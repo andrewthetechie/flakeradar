@@ -186,13 +186,48 @@ auto-skips a test on its own, and the MCP server cannot quarantine.
 
 ## MCP server for agents
 
-FlakeRadar serves a read-only [MCP](https://modelcontextprotocol.io) server at
-`/mcp/` (streamable HTTP). Authenticate with the API token as a Bearer token:
+FlakeRadar serves a read-only [MCP](https://modelcontextprotocol.io) server. It
+uses the **streamable HTTP** transport: the endpoint answers JSON-RPC **POST**
+requests — it is not a web page, so opening it in a browser returns **404**.
+
+### Endpoint
+
+```
+https://<your-host>/mcp/
+```
+
+The trailing slash matters: the app is mounted at `/mcp`, so `/mcp/` is the
+canonical endpoint. A request to `/mcp` (no slash) is *not* served and 404s.
+
+### Authentication (required)
+
+The MCP server is **token-gated**. Every request must send the API token as a
+bearer credential:
+
+```
+Authorization: Bearer <FLAKERADAR_API_TOKEN>
+```
+
+Without a valid token the server responds **401 Unauthorized** with
+`WWW-Authenticate: Bearer`. `FLAKERADAR_API_TOKEN` is the same token set in
+`.env` (and the one CI systems send in the `X-API-Key` header).
+
+### Connect an MCP client
+
+Point your client at `/mcp/` with streamable HTTP and the bearer token. For
+example, with the Claude Code CLI:
 
 ```bash
 claude mcp add --transport http flakeradar https://flakeradar.example.com/mcp/ \
   --header "Authorization: Bearer $FLAKERADAR_API_TOKEN"
 ```
+
+Other clients (Cursor, VS Code, custom agents) accept the same three values:
+URL `https://<your-host>/mcp/`, transport **streamable HTTP**, and the bearer
+token as the credential. Always HTTPS in production so the token is not sent
+in the clear.
+
+### Tools
 
 | Tool | Returns |
 |---|---|
