@@ -8,7 +8,7 @@ import { LeaderboardControls } from "./components/LeaderboardControls";
 import { Pagination } from "./components/Pagination";
 import { ScopePicker } from "./components/ScopePicker";
 import { StatTiles } from "./components/StatTiles";
-import { TestDetail } from "./components/TestDetail";
+import { TestDrawer } from "./components/TestDrawer";
 import { useViewState } from "./urlState";
 
 const REFRESH_MS = 30_000;
@@ -69,6 +69,8 @@ export default function App() {
     }
   }, [refresh]);
 
+  const closeDrawer = useCallback(() => setView({ test: null }), [setView]);
+
   return (
     <div className="app">
       <header className="app-header">
@@ -89,39 +91,42 @@ export default function App() {
 
       {summary && <StatTiles summary={summary} />}
 
-      <div className="columns">
-        <section className="panel">
-          <div className="panel-head">
-            <h2>Flakiness leaderboard</h2>
-            <LeaderboardControls
-              sort={sort}
-              showStable={showStable}
-              onSort={(s) => setView({ sort: s })}
-              onShowStable={(v) => setView({ showStable: v })}
-            />
-          </div>
-          <Leaderboard
-            tests={page?.items ?? []}
-            scope={{ repo, project }}
+      <section className="panel">
+        <div className="panel-head">
+          <h2>Flakiness leaderboard</h2>
+          <LeaderboardControls
+            sort={sort}
             showStable={showStable}
-            selectedId={view.test}
-            onSelect={(id) => setView({ test: id })}
-            onToggleQuarantine={onToggleQuarantine}
+            onSort={(s) => setView({ sort: s })}
+            onShowStable={(v) => setView({ showStable: v })}
           />
-          {page && page.total > 0 && (
-            <Pagination
-              page={page.page}
-              pageSize={page.page_size}
-              total={page.total}
-              onPage={(p) => setView({ page: p })}
-            />
-          )}
-        </section>
-        <section className="panel">
-          <h2>Test detail</h2>
-          <TestDetail history={history} />
-        </section>
-      </div>
+        </div>
+        <Leaderboard
+          tests={page?.items ?? []}
+          scope={{ repo, project }}
+          showStable={showStable}
+          selectedId={view.test}
+          onSelect={(id) => setView({ test: id })}
+          onToggleQuarantine={onToggleQuarantine}
+        />
+        {page && page.total > 0 && (
+          <Pagination
+            page={page.page}
+            pageSize={page.page_size}
+            total={page.total}
+            onPage={(p) => setView({ page: p })}
+          />
+        )}
+      </section>
+
+      {view.test != null && (
+        <TestDrawer
+          testId={view.test}
+          history={history}
+          onClose={closeDrawer}
+          onToggleQuarantine={onToggleQuarantine}
+        />
+      )}
 
       <footer className="app-footer">
         Ingest from CI:{" "}

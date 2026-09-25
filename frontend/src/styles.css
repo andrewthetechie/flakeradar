@@ -62,8 +62,6 @@ header.app-header .tagline { color: var(--text-secondary); font-size: 13px; }
 .tile .value.alert { color: var(--status-critical); }
 
 /* ---- layout ---- */
-.columns { display: grid; grid-template-columns: minmax(380px, 7fr) minmax(320px, 5fr); gap: 16px; align-items: start; }
-@media (max-width: 900px) { .columns { grid-template-columns: 1fr; } }
 
 .panel {
   background: var(--surface-1);
@@ -116,7 +114,7 @@ table.leaderboard { width: 100%; border-collapse: collapse; }
 .exec-table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 12px; }
 .exec-table th { text-align: left; color: var(--muted); font-weight: 600; padding: 4px 6px; border-bottom: 1px solid var(--baseline); }
 .exec-table td { padding: 4px 6px; border-bottom: 1px solid var(--grid); font-variant-numeric: tabular-nums; white-space: nowrap; }
-.exec-table td.msg { color: var(--text-secondary); max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.exec-table td.msg { color: var(--text-secondary); white-space: normal; overflow-wrap: anywhere; min-width: 160px; }
 
 .tooltip {
   position: absolute; pointer-events: none; z-index: 10;
@@ -138,6 +136,42 @@ footer.app-footer code { background: var(--surface-1); border: 1px solid var(--b
 
 .badge-quarantined { font-size: 0.75rem; border: 1px solid currentColor; border-radius: 4px; padding: 0 4px; margin-right: 6px; }
 .quarantine-btn { font-size: 0.75rem; cursor: pointer; }
+
+/* ---- slide-over test detail (task 12) ---- */
+.drawer-backdrop { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.25); z-index: 20; }
+.drawer {
+  position: fixed; top: 0; right: 0; bottom: 0; z-index: 21;
+  width: min(760px, 100vw); overflow-y: auto;
+  background: var(--surface-1); border-left: 1px solid var(--border);
+  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.18); padding: 16px 20px 32px;
+}
+.drawer-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+.breadcrumb { color: var(--accent); font-size: 12px; overflow-wrap: anywhere; }
+.drawer-close { font-size: 20px; line-height: 1; background: none; border: none; color: var(--text-secondary); cursor: pointer; }
+.drawer .detail-title { margin: 0 0 2px; }
+.detail-location { font-size: 12px; margin-bottom: 10px; overflow-wrap: anywhere; }
+.detail-location a { color: var(--accent); }
+.muted { color: var(--muted); }
+details.failure { margin: 12px 0; }
+details.failure summary { cursor: pointer; font-size: 12px; color: var(--text-secondary); }
+details.failure pre {
+  margin: 6px 0 0; padding: 10px; max-height: 320px; overflow: auto;
+  background: var(--page); border: 1px solid var(--border); border-radius: 6px;
+  font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.drawer .quarantine-btn { margin-bottom: 14px; }
+
+/* ---- phones: give the test name the width (task 12) ---- */
+@media (max-width: 640px) {
+  .app { padding: 16px 16px 32px; }
+  header.app-header { flex-wrap: wrap; }
+  header.app-header .tagline { display: none; }
+  .scope-picker { margin-left: 0; width: 100%; }
+  .scope-picker select { flex: 1; min-width: 0; }
+  .leaderboard .col-proof, .leaderboard .col-status { display: none; }
+  .leaderboard td:first-child { min-width: 55vw; }
+  .meter { min-width: 72px; }
+}
 
 /* ---- scope + leaderboard controls (task 11) ---- */
 .scope-picker { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; }

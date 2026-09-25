@@ -1,4 +1,5 @@
 import type { Scope, TestCase } from "../api";
+import { formatScore } from "../format";
 import { StatusMark } from "./StatusMark";
 
 // Sequential blue: darker = worse, so severity reads as magnitude.
@@ -44,8 +45,8 @@ export function Leaderboard({
         <tr>
           <th>Test</th>
           <th>Flakiness</th>
-          <th>Proof</th>
-          <th>Last status</th>
+          <th className="col-proof">Proof</th>
+          <th className="col-status">Last status</th>
           <th>Quarantine</th>
         </tr>
       </thead>
@@ -81,11 +82,11 @@ export function Leaderboard({
                       }}
                     />
                   </div>
-                  <span className="num">{t.flakiness_score.toFixed(2)}</span>
+                  <span className="num">{formatScore(t.flakiness_score)}</span>
                 </div>
                 <span className={`tier tier-${t.tier}`}>{t.tier}</span>
               </td>
-              <td>
+              <td className="col-proof">
                 {t.confirmed_flake_count > 0 ? (
                   <span className="chip" title="Failed and passed on the same commit">
                     ⚠ {t.confirmed_flake_count}× proven
@@ -94,7 +95,7 @@ export function Leaderboard({
                   <span className="chip">—</span>
                 )}
               </td>
-              <td>
+              <td className="col-status">
                 <span className="chip">
                   <StatusMark status={t.last_status} /> {t.last_status}
                   {t.github_issue_number != null && (

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { Execution, History } from "../api";
+import { formatScore } from "../format";
 import { MarkShape, StatusMark, statusColor } from "./StatusMark";
 
 const CELL = 18; // horizontal step per execution
@@ -31,7 +32,7 @@ function ExecutionStrip({ executions }: { executions: Execution[] }) {
           .map((e) => e.status)
           .join(", ")}`}
         onMouseLeave={() => setHover(null)}
-        style={{ display: "block" }}
+        style={{ display: "block", maxWidth: width }} // shrink for long histories, never enlarge
       >
         <line x1={0} y1={H - 8} x2={width} y2={H - 8} stroke="var(--baseline)" strokeWidth={1} />
         {ordered.map((e, i) => {
@@ -78,28 +79,20 @@ function ExecutionStrip({ executions }: { executions: Execution[] }) {
   );
 }
 
-export function TestDetail({ history }: { history: History | null }) {
-  if (!history) {
-    return <div className="empty">Select a test to inspect its execution history.</div>;
-  }
-  const { test, executions } = history;
+export function TestDetail({ history }: { history: History }) {
+  const { executions } = history;
   const fails = executions.filter((e) => e.status === "failed" || e.status === "error").length;
+  const latestFailure = executions.find((e) => e.status === "failed" || e.status === "error");
   return (
     <div>
-      <div className="detail-title">{test.name}</div>
-      <div className="detail-sub">
-        {test.classname || test.suite}
-        {test.github_issue_number != null && <> · issue #{test.github_issue_number}</>}
-      </div>
-
       <div className="facts">
         <div className="fact">
           <div className="label">Flakiness score</div>
-          <div className="value">{test.flakiness_score.toFixed(2)}</div>
+          <div className="value">{formatScore(history.test.flakiness_score)}</div>
         </div>
         <div className="fact">
           <div className="label">Proven flakes</div>
-          <div className="value">{test.confirmed_flake_count}</div>
+          <div className="value">{history.test.confirmed_flake_count}</div>
         </div>
         <div className="fact">
           <div className="label">Failures (window)</div>
@@ -108,6 +101,15 @@ export function TestDetail({ history }: { history: History | null }) {
           </div>
         </div>
       </div>
+
+      {latestFailure && (latestFailure.details || latestFailure.message) && (
+        <details className="failure" open>
+          <summary>
+            Latest failure · {latestFailure.commit_sha.slice(0, 10)} on {latestFailure.branch}
+          </summary>
+          <pre>{latestFailure.details || latestFailure.message}</pre>
+        </details>
+      )}
 
       <ExecutionStrip executions={executions} />
       <div className="strip-legend" aria-hidden>
@@ -138,7 +140,7 @@ export function TestDetail({ history }: { history: History | null }) {
               <td>{e.commit_sha.slice(0, 10)}</td>
               <td>{e.branch}</td>
               <td>{fmtWhen(e.created_at)}</td>
-              <td className="msg" title={e.message}>{e.message || "—"}</td>
+              <td className="msg">{e.message || "—"}</td>
             </tr>
           ))}
         </tbody>
