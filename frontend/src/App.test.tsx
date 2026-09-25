@@ -22,7 +22,8 @@ function page(name: string): TestPage {
     quarantined: false,
     quarantined_at: null,
     github_issue_number: null,
-    github_issue_url: null,  };
+    github_issue_url: null,
+  };
   return { items: [test], total: 1, page: 1, page_size: 50 };
 }
 

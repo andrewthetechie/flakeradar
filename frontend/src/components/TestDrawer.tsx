@@ -55,7 +55,9 @@ export function TestDrawer({
             <div className="mb-3 text-xs text-muted [overflow-wrap:anywhere]">
               {breakable(history.test.classname || history.test.suite)}
               {history.test.github_issue_number != null && (
-                <> ·{" "}
+                <>
+                  {" "}
+                  ·{" "}
                   <a
                     className="text-link underline-offset-2 hover:underline"
                     href={history.test.github_issue_url ?? undefined}

@@ -100,7 +100,10 @@ async def _issue_body(db: AsyncSession, tc: TestCase, repo: str, project: str, r
         f"- **Suite / classname:** `{tc.suite or '(none)'}` / `{tc.classname}`",
     ]
     if last_fail_sha:
-        lines.append(f"- **Last failing commit:** `{last_fail_sha}`" + (f" on branch `{last_fail_branch}`" if last_fail_branch else ""))
+        lines.append(
+            f"- **Last failing commit:** `{last_fail_sha}`"
+            + (f" on branch `{last_fail_branch}`" if last_fail_branch else "")
+        )
     lines += [
         "",
         "FlakeRadar flags this test because it reports nondeterministic results (a failure gives way to a",

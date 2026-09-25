@@ -61,9 +61,7 @@ def to_test_out(tc: TestCase, project: str, repo: str, threshold: float) -> sche
         quarantined_at=tc.quarantined_at,
         github_issue_number=tc.github_issue_number,
         github_issue_url=(
-            f"https://github.com/{repo}/issues/{tc.github_issue_number}"
-            if tc.github_issue_number is not None
-            else None
+            f"https://github.com/{repo}/issues/{tc.github_issue_number}" if tc.github_issue_number is not None else None
         ),
     )
 
