@@ -1,9 +1,13 @@
 fastapi>=0.115
 uvicorn[standard]>=0.30
-sqlalchemy>=2.0.36
+sqlalchemy[asyncio]>=2.0.36
+asyncpg>=0.30
 pydantic-settings>=2.5
-junitparser>=3.1
+junitparser>=5.0
 httpx>=0.27
 python-multipart>=0.0.9
-pytest>=8.3
 alembic>=1.13
+fastmcp>=4.0,<5
+pytest>=8.3
+pytest-asyncio>=1.0
+testcontainers[postgres]>=4.10

@@ -1,141 +1,128 @@
-/* FlakeRadar — roles-first tokens; light/dark from the validated palette. */
-:root {
+/* FlakeRadar — Tailwind v4 entry. Colors are role tokens (CSS variables) that
+   switch with <html data-theme>, so components never need dark: variants.
+   Dark is the default; light is opt-in from the header toggle. */
+@import "tailwindcss";
+@import "@fontsource-variable/ibm-plex-sans";
+@import "@fontsource/ibm-plex-mono/400.css";
+
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+:root,
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page: #0c121c;
+  --surface: #131b28;
+  --surface-2: #1b2535;
+  --line: #243146;
+  --baseline: #34435b;
+  --text: #e4e9f1;
+  --text-2: #a3b0c2;
+  --muted: #7d8a9d;
+  /* Signal amber: flaky is a warning about the test, not a failure of the code. */
+  --signal: #f0b54a;
+  --link: #74b0f4;
+  --status-good: #3fb479;
+  --status-critical: #f06b6b;
+  /* Score scale: on dark, brighter = worse. */
+  --seq-250: #2b5288;
+  --seq-400: #3d7fd6;
+  --seq-550: #6aa8f0;
+  --seq-650: #a9cdfa;
+  --scrim: rgb(3 6 12 / 0.6);
+}
+
+:root[data-theme="light"] {
   color-scheme: light;
-  --page: #f9f9f7;
-  --surface-1: #fcfcfb;
-  --text-primary: #0b0b0b;
-  --text-secondary: #52514e;
-  --muted: #898781;
-  --grid: #e1e0d9;
-  --baseline: #c3c2b7;
-  --border: rgba(11, 11, 11, 0.1);
-  --status-good: #0ca30c;
-  --status-critical: #d03b3b;
-  --status-warning: #fab219;
+  --page: #f5f6f8;
+  --surface: #ffffff;
+  --surface-2: #eef0f4;
+  --line: #e1e4ea;
+  --baseline: #c5cbd5;
+  --text: #121826;
+  --text-2: #4b5567;
+  --muted: #6b7486;
+  --signal: #a86a06;
+  --link: #1f66c1;
+  --status-good: #1b8a3f;
+  --status-critical: #c93636;
+  /* On light, darker = worse. */
   --seq-250: #86b6ef;
   --seq-400: #3987e5;
   --seq-550: #1c5cab;
   --seq-650: #104281;
-  --accent: #2a78d6;
+  --scrim: rgb(15 20 30 / 0.3);
 }
-@media (prefers-color-scheme: dark) {
-  :root {
-    color-scheme: dark;
-    --page: #0d0d0d;
-    --surface-1: #1a1a19;
-    --text-primary: #ffffff;
-    --text-secondary: #c3c2b7;
-    --muted: #898781;
-    --grid: #2c2c2a;
-    --baseline: #383835;
-    --border: rgba(255, 255, 255, 0.1);
-    --accent: #3987e5;
+
+@theme inline {
+  --font-sans: "IBM Plex Sans Variable", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+
+  --color-page: var(--page);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-line: var(--line);
+  --color-baseline: var(--baseline);
+  --color-text: var(--text);
+  --color-text-2: var(--text-2);
+  --color-muted: var(--muted);
+  --color-signal: var(--signal);
+  --color-link: var(--link);
+  --color-good: var(--status-good);
+  --color-critical: var(--status-critical);
+  --color-scrim: var(--scrim);
+
+  --animate-slide-in: slide-in 180ms ease-out;
+  @keyframes slide-in {
+    from { transform: translateX(24px); opacity: 0; }
+    to { transform: none; opacity: 1; }
   }
 }
 
-* { box-sizing: border-box; }
-body {
-  margin: 0;
-  background: var(--page);
-  color: var(--text-primary);
-  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-  font-size: 14px;
-  line-height: 1.45;
+@layer base {
+  body {
+    @apply bg-page text-text font-sans text-sm leading-normal antialiased;
+  }
+  :focus-visible {
+    @apply outline-2 outline-offset-2 outline-signal;
+  }
+  select,
+  button {
+    @apply cursor-pointer;
+  }
+  button:disabled {
+    @apply cursor-default;
+  }
 }
 
-.app { max-width: 1200px; margin: 0 auto; padding: 24px 20px 48px; }
-
-header.app-header { display: flex; align-items: baseline; gap: 12px; margin-bottom: 20px; }
-header.app-header h1 { font-size: 20px; margin: 0; letter-spacing: -0.01em; }
-header.app-header .tagline { color: var(--text-secondary); font-size: 13px; }
-
-/* ---- stat tiles ---- */
-.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 20px; }
-.tile {
-  background: var(--surface-1);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 14px 16px;
-}
-.tile .label { color: var(--text-secondary); font-size: 12px; margin-bottom: 4px; }
-.tile .value { font-size: 26px; font-weight: 600; }
-.tile .value.alert { color: var(--status-critical); }
-
-/* ---- layout ---- */
-.columns { display: grid; grid-template-columns: minmax(380px, 7fr) minmax(320px, 5fr); gap: 16px; align-items: start; }
-@media (max-width: 900px) { .columns { grid-template-columns: 1fr; } }
-
-.panel {
-  background: var(--surface-1);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 16px;
-  overflow-x: auto;
-}
-.panel h2 { font-size: 14px; margin: 0 0 12px; color: var(--text-secondary); font-weight: 600; }
-
-/* ---- leaderboard table ---- */
-table.leaderboard { width: 100%; border-collapse: collapse; }
-.leaderboard th {
-  text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em;
-  color: var(--muted); font-weight: 600; padding: 6px 8px; border-bottom: 1px solid var(--baseline);
-}
-.leaderboard td { padding: 8px; border-bottom: 1px solid var(--grid); }
-.leaderboard tbody tr { cursor: pointer; }
-.leaderboard tbody tr:hover { background: color-mix(in oklab, var(--accent) 7%, transparent); }
-.leaderboard tbody tr.selected { background: color-mix(in oklab, var(--accent) 13%, transparent); }
-.test-name { font-weight: 600; overflow-wrap: anywhere; }
-.test-class { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
-
-/* score meter: sequential blue, thin mark, 4px rounded data end */
-.meter { display: flex; align-items: center; gap: 8px; min-width: 120px; }
-.meter .track { flex: 1; height: 6px; background: var(--grid); border-radius: 4px; overflow: hidden; }
-.meter .fill { height: 100%; border-radius: 0 4px 4px 0; }
-.meter .num { font-variant-numeric: tabular-nums; width: 38px; text-align: right; color: var(--text-secondary); }
-
-/* status chip: icon + label, never color alone */
-.chip { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--text-secondary); white-space: nowrap; }
-.chip .mark { flex: none; }
-
-.badge-issue {
-  font-size: 11px; color: var(--accent); border: 1px solid var(--border);
-  border-radius: 999px; padding: 1px 8px; white-space: nowrap;
+@layer components {
+  .control {
+    @apply rounded-md border border-line bg-surface-2 px-2 py-1 text-sm text-text;
+  }
+  .btn {
+    @apply rounded-md border border-line px-2.5 py-1 text-xs text-text-2
+      hover:border-baseline hover:text-text disabled:opacity-40
+      disabled:hover:border-line disabled:hover:text-text-2;
+  }
 }
 
-/* ---- detail panel ---- */
-.detail-title { font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
-.detail-sub { color: var(--muted); font-size: 12px; margin-bottom: 12px; overflow-wrap: anywhere; }
-.facts { display: flex; gap: 18px; flex-wrap: wrap; margin-bottom: 14px; }
-.facts .fact .label { color: var(--muted); font-size: 11px; }
-.facts .fact .value { font-weight: 600; font-variant-numeric: tabular-nums; }
-
-.strip-wrap { position: relative; }
-.strip-legend { display: flex; gap: 14px; margin: 8px 0 4px; color: var(--text-secondary); font-size: 12px; }
-.strip-legend .item { display: inline-flex; align-items: center; gap: 5px; }
-
-.exec-table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 12px; }
-.exec-table th { text-align: left; color: var(--muted); font-weight: 600; padding: 4px 6px; border-bottom: 1px solid var(--baseline); }
-.exec-table td { padding: 4px 6px; border-bottom: 1px solid var(--grid); font-variant-numeric: tabular-nums; white-space: nowrap; }
-.exec-table td.msg { color: var(--text-secondary); max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-.tooltip {
-  position: absolute; pointer-events: none; z-index: 10;
-  background: var(--surface-1); border: 1px solid var(--border); border-radius: 8px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
-  padding: 8px 10px; font-size: 12px; max-width: 260px;
+/* Phones: give the test name the width; drop the secondary columns.
+   Quarantine stays one tap away in the slide-over. */
+@media (max-width: 640px) {
+  .leaderboard .col-proof,
+  .leaderboard .col-status,
+  .leaderboard .col-actions {
+    display: none;
+  }
+  .leaderboard td:first-child {
+    min-width: 55vw;
+  }
 }
-.tooltip .t-status { font-weight: 600; }
-.tooltip .t-meta { color: var(--text-secondary); }
 
-.empty { color: var(--muted); padding: 24px 8px; text-align: center; }
-.error-banner {
-  background: color-mix(in oklab, var(--status-critical) 12%, var(--surface-1));
-  border: 1px solid var(--status-critical); color: var(--text-primary);
-  border-radius: 8px; padding: 10px 14px; margin-bottom: 16px; font-size: 13px;
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition: none !important;
+    animation: none !important;
+  }
 }
-footer.app-footer { margin-top: 28px; color: var(--muted); font-size: 12px; }
-footer.app-footer code { background: var(--surface-1); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; }
-
-.project-select { margin-left: auto; padding: 4px 8px; }
-.badge-quarantined { font-size: 0.75rem; border: 1px solid currentColor; border-radius: 4px; padding: 0 4px; margin-right: 6px; }
-.quarantine-btn { font-size: 0.75rem; cursor: pointer; }

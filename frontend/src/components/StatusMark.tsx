@@ -20,7 +20,13 @@ export function StatusMark({ status, size = 10 }: { status: string; size?: numbe
   const c = statusColor(status);
   const half = size / 2;
   return (
-    <svg className="mark" width={size} height={size} viewBox={`0 0 ${size} ${size}`} aria-hidden>
+    <svg
+      className="shrink-0"
+      width={size}
+      height={size}
+      viewBox={`0 0 ${size} ${size}`}
+      aria-hidden
+    >
       <MarkShape status={status} cx={half} cy={half} r={half - 1} color={c} />
     </svg>
   );
@@ -28,8 +34,18 @@ export function StatusMark({ status, size = 10 }: { status: string; size?: numbe
 
 // Raw shape for embedding inside a larger SVG (the execution strip).
 export function MarkShape({
-  status, cx, cy, r, color,
-}: { status: string; cx: number; cy: number; r: number; color: string }) {
+  status,
+  cx,
+  cy,
+  r,
+  color,
+}: {
+  status: string;
+  cx: number;
+  cy: number;
+  r: number;
+  color: string;
+}) {
   if (status === "failed") {
     return <rect x={cx - r} y={cy - r} width={r * 2} height={r * 2} rx={1.5} fill={color} />;
   }

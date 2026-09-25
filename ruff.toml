@@ -1,0 +1,14 @@
+# Ruff configuration for the FlakeRadar backend.
+# Lint the `backend` package; the frontend is covered by its own tooling.
+# Kept in sync with the pinned ruff version in .github/workflows/ci.yml.
+line-length = 120
+
+[lint]
+# E402: module-level imports after `os.environ.setdefault(...)` are a deliberate
+#       pattern in conftest.py (env must be set before importing app modules).
+ignore = ["E402"]
+
+[lint.flake8-bugbear]
+# FastAPI idiom: these are safe as argument defaults and are exempted from the
+# B008 function-call-in-default-argument rule.
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Query", "fastapi.Path", "fastapi.Body", "fastapi.Header", "fastapi.Cookie", "fastapi.Form", "fastapi.File"]
