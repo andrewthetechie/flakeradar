@@ -125,9 +125,16 @@ export function Leaderboard({
                 <span className="inline-flex items-center gap-1.5 text-xs whitespace-nowrap text-text-2">
                   <StatusMark status={t.last_status} /> {t.last_status}
                   {t.github_issue_number != null && (
-                    <span className="rounded-full border border-line px-2 text-link">
+                    <a
+                      href={t.github_issue_url ?? undefined}
+                      onClick={(e) => e.stopPropagation()}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="rounded-full border border-line px-2 text-link hover:underline"
+                      title="GitHub issue filed by FlakeRadar"
+                    >
                       #{t.github_issue_number}
-                    </span>
+                    </a>
                   )}
                 </span>
               </td>

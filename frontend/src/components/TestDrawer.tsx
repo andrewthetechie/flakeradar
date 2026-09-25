@@ -55,7 +55,16 @@ export function TestDrawer({
             <div className="mb-3 text-xs text-muted [overflow-wrap:anywhere]">
               {breakable(history.test.classname || history.test.suite)}
               {history.test.github_issue_number != null && (
-                <> · issue #{history.test.github_issue_number}</>
+                <> ·{" "}
+                  <a
+                    className="text-link underline-offset-2 hover:underline"
+                    href={history.test.github_issue_url ?? undefined}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    issue #{history.test.github_issue_number}
+                  </a>
+                </>
               )}
             </div>
             <div className="mb-4 flex flex-wrap items-center justify-between gap-3">

@@ -244,14 +244,48 @@ Set in `.env`:
 
 ```
 FLAKERADAR_GITHUB_TOKEN=<fine-grained PAT with Issues:write on your repos>
-FLAKERADAR_FLAKE_THRESHOLD=0.30
+FLAKERADAR_GITHUB_ISSUE_LABEL=flakeradar
 ```
 
-When a test crosses the threshold, FlakeRadar files an issue **in that test's
-own repo** with the evidence: repo/project, location, score, proven flakes, the
-last 10 executions and a sample failure. One issue per test, labeled
-`flakeradar`, filed after processing (never on the upload path), rate-limit
-aware. Leave the token blank to disable.
+When a test crosses the *filing gate*, FlakeRadar files an issue **in that test's
+own repo** with everything an engineer (or an agent) needs to find and debug it:
+repo/project, file/line, a permalink to the test at its last failing commit,
+score (and the threshold used), proven-flake count, suite/classname, last failing
+commit and branch, the last 10 executions, and a sample failure traceback.
+One issue per test, labeled `FLAKERADAR_GITHUB_ISSUE_LABEL`, filed after
+processing (never on the upload path), rate-limit aware. Leave the token blank
+to disable the whole feature.
+
+### Filing gate (score / proven flakes / failures)
+
+Filing and tiering are decoupled: `FLAKE_THRESHOLD` still decides the UI/API
+"flaky" tier, while filing is controlled by three independent minimums. A test
+is filed only when it meets **every** configured (non-zero) minimum:
+
+```
+FLAKERADAR_GITHUB_ISSUE_MIN_SCORE=0.30          # flakiness score (0..1) min
+FLAKERADAR_GITHUB_ISSUE_MIN_PROVEN_FLAKES=0     # same-commit fail+pass min
+FLAKERADAR_GITHUB_ISSUE_MIN_FAILURES=0          # failures in recent window min
+```
+
+Set any signal's minimum to `0` to skip it, so you can gate on score, proven
+flakes, failures, or any combination. Defaults reproduce the historical behavior
+(score ≥ 0.30 only). If issues turn out to be false positives, raise these
+gates rather than loosening the tier threshold. (A token with all three at `0`
+would file for every touched test — keep `MIN_SCORE` above 0.)
+
+### Deduplication
+
+A filed issue's number is stored on the test and blocks re-filing. FlakeRadar
+checks GitHub periodically (on the leader's maintenance interval) and, once an
+issue is **closed** (or deleted), clears that marker so a later Report that
+re-triggers the flaky test files a fresh issue. Until the issue is closed, no
+new issue is opened.
+
+Filed issues are surfaced in the UI (a link on the leaderboard row and in the
+test drawer) and via the API/MCP (`github_issue_number` + `github_issue_url` on
+`/api/tests`, `/api/tests/{id}/history`, and the `get_test`/`top_flaky_tests`
+MCP tools).
 
 ## How scoring works
 

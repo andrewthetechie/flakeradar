@@ -21,6 +21,7 @@ const test: TestCase = {
   quarantined: false,
   quarantined_at: null,
   github_issue_number: null,
+  github_issue_url: null,
 };
 
 describe("Leaderboard", () => {

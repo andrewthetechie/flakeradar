@@ -21,6 +21,7 @@ export interface TestCase {
   quarantined: boolean;
   quarantined_at: string | null;
   github_issue_number: number | null;
+  github_issue_url: string | null;
 }
 
 export interface TestPage {

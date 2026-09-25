@@ -66,6 +66,7 @@ class TestOut(BaseModel):
     quarantined: bool
     quarantined_at: datetime | None
     github_issue_number: int | None
+    github_issue_url: str | None
 
 
 class TestPage(BaseModel):
