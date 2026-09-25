@@ -12,6 +12,7 @@ import { QueueIndicator } from "./components/QueueIndicator";
 import { ScopePicker } from "./components/ScopePicker";
 import { StatTiles } from "./components/StatTiles";
 import { TestDrawer } from "./components/TestDrawer";
+import { ThemeToggle } from "./components/ThemeToggle";
 import { useViewState } from "./urlState";
 
 const REFRESH_MS = 30_000;
@@ -85,29 +86,40 @@ export default function App() {
   const closeDrawer = useCallback(() => setView({ test: null }), [setView]);
 
   return (
-    <div className="app">
-      <header className="app-header">
-        <h1>FlakeRadar</h1>
-        <span className="tagline">flaky-test detection for your CI</span>
-        <QueueIndicator summary={queue} loadFailed={fetchFailedReports} />
-        <ScopePicker
-          repos={repos}
-          scope={{ repo, project }}
-          onChange={(scope) => setView(scope)}
-        />
+    <div className="mx-auto max-w-6xl px-4 pt-5 pb-12 sm:px-6">
+      <header className="mb-6 flex flex-wrap items-center gap-x-4 gap-y-3">
+        <div className="flex items-center gap-2.5">
+          <RadarMark />
+          <h1 className="text-lg font-semibold tracking-tight">FlakeRadar</h1>
+          <span className="hidden text-[13px] text-muted md:inline">
+            flaky-test detection for your CI
+          </span>
+        </div>
+        <div className="flex w-full flex-wrap items-center gap-2 sm:ml-auto sm:w-auto">
+          <QueueIndicator summary={queue} loadFailed={fetchFailedReports} />
+          <ScopePicker
+            repos={repos}
+            scope={{ repo, project }}
+            onChange={(scope) => setView(scope)}
+          />
+          <ThemeToggle />
+        </div>
       </header>
 
       {error && (
-        <div className="error-banner">
+        <div
+          role="alert"
+          className="mb-4 rounded-lg border border-critical/60 bg-critical/10 px-3.5 py-2.5 text-[13px]"
+        >
           Could not reach the FlakeRadar API ({error}). Is the backend running on port 8000?
         </div>
       )}
 
       {summary && <StatTiles summary={summary} />}
 
-      <section className="panel">
-        <div className="panel-head">
-          <h2>Flakiness leaderboard</h2>
+      <section className="rounded-xl border border-line bg-surface">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-4 py-3">
+          <h2 className="text-[15px] font-semibold">Flakiness leaderboard</h2>
           <LeaderboardControls
             sort={sort}
             showStable={showStable}
@@ -115,14 +127,16 @@ export default function App() {
             onShowStable={(v) => setView({ showStable: v })}
           />
         </div>
-        <Leaderboard
-          tests={page?.items ?? []}
-          scope={{ repo, project }}
-          showStable={showStable}
-          selectedId={view.test}
-          onSelect={(id) => setView({ test: id })}
-          onToggleQuarantine={onToggleQuarantine}
-        />
+        <div className="overflow-x-auto">
+          <Leaderboard
+            tests={page?.items ?? []}
+            scope={{ repo, project }}
+            showStable={showStable}
+            selectedId={view.test}
+            onSelect={(id) => setView({ test: id })}
+            onToggleQuarantine={onToggleQuarantine}
+          />
+        </div>
         {page && page.total > 0 && (
           <Pagination
             page={page.page}
@@ -142,13 +156,24 @@ export default function App() {
         />
       )}
 
-      <footer className="app-footer">
+      <footer className="mt-8 text-xs text-muted">
         Ingest from CI:{" "}
-        <code>
+        <code className="rounded border border-line bg-surface px-1.5 py-0.5 font-mono [overflow-wrap:anywhere]">
           curl -X POST "$URL/api/ingest?repo=$OWNER/$REPO&amp;project=backend&amp;commit_sha=$SHA&amp;branch=$BRANCH"
           -H "X-API-Key: $TOKEN" --data-binary @junit.xml
         </code>
       </footer>
     </div>
+  );
+}
+
+/** Same mark as the favicon: a sweep ring around a contact. */
+function RadarMark() {
+  return (
+    <svg width="22" height="22" viewBox="0 0 16 16" aria-hidden className="text-signal">
+      <circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" strokeWidth="1.25" opacity="0.45" />
+      <circle cx="8" cy="8" r="3.75" fill="none" stroke="currentColor" strokeWidth="1.25" opacity="0.7" />
+      <circle cx="8" cy="8" r="1.6" fill="currentColor" />
+    </svg>
   );
 }

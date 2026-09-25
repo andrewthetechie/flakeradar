@@ -15,21 +15,22 @@ export function LeaderboardControls({
   onShowStable: (show: boolean) => void;
 }) {
   return (
-    <div className="leaderboard-controls">
-      <label>
-        Sort by{" "}
-        <select value={sort} onChange={(e) => onSort(e.target.value as SortKey)}>
+    <div className="flex flex-wrap items-center gap-4 text-xs text-text-2">
+      <label className="flex items-center gap-2">
+        Sort by
+        <select className="control py-0.5 text-xs" value={sort} onChange={(e) => onSort(e.target.value as SortKey)}>
           {(Object.keys(SORT_LABELS) as SortKey[]).map((k) => (
             <option key={k} value={k}>{SORT_LABELS[k]}</option>
           ))}
         </select>
       </label>
-      <label>
+      <label className="flex cursor-pointer items-center gap-2">
         <input
           type="checkbox"
+          className="size-3.5 accent-(--signal)"
           checked={showStable}
           onChange={(e) => onShowStable(e.target.checked)}
-        />{" "}
+        />
         Show stable tests
       </label>
     </div>

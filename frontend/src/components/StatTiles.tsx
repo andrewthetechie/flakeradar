@@ -17,12 +17,17 @@ export function StatTiles({ summary }: { summary: Summary }) {
     { label: "CI runs ingested", value: summary.total_runs, alert: false },
     { label: "Executions recorded", value: summary.total_executions, alert: false },
   ];
+  // One strip split by hairlines (gap-px over the line color), not six cards.
   return (
-    <div className="tiles">
+    <div className="mb-6 grid grid-cols-2 gap-px overflow-hidden rounded-xl border border-line bg-line sm:grid-cols-3 lg:grid-cols-6">
       {tiles.map((t) => (
-        <div className="tile" key={t.label}>
-          <div className="label">{t.label}</div>
-          <div className={t.alert ? "value alert" : "value"}>{t.value}</div>
+        <div className="flex flex-col justify-between bg-surface px-4 py-3" key={t.label}>
+          <div className="text-xs text-text-2">{t.label}</div>
+          <div
+            className={`mt-1 text-[22px] font-semibold tabular-nums ${t.alert ? "text-signal" : ""}`}
+          >
+            {t.value.toLocaleString()}
+          </div>
         </div>
       ))}
     </div>

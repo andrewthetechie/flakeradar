@@ -1,14 +1,21 @@
 import type { Scope, TestCase } from "../api";
+import { breakable } from "../breakable";
 import { formatScore } from "../format";
 import { StatusMark } from "./StatusMark";
 
-// Sequential blue: darker = worse, so severity reads as magnitude.
+// Sequential blue: stronger = worse (the scale flips per theme in styles.css).
 function scoreColor(score: number): string {
   if (score >= 0.75) return "var(--seq-650)";
   if (score >= 0.5) return "var(--seq-550)";
   if (score >= 0.25) return "var(--seq-400)";
   return "var(--seq-250)";
 }
+
+const TIER_CLASS: Record<TestCase["tier"], string> = {
+  flaky: "font-semibold text-signal",
+  suspect: "text-text-2",
+  stable: "text-muted",
+};
 
 /** Where a row lives, shown only when the view spans more than that. */
 export function scopeLabel(t: TestCase, scope: Scope): string | null {
@@ -28,84 +35,101 @@ export function Leaderboard({
   onToggleQuarantine: (t: TestCase) => void;
 }) {
   if (tests.length === 0) {
-    return showStable ? (
-      <div className="empty">
-        No test data yet. POST a JUnit XML report to <code>/api/ingest</code> — see
-        the README for the one-line CI snippet.
-      </div>
-    ) : (
-      <div className="empty">
-        No flaky or suspect tests in this view. Tick “Show stable tests” to list every test.
+    return (
+      <div className="px-4 py-10 text-center text-text-2">
+        {showStable ? (
+          <>
+            No test data yet. POST a JUnit XML report to{" "}
+            <code className="font-mono text-text">/api/ingest</code> — see the README for the
+            one-line CI snippet.
+          </>
+        ) : (
+          <>No flaky or suspect tests in this view. Tick “Show stable tests” to list every test.</>
+        )}
       </div>
     );
   }
+  const th = "px-4 py-2 text-left text-xs font-medium text-muted";
   return (
-    <table className="leaderboard">
+    <table className="leaderboard w-full border-collapse">
       <thead>
-        <tr>
-          <th>Test</th>
-          <th>Flakiness</th>
-          <th className="col-proof">Proof</th>
-          <th className="col-status">Last status</th>
-          <th>Quarantine</th>
+        <tr className="border-b border-line">
+          <th className={th}>Test</th>
+          <th className={th}>Flakiness</th>
+          <th className={`col-proof ${th}`}>Proof</th>
+          <th className={`col-status ${th}`}>Last status</th>
+          <th className={`col-actions ${th} text-right`}>Quarantine</th>
         </tr>
       </thead>
       <tbody>
         {tests.map((t) => {
           const label = scopeLabel(t, scope);
+          const selected = t.id === selectedId;
           return (
             <tr
               key={t.id}
-              className={t.id === selectedId ? "selected" : ""}
+              className={`cursor-pointer border-b border-line last:border-b-0 hover:bg-surface-2 ${
+                selected ? "bg-surface-2 shadow-[inset_3px_0_0_var(--signal)]" : ""
+              }`}
               onClick={() => onSelect(t.id)}
             >
-              <td>
-                {label && <div className="test-scope">{label}</div>}
-                <div className="test-name">
+              <td className="px-4 py-2.5 align-top">
+                {label && <div className="text-xs text-link [overflow-wrap:anywhere]">{label}</div>}
+                <div className="font-semibold [overflow-wrap:anywhere]">
                   {t.quarantined && (
-                    <span className="badge-quarantined" title="Quarantined — runner may skip">
+                    <span
+                      className="mr-1.5 rounded border border-muted px-1 text-[11px] font-normal text-muted"
+                      title="Quarantined — runner may skip"
+                    >
                       ⏻ quarantined
                     </span>
                   )}
-                  {t.name}
+                  {breakable(t.name)}
                 </div>
-                <div className="test-class">{t.classname || t.suite}</div>
+                <div className="text-xs text-muted [overflow-wrap:anywhere]">
+                  {t.classname || t.suite}
+                </div>
               </td>
-              <td>
-                <div className="meter">
-                  <div className="track">
+              <td className="px-4 py-2.5 align-top">
+                <div className="flex min-w-18 items-center gap-2 sm:min-w-32">
+                  <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-line">
                     <div
-                      className="fill"
+                      className="h-full rounded-full"
                       style={{
                         width: `${Math.max(t.flakiness_score * 100, t.flakiness_score > 0 ? 4 : 0)}%`,
                         background: scoreColor(t.flakiness_score),
                       }}
                     />
                   </div>
-                  <span className="num">{formatScore(t.flakiness_score)}</span>
+                  <span className="w-9 text-right tabular-nums text-text-2">
+                    {formatScore(t.flakiness_score)}
+                  </span>
                 </div>
-                <span className={`tier tier-${t.tier}`}>{t.tier}</span>
+                <span className={`mt-1 inline-block text-xs ${TIER_CLASS[t.tier]}`}>{t.tier}</span>
               </td>
-              <td className="col-proof">
+              <td className="col-proof px-4 py-2.5 align-top text-xs whitespace-nowrap">
                 {t.confirmed_flake_count > 0 ? (
-                  <span className="chip" title="Failed and passed on the same commit">
+                  <span className="text-signal" title="Failed and passed on the same commit">
                     ⚠ {t.confirmed_flake_count}× proven
                   </span>
                 ) : (
-                  <span className="chip">—</span>
+                  <span className="text-muted">—</span>
                 )}
               </td>
-              <td className="col-status">
-                <span className="chip">
+              <td className="col-status px-4 py-2.5 align-top">
+                <span className="inline-flex items-center gap-1.5 text-xs whitespace-nowrap text-text-2">
                   <StatusMark status={t.last_status} /> {t.last_status}
                   {t.github_issue_number != null && (
-                    <span className="badge-issue">#{t.github_issue_number}</span>
+                    <span className="rounded-full border border-line px-2 text-link">
+                      #{t.github_issue_number}
+                    </span>
                   )}
                 </span>
               </td>
-              <td>
+              <td className="col-actions px-4 py-2.5 text-right align-top">
                 <button
-                  className="quarantine-btn"
+                  type="button"
+                  className="btn whitespace-nowrap"
                   onClick={(e) => { e.stopPropagation(); onToggleQuarantine(t); }}
                 >
                   {t.quarantined ? "Un-quarantine" : "Quarantine"}

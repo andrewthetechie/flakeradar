@@ -11,9 +11,10 @@ export function ScopePicker({
 }) {
   const projects = repos.find((r) => r.name === scope.repo)?.projects ?? [];
   return (
-    <div className="scope-picker">
+    <div className="flex min-w-0 flex-1 gap-2 sm:flex-none">
       <select
         aria-label="Repo"
+        className="control min-w-0 flex-1 sm:max-w-72"
         value={scope.repo ?? ""}
         onChange={(e) => onChange({ repo: e.target.value || null, project: null })}
       >
@@ -22,6 +23,7 @@ export function ScopePicker({
       </select>
       <select
         aria-label="Project"
+        className="control min-w-0 flex-1 disabled:opacity-50 sm:max-w-48"
         value={scope.project ?? ""}
         disabled={!scope.repo}
         onChange={(e) => onChange({ repo: scope.repo, project: e.target.value || null })}

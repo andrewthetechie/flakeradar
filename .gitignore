@@ -19,3 +19,7 @@ frontend/tsconfig.tsbuildinfo
 # OS/editor
 .DS_Store
 Thumbs.db
+
+.pi/
+context/
+.scratch/

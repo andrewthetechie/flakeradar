@@ -20,7 +20,7 @@ export function StatusMark({ status, size = 10 }: { status: string; size?: numbe
   const c = statusColor(status);
   const half = size / 2;
   return (
-    <svg className="mark" width={size} height={size} viewBox={`0 0 ${size} ${size}`} aria-hidden>
+    <svg className="shrink-0" width={size} height={size} viewBox={`0 0 ${size} ${size}`} aria-hidden>
       <MarkShape status={status} cx={half} cy={half} r={half - 1} color={c} />
     </svg>
   );

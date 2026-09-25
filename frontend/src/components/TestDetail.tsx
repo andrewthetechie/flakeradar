@@ -22,7 +22,7 @@ function ExecutionStrip({ executions }: { executions: Execution[] }) {
   const width = Math.max(ordered.length * CELL + CELL, 200);
 
   return (
-    <div className="strip-wrap">
+    <div className="relative">
       <svg
         width="100%"
         viewBox={`0 0 ${width} ${H}`}
@@ -58,21 +58,21 @@ function ExecutionStrip({ executions }: { executions: Execution[] }) {
       </svg>
       {hover && (
         <div
-          className="tooltip"
+          className="pointer-events-none absolute z-10 max-w-65 rounded-lg border border-line bg-surface-2 px-2.5 py-2 text-xs shadow-xl"
           style={{
             left: `min(${(hover.x / width) * 100}%, calc(100% - 200px))`,
             top: 0,
             transform: "translateY(-100%)",
           }}
         >
-          <div className="t-status">
+          <div className="flex items-center gap-1.5 font-semibold">
             <StatusMark status={hover.e.status} size={9} /> {hover.e.status}
             {hover.e.duration > 0 && ` · ${hover.e.duration.toFixed(2)}s`}
           </div>
-          <div className="t-meta">
-            {hover.e.commit_sha.slice(0, 10)} on {hover.e.branch} · {fmtWhen(hover.e.created_at)}
+          <div className="text-text-2">
+            <span className="font-mono">{hover.e.commit_sha.slice(0, 10)}</span> on {hover.e.branch} · {fmtWhen(hover.e.created_at)}
           </div>
-          {hover.e.message && <div className="t-meta">{hover.e.message.slice(0, 140)}</div>}
+          {hover.e.message && <div className="text-text-2">{hover.e.message.slice(0, 140)}</div>}
         </div>
       )}
     </div>
@@ -85,62 +85,64 @@ export function TestDetail({ history }: { history: History }) {
   const latestFailure = executions.find((e) => e.status === "failed" || e.status === "error");
   return (
     <div>
-      <div className="facts">
-        <div className="fact">
-          <div className="label">Flakiness score</div>
-          <div className="value">{formatScore(history.test.flakiness_score)}</div>
+      <div className="mb-4 flex flex-wrap gap-x-8 gap-y-2">
+        <div>
+          <div className="text-xs text-muted">Flakiness score</div>
+          <div className="text-lg font-semibold tabular-nums">{formatScore(history.test.flakiness_score)}</div>
         </div>
-        <div className="fact">
-          <div className="label">Proven flakes</div>
-          <div className="value">{history.test.confirmed_flake_count}</div>
+        <div>
+          <div className="text-xs text-muted">Proven flakes</div>
+          <div className={`text-lg font-semibold tabular-nums ${history.test.confirmed_flake_count > 0 ? "text-signal" : ""}`}>
+            {history.test.confirmed_flake_count}
+          </div>
         </div>
-        <div className="fact">
-          <div className="label">Failures (window)</div>
-          <div className="value">
+        <div>
+          <div className="text-xs text-muted">Failures (window)</div>
+          <div className="text-lg font-semibold tabular-nums">
             {fails}/{executions.length}
           </div>
         </div>
       </div>
 
       {latestFailure && (latestFailure.details || latestFailure.message) && (
-        <details className="failure" open>
-          <summary>
-            Latest failure · {latestFailure.commit_sha.slice(0, 10)} on {latestFailure.branch}
+        <details className="group mb-5" open>
+          <summary className="cursor-pointer text-xs text-text-2 hover:text-text">
+            Latest failure · <span className="font-mono">{latestFailure.commit_sha.slice(0, 10)}</span> on {latestFailure.branch}
           </summary>
-          <pre>{latestFailure.details || latestFailure.message}</pre>
+          <pre className="mt-2 max-h-80 overflow-auto rounded-lg border border-line bg-page p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap [overflow-wrap:anywhere] text-text">{latestFailure.details || latestFailure.message}</pre>
         </details>
       )}
 
       <ExecutionStrip executions={executions} />
-      <div className="strip-legend" aria-hidden>
-        <span className="item"><StatusMark status="passed" /> passed</span>
-        <span className="item"><StatusMark status="failed" /> failed</span>
-        <span className="item"><StatusMark status="error" /> error</span>
-        <span className="item"><StatusMark status="skipped" /> skipped</span>
+      <div className="mt-2 mb-1 flex flex-wrap gap-4 text-xs text-text-2" aria-hidden>
+        <span className="inline-flex items-center gap-1.5"><StatusMark status="passed" /> passed</span>
+        <span className="inline-flex items-center gap-1.5"><StatusMark status="failed" /> failed</span>
+        <span className="inline-flex items-center gap-1.5"><StatusMark status="error" /> error</span>
+        <span className="inline-flex items-center gap-1.5"><StatusMark status="skipped" /> skipped</span>
       </div>
 
-      <table className="exec-table">
+      <table className="mt-4 w-full border-collapse text-xs">
         <thead>
-          <tr>
-            <th>Status</th>
-            <th>Commit</th>
-            <th>Branch</th>
-            <th>When</th>
-            <th>Message</th>
+          <tr className="border-b border-line text-left text-muted">
+            <th className="py-1.5 pr-3 font-medium">Status</th>
+            <th className="py-1.5 pr-3 font-medium">Commit</th>
+            <th className="py-1.5 pr-3 font-medium">Branch</th>
+            <th className="py-1.5 pr-3 font-medium">When</th>
+            <th className="py-1.5 font-medium">Message</th>
           </tr>
         </thead>
         <tbody>
           {executions.slice(0, 15).map((e) => (
-            <tr key={e.id}>
+            <tr key={e.id} className="border-b border-line tabular-nums whitespace-nowrap [&>td]:py-1.5 [&>td]:pr-3">
               <td>
-                <span className="chip">
+                <span className="inline-flex items-center gap-1.5 text-text-2">
                   <StatusMark status={e.status} size={9} /> {e.status}
                 </span>
               </td>
-              <td>{e.commit_sha.slice(0, 10)}</td>
+              <td className="font-mono">{e.commit_sha.slice(0, 10)}</td>
               <td>{e.branch}</td>
               <td>{fmtWhen(e.created_at)}</td>
-              <td className="msg">{e.message || "—"}</td>
+              <td className="min-w-40 whitespace-normal text-text-2 [overflow-wrap:anywhere]">{e.message || "—"}</td>
             </tr>
           ))}
         </tbody>
