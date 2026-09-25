@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from .config import DEFAULT_INSECURE_TOKEN, assert_secure_token, get_settings
 from .db import SessionLocal, engine
 from .migrate import run_migrations
+from .retention import run_prune
 from .routers import reports
 from .worker import ReportWorker
 
@@ -29,7 +30,12 @@ async def lifespan(app: FastAPI):
             "FLAKERADAR_API_TOKEN is the default 'changeme' — set a real token."
         )
     await run_migrations(engine)
-    worker = ReportWorker(engine, SessionLocal, poll_seconds=settings.worker_poll_seconds)
+    worker = ReportWorker(
+        engine, SessionLocal,
+        poll_seconds=settings.worker_poll_seconds,
+        prune=lambda: run_prune(SessionLocal),
+        prune_interval_seconds=settings.prune_interval_seconds,
+    )
     await worker.start()
     try:
         yield

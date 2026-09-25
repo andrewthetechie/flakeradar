@@ -22,6 +22,7 @@ from .processing import ProcessOutcome, process_next
 logger = logging.getLogger("flakeradar.worker")
 
 OnProcessed = Callable[[ProcessOutcome], Awaitable[None]]
+Prune = Callable[[], Awaitable[object]]
 
 
 class ReportWorker:
@@ -33,12 +34,17 @@ class ReportWorker:
         poll_seconds: float = 1.0,
         standby_seconds: float = 5.0,
         on_processed: OnProcessed | None = None,
+        prune: Prune | None = None,
+        prune_interval_seconds: float = 3600.0,
     ) -> None:
         self._engine = engine
         self._session_factory = session_factory
         self._poll_seconds = poll_seconds
         self._standby_seconds = standby_seconds
         self._on_processed = on_processed
+        self._prune = prune
+        self._prune_interval_seconds = prune_interval_seconds
+        self._last_prune: float | None = None  # loop.time() of the last prune
         self._lock_conn: AsyncConnection | None = None
         self._task: asyncio.Task | None = None
 
@@ -93,12 +99,26 @@ class ReportWorker:
         assert self._lock_conn is not None
         await self._lock_conn.execute(text("SELECT 1"))
 
+    async def _maybe_prune(self) -> None:
+        """Leader-only housekeeping, at most once per prune interval."""
+        if self._prune is None:
+            return
+        now = asyncio.get_running_loop().time()
+        if self._last_prune is not None and now - self._last_prune < self._prune_interval_seconds:
+            return
+        self._last_prune = now
+        try:
+            await self._prune()
+        except Exception:
+            logger.exception("Retention prune failed; will retry next interval")
+
     async def _run(self) -> None:
         while True:
             try:
                 if not self.is_leader and not await self._try_lead():
                     await asyncio.sleep(self._standby_seconds)
                     continue
+                await self._maybe_prune()
                 outcome = await process_next(self._session_factory)
                 if outcome is None:
                     await self._lock_alive()

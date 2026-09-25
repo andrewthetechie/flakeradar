@@ -35,6 +35,11 @@ class Settings(BaseSettings):
     # Report processor: idle poll interval when the queue is empty.
     worker_poll_seconds: float = 1.0
 
+    # Retention (pruned hourly by the Report processor).
+    report_retention_days: int = 7        # processed Reports; failed ones are kept
+    execution_retention_days: int = 90    # Executions (and Runs left empty)
+    prune_interval_seconds: float = 3600.0
+
     @field_validator("database_url")
     @classmethod
     def _require_asyncpg(cls, value: str) -> str:
