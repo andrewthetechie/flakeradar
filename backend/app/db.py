@@ -1,37 +1,30 @@
-"""Database engine and session management."""
-import os
-from collections.abc import Generator
+"""Async database engine and session management (PostgreSQL + asyncpg)."""
+from collections.abc import AsyncIterator
 
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine,
+)
 
 from .config import get_settings
 
-
-def _build_engine():
-    settings = get_settings()
-    url = settings.database_url
-    connect_args = {}
-    if url.startswith("sqlite"):
-        connect_args["check_same_thread"] = False
-        # Under concurrent ingests, wait for the file lock instead of
-        # failing immediately with "database is locked".
-        connect_args["timeout"] = 30
-        # Ensure the parent directory for a file-based SQLite DB exists.
-        path = url.replace("sqlite:///", "", 1)
-        if path and path != ":memory:":
-            parent = os.path.dirname(os.path.abspath(path))
-            os.makedirs(parent, exist_ok=True)
-    return create_engine(url, connect_args=connect_args)
+# Postgres advisory-lock keys (any stable bigint; must not collide).
+MIGRATION_LOCK_KEY = 726_300_001  # serializes startup migrations across uvicorn workers
+WORKER_LOCK_KEY = 726_300_002     # elects the single Report processor (ADR 0002)
 
 
-engine = _build_engine()
-SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+def make_engine(url: str | None = None) -> AsyncEngine:
+    return create_async_engine(url or get_settings().database_url, pool_pre_ping=True)
 
 
-def get_db() -> Generator[Session, None, None]:
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+def make_session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
+    return async_sessionmaker(engine, expire_on_commit=False)
+
+
+# Creating the engine does not connect; the first query does.
+engine: AsyncEngine = make_engine()
+SessionLocal: async_sessionmaker[AsyncSession] = make_session_factory(engine)
+
+
+async def get_db() -> AsyncIterator[AsyncSession]:
+    async with SessionLocal() as session:
+        yield session

@@ -1,4 +1,19 @@
 services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: flakeradar
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-flakeradar}
+      POSTGRES_DB: flakeradar
+    volumes:
+      - flakeradar-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U flakeradar -d flakeradar"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
   flakeradar:
     build:
       context: .
@@ -7,11 +22,11 @@ services:
       - "127.0.0.1:8000:8000"
     env_file: .env
     environment:
-      # In-container CORS is irrelevant (same origin); kept for clarity.
-      FLAKERADAR_DATABASE_URL: sqlite:////srv/backend/data/flakeradar.db
-    volumes:
-      - flakeradar-data:/srv/backend/data
+      FLAKERADAR_DATABASE_URL: postgresql+asyncpg://flakeradar:${POSTGRES_PASSWORD:-flakeradar}@db:5432/flakeradar
+    depends_on:
+      db:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:
-  flakeradar-data:
+  flakeradar-pg:

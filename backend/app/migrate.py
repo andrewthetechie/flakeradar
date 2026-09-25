@@ -1,31 +1,36 @@
-"""Run Alembic migrations at startup, tolerant of pre-Alembic databases.
+"""Run Alembic migrations at startup, from inside the running event loop.
 
-A database created by the old `Base.metadata.create_all` path has the app
-tables but no `alembic_version` marker. Running `upgrade` on it directly would
-try to re-create existing tables and fail, so we stamp it at baseline first.
+Several uvicorn workers start at once, so the upgrade runs under a
+transaction-scoped advisory lock: the first worker migrates, the others wait
+and then find nothing to do.
 """
 from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import inspect
+from sqlalchemy import text
+from sqlalchemy.engine import Connection
+from sqlalchemy.ext.asyncio import AsyncEngine
 
-from .db import engine
-
-_BASELINE_REVISION = "0001"
+from .db import MIGRATION_LOCK_KEY
 
 
 def _alembic_config() -> Config:
     backend_root = Path(__file__).resolve().parents[1]  # backend/
     cfg = Config(str(backend_root / "alembic.ini"))
     cfg.set_main_option("script_location", str(backend_root / "migrations"))
-    cfg.set_main_option("sqlalchemy.url", str(engine.url))
     return cfg
 
 
-def run_migrations() -> None:
-    tables = set(inspect(engine).get_table_names())
+def _upgrade(connection: Connection) -> None:
     cfg = _alembic_config()
-    if "test_cases" in tables and "alembic_version" not in tables:
-        command.stamp(cfg, _BASELINE_REVISION)
+    cfg.attributes["connection"] = connection  # see migrations/env.py
     command.upgrade(cfg, "head")
+
+
+async def run_migrations(engine: AsyncEngine) -> None:
+    async with engine.begin() as conn:
+        await conn.execute(
+            text("SELECT pg_advisory_xact_lock(:key)"), {"key": MIGRATION_LOCK_KEY}
+        )
+        await conn.run_sync(_upgrade)

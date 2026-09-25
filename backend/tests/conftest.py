@@ -1,56 +1,81 @@
-"""Shared fixtures: every test gets a fresh in-memory SQLite DB."""
+"""Shared fixtures: one Postgres per test session, clean tables per test.
+
+Docker must be running (testcontainers). Set FLAKERADAR_TEST_DATABASE_URL to
+use an existing Postgres instead; its tables are truncated between tests.
+"""
 import os
-from unittest.mock import patch
+from collections.abc import AsyncIterator, Iterator
 
 os.environ.setdefault("FLAKERADAR_ALLOW_INSECURE", "1")
 
+import httpx
 import pytest
-from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
-from app.db import get_db
+from app.db import get_db, make_engine, make_session_factory
 from app.main import app
-from app.models import Base
+from app.migrate import run_migrations
 
 TOKEN = "changeme"  # default Settings token; tests send it explicitly
+AUTH = {"X-API-Key": TOKEN}
+
+# Every app table, children first. RESTART IDENTITY makes ids start at 1.
+_TABLES = "reports, test_executions, test_runs, test_cases, projects, repos"
+
+
+@pytest.fixture(scope="session")
+def database_url() -> Iterator[str]:
+    override = os.environ.get("FLAKERADAR_TEST_DATABASE_URL")
+    if override:
+        yield override
+        return
+    from testcontainers.community.postgres import PostgresContainer
+
+    with PostgresContainer("postgres:17-alpine", driver="asyncpg") as pg:
+        yield pg.get_connection_url()
+
+
+@pytest.fixture(scope="session")
+async def engine(database_url: str) -> AsyncIterator[AsyncEngine]:
+    eng = make_engine(database_url)
+    await run_migrations(eng)
+    yield eng
+    await eng.dispose()
 
 
 @pytest.fixture()
-def db_session():
-    engine = create_engine(
-        "sqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,  # one shared in-memory DB across connections
-    )
-    Base.metadata.create_all(engine)
-    TestingSession = sessionmaker(bind=engine, expire_on_commit=False)
-    session = TestingSession()
-    try:
+async def session_factory(engine: AsyncEngine) -> AsyncIterator[async_sessionmaker[AsyncSession]]:
+    async with engine.begin() as conn:
+        await conn.execute(text(f"TRUNCATE {_TABLES} RESTART IDENTITY CASCADE"))
+    yield make_session_factory(engine)
+
+
+@pytest.fixture()
+async def db(session_factory: async_sessionmaker[AsyncSession]) -> AsyncIterator[AsyncSession]:
+    async with session_factory() as session:
         yield session
-    finally:
-        session.close()
-        engine.dispose()
 
 
 @pytest.fixture()
-def client(db_session):
-    def override_get_db():
-        yield db_session
+async def client(session_factory: async_sessionmaker[AsyncSession]) -> AsyncIterator[httpx.AsyncClient]:
+    async def override_get_db() -> AsyncIterator[AsyncSession]:
+        async with session_factory() as session:
+            yield session
 
     app.dependency_overrides[get_db] = override_get_db
-    # The app lifespan runs Alembic against the real configured (on-disk) engine,
-    # which is irrelevant here: db_session already built the schema on an isolated
-    # in-memory engine and get_db is overridden to use it. No-op the migration so
-    # tests never touch a real database file.
-    with patch("app.main.run_migrations"):
-        with TestClient(app) as c:
-            yield c
+    # ASGITransport does not run the lifespan: no startup migrations, no worker.
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+        yield c
     app.dependency_overrides.clear()
 
 
-def make_junit(cases: list[tuple[str, str]], suite: str = "unit") -> bytes:
+def make_junit(
+    cases: list[tuple[str, str]],
+    suite: str = "unit",
+    classname: str = "tests.test_mod",
+) -> bytes:
     """Build a minimal JUnit XML report.
 
     `cases` is a list of (test_name, status) where status is
@@ -65,6 +90,6 @@ def make_junit(cases: list[tuple[str, str]], suite: str = "unit") -> bytes:
             body = '<error message="boom">trace</error>'
         elif status == "skipped":
             body = '<skipped message="not on windows"/>'
-        inner += f'<testcase classname="tests.test_mod" name="{name}" time="0.01">{body}</testcase>'
+        inner += f'<testcase classname="{classname}" name="{name}" time="0.01">{body}</testcase>'
     xml = f'<testsuites><testsuite name="{suite}" tests="{len(cases)}">{inner}</testsuite></testsuites>'
     return xml.encode()
