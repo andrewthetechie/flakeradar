@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import type { History, TestCase } from "../api";
 import { breakable } from "../breakable";
+import { IssueLink } from "./IssueLink";
 import { TestDetail } from "./TestDetail";
 
 /** Slide-over panel for one Test. The leaderboard keeps the full width. */
@@ -58,14 +59,13 @@ export function TestDrawer({
                 <>
                   {" "}
                   ·{" "}
-                  <a
+                  <IssueLink
+                    number={history.test.github_issue_number}
+                    url={history.test.github_issue_url}
                     className="text-link underline-offset-2 hover:underline"
-                    href={history.test.github_issue_url ?? undefined}
-                    target="_blank"
-                    rel="noreferrer"
                   >
                     issue #{history.test.github_issue_number}
-                  </a>
+                  </IssueLink>
                 </>
               )}
             </div>

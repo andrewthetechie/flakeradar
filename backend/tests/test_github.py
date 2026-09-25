@@ -6,6 +6,7 @@ import httpx
 import pytest
 from app import github_integration
 from app.config import Settings
+from app.models import Project, TestCase
 from app.processing import ProcessOutcome
 from sqlalchemy import select
 
@@ -87,8 +88,34 @@ async def test_files_issue_in_the_tests_own_repo(db, gh_settings):
     assert "https://github.com/andrewthetechie/writers-app/blob/deadbeef/frontend/src/a.test.ts#L12" in body["body"]
     assert "Proven flakes" in body["body"]
     assert "Traceback: boom" in body["body"]
+    # Run-hint must match the test's own framework, not always assume pytest.
+    assert 'npx vitest run frontend/src/a.test.ts -t "t_flaky"' in body["body"]
+    assert "pytest" not in body["body"]
     await db.refresh(tc)
     assert tc.github_issue_number == 77
+
+
+def test_run_hint_matches_the_test_framework_by_file_extension():
+    assert (
+        github_integration._run_hint("tests/test_mod.py", "tests.test_mod", "t_flaky")
+        == "pytest tests/test_mod.py::t_flaky"
+    )
+    assert (
+        github_integration._run_hint("src/a.test.ts", "src.a", "t_flaky") == 'npx vitest run src/a.test.ts -t "t_flaky"'
+    )
+    assert github_integration._run_hint("pkg/foo_test.go", "pkg", "TestFoo") == "go test ./... -run TestFoo"
+    assert (
+        github_integration._run_hint("src/Foo.java", "com.acme.Foo", "testBar")
+        == "mvn test -Dtest=com.acme.Foo#testBar"
+    )
+    # No file path reported, or an extension FlakeRadar doesn't recognize: fall
+    # back to a generic hint rather than guessing a framework wrong.
+    assert github_integration._run_hint(None, "tests.test_mod", "t_flaky") == (
+        "# Re-run `tests.test_mod::t_flaky` via your project's test runner (no file path reported)."
+    )
+    assert github_integration._run_hint("script.weird", "c", "n") == (
+        "# Re-run `c::n` via your project's test runner (script.weird)."
+    )
 
 
 async def test_does_not_refile_or_file_below_threshold(db, gh_settings):
@@ -152,8 +179,6 @@ async def test_min_proven_flakes_gate(db, gh_settings):
 
 
 async def _add_failure(db, tc, sha="cafe1234"):
-    from app.models import Project, TestCase
-
     proj = (await db.execute(select(Project).join(TestCase, TestCase.project_id == Project.id))).scalar_one()
     run = await make_run(db, proj, commit_sha=sha)
     await make_execution(db, tc, run, status="failed", details="boom2")

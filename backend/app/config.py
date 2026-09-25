@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     github_issue_label: str = "flakeradar"
 
     # Issue-filing gate. A test is filed only when it meets EVERY configured
-    # (non-zero) minimum: flakiness score, proven flakes (same-commit fail+pass),/
+    # (non-zero) minimum: flakiness score, proven flakes (same-commit fail+pass),
     # and failure count over the recent window. Set a signal's minimum to 0 to
     # skip that gate entirely, so you can tune on score, proven flakes, failures,
     # or any combination. Defaults match the historical behavior (score only).

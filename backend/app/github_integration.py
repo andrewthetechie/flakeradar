@@ -21,12 +21,14 @@ Error handling: never raises.
 """
 
 import logging
+from collections.abc import Iterator
+from dataclasses import dataclass
 
 import httpx
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from .config import get_settings
+from .config import Settings, get_settings
 from .models import REPORT_PROCESSED, Project, Repo, TestCase, TestExecution, TestRun
 from .processing import CHUNK, ProcessOutcome
 from .scoring import FAILING
@@ -40,6 +42,19 @@ def configured() -> bool:
     return bool(get_settings().github_token)
 
 
+@dataclass(frozen=True)
+class _FilingGate:
+    """The three-signal issue-filing gate (see module docstring), as one unit."""
+
+    min_score: float
+    min_proven_flakes: int
+    min_failures: int
+
+    @classmethod
+    def from_settings(cls, s: Settings) -> "_FilingGate":
+        return cls(s.github_issue_min_score, s.github_issue_min_proven_flakes, s.github_issue_min_failures)
+
+
 def _headers(token: str) -> dict[str, str]:
     return {
         "Authorization": f"Bearer {token}",
@@ -48,8 +63,43 @@ def _headers(token: str) -> dict[str, str]:
     }
 
 
-def _repo_path(root: str, file: str) -> str:
-    return f"{root}/{file}" if root else file
+def _chunks(ids: list[int]) -> Iterator[list[int]]:
+    """Split `ids` into batches of `CHUNK`, staying under the DB driver's bind-param limit."""
+    for i in range(0, len(ids), CHUNK):
+        chunk = ids[i : i + CHUNK]
+        if chunk:
+            yield chunk
+
+
+_RUN_HINT_TEMPLATES: dict[str, str] = {
+    "py": "pytest {path}::{name}",
+    "js": 'npx vitest run {path} -t "{name}"',
+    "jsx": 'npx vitest run {path} -t "{name}"',
+    "mjs": 'npx vitest run {path} -t "{name}"',
+    "cjs": 'npx vitest run {path} -t "{name}"',
+    "ts": 'npx vitest run {path} -t "{name}"',
+    "tsx": 'npx vitest run {path} -t "{name}"',
+    "go": "go test ./... -run {name}",
+    "java": "mvn test -Dtest={classname}#{name}",
+    "kt": "mvn test -Dtest={classname}#{name}",
+    "rb": 'bundle exec rspec {path} -e "{name}"',
+}
+
+
+def _run_hint(path: str | None, classname: str, name: str) -> str:
+    """Best-effort re-run command, inferred from the test file's extension.
+
+    FlakeRadar ingests JUnit XML from any runner, so the framework is never
+    reported directly; a wrong guess (e.g. always "pytest") would send an
+    agent to run a Python command against a JS/TS/Java/Go test.
+    """
+    if not path:
+        return f"# Re-run `{classname}::{name}` via your project's test runner (no file path reported)."
+    ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
+    template = _RUN_HINT_TEMPLATES.get(ext)
+    if template is None:
+        return f"# Re-run `{classname}::{name}` via your project's test runner ({path})."
+    return template.format(path=path, name=name, classname=classname)
 
 
 async def _issue_body(db: AsyncSession, tc: TestCase, repo: str, project: str, root: str) -> str:
@@ -65,7 +115,7 @@ async def _issue_body(db: AsyncSession, tc: TestCase, repo: str, project: str, r
         )
     ).all()
     if tc.file:
-        path = _repo_path(root, tc.file)
+        path = f"{root}/{tc.file}" if root else tc.file
         location = f"`{path}`" + (f" line {tc.line}" if tc.line is not None else "")
     else:
         path = None
@@ -83,9 +133,7 @@ async def _issue_body(db: AsyncSession, tc: TestCase, repo: str, project: str, r
         permalink = f"https://github.com/{repo}/blob/{last_fail_sha}/{path}"
         if tc.line is not None and tc.line >= 1:
             permalink += f"#L{tc.line}"
-    run_hint = "pytest"
-    if path:
-        run_hint += f" {path}" + (f"::{tc.name}" if tc.name else "")
+    run_hint = _run_hint(path, tc.classname, tc.name)
     lines = [
         f"FlakeRadar detected a flaky test: `{tc.classname}::{tc.name}`",
         "",
@@ -133,10 +181,7 @@ async def _window_failures(db: AsyncSession, test_case_ids: list[int], window: i
     """Count failed/error executions per Test over its most recent `window` runs."""
     rn = func.row_number().over(partition_by=TestExecution.test_case_id, order_by=TestExecution.id.desc()).label("rn")
     counts: dict[int, int] = {}
-    for i in range(0, len(test_case_ids), CHUNK):
-        chunk = test_case_ids[i : i + CHUNK]
-        if not chunk:
-            continue
+    for chunk in _chunks(test_case_ids):
         ranked = (
             select(TestExecution.test_case_id, TestExecution.status, rn)
             .where(TestExecution.test_case_id.in_(chunk))
@@ -152,11 +197,9 @@ async def _window_failures(db: AsyncSession, test_case_ids: list[int], window: i
 async def _select_candidates(db: AsyncSession, test_case_ids: list[int]) -> list[tuple[TestCase, str, str, str]]:
     """Tests that meet the configured filing gate and still have no open issue."""
     s = get_settings()
+    gate = _FilingGate.from_settings(s)
     candidates: list[tuple[TestCase, str, str, str]] = []
-    for i in range(0, len(test_case_ids), CHUNK):
-        chunk = test_case_ids[i : i + CHUNK]
-        if not chunk:
-            continue
+    for chunk in _chunks(test_case_ids):
         candidates += (
             await db.execute(
                 select(TestCase, Repo.name, Project.name, Project.root)
@@ -164,16 +207,16 @@ async def _select_candidates(db: AsyncSession, test_case_ids: list[int]) -> list
                 .join(Repo, Project.repo_id == Repo.id)
                 .where(
                     TestCase.id.in_(chunk),
-                    TestCase.flakiness_score >= s.github_issue_min_score,
-                    TestCase.confirmed_flake_count >= s.github_issue_min_proven_flakes,
+                    TestCase.flakiness_score >= gate.min_score,
+                    TestCase.confirmed_flake_count >= gate.min_proven_flakes,
                     TestCase.github_issue_number.is_(None),
                 )
                 .order_by(TestCase.id)
             )
         ).all()
-    if s.github_issue_min_failures > 0:
+    if gate.min_failures > 0:
         failures = await _window_failures(db, [r[0].id for r in candidates], s.score_window)
-        candidates = [r for r in candidates if failures.get(r[0].id, 0) >= s.github_issue_min_failures]
+        candidates = [r for r in candidates if failures.get(r[0].id, 0) >= gate.min_failures]
     return candidates
 
 
@@ -236,7 +279,9 @@ async def sync_closed_issues(
     A filed issue's number is stored on the Test and blocks re-filing. When
     GitHub reports that issue closed (or gone), clear the stored number so the
     next Report that touches the Test can re-file a fresh issue if it still
-    meets the filing gate. Leader-only maintenance, batched, never raises.
+    meets the filing gate. Leader-only maintenance; checks each open issue with
+    its own sequential GET (capped at the 2000 most stale rows per run — the
+    GitHub REST API has no bulk lookup by arbitrary issue numbers). Never raises.
 
     `transport` exists for tests (httpx.MockTransport); production passes None.
     """
