@@ -28,6 +28,21 @@ class Settings(BaseSettings):
     # Issues are filed in each Test's own Repo, so the token needs
     # Issues: write on every Repo you ingest.
     github_token: str = ""
+
+    # Label applied to every auto-filed GitHub issue.
+    github_issue_label: str = "flakeradar"
+
+    # Issue-filing gate. A test is filed only when it meets EVERY configured
+    # (non-zero) minimum: flakiness score, proven flakes (same-commit fail+pass),
+    # and failure count over the recent window. Set a signal's minimum to 0 to
+    # skip that gate entirely, so you can tune on score, proven flakes, failures,
+    # or any combination. Defaults match the historical behavior (score only).
+    github_issue_min_score: float = 0.30
+    github_issue_min_proven_flakes: int = 0
+    github_issue_min_failures: int = 0
+
+    # Tier classification threshold for the UI/API ("flaky" vs "suspect").
+    # Independent of the GitHub filing gate above.
     flake_threshold: float = 0.30
 
     cors_origins: str = "http://localhost:5173"

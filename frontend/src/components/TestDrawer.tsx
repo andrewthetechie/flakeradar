@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import type { History, TestCase } from "../api";
 import { breakable } from "../breakable";
+import { IssueLink } from "./IssueLink";
 import { TestDetail } from "./TestDetail";
 
 /** Slide-over panel for one Test. The leaderboard keeps the full width. */
@@ -55,7 +56,17 @@ export function TestDrawer({
             <div className="mb-3 text-xs text-muted [overflow-wrap:anywhere]">
               {breakable(history.test.classname || history.test.suite)}
               {history.test.github_issue_number != null && (
-                <> · issue #{history.test.github_issue_number}</>
+                <>
+                  {" "}
+                  ·{" "}
+                  <IssueLink
+                    number={history.test.github_issue_number}
+                    url={history.test.github_issue_url}
+                    className="text-link underline-offset-2 hover:underline"
+                  >
+                    issue #{history.test.github_issue_number}
+                  </IssueLink>
+                </>
               )}
             </div>
             <div className="mb-4 flex flex-wrap items-center justify-between gap-3">

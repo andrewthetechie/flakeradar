@@ -23,6 +23,7 @@ const history: History = {
     quarantined: false,
     quarantined_at: null,
     github_issue_number: null,
+    github_issue_url: null,
   },
   location: {
     path: "frontend/src/app.test.ts",

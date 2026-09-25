@@ -32,12 +32,18 @@ async def lifespan(app: FastAPI):
     if settings.api_token == DEFAULT_INSECURE_TOKEN:
         logger.warning("FLAKERADAR_API_TOKEN is the default 'changeme' — set a real token.")
     await run_migrations(engine)
+
+    async def _maintenance() -> None:
+        """Leader-only housekeeping: retention prune + re-arm closed GitHub issues."""
+        await run_prune(SessionLocal)
+        await github_integration.sync_closed_issues(SessionLocal)
+
     worker = ReportWorker(
         engine,
         SessionLocal,
         poll_seconds=settings.worker_poll_seconds,
         on_processed=lambda outcome: github_integration.on_report_processed(SessionLocal, outcome),
-        prune=lambda: run_prune(SessionLocal),
+        prune=_maintenance,
         prune_interval_seconds=settings.prune_interval_seconds,
     )
     await worker.start()

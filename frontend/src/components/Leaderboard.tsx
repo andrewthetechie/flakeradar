@@ -1,6 +1,7 @@
 import type { Scope, TestCase } from "../api";
 import { breakable } from "../breakable";
 import { formatScore } from "../format";
+import { IssueLink } from "./IssueLink";
 import { StatusMark } from "./StatusMark";
 
 // Sequential blue: stronger = worse (the scale flips per theme in styles.css).
@@ -124,11 +125,15 @@ export function Leaderboard({
               <td className="col-status px-4 py-2.5 align-top">
                 <span className="inline-flex items-center gap-1.5 text-xs whitespace-nowrap text-text-2">
                   <StatusMark status={t.last_status} /> {t.last_status}
-                  {t.github_issue_number != null && (
-                    <span className="rounded-full border border-line px-2 text-link">
-                      #{t.github_issue_number}
-                    </span>
-                  )}
+                  <IssueLink
+                    number={t.github_issue_number}
+                    url={t.github_issue_url}
+                    onClick={(e) => e.stopPropagation()}
+                    className="rounded-full border border-line px-2 text-link hover:underline"
+                    title="GitHub issue filed by FlakeRadar"
+                  >
+                    #{t.github_issue_number}
+                  </IssueLink>
                 </span>
               </td>
               <td className="col-actions px-4 py-2.5 text-right align-top">
