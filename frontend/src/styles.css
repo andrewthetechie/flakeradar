@@ -161,6 +161,26 @@ details.failure pre {
 }
 .drawer .quarantine-btn { margin-bottom: 14px; }
 
+/* ---- report queue indicator (task 13) ---- */
+.queue { position: relative; margin-left: auto; }
+.queue + .scope-picker { margin-left: 0; }
+.queue-btn {
+  font-size: 12px; border: 1px solid var(--border); border-radius: 999px;
+  background: var(--surface-1); color: var(--text-secondary); padding: 3px 10px; cursor: pointer;
+}
+.queue-btn.alert { color: var(--status-critical); border-color: var(--status-critical); }
+.queue-pop {
+  position: absolute; right: 0; top: calc(100% + 6px); z-index: 15;
+  width: min(420px, calc(100vw - 32px)); max-height: 360px; overflow-y: auto;
+  background: var(--surface-1); border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18); padding: 10px 12px; font-size: 12px;
+}
+.queue-pop ul { list-style: none; margin: 0; padding: 0; }
+.queue-pop li { padding: 6px 0; border-bottom: 1px solid var(--grid); }
+.queue-item-head { font-weight: 600; overflow-wrap: anywhere; }
+.queue-item-error { color: var(--status-critical); overflow-wrap: anywhere; }
+.queue-hint { margin-top: 8px; }
+
 /* ---- phones: give the test name the width (task 12) ---- */
 @media (max-width: 640px) {
   .app { padding: 16px 16px 32px; }

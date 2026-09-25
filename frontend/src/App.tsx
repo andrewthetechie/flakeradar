@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useState } from "react";
 import {
-  fetchHistory, fetchRepos, fetchSummary, fetchTests, setQuarantine,
-  type History, type RepoInfo, type Summary, type TestPage, type TestCase,
+  fetchFailedReports, fetchHistory, fetchReportSummary, fetchRepos, fetchSummary,
+  fetchTests, setQuarantine,
+  type History, type RepoInfo, type ReportSummary, type Summary, type TestPage,
+  type TestCase,
 } from "./api";
 import { Leaderboard } from "./components/Leaderboard";
 import { LeaderboardControls } from "./components/LeaderboardControls";
 import { Pagination } from "./components/Pagination";
+import { QueueIndicator } from "./components/QueueIndicator";
 import { ScopePicker } from "./components/ScopePicker";
 import { StatTiles } from "./components/StatTiles";
 import { TestDrawer } from "./components/TestDrawer";
@@ -18,6 +21,7 @@ export default function App() {
   const [view, setView] = useViewState();
   const [repos, setRepos] = useState<RepoInfo[]>([]);
   const [summary, setSummary] = useState<Summary | null>(null);
+  const [queue, setQueue] = useState<ReportSummary | null>(null);
   const [page, setPage] = useState<TestPage | null>(null);
   const [history, setHistory] = useState<History | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -28,14 +32,16 @@ export default function App() {
   const refresh = useCallback(async () => {
     const scope = { repo, project };
     try {
-      const [r, s, t] = await Promise.all([
+      const [r, s, t, q] = await Promise.all([
         fetchRepos(),
         fetchSummary(scope),
         fetchTests({ ...scope, page: pageNumber, pageSize: PAGE_SIZE, sort, showStable }),
+        fetchReportSummary(),
       ]);
       setRepos(r);
       setSummary(s);
       setPage(t);
+      setQueue(q);
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -76,6 +82,7 @@ export default function App() {
       <header className="app-header">
         <h1>FlakeRadar</h1>
         <span className="tagline">flaky-test detection for your CI</span>
+        <QueueIndicator summary={queue} loadFailed={fetchFailedReports} />
         <ScopePicker
           repos={repos}
           scope={{ repo, project }}

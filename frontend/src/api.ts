@@ -135,3 +135,30 @@ export async function setQuarantine(id: number, quarantined: boolean): Promise<T
   if (!resp.ok) throw new Error(`quarantine ${id} -> ${resp.status}`);
   return resp.json() as Promise<TestCase>;
 }
+
+// --- Report queue (task 13) ----------------------------------------------
+
+export interface ReportInfo {
+  id: number;
+  repo: string;
+  project: string;
+  commit_sha: string;
+  branch: string;
+  ci_run_id: string;
+  status: "pending" | "processed" | "failed";
+  error: string | null;
+  counts: Record<string, number> | null;
+  run_id: number | null;
+  created_at: string;
+  processed_at: string | null;
+}
+
+export interface ReportSummary {
+  pending: number;
+  failed: number;
+}
+
+export const fetchReportSummary = () => getJson<ReportSummary>("/api/reports/summary");
+
+export const fetchFailedReports = () =>
+  getJson<ReportInfo[]>("/api/reports?status=failed&limit=20");
