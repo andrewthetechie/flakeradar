@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from .config import DEFAULT_INSECURE_TOKEN, assert_secure_token, get_settings
 from .db import engine
 from .migrate import run_migrations
+from .routers import reports
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("flakeradar")
@@ -48,6 +49,7 @@ async def health() -> dict:
 
 # --- API routers: include them HERE, above the static mount. -------------
 # A Mount("/") registered earlier would swallow every later route.
+app.include_router(reports.router)
 
 
 # Serve the built frontend (frontend/dist) if present — single-container self-host.
