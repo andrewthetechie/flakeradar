@@ -79,11 +79,22 @@ def _outcome(case) -> tuple[str, str, str]:
     return "passed", "", ""
 
 
-def parse_junit_xml(content: bytes) -> list[ParsedCase]:
+def _load(content: bytes) -> JUnitXml | TestSuite:
+    # Bytes first, so the parser honors the declared encoding (e.g. ISO-8859-1).
+    # A byte that is invalid in that encoding (binary junk in captured output)
+    # falls back to a lenient UTF-8 decode rather than rejecting the report.
     try:
-        xml = JUnitXml.fromstring(content.decode("utf-8", errors="replace"))
+        return JUnitXml.fromstring(content)
+    except Exception:
+        pass
+    try:
+        return JUnitXml.fromstring(content.decode("utf-8", errors="replace"))
     except Exception as exc:  # junitparser raises lxml/xml parse errors
         raise ParseError(f"Not a valid JUnit XML report: {exc}") from exc
+
+
+def parse_junit_xml(content: bytes) -> list[ParsedCase]:
+    xml = _load(content)
 
     # A file may be a <testsuites> wrapper or a single bare <testsuite>.
     suites = list(xml) if isinstance(xml, JUnitXml) else [xml]

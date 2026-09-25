@@ -86,6 +86,17 @@ def test_duplicate_testcases_are_all_returned():
     assert [c.status for c in cases] == ["failed", "passed"]
 
 
+def test_declared_encoding_is_honored():
+    body = ('<?xml version="1.0" encoding="ISO-8859-1"?>'
+            '<testsuite name="s"><testcase classname="c" name="café"/></testsuite>')
+    assert parse_junit_xml(body.encode("latin-1"))[0].name == "café"
+
+
+def test_invalid_utf8_bytes_are_replaced_not_rejected():
+    c = parse_junit_xml(b'<testsuite name="s"><testcase classname="c" name="bad\xff"/></testsuite>')[0]
+    assert c.name == "bad�"
+
+
 @pytest.mark.parametrize("body", [b"not xml at all", b"<testsuites></testsuites>"])
 def test_invalid_or_empty_reports_raise(body):
     with pytest.raises(ParseError):

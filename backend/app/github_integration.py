@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from .config import get_settings
 from .models import REPORT_PROCESSED, Project, Repo, TestCase, TestExecution, TestRun
-from .processing import ProcessOutcome
+from .processing import CHUNK, ProcessOutcome
 
 logger = logging.getLogger("flakeradar.github")
 
@@ -88,17 +88,20 @@ async def file_issues_for(
     if not configured() or not test_case_ids:
         return
     s = get_settings()
-    candidates = (await db.execute(
-        select(TestCase, Repo.name, Project.name, Project.root)
-        .join(Project, TestCase.project_id == Project.id)
-        .join(Repo, Project.repo_id == Repo.id)
-        .where(
-            TestCase.id.in_(test_case_ids),
-            TestCase.flakiness_score >= s.flake_threshold,
-            TestCase.github_issue_number.is_(None),
-        )
-        .order_by(TestCase.id)
-    )).all()
+    candidates = []
+    # Chunked IN lists: a Report can touch more Tests than asyncpg can bind.
+    for i in range(0, len(test_case_ids), CHUNK):
+        candidates += (await db.execute(
+            select(TestCase, Repo.name, Project.name, Project.root)
+            .join(Project, TestCase.project_id == Project.id)
+            .join(Repo, Project.repo_id == Repo.id)
+            .where(
+                TestCase.id.in_(test_case_ids[i:i + CHUNK]),
+                TestCase.flakiness_score >= s.flake_threshold,
+                TestCase.github_issue_number.is_(None),
+            )
+            .order_by(TestCase.id)
+        )).all()
     if not candidates:
         return
 

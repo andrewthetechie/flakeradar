@@ -132,7 +132,7 @@ table.leaderboard { width: 100%; border-collapse: collapse; }
   border-radius: 8px; padding: 10px 14px; margin-bottom: 16px; font-size: 13px;
 }
 footer.app-footer { margin-top: 28px; color: var(--muted); font-size: 12px; }
-footer.app-footer code { background: var(--surface-1); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; }
+footer.app-footer code { background: var(--surface-1); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; overflow-wrap: anywhere; }
 
 .badge-quarantined { font-size: 0.75rem; border: 1px solid currentColor; border-radius: 4px; padding: 0 4px; margin-right: 6px; }
 .quarantine-btn { font-size: 0.75rem; cursor: pointer; }

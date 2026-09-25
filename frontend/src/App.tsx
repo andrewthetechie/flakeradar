@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   fetchFailedReports, fetchHistory, fetchReportSummary, fetchRepos, fetchSummary,
   fetchTests, setQuarantine,
@@ -29,8 +29,13 @@ export default function App() {
   const { repo, project, sort, showStable } = view;
   const pageNumber = view.page;
 
+  // Only the newest refresh may write state: a slow response for the old
+  // scope must not overwrite the view the user has since switched to.
+  const latestRefresh = useRef(0);
+
   const refresh = useCallback(async () => {
     const scope = { repo, project };
+    const request = ++latestRefresh.current;
     try {
       const [r, s, t, q] = await Promise.all([
         fetchRepos(),
@@ -38,12 +43,14 @@ export default function App() {
         fetchTests({ ...scope, page: pageNumber, pageSize: PAGE_SIZE, sort, showStable }),
         fetchReportSummary(),
       ]);
+      if (request !== latestRefresh.current) return;
       setRepos(r);
       setSummary(s);
       setPage(t);
       setQueue(q);
       setError(null);
     } catch (e) {
+      if (request !== latestRefresh.current) return;
       setError(e instanceof Error ? e.message : String(e));
     }
   }, [repo, project, pageNumber, sort, showStable]);

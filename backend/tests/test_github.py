@@ -115,3 +115,12 @@ async def test_hook_ignores_failed_reports(session_factory, gh_settings, monkeyp
     await github_integration.on_report_processed(session_factory, failed)
     await github_integration.on_report_processed(session_factory, done)
     assert called == [[3, 4]]
+
+
+async def test_many_touched_ids_stay_under_the_bind_limit(db, gh_settings):
+    # A huge Report touches more Tests than asyncpg can bind (32,767) in one IN list.
+    tc = await _flaky_test(db)
+    calls, transport = _recorder()
+    ids = sorted([tc.id, *range(10_000_000, 10_040_000)])
+    await github_integration.file_issues_for(db, ids, transport=transport)
+    assert len(calls) == 1
