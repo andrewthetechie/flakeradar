@@ -3,6 +3,7 @@
 Docker must be running (testcontainers). Set FLAKERADAR_TEST_DATABASE_URL to
 use an existing Postgres instead; its tables are truncated between tests.
 """
+
 import os
 from collections.abc import AsyncIterator, Iterator
 
@@ -10,12 +11,11 @@ os.environ.setdefault("FLAKERADAR_ALLOW_INSECURE", "1")
 
 import httpx
 import pytest
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
-
 from app.db import get_db, make_engine, make_session_factory
 from app.main import app
 from app.migrate import run_migrations
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 TOKEN = "changeme"  # default Settings token; tests send it explicitly
 AUTH = {"X-API-Key": TOKEN}

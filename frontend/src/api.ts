@@ -123,8 +123,7 @@ export function fetchTests(q: TestQuery): Promise<TestPage> {
   return getJson<TestPage>(withQuery("/api/tests", params));
 }
 
-export const fetchHistory = (id: number) =>
-  getJson<History>(`/api/tests/${id}/history?limit=60`);
+export const fetchHistory = (id: number) => getJson<History>(`/api/tests/${id}/history?limit=60`);
 
 export async function setQuarantine(id: number, quarantined: boolean): Promise<TestCase> {
   const resp = await fetch(`/api/tests/${id}/quarantine`, {

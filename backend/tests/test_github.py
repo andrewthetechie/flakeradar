@@ -1,13 +1,13 @@
 """GitHub issues are filed in each Test's own Repo; failures never raise."""
+
 import json
 
 import httpx
 import pytest
-
 from app import github_integration
 from app.config import Settings
-from app.models import TestCase
 from app.processing import ProcessOutcome
+
 from tests.factories import make_execution, make_project, make_run, make_test_case
 
 
@@ -20,11 +20,9 @@ def gh_settings(monkeypatch):
 
 async def _flaky_test(db, repo="acme/app", project="backend", name="t_flaky", **fields):
     proj = await make_project(db, repo, project, root=fields.pop("root", ""))
-    tc = await make_test_case(db, proj, name=name, flakiness_score=0.6,
-                              confirmed_flake_count=1, **fields)
+    tc = await make_test_case(db, proj, name=name, flakiness_score=0.6, confirmed_flake_count=1, **fields)
     run = await make_run(db, proj, commit_sha="deadbeef")
-    await make_execution(db, tc, run, status="failed", message="assert 1 == 2",
-                         details="Traceback: boom")
+    await make_execution(db, tc, run, status="failed", message="assert 1 == 2", details="Traceback: boom")
     await make_execution(db, tc, run, status="passed")
     await db.commit()
     return tc
@@ -48,8 +46,7 @@ async def test_unconfigured_is_noop(db):
 
 
 async def test_files_issue_in_the_tests_own_repo(db, gh_settings):
-    tc = await _flaky_test(db, repo="andrewthetechie/writers-app", file="src/a.test.ts",
-                           line=12, root="frontend")
+    tc = await _flaky_test(db, repo="andrewthetechie/writers-app", file="src/a.test.ts", line=12, root="frontend")
     calls, transport = _recorder()
     await github_integration.file_issues_for(db, [tc.id], transport=transport)
 
@@ -108,10 +105,8 @@ async def test_hook_ignores_failed_reports(session_factory, gh_settings, monkeyp
         called.append(ids)
 
     monkeypatch.setattr(github_integration, "file_issues_for", fake_file)
-    failed = ProcessOutcome(report_id=1, status="failed", run_id=None, counts=None,
-                            touched_test_ids=[], error="x")
-    done = ProcessOutcome(report_id=2, status="processed", run_id=1, counts={},
-                          touched_test_ids=[3, 4], error=None)
+    failed = ProcessOutcome(report_id=1, status="failed", run_id=None, counts=None, touched_test_ids=[], error="x")
+    done = ProcessOutcome(report_id=2, status="processed", run_id=1, counts={}, touched_test_ids=[3, 4], error=None)
     await github_integration.on_report_processed(session_factory, failed)
     await github_integration.on_report_processed(session_factory, done)
     assert called == [[3, 4]]

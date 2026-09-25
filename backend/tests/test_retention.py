@@ -1,14 +1,19 @@
 """Retention: old processed Reports and old Executions go; the rest stays."""
+
 import asyncio
 from datetime import timedelta
-
-from sqlalchemy import func, select
 
 from app.models import REPORT_FAILED, REPORT_PROCESSED, Report, TestExecution, TestRun, utcnow
 from app.retention import prune
 from app.worker import ReportWorker
+from sqlalchemy import func, select
+
 from tests.factories import (
-    make_execution, make_project, make_report, make_run, make_test_case,
+    make_execution,
+    make_project,
+    make_report,
+    make_run,
+    make_test_case,
 )
 
 
@@ -51,8 +56,9 @@ async def test_worker_prunes_once_per_interval(engine, session_factory):
     async def fake_prune():
         calls.append(1)
 
-    worker = ReportWorker(engine, session_factory, poll_seconds=0.05, standby_seconds=0.1,
-                          prune=fake_prune, prune_interval_seconds=3600)
+    worker = ReportWorker(
+        engine, session_factory, poll_seconds=0.05, standby_seconds=0.1, prune=fake_prune, prune_interval_seconds=3600
+    )
     await worker.start()
     try:
         await asyncio.sleep(0.5)

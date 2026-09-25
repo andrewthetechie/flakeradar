@@ -4,8 +4,12 @@ import { DEFAULT_VIEW, applyPatch, parseViewState, serializeViewState } from "./
 describe("view state in the URL", () => {
   it("round-trips a full view", () => {
     const view = {
-      repo: "andrewthetechie/writers-app", project: "backend", test: 42,
-      page: 3, sort: "proven" as const, showStable: true,
+      repo: "andrewthetechie/writers-app",
+      project: "backend",
+      test: 42,
+      page: 3,
+      sort: "proven" as const,
+      showStable: true,
     };
     const search = serializeViewState(view);
     expect(search).toBe(
@@ -20,8 +24,9 @@ describe("view state in the URL", () => {
   });
 
   it("ignores invalid values and a project without a repo", () => {
-    expect(parseViewState("?project=backend&page=0&test=abc&sort=name&stable=yes"))
-      .toEqual(DEFAULT_VIEW);
+    expect(parseViewState("?project=backend&page=0&test=abc&sort=name&stable=yes")).toEqual(
+      DEFAULT_VIEW,
+    );
   });
 });
 
@@ -30,7 +35,10 @@ describe("applyPatch", () => {
 
   it("changing repo clears project and resets page, keeps the selected test", () => {
     expect(applyPatch(base, { repo: "c/d" })).toEqual({
-      ...base, repo: "c/d", project: null, page: 1,
+      ...base,
+      repo: "c/d",
+      project: null,
+      page: 1,
     });
   });
 
@@ -43,7 +51,9 @@ describe("applyPatch", () => {
 
   it("clearing the repo clears the project", () => {
     expect(applyPatch(base, { repo: null, project: null })).toMatchObject({
-      repo: null, project: null, page: 1,
+      repo: null,
+      project: null,
+      page: 1,
     });
   });
 });

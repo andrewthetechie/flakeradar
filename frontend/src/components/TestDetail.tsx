@@ -10,7 +10,10 @@ const H = 46; // strip height
 function fmtWhen(iso: string): string {
   const d = new Date(iso);
   return d.toLocaleString(undefined, {
-    month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
   });
 }
 
@@ -41,7 +44,10 @@ function ExecutionStrip({ executions }: { executions: Execution[] }) {
             <g key={e.id}>
               {/* hit target larger than the mark */}
               <rect
-                x={cx - CELL / 2} y={0} width={CELL} height={H}
+                x={cx - CELL / 2}
+                y={0}
+                width={CELL}
+                height={H}
                 fill="transparent"
                 onMouseEnter={() => setHover({ x: cx, e })}
               />
@@ -70,7 +76,8 @@ function ExecutionStrip({ executions }: { executions: Execution[] }) {
             {hover.e.duration > 0 && ` · ${hover.e.duration.toFixed(2)}s`}
           </div>
           <div className="text-text-2">
-            <span className="font-mono">{hover.e.commit_sha.slice(0, 10)}</span> on {hover.e.branch} · {fmtWhen(hover.e.created_at)}
+            <span className="font-mono">{hover.e.commit_sha.slice(0, 10)}</span> on {hover.e.branch}{" "}
+            · {fmtWhen(hover.e.created_at)}
           </div>
           {hover.e.message && <div className="text-text-2">{hover.e.message.slice(0, 140)}</div>}
         </div>
@@ -88,11 +95,15 @@ export function TestDetail({ history }: { history: History }) {
       <div className="mb-4 flex flex-wrap gap-x-8 gap-y-2">
         <div>
           <div className="text-xs text-muted">Flakiness score</div>
-          <div className="text-lg font-semibold tabular-nums">{formatScore(history.test.flakiness_score)}</div>
+          <div className="text-lg font-semibold tabular-nums">
+            {formatScore(history.test.flakiness_score)}
+          </div>
         </div>
         <div>
           <div className="text-xs text-muted">Proven flakes</div>
-          <div className={`text-lg font-semibold tabular-nums ${history.test.confirmed_flake_count > 0 ? "text-signal" : ""}`}>
+          <div
+            className={`text-lg font-semibold tabular-nums ${history.test.confirmed_flake_count > 0 ? "text-signal" : ""}`}
+          >
             {history.test.confirmed_flake_count}
           </div>
         </div>
@@ -107,18 +118,30 @@ export function TestDetail({ history }: { history: History }) {
       {latestFailure && (latestFailure.details || latestFailure.message) && (
         <details className="group mb-5" open>
           <summary className="cursor-pointer text-xs text-text-2 hover:text-text">
-            Latest failure · <span className="font-mono">{latestFailure.commit_sha.slice(0, 10)}</span> on {latestFailure.branch}
+            Latest failure ·{" "}
+            <span className="font-mono">{latestFailure.commit_sha.slice(0, 10)}</span> on{" "}
+            {latestFailure.branch}
           </summary>
-          <pre className="mt-2 max-h-80 overflow-auto rounded-lg border border-line bg-page p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap [overflow-wrap:anywhere] text-text">{latestFailure.details || latestFailure.message}</pre>
+          <pre className="mt-2 max-h-80 overflow-auto rounded-lg border border-line bg-page p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap [overflow-wrap:anywhere] text-text">
+            {latestFailure.details || latestFailure.message}
+          </pre>
         </details>
       )}
 
       <ExecutionStrip executions={executions} />
       <div className="mt-2 mb-1 flex flex-wrap gap-4 text-xs text-text-2" aria-hidden>
-        <span className="inline-flex items-center gap-1.5"><StatusMark status="passed" /> passed</span>
-        <span className="inline-flex items-center gap-1.5"><StatusMark status="failed" /> failed</span>
-        <span className="inline-flex items-center gap-1.5"><StatusMark status="error" /> error</span>
-        <span className="inline-flex items-center gap-1.5"><StatusMark status="skipped" /> skipped</span>
+        <span className="inline-flex items-center gap-1.5">
+          <StatusMark status="passed" /> passed
+        </span>
+        <span className="inline-flex items-center gap-1.5">
+          <StatusMark status="failed" /> failed
+        </span>
+        <span className="inline-flex items-center gap-1.5">
+          <StatusMark status="error" /> error
+        </span>
+        <span className="inline-flex items-center gap-1.5">
+          <StatusMark status="skipped" /> skipped
+        </span>
       </div>
 
       <table className="mt-4 w-full border-collapse text-xs">
@@ -133,7 +156,10 @@ export function TestDetail({ history }: { history: History }) {
         </thead>
         <tbody>
           {executions.slice(0, 15).map((e) => (
-            <tr key={e.id} className="border-b border-line tabular-nums whitespace-nowrap [&>td]:py-1.5 [&>td]:pr-3">
+            <tr
+              key={e.id}
+              className="border-b border-line tabular-nums whitespace-nowrap [&>td]:py-1.5 [&>td]:pr-3"
+            >
               <td>
                 <span className="inline-flex items-center gap-1.5 text-text-2">
                   <StatusMark status={e.status} size={9} /> {e.status}
@@ -142,7 +168,9 @@ export function TestDetail({ history }: { history: History }) {
               <td className="font-mono">{e.commit_sha.slice(0, 10)}</td>
               <td>{e.branch}</td>
               <td>{fmtWhen(e.created_at)}</td>
-              <td className="min-w-40 whitespace-normal text-text-2 [overflow-wrap:anywhere]">{e.message || "—"}</td>
+              <td className="min-w-40 whitespace-normal text-text-2 [overflow-wrap:anywhere]">
+                {e.message || "—"}
+              </td>
             </tr>
           ))}
         </tbody>

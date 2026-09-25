@@ -1,26 +1,25 @@
 """Foundation: migrations build the schema; the app boots its health route."""
-import pytest
-from sqlalchemy import inspect, select, text
-from sqlalchemy.exc import IntegrityError
 
+import pytest
 from app.config import Settings
 from app.migrate import run_migrations
 from app.models import Report, TestCase
+from sqlalchemy import inspect, select, text
+from sqlalchemy.exc import IntegrityError
+
 from tests.factories import make_project, make_report
 
 
 async def test_migrations_create_every_table(engine):
     async with engine.connect() as conn:
         tables = set(await conn.run_sync(lambda c: inspect(c).get_table_names()))
-    assert {"repos", "projects", "test_cases", "test_runs",
-            "test_executions", "reports", "alembic_version"} <= tables
+    assert {"repos", "projects", "test_cases", "test_runs", "test_executions", "reports", "alembic_version"} <= tables
 
 
 async def test_models_match_migrations(engine):
     """Autogenerate finds nothing: models.py and the migrations agree."""
     from alembic.autogenerate import compare_metadata
     from alembic.migration import MigrationContext
-
     from app.models import Base
 
     def diff(sync_conn):

@@ -13,6 +13,7 @@ Signals combined:
 
 Final score is in [0, 1].
 """
+
 from collections import defaultdict
 
 FAILING = {"failed", "error"}

@@ -1,4 +1,5 @@
 """Shared-token auth for CI-facing endpoints."""
+
 import secrets
 
 from fastapi import Header, HTTPException

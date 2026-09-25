@@ -6,31 +6,65 @@ import { TestDrawer } from "./TestDrawer";
 
 const history: History = {
   test: {
-    id: 7, repo: "andrewthetechie/writers-app", project: "frontend", fingerprint: "f",
-    suite: "unit", classname: "src/app.test.ts", name: "renders", file: "src/app.test.ts",
-    line: 12, flakiness_score: 0.6, tier: "flaky", confirmed_flake_count: 1,
-    last_status: "passed", last_seen_at: "2026-09-25T00:00:00Z", quarantined: false,
-    quarantined_at: null, github_issue_number: null,
+    id: 7,
+    repo: "andrewthetechie/writers-app",
+    project: "frontend",
+    fingerprint: "f",
+    suite: "unit",
+    classname: "src/app.test.ts",
+    name: "renders",
+    file: "src/app.test.ts",
+    line: 12,
+    flakiness_score: 0.6,
+    tier: "flaky",
+    confirmed_flake_count: 1,
+    last_status: "passed",
+    last_seen_at: "2026-09-25T00:00:00Z",
+    quarantined: false,
+    quarantined_at: null,
+    github_issue_number: null,
   },
   location: {
-    path: "frontend/src/app.test.ts", line: 12,
+    path: "frontend/src/app.test.ts",
+    line: 12,
     url: "https://github.com/andrewthetechie/writers-app/blob/aaa111/frontend/src/app.test.ts#L12",
   },
   last_failing_sha: "aaa111",
   last_failing_branch: "main",
   executions: [
-    { id: 2, status: "passed", duration: 0.1, message: "", details: "",
-      created_at: "2026-09-25T01:00:00Z", commit_sha: "bbb222", branch: "feat", ci_run_id: "2" },
-    { id: 1, status: "failed", duration: 0.1, message: "expected 3",
-      details: "Traceback\n  at src/app.test.ts:14", created_at: "2026-09-25T00:00:00Z",
-      commit_sha: "aaa111", branch: "main", ci_run_id: "1" },
+    {
+      id: 2,
+      status: "passed",
+      duration: 0.1,
+      message: "",
+      details: "",
+      created_at: "2026-09-25T01:00:00Z",
+      commit_sha: "bbb222",
+      branch: "feat",
+      ci_run_id: "2",
+    },
+    {
+      id: 1,
+      status: "failed",
+      duration: 0.1,
+      message: "expected 3",
+      details: "Traceback\n  at src/app.test.ts:14",
+      created_at: "2026-09-25T00:00:00Z",
+      commit_sha: "aaa111",
+      branch: "main",
+      ci_run_id: "1",
+    },
   ],
 };
 
 function renderDrawer(overrides: Partial<History> = {}, onClose = vi.fn(), onQ = vi.fn()) {
   render(
-    <TestDrawer testId={7} history={{ ...history, ...overrides }} onClose={onClose}
-      onToggleQuarantine={onQ} />,
+    <TestDrawer
+      testId={7}
+      history={{ ...history, ...overrides }}
+      onClose={onClose}
+      onToggleQuarantine={onQ}
+    />,
   );
   return { onClose, onQ };
 }
@@ -66,8 +100,9 @@ describe("TestDrawer", () => {
   });
 
   it("shows a loading state until the right test's history arrives", () => {
-    render(<TestDrawer testId={99} history={history} onClose={() => {}}
-      onToggleQuarantine={() => {}} />);
+    render(
+      <TestDrawer testId={99} history={history} onClose={() => {}} onToggleQuarantine={() => {}} />,
+    );
     expect(screen.getByText("Loading…")).toBeInTheDocument();
   });
 });

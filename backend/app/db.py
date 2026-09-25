@@ -1,15 +1,19 @@
 """Async database engine and session management (PostgreSQL + asyncpg)."""
+
 from collections.abc import AsyncIterator
 
 from sqlalchemy.ext.asyncio import (
-    AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine,
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
 )
 
 from .config import get_settings
 
 # Postgres advisory-lock keys (any stable bigint; must not collide).
 MIGRATION_LOCK_KEY = 726_300_001  # serializes startup migrations across uvicorn workers
-WORKER_LOCK_KEY = 726_300_002     # elects the single Report processor (ADR 0002)
+WORKER_LOCK_KEY = 726_300_002  # elects the single Report processor (ADR 0002)
 
 
 def make_engine(url: str | None = None) -> AsyncEngine:

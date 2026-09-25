@@ -3,6 +3,7 @@
 Every function takes an AsyncSession and returns schemas.* models, so both
 front doors (HTTP and MCP) expose exactly the same data.
 """
+
 from dataclasses import dataclass
 from typing import Literal
 
@@ -18,6 +19,7 @@ SortKey = Literal["score", "last_seen", "proven"]
 @dataclass(frozen=True)
 class Scope:
     """Which Tests a query covers. `project` requires `repo` (names overlap across Repos)."""
+
     repo: str | None = None
     project: str | None = None
 
@@ -41,13 +43,23 @@ def escape_like(text: str) -> str:
 
 def to_test_out(tc: TestCase, project: str, repo: str, threshold: float) -> schemas.TestOut:
     return schemas.TestOut(
-        id=tc.id, repo=repo, project=project, fingerprint=tc.fingerprint,
-        suite=tc.suite, classname=tc.classname, name=tc.name,
-        file=tc.file, line=tc.line, flakiness_score=tc.flakiness_score,
+        id=tc.id,
+        repo=repo,
+        project=project,
+        fingerprint=tc.fingerprint,
+        suite=tc.suite,
+        classname=tc.classname,
+        name=tc.name,
+        file=tc.file,
+        line=tc.line,
+        flakiness_score=tc.flakiness_score,
         tier=tier_for(tc.flakiness_score, threshold),
-        confirmed_flake_count=tc.confirmed_flake_count, last_status=tc.last_status,
-        last_seen_at=tc.last_seen_at, quarantined=tc.quarantined,
-        quarantined_at=tc.quarantined_at, github_issue_number=tc.github_issue_number,
+        confirmed_flake_count=tc.confirmed_flake_count,
+        last_status=tc.last_status,
+        last_seen_at=tc.last_seen_at,
+        quarantined=tc.quarantined,
+        quarantined_at=tc.quarantined_at,
+        github_issue_number=tc.github_issue_number,
     )
 
 
@@ -70,11 +82,13 @@ def _scoped(stmt: Select, scope: Scope) -> Select:
 
 
 async def list_repos(db: AsyncSession) -> list[schemas.RepoOut]:
-    rows = (await db.execute(
-        select(Repo.name, Project.name, Project.root)
-        .join(Project, Project.repo_id == Repo.id)
-        .order_by(Repo.name, Project.name)
-    )).all()
+    rows = (
+        await db.execute(
+            select(Repo.name, Project.name, Project.root)
+            .join(Project, Project.repo_id == Repo.id)
+            .order_by(Repo.name, Project.name)
+        )
+    ).all()
     repos: dict[str, schemas.RepoOut] = {}
     for repo, project, root in rows:
         repos.setdefault(repo, schemas.RepoOut(name=repo, projects=[]))
@@ -102,22 +116,19 @@ async def list_tests(
     if file:
         stmt = stmt.where(TestCase.file.ilike(f"%{escape_like(file)}%", escape="\\"))
 
-    total = (await db.execute(
-        select(func.count()).select_from(stmt.subquery())
-    )).scalar_one()
+    total = (await db.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one()
 
     order = {
         "score": (TestCase.flakiness_score.desc(), TestCase.last_seen_at.desc(), TestCase.id),
         "last_seen": (TestCase.last_seen_at.desc(), TestCase.id.desc()),
-        "proven": (TestCase.confirmed_flake_count.desc(),
-                   TestCase.flakiness_score.desc(), TestCase.id),
+        "proven": (TestCase.confirmed_flake_count.desc(), TestCase.flakiness_score.desc(), TestCase.id),
     }[sort]
-    rows = (await db.execute(
-        stmt.order_by(*order).offset((page - 1) * page_size).limit(page_size)
-    )).all()
+    rows = (await db.execute(stmt.order_by(*order).offset((page - 1) * page_size).limit(page_size))).all()
     return schemas.TestPage(
         items=[to_test_out(tc, project, repo, threshold) for tc, project, repo in rows],
-        total=total, page=page, page_size=page_size,
+        total=total,
+        page=page,
+        page_size=page_size,
     )
 
 
@@ -133,26 +144,39 @@ async def summary(db: AsyncSession, scope: Scope, *, threshold: float) -> schema
 
     total = (await db.execute(tests_count())).scalar_one()
     flaky = (await db.execute(tests_count(TestCase.flakiness_score >= threshold))).scalar_one()
-    suspect = (await db.execute(tests_count(
-        TestCase.flakiness_score > 0, TestCase.flakiness_score < threshold))).scalar_one()
+    suspect = (
+        await db.execute(tests_count(TestCase.flakiness_score > 0, TestCase.flakiness_score < threshold))
+    ).scalar_one()
     confirmed = (await db.execute(tests_count(TestCase.confirmed_flake_count > 0))).scalar_one()
-    runs = (await db.execute(_scoped(
-        select(func.count(TestRun.id))
-        .join(Project, TestRun.project_id == Project.id)
-        .join(Repo, Project.repo_id == Repo.id),
-        scope,
-    ))).scalar_one()
-    executions = (await db.execute(_scoped(
-        select(func.count(TestExecution.id))
-        .join(TestCase, TestExecution.test_case_id == TestCase.id)
-        .join(Project, TestCase.project_id == Project.id)
-        .join(Repo, Project.repo_id == Repo.id),
-        scope,
-    ))).scalar_one()
+    runs = (
+        await db.execute(
+            _scoped(
+                select(func.count(TestRun.id))
+                .join(Project, TestRun.project_id == Project.id)
+                .join(Repo, Project.repo_id == Repo.id),
+                scope,
+            )
+        )
+    ).scalar_one()
+    executions = (
+        await db.execute(
+            _scoped(
+                select(func.count(TestExecution.id))
+                .join(TestCase, TestExecution.test_case_id == TestCase.id)
+                .join(Project, TestCase.project_id == Project.id)
+                .join(Repo, Project.repo_id == Repo.id),
+                scope,
+            )
+        )
+    ).scalar_one()
     return schemas.SummaryOut(
-        total_tests=total, flaky_tests=flaky, suspect_tests=suspect,
-        confirmed_flaky_tests=confirmed, total_runs=runs,
-        total_executions=executions, flake_threshold=threshold,
+        total_tests=total,
+        flaky_tests=flaky,
+        suspect_tests=suspect,
+        confirmed_flaky_tests=confirmed,
+        total_runs=runs,
+        total_executions=executions,
+        flake_threshold=threshold,
     )
 
 
@@ -174,47 +198,58 @@ def permalink(repo: str, sha: str, root: str, file: str, line: int | None) -> st
 async def get_test(
     db: AsyncSession, test_id: int, *, threshold: float, executions_limit: int = 60
 ) -> schemas.HistoryOut | None:
-    row = (await db.execute(
-        tests_select().add_columns(Project.root).where(TestCase.id == test_id)
-    )).first()
+    row = (await db.execute(tests_select().add_columns(Project.root).where(TestCase.id == test_id))).first()
     if row is None:
         return None
     tc, project, repo, root = row
 
-    rows = (await db.execute(
-        select(TestExecution, TestRun)
-        .join(TestRun, TestExecution.test_run_id == TestRun.id)
-        .where(TestExecution.test_case_id == test_id)
-        .order_by(TestExecution.id.desc())
-        .limit(executions_limit)
-    )).all()
+    rows = (
+        await db.execute(
+            select(TestExecution, TestRun)
+            .join(TestRun, TestExecution.test_run_id == TestRun.id)
+            .where(TestExecution.test_case_id == test_id)
+            .order_by(TestExecution.id.desc())
+            .limit(executions_limit)
+        )
+    ).all()
     executions = [
         schemas.ExecutionOut(
-            id=e.id, status=e.status, duration=e.duration, message=e.message,
-            details=e.details, created_at=e.created_at, commit_sha=r.commit_sha,
-            branch=r.branch, ci_run_id=r.ci_run_id,
+            id=e.id,
+            status=e.status,
+            duration=e.duration,
+            message=e.message,
+            details=e.details,
+            created_at=e.created_at,
+            commit_sha=r.commit_sha,
+            branch=r.branch,
+            ci_run_id=r.ci_run_id,
         )
         for e, r in rows
     ]
 
-    failing = (await db.execute(
-        select(TestRun.commit_sha, TestRun.branch)
-        .join(TestExecution, TestExecution.test_run_id == TestRun.id)
-        .where(TestExecution.test_case_id == test_id, TestExecution.status.in_(FAILING))
-        .order_by(TestExecution.id.desc())
-        .limit(1)
-    )).first()
+    failing = (
+        await db.execute(
+            select(TestRun.commit_sha, TestRun.branch)
+            .join(TestExecution, TestExecution.test_run_id == TestRun.id)
+            .where(TestExecution.test_case_id == test_id, TestExecution.status.in_(FAILING))
+            .order_by(TestExecution.id.desc())
+            .limit(1)
+        )
+    ).first()
     last_sha, last_branch = failing if failing is not None else (None, None)
 
     location = None
     if tc.file:
         location = schemas.LocationOut(
-            path=repo_path(root, tc.file), line=tc.line,
+            path=repo_path(root, tc.file),
+            line=tc.line,
             url=permalink(repo, last_sha, root, tc.file, tc.line) if last_sha else None,
         )
     return schemas.HistoryOut(
-        test=to_test_out(tc, project, repo, threshold), location=location,
-        last_failing_sha=last_sha, last_failing_branch=last_branch,
+        test=to_test_out(tc, project, repo, threshold),
+        location=location,
+        last_failing_sha=last_sha,
+        last_failing_branch=last_branch,
         executions=executions,
     )
 
@@ -232,20 +267,28 @@ async def set_quarantine(
     return to_test_out(tc, project, repo, threshold)
 
 
-async def quarantine_list(
-    db: AsyncSession, repo: str, project: str
-) -> list[schemas.QuarantineItem]:
-    rows = (await db.execute(
-        select(TestCase)
-        .join(Project, TestCase.project_id == Project.id)
-        .join(Repo, Project.repo_id == Repo.id)
-        .where(Repo.name == repo, Project.name == project, TestCase.quarantined.is_(True))
-        .order_by(TestCase.name, TestCase.id)
-    )).scalars().all()
+async def quarantine_list(db: AsyncSession, repo: str, project: str) -> list[schemas.QuarantineItem]:
+    rows = (
+        (
+            await db.execute(
+                select(TestCase)
+                .join(Project, TestCase.project_id == Project.id)
+                .join(Repo, Project.repo_id == Repo.id)
+                .where(Repo.name == repo, Project.name == project, TestCase.quarantined.is_(True))
+                .order_by(TestCase.name, TestCase.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
     return [
         schemas.QuarantineItem(
-            suite=tc.suite, classname=tc.classname, name=tc.name,
-            fingerprint=tc.fingerprint, file=tc.file, line=tc.line,
+            suite=tc.suite,
+            classname=tc.classname,
+            name=tc.name,
+            fingerprint=tc.fingerprint,
+            file=tc.file,
+            line=tc.line,
             quarantined_at=tc.quarantined_at,
         )
         for tc in rows
@@ -253,6 +296,7 @@ async def quarantine_list(
 
 
 # --- Search and name lookup (task 10, used by the MCP server) ----------
+
 
 async def search_tests(
     db: AsyncSession, scope: Scope, query: str, *, threshold: float, limit: int = 20
@@ -264,9 +308,7 @@ async def search_tests(
         | TestCase.classname.ilike(pattern, escape="\\")
         | TestCase.file.ilike(pattern, escape="\\")
     )
-    rows = (await db.execute(
-        stmt.order_by(TestCase.flakiness_score.desc(), TestCase.id).limit(limit)
-    )).all()
+    rows = (await db.execute(stmt.order_by(TestCase.flakiness_score.desc(), TestCase.id).limit(limit))).all()
     return [to_test_out(tc, project, repo, threshold) for tc, project, repo in rows]
 
 
@@ -287,18 +329,26 @@ async def find_test_ids(
 
 
 async def latest_failure(db: AsyncSession, test_id: int) -> schemas.ExecutionOut | None:
-    row = (await db.execute(
-        select(TestExecution, TestRun)
-        .join(TestRun, TestExecution.test_run_id == TestRun.id)
-        .where(TestExecution.test_case_id == test_id, TestExecution.status.in_(FAILING))
-        .order_by(TestExecution.id.desc())
-        .limit(1)
-    )).first()
+    row = (
+        await db.execute(
+            select(TestExecution, TestRun)
+            .join(TestRun, TestExecution.test_run_id == TestRun.id)
+            .where(TestExecution.test_case_id == test_id, TestExecution.status.in_(FAILING))
+            .order_by(TestExecution.id.desc())
+            .limit(1)
+        )
+    ).first()
     if row is None:
         return None
     e, r = row
     return schemas.ExecutionOut(
-        id=e.id, status=e.status, duration=e.duration, message=e.message,
-        details=e.details, created_at=e.created_at, commit_sha=r.commit_sha,
-        branch=r.branch, ci_run_id=r.ci_run_id,
+        id=e.id,
+        status=e.status,
+        duration=e.duration,
+        message=e.message,
+        details=e.details,
+        created_at=e.created_at,
+        commit_sha=r.commit_sha,
+        branch=r.branch,
+        ci_run_id=r.ci_run_id,
     )

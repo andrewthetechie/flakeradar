@@ -9,11 +9,13 @@ The lock is session-level and SURVIVES a connection being returned to the
 pool, so the leader keeps one dedicated AUTOCOMMIT connection for as long as
 it leads and unlocks explicitly before closing it.
 """
+
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError, InvalidRequestError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, AsyncSession, async_sessionmaker
 
 from .db import WORKER_LOCK_KEY
@@ -69,9 +71,7 @@ class ReportWorker:
         conn = await self._engine.connect()
         try:
             await conn.execution_options(isolation_level="AUTOCOMMIT")
-            got = (await conn.execute(
-                text("SELECT pg_try_advisory_lock(:key)"), {"key": WORKER_LOCK_KEY}
-            )).scalar()
+            got = (await conn.execute(text("SELECT pg_try_advisory_lock(:key)"), {"key": WORKER_LOCK_KEY})).scalar()
         except BaseException:
             await conn.close()
             raise
@@ -87,11 +87,9 @@ class ReportWorker:
         if conn is None:
             return
         try:
-            await conn.execute(
-                text("SELECT pg_advisory_unlock(:key)"), {"key": WORKER_LOCK_KEY}
-            )
+            await conn.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": WORKER_LOCK_KEY})
             await conn.close()
-        except Exception:
+        except (DBAPIError, InvalidRequestError):
             # Connection is broken: the server already dropped the lock.
             await conn.invalidate()
 
@@ -128,8 +126,7 @@ class ReportWorker:
                     try:
                         await self._on_processed(outcome)
                     except Exception:
-                        logger.exception("on_processed hook failed for Report %s",
-                                         outcome.report_id)
+                        logger.exception("on_processed hook failed for Report %s", outcome.report_id)
             except asyncio.CancelledError:
                 raise
             except Exception:

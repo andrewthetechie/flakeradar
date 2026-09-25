@@ -7,7 +7,10 @@ const SORT_LABELS: Record<SortKey, string> = {
 };
 
 export function LeaderboardControls({
-  sort, showStable, onSort, onShowStable,
+  sort,
+  showStable,
+  onSort,
+  onShowStable,
 }: {
   sort: SortKey;
   showStable: boolean;
@@ -18,9 +21,15 @@ export function LeaderboardControls({
     <div className="flex flex-wrap items-center gap-4 text-xs text-text-2">
       <label className="flex items-center gap-2">
         Sort by
-        <select className="control py-0.5 text-xs" value={sort} onChange={(e) => onSort(e.target.value as SortKey)}>
+        <select
+          className="control py-0.5 text-xs"
+          value={sort}
+          onChange={(e) => onSort(e.target.value as SortKey)}
+        >
           {(Object.keys(SORT_LABELS) as SortKey[]).map((k) => (
-            <option key={k} value={k}>{SORT_LABELS[k]}</option>
+            <option key={k} value={k}>
+              {SORT_LABELS[k]}
+            </option>
           ))}
         </select>
       </label>

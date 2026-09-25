@@ -3,19 +3,24 @@
 Each helper flushes (so ids are assigned) but does not commit; call
 ``await db.commit()`` when another session must see the rows.
 """
+
 from datetime import datetime
 
+from app.models import (
+    REPORT_PENDING,
+    Project,
+    Repo,
+    Report,
+    TestCase,
+    TestExecution,
+    TestRun,
+    utcnow,
+)
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import (
-    REPORT_PENDING, Project, Repo, Report, TestCase, TestExecution, TestRun, utcnow,
-)
 
-
-async def make_project(
-    db: AsyncSession, repo: str = "acme/app", project: str = "default", root: str = ""
-) -> Project:
+async def make_project(db: AsyncSession, repo: str = "acme/app", project: str = "default", root: str = "") -> Project:
     repo_row = (await db.execute(select(Repo).where(Repo.name == repo))).scalar_one_or_none()
     if repo_row is None:
         repo_row = Repo(name=repo)
@@ -40,7 +45,9 @@ async def make_test_case(
     tc = TestCase(
         project_id=project.id,
         fingerprint=fingerprint(suite, classname, name),
-        suite=suite, classname=classname, name=name,
+        suite=suite,
+        classname=classname,
+        name=name,
         **fields,
     )
     db.add(tc)
@@ -56,8 +63,13 @@ async def make_run(
     ci_run_id: str = "",
     created_at: datetime | None = None,
 ) -> TestRun:
-    run = TestRun(project_id=project.id, commit_sha=commit_sha, branch=branch,
-                  ci_run_id=ci_run_id, created_at=created_at or utcnow())
+    run = TestRun(
+        project_id=project.id,
+        commit_sha=commit_sha,
+        branch=branch,
+        ci_run_id=ci_run_id,
+        created_at=created_at or utcnow(),
+    )
     db.add(run)
     await db.flush()
     return run
@@ -72,9 +84,14 @@ async def make_execution(
     details: str = "",
     created_at: datetime | None = None,
 ) -> TestExecution:
-    ex = TestExecution(test_case_id=test_case.id, test_run_id=run.id, status=status,
-                       message=message, details=details,
-                       created_at=created_at or utcnow())
+    ex = TestExecution(
+        test_case_id=test_case.id,
+        test_run_id=run.id,
+        status=status,
+        message=message,
+        details=details,
+        created_at=created_at or utcnow(),
+    )
     db.add(ex)
     await db.flush()
     return ex
@@ -90,8 +107,15 @@ async def make_report(
     root: str | None = None,
     status: str = REPORT_PENDING,
 ) -> Report:
-    rep = Report(project_id=project.id, commit_sha=commit_sha, branch=branch,
-                 ci_run_id=ci_run_id, root=root, body=body, status=status)
+    rep = Report(
+        project_id=project.id,
+        commit_sha=commit_sha,
+        branch=branch,
+        ci_run_id=ci_run_id,
+        root=root,
+        body=body,
+        status=status,
+    )
     db.add(rep)
     await db.flush()
     return rep

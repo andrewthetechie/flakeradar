@@ -7,16 +7,16 @@ Two entry points:
 - The CLI (``alembic upgrade head`` / ``alembic revision --autogenerate``)
   has no connection, so we build an async engine from Settings.
 """
+
 import asyncio
 from logging.config import fileConfig
 
 from alembic import context
+from app.config import get_settings
+from app.models import Base
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import create_async_engine
-
-from app.config import get_settings
-from app.models import Base
 
 config = context.config
 if config.config_file_name is not None:

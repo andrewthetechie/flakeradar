@@ -1,4 +1,5 @@
 """Application configuration, sourced from environment variables (.env supported)."""
+
 import os
 from functools import lru_cache
 
@@ -10,9 +11,7 @@ DEFAULT_DATABASE_URL = "postgresql+asyncpg://flakeradar:flakeradar@localhost:543
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(
-        env_file=".env", env_prefix="FLAKERADAR_", extra="ignore"
-    )
+    model_config = SettingsConfigDict(env_file=".env", env_prefix="FLAKERADAR_", extra="ignore")
 
     # Auth token CI systems send in the X-API-Key header (and MCP clients as a Bearer token).
     api_token: str = DEFAULT_INSECURE_TOKEN
@@ -37,8 +36,8 @@ class Settings(BaseSettings):
     worker_poll_seconds: float = 1.0
 
     # Retention (pruned hourly by the Report processor).
-    report_retention_days: int = 7        # processed Reports; failed ones are kept
-    execution_retention_days: int = 90    # Executions (and Runs left empty)
+    report_retention_days: int = 7  # processed Reports; failed ones are kept
+    execution_retention_days: int = 90  # Executions (and Runs left empty)
     prune_interval_seconds: float = 3600.0
 
     @field_validator("database_url")
@@ -46,11 +45,10 @@ class Settings(BaseSettings):
     def _require_asyncpg(cls, value: str) -> str:
         for prefix in ("postgresql://", "postgres://"):
             if value.startswith(prefix):
-                return "postgresql+asyncpg://" + value[len(prefix):]
+                return "postgresql+asyncpg://" + value[len(prefix) :]
         if not value.startswith("postgresql+asyncpg://"):
             raise ValueError(
-                "FLAKERADAR_DATABASE_URL must be a PostgreSQL URL "
-                "(postgresql+asyncpg://user:pass@host:5432/db)"
+                "FLAKERADAR_DATABASE_URL must be a PostgreSQL URL (postgresql+asyncpg://user:pass@host:5432/db)"
             )
         return value
 

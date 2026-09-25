@@ -44,9 +44,7 @@ def test_fewer_than_two_executions_scores_zero():
 def test_error_counts_as_failing():
     as_errors = ["error", "passed"] * 5
     as_failures = ["failed", "passed"] * 5
-    assert scoring.flip_score(as_errors, 0.85, 50) == scoring.flip_score(
-        as_failures, 0.85, 50
-    )
+    assert scoring.flip_score(as_errors, 0.85, 50) == scoring.flip_score(as_failures, 0.85, 50)
 
 
 def test_small_samples_are_damped():

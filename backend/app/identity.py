@@ -3,6 +3,7 @@
 A Repo is a lowercase ``owner/name``; a Project is a lowercase name unique
 within its Repo (``default`` when omitted). See CONTEXT.md and ADR 0001.
 """
+
 import re
 
 from sqlalchemy import select
@@ -26,9 +27,7 @@ def normalize_repo(raw: str) -> str:
 def normalize_project(raw: str | None) -> str:
     value = (raw or "").strip().lower() or DEFAULT_PROJECT
     if not PROJECT_RE.match(value):
-        raise ValueError(
-            f"project must be 1-100 chars of a-z, 0-9, '.', '_' or '-', got {raw!r}"
-        )
+        raise ValueError(f"project must be 1-100 chars of a-z, 0-9, '.', '_' or '-', got {raw!r}")
     return value
 
 
@@ -47,11 +46,11 @@ def normalize_root(raw: str | None) -> str | None:
 
 async def get_or_create_project(db: AsyncSession, repo: str, project: str) -> Project:
     """Race-safe get-or-create for normalized names (ON CONFLICT DO NOTHING)."""
-    await db.execute(pg_insert(Repo).values(name=repo).on_conflict_do_nothing(
-        index_elements=["name"]))
+    await db.execute(pg_insert(Repo).values(name=repo).on_conflict_do_nothing(index_elements=["name"]))
     repo_id = (await db.execute(select(Repo.id).where(Repo.name == repo))).scalar_one()
-    await db.execute(pg_insert(Project).values(repo_id=repo_id, name=project)
-                     .on_conflict_do_nothing(constraint="uq_projects_repo_name"))
-    return (await db.execute(
-        select(Project).where(Project.repo_id == repo_id, Project.name == project)
-    )).scalar_one()
+    await db.execute(
+        pg_insert(Project)
+        .values(repo_id=repo_id, name=project)
+        .on_conflict_do_nothing(constraint="uq_projects_repo_name")
+    )
+    return (await db.execute(select(Project).where(Project.repo_id == repo_id, Project.name == project))).scalar_one()

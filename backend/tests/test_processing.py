@@ -1,10 +1,11 @@
 """Report processor: Runs, Executions, Tests, Location, scoring, failures."""
+
 import asyncio
 
+from app.models import Report, TestCase, TestExecution, TestRun
+from app.processing import claim_next_report, process_next
 from sqlalchemy import func, select
 
-from app.models import Project, Report, TestCase, TestExecution, TestRun
-from app.processing import claim_next_report, process_next
 from tests.conftest import make_junit
 from tests.factories import make_project, make_report
 
@@ -25,8 +26,9 @@ async def test_empty_queue_returns_none(session_factory):
 
 
 async def test_processes_report_into_run(db, session_factory):
-    rep = await _queue(db, make_junit([("t1", "passed"), ("t2", "failed")]),
-                       commit_sha="abc", branch="feat", ci_run_id="9-1")
+    rep = await _queue(
+        db, make_junit([("t1", "passed"), ("t2", "failed")]), commit_sha="abc", branch="feat", ci_run_id="9-1"
+    )
     outcome = await process_next(session_factory)
     assert outcome.status == "processed" and outcome.report_id == rep.id
     assert outcome.counts == {"passed": 1, "failed": 1, "error": 0, "skipped": 0}
@@ -39,8 +41,7 @@ async def test_processes_report_into_run(db, session_factory):
     tests = await _tests(db)
     assert [(t.name, t.last_status) for t in tests] == [("t1", "passed"), ("t2", "failed")]
     assert sorted(outcome.touched_test_ids) == [t.id for t in tests]
-    msg = (await db.execute(select(TestExecution.message).where(
-        TestExecution.status == "failed"))).scalar_one()
+    msg = (await db.execute(select(TestExecution.message).where(TestExecution.status == "failed"))).scalar_one()
     assert msg == "assert 1 == 2"
 
 
@@ -55,9 +56,11 @@ async def test_same_sha_retry_is_proven_flake(db, session_factory):
 
 
 async def test_same_test_twice_in_one_report(db, session_factory):
-    xml = (b'<testsuite name="unit">'
-           b'<testcase classname="tests.test_mod" name="t"><failure message="x"/></testcase>'
-           b'<testcase classname="tests.test_mod" name="t"/></testsuite>')
+    xml = (
+        b'<testsuite name="unit">'
+        b'<testcase classname="tests.test_mod" name="t"><failure message="x"/></testcase>'
+        b'<testcase classname="tests.test_mod" name="t"/></testsuite>'
+    )
     await _queue(db, xml)
     outcome = await process_next(session_factory)
     (tc,) = await _tests(db)
@@ -81,10 +84,8 @@ async def test_same_name_in_two_projects_is_two_tests(db, session_factory):
 
 async def test_location_latest_wins_but_is_never_erased(db, session_factory):
     proj = await make_project(db, "acme/app", "backend")
-    with_loc = (b'<testsuite name="s"><testcase classname="c" name="t" '
-                b'file="tests/a.py" line="3"/></testsuite>')
-    moved = (b'<testsuite name="s"><testcase classname="c" name="t" '
-             b'file="tests/b.py" line="9"/></testsuite>')
+    with_loc = b'<testsuite name="s"><testcase classname="c" name="t" file="tests/a.py" line="3"/></testsuite>'
+    moved = b'<testsuite name="s"><testcase classname="c" name="t" file="tests/b.py" line="9"/></testsuite>'
     no_loc = b'<testsuite name="s"><testcase classname="c" name="t"/></testsuite>'
     await _queue(db, with_loc, project=proj)
     await process_next(session_factory)
@@ -126,11 +127,10 @@ async def test_claim_skips_locked_rows(db, session_factory):
     proj = await make_project(db, "acme/app", "backend")
     r1 = await _queue(db, make_junit([("t", "passed")]), project=proj)
     r2 = await _queue(db, make_junit([("t", "passed")]), project=proj)
-    async with session_factory() as a, session_factory() as b:
-        async with a.begin(), b.begin():
-            got_a = await claim_next_report(a)
-            got_b = await claim_next_report(b)
-            assert (got_a.id, got_b.id) == (r1.id, r2.id)
+    async with session_factory() as a, session_factory() as b, a.begin(), b.begin():
+        got_a = await claim_next_report(a)
+        got_b = await claim_next_report(b)
+        assert (got_a.id, got_b.id) == (r1.id, r2.id)
 
 
 async def test_large_report_is_batched(db, session_factory):

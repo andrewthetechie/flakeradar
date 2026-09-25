@@ -1,4 +1,5 @@
 """FastAPI application: lifespan, API routers, static frontend hosting."""
+
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -29,12 +30,11 @@ async def lifespan(app: FastAPI):
     settings = get_settings()
     assert_secure_token(settings.api_token)
     if settings.api_token == DEFAULT_INSECURE_TOKEN:
-        logger.warning(
-            "FLAKERADAR_API_TOKEN is the default 'changeme' — set a real token."
-        )
+        logger.warning("FLAKERADAR_API_TOKEN is the default 'changeme' — set a real token.")
     await run_migrations(engine)
     worker = ReportWorker(
-        engine, SessionLocal,
+        engine,
+        SessionLocal,
         poll_seconds=settings.worker_poll_seconds,
         on_processed=lambda outcome: github_integration.on_report_processed(SessionLocal, outcome),
         prune=lambda: run_prune(SessionLocal),
@@ -53,7 +53,8 @@ mcp = build_mcp(SessionLocal, api_token=get_settings().api_token)
 mcp_app = mcp.http_app(path="/")
 
 app = FastAPI(
-    title="FlakeRadar", version="2.0.0",
+    title="FlakeRadar",
+    version="2.0.0",
     lifespan=combine_lifespans(lifespan, mcp_app.lifespan),
 )
 

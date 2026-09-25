@@ -5,6 +5,7 @@ in upload order — scoring depends on Execution order, so never parallelize.
 Every statement is batched (chunks of CHUNK rows) to stay far below
 asyncpg's 32,767 bind-parameter limit and avoid per-test round-trips.
 """
+
 import asyncio
 import logging
 from collections import defaultdict
@@ -18,8 +19,15 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from . import scoring
 from .config import get_settings
 from .models import (
-    REPORT_FAILED, REPORT_PENDING, REPORT_PROCESSED, Project, Report, TestCase,
-    TestExecution, TestRun, utcnow,
+    REPORT_FAILED,
+    REPORT_PENDING,
+    REPORT_PROCESSED,
+    Project,
+    Report,
+    TestCase,
+    TestExecution,
+    TestRun,
+    utcnow,
 )
 from .parsing import ParsedCase, fingerprint, parse_junit_xml
 
@@ -32,7 +40,7 @@ ERROR_MAX = 2000
 @dataclass(frozen=True)
 class ProcessOutcome:
     report_id: int
-    status: str                      # REPORT_PROCESSED | REPORT_FAILED
+    status: str  # REPORT_PROCESSED | REPORT_FAILED
     run_id: int | None
     counts: dict[str, int] | None
     touched_test_ids: list[int]
@@ -41,42 +49,41 @@ class ProcessOutcome:
 
 def _chunks(items: list, size: int = CHUNK):
     for i in range(0, len(items), size):
-        yield items[i:i + size]
+        yield items[i : i + size]
 
 
 async def claim_next_report(db: AsyncSession) -> Report | None:
     """Lock the oldest pending Report for this transaction (SKIP LOCKED)."""
-    return (await db.execute(
-        select(Report)
-        .where(Report.status == REPORT_PENDING)
-        .order_by(Report.id)
-        .limit(1)
-        .with_for_update(skip_locked=True)
-    )).scalar_one_or_none()
+    return (
+        await db.execute(
+            select(Report)
+            .where(Report.status == REPORT_PENDING)
+            .order_by(Report.id)
+            .limit(1)
+            .with_for_update(skip_locked=True)
+        )
+    ).scalar_one_or_none()
 
 
-async def _upsert_test_cases(
-    db: AsyncSession, project_id: int, parsed: list[ParsedCase]
-) -> dict[str, int]:
+async def _upsert_test_cases(db: AsyncSession, project_id: int, parsed: list[ParsedCase]) -> dict[str, int]:
     """Insert unseen Tests; return {fingerprint: test_case_id} for all of them."""
     by_fp: dict[str, ParsedCase] = {}
     for pc in parsed:
         by_fp.setdefault(fingerprint(pc.suite, pc.classname, pc.name), pc)
     rows = [
-        {"project_id": project_id, "fingerprint": fp, "suite": pc.suite,
-         "classname": pc.classname, "name": pc.name}
+        {"project_id": project_id, "fingerprint": fp, "suite": pc.suite, "classname": pc.classname, "name": pc.name}
         for fp, pc in by_fp.items()
     ]
     for chunk in _chunks(rows):
         await db.execute(
-            pg_insert(TestCase).values(chunk).on_conflict_do_nothing(
-                constraint="uq_test_cases_project_fingerprint")
+            pg_insert(TestCase).values(chunk).on_conflict_do_nothing(constraint="uq_test_cases_project_fingerprint")
         )
     ids: dict[str, int] = {}
     for chunk in _chunks(list(by_fp)):
         result = await db.execute(
             select(TestCase.fingerprint, TestCase.id).where(
-                TestCase.project_id == project_id, TestCase.fingerprint.in_(chunk))
+                TestCase.project_id == project_id, TestCase.fingerprint.in_(chunk)
+            )
         )
         ids.update(dict(result.all()))
     return ids
@@ -85,9 +92,7 @@ async def _upsert_test_cases(
 async def rescore(db: AsyncSession, test_case_ids: list[int]) -> None:
     """Recompute flakiness for the given Tests from their last `window` Executions."""
     settings = get_settings()
-    rn = func.row_number().over(
-        partition_by=TestExecution.test_case_id, order_by=TestExecution.id.desc()
-    ).label("rn")
+    rn = func.row_number().over(partition_by=TestExecution.test_case_id, order_by=TestExecution.id.desc()).label("rn")
     history: dict[int, list[tuple[str, str]]] = defaultdict(list)  # id -> [(sha, status)] newest first
     for chunk in _chunks(test_case_ids):
         ranked = (
@@ -108,11 +113,12 @@ async def rescore(db: AsyncSession, test_case_ids: list[int]) -> None:
     for tc_id in test_case_ids:
         execs = history.get(tc_id, [])
         score, confirmed = scoring.combined_score(
-            [status for _, status in execs], execs,
-            settings.score_decay, settings.score_window,
+            [status for _, status in execs],
+            execs,
+            settings.score_decay,
+            settings.score_window,
         )
-        updates.append({"id": tc_id, "flakiness_score": score,
-                        "confirmed_flake_count": confirmed})
+        updates.append({"id": tc_id, "flakiness_score": score, "confirmed_flake_count": confirmed})
     for chunk in _chunks(updates):
         await db.execute(update(TestCase), chunk)
 
@@ -123,12 +129,15 @@ async def process_report(db: AsyncSession, report: Report) -> ProcessOutcome:
     now = utcnow()
 
     if report.root is not None:
-        await db.execute(
-            update(Project).where(Project.id == report.project_id).values(root=report.root)
-        )
+        await db.execute(update(Project).where(Project.id == report.project_id).values(root=report.root))
 
-    run = TestRun(project_id=report.project_id, commit_sha=report.commit_sha,
-                  branch=report.branch, ci_run_id=report.ci_run_id, created_at=now)
+    run = TestRun(
+        project_id=report.project_id,
+        commit_sha=report.commit_sha,
+        branch=report.branch,
+        ci_run_id=report.ci_run_id,
+        created_at=now,
+    )
     db.add(run)
     await db.flush()
 
@@ -140,11 +149,17 @@ async def process_report(db: AsyncSession, report: Report) -> ProcessOutcome:
     for pc in parsed:
         tc_id = ids[fingerprint(pc.suite, pc.classname, pc.name)]
         counts[pc.status] += 1
-        executions.append({
-            "test_case_id": tc_id, "test_run_id": run.id, "status": pc.status,
-            "duration": pc.duration, "message": pc.message, "details": pc.details,
-            "created_at": now,
-        })
+        executions.append(
+            {
+                "test_case_id": tc_id,
+                "test_run_id": run.id,
+                "status": pc.status,
+                "duration": pc.duration,
+                "message": pc.message,
+                "details": pc.details,
+                "created_at": now,
+            }
+        )
         row = latest.setdefault(tc_id, {"id": tc_id})
         row["last_status"] = pc.status
         row["last_seen_at"] = now
@@ -165,8 +180,9 @@ async def process_report(db: AsyncSession, report: Report) -> ProcessOutcome:
     report.run_id = run.id
     report.error = None
     report.processed_at = now
-    return ProcessOutcome(report_id=report.id, status=REPORT_PROCESSED, run_id=run.id,
-                          counts=counts, touched_test_ids=touched, error=None)
+    return ProcessOutcome(
+        report_id=report.id, status=REPORT_PROCESSED, run_id=run.id, counts=counts, touched_test_ids=touched, error=None
+    )
 
 
 async def process_next(
@@ -178,20 +194,19 @@ async def process_next(
     Report (still row-locked) is marked failed with the error in the same
     transaction, so a bad Report can never block the queue.
     """
-    async with session_factory() as db:
-        async with db.begin():
-            report = await claim_next_report(db)
-            if report is None:
-                return None
-            try:
-                async with db.begin_nested():
-                    return await process_report(db, report)
-            except Exception as exc:
-                logger.exception("Report %s failed to process", report.id)
-                error = f"{type(exc).__name__}: {exc}"[:ERROR_MAX]
-                report.status = REPORT_FAILED
-                report.error = error
-                report.processed_at = utcnow()
-                return ProcessOutcome(report_id=report.id, status=REPORT_FAILED,
-                                      run_id=None, counts=None, touched_test_ids=[],
-                                      error=error)
+    async with session_factory() as db, db.begin():
+        report = await claim_next_report(db)
+        if report is None:
+            return None
+        try:
+            async with db.begin_nested():
+                return await process_report(db, report)
+        except Exception as exc:
+            logger.exception("Report %s failed to process", report.id)
+            error = f"{type(exc).__name__}: {exc}"[:ERROR_MAX]
+            report.status = REPORT_FAILED
+            report.error = error
+            report.processed_at = utcnow()
+            return ProcessOutcome(
+                report_id=report.id, status=REPORT_FAILED, run_id=None, counts=None, touched_test_ids=[], error=error
+            )

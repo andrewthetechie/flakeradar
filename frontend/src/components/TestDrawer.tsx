@@ -5,7 +5,10 @@ import { TestDetail } from "./TestDetail";
 
 /** Slide-over panel for one Test. The leaderboard keeps the full width. */
 export function TestDrawer({
-  testId, history, onClose, onToggleQuarantine,
+  testId,
+  history,
+  onClose,
+  onToggleQuarantine,
 }: {
   testId: number;
   history: History | null;
@@ -13,7 +16,9 @@ export function TestDrawer({
   onToggleQuarantine: (t: TestCase) => void;
 }) {
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
@@ -56,10 +61,16 @@ export function TestDrawer({
             <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
               <div className="min-w-0 font-mono text-xs [overflow-wrap:anywhere]">
                 {loc == null ? (
-                  <span className="font-sans text-muted">Location not reported by the test runner</span>
+                  <span className="font-sans text-muted">
+                    Location not reported by the test runner
+                  </span>
                 ) : loc.url ? (
-                  <a className="text-link underline-offset-2 hover:underline" href={loc.url}
-                    target="_blank" rel="noreferrer">
+                  <a
+                    className="text-link underline-offset-2 hover:underline"
+                    href={loc.url}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
                     {breakable(loc.path)}
                     {loc.line != null && `:${loc.line}`}
                   </a>

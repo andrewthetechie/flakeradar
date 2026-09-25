@@ -1,7 +1,8 @@
 """Queued ingest: validate, store a pending Report, answer 202."""
-from sqlalchemy import select
 
 from app.models import Project, Repo, Report
+from sqlalchemy import select
+
 from tests.conftest import AUTH, make_junit
 
 
@@ -19,15 +20,21 @@ async def test_ingest_requires_token(client):
 async def test_ingest_queues_report(client, db):
     resp = await client.post(
         _url(project="Backend", root="./server/", branch="feat", ci_run_id="42-1"),
-        content=make_junit([("t1", "passed")]), headers=AUTH,
+        content=make_junit([("t1", "passed")]),
+        headers=AUTH,
     )
     assert resp.status_code == 202, resp.text
     body = resp.json()
     assert body["status"] == "pending"
 
     report = (await db.execute(select(Report).where(Report.id == body["report_id"]))).scalar_one()
-    assert (report.status, report.commit_sha, report.branch, report.ci_run_id, report.root) == \
-        ("pending", "sha1", "feat", "42-1", "server")
+    assert (report.status, report.commit_sha, report.branch, report.ci_run_id, report.root) == (
+        "pending",
+        "sha1",
+        "feat",
+        "42-1",
+        "server",
+    )
     assert report.body == make_junit([("t1", "passed")])
     proj = (await db.execute(select(Project).where(Project.id == report.project_id))).scalar_one()
     repo = (await db.execute(select(Repo).where(Repo.id == proj.repo_id))).scalar_one()
@@ -43,7 +50,8 @@ async def test_ingest_defaults_project_to_default(client, db):
 
 async def test_ingest_multipart_upload(client):
     resp = await client.post(
-        _url(), headers=AUTH,
+        _url(),
+        headers=AUTH,
         files={"report": ("junit.xml", make_junit([("t1", "passed")]), "text/xml")},
     )
     assert resp.status_code == 202
@@ -52,14 +60,14 @@ async def test_ingest_multipart_upload(client):
 async def test_ingest_raw_body_any_content_type(client):
     # curl --data-binary @junit.xml sends application/x-www-form-urlencoded.
     for ctype in ("application/x-www-form-urlencoded", "application/xml", "text/plain"):
-        resp = await client.post(_url(), content=make_junit([("t1", "passed")]),
-                                 headers={**AUTH, "Content-Type": ctype})
+        resp = await client.post(
+            _url(), content=make_junit([("t1", "passed")]), headers={**AUTH, "Content-Type": ctype}
+        )
         assert resp.status_code == 202, (ctype, resp.text)
 
 
 async def test_ingest_rejects_missing_repo(client):
-    resp = await client.post("/api/ingest?commit_sha=s", content=make_junit([("t", "passed")]),
-                             headers=AUTH)
+    resp = await client.post("/api/ingest?commit_sha=s", content=make_junit([("t", "passed")]), headers=AUTH)
     assert resp.status_code == 422
 
 

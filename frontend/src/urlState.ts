@@ -14,7 +14,12 @@ export interface ViewState {
 }
 
 export const DEFAULT_VIEW: ViewState = {
-  repo: null, project: null, test: null, page: 1, sort: "score", showStable: false,
+  repo: null,
+  project: null,
+  test: null,
+  page: 1,
+  sort: "score",
+  showStable: false,
 };
 
 const SORTS: readonly SortKey[] = ["score", "last_seen", "proven"];

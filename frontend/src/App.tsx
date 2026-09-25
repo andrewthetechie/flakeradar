@@ -1,8 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  fetchFailedReports, fetchHistory, fetchReportSummary, fetchRepos, fetchSummary,
-  fetchTests, setQuarantine,
-  type History, type RepoInfo, type ReportSummary, type Summary, type TestPage,
+  fetchFailedReports,
+  fetchHistory,
+  fetchReportSummary,
+  fetchRepos,
+  fetchSummary,
+  fetchTests,
+  setQuarantine,
+  type History,
+  type RepoInfo,
+  type ReportSummary,
+  type Summary,
+  type TestPage,
   type TestCase,
 } from "./api";
 import { Leaderboard } from "./components/Leaderboard";
@@ -69,19 +78,28 @@ export default function App() {
     }
     let cancelled = false;
     fetchHistory(view.test)
-      .then((h) => { if (!cancelled) setHistory(h); })
-      .catch((e) => { if (!cancelled) setError(String(e)); });
-    return () => { cancelled = true; };
+      .then((h) => {
+        if (!cancelled) setHistory(h);
+      })
+      .catch((e) => {
+        if (!cancelled) setError(String(e));
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [view.test, page]); // re-fetch when the leaderboard refreshes
 
-  const onToggleQuarantine = useCallback(async (t: TestCase) => {
-    try {
-      await setQuarantine(t.id, !t.quarantined);
-      await refresh();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    }
-  }, [refresh]);
+  const onToggleQuarantine = useCallback(
+    async (t: TestCase) => {
+      try {
+        await setQuarantine(t.id, !t.quarantined);
+        await refresh();
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [refresh],
+  );
 
   const closeDrawer = useCallback(() => setView({ test: null }), [setView]);
 
@@ -159,7 +177,8 @@ export default function App() {
       <footer className="mt-8 text-xs text-muted">
         Ingest from CI:{" "}
         <code className="rounded border border-line bg-surface px-1.5 py-0.5 font-mono [overflow-wrap:anywhere]">
-          curl -X POST "$URL/api/ingest?repo=$OWNER/$REPO&amp;project=backend&amp;commit_sha=$SHA&amp;branch=$BRANCH"
+          curl -X POST
+          "$URL/api/ingest?repo=$OWNER/$REPO&amp;project=backend&amp;commit_sha=$SHA&amp;branch=$BRANCH"
           -H "X-API-Key: $TOKEN" --data-binary @junit.xml
         </code>
       </footer>
@@ -171,8 +190,24 @@ export default function App() {
 function RadarMark() {
   return (
     <svg width="22" height="22" viewBox="0 0 16 16" aria-hidden className="text-signal">
-      <circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" strokeWidth="1.25" opacity="0.45" />
-      <circle cx="8" cy="8" r="3.75" fill="none" stroke="currentColor" strokeWidth="1.25" opacity="0.7" />
+      <circle
+        cx="8"
+        cy="8"
+        r="6.5"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.25"
+        opacity="0.45"
+      />
+      <circle
+        cx="8"
+        cy="8"
+        r="3.75"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.25"
+        opacity="0.7"
+      />
       <circle cx="8" cy="8" r="1.6" fill="currentColor" />
     </svg>
   );

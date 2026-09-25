@@ -4,7 +4,8 @@ import type { ReportInfo, ReportSummary } from "../api";
 /** "3 pending · 1 failed" — the only place a broken CI upload becomes visible.
  *  Hidden while the queue is empty and nothing has failed. */
 export function QueueIndicator({
-  summary, loadFailed,
+  summary,
+  loadFailed,
 }: {
   summary: ReportSummary | null;
   loadFailed: () => Promise<ReportInfo[]>;
@@ -62,7 +63,9 @@ export function QueueIndicator({
                 ))}
               </ul>
               <div className="mt-2 text-muted">
-                Retry one with <code className="font-mono text-text-2">POST /api/reports/&lt;id&gt;/retry</code> (X-API-Key).
+                Retry one with{" "}
+                <code className="font-mono text-text-2">POST /api/reports/&lt;id&gt;/retry</code>{" "}
+                (X-API-Key).
               </div>
             </>
           )}

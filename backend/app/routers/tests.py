@@ -1,4 +1,5 @@
 """Dashboard API: Repos, leaderboard, summary, Test detail and quarantine."""
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -41,9 +42,14 @@ async def list_tests(
     db: AsyncSession = Depends(get_db),
 ):
     return await queries.list_tests(
-        db, scope, threshold=get_settings().flake_threshold,
-        include_stable=include_stable, sort=sort, page=page,
-        page_size=page_size, file=file,
+        db,
+        scope,
+        threshold=get_settings().flake_threshold,
+        include_stable=include_stable,
+        sort=sort,
+        page=page,
+        page_size=page_size,
+        file=file,
     )
 
 
@@ -61,9 +67,7 @@ async def test_history(
     limit: int = Query(default=60, ge=1, le=500),
     db: AsyncSession = Depends(get_db),
 ):
-    history = await queries.get_test(
-        db, test_id, threshold=get_settings().flake_threshold, executions_limit=limit
-    )
+    history = await queries.get_test(db, test_id, threshold=get_settings().flake_threshold, executions_limit=limit)
     if history is None:
         raise HTTPException(status_code=404, detail="Test not found")
     return history
@@ -75,9 +79,7 @@ async def set_quarantine(
     body: schemas.QuarantineIn,
     db: AsyncSession = Depends(get_db),
 ):
-    result = await queries.set_quarantine(
-        db, test_id, body.quarantined, threshold=get_settings().flake_threshold
-    )
+    result = await queries.set_quarantine(db, test_id, body.quarantined, threshold=get_settings().flake_threshold)
     if result is None:
         raise HTTPException(status_code=404, detail="Test not found")
     return result

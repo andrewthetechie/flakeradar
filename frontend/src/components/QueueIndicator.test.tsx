@@ -5,10 +5,18 @@ import type { ReportInfo } from "../api";
 import { QueueIndicator } from "./QueueIndicator";
 
 const failedReport: ReportInfo = {
-  id: 12, repo: "andrewthetechie/writers-app", project: "e2e", commit_sha: "abcdef1234567",
-  branch: "main", ci_run_id: "7-1", status: "failed",
+  id: 12,
+  repo: "andrewthetechie/writers-app",
+  project: "e2e",
+  commit_sha: "abcdef1234567",
+  branch: "main",
+  ci_run_id: "7-1",
+  status: "failed",
   error: "ParseError: Not a valid JUnit XML report: syntax error",
-  counts: null, run_id: null, created_at: "2026-09-25T00:00:00Z", processed_at: null,
+  counts: null,
+  run_id: null,
+  created_at: "2026-09-25T00:00:00Z",
+  processed_at: null,
 };
 
 describe("QueueIndicator", () => {
@@ -25,15 +33,20 @@ describe("QueueIndicator", () => {
     const button = screen.getByRole("button", { name: "3 pending · 1 failed" });
     await userEvent.click(button);
     expect(loadFailed).toHaveBeenCalledOnce();
-    expect(await screen.findByText("#12 · andrewthetechie/writers-app / e2e · abcdef1234"))
-      .toBeInTheDocument();
+    expect(
+      await screen.findByText("#12 · andrewthetechie/writers-app / e2e · abcdef1234"),
+    ).toBeInTheDocument();
     expect(screen.getByText(/ParseError: Not a valid JUnit XML report/)).toBeInTheDocument();
     expect(button).toHaveAttribute("aria-expanded", "true");
   });
 
   it("says so when there are no failed reports", async () => {
-    render(<QueueIndicator summary={{ pending: 2, failed: 0 }}
-      loadFailed={vi.fn().mockResolvedValue([])} />);
+    render(
+      <QueueIndicator
+        summary={{ pending: 2, failed: 0 }}
+        loadFailed={vi.fn().mockResolvedValue([])}
+      />,
+    );
     await userEvent.click(screen.getByRole("button"));
     expect(await screen.findByText("No failed reports.")).toBeInTheDocument();
   });

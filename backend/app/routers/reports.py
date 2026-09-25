@@ -1,20 +1,29 @@
 """Ingest (accept-then-process, ADR 0002) and the Report status endpoints."""
+
 import asyncio
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from starlette.datastructures import UploadFile
 from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.datastructures import UploadFile
 
 from .. import schemas
 from ..auth import require_token
 from ..db import get_db
 from ..identity import (
-    DEFAULT_PROJECT, get_or_create_project, normalize_project, normalize_repo,
+    DEFAULT_PROJECT,
+    get_or_create_project,
+    normalize_project,
+    normalize_repo,
     normalize_root,
 )
 from ..models import (
-    REPORT_FAILED, REPORT_PENDING, REPORT_STATUSES, Project, Repo, Report,
+    REPORT_FAILED,
+    REPORT_PENDING,
+    REPORT_STATUSES,
+    Project,
+    Repo,
+    Report,
 )
 from ..parsing import ParseError, parse_junit_xml
 
@@ -62,8 +71,13 @@ async def ingest_endpoint(
 
     proj = await get_or_create_project(db, repo_name, project_name)
     row = Report(
-        project_id=proj.id, commit_sha=commit_sha, branch=branch,
-        ci_run_id=ci_run_id, root=root_value, body=content, status=REPORT_PENDING,
+        project_id=proj.id,
+        commit_sha=commit_sha,
+        branch=branch,
+        ci_run_id=ci_run_id,
+        root=root_value,
+        body=content,
+        status=REPORT_PENDING,
     )
     db.add(row)
     await db.commit()
@@ -94,25 +108,33 @@ def _report_query() -> Select:
 
 def _report_out(report: Report, project: str, repo: str) -> schemas.ReportOut:
     return schemas.ReportOut(
-        id=report.id, repo=repo, project=project, commit_sha=report.commit_sha,
-        branch=report.branch, ci_run_id=report.ci_run_id, status=report.status,
-        error=report.error, counts=report.counts, run_id=report.run_id,
-        created_at=report.created_at, processed_at=report.processed_at,
+        id=report.id,
+        repo=repo,
+        project=project,
+        commit_sha=report.commit_sha,
+        branch=report.branch,
+        ci_run_id=report.ci_run_id,
+        status=report.status,
+        error=report.error,
+        counts=report.counts,
+        run_id=report.run_id,
+        created_at=report.created_at,
+        processed_at=report.processed_at,
     )
 
 
 # Declared before /api/reports/{report_id} so "summary" is not parsed as an id.
 @router.get("/api/reports/summary", response_model=schemas.ReportSummaryOut)
 async def report_summary(db: AsyncSession = Depends(get_db)):
-    rows = (await db.execute(
-        select(Report.status, func.count())
-        .where(Report.status.in_([REPORT_PENDING, REPORT_FAILED]))
-        .group_by(Report.status)
-    )).all()
+    rows = (
+        await db.execute(
+            select(Report.status, func.count())
+            .where(Report.status.in_([REPORT_PENDING, REPORT_FAILED]))
+            .group_by(Report.status)
+        )
+    ).all()
     counts = dict(rows)
-    return schemas.ReportSummaryOut(
-        pending=counts.get(REPORT_PENDING, 0), failed=counts.get(REPORT_FAILED, 0)
-    )
+    return schemas.ReportSummaryOut(pending=counts.get(REPORT_PENDING, 0), failed=counts.get(REPORT_FAILED, 0))
 
 
 @router.get("/api/reports", response_model=list[schemas.ReportOut])

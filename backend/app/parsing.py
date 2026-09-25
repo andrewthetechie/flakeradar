@@ -5,7 +5,9 @@ Location (file/line attributes, when the runner emits them) and — for
 failures — the Failure message plus Failure details (traceback body and
 captured stdout/stderr). Sizes are capped here so storage never sees more.
 """
+
 import hashlib
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 
 from junitparser import Error, Failure, JUnitXml, Skipped, TestSuite
@@ -24,12 +26,12 @@ class ParsedCase:
     suite: str
     classname: str
     name: str
-    status: str          # passed | failed | error | skipped
+    status: str  # passed | failed | error | skipped
     duration: float
-    message: str         # Failure message ("" when passed)
-    details: str         # Failure details ("" unless failed/error)
-    file: str | None     # Location file as reported, "./" stripped
-    line: int | None     # Location line as reported (pytest xunit1 is 0-based)
+    message: str  # Failure message ("" when passed)
+    details: str  # Failure details ("" unless failed/error)
+    file: str | None  # Location file as reported, "./" stripped
+    line: int | None  # Location line as reported (pytest xunit1 is 0-based)
 
 
 def fingerprint(suite: str, classname: str, name: str) -> str:
@@ -84,12 +86,12 @@ def _load(content: bytes) -> JUnitXml | TestSuite:
     # A byte that is invalid in that encoding (binary junk in captured output)
     # falls back to a lenient UTF-8 decode rather than rejecting the report.
     try:
-        return JUnitXml.fromstring(content)
-    except Exception:
-        pass
-    try:
-        return JUnitXml.fromstring(content.decode("utf-8", errors="replace"))
-    except Exception as exc:  # junitparser raises lxml/xml parse errors
+        data = content.decode("utf-8", errors="replace")
+        try:
+            return JUnitXml.fromstring(content)
+        except ET.ParseError:
+            return JUnitXml.fromstring(data)
+    except Exception as exc:  # junitparser raises xml parse errors
         raise ParseError(f"Not a valid JUnit XML report: {exc}") from exc
 
 

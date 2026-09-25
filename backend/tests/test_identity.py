@@ -1,11 +1,14 @@
 """Repo/Project/root naming rules and race-safe get-or-create."""
-import pytest
-from sqlalchemy import func, select
 
+import pytest
 from app.identity import (
-    get_or_create_project, normalize_project, normalize_repo, normalize_root,
+    get_or_create_project,
+    normalize_project,
+    normalize_repo,
+    normalize_root,
 )
 from app.models import Project, Repo
+from sqlalchemy import func, select
 
 
 def test_normalize_repo():

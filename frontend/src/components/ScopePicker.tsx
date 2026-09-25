@@ -3,7 +3,9 @@ import type { RepoInfo, Scope } from "../api";
 /** Repo picker, then Project picker (enabled once a Repo is chosen:
  *  project names like "backend" repeat across repos). */
 export function ScopePicker({
-  repos, scope, onChange,
+  repos,
+  scope,
+  onChange,
 }: {
   repos: RepoInfo[];
   scope: Scope;
@@ -19,7 +21,11 @@ export function ScopePicker({
         onChange={(e) => onChange({ repo: e.target.value || null, project: null })}
       >
         <option value="">All repos</option>
-        {repos.map((r) => <option key={r.name} value={r.name}>{r.name}</option>)}
+        {repos.map((r) => (
+          <option key={r.name} value={r.name}>
+            {r.name}
+          </option>
+        ))}
       </select>
       <select
         aria-label="Project"
@@ -29,7 +35,11 @@ export function ScopePicker({
         onChange={(e) => onChange({ repo: scope.repo, project: e.target.value || null })}
       >
         <option value="">All projects</option>
-        {projects.map((p) => <option key={p.name} value={p.name}>{p.name}</option>)}
+        {projects.map((p) => (
+          <option key={p.name} value={p.name}>
+            {p.name}
+          </option>
+        ))}
       </select>
     </div>
   );

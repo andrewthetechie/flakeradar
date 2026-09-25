@@ -4,6 +4,7 @@ Several uvicorn workers start at once, so the upgrade runs under a
 transaction-scoped advisory lock: the first worker migrates, the others wait
 and then find nothing to do.
 """
+
 from pathlib import Path
 
 from alembic import command
@@ -30,7 +31,5 @@ def _upgrade(connection: Connection) -> None:
 
 async def run_migrations(engine: AsyncEngine) -> None:
     async with engine.begin() as conn:
-        await conn.execute(
-            text("SELECT pg_advisory_xact_lock(:key)"), {"key": MIGRATION_LOCK_KEY}
-        )
+        await conn.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": MIGRATION_LOCK_KEY})
         await conn.run_sync(_upgrade)

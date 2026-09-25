@@ -1,4 +1,5 @@
 """Pydantic response models — the typed contract the frontend and MCP consume."""
+
 from datetime import datetime
 from typing import Any, Literal
 
@@ -88,12 +89,13 @@ class SummaryOut(BaseModel):
 
 # --- Test detail and quarantine (task 09) -------------------------------
 
+
 class ExecutionOut(BaseModel):
     id: int
     status: str
     duration: float
-    message: str   # Failure message
-    details: str   # Failure details (traceback + captured output)
+    message: str  # Failure message
+    details: str  # Failure details (traceback + captured output)
     created_at: datetime
     commit_sha: str
     branch: str
@@ -101,17 +103,17 @@ class ExecutionOut(BaseModel):
 
 
 class LocationOut(BaseModel):
-    path: str             # file joined onto the Project root, repo-relative
+    path: str  # file joined onto the Project root, repo-relative
     line: int | None
-    url: str | None       # GitHub permalink at the last failing SHA, when one exists
+    url: str | None  # GitHub permalink at the last failing SHA, when one exists
 
 
 class HistoryOut(BaseModel):
     test: TestOut
-    location: LocationOut | None       # None when the runner never reported a file
+    location: LocationOut | None  # None when the runner never reported a file
     last_failing_sha: str | None
     last_failing_branch: str | None
-    executions: list[ExecutionOut]     # newest first
+    executions: list[ExecutionOut]  # newest first
 
 
 class QuarantineIn(BaseModel):

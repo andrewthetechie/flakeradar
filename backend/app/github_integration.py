@@ -12,6 +12,7 @@ Behavior:
 - Any other failure (404: token cannot see that repo, network) -> log, go on.
 Never raises.
 """
+
 import logging
 
 import httpx
@@ -32,16 +33,16 @@ def configured() -> bool:
     return bool(get_settings().github_token)
 
 
-async def _issue_body(
-    db: AsyncSession, tc: TestCase, repo: str, project: str, root: str
-) -> str:
-    recent = (await db.execute(
-        select(TestExecution, TestRun)
-        .join(TestRun, TestExecution.test_run_id == TestRun.id)
-        .where(TestExecution.test_case_id == tc.id)
-        .order_by(TestExecution.id.desc())
-        .limit(10)
-    )).all()
+async def _issue_body(db: AsyncSession, tc: TestCase, repo: str, project: str, root: str) -> str:
+    recent = (
+        await db.execute(
+            select(TestExecution, TestRun)
+            .join(TestRun, TestExecution.test_run_id == TestRun.id)
+            .where(TestExecution.test_case_id == tc.id)
+            .order_by(TestExecution.id.desc())
+            .limit(10)
+        )
+    ).all()
     if tc.file:
         path = f"{root}/{tc.file}" if root else tc.file
         location = f"`{path}`" + (f" line {tc.line}" if tc.line is not None else "")
@@ -64,8 +65,7 @@ async def _issue_body(
     sample_failure = ""
     for execution, run in recent:
         lines.append(
-            f"| {execution.status} | `{run.commit_sha[:10]}` | {run.branch} "
-            f"| {execution.created_at:%Y-%m-%d %H:%M} |"
+            f"| {execution.status} | `{run.commit_sha[:10]}` | {run.branch} | {execution.created_at:%Y-%m-%d %H:%M} |"
         )
         if not sample_failure and execution.status in ("failed", "error"):
             sample_failure = execution.details or execution.message
@@ -91,17 +91,19 @@ async def file_issues_for(
     candidates = []
     # Chunked IN lists: a Report can touch more Tests than asyncpg can bind.
     for i in range(0, len(test_case_ids), CHUNK):
-        candidates += (await db.execute(
-            select(TestCase, Repo.name, Project.name, Project.root)
-            .join(Project, TestCase.project_id == Project.id)
-            .join(Repo, Project.repo_id == Repo.id)
-            .where(
-                TestCase.id.in_(test_case_ids[i:i + CHUNK]),
-                TestCase.flakiness_score >= s.flake_threshold,
-                TestCase.github_issue_number.is_(None),
+        candidates += (
+            await db.execute(
+                select(TestCase, Repo.name, Project.name, Project.root)
+                .join(Project, TestCase.project_id == Project.id)
+                .join(Repo, Project.repo_id == Repo.id)
+                .where(
+                    TestCase.id.in_(test_case_ids[i : i + CHUNK]),
+                    TestCase.flakiness_score >= s.flake_threshold,
+                    TestCase.github_issue_number.is_(None),
+                )
+                .order_by(TestCase.id)
             )
-            .order_by(TestCase.id)
-        )).all()
+        ).all()
     if not candidates:
         return
 
@@ -111,8 +113,7 @@ async def file_issues_for(
         "X-GitHub-Api-Version": "2022-11-28",
     }
     try:
-        async with httpx.AsyncClient(base_url=API_BASE, headers=headers, timeout=15,
-                                     transport=transport) as client:
+        async with httpx.AsyncClient(base_url=API_BASE, headers=headers, timeout=15, transport=transport) as client:
             for tc, repo, project, root in candidates:
                 resp = await client.post(
                     f"/repos/{repo}/issues",
@@ -125,8 +126,7 @@ async def file_issues_for(
                 if resp.status_code == 201:
                     tc.github_issue_number = resp.json()["number"]
                     await db.commit()
-                    logger.info("Filed issue %s#%s for test %s",
-                                repo, tc.github_issue_number, tc.id)
+                    logger.info("Filed issue %s#%s for test %s", repo, tc.github_issue_number, tc.id)
                 elif resp.status_code in (403, 429):
                     logger.warning(
                         "GitHub rate limit / forbidden (remaining=%s); stopping batch",
@@ -136,15 +136,16 @@ async def file_issues_for(
                 else:
                     logger.warning(
                         "GitHub issue creation failed for test %s in %s: %s %s",
-                        tc.id, repo, resp.status_code, resp.text[:300],
+                        tc.id,
+                        repo,
+                        resp.status_code,
+                        resp.text[:300],
                     )
     except httpx.HTTPError as exc:
         logger.warning("GitHub unreachable, skipping issue filing: %s", exc)
 
 
-async def on_report_processed(
-    session_factory: async_sessionmaker[AsyncSession], outcome: ProcessOutcome
-) -> None:
+async def on_report_processed(session_factory: async_sessionmaker[AsyncSession], outcome: ProcessOutcome) -> None:
     """ReportWorker hook: file issues for the Tests a processed Report touched."""
     if outcome.status != REPORT_PROCESSED or not configured():
         return

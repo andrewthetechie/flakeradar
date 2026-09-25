@@ -8,7 +8,10 @@ const repos: RepoInfo[] = [
   { name: "andrewthetechie/fantasy", projects: [{ name: "backend", root: "" }] },
   {
     name: "andrewthetechie/writers-app",
-    projects: [{ name: "backend", root: "" }, { name: "e2e", root: "e2e" }],
+    projects: [
+      { name: "backend", root: "" },
+      { name: "e2e", root: "e2e" },
+    ],
   },
 ];
 

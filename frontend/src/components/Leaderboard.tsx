@@ -25,7 +25,12 @@ export function scopeLabel(t: TestCase, scope: Scope): string | null {
 }
 
 export function Leaderboard({
-  tests, scope, showStable, selectedId, onSelect, onToggleQuarantine,
+  tests,
+  scope,
+  showStable,
+  selectedId,
+  onSelect,
+  onToggleQuarantine,
 }: {
   tests: TestCase[];
   scope: Scope;
@@ -130,7 +135,10 @@ export function Leaderboard({
                 <button
                   type="button"
                   className="btn whitespace-nowrap"
-                  onClick={(e) => { e.stopPropagation(); onToggleQuarantine(t); }}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onToggleQuarantine(t);
+                  }}
                 >
                   {t.quarantined ? "Un-quarantine" : "Quarantine"}
                 </button>

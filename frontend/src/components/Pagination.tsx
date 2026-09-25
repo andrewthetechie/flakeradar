@@ -1,5 +1,8 @@
 export function Pagination({
-  page, pageSize, total, onPage,
+  page,
+  pageSize,
+  total,
+  onPage,
 }: {
   page: number;
   pageSize: number;
@@ -20,7 +23,12 @@ export function Pagination({
       <span className="tabular-nums">
         Page {page} of {pages} · {first}–{last} of {total}
       </span>
-      <button type="button" className="btn" onClick={() => onPage(page + 1)} disabled={page >= pages}>
+      <button
+        type="button"
+        className="btn"
+        onClick={() => onPage(page + 1)}
+        disabled={page >= pages}
+      >
         Next ›
       </button>
     </nav>

@@ -4,8 +4,9 @@ Revision ID: 0001
 Revises:
 Create Date: 2026-09-25
 """
-from alembic import op
+
 import sqlalchemy as sa
+from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision = "0001"
@@ -28,8 +29,7 @@ def upgrade() -> None:
     op.create_table(
         "projects",
         sa.Column("id", sa.Integer(), primary_key=True),
-        sa.Column("repo_id", sa.Integer(),
-                  sa.ForeignKey("repos.id", ondelete="CASCADE"), nullable=False),
+        sa.Column("repo_id", sa.Integer(), sa.ForeignKey("repos.id", ondelete="CASCADE"), nullable=False),
         sa.Column("name", sa.String(length=100), nullable=False),
         sa.Column("root", sa.String(length=1024), nullable=False, server_default=""),
         sa.Column("created_at", TS, nullable=False),
@@ -40,8 +40,7 @@ def upgrade() -> None:
     op.create_table(
         "test_cases",
         sa.Column("id", sa.Integer(), primary_key=True),
-        sa.Column("project_id", sa.Integer(),
-                  sa.ForeignKey("projects.id", ondelete="CASCADE"), nullable=False),
+        sa.Column("project_id", sa.Integer(), sa.ForeignKey("projects.id", ondelete="CASCADE"), nullable=False),
         sa.Column("fingerprint", sa.String(length=40), nullable=False),
         sa.Column("suite", sa.Text(), nullable=False, server_default=""),
         sa.Column("classname", sa.Text(), nullable=False, server_default=""),
@@ -55,18 +54,15 @@ def upgrade() -> None:
         sa.Column("quarantined", sa.Boolean(), nullable=False, server_default=sa.false()),
         sa.Column("quarantined_at", TS, nullable=True),
         sa.Column("github_issue_number", sa.Integer(), nullable=True),
-        sa.UniqueConstraint("project_id", "fingerprint",
-                            name="uq_test_cases_project_fingerprint"),
+        sa.UniqueConstraint("project_id", "fingerprint", name="uq_test_cases_project_fingerprint"),
     )
     op.create_index("ix_test_cases_project_id", "test_cases", ["project_id"])
-    op.create_index("ix_test_cases_project_score", "test_cases",
-                    ["project_id", "flakiness_score"])
+    op.create_index("ix_test_cases_project_score", "test_cases", ["project_id", "flakiness_score"])
 
     op.create_table(
         "test_runs",
         sa.Column("id", sa.Integer(), primary_key=True),
-        sa.Column("project_id", sa.Integer(),
-                  sa.ForeignKey("projects.id", ondelete="CASCADE"), nullable=False),
+        sa.Column("project_id", sa.Integer(), sa.ForeignKey("projects.id", ondelete="CASCADE"), nullable=False),
         sa.Column("commit_sha", sa.String(length=64), nullable=False),
         sa.Column("branch", sa.String(length=255), nullable=False),
         sa.Column("ci_run_id", sa.String(length=255), nullable=False, server_default=""),
@@ -78,10 +74,8 @@ def upgrade() -> None:
     op.create_table(
         "test_executions",
         sa.Column("id", sa.BigInteger(), primary_key=True),
-        sa.Column("test_case_id", sa.Integer(),
-                  sa.ForeignKey("test_cases.id", ondelete="CASCADE"), nullable=False),
-        sa.Column("test_run_id", sa.Integer(),
-                  sa.ForeignKey("test_runs.id", ondelete="CASCADE"), nullable=False),
+        sa.Column("test_case_id", sa.Integer(), sa.ForeignKey("test_cases.id", ondelete="CASCADE"), nullable=False),
+        sa.Column("test_run_id", sa.Integer(), sa.ForeignKey("test_runs.id", ondelete="CASCADE"), nullable=False),
         sa.Column("status", sa.String(length=16), nullable=False),
         sa.Column("duration", sa.Float(), nullable=False, server_default="0"),
         sa.Column("message", sa.Text(), nullable=False, server_default=""),
@@ -95,8 +89,7 @@ def upgrade() -> None:
     op.create_table(
         "reports",
         sa.Column("id", sa.Integer(), primary_key=True),
-        sa.Column("project_id", sa.Integer(),
-                  sa.ForeignKey("projects.id", ondelete="CASCADE"), nullable=False),
+        sa.Column("project_id", sa.Integer(), sa.ForeignKey("projects.id", ondelete="CASCADE"), nullable=False),
         sa.Column("commit_sha", sa.String(length=64), nullable=False),
         sa.Column("branch", sa.String(length=255), nullable=False),
         sa.Column("ci_run_id", sa.String(length=255), nullable=False, server_default=""),
@@ -105,8 +98,7 @@ def upgrade() -> None:
         sa.Column("status", sa.String(length=16), nullable=False, server_default="pending"),
         sa.Column("error", sa.Text(), nullable=True),
         sa.Column("counts", postgresql.JSONB(), nullable=True),
-        sa.Column("run_id", sa.Integer(),
-                  sa.ForeignKey("test_runs.id", ondelete="SET NULL"), nullable=True),
+        sa.Column("run_id", sa.Integer(), sa.ForeignKey("test_runs.id", ondelete="SET NULL"), nullable=True),
         sa.Column("created_at", TS, nullable=False),
         sa.Column("processed_at", TS, nullable=True),
     )

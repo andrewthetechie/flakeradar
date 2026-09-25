@@ -1,5 +1,7 @@
 """Report status, listing, summary and retry."""
+
 from app.models import REPORT_FAILED, REPORT_PROCESSED
+
 from tests.conftest import AUTH
 from tests.factories import make_project, make_report
 
