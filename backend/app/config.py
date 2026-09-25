@@ -25,9 +25,10 @@ class Settings(BaseSettings):
     score_window: int = 50
     score_decay: float = 0.85
 
-    # GitHub integration. Leave token/repo empty to disable (graceful no-op).
+    # GitHub integration. Leave the token empty to disable (graceful no-op).
+    # Issues are filed in each Test's own Repo, so the token needs
+    # Issues: write on every Repo you ingest.
     github_token: str = ""
-    github_repo: str = ""  # "owner/name"
     flake_threshold: float = 0.30
 
     cors_origins: str = "http://localhost:5173"

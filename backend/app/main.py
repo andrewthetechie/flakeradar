@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from . import github_integration
 from .config import DEFAULT_INSECURE_TOKEN, assert_secure_token, get_settings
 from .db import SessionLocal, engine
 from .migrate import run_migrations
@@ -33,6 +34,7 @@ async def lifespan(app: FastAPI):
     worker = ReportWorker(
         engine, SessionLocal,
         poll_seconds=settings.worker_poll_seconds,
+        on_processed=lambda outcome: github_integration.on_report_processed(SessionLocal, outcome),
         prune=lambda: run_prune(SessionLocal),
         prune_interval_seconds=settings.prune_interval_seconds,
     )
