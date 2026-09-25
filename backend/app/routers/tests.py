@@ -1,11 +1,12 @@
-"""Dashboard read API: Repos, the Test leaderboard and summary tiles."""
+"""Dashboard API: Repos, leaderboard, summary, Test detail and quarantine."""
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import queries, schemas
+from ..auth import require_token
 from ..config import get_settings
 from ..db import get_db
-from ..identity import normalize_project, normalize_repo
+from ..identity import DEFAULT_PROJECT, normalize_project, normalize_repo
 
 router = APIRouter()
 
@@ -52,3 +53,49 @@ async def summary(
     db: AsyncSession = Depends(get_db),
 ):
     return await queries.summary(db, scope, threshold=get_settings().flake_threshold)
+
+
+@router.get("/api/tests/{test_id}/history", response_model=schemas.HistoryOut)
+async def test_history(
+    test_id: int,
+    limit: int = Query(default=60, ge=1, le=500),
+    db: AsyncSession = Depends(get_db),
+):
+    history = await queries.get_test(
+        db, test_id, threshold=get_settings().flake_threshold, executions_limit=limit
+    )
+    if history is None:
+        raise HTTPException(status_code=404, detail="Test not found")
+    return history
+
+
+@router.post("/api/tests/{test_id}/quarantine", response_model=schemas.TestOut)
+async def set_quarantine(
+    test_id: int,
+    body: schemas.QuarantineIn,
+    db: AsyncSession = Depends(get_db),
+):
+    result = await queries.set_quarantine(
+        db, test_id, body.quarantined, threshold=get_settings().flake_threshold
+    )
+    if result is None:
+        raise HTTPException(status_code=404, detail="Test not found")
+    return result
+
+
+@router.get(
+    "/api/quarantine",
+    response_model=list[schemas.QuarantineItem],
+    dependencies=[Depends(require_token)],
+)
+async def quarantine_list(
+    repo: str = Query(..., max_length=255),
+    project: str = Query(default=DEFAULT_PROJECT, max_length=100),
+    db: AsyncSession = Depends(get_db),
+):
+    """For test runners: the Tests to skip in one Repo + Project."""
+    try:
+        repo_name, project_name = normalize_repo(repo), normalize_project(project)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return await queries.quarantine_list(db, repo_name, project_name)

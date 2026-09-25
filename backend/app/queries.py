@@ -10,7 +10,7 @@ from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from . import schemas
-from .models import Project, Repo, TestCase, TestExecution, TestRun
+from .models import Project, Repo, TestCase, TestExecution, TestRun, utcnow
 
 SortKey = Literal["score", "last_seen", "proven"]
 
@@ -154,3 +154,99 @@ async def summary(db: AsyncSession, scope: Scope, *, threshold: float) -> schema
         confirmed_flaky_tests=confirmed, total_runs=runs,
         total_executions=executions, flake_threshold=threshold,
     )
+
+
+# --- Test detail and quarantine (task 09) -------------------------------
+
+FAILING = ("failed", "error")
+
+
+def repo_path(root: str, file: str) -> str:
+    """A reported file path made relative to the Repo root."""
+    return f"{root}/{file}" if root else file
+
+
+def permalink(repo: str, sha: str, root: str, file: str, line: int | None) -> str:
+    url = f"https://github.com/{repo}/blob/{sha}/{repo_path(root, file)}"
+    return f"{url}#L{line}" if line is not None and line >= 1 else url
+
+
+async def get_test(
+    db: AsyncSession, test_id: int, *, threshold: float, executions_limit: int = 60
+) -> schemas.HistoryOut | None:
+    row = (await db.execute(
+        tests_select().add_columns(Project.root).where(TestCase.id == test_id)
+    )).first()
+    if row is None:
+        return None
+    tc, project, repo, root = row
+
+    rows = (await db.execute(
+        select(TestExecution, TestRun)
+        .join(TestRun, TestExecution.test_run_id == TestRun.id)
+        .where(TestExecution.test_case_id == test_id)
+        .order_by(TestExecution.id.desc())
+        .limit(executions_limit)
+    )).all()
+    executions = [
+        schemas.ExecutionOut(
+            id=e.id, status=e.status, duration=e.duration, message=e.message,
+            details=e.details, created_at=e.created_at, commit_sha=r.commit_sha,
+            branch=r.branch, ci_run_id=r.ci_run_id,
+        )
+        for e, r in rows
+    ]
+
+    failing = (await db.execute(
+        select(TestRun.commit_sha, TestRun.branch)
+        .join(TestExecution, TestExecution.test_run_id == TestRun.id)
+        .where(TestExecution.test_case_id == test_id, TestExecution.status.in_(FAILING))
+        .order_by(TestExecution.id.desc())
+        .limit(1)
+    )).first()
+    last_sha, last_branch = failing if failing is not None else (None, None)
+
+    location = None
+    if tc.file:
+        location = schemas.LocationOut(
+            path=repo_path(root, tc.file), line=tc.line,
+            url=permalink(repo, last_sha, root, tc.file, tc.line) if last_sha else None,
+        )
+    return schemas.HistoryOut(
+        test=to_test_out(tc, project, repo, threshold), location=location,
+        last_failing_sha=last_sha, last_failing_branch=last_branch,
+        executions=executions,
+    )
+
+
+async def set_quarantine(
+    db: AsyncSession, test_id: int, quarantined: bool, *, threshold: float
+) -> schemas.TestOut | None:
+    row = (await db.execute(tests_select().where(TestCase.id == test_id))).first()
+    if row is None:
+        return None
+    tc, project, repo = row
+    tc.quarantined = quarantined
+    tc.quarantined_at = utcnow() if quarantined else None
+    await db.commit()
+    return to_test_out(tc, project, repo, threshold)
+
+
+async def quarantine_list(
+    db: AsyncSession, repo: str, project: str
+) -> list[schemas.QuarantineItem]:
+    rows = (await db.execute(
+        select(TestCase)
+        .join(Project, TestCase.project_id == Project.id)
+        .join(Repo, Project.repo_id == Repo.id)
+        .where(Repo.name == repo, Project.name == project, TestCase.quarantined.is_(True))
+        .order_by(TestCase.name, TestCase.id)
+    )).scalars().all()
+    return [
+        schemas.QuarantineItem(
+            suite=tc.suite, classname=tc.classname, name=tc.name,
+            fingerprint=tc.fingerprint, file=tc.file, line=tc.line,
+            quarantined_at=tc.quarantined_at,
+        )
+        for tc in rows
+    ]
