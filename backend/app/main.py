@@ -6,10 +6,12 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from fastmcp.utilities.lifespan import combine_lifespans
 
 from . import github_integration
 from .config import DEFAULT_INSECURE_TOKEN, assert_secure_token, get_settings
 from .db import SessionLocal, engine
+from .mcp_server import build_mcp
 from .migrate import run_migrations
 from .retention import run_prune
 from .routers import reports, tests
@@ -46,7 +48,14 @@ async def lifespan(app: FastAPI):
         await engine.dispose()
 
 
-app = FastAPI(title="FlakeRadar", version="2.0.0", lifespan=lifespan)
+# Read-only MCP server for agents (Bearer token = FLAKERADAR_API_TOKEN).
+mcp = build_mcp(SessionLocal, api_token=get_settings().api_token)
+mcp_app = mcp.http_app(path="/")
+
+app = FastAPI(
+    title="FlakeRadar", version="2.0.0",
+    lifespan=combine_lifespans(lifespan, mcp_app.lifespan),
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -65,6 +74,7 @@ async def health() -> dict:
 # A Mount("/") registered earlier would swallow every later route.
 app.include_router(reports.router)
 app.include_router(tests.router)
+app.mount("/mcp", mcp_app)  # endpoint: /mcp/ (POST /mcp redirects there)
 
 
 # Serve the built frontend (frontend/dist) if present — single-container self-host.

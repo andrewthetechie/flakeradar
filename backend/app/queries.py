@@ -250,3 +250,55 @@ async def quarantine_list(
         )
         for tc in rows
     ]
+
+
+# --- Search and name lookup (task 10, used by the MCP server) ----------
+
+async def search_tests(
+    db: AsyncSession, scope: Scope, query: str, *, threshold: float, limit: int = 20
+) -> list[schemas.TestOut]:
+    """Case-insensitive literal substring over name, classname and file; worst first."""
+    pattern = f"%{escape_like(query)}%"
+    stmt = _scoped(tests_select(), scope).where(
+        TestCase.name.ilike(pattern, escape="\\")
+        | TestCase.classname.ilike(pattern, escape="\\")
+        | TestCase.file.ilike(pattern, escape="\\")
+    )
+    rows = (await db.execute(
+        stmt.order_by(TestCase.flakiness_score.desc(), TestCase.id).limit(limit)
+    )).all()
+    return [to_test_out(tc, project, repo, threshold) for tc, project, repo in rows]
+
+
+async def find_test_ids(
+    db: AsyncSession, repo: str, project: str, name: str, classname: str | None = None
+) -> list[int]:
+    """Exact-match lookup of a Test by name (and optionally classname)."""
+    stmt = _scoped(
+        select(TestCase.id)
+        .join(Project, TestCase.project_id == Project.id)
+        .join(Repo, Project.repo_id == Repo.id)
+        .where(TestCase.name == name),
+        Scope(repo=repo, project=project),
+    )
+    if classname is not None:
+        stmt = stmt.where(TestCase.classname == classname)
+    return list((await db.execute(stmt.order_by(TestCase.id))).scalars())
+
+
+async def latest_failure(db: AsyncSession, test_id: int) -> schemas.ExecutionOut | None:
+    row = (await db.execute(
+        select(TestExecution, TestRun)
+        .join(TestRun, TestExecution.test_run_id == TestRun.id)
+        .where(TestExecution.test_case_id == test_id, TestExecution.status.in_(FAILING))
+        .order_by(TestExecution.id.desc())
+        .limit(1)
+    )).first()
+    if row is None:
+        return None
+    e, r = row
+    return schemas.ExecutionOut(
+        id=e.id, status=e.status, duration=e.duration, message=e.message,
+        details=e.details, created_at=e.created_at, commit_sha=r.commit_sha,
+        branch=r.branch, ci_run_id=r.ci_run_id,
+    )
