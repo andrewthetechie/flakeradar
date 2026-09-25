@@ -12,7 +12,7 @@ from .config import DEFAULT_INSECURE_TOKEN, assert_secure_token, get_settings
 from .db import SessionLocal, engine
 from .migrate import run_migrations
 from .retention import run_prune
-from .routers import reports
+from .routers import reports, tests
 from .worker import ReportWorker
 
 logging.basicConfig(level=logging.INFO)
@@ -64,6 +64,7 @@ async def health() -> dict:
 # --- API routers: include them HERE, above the static mount. -------------
 # A Mount("/") registered earlier would swallow every later route.
 app.include_router(reports.router)
+app.include_router(tests.router)
 
 
 # Serve the built frontend (frontend/dist) if present — single-container self-host.
