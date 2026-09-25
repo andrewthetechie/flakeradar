@@ -1,16 +1,17 @@
 # Add this step to your GitHub Actions workflow AFTER the test step.
-# Requires secrets: FLAKERADAR_URL (e.g. https://flakeradar.example.com)
-#                   FLAKERADAR_TOKEN (your FLAKERADAR_API_TOKEN)
+# Requires: FLAKERADAR_URL (e.g. https://flakeradar.example.com) as a variable
+#           or secret, and FLAKERADAR_TOKEN (your FLAKERADAR_API_TOKEN) as a secret.
 # Works with any runner that produces a JUnit XML report, e.g.:
-#   pytest --junitxml=junit.xml         (Python)
-#   vitest --reporter=junit             (JS/TS)
-#   go test ... | go-junit-report       (Go)
+#   pytest --junitxml=junit.xml -o junit_family=xunit1   (Python; xunit1 adds file/line)
+#   vitest --reporter=junit --outputFile=junit.xml        (JS/TS; set addFileAttribute)
+#   go test ... | go-junit-report > junit.xml              (Go)
+# One step per project: set `project` (and `root`, its directory) for each suite.
 
 - name: Report test results to FlakeRadar
   if: always()   # crucial — you want the FAILED runs recorded too
   run: |
-    curl --fail-with-body -sS -X POST \
-      "${{ secrets.FLAKERADAR_URL }}/api/ingest?commit_sha=${{ github.sha }}&branch=${{ github.ref_name }}&ci_run_id=${{ github.run_id }}-${{ github.run_attempt }}" \
+    curl --fail-with-body -sS --retry 5 --retry-all-errors --retry-delay 2 -X POST \
+      "${{ secrets.FLAKERADAR_URL }}/api/ingest?repo=${{ github.repository }}&project=backend&root=backend&commit_sha=${{ github.sha }}&branch=${{ github.ref_name }}&ci_run_id=${{ github.run_id }}-${{ github.run_attempt }}" \
       -H "X-API-Key: ${{ secrets.FLAKERADAR_TOKEN }}" \
       -H "Content-Type: application/xml" \
       --data-binary @junit.xml
