@@ -8,9 +8,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from .config import DEFAULT_INSECURE_TOKEN, assert_secure_token, get_settings
-from .db import engine
+from .db import SessionLocal, engine
 from .migrate import run_migrations
 from .routers import reports
+from .worker import ReportWorker
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("flakeradar")
@@ -28,8 +29,13 @@ async def lifespan(app: FastAPI):
             "FLAKERADAR_API_TOKEN is the default 'changeme' — set a real token."
         )
     await run_migrations(engine)
-    yield
-    await engine.dispose()
+    worker = ReportWorker(engine, SessionLocal, poll_seconds=settings.worker_poll_seconds)
+    await worker.start()
+    try:
+        yield
+    finally:
+        await worker.stop()
+        await engine.dispose()
 
 
 app = FastAPI(title="FlakeRadar", version="2.0.0", lifespan=lifespan)

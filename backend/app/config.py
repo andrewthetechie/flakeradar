@@ -32,6 +32,9 @@ class Settings(BaseSettings):
 
     cors_origins: str = "http://localhost:5173"
 
+    # Report processor: idle poll interval when the queue is empty.
+    worker_poll_seconds: float = 1.0
+
     @field_validator("database_url")
     @classmethod
     def _require_asyncpg(cls, value: str) -> str:
