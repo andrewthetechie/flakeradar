@@ -14,7 +14,8 @@ XML), tracks every test's outcome across runs *keyed by commit SHA*, and scores
 flakiness statistically. A test that fails and then passes on the same commit is
 **proven** nondeterministic — no heuristics required.
 
-![FlakeRadar dashboard — flakiness leaderboard and per-test execution history](docs/dashboard.jpg)
+<img width="1180" height="463" alt="image" src="https://github.com/user-attachments/assets/f2f14878-1ad7-4b08-9e2b-cbe6fd5441c7" />
+
 
 ## Contents
 
