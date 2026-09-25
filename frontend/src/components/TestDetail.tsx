@@ -98,7 +98,7 @@ export function TestDetail({ history }: { history: History | null }) {
           <div className="value">{test.flakiness_score.toFixed(2)}</div>
         </div>
         <div className="fact">
-          <div className="label">Same-SHA flips</div>
+          <div className="label">Proven flakes</div>
           <div className="value">{test.confirmed_flake_count}</div>
         </div>
         <div className="fact">

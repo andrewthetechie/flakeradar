@@ -8,6 +8,7 @@ export function StatTiles({ summary }: { summary: Summary }) {
       value: summary.flaky_tests,
       alert: summary.flaky_tests > 0,
     },
+    { label: "Suspect (score > 0)", value: summary.suspect_tests, alert: false },
     {
       label: "Proven flaky (same-commit flip)",
       value: summary.confirmed_flaky_tests,

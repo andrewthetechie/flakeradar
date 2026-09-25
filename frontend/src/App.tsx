@@ -1,36 +1,46 @@
 import { useCallback, useEffect, useState } from "react";
 import {
-  fetchHistory, fetchProjects, fetchSummary, fetchTests, setQuarantine,
-  type History, type Summary, type TestCase,
+  fetchHistory, fetchRepos, fetchSummary, fetchTests, setQuarantine,
+  type History, type RepoInfo, type Summary, type TestPage, type TestCase,
 } from "./api";
 import { Leaderboard } from "./components/Leaderboard";
+import { LeaderboardControls } from "./components/LeaderboardControls";
+import { Pagination } from "./components/Pagination";
+import { ScopePicker } from "./components/ScopePicker";
 import { StatTiles } from "./components/StatTiles";
 import { TestDetail } from "./components/TestDetail";
+import { useViewState } from "./urlState";
 
 const REFRESH_MS = 30_000;
+const PAGE_SIZE = 50;
 
 export default function App() {
+  const [view, setView] = useViewState();
+  const [repos, setRepos] = useState<RepoInfo[]>([]);
   const [summary, setSummary] = useState<Summary | null>(null);
-  const [tests, setTests] = useState<TestCase[]>([]);
-  const [projects, setProjects] = useState<string[]>([]);
-  const [project, setProject] = useState<string>("All");
-  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [page, setPage] = useState<TestPage | null>(null);
   const [history, setHistory] = useState<History | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  const { repo, project, sort, showStable } = view;
+  const pageNumber = view.page;
+
   const refresh = useCallback(async () => {
+    const scope = { repo, project };
     try {
-      const [s, t, p] = await Promise.all([
-        fetchSummary(project), fetchTests(project), fetchProjects(),
+      const [r, s, t] = await Promise.all([
+        fetchRepos(),
+        fetchSummary(scope),
+        fetchTests({ ...scope, page: pageNumber, pageSize: PAGE_SIZE, sort, showStable }),
       ]);
+      setRepos(r);
       setSummary(s);
-      setTests(t);
-      setProjects(p);
+      setPage(t);
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
-  }, [project]);
+  }, [repo, project, pageNumber, sort, showStable]);
 
   useEffect(() => {
     void refresh();
@@ -39,13 +49,16 @@ export default function App() {
   }, [refresh]);
 
   useEffect(() => {
-    if (selectedId == null) return;
+    if (view.test == null) {
+      setHistory(null);
+      return;
+    }
     let cancelled = false;
-    fetchHistory(selectedId)
+    fetchHistory(view.test)
       .then((h) => { if (!cancelled) setHistory(h); })
       .catch((e) => { if (!cancelled) setError(String(e)); });
     return () => { cancelled = true; };
-  }, [selectedId, tests]); // re-fetch when leaderboard refreshes
+  }, [view.test, page]); // re-fetch when the leaderboard refreshes
 
   const onToggleQuarantine = useCallback(async (t: TestCase) => {
     try {
@@ -61,15 +74,11 @@ export default function App() {
       <header className="app-header">
         <h1>FlakeRadar</h1>
         <span className="tagline">flaky-test detection for your CI</span>
-        <select
-          className="project-select"
-          value={project}
-          onChange={(e) => setProject(e.target.value)}
-          aria-label="Filter by project"
-        >
-          <option value="All">All projects</option>
-          {projects.map((p) => <option key={p} value={p}>{p}</option>)}
-        </select>
+        <ScopePicker
+          repos={repos}
+          scope={{ repo, project }}
+          onChange={(scope) => setView(scope)}
+        />
       </header>
 
       {error && (
@@ -82,13 +91,31 @@ export default function App() {
 
       <div className="columns">
         <section className="panel">
-          <h2>Flakiness leaderboard</h2>
+          <div className="panel-head">
+            <h2>Flakiness leaderboard</h2>
+            <LeaderboardControls
+              sort={sort}
+              showStable={showStable}
+              onSort={(s) => setView({ sort: s })}
+              onShowStable={(v) => setView({ showStable: v })}
+            />
+          </div>
           <Leaderboard
-            tests={tests}
-            selectedId={selectedId}
-            onSelect={setSelectedId}
+            tests={page?.items ?? []}
+            scope={{ repo, project }}
+            showStable={showStable}
+            selectedId={view.test}
+            onSelect={(id) => setView({ test: id })}
             onToggleQuarantine={onToggleQuarantine}
           />
+          {page && page.total > 0 && (
+            <Pagination
+              page={page.page}
+              pageSize={page.page_size}
+              total={page.total}
+              onPage={(p) => setView({ page: p })}
+            />
+          )}
         </section>
         <section className="panel">
           <h2>Test detail</h2>
@@ -99,8 +126,8 @@ export default function App() {
       <footer className="app-footer">
         Ingest from CI:{" "}
         <code>
-          curl -X POST "$URL/api/ingest?commit_sha=$SHA&amp;branch=$BRANCH&amp;project=$REPO" -H "X-API-Key: $TOKEN"
-          --data-binary @junit.xml
+          curl -X POST "$URL/api/ingest?repo=$OWNER/$REPO&amp;project=backend&amp;commit_sha=$SHA&amp;branch=$BRANCH"
+          -H "X-API-Key: $TOKEN" --data-binary @junit.xml
         </code>
       </footer>
     </div>
