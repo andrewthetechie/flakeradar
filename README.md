@@ -123,8 +123,15 @@ Add one step after your tests (see `samples/github-actions-snippet.yml`):
 - name: Report to FlakeRadar
   if: always()   # crucial — failed runs are the signal
   run: |
+    PIPELINE="${GITHUB_WORKFLOW_REF#${GITHUB_REPOSITORY}/}"; PIPELINE="${PIPELINE%@*}"
+    QUERY=$(jq -rn --arg repo "${{ github.repository }}" --arg project "backend" \
+      --arg root "backend" --arg sha "${{ github.sha }}" --arg branch "${{ github.ref_name }}" \
+      --arg run "${{ github.run_id }}" --arg attempt "${{ github.run_attempt }}" \
+      --arg job "${{ job.check_run_id }}" --arg pipeline "$PIPELINE" \
+      --arg default_branch "${{ github.event.repository.default_branch }}" \
+      '"repo="+($repo|@uri)+"&project="+($project|@uri)+"&root="+($root|@uri)+"&commit_sha="+($sha|@uri)+"&branch="+($branch|@uri)+"&ci_run_id="+($run|@uri)+"&ci_run_attempt="+($attempt|@uri)+"&ci_job_id="+($job|@uri)+"&pipeline="+($pipeline|@uri)+"&default_branch="+($default_branch|@uri)')
     curl --fail-with-body -sS --retry 5 --retry-all-errors --retry-delay 2 \
-      -X POST "$FLAKERADAR_URL/api/ingest?repo=${{ github.repository }}&project=backend&root=backend&commit_sha=${{ github.sha }}&branch=${{ github.ref_name }}&ci_run_id=${{ github.run_id }}-${{ github.run_attempt }}" \
+      -X POST "$FLAKERADAR_URL/api/ingest?${QUERY}" \
       -H "X-API-Key: ${{ secrets.FLAKERADAR_TOKEN }}" \
       -H "Content-Type: application/xml" \
       --data-binary @junit.xml
@@ -137,11 +144,78 @@ Add one step after your tests (see `samples/github-actions-snippet.yml`):
 | `root` | no | the project's directory in the repo (e.g. `frontend`), used to build file paths and permalinks |
 | `commit_sha` | yes | the commit under test |
 | `branch` | no (`main`) | |
-| `ci_run_id` | no | include the attempt number: it turns "re-run failed jobs" into labeled flake data |
+| `ci_run_id` | no | the workflow run id (`${{ github.run_id }}`) |
+| `ci_run_attempt` | no | the run attempt number (`${{ github.run_attempt }}`); a re-run is a new attempt on the same SHA |
+| `ci_job_id` | no | this Job's id (`${{ job.check_run_id }}`); links the Run to a Job execution so a failed Job can be explained by failing Tests |
+| `pipeline` | no | the workflow file path, e.g. `.github/workflows/ci.yml` (derived from `GITHUB_WORKFLOW_REF`) |
+| `default_branch` | no | the repo's default branch, so flips elsewhere don't count |
 
 The server answers `202 {"report_id": 7, "status": "pending"}` as soon as the
 report is stored; `GET /api/reports/7` shows when it has been processed. The
 `--retry` flags cover the server being briefly unreachable (e.g. a redeploy).
+
+## CI jobs
+
+FlakeRadar also scores **CI jobs** for flakiness with the same rules as tests,
+even when they produce no JUnit. On GitHub this is a one-file setup · copy
+`samples/flakeradar-jobs.yml` to `.github/workflows/flakeradar-jobs.yml` on
+your **default branch** (the `workflow_run` trigger only fires from there) and
+list the workflows you want tracked by their exact `name:` (no globs). After
+every attempt of those workflows it fetches that attempt's job results and
+POSTs them to `POST /api/ingest/pipeline`. It needs `FLAKERADAR_URL` and
+`FLAKERADAR_TOKEN` secrets, and `actions: read` permission. FlakeRadar never
+calls GitHub — your workflow pushes results to it.
+
+The JUnit snippet above sends `ci_job_id`, `ci_run_attempt` and `pipeline` so
+that each test Run is linked to the Job execution that produced it.
+
+### Vocabulary
+
+- A **Pipeline** is a named CI workflow in a Repo, identified on GitHub by its
+  workflow file path (e.g. `.github/workflows/ci.yml`). It groups Jobs and is
+  not scored.
+- A **Job** is one job within a Pipeline, identified by its display name. Each
+  matrix leg is its own Job, e.g. `test (ubuntu-latest, 3.12)`. It belongs to a
+  Repo through its Pipeline, not to a Project.
+- A **Job execution** is one Job's outcome (`passed`, `failed`, `skipped`) in
+  one attempt at one commit. A failed attempt followed by a passing re-run on
+  the same SHA is a **Proven flake**, exactly as for Tests.
+
+### Explained vs unexplained failures
+
+A failed **Test** frequently explains a failed **Job** — the test broke, so the
+job failed. Counting those against the Job would just double-count a flaky
+test. So a failed Job execution is **explained** when a JUnit upload from the
+same `ci_job_id` (same Repo) contains a failing or errored Test. Explained
+failures are scored as `skipped`; only **unexplained** failures (setup, network,
+runners, a crash before the tests run) move a Job's score.
+
+To make attribution work, **every JUnit upload must send `ci_job_id`** — this
+is why the snippet sends `ci_job_id=${{ job.check_run_id }}`. Without it, that
+Job's failures are all unexplained and can look flaky even when a test broke.
+
+### Other providers
+
+Any CI can POST the same JSON contract to `POST /api/ingest/pipeline`:
+
+```json
+{
+  "repo": "acme/app", "provider": "gitlab", "pipeline": ".gitlab-ci.yml",
+  "commit_sha": "deadbeef", "branch": "main", "default_branch": "main",
+  "ci_run_id": "123", "ci_run_attempt": 1,
+  "jobs": [
+    {"ci_job_id": "456", "name": "test", "status": "failed",
+     "url": "https://gitlab.com/acme/app/-/jobs/456",
+     "runner_name": "runner-1", "runner_labels": ["linux"]}
+  ]
+}
+```
+
+The `status` is already normalized to `passed | failed | skipped` by your
+reporter; FlakeRadar decides nothing about provider conclusions. As a *sketch*
+for GitLab, map `CI_JOB_ID`, `CI_JOB_NAME`, `CI_PIPELINE_ID`, `CI_DEFAULT_BRANCH`
+and `CI_COMMIT_SHA` onto the fields above (a GitLab example is out of scope and
+not built or tested).
 
 ## Repos and projects
 
@@ -303,6 +377,18 @@ For each test, over its last 50 executions (configurable):
 into tiers: **flaky** (score ≥ threshold), **suspect** (0 < score < threshold)
 and **stable** (0). The leaderboard hides stable tests unless you ask for them.
 
+The same rules and tiers apply to **CI jobs**.
+
+### The default-branch rule (Tests and Jobs)
+
+Flips only count on a Repo's **default branch** — a test (or job) that breaks
+on a PR branch and is then fixed should not look flaky. So the **flip score** is
+computed over the newest executions on the default branch only. **Proven
+flakes** (a pass and a fail on the same commit) still count on every branch,
+because a same-commit flip is nondeterminism on identical code. Until the
+default branch is known (no report has named it), every branch counts — the
+original behaviour.
+
 ## Configuration
 
 Environment variables (prefix `FLAKERADAR_`, `.env` supported):
@@ -324,15 +410,19 @@ Environment variables (prefix `FLAKERADAR_`, `.env` supported):
 
 | Endpoint | Auth | Purpose |
 |---|---|---|
-| `POST /api/ingest?repo=&project=&root=&commit_sha=&branch=&ci_run_id=` | `X-API-Key` | Queue a JUnit XML report (raw body or multipart `report` field, ≤20 MB) → `202` |
+| `POST /api/ingest?repo=&project=&root=&commit_sha=&branch=&ci_run_id=&ci_run_attempt=&ci_job_id=&pipeline=&default_branch=` | `X-API-Key` | Queue a JUnit XML report (raw body or multipart `report` field, ≤20 MB) → `202` |
+| `POST /api/ingest/pipeline` | `X-API-Key` | Queue a Pipeline report (JSON) with `jobs` → `202` |
 | `GET /api/reports/{id}` | — | One report's status (`pending`/`processed`/`failed`), counts, error |
 | `GET /api/reports?status=&limit=` | — | Recent reports, newest first |
 | `GET /api/reports/summary` | — | `{pending, failed}` |
 | `POST /api/reports/{id}/retry` | `X-API-Key` | Re-queue a failed report |
 | `GET /api/repos` | — | Repos with their projects |
 | `GET /api/tests?repo=&project=&include_stable=&sort=&page=&page_size=&file=` | — | Paginated leaderboard (`sort`: `score`, `last_seen`, `proven`) |
-| `GET /api/tests/{id}/history?limit=` | — | One test: location + permalink, last failing commit, executions with failure details |
-| `GET /api/summary?repo=&project=` | — | Dashboard tiles |
+| `GET /api/tests/{id}/history?limit=` | — | One test: location + permalink, last failing commit, executions with failure details, and the Jobs its Runs came from |
+| `GET /api/jobs?repo=&include_stable=&sort=&page=&page_size=` | — | Jobs leaderboard for a Repo (worst first) |
+| `GET /api/jobs/summary?repo=` | — | Job summary tiles |
+| `GET /api/jobs/{id}/history?limit=` | — | One job: recent Job executions, each tagged `passed`/`failed`/`explained`/`skipped`, with the explaining Tests |
+| `GET /api/summary?repo=&project=` | — | Dashboard tiles (Tests) |
 | `POST /api/tests/{id}/quarantine` | — | Toggle quarantine (body `{"quarantined": bool}`) |
 | `GET /api/quarantine?repo=&project=` | `X-API-Key` | Quarantined tests for one repo + project (for the test runner) |
 | `/mcp/` | Bearer token | MCP server (see above) |

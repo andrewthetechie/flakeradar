@@ -1,0 +1,52 @@
+# Reports every job of the listed workflows to FlakeRadar after each attempt.
+# Copy to .github/workflows/flakeradar-jobs.yml on your DEFAULT branch
+# (workflow_run only fires from there). List workflows by their `name:`
+# (exact names, no globs). Needs FLAKERADAR_URL and FLAKERADAR_TOKEN secrets.
+name: FlakeRadar jobs
+on:
+  workflow_run:
+    workflows: ["CI"]        # <- your workflow names
+    types: [completed]
+permissions:
+  actions: read
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        env:
+          FLAKERADAR_URL: ${{ secrets.FLAKERADAR_URL }}
+          FLAKERADAR_TOKEN: ${{ secrets.FLAKERADAR_TOKEN }}
+        with:
+          script: |
+            const run = context.payload.workflow_run;
+            const repo = context.payload.repository;
+            const jobs = await github.paginate(
+              github.rest.actions.listJobsForWorkflowRunAttempt,
+              { owner: context.repo.owner, repo: context.repo.repo,
+                run_id: run.id, attempt_number: run.run_attempt, per_page: 100 });
+            const STATUS = { success: "passed", failure: "failed", timed_out: "failed",
+                             cancelled: "skipped", skipped: "skipped", neutral: "skipped" };
+            const results = jobs.filter(j => STATUS[j.conclusion]).map(j => ({
+              ci_job_id: String(j.id), name: j.name, status: STATUS[j.conclusion],
+              url: j.html_url ?? "", runner_name: j.runner_name ?? "",
+              runner_labels: j.labels ?? [], started_at: j.started_at, completed_at: j.completed_at }));
+            if (results.length === 0) { core.info("No reportable jobs."); return; }
+            const fork = run.head_repository && run.head_repository.full_name !== repo.full_name;
+            const branch = fork ? `${run.head_repository.owner.login}:${run.head_branch ?? ""}` : (run.head_branch ?? "");
+            const body = {
+              repo: repo.full_name, provider: "github", pipeline: run.path,
+              commit_sha: run.head_sha,
+              branch: branch,
+              default_branch: repo.default_branch,
+              ci_run_id: String(run.id), ci_run_attempt: run.run_attempt, jobs: results };
+            for (let i = 1; i <= 5; i++) {
+              const resp = await fetch(`${process.env.FLAKERADAR_URL}/api/ingest/pipeline`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json", "X-API-Key": process.env.FLAKERADAR_TOKEN },
+                body: JSON.stringify(body) });
+              if (resp.ok) { core.info(`Queued report ${(await resp.json()).report_id}`); return; }
+              if (resp.status < 500) { core.setFailed(`${resp.status} ${await resp.text()}`); return; }
+              await new Promise(r => setTimeout(r, 2000 * i));
+            }
+            core.setFailed("FlakeRadar unreachable after 5 attempts")
