@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { Execution, History } from "../api";
 import { formatScore } from "../format";
+import { Sparkline } from "./Sparkline";
 import { MarkShape, StatusMark, statusColor } from "./StatusMark";
 
 const CELL = 18; // horizontal step per execution
@@ -120,6 +121,10 @@ export function TestDetail({
           </div>
         </div>
         <div>
+          <div className="text-xs text-muted">Clean streak</div>
+          <div className="text-lg font-semibold tabular-nums">{history.test.clean_streak}</div>
+        </div>
+        <div>
           <div className="text-xs text-muted">Likely cause</div>
           <div className="text-lg font-semibold">{history.test.failure_category ?? "—"}</div>
         </div>
@@ -129,6 +134,11 @@ export function TestDetail({
             {fails}/{executions.length}
           </div>
         </div>
+      </div>
+
+      <div className="mb-4">
+        <div className="mb-1 text-xs text-muted">Flakiness score, last 90 days</div>
+        <Sparkline points={history.score_history} label="Flakiness score" />
       </div>
 
       {history.jobs.length > 0 && (

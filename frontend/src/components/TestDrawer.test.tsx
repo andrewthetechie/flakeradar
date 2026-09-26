@@ -20,6 +20,8 @@ const history: History = {
     tier: "flaky",
     confirmed_flake_count: 1,
     failure_category: "assertion",
+    clean_streak: 3,
+    trend: "steady",
     last_status: "passed",
     last_seen_at: "2026-09-25T00:00:00Z",
     quarantined: false,
@@ -76,6 +78,15 @@ const history: History = {
       failure_category: "assertion",
     },
   ],
+  score_history: [
+    {
+      day: "2026-09-20",
+      flakiness_score: 0.6,
+      confirmed_flake_count: 1,
+      executions: 2,
+      failures: 1,
+    },
+  ],
 };
 
 function renderDrawer(overrides: Partial<History> = {}, onClose = vi.fn(), onQ = vi.fn()) {
@@ -107,6 +118,12 @@ describe("TestDrawer", () => {
     renderDrawer();
     expect(screen.getByText("Likely cause")).toBeInTheDocument();
     expect(screen.getAllByText("assertion").length).toBeGreaterThan(0);
+  });
+
+  it("shows the clean streak and a score sparkline", () => {
+    renderDrawer();
+    expect(screen.getByText("Clean streak")).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: /^Flakiness score,/ })).toBeInTheDocument();
   });
 
   it("shows breadcrumb, permalink and the latest failure details", () => {

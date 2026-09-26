@@ -4,6 +4,7 @@ import { formatScore } from "../format";
 import { IssueLink } from "./IssueLink";
 import { scoreColor, TIER_CLASS } from "./scoreStyle";
 import { StatusMark } from "./StatusMark";
+import { TrendMark } from "./TrendMark";
 
 function jobLabel(job: Job, repo: string | null): string | null {
   // Show the Repo when the view spans repos, otherwise the Pipeline is enough.
@@ -81,6 +82,7 @@ export function JobLeaderboard({
                   <span className="w-9 text-right tabular-nums text-text-2">
                     {formatScore(j.flakiness_score)}
                   </span>
+                  <TrendMark trend={j.trend} />
                 </div>
                 <span className={`mt-1 inline-block text-xs ${TIER_CLASS[j.tier]}`}>{j.tier}</span>
               </td>

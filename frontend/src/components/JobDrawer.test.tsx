@@ -14,6 +14,8 @@ const history: JobHistory = {
     flakiness_score: 0.31,
     tier: "flaky",
     confirmed_flake_count: 0,
+    clean_streak: 4,
+    trend: null,
     last_status: "failed",
     last_seen_at: "2026-09-25T00:00:00Z",
     github_issue_number: null,
@@ -65,6 +67,7 @@ const history: JobHistory = {
       explained_by: [],
     },
   ],
+  score_history: [],
 };
 
 function renderDrawer(overrides: Partial<JobHistory> = {}, onClose = vi.fn()) {
@@ -86,8 +89,11 @@ describe("JobDrawer", () => {
     expect(screen.getByRole("dialog", { name: "Job detail" })).toBeInTheDocument();
     expect(screen.getByText(/acme\/app · \.github\/workflows\/ci\.yml/)).toBeInTheDocument();
     expect(
-      screen.getByText("1 unexplained failure · 1 explained by tests (last 2 executions)"),
+      screen.getByText(
+        "1 unexplained failure · 1 explained by tests (last 2 executions) · clean streak 4",
+      ),
     ).toBeInTheDocument();
+    expect(screen.getByText("No score history yet.")).toBeInTheDocument();
     expect(screen.getAllByText("attempt 1").length).toBe(2);
     expect(screen.getByText("runner-1")).toBeInTheDocument();
   });

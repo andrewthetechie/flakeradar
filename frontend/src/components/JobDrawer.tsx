@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import type { JobExecution, JobHistory } from "../api";
 import { breakable } from "../breakable";
 import { IssueLink } from "./IssueLink";
+import { Sparkline } from "./Sparkline";
 import { StatusMark } from "./StatusMark";
 
 function fmtWhen(iso: string): string {
@@ -92,7 +93,13 @@ export function JobDrawer({
             <div className="mb-4 rounded-lg border border-line bg-surface-2 px-3 py-2 text-xs text-text-2">
               {history.unexplained_failures} unexplained failure
               {history.unexplained_failures === 1 ? "" : "s"} · {history.explained_failures}{" "}
-              explained by tests (last {history.executions.length} executions)
+              explained by tests (last {history.executions.length} executions) · clean streak{" "}
+              {history.job.clean_streak}
+            </div>
+
+            <div className="mb-4">
+              <div className="mb-1 text-xs text-muted">Flakiness score, last 90 days</div>
+              <Sparkline points={history.score_history} label="Flakiness score" />
             </div>
 
             <table className="w-full border-collapse text-xs">

@@ -13,6 +13,8 @@ function job(overrides: Partial<Job> = {}): Job {
     flakiness_score: 0.6,
     tier: "flaky",
     confirmed_flake_count: 2,
+    clean_streak: 0,
+    trend: null,
     last_status: "failed",
     last_seen_at: "2026-09-25T00:00:00Z",
     github_issue_number: null,

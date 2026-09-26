@@ -10,6 +10,15 @@ export const FAILURE_CATEGORIES: readonly FailureCategory[] = [
   "assertion",
   "other",
 ];
+export type Trend = "worsening" | "improving" | "steady";
+
+export interface ScorePoint {
+  day: string; // "YYYY-MM-DD", UTC
+  flakiness_score: number;
+  confirmed_flake_count: number;
+  executions: number;
+  failures: number;
+}
 
 export interface TestCase {
   id: number;
@@ -25,6 +34,8 @@ export interface TestCase {
   tier: Tier;
   confirmed_flake_count: number;
   failure_category: FailureCategory | null;
+  clean_streak: number;
+  trend: Trend | null;
   last_status: string;
   last_seen_at: string;
   quarantined: boolean;
@@ -77,6 +88,7 @@ export interface History {
   last_failing_branch: string | null;
   executions: Execution[];
   jobs: TestJobLink[];
+  score_history: ScorePoint[];
 }
 
 export interface TestJobLink {
@@ -158,6 +170,8 @@ export interface Job {
   flakiness_score: number;
   tier: Tier;
   confirmed_flake_count: number;
+  clean_streak: number;
+  trend: Trend | null;
   last_status: string;
   last_seen_at: string;
   github_issue_number: number | null;
@@ -211,6 +225,7 @@ export interface JobHistory {
   unexplained_failures: number;
   explained_failures: number;
   executions: JobExecution[];
+  score_history: ScorePoint[];
 }
 
 export interface JobQuery {
