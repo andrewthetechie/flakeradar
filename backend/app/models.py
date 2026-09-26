@@ -101,6 +101,7 @@ class TestCase(Base):
     # Cached analytics, recomputed whenever a Run touches this test.
     flakiness_score: Mapped[float] = mapped_column(Float, default=0.0, server_default="0")
     confirmed_flake_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    failure_category: Mapped[str | None] = mapped_column(String(16), default=None)  # dominant over the score window
     last_status: Mapped[str] = mapped_column(String(16), default="passed", server_default="passed")
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
@@ -141,6 +142,7 @@ class TestExecution(Base):
     message: Mapped[str] = mapped_column(Text, default="", server_default="")
     details: Mapped[str] = mapped_column(Text, default="", server_default="")
     attempt: Mapped[int] = mapped_column(Integer, default=0, server_default="0")  # 0 = first try in its Run
+    failure_category: Mapped[str | None] = mapped_column(String(16), default=None)  # NULL unless failed/error
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
 
 

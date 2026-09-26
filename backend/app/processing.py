@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from . import scoring
 from .attribution import explained_clause
 from .batching import chunks
+from .classify import classify_failure, dominant_category
 from .config import get_settings
 from .models import (
     JOB_FAILED,
@@ -45,6 +46,14 @@ from .schemas import PipelineReportIn
 logger = logging.getLogger("flakeradar.processing")
 
 ERROR_MAX = 2000
+
+
+def _parse_and_classify(body: bytes) -> list[tuple[ParsedCase, str | None]]:
+    """Parse a JUnit body and classify each failing case (CPU work: runs in a thread)."""
+    return [
+        (pc, classify_failure(pc.message, pc.details) if pc.status in scoring.FAILING else None)
+        for pc in parse_junit_xml(body)
+    ]
 
 
 @dataclass(frozen=True)
@@ -115,6 +124,7 @@ async def rescore(db: AsyncSession, test_case_ids: list[int]) -> None:
         .label("rn_def")
     )
     history: dict[int, list[tuple[str, str, str]]] = defaultdict(list)  # id -> [(sha, branch, status)]
+    categories: dict[int, list[str | None]] = defaultdict(list)  # id -> [category, ...] newest first
     default_branch: dict[int, str | None] = {}  # id -> branch (constant per Test/Repo)
     for chunk in chunks(test_case_ids):
         ranked = (
@@ -122,6 +132,7 @@ async def rescore(db: AsyncSession, test_case_ids: list[int]) -> None:
                 TestExecution.id,
                 TestExecution.test_case_id,
                 TestExecution.status,
+                TestExecution.failure_category,
                 TestRun.commit_sha,
                 TestRun.branch,
                 Repo.default_branch,
@@ -136,13 +147,19 @@ async def rescore(db: AsyncSession, test_case_ids: list[int]) -> None:
         )
         rows = await db.execute(
             select(
-                ranked.c.test_case_id, ranked.c.commit_sha, ranked.c.branch, ranked.c.status, ranked.c.default_branch
+                ranked.c.test_case_id,
+                ranked.c.commit_sha,
+                ranked.c.branch,
+                ranked.c.status,
+                ranked.c.failure_category,
+                ranked.c.default_branch,
             )
             .where((ranked.c.rn_all <= settings.score_window) | (ranked.c.rn_def <= settings.score_window))
             .order_by(ranked.c.test_case_id, ranked.c.id.desc())
         )
-        for tc_id, sha, branch, status, def_branch in rows.all():
+        for tc_id, sha, branch, status, category, def_branch in rows.all():
             history[tc_id].append((sha, branch, status))
+            categories[tc_id].append(category)
             default_branch[tc_id] = def_branch
 
     updates: list[dict[str, Any]] = []
@@ -154,7 +171,14 @@ async def rescore(db: AsyncSession, test_case_ids: list[int]) -> None:
             settings.score_decay,
             settings.score_window,
         )
-        updates.append({"id": tc_id, "flakiness_score": score, "confirmed_flake_count": confirmed})
+        updates.append(
+            {
+                "id": tc_id,
+                "flakiness_score": score,
+                "confirmed_flake_count": confirmed,
+                "failure_category": dominant_category(categories.get(tc_id, [])[: settings.score_window]),
+            }
+        )
     for chunk in chunks(updates):
         await db.execute(update(TestCase), chunk)
 
@@ -397,7 +421,8 @@ async def process_report(db: AsyncSession, report: Report) -> ProcessOutcome:
     """Persist one Report. Caller owns the transaction (no commit here)."""
     if report.kind == REPORT_KIND_PIPELINE:
         return await process_pipeline_report(db, report)
-    parsed = await asyncio.to_thread(parse_junit_xml, report.body)
+    classified = await asyncio.to_thread(_parse_and_classify, report.body)
+    parsed = [pc for pc, _ in classified]
     now = utcnow()
 
     # A reported Default branch changes the Repo; every Test in it is then
@@ -427,7 +452,7 @@ async def process_report(db: AsyncSession, report: Report) -> ProcessOutcome:
     attempts: dict[int, int] = {}  # per Test: Executions seen so far in this report
     executions: list[dict[str, Any]] = []
     latest: dict[int, dict[str, Any]] = {}  # per Test: last occurrence in the report wins
-    for pc in parsed:
+    for pc, category in classified:
         tc_id = ids[fingerprint(pc.suite, pc.classname, pc.name)]
         attempt = attempts.get(tc_id, 0)
         attempts[tc_id] = attempt + 1
@@ -441,6 +466,7 @@ async def process_report(db: AsyncSession, report: Report) -> ProcessOutcome:
                 "message": pc.message,
                 "details": pc.details,
                 "attempt": attempt,
+                "failure_category": category,
                 "created_at": now,
             }
         )

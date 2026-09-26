@@ -99,6 +99,7 @@ async def make_execution(
     message: str = "",
     details: str = "",
     attempt: int = 0,
+    failure_category: str | None = None,
     created_at: datetime | None = None,
 ) -> TestExecution:
     ex = TestExecution(
@@ -108,6 +109,7 @@ async def make_execution(
         message=message,
         details=details,
         attempt=attempt,
+        failure_category=failure_category,
         created_at=created_at or utcnow(),
     )
     db.add(ex)

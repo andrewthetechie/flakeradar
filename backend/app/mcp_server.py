@@ -190,6 +190,7 @@ def build_mcp(session_factory: async_sessionmaker[AsyncSession], *, api_token: s
                 "details": _cap(failure.details),
                 "commit_sha": failure.commit_sha,
                 "branch": failure.branch,
+                "failure_category": failure.failure_category,
                 "created_at": failure.created_at.isoformat(),
             },
             "executions": [
@@ -202,6 +203,7 @@ def build_mcp(session_factory: async_sessionmaker[AsyncSession], *, api_token: s
                     "duration": e.duration,
                     "message": e.message,
                     "attempt": e.attempt,
+                    "failure_category": e.failure_category,
                 }
                 for e in history.executions
             ],

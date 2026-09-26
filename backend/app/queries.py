@@ -62,6 +62,7 @@ def to_test_out(tc: TestCase, project: str, repo: str, threshold: float) -> sche
         flakiness_score=tc.flakiness_score,
         tier=tier_for(tc.flakiness_score, threshold),
         confirmed_flake_count=tc.confirmed_flake_count,
+        failure_category=tc.failure_category,
         last_status=tc.last_status,
         last_seen_at=tc.last_seen_at,
         quarantined=tc.quarantined,
@@ -230,6 +231,7 @@ async def get_test(
             branch=r.branch,
             ci_run_id=r.ci_run_id,
             attempt=e.attempt,
+            failure_category=e.failure_category,
         )
         for e, r in rows
     ]
@@ -361,6 +363,7 @@ async def latest_failure(db: AsyncSession, test_id: int) -> schemas.ExecutionOut
         branch=r.branch,
         ci_run_id=r.ci_run_id,
         attempt=e.attempt,
+        failure_category=e.failure_category,
     )
 
 

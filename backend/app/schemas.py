@@ -117,6 +117,7 @@ class TestOut(BaseModel):
     flakiness_score: float
     tier: Tier
     confirmed_flake_count: int
+    failure_category: str | None
     last_status: str
     last_seen_at: datetime
     quarantined: bool
@@ -158,6 +159,7 @@ class ExecutionOut(BaseModel):
     branch: str
     ci_run_id: str
     attempt: int
+    failure_category: str | None
 
 
 class LocationOut(BaseModel):

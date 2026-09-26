@@ -96,6 +96,30 @@ async def test_flaky_retry_is_proven_flake_from_one_report(db, session_factory):
     assert [(s, a) for s, a in rows] == [("failed", 0), ("passed", 1)]
 
 
+async def test_failures_are_classified_and_test_gets_dominant_category(db, session_factory):
+    xml = (
+        b'<testsuite name="s"><testcase classname="c" name="t">'
+        b'<failure message="Test timeout of 30000ms exceeded.">trace</failure></testcase>'
+        b'<testcase classname="c" name="ok"/></testsuite>'
+    )
+    await _queue(db, xml)
+    await process_next(session_factory)
+    by_name = {
+        name: (status, category)
+        for name, status, category in (
+            await db.execute(
+                select(TestCase.name, TestExecution.status, TestExecution.failure_category).join(
+                    TestCase, TestCase.id == TestExecution.test_case_id
+                )
+            )
+        ).all()
+    }
+    assert by_name["t"] == ("failed", "timing")  # the failing attempt is categorized
+    assert by_name["ok"] == ("passed", None)  # passing rows stay NULL
+    (t,) = (await db.execute(select(TestCase).where(TestCase.name == "t"))).scalars()
+    assert t.failure_category == "timing"  # cached dominant category
+
+
 async def test_same_name_in_two_projects_is_two_tests(db, session_factory):
     a = await make_project(db, "acme/app", "backend")
     b = await make_project(db, "acme/app", "frontend")
