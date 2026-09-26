@@ -38,6 +38,7 @@ last failure) and trend (worsening/improving/steady versus 14 days ago, or
 null when there is not enough history). get_test returns score_history: the
 daily score for up to the last 30 days. A fix that held shows a growing
 clean_streak and a falling score.
+Jobs have clean_streak, trend and score_history too (get_job).
 FlakeRadar also tracks CI jobs: a Pipeline is a named workflow (e.g.
 .github/workflows/ci.yml), a Job is one job inside it. Job scores count only
 UNEXPLAINED failures (a failure with no failing test in the same job is
@@ -288,15 +289,24 @@ def build_mcp(session_factory: async_sessionmaker[AsyncSession], *, api_token: s
             )
             if history is None:
                 raise ToolError(f"No job with id {job_id}.")
-        return history.model_dump(mode="json", include={"job", "unexplained_failures", "explained_failures"}) | {
-            "executions": [
-                e.model_dump(mode="json", include=_JOB_EXECUTION_FIELDS)
-                | {
-                    "created_at": e.created_at.isoformat(),
-                    "explained_by": [t.model_dump(mode="json") for t in e.explained_by[:_EXPLAINED_BY_MAX]],
-                }
-                for e in history.executions
-            ]
-        }
+        return (
+            history.model_dump(mode="json", include={"job", "unexplained_failures", "explained_failures"})
+            | {
+                "executions": [
+                    e.model_dump(mode="json", include=_JOB_EXECUTION_FIELDS)
+                    | {
+                        "created_at": e.created_at.isoformat(),
+                        "explained_by": [t.model_dump(mode="json") for t in e.explained_by[:_EXPLAINED_BY_MAX]],
+                    }
+                    for e in history.executions
+                ]
+            }
+            | {
+                "score_history": [
+                    {"day": p.day.isoformat(), "flakiness_score": p.flakiness_score}
+                    for p in history.score_history[-30:]
+                ]
+            }
+        )
 
     return mcp

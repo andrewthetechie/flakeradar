@@ -13,6 +13,7 @@ from app.models import (
     REPORT_PENDING,
     Job,
     JobExecution,
+    JobScoreHistory,
     Pipeline,
     Project,
     Repo,
@@ -255,6 +256,13 @@ async def make_test_score(
     db: AsyncSession, test_case: TestCase, day: date, flakiness_score: float, **fields
 ) -> TestScoreHistory:
     row = TestScoreHistory(test_case_id=test_case.id, day=day, flakiness_score=flakiness_score, **fields)
+    db.add(row)
+    await db.flush()
+    return row
+
+
+async def make_job_score(db: AsyncSession, job: Job, day: date, flakiness_score: float, **fields) -> JobScoreHistory:
+    row = JobScoreHistory(job_id=job.id, day=day, flakiness_score=flakiness_score, **fields)
     db.add(row)
     await db.flush()
     return row

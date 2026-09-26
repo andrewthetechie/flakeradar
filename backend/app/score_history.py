@@ -10,7 +10,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .batching import chunks
-from .models import TestScoreHistory
+from .models import JobScoreHistory, TestScoreHistory
 
 TREND_DAYS = 14
 TREND_DELTA = 0.05
@@ -44,6 +44,25 @@ async def upsert_test_history(db: AsyncSession, rows: list[dict[str, Any]]) -> N
                 "confirmed_flake_count": stmt.excluded.confirmed_flake_count,
                 "executions": TestScoreHistory.executions + stmt.excluded.executions,
                 "failures": TestScoreHistory.failures + stmt.excluded.failures,
+            },
+        )
+        await db.execute(stmt)
+
+
+async def upsert_job_history(db: AsyncSession, rows: list[dict[str, Any]]) -> None:
+    """rows: {job_id, day, flakiness_score, confirmed_flake_count, executions, failures}.
+
+    (job_id, day) must be unique within `rows`.
+    """
+    for chunk in chunks(rows):
+        stmt = pg_insert(JobScoreHistory).values(list(chunk))
+        stmt = stmt.on_conflict_do_update(
+            index_elements=[JobScoreHistory.job_id, JobScoreHistory.day],
+            set_={
+                "flakiness_score": stmt.excluded.flakiness_score,
+                "confirmed_flake_count": stmt.excluded.confirmed_flake_count,
+                "executions": JobScoreHistory.executions + stmt.excluded.executions,
+                "failures": JobScoreHistory.failures + stmt.excluded.failures,
             },
         )
         await db.execute(stmt)

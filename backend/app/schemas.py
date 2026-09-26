@@ -211,6 +211,8 @@ class JobOut(BaseModel):
     flakiness_score: float
     tier: Tier
     confirmed_flake_count: int
+    clean_streak: int
+    trend: Literal["worsening", "improving", "steady"] | None = None
     last_status: str
     last_seen_at: datetime
     github_issue_number: int | None
@@ -263,6 +265,7 @@ class JobHistoryOut(BaseModel):
     unexplained_failures: int  # over the returned executions
     explained_failures: int
     executions: list[JobExecutionOut]  # newest first
+    score_history: list[ScorePointOut]  # oldest first, the last HISTORY_DAYS days
 
 
 class JobSummaryOut(BaseModel):

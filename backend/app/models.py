@@ -219,10 +219,25 @@ class Job(Base):
     name: Mapped[str] = mapped_column(String(512))
     flakiness_score: Mapped[float] = mapped_column(Float, default=0.0, server_default="0")
     confirmed_flake_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    clean_streak: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     last_status: Mapped[str] = mapped_column(String(16), default="passed", server_default="passed")
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     github_issue_number: Mapped[int | None] = mapped_column(Integer, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class JobScoreHistory(Base):
+    """One row per Job per UTC day (ADR 0007). failures = raw failed Job executions."""
+
+    __tablename__ = "job_score_history"
+    __test__ = False
+
+    job_id: Mapped[int] = mapped_column(ForeignKey("jobs.id", ondelete="CASCADE"), primary_key=True)
+    day: Mapped[date] = mapped_column(Date, primary_key=True, index=True)
+    flakiness_score: Mapped[float] = mapped_column(Float)
+    confirmed_flake_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    executions: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    failures: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
 
 class JobExecution(Base):

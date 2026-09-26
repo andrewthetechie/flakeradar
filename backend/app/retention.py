@@ -16,6 +16,7 @@ from .config import get_settings
 from .models import (
     REPORT_PROCESSED,
     JobExecution,
+    JobScoreHistory,
     Report,
     TestExecution,
     TestRun,
@@ -61,12 +62,15 @@ async def prune(
     score_history = await db.execute(
         delete(TestScoreHistory).where(TestScoreHistory.day < (now - timedelta(days=history_days)).date())
     )
+    job_score_history = await db.execute(
+        delete(JobScoreHistory).where(JobScoreHistory.day < (now - timedelta(days=history_days)).date())
+    )
     return PruneResult(
         reports=reports.rowcount,
         executions=executions.rowcount,
         runs=runs.rowcount,
         job_executions=job_executions.rowcount,
-        score_history=score_history.rowcount,
+        score_history=score_history.rowcount + job_score_history.rowcount,
     )
 
 

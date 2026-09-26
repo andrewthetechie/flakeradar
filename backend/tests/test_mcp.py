@@ -201,6 +201,8 @@ async def test_get_job_by_id_and_by_name_with_explained(mcp, db):
         by_name = (await c.call_tool("get_job", {"repo": "acme/app", "name": "test"})).data
         missing = await c.call_tool("get_job", {"repo": "acme/app", "name": "nope"}, raise_on_error=False)
     assert by_id == by_name
+    assert "score_history" in by_id
+    assert "clean_streak" in by_id["job"]
     assert len(by_id["executions"]) == 2
     outcomes = {e["ci_job_id"]: e["outcome"] for e in by_id["executions"]}
     assert outcomes["ex-1"] == "explained" and outcomes["ex-2"] == "passed"

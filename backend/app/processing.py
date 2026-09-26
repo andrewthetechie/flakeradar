@@ -42,7 +42,7 @@ from .models import (
 )
 from .parsing import ParsedCase, fingerprint, parse_junit_xml
 from .schemas import PipelineReportIn
-from .score_history import upsert_test_history
+from .score_history import upsert_job_history, upsert_test_history
 
 logger = logging.getLogger("flakeradar.processing")
 
@@ -299,8 +299,15 @@ async def _job_history(
     return {jid: (branches.get(jid), history[jid]) for jid in job_ids}
 
 
-async def rescore_jobs(db: AsyncSession, job_ids: list[int]) -> None:
-    """Recompute flakiness for Jobs with the Default-branch rule (see rescore)."""
+async def rescore_jobs(
+    db: AsyncSession, job_ids: list[int], *, day_counts: dict[int, tuple[int, int]] | None = None
+) -> None:
+    """Recompute flakiness for Jobs with the Default-branch rule (see rescore).
+
+    `day_counts` maps a job id to (executions, failures) added today, so each
+    rescore also writes that day's Score history row. Explained failures are
+    already `JOB_SKIPPED` in `_job_history`, so they never break the streak.
+    """
     settings = get_settings()
     history = await _job_history(db, job_ids)
     updates: list[dict[str, Any]] = []
@@ -312,9 +319,33 @@ async def rescore_jobs(db: AsyncSession, job_ids: list[int]) -> None:
             settings.score_decay,
             settings.score_window,
         )
-        updates.append({"id": job_id, "flakiness_score": score, "confirmed_flake_count": confirmed})
+        updates.append(
+            {
+                "id": job_id,
+                "flakiness_score": score,
+                "confirmed_flake_count": confirmed,
+                "clean_streak": scoring.branch_scoped_streak(execs, def_branch),
+            }
+        )
     for chunk in chunks(updates):
         await db.execute(update(Job), chunk)
+    if updates:
+        today = utcnow().date()
+        counts = day_counts or {}
+        await upsert_job_history(
+            db,
+            [
+                {
+                    "job_id": u["id"],
+                    "day": today,
+                    "flakiness_score": u["flakiness_score"],
+                    "confirmed_flake_count": u["confirmed_flake_count"],
+                    "executions": counts.get(u["id"], (0, 0))[0],
+                    "failures": counts.get(u["id"], (0, 0))[1],
+                }
+                for u in updates
+            ],
+        )
 
 
 async def _rescore_jobs_for_ci_job_id(db: AsyncSession, repo_id: int, ci_job_id: str) -> list[int]:
@@ -394,6 +425,7 @@ async def process_pipeline_report(db: AsyncSession, report: Report) -> ProcessOu
 
     jobs_with_new_exec: set[int] = set()
     new_counts = dict.fromkeys(JOB_STATUSES, 0)
+    day_counts: dict[int, tuple[int, int]] = {}
     for chunk in chunks(exec_rows):
         inserted = (
             await db.execute(
@@ -406,6 +438,8 @@ async def process_pipeline_report(db: AsyncSession, report: Report) -> ProcessOu
         for job_id, status in inserted:
             jobs_with_new_exec.add(job_id)
             new_counts[status] += 1
+            n, f = day_counts.get(job_id, (0, 0))
+            day_counts[job_id] = (n + 1, f + (status == JOB_FAILED))
 
     # Update last status for every Job that got a new execution.
     status_by_job: dict[int, str] = {}
@@ -420,7 +454,7 @@ async def process_pipeline_report(db: AsyncSession, report: Report) -> ProcessOu
             )
 
     touched = sorted(jobs_with_new_exec)
-    await rescore_jobs(db, touched)
+    await rescore_jobs(db, touched, day_counts=day_counts)
     if branch_changed:
         await rescore_repo(db, report.repo_id)
 

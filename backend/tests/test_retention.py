@@ -7,6 +7,7 @@ from app.models import (
     REPORT_FAILED,
     REPORT_PROCESSED,
     JobExecution,
+    JobScoreHistory,
     Report,
     TestExecution,
     TestRun,
@@ -21,6 +22,7 @@ from tests.factories import (
     make_execution,
     make_job,
     make_job_execution,
+    make_job_score,
     make_pipeline,
     make_project,
     make_report,
@@ -111,4 +113,20 @@ async def test_prune_deletes_old_score_history_rows(db):
 
     assert result.score_history == 1
     remaining = (await db.execute(select(func.count()).select_from(TestScoreHistory))).scalar()
+    assert remaining == 1
+
+
+async def test_prune_deletes_old_job_score_history_rows(db):
+    now = utcnow()
+    pipe = await make_pipeline(db)
+    job = await make_job(db, pipe)
+    await make_job_score(db, job, (now - timedelta(days=400)).date(), 0.5)
+    await make_job_score(db, job, (now - timedelta(days=10)).date(), 0.5)
+    await db.commit()
+
+    result = await prune(db, now=now, report_days=7, execution_days=90, history_days=365)
+    await db.commit()
+
+    assert result.score_history == 1
+    remaining = (await db.execute(select(func.count()).select_from(JobScoreHistory))).scalar()
     assert remaining == 1

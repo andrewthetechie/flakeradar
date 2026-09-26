@@ -19,6 +19,7 @@ from .models import (
     JOB_FAILED,
     Job,
     JobExecution,
+    JobScoreHistory,
     Pipeline,
     Project,
     Repo,
@@ -459,7 +460,9 @@ async def latest_failure(db: AsyncSession, test_id: int) -> schemas.ExecutionOut
 # --- Jobs (task 06) ------------------------------------------------------
 
 
-def to_job_out(job: Job, pipeline: Pipeline, repo: Repo, threshold: float) -> schemas.JobOut:
+def to_job_out(
+    job: Job, pipeline: Pipeline, repo: Repo, threshold: float, trend: Trend | None = None
+) -> schemas.JobOut:
     return schemas.JobOut(
         id=job.id,
         repo=repo.name,
@@ -469,11 +472,36 @@ def to_job_out(job: Job, pipeline: Pipeline, repo: Repo, threshold: float) -> sc
         flakiness_score=job.flakiness_score,
         tier=tier_for(job.flakiness_score, threshold),
         confirmed_flake_count=job.confirmed_flake_count,
+        clean_streak=job.clean_streak,
+        trend=trend,
         last_status=job.last_status,
         last_seen_at=job.last_seen_at,
         github_issue_number=job.github_issue_number,
         github_issue_url=issue_url(repo.name, job.github_issue_number) if pipeline.provider == "github" else None,
     )
+
+
+async def past_job_scores(db: AsyncSession, job_ids: list[int]) -> dict[int, float]:
+    """Score of each Job's newest history row at least TREND_DAYS old."""
+    cutoff = utcnow().date() - timedelta(days=TREND_DAYS)
+    found: dict[int, float] = {}
+    for chunk in chunks(job_ids):
+        rn = (
+            func.row_number()
+            .over(
+                partition_by=JobScoreHistory.job_id,
+                order_by=JobScoreHistory.day.desc(),
+            )
+            .label("rn")
+        )
+        ranked = (
+            select(JobScoreHistory.job_id, JobScoreHistory.flakiness_score, rn)
+            .where(JobScoreHistory.job_id.in_(chunk), JobScoreHistory.day <= cutoff)
+            .subquery()
+        )
+        rows = await db.execute(select(ranked.c.job_id, ranked.c.flakiness_score).where(ranked.c.rn == 1))
+        found.update(dict(rows.all()))
+    return found
 
 
 def jobs_select() -> Select:
@@ -512,8 +540,12 @@ async def list_jobs(
         "proven": (Job.confirmed_flake_count.desc(), Job.flakiness_score.desc(), Job.id),
     }[sort]
     rows = (await db.execute(stmt.order_by(*order).offset((page - 1) * page_size).limit(page_size))).all()
+    past = await past_job_scores(db, [job.id for job, _, _ in rows])
     return schemas.JobPage(
-        items=[to_job_out(job, pipeline, repo, threshold) for job, pipeline, repo in rows],
+        items=[
+            to_job_out(job, pipeline, repo, threshold, trend=trend_for(job.flakiness_score, past.get(job.id)))
+            for job, pipeline, repo in rows
+        ],
         total=total,
         page=page,
         page_size=page_size,
@@ -641,11 +673,36 @@ async def get_job(
         for j in exec_outs:
             j.explained_by = by_exec.get(j.id, [])
 
+    past = await past_job_scores(db, [job.id])
+    history_rows = (
+        (
+            await db.execute(
+                select(JobScoreHistory)
+                .where(
+                    JobScoreHistory.job_id == job_id,
+                    JobScoreHistory.day > utcnow().date() - timedelta(days=HISTORY_DAYS),
+                )
+                .order_by(JobScoreHistory.day)
+            )
+        )
+        .scalars()
+        .all()
+    )
     return schemas.JobHistoryOut(
-        job=to_job_out(job, pipeline, repo, threshold),
+        job=to_job_out(job, pipeline, repo, threshold, trend=trend_for(job.flakiness_score, past.get(job.id))),
         unexplained_failures=unexplained,
         explained_failures=explained_failures,
         executions=exec_outs,
+        score_history=[
+            schemas.ScorePointOut(
+                day=h.day,
+                flakiness_score=h.flakiness_score,
+                confirmed_flake_count=h.confirmed_flake_count,
+                executions=h.executions,
+                failures=h.failures,
+            )
+            for h in history_rows
+        ],
     )
 
 
@@ -659,7 +716,11 @@ async def search_jobs(
         (Job.name.ilike(pattern, escape="\\")) | (Pipeline.name.ilike(pattern, escape="\\")),
     )
     rows = (await db.execute(stmt.order_by(Job.flakiness_score.desc(), Job.id).limit(limit))).all()
-    return [to_job_out(job, pipeline, reponame, threshold) for job, pipeline, reponame in rows]
+    past = await past_job_scores(db, [job.id for job, _, _ in rows])
+    return [
+        to_job_out(job, pipeline, reponame, threshold, trend=trend_for(job.flakiness_score, past.get(job.id)))
+        for job, pipeline, reponame in rows
+    ]
 
 
 async def find_job_ids(db: AsyncSession, repo: str, name: str, pipeline: str | None = None) -> list[int]:
