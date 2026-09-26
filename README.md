@@ -272,9 +272,10 @@ Each failed retry counts as one failure, including for
 ## Failure categories
 
 Every failing test execution gets a **likely cause**: `network`, `environment`,
-`timing`, `assertion` or `other`, assigned by fixed rules from fixed-to-general
-order. The failure **message** is checked first; the failure details only when
-the message matches nothing.
+`timing`, `assertion` or `other`. Fixed rules assign it, tried from most to
+least specific: network → environment → timing → assertion. A failure that
+matches no rule is `other`. The failure **message** is checked first; the
+failure details only when the message matches nothing.
 
 For example, `Timed out 5000ms waiting for expect(...)` is `timing`, and
 `connect ECONNREFUSED` is `network`. A test's category is the most common one
@@ -350,6 +351,9 @@ in the clear.
 | `top_flaky_tests(repo, project?, limit=20, include_suspect=true, file?, category?)` | worst tests first; `category` (network/environment/timing/assertion/other) filters by likely cause |
 | `search_tests(repo, query, project?, limit=20)` | tests whose name, classname or file contains `query` |
 | `get_test(test_id \| repo+project+name[+classname], executions_limit=20)` | location + GitHub permalink, last failing commit, latest failure message and traceback (≤4 KB), recent executions, score history (30 days) |
+| `top_flaky_jobs(repo, limit=20, include_suspect=true)` | worst CI jobs first (scores count only unexplained failures) |
+| `search_jobs(repo, query, limit=20)` | jobs whose name or pipeline contains `query` |
+| `get_job(job_id \| repo+name[+pipeline], executions_limit=20)` | unexplained vs explained failures, recent executions with the explaining tests, score history (30 days) |
 
 ## GitHub issue automation
 
