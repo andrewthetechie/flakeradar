@@ -20,6 +20,7 @@ from . import scoring
 from .config import get_settings
 from .models import (
     REPORT_FAILED,
+    REPORT_KIND_JUNIT,
     REPORT_PENDING,
     REPORT_PROCESSED,
     Project,
@@ -182,6 +183,10 @@ async def rescore_repo(db: AsyncSession, repo_id: int) -> list[int]:
 
 async def process_report(db: AsyncSession, report: Report) -> ProcessOutcome:
     """Persist one Report as a Run. Caller owns the transaction (no commit here)."""
+    if report.kind != REPORT_KIND_JUNIT:
+        # Pipeline reports are consumed by task 04; until then mark them failed
+        # cleanly instead of crashing on a missing Project.
+        raise ValueError("pipeline reports are not processed yet")
     parsed = await asyncio.to_thread(parse_junit_xml, report.body)
     now = utcnow()
 

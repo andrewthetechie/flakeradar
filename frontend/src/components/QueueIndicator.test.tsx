@@ -6,6 +6,7 @@ import { QueueIndicator } from "./QueueIndicator";
 
 const failedReport: ReportInfo = {
   id: 12,
+  kind: "junit",
   repo: "andrewthetechie/writers-app",
   project: "e2e",
   commit_sha: "abcdef1234567",
@@ -49,5 +50,15 @@ describe("QueueIndicator", () => {
     );
     await userEvent.click(screen.getByRole("button"));
     expect(await screen.findByText("No failed reports.")).toBeInTheDocument();
+  });
+
+  it("renders a pipeline row when the report has no project", async () => {
+    const pipelineReport: ReportInfo = { ...failedReport, id: 13, kind: "pipeline", project: null };
+    const loadFailed = vi.fn().mockResolvedValue([pipelineReport]);
+    render(<QueueIndicator summary={{ pending: 0, failed: 1 }} loadFailed={loadFailed} />);
+    await userEvent.click(screen.getByRole("button"));
+    expect(
+      await screen.findByText("#13 · andrewthetechie/writers-app · pipeline · abcdef1234"),
+    ).toBeInTheDocument();
   });
 });

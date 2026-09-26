@@ -140,8 +140,9 @@ export async function setQuarantine(id: number, quarantined: boolean): Promise<T
 
 export interface ReportInfo {
   id: number;
+  kind: "junit" | "pipeline";
   repo: string;
-  project: string;
+  project: string | null;
   commit_sha: string;
   branch: string;
   ci_run_id: string;

@@ -127,7 +127,7 @@ async def make_report(
     default_branch: str | None = None,
 ) -> Report:
     rep = Report(
-        project_id=project.id,
+        project_id=None if kind == "pipeline" else project.id,
         kind=kind,
         repo_id=project.repo_id,
         commit_sha=commit_sha,

@@ -4,6 +4,7 @@ import pytest
 from app.identity import (
     get_or_create_project,
     normalize_project,
+    normalize_provider,
     normalize_repo,
     normalize_root,
 )
@@ -34,6 +35,14 @@ def test_normalize_root():
     assert normalize_root("/apps/web") == "apps/web"
     with pytest.raises(ValueError):
         normalize_root("../secrets")
+
+
+def test_normalize_provider():
+    assert normalize_provider(" GitHub ") == "github"
+    assert normalize_provider("GITLAB") == "gitlab"
+    for bad in ["", "a/b", "has space", "x" * 33]:
+        with pytest.raises(ValueError):
+            normalize_provider(bad)
 
 
 async def test_get_or_create_project_is_idempotent(db):

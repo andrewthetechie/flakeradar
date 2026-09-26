@@ -1,9 +1,9 @@
 """Pydantic response models — the typed contract the frontend and MCP consume."""
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class IngestAccepted(BaseModel):
@@ -11,10 +11,34 @@ class IngestAccepted(BaseModel):
     status: str  # always "pending"
 
 
+class JobResultIn(BaseModel):
+    ci_job_id: str = Field(min_length=1, max_length=255)
+    name: str = Field(min_length=1, max_length=512)
+    status: Literal["passed", "failed", "skipped"]
+    url: str = Field(default="", max_length=2048)
+    runner_name: str = Field(default="", max_length=255)
+    runner_labels: list[Annotated[str, Field(max_length=255)]] = Field(default_factory=list, max_length=50)
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+
+
+class PipelineReportIn(BaseModel):
+    repo: str = Field(max_length=255)
+    provider: str = Field(max_length=32)
+    pipeline: str = Field(min_length=1, max_length=512)
+    commit_sha: str = Field(min_length=1, max_length=64)
+    branch: str = Field(min_length=1, max_length=255)
+    default_branch: str | None = Field(default=None, max_length=255)
+    ci_run_id: str = Field(default="", max_length=255)
+    ci_run_attempt: int = Field(default=1, ge=1)
+    jobs: list[JobResultIn] = Field(min_length=1, max_length=1000)
+
+
 class ReportOut(BaseModel):
     id: int
+    kind: str  # junit | pipeline
     repo: str
-    project: str
+    project: str | None
     commit_sha: str
     branch: str
     ci_run_id: str

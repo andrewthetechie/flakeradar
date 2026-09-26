@@ -13,13 +13,16 @@ from ..db import get_db
 from ..identity import (
     DEFAULT_PROJECT,
     get_or_create_project,
+    get_or_create_repo,
     normalize_project,
+    normalize_provider,
     normalize_repo,
     normalize_root,
 )
 from ..models import (
     REPORT_FAILED,
     REPORT_KIND_JUNIT,
+    REPORT_KIND_PIPELINE,
     REPORT_PENDING,
     REPORT_STATUSES,
     Project,
@@ -105,16 +108,19 @@ async def _read_report(request: Request) -> bytes:
 
 
 def _report_query() -> Select:
+    # Pipeline reports have project_id NULL; outer-join Project so they still
+    # appear. Repo is always known (repo_id is NOT NULL).
     return (
-        select(Report, Project.name, Repo.name)
-        .join(Project, Report.project_id == Project.id)
-        .join(Repo, Project.repo_id == Repo.id)
+        select(Report, Repo.name, Project.name)
+        .join(Repo, Report.repo_id == Repo.id)
+        .outerjoin(Project, Report.project_id == Project.id)
     )
 
 
-def _report_out(report: Report, project: str, repo: str) -> schemas.ReportOut:
+def _report_out(report: Report, repo: str, project: str | None) -> schemas.ReportOut:
     return schemas.ReportOut(
         id=report.id,
+        kind=report.kind,
         repo=repo,
         project=project,
         commit_sha=report.commit_sha,
@@ -127,6 +133,66 @@ def _report_out(report: Report, project: str, repo: str) -> schemas.ReportOut:
         created_at=report.created_at,
         processed_at=report.processed_at,
     )
+
+
+@router.post(
+    "/api/ingest/pipeline",
+    status_code=202,
+    response_model=schemas.IngestAccepted,
+    dependencies=[Depends(require_token)],
+)
+async def ingest_pipeline(body: schemas.PipelineReportIn, db: AsyncSession = Depends(get_db)):
+    """Accept one attempt of one Pipeline run as a JSON report.
+
+    Validates and normalizes here, then queues a `pending` pipeline Report; the
+    processor (task 04) turns it into Job executions. The stored body is the
+    normalized payload, and its jobs already passed Pydantic validation.
+    """
+    try:
+        repo_name = normalize_repo(body.repo)
+        provider = normalize_provider(body.provider)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    pipeline = body.pipeline.strip()
+    branch = body.branch.strip()
+    default_branch = (body.default_branch or "").strip() or None
+
+    seen: set[str] = set()
+    jobs = []
+    for j in body.jobs:
+        if j.ci_job_id in seen:
+            raise HTTPException(status_code=422, detail="duplicate ci_job_id in jobs")
+        seen.add(j.ci_job_id)
+        jobs.append(j.model_copy(update={"name": j.name.strip()}))
+
+    repo = await get_or_create_repo(db, repo_name)
+    payload = body.model_copy(
+        update={
+            "repo": repo_name,
+            "provider": provider,
+            "pipeline": pipeline,
+            "branch": branch,
+            "default_branch": default_branch,
+            "jobs": jobs,
+        }
+    )
+    row = Report(
+        kind=REPORT_KIND_PIPELINE,
+        repo_id=repo.id,
+        project_id=None,
+        commit_sha=payload.commit_sha,
+        branch=payload.branch,
+        ci_run_id=payload.ci_run_id,
+        ci_run_attempt=payload.ci_run_attempt,
+        pipeline=payload.pipeline,
+        default_branch=payload.default_branch,
+        body=payload.model_dump_json().encode(),
+        status=REPORT_PENDING,
+    )
+    db.add(row)
+    await db.commit()
+    return schemas.IngestAccepted(report_id=row.id, status=REPORT_PENDING)
 
 
 # Declared before /api/reports/{report_id} so "summary" is not parsed as an id.
@@ -177,11 +243,11 @@ async def retry_report(report_id: int, db: AsyncSession = Depends(get_db)):
     row = (await db.execute(_report_query().where(Report.id == report_id))).first()
     if row is None:
         raise HTTPException(status_code=404, detail="Report not found")
-    report, project, repo = row
+    report, repo, project = row
     if report.status != REPORT_FAILED:
         raise HTTPException(status_code=409, detail="Only failed reports can be retried")
     report.status = REPORT_PENDING
     report.error = None
     report.processed_at = None
     await db.commit()
-    return _report_out(report, project, repo)
+    return _report_out(report, repo, project)
