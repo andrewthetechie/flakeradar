@@ -2,18 +2,27 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   fetchFailedReports,
   fetchHistory,
+  fetchJobHistory,
+  fetchJobSummary,
+  fetchJobs,
   fetchReportSummary,
   fetchRepos,
   fetchSummary,
   fetchTests,
   setQuarantine,
   type History,
+  type JobHistory,
+  type JobPage,
+  type JobSummary,
   type RepoInfo,
   type ReportSummary,
   type Summary,
-  type TestPage,
   type TestCase,
+  type TestPage,
 } from "./api";
+import { JobDrawer } from "./components/JobDrawer";
+import { JobLeaderboard } from "./components/JobLeaderboard";
+import { JobStatTiles } from "./components/JobStatTiles";
 import { Leaderboard } from "./components/Leaderboard";
 import { LeaderboardControls } from "./components/LeaderboardControls";
 import { Pagination } from "./components/Pagination";
@@ -22,6 +31,7 @@ import { ScopePicker } from "./components/ScopePicker";
 import { StatTiles } from "./components/StatTiles";
 import { TestDrawer } from "./components/TestDrawer";
 import { ThemeToggle } from "./components/ThemeToggle";
+import { ViewToggle } from "./components/ViewToggle";
 import { useViewState } from "./urlState";
 
 const REFRESH_MS = 30_000;
@@ -31,12 +41,15 @@ export default function App() {
   const [view, setView] = useViewState();
   const [repos, setRepos] = useState<RepoInfo[]>([]);
   const [summary, setSummary] = useState<Summary | null>(null);
+  const [jobSummary, setJobSummary] = useState<JobSummary | null>(null);
   const [queue, setQueue] = useState<ReportSummary | null>(null);
   const [page, setPage] = useState<TestPage | null>(null);
+  const [jobPage, setJobPage] = useState<JobPage | null>(null);
   const [history, setHistory] = useState<History | null>(null);
+  const [jobHistory, setJobHistory] = useState<JobHistory | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const { repo, project, sort, showStable } = view;
+  const { repo, project, sort, showStable, view: kind } = view;
   const pageNumber = view.page;
 
   // Only the newest refresh may write state: a slow response for the old
@@ -44,26 +57,42 @@ export default function App() {
   const latestRefresh = useRef(0);
 
   const refresh = useCallback(async () => {
-    const scope = { repo, project };
     const request = ++latestRefresh.current;
     try {
-      const [r, s, t, q] = await Promise.all([
-        fetchRepos(),
-        fetchSummary(scope),
-        fetchTests({ ...scope, page: pageNumber, pageSize: PAGE_SIZE, sort, showStable }),
-        fetchReportSummary(),
-      ]);
-      if (request !== latestRefresh.current) return;
-      setRepos(r);
-      setSummary(s);
-      setPage(t);
-      setQueue(q);
-      setError(null);
+      const queueQ = fetchReportSummary();
+      if (kind === "jobs") {
+        const [r, s, jobs, q] = await Promise.all([
+          fetchRepos(),
+          fetchJobSummary(repo),
+          fetchJobs({ repo, page: pageNumber, pageSize: PAGE_SIZE, sort, showStable }),
+          queueQ,
+        ]);
+        if (request !== latestRefresh.current) return;
+        setRepos(r);
+        setJobSummary(s);
+        setJobPage(jobs);
+        setQueue(q);
+        setError(null);
+      } else {
+        const scope = { repo, project };
+        const [r, s, t, q] = await Promise.all([
+          fetchRepos(),
+          fetchSummary(scope),
+          fetchTests({ ...scope, page: pageNumber, pageSize: PAGE_SIZE, sort, showStable }),
+          queueQ,
+        ]);
+        if (request !== latestRefresh.current) return;
+        setRepos(r);
+        setSummary(s);
+        setPage(t);
+        setQueue(q);
+        setError(null);
+      }
     } catch (e) {
       if (request !== latestRefresh.current) return;
       setError(e instanceof Error ? e.message : String(e));
     }
-  }, [repo, project, pageNumber, sort, showStable]);
+  }, [kind, repo, project, pageNumber, sort, showStable]);
 
   useEffect(() => {
     void refresh();
@@ -72,6 +101,23 @@ export default function App() {
   }, [refresh]);
 
   useEffect(() => {
+    if (kind === "jobs") {
+      if (view.job == null) {
+        setJobHistory(null);
+        return;
+      }
+      let cancelled = false;
+      fetchJobHistory(view.job)
+        .then((h) => {
+          if (!cancelled) setJobHistory(h);
+        })
+        .catch((e) => {
+          if (!cancelled) setError(String(e));
+        });
+      return () => {
+        cancelled = true;
+      };
+    }
     if (view.test == null) {
       setHistory(null);
       return;
@@ -87,7 +133,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [view.test, page]); // re-fetch when the leaderboard refreshes
+  }, [kind, view.job, view.test, pageNumber, refresh]); // re-fetch when a drawer's list refreshes
 
   const onToggleQuarantine = useCallback(
     async (t: TestCase) => {
@@ -101,7 +147,21 @@ export default function App() {
     [refresh],
   );
 
-  const closeDrawer = useCallback(() => setView({ test: null }), [setView]);
+  const closeDrawer = useCallback(() => {
+    if (kind === "jobs") setView({ job: null });
+    else setView({ test: null });
+  }, [kind, setView]);
+
+  const openJobFromTest = useCallback(
+    (jobId: number) => setView({ view: "jobs", job: jobId }),
+    [setView],
+  );
+  const openTestFromJob = useCallback(
+    (testId: number) => setView({ view: "tests", test: testId }),
+    [setView],
+  );
+
+  const visiblePage = kind === "jobs" ? jobPage : page;
 
   return (
     <div className="mx-auto max-w-6xl px-4 pt-5 pb-12 sm:px-6">
@@ -115,9 +175,11 @@ export default function App() {
         </div>
         <div className="flex w-full flex-wrap items-center gap-2 sm:ml-auto sm:w-auto">
           <QueueIndicator summary={queue} loadFailed={fetchFailedReports} />
+          <ViewToggle view={kind} onChange={(v) => setView({ view: v })} />
           <ScopePicker
             repos={repos}
             scope={{ repo, project }}
+            showProject={kind === "tests"}
             onChange={(scope) => setView(scope)}
           />
           <ThemeToggle />
@@ -133,7 +195,8 @@ export default function App() {
         </div>
       )}
 
-      {summary && <StatTiles summary={summary} />}
+      {kind === "tests" && summary && <StatTiles summary={summary} />}
+      {kind === "jobs" && jobSummary && <JobStatTiles summary={jobSummary} />}
 
       <section className="rounded-xl border border-line bg-surface">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-4 py-3">
@@ -141,36 +204,56 @@ export default function App() {
           <LeaderboardControls
             sort={sort}
             showStable={showStable}
+            stableLabel={kind === "jobs" ? "Show stable jobs" : "Show stable tests"}
             onSort={(s) => setView({ sort: s })}
             onShowStable={(v) => setView({ showStable: v })}
           />
         </div>
         <div className="overflow-x-auto">
-          <Leaderboard
-            tests={page?.items ?? []}
-            scope={{ repo, project }}
-            showStable={showStable}
-            selectedId={view.test}
-            onSelect={(id) => setView({ test: id })}
-            onToggleQuarantine={onToggleQuarantine}
-          />
+          {kind === "jobs" ? (
+            <JobLeaderboard
+              jobs={jobPage?.items ?? []}
+              repo={repo}
+              showStable={showStable}
+              selectedId={view.job}
+              onSelect={(id) => setView({ job: id })}
+            />
+          ) : (
+            <Leaderboard
+              tests={page?.items ?? []}
+              scope={{ repo, project }}
+              showStable={showStable}
+              selectedId={view.test}
+              onSelect={(id) => setView({ test: id })}
+              onToggleQuarantine={onToggleQuarantine}
+            />
+          )}
         </div>
-        {page && page.total > 0 && (
+        {visiblePage && visiblePage.total > 0 && (
           <Pagination
-            page={page.page}
-            pageSize={page.page_size}
-            total={page.total}
+            page={visiblePage.page}
+            pageSize={visiblePage.page_size}
+            total={visiblePage.total}
             onPage={(p) => setView({ page: p })}
           />
         )}
       </section>
 
-      {view.test != null && (
+      {kind === "tests" && view.test != null && (
         <TestDrawer
           testId={view.test}
           history={history}
           onClose={closeDrawer}
           onToggleQuarantine={onToggleQuarantine}
+          onOpenJob={openJobFromTest}
+        />
+      )}
+      {kind === "jobs" && view.job != null && (
+        <JobDrawer
+          jobId={view.job}
+          history={jobHistory}
+          onClose={closeDrawer}
+          onOpenTest={openTestFromJob}
         />
       )}
 
@@ -181,6 +264,12 @@ export default function App() {
           "$URL/api/ingest?repo=$OWNER/$REPO&amp;project=backend&amp;commit_sha=$SHA&amp;branch=$BRANCH"
           -H "X-API-Key: $TOKEN" --data-binary @junit.xml
         </code>
+        <br />
+        Job-level flakiness: add{" "}
+        <code className="rounded border border-line bg-surface px-1.5 py-0.5 font-mono [overflow-wrap:anywhere]">
+          samples/flakeradar-jobs.yml
+        </code>{" "}
+        to your repo — see the README.
       </footer>
     </div>
   );

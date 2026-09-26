@@ -10,11 +10,13 @@ export function TestDrawer({
   history,
   onClose,
   onToggleQuarantine,
+  onOpenJob,
 }: {
   testId: number;
   history: History | null;
   onClose: () => void;
   onToggleQuarantine: (t: TestCase) => void;
+  onOpenJob: (jobId: number) => void;
 }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -100,7 +102,7 @@ export function TestDrawer({
                 {history.test.quarantined ? "Un-quarantine" : "Quarantine"}
               </button>
             </div>
-            <TestDetail history={history} />
+            <TestDetail history={history} onOpenJob={onOpenJob} />
           </>
         )}
       </aside>

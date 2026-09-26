@@ -32,6 +32,7 @@ const history: History = {
   },
   last_failing_sha: "aaa111",
   last_failing_branch: "main",
+  jobs: [],
   executions: [
     {
       id: 2,
@@ -59,15 +60,17 @@ const history: History = {
 };
 
 function renderDrawer(overrides: Partial<History> = {}, onClose = vi.fn(), onQ = vi.fn()) {
+  const onOpenJob = vi.fn();
   render(
     <TestDrawer
       testId={7}
       history={{ ...history, ...overrides }}
       onClose={onClose}
       onToggleQuarantine={onQ}
+      onOpenJob={onOpenJob}
     />,
   );
-  return { onClose, onQ };
+  return { onClose, onQ, onOpenJob };
 }
 
 describe("TestDrawer", () => {
@@ -102,8 +105,21 @@ describe("TestDrawer", () => {
 
   it("shows a loading state until the right test's history arrives", () => {
     render(
-      <TestDrawer testId={99} history={history} onClose={() => {}} onToggleQuarantine={() => {}} />,
+      <TestDrawer
+        testId={99}
+        history={history}
+        onClose={() => {}}
+        onToggleQuarantine={() => {}}
+        onOpenJob={() => {}}
+      />,
     );
     expect(screen.getByText("Loading…")).toBeInTheDocument();
+  });
+
+  it("lists seen-in-Jobs and navigates to a Job", async () => {
+    const { onOpenJob } = renderDrawer({ jobs: [{ job_id: 3, pipeline: "ci.yml", name: "test" }] });
+    expect(await screen.findByText("Seen in Jobs:")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "ci.yml · test" }));
+    expect(onOpenJob).toHaveBeenCalledWith(3);
   });
 });

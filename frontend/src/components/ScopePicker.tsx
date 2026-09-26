@@ -6,10 +6,12 @@ export function ScopePicker({
   repos,
   scope,
   onChange,
+  showProject = true,
 }: {
   repos: RepoInfo[];
   scope: Scope;
   onChange: (scope: Scope) => void;
+  showProject?: boolean;
 }) {
   const projects = repos.find((r) => r.name === scope.repo)?.projects ?? [];
   return (
@@ -27,20 +29,22 @@ export function ScopePicker({
           </option>
         ))}
       </select>
-      <select
-        aria-label="Project"
-        className="control min-w-0 flex-1 disabled:opacity-50 sm:max-w-48"
-        value={scope.project ?? ""}
-        disabled={!scope.repo}
-        onChange={(e) => onChange({ repo: scope.repo, project: e.target.value || null })}
-      >
-        <option value="">All projects</option>
-        {projects.map((p) => (
-          <option key={p.name} value={p.name}>
-            {p.name}
-          </option>
-        ))}
-      </select>
+      {showProject && (
+        <select
+          aria-label="Project"
+          className="control min-w-0 flex-1 disabled:opacity-50 sm:max-w-48"
+          value={scope.project ?? ""}
+          disabled={!scope.repo}
+          onChange={(e) => onChange({ repo: scope.repo, project: e.target.value || null })}
+        >
+          <option value="">All projects</option>
+          {projects.map((p) => (
+            <option key={p.name} value={p.name}>
+              {p.name}
+            </option>
+          ))}
+        </select>
+      )}
     </div>
   );
 }

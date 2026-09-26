@@ -9,11 +9,13 @@ const SORT_LABELS: Record<SortKey, string> = {
 export function LeaderboardControls({
   sort,
   showStable,
+  stableLabel = "Show stable tests",
   onSort,
   onShowStable,
 }: {
   sort: SortKey;
   showStable: boolean;
+  stableLabel?: string;
   onSort: (sort: SortKey) => void;
   onShowStable: (show: boolean) => void;
 }) {
@@ -40,7 +42,7 @@ export function LeaderboardControls({
           checked={showStable}
           onChange={(e) => onShowStable(e.target.checked)}
         />
-        Show stable tests
+        {stableLabel}
       </label>
     </div>
   );
