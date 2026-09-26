@@ -133,12 +133,100 @@ class LocationOut(BaseModel):
     url: str | None  # GitHub permalink at the last failing SHA, when one exists
 
 
+class TestJobLinkOut(BaseModel):
+    __test__ = False
+
+    job_id: int
+    pipeline: str
+    name: str
+
+
 class HistoryOut(BaseModel):
     test: TestOut
     location: LocationOut | None  # None when the runner never reported a file
     last_failing_sha: str | None
     last_failing_branch: str | None
     executions: list[ExecutionOut]  # newest first
+    jobs: list[TestJobLinkOut]  # "seen in Jobs": Jobs whose executions share a ci_job_id with these Runs
+
+
+# --- Jobs (task 06) ----------------------------------------------------
+
+
+class JobOut(BaseModel):
+    __test__ = False
+
+    id: int
+    repo: str
+    provider: str
+    pipeline: str
+    name: str
+    flakiness_score: float
+    tier: Tier
+    confirmed_flake_count: int
+    last_status: str
+    last_seen_at: datetime
+    github_issue_number: int | None
+    github_issue_url: str | None  # only when provider == "github"
+
+
+class JobPage(BaseModel):
+    __test__ = False
+
+    items: list[JobOut]
+    total: int
+    page: int
+    page_size: int
+
+
+class ExplainingTestOut(BaseModel):
+    __test__ = False
+
+    test_id: int
+    project: str
+    classname: str
+    name: str
+    status: str  # failed | error
+
+
+class JobExecutionOut(BaseModel):
+    __test__ = False
+
+    id: int
+    status: str  # passed | failed | skipped (as stored)
+    outcome: Literal["passed", "failed", "explained", "skipped"]  # failed = unexplained
+    commit_sha: str
+    branch: str
+    ci_run_id: str
+    ci_run_attempt: int
+    ci_job_id: str
+    url: str
+    runner_name: str
+    runner_labels: list[str]
+    started_at: datetime | None
+    completed_at: datetime | None
+    created_at: datetime
+    explained_by: list[ExplainingTestOut]  # empty unless outcome == "explained"
+
+
+class JobHistoryOut(BaseModel):
+    __test__ = False
+
+    job: JobOut
+    unexplained_failures: int  # over the returned executions
+    explained_failures: int
+    executions: list[JobExecutionOut]  # newest first
+
+
+class JobSummaryOut(BaseModel):
+    __test__ = False
+
+    total_jobs: int
+    flaky_jobs: int
+    suspect_jobs: int
+    confirmed_flaky_jobs: int
+    total_job_executions: int
+    flake_threshold: float
 
 
 class QuarantineIn(BaseModel):
