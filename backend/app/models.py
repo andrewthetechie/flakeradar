@@ -46,7 +46,6 @@ REPORT_KINDS = (REPORT_KIND_JUNIT, REPORT_KIND_PIPELINE)
 
 # A Job execution's status, already normalized by the CI reporter.
 JobStatus = Literal["passed", "failed", "skipped"]
-JOB_PASSED: JobStatus = "passed"
 JOB_FAILED: JobStatus = "failed"
 JOB_SKIPPED: JobStatus = "skipped"
 JOB_STATUSES: tuple[JobStatus, ...] = get_args(JobStatus)

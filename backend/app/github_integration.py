@@ -22,7 +22,6 @@ Error handling: never raises.
 """
 
 import logging
-from collections.abc import Iterator
 from dataclasses import dataclass
 
 import httpx
@@ -31,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from . import queries
 from .attribution import unexplained_failure_counts
+from .batching import chunks
 from .config import Settings, get_settings
 from .models import (
     REPORT_PROCESSED,
@@ -42,7 +42,7 @@ from .models import (
     TestExecution,
     TestRun,
 )
-from .processing import CHUNK, ProcessOutcome
+from .processing import ProcessOutcome
 from .scoring import FAILING
 
 logger = logging.getLogger("flakeradar.github")
@@ -73,14 +73,6 @@ def _headers(token: str) -> dict[str, str]:
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
     }
-
-
-def _chunks(ids: list[int]) -> Iterator[list[int]]:
-    """Split `ids` into batches of `CHUNK`, staying under the DB driver's bind-param limit."""
-    for i in range(0, len(ids), CHUNK):
-        chunk = ids[i : i + CHUNK]
-        if chunk:
-            yield chunk
 
 
 _RUN_HINT_TEMPLATES: dict[str, str] = {
@@ -193,7 +185,7 @@ async def _window_failures(db: AsyncSession, test_case_ids: list[int], window: i
     """Count failed/error executions per Test over its most recent `window` runs."""
     rn = func.row_number().over(partition_by=TestExecution.test_case_id, order_by=TestExecution.id.desc()).label("rn")
     counts: dict[int, int] = {}
-    for chunk in _chunks(test_case_ids):
+    for chunk in chunks(test_case_ids):
         ranked = (
             select(TestExecution.test_case_id, TestExecution.status, rn)
             .where(TestExecution.test_case_id.in_(chunk))
@@ -211,7 +203,7 @@ async def _select_candidates(db: AsyncSession, test_case_ids: list[int]) -> list
     s = get_settings()
     gate = _FilingGate.from_settings(s)
     candidates: list[tuple[TestCase, str, str, str]] = []
-    for chunk in _chunks(test_case_ids):
+    for chunk in chunks(test_case_ids):
         candidates += (
             await db.execute(
                 select(TestCase, Repo.name, Project.name, Project.root)
@@ -293,7 +285,7 @@ async def _job_candidates(db: AsyncSession, job_ids: list[int]) -> list[tuple[Jo
     s = get_settings()
     gate = _FilingGate.from_settings(s)
     candidates: list[tuple[Job, str, str]] = []
-    for chunk in _chunks(job_ids):
+    for chunk in chunks(job_ids):
         candidates += (
             await db.execute(
                 select(Job, Pipeline.name, Repo.name)

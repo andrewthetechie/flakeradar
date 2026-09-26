@@ -202,6 +202,7 @@ async def test_get_job_by_id_and_by_name_with_explained(mcp, db):
         "created_at",
         "explained_by",
     }
+    assert explained["created_at"].endswith("+00:00")  # isoformat(), as before the schema dump
     assert missing.is_error and "No job named 'nope'" in missing.content[0].text
 
 

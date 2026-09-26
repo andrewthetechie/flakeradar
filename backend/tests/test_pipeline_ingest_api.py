@@ -51,9 +51,9 @@ async def test_valid_pipeline_report_is_queued(client, db):
 
 
 async def test_pipeline_ingest_strips_names(client, db):
-    payload = _payload(pipeline="  ci.yml ", branch=" feat ", default_branch="  ")
-    payload["jobs"][0]["name"] = " build "
-    resp = await client.post("/api/ingest/pipeline", json=payload, headers=AUTH)
+    report_json = _payload(pipeline="  ci.yml ", branch=" feat ", default_branch="  ")
+    report_json["jobs"][0]["name"] = " build "
+    resp = await client.post("/api/ingest/pipeline", json=report_json, headers=AUTH)
     assert resp.status_code == 202, resp.text
     rep = (await db.execute(select(Report).where(Report.id == resp.json()["report_id"]))).scalar_one()
     stored = json.loads(rep.body)

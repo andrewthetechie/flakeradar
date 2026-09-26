@@ -266,10 +266,15 @@ def build_mcp(session_factory: async_sessionmaker[AsyncSession], *, api_token: s
             )
             if history is None:
                 raise ToolError(f"No job with id {job_id}.")
-        for e in history.executions:
-            e.explained_by = e.explained_by[:_EXPLAINED_BY_MAX]
         return history.model_dump(mode="json", include={"job", "unexplained_failures", "explained_failures"}) | {
-            "executions": [e.model_dump(mode="json", include=_JOB_EXECUTION_FIELDS) for e in history.executions]
+            "executions": [
+                e.model_dump(mode="json", include=_JOB_EXECUTION_FIELDS)
+                | {
+                    "created_at": e.created_at.isoformat(),
+                    "explained_by": [t.model_dump(mode="json") for t in e.explained_by[:_EXPLAINED_BY_MAX]],
+                }
+                for e in history.executions
+            ]
         }
 
     return mcp

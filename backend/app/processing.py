@@ -17,7 +17,8 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from . import scoring
-from .attribution import explained
+from .attribution import explained_clause
+from .batching import chunks
 from .config import get_settings
 from .models import (
     JOB_FAILED,
@@ -43,7 +44,6 @@ from .schemas import PipelineReportIn
 
 logger = logging.getLogger("flakeradar.processing")
 
-CHUNK = 1000
 ERROR_MAX = 2000
 
 
@@ -56,11 +56,6 @@ class ProcessOutcome:
     touched_test_ids: list[int]
     error: str | None
     touched_job_ids: list[int] = field(default_factory=list)
-
-
-def _chunks(items: list, size: int = CHUNK):
-    for i in range(0, len(items), size):
-        yield items[i : i + size]
 
 
 async def claim_next_report(db: AsyncSession) -> Report | None:
@@ -85,12 +80,12 @@ async def _upsert_test_cases(db: AsyncSession, project_id: int, parsed: list[Par
         {"project_id": project_id, "fingerprint": fp, "suite": pc.suite, "classname": pc.classname, "name": pc.name}
         for fp, pc in by_fp.items()
     ]
-    for chunk in _chunks(rows):
+    for chunk in chunks(rows):
         await db.execute(
             pg_insert(TestCase).values(chunk).on_conflict_do_nothing(constraint="uq_test_cases_project_fingerprint")
         )
     ids: dict[str, int] = {}
-    for chunk in _chunks(list(by_fp)):
+    for chunk in chunks(list(by_fp)):
         result = await db.execute(
             select(TestCase.fingerprint, TestCase.id).where(
                 TestCase.project_id == project_id, TestCase.fingerprint.in_(chunk)
@@ -121,7 +116,7 @@ async def rescore(db: AsyncSession, test_case_ids: list[int]) -> None:
     )
     history: dict[int, list[tuple[str, str, str]]] = defaultdict(list)  # id -> [(sha, branch, status)]
     default_branch: dict[int, str | None] = {}  # id -> branch (constant per Test/Repo)
-    for chunk in _chunks(test_case_ids):
+    for chunk in chunks(test_case_ids):
         ranked = (
             select(
                 TestExecution.id,
@@ -160,7 +155,7 @@ async def rescore(db: AsyncSession, test_case_ids: list[int]) -> None:
             settings.score_window,
         )
         updates.append({"id": tc_id, "flakiness_score": score, "confirmed_flake_count": confirmed})
-    for chunk in _chunks(updates):
+    for chunk in chunks(updates):
         await db.execute(update(TestCase), chunk)
 
 
@@ -218,7 +213,7 @@ async def _job_history(
     )
     history: dict[int, list[tuple[str, str, str]]] = defaultdict(list)
     branches: dict[int, str | None] = {}
-    for chunk in _chunks(job_ids):
+    for chunk in chunks(job_ids):
         ranked = (
             select(
                 JobExecution.id,
@@ -226,7 +221,7 @@ async def _job_history(
                 JobExecution.commit_sha,
                 JobExecution.branch,
                 JobExecution.status,
-                explained(JobExecution.ci_job_id, Pipeline.repo_id).label("explained"),
+                explained_clause(JobExecution.ci_job_id, Pipeline.repo_id).label("explained"),
                 Repo.default_branch,
                 rn_all,
                 rn_def,
@@ -271,7 +266,7 @@ async def rescore_jobs(db: AsyncSession, job_ids: list[int]) -> None:
             settings.score_window,
         )
         updates.append({"id": job_id, "flakiness_score": score, "confirmed_flake_count": confirmed})
-    for chunk in _chunks(updates):
+    for chunk in chunks(updates):
         await db.execute(update(Job), chunk)
 
 
@@ -319,14 +314,14 @@ async def process_pipeline_report(db: AsyncSession, report: Report) -> ProcessOu
     ).scalar_one()
 
     job_names = sorted({j.name for j in pipeline_report.jobs})
-    for chunk in _chunks(job_names):
+    for chunk in chunks(job_names):
         await db.execute(
             pg_insert(Job)
             .values([{"pipeline_id": pipeline_id, "name": n, "last_seen_at": now} for n in chunk])
             .on_conflict_do_nothing(constraint="uq_jobs_pipeline_name")
         )
     job_ids: dict[str, int] = {}
-    for chunk in _chunks(job_names):
+    for chunk in chunks(job_names):
         rows = await db.execute(select(Job.name, Job.id).where(Job.pipeline_id == pipeline_id, Job.name.in_(chunk)))
         job_ids.update(dict(rows.all()))
 
@@ -352,7 +347,7 @@ async def process_pipeline_report(db: AsyncSession, report: Report) -> ProcessOu
 
     jobs_with_new_exec: set[int] = set()
     new_counts = dict.fromkeys(JOB_STATUSES, 0)
-    for chunk in _chunks(exec_rows):
+    for chunk in chunks(exec_rows):
         inserted = (
             await db.execute(
                 pg_insert(JobExecution)
@@ -371,7 +366,7 @@ async def process_pipeline_report(db: AsyncSession, report: Report) -> ProcessOu
         if job_ids[j.name] in jobs_with_new_exec:
             status_by_job[job_ids[j.name]] = j.status
     if status_by_job:
-        for chunk in _chunks(list(status_by_job.items())):
+        for chunk in chunks(list(status_by_job.items())):
             await db.execute(
                 update(Job),
                 [{"id": jid, "last_status": s, "last_seen_at": now} for jid, s in chunk],
@@ -452,9 +447,9 @@ async def process_report(db: AsyncSession, report: Report) -> ProcessOutcome:
             row["file"] = pc.file
             row["line"] = pc.line
 
-    for chunk in _chunks(executions):
+    for chunk in chunks(executions):
         await db.execute(insert(TestExecution), chunk)
-    for chunk in _chunks(list(latest.values())):
+    for chunk in chunks(list(latest.values())):
         await db.execute(update(TestCase), chunk)
 
     touched = sorted(latest)
