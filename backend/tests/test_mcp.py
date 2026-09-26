@@ -92,6 +92,19 @@ async def test_top_flaky_tests(mcp, db):
     assert bad.is_error
 
 
+async def test_top_flaky_tests_category(mcp, db):
+    proj = await make_project(db, "acme/app", "backend")
+    await make_test_case(db, proj, name="A", flakiness_score=0.8, failure_category="timing")
+    await make_test_case(db, proj, name="B", flakiness_score=0.2, failure_category="network")
+    await make_test_case(db, proj, name="C", flakiness_score=0.5, failure_category="timing")
+    await db.commit()
+    async with Client(mcp) as c:
+        network = (await c.call_tool("top_flaky_tests", {"repo": "acme/app", "category": "network"})).data
+        bad = await c.call_tool("top_flaky_tests", {"repo": "acme/app", "category": "nope"}, raise_on_error=False)
+    assert [t["name"] for t in network] == ["B"]
+    assert bad.is_error and "category must be one of" in bad.content[0].text
+
+
 async def test_search_tests_matches_name_classname_and_file(mcp, db):
     await _seed(db)
     async with Client(mcp) as c:

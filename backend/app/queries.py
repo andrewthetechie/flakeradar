@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from . import schemas
 from .attribution import explained_ci_job_ids
+from .classify import CATEGORIES, FailureCategory
 from .models import JOB_FAILED, Job, JobExecution, Pipeline, Project, Repo, TestCase, TestExecution, TestRun, utcnow
 from .scoring import FAILING
 
@@ -116,6 +117,7 @@ async def list_tests(
     page: int = 1,
     page_size: int = 50,
     file: str | None = None,
+    category: FailureCategory | None = None,
 ) -> schemas.TestPage:
     stmt = _scoped(tests_select(), scope)
     if flaky_only:
@@ -124,6 +126,8 @@ async def list_tests(
         stmt = stmt.where(TestCase.flakiness_score > 0)
     if file:
         stmt = stmt.where(TestCase.file.ilike(f"%{escape_like(file)}%", escape="\\"))
+    if category:
+        stmt = stmt.where(TestCase.failure_category == category)
 
     total = (await db.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one()
 
@@ -178,6 +182,17 @@ async def summary(db: AsyncSession, scope: Scope, *, threshold: float) -> schema
             )
         )
     ).scalar_one()
+    rows = await db.execute(
+        _scoped(
+            select(TestCase.failure_category, func.count(TestCase.id))
+            .join(Project, TestCase.project_id == Project.id)
+            .join(Repo, Project.repo_id == Repo.id)
+            .where(TestCase.flakiness_score > 0, TestCase.failure_category.is_not(None))
+            .group_by(TestCase.failure_category),
+            scope,
+        )
+    )
+    category_counts = {c: 0 for c in CATEGORIES} | {cat: n for cat, n in rows.all() if cat in CATEGORIES}
     return schemas.SummaryOut(
         total_tests=total,
         flaky_tests=flaky,
@@ -186,6 +201,7 @@ async def summary(db: AsyncSession, scope: Scope, *, threshold: float) -> schema
         total_runs=runs,
         total_executions=executions,
         flake_threshold=threshold,
+        category_counts=category_counts,
     )
 
 

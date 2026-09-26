@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import queries, schemas
 from ..auth import require_token
+from ..classify import FailureCategory
 from ..config import get_settings
 from ..db import get_db
 from ..identity import DEFAULT_PROJECT, normalize_project, normalize_repo
@@ -39,6 +40,7 @@ async def list_tests(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=100),
     file: str | None = Query(default=None, max_length=1024),
+    category: FailureCategory | None = Query(default=None),
     db: AsyncSession = Depends(get_db),
 ):
     return await queries.list_tests(
@@ -50,6 +52,7 @@ async def list_tests(
         page=page,
         page_size=page_size,
         file=file,
+        category=category,
     )
 
 

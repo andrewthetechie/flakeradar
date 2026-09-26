@@ -143,6 +143,7 @@ class SummaryOut(BaseModel):
     total_runs: int
     total_executions: int
     flake_threshold: float
+    category_counts: dict[str, int]
 
 
 # --- Test detail and quarantine (task 09) -------------------------------
