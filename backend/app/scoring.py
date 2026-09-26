@@ -79,3 +79,20 @@ def combined_score(
         # push it toward 1.0.
         score = max(score, min(1.0, SAME_SHA_FLOOR + 0.1 * (confirmed - 1)))
     return round(min(score, 1.0), 4), confirmed
+
+
+def branch_scoped_score(
+    history: list[tuple[str, str, str]],  # (commit_sha, branch, status), newest first
+    default_branch: str | None,
+    decay: float,
+    window: int,
+) -> tuple[float, int]:
+    """Flips on the Default branch only; Proven flakes on every branch.
+
+    `history` must hold at least the newest `window` rows overall AND the
+    newest `window` rows on the Default branch (see processing.rescore).
+    default_branch=None means "unknown": every branch counts (old behaviour).
+    """
+    flips = [s for _, b, s in history if default_branch is None or b == default_branch]
+    proven = [(sha, s) for sha, _, s in history[:window]]
+    return combined_score(flips, proven, decay, window)

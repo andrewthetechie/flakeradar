@@ -65,6 +65,13 @@ export interface History {
   last_failing_sha: string | null;
   last_failing_branch: string | null;
   executions: Execution[];
+  jobs: TestJobLink[];
+}
+
+export interface TestJobLink {
+  job_id: number;
+  pipeline: string;
+  name: string;
 }
 
 export interface Summary {
@@ -126,6 +133,98 @@ export function fetchTests(q: TestQuery): Promise<TestPage> {
 
 export const fetchHistory = (id: number) => getJson<History>(`/api/tests/${id}/history?limit=60`);
 
+// --- Jobs (task 06) ------------------------------------------------------
+
+export interface Job {
+  id: number;
+  repo: string;
+  provider: string;
+  pipeline: string;
+  name: string;
+  flakiness_score: number;
+  tier: Tier;
+  confirmed_flake_count: number;
+  last_status: string;
+  last_seen_at: string;
+  github_issue_number: number | null;
+  github_issue_url: string | null;
+}
+
+export interface JobPage {
+  items: Job[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export interface JobSummary {
+  total_jobs: number;
+  flaky_jobs: number;
+  suspect_jobs: number;
+  confirmed_flaky_jobs: number;
+  total_job_executions: number;
+  flake_threshold: number;
+}
+
+export interface ExplainingTest {
+  test_id: number;
+  project: string;
+  classname: string;
+  name: string;
+  status: string;
+}
+
+export interface JobExecution {
+  id: number;
+  status: string; // passed | failed | skipped (as stored)
+  outcome: "passed" | "failed" | "explained" | "skipped";
+  commit_sha: string;
+  branch: string;
+  ci_run_id: string;
+  ci_run_attempt: number;
+  ci_job_id: string;
+  url: string;
+  runner_name: string;
+  runner_labels: string[];
+  started_at: string | null;
+  completed_at: string | null;
+  created_at: string;
+  explained_by: ExplainingTest[];
+}
+
+export interface JobHistory {
+  job: Job;
+  unexplained_failures: number;
+  explained_failures: number;
+  executions: JobExecution[];
+}
+
+export interface JobQuery {
+  repo: string | null;
+  page: number;
+  pageSize: number;
+  sort: SortKey;
+  showStable: boolean;
+}
+
+export function fetchJobs(q: JobQuery): Promise<JobPage> {
+  const params = new URLSearchParams();
+  if (q.repo) params.set("repo", q.repo);
+  params.set("page", String(q.page));
+  params.set("page_size", String(q.pageSize));
+  params.set("sort", q.sort);
+  if (q.showStable) params.set("include_stable", "true");
+  return getJson<JobPage>(withQuery("/api/jobs", params));
+}
+
+export const fetchJobSummary = (repo: string | null) =>
+  getJson<JobSummary>(
+    withQuery("/api/jobs/summary", repo ? new URLSearchParams({ repo }) : new URLSearchParams()),
+  );
+
+export const fetchJobHistory = (id: number) =>
+  getJson<JobHistory>(`/api/jobs/${id}/history?limit=60`);
+
 export async function setQuarantine(id: number, quarantined: boolean): Promise<TestCase> {
   const resp = await fetch(`/api/tests/${id}/quarantine`, {
     method: "POST",
@@ -140,8 +239,9 @@ export async function setQuarantine(id: number, quarantined: boolean): Promise<T
 
 export interface ReportInfo {
   id: number;
+  kind: "junit" | "pipeline";
   repo: string;
-  project: string;
+  project: string | null;
   commit_sha: string;
   branch: string;
   ci_run_id: string;

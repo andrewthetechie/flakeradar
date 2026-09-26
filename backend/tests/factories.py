@@ -4,10 +4,16 @@ Each helper flushes (so ids are assigned) but does not commit; call
 ``await db.commit()`` when another session must see the rows.
 """
 
+import itertools
 from datetime import datetime
 
+from app.identity import get_or_create_repo
 from app.models import (
+    JOB_STATUSES,
     REPORT_PENDING,
+    Job,
+    JobExecution,
+    Pipeline,
     Project,
     Repo,
     Report,
@@ -16,8 +22,12 @@ from app.models import (
     TestRun,
     utcnow,
 )
+from app.schemas import PipelineReportIn
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+# Monotonic ci_job_id for factory-created job executions (no real provider id).
+_ci_job_counter = itertools.count(1)
 
 
 async def make_project(db: AsyncSession, repo: str = "acme/app", project: str = "default", root: str = "") -> Project:
@@ -62,6 +72,9 @@ async def make_run(
     branch: str = "main",
     ci_run_id: str = "",
     created_at: datetime | None = None,
+    ci_job_id: str | None = None,
+    ci_run_attempt: int | None = None,
+    pipeline: str | None = None,
 ) -> TestRun:
     run = TestRun(
         project_id=project.id,
@@ -69,6 +82,9 @@ async def make_run(
         branch=branch,
         ci_run_id=ci_run_id,
         created_at=created_at or utcnow(),
+        ci_job_id=ci_job_id,
+        ci_run_attempt=ci_run_attempt,
+        pipeline=pipeline,
     )
     db.add(run)
     await db.flush()
@@ -97,6 +113,48 @@ async def make_execution(
     return ex
 
 
+async def make_pipeline_report(
+    db: AsyncSession,
+    repo: str = "acme/app",
+    payload: dict | None = None,
+) -> Report:
+    """Seed a pending `pipeline` Report for a Repo (creating the Repo if needed).
+
+    `payload` is the raw body dict; it is normalized and serialized the same
+    way the ingest endpoint would (PipelineReportIn.model_dump_json).
+    """
+    if payload is None:
+        payload = {
+            "repo": repo,
+            "provider": "github",
+            "pipeline": ".github/workflows/ci.yml",
+            "commit_sha": "sha1",
+            "branch": "main",
+            "default_branch": "main",
+            "ci_run_id": "1",
+            "ci_run_attempt": 1,
+            "jobs": [{"ci_job_id": "1", "name": "test", "status": "passed"}],
+        }
+    repo_row = await get_or_create_repo(db, payload.get("repo", repo))
+    body = PipelineReportIn(**payload).model_dump_json().encode()
+    rep = Report(
+        kind="pipeline",
+        repo_id=repo_row.id,
+        project_id=None,
+        commit_sha=payload["commit_sha"],
+        branch=payload["branch"],
+        ci_run_id=payload.get("ci_run_id", ""),
+        ci_run_attempt=payload.get("ci_run_attempt", 1),
+        pipeline=payload["pipeline"],
+        default_branch=payload.get("default_branch"),
+        body=body,
+        status=REPORT_PENDING,
+    )
+    db.add(rep)
+    await db.flush()
+    return rep
+
+
 async def make_report(
     db: AsyncSession,
     project: Project,
@@ -106,16 +164,83 @@ async def make_report(
     ci_run_id: str = "",
     root: str | None = None,
     status: str = REPORT_PENDING,
+    kind: str = "junit",
+    ci_job_id: str | None = None,
+    ci_run_attempt: int | None = None,
+    pipeline: str | None = None,
+    default_branch: str | None = None,
 ) -> Report:
     rep = Report(
-        project_id=project.id,
+        project_id=None if kind == "pipeline" else project.id,
+        kind=kind,
+        repo_id=project.repo_id,
         commit_sha=commit_sha,
         branch=branch,
         ci_run_id=ci_run_id,
         root=root,
         body=body,
         status=status,
+        ci_job_id=ci_job_id,
+        ci_run_attempt=ci_run_attempt,
+        pipeline=pipeline,
+        default_branch=default_branch,
     )
     db.add(rep)
     await db.flush()
     return rep
+
+
+async def make_pipeline(
+    db: AsyncSession,
+    repo: str = "acme/app",
+    name: str = ".github/workflows/ci.yml",
+    provider: str = "github",
+) -> Pipeline:
+    repo_row = (await db.execute(select(Repo).where(Repo.name == repo))).scalar_one_or_none()
+    if repo_row is None:
+        repo_row = Repo(name=repo)
+        db.add(repo_row)
+        await db.flush()
+    pipe = Pipeline(repo_id=repo_row.id, provider=provider, name=name)
+    db.add(pipe)
+    await db.flush()
+    return pipe
+
+
+async def make_job(db: AsyncSession, pipeline: Pipeline, name: str = "test", **fields) -> Job:
+    job = Job(pipeline_id=pipeline.id, name=name, **fields)
+    db.add(job)
+    await db.flush()
+    return job
+
+
+async def make_job_execution(
+    db: AsyncSession,
+    job: Job,
+    status: str = "passed",
+    *,
+    ci_job_id: str | None = None,
+    commit_sha: str = "sha1",
+    branch: str = "main",
+    ci_run_id: str = "1",
+    ci_run_attempt: int = 1,
+    created_at: datetime | None = None,
+    **fields,
+) -> JobExecution:
+    # status must be one of JOB_STATUSES to satisfy callers that assume the DB contract.
+    if status not in JOB_STATUSES:
+        raise ValueError(f"bad job status: {status!r}")
+    ex = JobExecution(
+        job_id=job.id,
+        ci_job_id=ci_job_id or f"{next(_ci_job_counter)}",
+        commit_sha=commit_sha,
+        branch=branch,
+        ci_run_id=ci_run_id,
+        ci_run_attempt=ci_run_attempt,
+        status=status,
+        created_at=created_at or utcnow(),
+        **fields,
+    )
+    db.add(ex)
+    await db.flush()
+    return ex

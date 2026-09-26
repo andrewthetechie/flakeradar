@@ -3,13 +3,24 @@
 import asyncio
 from datetime import timedelta
 
-from app.models import REPORT_FAILED, REPORT_PROCESSED, Report, TestExecution, TestRun, utcnow
+from app.models import (
+    REPORT_FAILED,
+    REPORT_PROCESSED,
+    JobExecution,
+    Report,
+    TestExecution,
+    TestRun,
+    utcnow,
+)
 from app.retention import prune
 from app.worker import ReportWorker
 from sqlalchemy import func, select
 
 from tests.factories import (
     make_execution,
+    make_job,
+    make_job_execution,
+    make_pipeline,
     make_project,
     make_report,
     make_run,
@@ -65,3 +76,21 @@ async def test_worker_prunes_once_per_interval(engine, session_factory):
     finally:
         await worker.stop()
     assert calls == [1]
+
+
+async def test_prune_deletes_old_job_executions(db):
+    now = utcnow()
+    pipe = await make_pipeline(db)
+    job = await make_job(db, pipe)
+    old = now - timedelta(days=100)
+    recent = now - timedelta(days=1)
+    await make_job_execution(db, job, ci_job_id="old", created_at=old)
+    await make_job_execution(db, job, ci_job_id="new", created_at=recent)
+    await db.commit()
+
+    result = await prune(db, now=now, report_days=7, execution_days=90)
+    await db.commit()
+
+    assert result.job_executions == 1
+    remaining = (await db.execute(select(JobExecution.ci_job_id))).scalars().all()
+    assert remaining == ["new"]

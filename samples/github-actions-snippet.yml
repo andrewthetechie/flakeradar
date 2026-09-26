@@ -6,12 +6,27 @@
 #   vitest --reporter=junit --outputFile=junit.xml        (JS/TS; set addFileAttribute)
 #   go test ... | go-junit-report > junit.xml              (Go)
 # One step per project: set `project` (and `root`, its directory) for each suite.
+#
+# ci_job_id (${{ job.check_run_id }}) links this Test's Run to the Job execution
+# that produced it, so a failed Job can be "explained" by failing Tests.
+# default_branch lets FlakeRadar only count flips that happen on your default
+# branch. ci_run_id is the run id only; the attempt is reported separately.
 
 - name: Report test results to FlakeRadar
   if: always()   # crucial — you want the FAILED runs recorded too
   run: |
+    # Derive the pipeline (workflow file path, e.g. .github/workflows/ci.yml)
+    # from GITHUB_WORKFLOW_REF = owner/repo/.github/workflows/ci.yml@refs/heads/main.
+    PIPELINE="${GITHUB_WORKFLOW_REF#${GITHUB_REPOSITORY}/}"; PIPELINE="${PIPELINE%@*}"
+    # Build and URL-encode the query string so values with / or spaces stay intact.
+    QUERY=$(jq -rn --arg repo "${{ github.repository }}" --arg project "backend" \
+      --arg root "backend" --arg sha "${{ github.sha }}" --arg branch "${{ github.ref_name }}" \
+      --arg run "${{ github.run_id }}" --arg attempt "${{ github.run_attempt }}" \
+      --arg job "${{ job.check_run_id }}" --arg pipeline "$PIPELINE" \
+      --arg default_branch "${{ github.event.repository.default_branch }}" \
+      '"repo="+($repo|@uri)+"&project="+($project|@uri)+"&root="+($root|@uri)+"&commit_sha="+($sha|@uri)+"&branch="+($branch|@uri)+"&ci_run_id="+($run|@uri)+"&ci_run_attempt="+($attempt|@uri)+"&ci_job_id="+($job|@uri)+"&pipeline="+($pipeline|@uri)+"&default_branch="+($default_branch|@uri)')
     curl --fail-with-body -sS --retry 5 --retry-all-errors --retry-delay 2 -X POST \
-      "${{ secrets.FLAKERADAR_URL }}/api/ingest?repo=${{ github.repository }}&project=backend&root=backend&commit_sha=${{ github.sha }}&branch=${{ github.ref_name }}&ci_run_id=${{ github.run_id }}-${{ github.run_attempt }}" \
+      "${{ secrets.FLAKERADAR_URL }}/api/ingest?${QUERY}" \
       -H "X-API-Key: ${{ secrets.FLAKERADAR_TOKEN }}" \
       -H "Content-Type: application/xml" \
       --data-binary @junit.xml

@@ -6,6 +6,9 @@ Design notes:
 - A Report is the raw JUnit upload, queued until the processor turns it into
   a Run. Executions are keyed to a Run's commit SHA because a fail->pass flip
   on the SAME sha is proof of nondeterminism.
+- Pipelines are named CI workflows, never scored. Jobs belong to a Pipeline
+  (not a Project) and are scored like Tests. A Job execution is one attempt
+  of one Job at one commit SHA, unique per (job_id, ci_job_id).
 - No ORM relationships: async SQLAlchemy cannot lazy-load, so every read is
   an explicit select()/join.
 """
@@ -16,6 +19,7 @@ from typing import Any
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
     DateTime,
     Float,
     ForeignKey,
@@ -26,6 +30,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     false,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -34,6 +39,12 @@ REPORT_PENDING = "pending"
 REPORT_PROCESSED = "processed"
 REPORT_FAILED = "failed"
 REPORT_STATUSES = (REPORT_PENDING, REPORT_PROCESSED, REPORT_FAILED)
+
+REPORT_KIND_JUNIT = "junit"
+REPORT_KIND_PIPELINE = "pipeline"
+REPORT_KINDS = (REPORT_KIND_JUNIT, REPORT_KIND_PIPELINE)
+
+JOB_STATUSES = ("passed", "failed", "skipped")
 
 
 def utcnow() -> datetime:
@@ -49,6 +60,7 @@ class Repo(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(255), unique=True)
+    default_branch: Mapped[str | None] = mapped_column(String(255), default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
@@ -105,6 +117,10 @@ class TestRun(Base):
     commit_sha: Mapped[str] = mapped_column(String(64), index=True)
     branch: Mapped[str] = mapped_column(String(255), default="main")
     ci_run_id: Mapped[str] = mapped_column(String(255), default="", server_default="")
+    # A Run can name the Job execution (ci_job_id) that produced it.
+    ci_job_id: Mapped[str | None] = mapped_column(String(255), index=True, default=None)
+    ci_run_attempt: Mapped[int | None] = mapped_column(Integer, default=None)
+    pipeline: Mapped[str | None] = mapped_column(String(512), default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
@@ -125,15 +141,25 @@ class TestExecution(Base):
 
 class Report(Base):
     __tablename__ = "reports"
-    __table_args__ = (Index("ix_reports_status_id", "status", "id"),)
+    __table_args__ = (
+        Index("ix_reports_status_id", "status", "id"),
+        CheckConstraint("kind <> 'junit' OR project_id IS NOT NULL", name="ck_reports_junit_has_project"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    kind: Mapped[str] = mapped_column(String(16), default=REPORT_KIND_JUNIT, server_default=REPORT_KIND_JUNIT)
+    project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    repo_id: Mapped[int] = mapped_column(ForeignKey("repos.id", ondelete="CASCADE"), index=True)
     commit_sha: Mapped[str] = mapped_column(String(64))
     branch: Mapped[str] = mapped_column(String(255), default="main")
     ci_run_id: Mapped[str] = mapped_column(String(255), default="", server_default="")
     # Project root sent with this upload; None means "leave the Project's root alone".
     root: Mapped[str | None] = mapped_column(String(1024), default=None)
+    # A JUnit Report can name the Job execution (ci_job_id) that produced it.
+    ci_job_id: Mapped[str | None] = mapped_column(String(255), default=None)
+    ci_run_attempt: Mapped[int | None] = mapped_column(Integer, default=None)
+    pipeline: Mapped[str | None] = mapped_column(String(512), default=None)
+    default_branch: Mapped[str | None] = mapped_column(String(255), default=None)
     body: Mapped[bytes] = mapped_column(LargeBinary)
     status: Mapped[str] = mapped_column(String(16), default=REPORT_PENDING, server_default=REPORT_PENDING)
     error: Mapped[str | None] = mapped_column(Text, default=None)
@@ -141,3 +167,58 @@ class Report(Base):
     run_id: Mapped[int | None] = mapped_column(ForeignKey("test_runs.id", ondelete="SET NULL"), default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+
+
+class Pipeline(Base):
+    """A named CI workflow in a Repo; groups Jobs and is never scored."""
+
+    __tablename__ = "pipelines"
+    __table_args__ = (UniqueConstraint("repo_id", "provider", "name", name="uq_pipelines_repo_provider_name"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    repo_id: Mapped[int] = mapped_column(ForeignKey("repos.id", ondelete="CASCADE"), index=True)
+    provider: Mapped[str] = mapped_column(String(32))
+    name: Mapped[str] = mapped_column(String(512))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class Job(Base):
+    __tablename__ = "jobs"
+    __table_args__ = (
+        UniqueConstraint("pipeline_id", "name", name="uq_jobs_pipeline_name"),
+        Index("ix_jobs_pipeline_score", "pipeline_id", "flakiness_score"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    pipeline_id: Mapped[int] = mapped_column(ForeignKey("pipelines.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(512))
+    flakiness_score: Mapped[float] = mapped_column(Float, default=0.0, server_default="0")
+    confirmed_flake_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    last_status: Mapped[str] = mapped_column(String(16), default="passed", server_default="passed")
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    github_issue_number: Mapped[int | None] = mapped_column(Integer, default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class JobExecution(Base):
+    __tablename__ = "job_executions"
+    __test__ = False
+    __table_args__ = (
+        UniqueConstraint("job_id", "ci_job_id", name="uq_job_executions_job_ci_job_id"),
+        Index("ix_job_exec_job_id", "job_id", "id"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    job_id: Mapped[int] = mapped_column(ForeignKey("jobs.id", ondelete="CASCADE"))
+    ci_job_id: Mapped[str] = mapped_column(String(255), index=True)
+    ci_run_id: Mapped[str] = mapped_column(String(255), default="", server_default="")
+    ci_run_attempt: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    commit_sha: Mapped[str] = mapped_column(String(64))
+    branch: Mapped[str] = mapped_column(String(255))
+    status: Mapped[str] = mapped_column(String(16))
+    url: Mapped[str] = mapped_column(Text, default="", server_default="")
+    runner_name: Mapped[str] = mapped_column(String(255), default="", server_default="")
+    runner_labels: Mapped[list[str]] = mapped_column(JSONB, default=list, server_default=text("'[]'::jsonb"))
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)

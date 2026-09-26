@@ -7,13 +7,33 @@ describe("view state in the URL", () => {
       repo: "andrewthetechie/writers-app",
       project: "backend",
       test: 42,
+      job: null,
       page: 3,
       sort: "proven" as const,
       showStable: true,
+      view: "tests" as const,
     };
     const search = serializeViewState(view);
     expect(search).toBe(
       "?repo=andrewthetechie%2Fwriters-app&project=backend&test=42&page=3&sort=proven&stable=1",
+    );
+    expect(parseViewState(search)).toEqual(view);
+  });
+
+  it("serializes and parses the jobs view and a job id", () => {
+    const view = {
+      repo: "andrewthetechie/writers-app",
+      project: "backend",
+      test: null,
+      job: 3,
+      page: 2,
+      sort: "score" as const,
+      showStable: false,
+      view: "jobs" as const,
+    };
+    const search = serializeViewState(view);
+    expect(search).toBe(
+      "?repo=andrewthetechie%2Fwriters-app&project=backend&view=jobs&job=3&page=2",
     );
     expect(parseViewState(search)).toEqual(view);
   });
@@ -55,5 +75,21 @@ describe("applyPatch", () => {
       project: null,
       page: 1,
     });
+  });
+
+  it("switching the view resets the page and clears the drawer", () => {
+    const jobs = applyPatch(base, { view: "jobs" });
+    expect(jobs).toMatchObject({ view: "jobs", page: 1, test: null, job: null, repo: "a/b" });
+    const back = applyPatch(applyPatch(base, { view: "jobs", job: 3 }), { view: "tests" });
+    expect(back).toMatchObject({ view: "tests", page: 1, test: null, job: null });
+  });
+
+  it("test and job are mutually exclusive", () => {
+    const withJob = applyPatch({ ...base, test: 7 }, { job: 5 });
+    expect(withJob.job).toBe(5);
+    expect(withJob.test).toBeNull();
+    const withTest = applyPatch({ ...DEFAULT_VIEW, job: 5 }, { test: 9 });
+    expect(withTest.test).toBe(9);
+    expect(withTest.job).toBeNull();
   });
 });

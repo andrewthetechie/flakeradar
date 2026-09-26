@@ -56,8 +56,10 @@ export function QueueIndicator({
                 {failed.map((r) => (
                   <li key={r.id} className="border-b border-line py-1.5 last:border-b-0">
                     <div className="font-semibold [overflow-wrap:anywhere]">
-                      #{r.id} · {r.repo} / {r.project} · {r.commit_sha.slice(0, 10)}
-                    </div>
+                      #{r.id} ·{" "}
+                      {r.project == null ? `${r.repo} · pipeline` : `${r.repo} / ${r.project}`} ·{" "}
+                      {r.commit_sha.slice(0, 10)}
+                    </div>{" "}
                     <div className="text-critical [overflow-wrap:anywhere]">{r.error}</div>
                   </li>
                 ))}

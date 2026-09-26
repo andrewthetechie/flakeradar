@@ -14,6 +14,7 @@ from .models import Project, Repo
 
 REPO_RE = re.compile(r"^[a-z0-9_.-]+/[a-z0-9_.-]+$")
 PROJECT_RE = re.compile(r"^[a-z0-9_.-]{1,100}$")
+PROVIDER_RE = re.compile(r"^[a-z0-9_-]{1,32}$")
 DEFAULT_PROJECT = "default"
 
 
@@ -44,10 +45,22 @@ def normalize_root(raw: str | None) -> str | None:
     return value
 
 
+def normalize_provider(raw: str) -> str:
+    value = raw.strip().lower()
+    if not PROVIDER_RE.match(value):
+        raise ValueError(f"provider must be 1-32 chars of a-z, 0-9, '_' or '-', got {raw!r}")
+    return value
+
+
+async def get_or_create_repo(db: AsyncSession, repo: str) -> Repo:
+    """Race-safe get-or-create for a normalized Repo name."""
+    await db.execute(pg_insert(Repo).values(name=repo).on_conflict_do_nothing(index_elements=["name"]))
+    return (await db.execute(select(Repo).where(Repo.name == repo))).scalar_one()
+
+
 async def get_or_create_project(db: AsyncSession, repo: str, project: str) -> Project:
     """Race-safe get-or-create for normalized names (ON CONFLICT DO NOTHING)."""
-    await db.execute(pg_insert(Repo).values(name=repo).on_conflict_do_nothing(index_elements=["name"]))
-    repo_id = (await db.execute(select(Repo.id).where(Repo.name == repo))).scalar_one()
+    repo_id = (await get_or_create_repo(db, repo)).id
     await db.execute(
         pg_insert(Project)
         .values(repo_id=repo_id, name=project)

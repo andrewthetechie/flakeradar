@@ -86,7 +86,13 @@ function ExecutionStrip({ executions }: { executions: Execution[] }) {
   );
 }
 
-export function TestDetail({ history }: { history: History }) {
+export function TestDetail({
+  history,
+  onOpenJob,
+}: {
+  history: History;
+  onOpenJob: (jobId: number) => void;
+}) {
   const { executions } = history;
   const fails = executions.filter((e) => e.status === "failed" || e.status === "error").length;
   const latestFailure = executions.find((e) => e.status === "failed" || e.status === "error");
@@ -114,6 +120,25 @@ export function TestDetail({ history }: { history: History }) {
           </div>
         </div>
       </div>
+
+      {history.jobs.length > 0 && (
+        <div className="mb-4 text-xs text-text-2">
+          <span className="text-muted">Seen in Jobs:</span>{" "}
+          {history.jobs.map((j, i) => (
+            <span key={j.job_id}>
+              {i > 0 && <span className="text-muted"> · </span>}
+              <button
+                type="button"
+                onClick={() => onOpenJob(j.job_id)}
+                className="text-link underline-offset-2 hover:underline"
+                title="Open this Job"
+              >
+                {j.pipeline} · {j.name}
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
 
       {latestFailure && (latestFailure.details || latestFailure.message) && (
         <details className="group mb-5" open>
