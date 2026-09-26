@@ -1,6 +1,50 @@
 from app import scoring
 
 
+def test_branch_scoped_none_equals_legacy():
+    # default_branch=None must reproduce today's combined_score exactly.
+    history = [("a", "main", "passed"), ("a", "feat", "failed"), ("b", "main", "passed")]
+    got_score, got_confirmed = scoring.branch_scoped_score(history, None, 0.85, 50)
+    want_score, want_confirmed = scoring.combined_score(
+        [s for _, _, s in history], [(sha, s) for sha, _, s in history], 0.85, 50
+    )
+    assert (got_score, got_confirmed) == (want_score, want_confirmed)
+
+
+def test_branch_scoped_ignores_feature_branch_flips():
+    # feats flicker pass/fail; main is steady. With Default branch known, no score.
+    history = [
+        ("c", "main", "passed"),
+        ("d", "main", "passed"),
+        ("a", "feat", "failed"),
+        ("b", "feat", "passed"),
+    ]
+    score, confirmed = scoring.branch_scoped_score(history, "main", 0.85, 50)
+    assert score == 0.0
+    assert confirmed == 0
+
+
+def test_branch_scoped_same_sha_flip_on_feature_branch_still_counts():
+    # Proven nondeterminism on a feature branch is still a flake.
+    history = [("x", "feat", "passed"), ("x", "feat", "failed")]
+    score, confirmed = scoring.branch_scoped_score(history, "main", 0.85, 50)
+    assert confirmed == 1
+    assert score >= scoring.SAME_SHA_FLOOR
+
+
+def test_branch_scoped_history_slicing():
+    # Provenance counts same-SHA flips only within the newest `window` rows.
+    window = 3
+    # Newest 3 rows: distinct pass on sha a. A same-SHA flip on x lies beyond
+    # the window and must not count as provenance.
+    history = [("a", "main", "passed"), ("a", "main", "passed"), ("a", "main", "passed")] + [
+        ("x", "main", "failed"),
+        ("x", "main", "passed"),
+    ]
+    _, confirmed = scoring.branch_scoped_score(history, "main", 0.85, window)
+    assert confirmed == 0
+
+
 def test_stable_passing_test_scores_zero():
     assert scoring.flip_score(["passed"] * 20, decay=0.85, window=50) == 0.0
 

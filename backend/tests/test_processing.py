@@ -2,7 +2,8 @@
 
 import asyncio
 
-from app.models import Report, TestCase, TestExecution, TestRun
+from app.config import Settings
+from app.models import Repo, Report, TestCase, TestExecution, TestRun
 from app.processing import claim_next_report, process_next
 from sqlalchemy import func, select
 
@@ -139,3 +140,93 @@ async def test_large_report_is_batched(db, session_factory):
     outcome = await asyncio.wait_for(process_next(session_factory), timeout=30)
     assert outcome.status == "processed"
     assert len(outcome.touched_test_ids) == 2500
+
+
+async def test_default_branch_ignores_feature_flips(db, session_factory):
+    proj = await make_project(db, "acme/app", "backend")
+    # feat fail@a, feat pass@b, then main pass@c, main pass@d.
+    await _queue(db, make_junit([("t", "failed")]), project=proj, branch="feat", commit_sha="a", default_branch="main")
+    await _queue(db, make_junit([("t", "passed")]), project=proj, branch="feat", commit_sha="b")
+    await _queue(db, make_junit([("t", "passed")]), project=proj, branch="main", commit_sha="c")
+    await _queue(db, make_junit([("t", "passed")]), project=proj, branch="main", commit_sha="d")
+    for _ in range(4):
+        await process_next(session_factory)
+    repo = (await db.execute(select(Repo))).scalar_one()
+    assert repo.default_branch == "main"
+    (tc,) = await _tests(db)
+    assert tc.flakiness_score == 0.0
+    assert tc.confirmed_flake_count == 0
+
+
+async def test_same_sha_flip_on_feature_branch_still_proven(db, session_factory):
+    proj = await make_project(db, "acme/app", "backend")
+    await _queue(db, make_junit([("t", "failed")]), project=proj, branch="feat", commit_sha="x", default_branch="main")
+    await _queue(db, make_junit([("t", "passed")]), project=proj, branch="feat", commit_sha="x")
+    await process_next(session_factory)
+    await process_next(session_factory)
+    (tc,) = await _tests(db)
+    assert tc.confirmed_flake_count == 1
+    assert tc.flakiness_score >= 0.6
+
+
+async def test_branch_change_rescores_tests_not_in_report(db, session_factory):
+    proj = await make_project(db, "acme/app", "backend")
+    # t1 and t2 each flicker on feat (different shas) -> both score high with no default.
+    await _queue(db, make_junit([("t1", "failed")]), project=proj, branch="feat", commit_sha="a")
+    await _queue(db, make_junit([("t1", "passed")]), project=proj, branch="feat", commit_sha="b")
+    await _queue(db, make_junit([("t2", "failed")]), project=proj, branch="feat", commit_sha="c")
+    await _queue(db, make_junit([("t2", "passed")]), project=proj, branch="feat", commit_sha="d")
+    for _ in range(4):
+        await process_next(session_factory)
+    tests = {t.name: t for t in await _tests(db)}
+    assert tests["t1"].flakiness_score > 0 and tests["t2"].flakiness_score > 0
+    t2_before = tests["t2"].flakiness_score
+    # A report touching ONLY t1 sets the Default branch -> t2 must be rescored too.
+    await _queue(db, make_junit([("t1", "passed")]), project=proj, branch="main", commit_sha="e", default_branch="main")
+    await process_next(session_factory)
+    tests = {t.name: t for t in await _tests(db)}
+    await db.refresh(tests["t2"])  # expire_on_commit=False: force a fresh read
+    assert tests["t2"].flakiness_score == 0.0
+    assert tests["t2"].flakiness_score < t2_before
+
+
+async def test_default_branch_applied_only_at_processing(db, session_factory):
+    proj = await make_project(db, "acme/app", "backend")
+    await _queue(db, make_junit([("t", "passed")]), project=proj, default_branch="main")
+    repo = (await db.execute(select(Repo))).scalar_one()  # still pending: not applied
+    assert repo.default_branch is None
+    await process_next(session_factory)
+    await db.refresh(repo)
+    assert repo.default_branch == "main"
+
+
+async def test_report_without_default_branch_never_clears(db, session_factory):
+    proj = await make_project(db, "acme/app", "backend")
+    await _queue(db, make_junit([("t", "passed")]), project=proj, default_branch="main")
+    await process_next(session_factory)
+    await _queue(db, make_junit([("t", "passed")]), project=proj)  # no default_branch
+    await process_next(session_factory)
+    repo = (await db.execute(select(Repo))).scalar_one()
+    assert repo.default_branch == "main"
+
+
+async def test_default_branch_window_rescope(db, session_factory, monkeypatch):
+    monkeypatch.setattr("app.processing.get_settings", lambda: Settings(score_window=3))
+    proj = await make_project(db, "acme/app", "backend")
+    # 5 main executions flickering (oldest first), then 10 newer feat passes.
+    for i, status in enumerate(["failed", "passed", "failed", "passed", "failed"]):
+        await _queue(
+            db,
+            make_junit([("t", status)]),
+            project=proj,
+            branch="main",
+            commit_sha=f"m{i}",
+            default_branch="main" if i == 0 else None,
+        )
+    for i in range(10):
+        await _queue(db, make_junit([("t", "passed")]), project=proj, branch="feat", commit_sha=f"f{i}")
+    for _ in range(15):
+        await process_next(session_factory)
+    (tc,) = await _tests(db)
+    # The 3 newest main rows must still be flip-scored despite 10 newer feat rows.
+    assert tc.flakiness_score > 0

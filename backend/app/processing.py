@@ -12,7 +12,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import func, insert, select, update
+from sqlalchemy import func, insert, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -23,6 +23,7 @@ from .models import (
     REPORT_PENDING,
     REPORT_PROCESSED,
     Project,
+    Repo,
     Report,
     TestCase,
     TestExecution,
@@ -90,31 +91,61 @@ async def _upsert_test_cases(db: AsyncSession, project_id: int, parsed: list[Par
 
 
 async def rescore(db: AsyncSession, test_case_ids: list[int]) -> None:
-    """Recompute flakiness for the given Tests from their last `window` Executions."""
+    """Recompute flakiness for the given Tests from their last `window` Executions.
+
+    Flip scoring looks only at Executions on the Repo's Default branch, while
+    Proven flakes (same-SHA flips) still count on every branch. A Repo whose
+    Default branch is unknown (NULL) scores exactly as before.
+    """
     settings = get_settings()
-    rn = func.row_number().over(partition_by=TestExecution.test_case_id, order_by=TestExecution.id.desc()).label("rn")
-    history: dict[int, list[tuple[str, str]]] = defaultdict(list)  # id -> [(sha, status)] newest first
+    on_default = or_(Repo.default_branch.is_(None), TestRun.branch == Repo.default_branch)
+    rn_all = (
+        func.row_number()
+        .over(partition_by=TestExecution.test_case_id, order_by=TestExecution.id.desc())
+        .label("rn_all")
+    )
+    rn_def = (
+        func.row_number()
+        .over(partition_by=(TestExecution.test_case_id, on_default), order_by=TestExecution.id.desc())
+        .label("rn_def")
+    )
+    history: dict[int, list[tuple[str, str, str]]] = defaultdict(list)  # id -> [(sha, branch, status)]
+    default_branch: dict[int, str | None] = {}  # id -> branch (constant per Test/Repo)
     for chunk in _chunks(test_case_ids):
         ranked = (
-            select(TestExecution.test_case_id, TestExecution.status, TestRun.commit_sha, rn)
+            select(
+                TestExecution.id,
+                TestExecution.test_case_id,
+                TestExecution.status,
+                TestRun.commit_sha,
+                TestRun.branch,
+                Repo.default_branch,
+                rn_all,
+                rn_def,
+            )
             .join(TestRun, TestRun.id == TestExecution.test_run_id)
+            .join(Project, Project.id == TestRun.project_id)
+            .join(Repo, Repo.id == Project.repo_id)
             .where(TestExecution.test_case_id.in_(chunk))
             .subquery()
         )
         rows = await db.execute(
-            select(ranked.c.test_case_id, ranked.c.status, ranked.c.commit_sha)
-            .where(ranked.c.rn <= settings.score_window)
-            .order_by(ranked.c.test_case_id, ranked.c.rn)
+            select(
+                ranked.c.test_case_id, ranked.c.commit_sha, ranked.c.branch, ranked.c.status, ranked.c.default_branch
+            )
+            .where((ranked.c.rn_all <= settings.score_window) | (ranked.c.rn_def <= settings.score_window))
+            .order_by(ranked.c.test_case_id, ranked.c.id.desc())
         )
-        for tc_id, status, sha in rows.all():
-            history[tc_id].append((sha, status))
+        for tc_id, sha, branch, status, def_branch in rows.all():
+            history[tc_id].append((sha, branch, status))
+            default_branch[tc_id] = def_branch
 
     updates: list[dict[str, Any]] = []
     for tc_id in test_case_ids:
         execs = history.get(tc_id, [])
-        score, confirmed = scoring.combined_score(
-            [status for _, status in execs],
+        score, confirmed = scoring.branch_scoped_score(
             execs,
+            default_branch.get(tc_id),
             settings.score_decay,
             settings.score_window,
         )
@@ -123,10 +154,41 @@ async def rescore(db: AsyncSession, test_case_ids: list[int]) -> None:
         await db.execute(update(TestCase), chunk)
 
 
+async def apply_default_branch(db: AsyncSession, repo_id: int, value: str | None) -> bool:
+    """Store a reported Default branch on the Repo. True when it changed (None never changes it)."""
+    if value is None:
+        return False
+    repo = (await db.execute(select(Repo).where(Repo.id == repo_id))).scalar_one_or_none()
+    if repo is None or repo.default_branch == value:
+        return False
+    repo.default_branch = value
+    await db.flush()  # the rescore in the same transaction must read the new value
+    return True
+
+
+async def rescore_repo(db: AsyncSession, repo_id: int) -> list[int]:
+    """Rescore every Test in the Repo (chunked). Returns their ids, sorted."""
+    ids = list(
+        (
+            await db.execute(
+                select(TestCase.id).join(Project, Project.id == TestCase.project_id).where(Project.repo_id == repo_id)
+            )
+        ).scalars()
+    )
+    ids = sorted(ids)
+    await rescore(db, ids)
+    return ids
+
+
 async def process_report(db: AsyncSession, report: Report) -> ProcessOutcome:
     """Persist one Report as a Run. Caller owns the transaction (no commit here)."""
     parsed = await asyncio.to_thread(parse_junit_xml, report.body)
     now = utcnow()
+
+    # A reported Default branch changes the Repo; every Test in it is then
+    # rescored because flip scoring suddenly filters by branch. Apply it before
+    # inserting Executions so the rescore sees the new value.
+    branch_changed = await apply_default_branch(db, report.repo_id, report.default_branch)
 
     if report.root is not None:
         await db.execute(update(Project).where(Project.id == report.project_id).values(root=report.root))
@@ -174,6 +236,8 @@ async def process_report(db: AsyncSession, report: Report) -> ProcessOutcome:
 
     touched = sorted(latest)
     await rescore(db, touched)
+    if branch_changed:
+        await rescore_repo(db, report.repo_id)
 
     report.status = REPORT_PROCESSED
     report.counts = counts

@@ -48,6 +48,20 @@ async def test_ingest_defaults_project_to_default(client, db):
     assert names == ["default"]
 
 
+async def test_ingest_stores_and_trims_default_branch(client, db):
+    resp = await client.post(_url(default_branch="  main  "), content=make_junit([("t1", "passed")]), headers=AUTH)
+    assert resp.status_code == 202
+    report = (await db.execute(select(Report).where(Report.id == resp.json()["report_id"]))).scalar_one()
+    assert report.default_branch == "main"
+
+
+async def test_ingest_empty_default_branch_becomes_none(client, db):
+    resp = await client.post(_url(default_branch="   "), content=make_junit([("t1", "passed")]), headers=AUTH)
+    assert resp.status_code == 202
+    report = (await db.execute(select(Report).where(Report.id == resp.json()["report_id"]))).scalar_one()
+    assert report.default_branch is None
+
+
 async def test_ingest_multipart_upload(client):
     resp = await client.post(
         _url(),
