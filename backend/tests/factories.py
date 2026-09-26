@@ -7,6 +7,7 @@ Each helper flushes (so ids are assigned) but does not commit; call
 import itertools
 from datetime import datetime
 
+from app.identity import get_or_create_repo
 from app.models import (
     JOB_STATUSES,
     REPORT_PENDING,
@@ -21,6 +22,7 @@ from app.models import (
     TestRun,
     utcnow,
 )
+from app.schemas import PipelineReportIn
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -109,6 +111,48 @@ async def make_execution(
     db.add(ex)
     await db.flush()
     return ex
+
+
+async def make_pipeline_report(
+    db: AsyncSession,
+    repo: str = "acme/app",
+    payload: dict | None = None,
+) -> Report:
+    """Seed a pending `pipeline` Report for a Repo (creating the Repo if needed).
+
+    `payload` is the raw body dict; it is normalized and serialized the same
+    way the ingest endpoint would (PipelineReportIn.model_dump_json).
+    """
+    if payload is None:
+        payload = {
+            "repo": repo,
+            "provider": "github",
+            "pipeline": ".github/workflows/ci.yml",
+            "commit_sha": "sha1",
+            "branch": "main",
+            "default_branch": "main",
+            "ci_run_id": "1",
+            "ci_run_attempt": 1,
+            "jobs": [{"ci_job_id": "1", "name": "test", "status": "passed"}],
+        }
+    repo_row = await get_or_create_repo(db, payload.get("repo", repo))
+    body = PipelineReportIn(**payload).model_dump_json().encode()
+    rep = Report(
+        kind="pipeline",
+        repo_id=repo_row.id,
+        project_id=None,
+        commit_sha=payload["commit_sha"],
+        branch=payload["branch"],
+        ci_run_id=payload.get("ci_run_id", ""),
+        ci_run_attempt=payload.get("ci_run_attempt", 1),
+        pipeline=payload["pipeline"],
+        default_branch=payload.get("default_branch"),
+        body=body,
+        status=REPORT_PENDING,
+    )
+    db.add(rep)
+    await db.flush()
+    return rep
 
 
 async def make_report(

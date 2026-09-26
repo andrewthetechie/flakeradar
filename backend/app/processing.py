@@ -9,7 +9,7 @@ asyncpg's 32,767 bind-parameter limit and avoid per-test round-trips.
 import asyncio
 import logging
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from sqlalchemy import func, insert, or_, select, update
@@ -20,9 +20,12 @@ from . import scoring
 from .config import get_settings
 from .models import (
     REPORT_FAILED,
-    REPORT_KIND_JUNIT,
+    REPORT_KIND_PIPELINE,
     REPORT_PENDING,
     REPORT_PROCESSED,
+    Job,
+    JobExecution,
+    Pipeline,
     Project,
     Repo,
     Report,
@@ -32,6 +35,7 @@ from .models import (
     utcnow,
 )
 from .parsing import ParsedCase, fingerprint, parse_junit_xml
+from .schemas import PipelineReportIn
 
 logger = logging.getLogger("flakeradar.processing")
 
@@ -47,6 +51,7 @@ class ProcessOutcome:
     counts: dict[str, int] | None
     touched_test_ids: list[int]
     error: str | None
+    touched_job_ids: list[int] = field(default_factory=list)
 
 
 def _chunks(items: list, size: int = CHUNK):
@@ -167,26 +172,203 @@ async def apply_default_branch(db: AsyncSession, repo_id: int, value: str | None
     return True
 
 
-async def rescore_repo(db: AsyncSession, repo_id: int) -> list[int]:
-    """Rescore every Test in the Repo (chunked). Returns their ids, sorted."""
-    ids = list(
+async def rescore_repo(db: AsyncSession, repo_id: int) -> tuple[list[int], list[int]]:
+    """Rescore every Test and every Job in the Repo (chunked).
+
+    Returns (test_ids, job_ids), each sorted.
+    """
+    test_ids = list(
         (
             await db.execute(
                 select(TestCase.id).join(Project, Project.id == TestCase.project_id).where(Project.repo_id == repo_id)
             )
         ).scalars()
     )
-    ids = sorted(ids)
-    await rescore(db, ids)
-    return ids
+    job_ids = list(
+        (
+            await db.execute(
+                select(Job.id).join(Pipeline, Pipeline.id == Job.pipeline_id).where(Pipeline.repo_id == repo_id)
+            )
+        ).scalars()
+    )
+    test_ids, job_ids = sorted(test_ids), sorted(job_ids)
+    await rescore(db, test_ids)
+    await rescore_jobs(db, job_ids)
+    return test_ids, job_ids
+
+
+async def _job_history(
+    db: AsyncSession, job_ids: list[int]
+) -> dict[int, tuple[str | None, list[tuple[str, str, str]]]]:
+    """Newest-first Job-execution history for each Job, plus its Repo's Default branch.
+
+    Returns {job_id: (default_branch, [(commit_sha, branch, status), ...])}.
+    """
+    settings = get_settings()
+    on_default = or_(Repo.default_branch.is_(None), JobExecution.branch == Repo.default_branch)
+    rn_all = func.row_number().over(partition_by=JobExecution.job_id, order_by=JobExecution.id.desc()).label("rn_all")
+    rn_def = (
+        func.row_number()
+        .over(partition_by=(JobExecution.job_id, on_default), order_by=JobExecution.id.desc())
+        .label("rn_def")
+    )
+    history: dict[int, list[tuple[str, str, str]]] = defaultdict(list)
+    branches: dict[int, str | None] = {}
+    for chunk in _chunks(job_ids):
+        ranked = (
+            select(
+                JobExecution.id,
+                JobExecution.job_id,
+                JobExecution.commit_sha,
+                JobExecution.branch,
+                JobExecution.status,
+                Repo.default_branch,
+                rn_all,
+                rn_def,
+            )
+            .join(Job, Job.id == JobExecution.job_id)
+            .join(Pipeline, Pipeline.id == Job.pipeline_id)
+            .join(Repo, Repo.id == Pipeline.repo_id)
+            .where(JobExecution.job_id.in_(chunk))
+            .subquery()
+        )
+        rows = await db.execute(
+            select(ranked.c.job_id, ranked.c.commit_sha, ranked.c.branch, ranked.c.status, ranked.c.default_branch)
+            .where((ranked.c.rn_all <= settings.score_window) | (ranked.c.rn_def <= settings.score_window))
+            .order_by(ranked.c.job_id, ranked.c.id.desc())
+        )
+        for job_id, sha, branch, status, def_branch in rows.all():
+            history[job_id].append((sha, branch, status))
+            branches.setdefault(job_id, def_branch)
+    return {jid: (branches.get(jid), history[jid]) for jid in job_ids}
+
+
+async def rescore_jobs(db: AsyncSession, job_ids: list[int]) -> None:
+    """Recompute flakiness for Jobs with the Default-branch rule (see rescore)."""
+    settings = get_settings()
+    history = await _job_history(db, job_ids)
+    updates: list[dict[str, Any]] = []
+    for job_id in job_ids:
+        def_branch, execs = history.get(job_id, (None, []))
+        score, confirmed = scoring.branch_scoped_score(
+            execs,
+            def_branch,
+            settings.score_decay,
+            settings.score_window,
+        )
+        updates.append({"id": job_id, "flakiness_score": score, "confirmed_flake_count": confirmed})
+    for chunk in _chunks(updates):
+        await db.execute(update(Job), chunk)
+
+
+async def process_pipeline_report(db: AsyncSession, report: Report) -> ProcessOutcome:
+    """Persist one Pipeline report as Job executions. Caller owns the transaction."""
+    payload = PipelineReportIn.model_validate_json(report.body)
+    now = utcnow()
+
+    changed = await apply_default_branch(db, report.repo_id, payload.default_branch)
+
+    # Upsert the Pipeline, then the Jobs, then insert Job executions (dedupe by
+    # ci_job_id). Only brand-new executions count toward scoring.
+    await db.execute(
+        pg_insert(Pipeline)
+        .values(repo_id=report.repo_id, provider=payload.provider, name=payload.pipeline)
+        .on_conflict_do_nothing(constraint="uq_pipelines_repo_provider_name")
+    )
+    pipeline_id = (
+        await db.execute(
+            select(Pipeline.id).where(
+                Pipeline.repo_id == report.repo_id,
+                Pipeline.provider == payload.provider,
+                Pipeline.name == payload.pipeline,
+            )
+        )
+    ).scalar_one()
+
+    job_names = sorted({j.name for j in payload.jobs})
+    for chunk in _chunks(job_names):
+        await db.execute(
+            pg_insert(Job)
+            .values([{"pipeline_id": pipeline_id, "name": n, "last_seen_at": now} for n in chunk])
+            .on_conflict_do_nothing(constraint="uq_jobs_pipeline_name")
+        )
+    job_ids: dict[str, int] = {}
+    for chunk in _chunks(job_names):
+        rows = await db.execute(select(Job.name, Job.id).where(Job.pipeline_id == pipeline_id, Job.name.in_(chunk)))
+        job_ids.update(dict(rows.all()))
+
+    exec_rows = []
+    for j in payload.jobs:
+        exec_rows.append(
+            {
+                "job_id": job_ids[j.name],
+                "ci_job_id": j.ci_job_id,
+                "ci_run_id": payload.ci_run_id,
+                "ci_run_attempt": payload.ci_run_attempt,
+                "commit_sha": payload.commit_sha,
+                "branch": payload.branch,
+                "status": j.status,
+                "url": j.url,
+                "runner_name": j.runner_name,
+                "runner_labels": j.runner_labels,
+                "started_at": j.started_at,
+                "completed_at": j.completed_at,
+                "created_at": now,
+            }
+        )
+
+    sees_new: set[int] = set()
+    new_counts = {"passed": 0, "failed": 0, "skipped": 0}
+    for chunk in _chunks(exec_rows):
+        inserted = (
+            await db.execute(
+                pg_insert(JobExecution)
+                .values(chunk)
+                .on_conflict_do_nothing(constraint="uq_job_executions_job_ci_job_id")
+                .returning(JobExecution.id, JobExecution.job_id, JobExecution.status)
+            )
+        ).all()
+        for exec_id, job_id, status in inserted:
+            sees_new.add(job_id)
+            new_counts[status] += 1
+
+    # Update last status for every Job that got a new execution.
+    status_by_job: dict[int, str] = {}
+    for j in payload.jobs:
+        if job_ids[j.name] in sees_new:
+            status_by_job[job_ids[j.name]] = j.status
+    if status_by_job:
+        for chunk in _chunks(list(status_by_job.items())):
+            await db.execute(
+                update(Job),
+                [{"id": jid, "last_status": s, "last_seen_at": now} for jid, s in chunk],
+            )
+
+    touched = sorted(sees_new)
+    await rescore_jobs(db, touched)
+    if changed:
+        await rescore_repo(db, report.repo_id)
+
+    report.status = REPORT_PROCESSED
+    report.counts = {**new_counts, "duplicate": len(payload.jobs) - len(sees_new)}
+    report.run_id = None
+    report.error = None
+    report.processed_at = now
+    return ProcessOutcome(
+        report_id=report.id,
+        status=REPORT_PROCESSED,
+        run_id=None,
+        counts=report.counts,
+        touched_test_ids=[],
+        error=None,
+        touched_job_ids=touched,
+    )
 
 
 async def process_report(db: AsyncSession, report: Report) -> ProcessOutcome:
-    """Persist one Report as a Run. Caller owns the transaction (no commit here)."""
-    if report.kind != REPORT_KIND_JUNIT:
-        # Pipeline reports are consumed by task 04; until then mark them failed
-        # cleanly instead of crashing on a missing Project.
-        raise ValueError("pipeline reports are not processed yet")
+    """Persist one Report. Caller owns the transaction (no commit here)."""
+    if report.kind == REPORT_KIND_PIPELINE:
+        return await process_pipeline_report(db, report)
     parsed = await asyncio.to_thread(parse_junit_xml, report.body)
     now = utcnow()
 

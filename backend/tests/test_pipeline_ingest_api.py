@@ -3,7 +3,6 @@
 import json
 
 from app.models import Repo, Report
-from app.processing import process_next
 from sqlalchemy import select
 
 from tests.conftest import AUTH
@@ -85,12 +84,3 @@ async def test_pipeline_report_auto_creates_repo(client, db):
         headers=AUTH,
     )
     assert (await db.execute(select(Repo.name))).scalars().all() == ["brand/newrepo"]
-
-
-async def test_pipeline_report_fails_cleanly_until_processed(client, db, session_factory):
-    await client.post("/api/ingest/pipeline", json=_payload(), headers=AUTH)
-    outcome = await process_next(session_factory)
-    assert outcome.status == "failed"
-    assert "pipeline reports are not processed yet" in outcome.error
-    rep = (await db.execute(select(Report))).scalar_one()
-    assert rep.status == "failed"
