@@ -80,10 +80,10 @@ A failed Job execution in which at least one Test execution uploaded by that sam
 A failed Job execution with no failing Test execution from the same Job attempt: a failure from setup, infrastructure or a step outside the test runner. Only these count against a Job's Flakiness score.
 
 **Score history**:
-A Test's Flakiness score at the end of each day, with that day's counts of Executions, failures and Proven flakes. It shows whether a Test is getting worse or better.
+A Test's or Job's Flakiness score and Proven flake count at the end of each day, with that day's counts of Executions and failures. It shows whether a Test or Job is getting worse or better.
 
 **Clean streak**:
-The number of non-skipped Executions of a Test since its last failure. After a fix, a growing Clean streak shows that the fix held.
+The number of non-skipped Executions of a Test or Job on the Default branch since its last failure. After a fix, a growing Clean streak shows that the fix held.
 
 **Flake threshold**:
 The Flakiness score at or above which a Test counts as a Flaky test.
