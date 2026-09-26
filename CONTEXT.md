@@ -43,8 +43,8 @@ The processed result of one Report: the Executions for one Repo and Project at a
 _Avoid_: Build, Job (that is a CI job)
 
 **Execution**:
-One Test's outcome (passed, failed, error or skipped) within one Run.
-_Avoid_: Result, attempt
+One try of a Test by the test runner, and its outcome (passed, failed, error or skipped), within one Run. When the test runner retries a Test inside the same Run, each retry is its own Execution, numbered from 0 in the order they ran. A CI re-run is not a retry: it produces a new Run.
+_Avoid_: Result
 
 **Job execution**:
 One Job's outcome (passed, failed or skipped) in one attempt at a specific commit SHA. A re-run of the same CI run is a new attempt and a new Job execution. A cancelled Job counts as skipped.
@@ -52,6 +52,10 @@ _Avoid_: Job run, build
 
 **Failure message**:
 The short, one-line reason that a failing Execution gives, such as `AssertionError: expected 3, got 4`.
+
+**Failure category**:
+The likely cause of a failing Execution: timing, network, environment, assertion or other. Rules assign it from the Failure message and Failure details. A Test's Failure category is the most common one among its recent failing Executions.
+_Avoid_: Root cause (the category is a guess, not a diagnosis)
 
 **Failure details**:
 The full output that a failing Execution gives: the traceback and any captured stdout or stderr.
@@ -74,6 +78,12 @@ A failed Job execution in which at least one Test execution uploaded by that sam
 
 **Unexplained failure**:
 A failed Job execution with no failing Test execution from the same Job attempt: a failure from setup, infrastructure or a step outside the test runner. Only these count against a Job's Flakiness score.
+
+**Score history**:
+A Test's Flakiness score at the end of each day, with that day's counts of Executions, failures and Proven flakes. It shows whether a Test is getting worse or better.
+
+**Clean streak**:
+The number of non-skipped Executions of a Test since its last failure. After a fix, a growing Clean streak shows that the fix held.
 
 **Flake threshold**:
 The Flakiness score at or above which a Test counts as a Flaky test.
