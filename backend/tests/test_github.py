@@ -6,11 +6,19 @@ import httpx
 import pytest
 from app import github_integration
 from app.config import Settings
-from app.models import Project, TestCase
+from app.models import Project, Repo, TestCase
 from app.processing import ProcessOutcome
 from sqlalchemy import select
 
-from tests.factories import make_execution, make_project, make_run, make_test_case
+from tests.factories import (
+    make_execution,
+    make_job,
+    make_job_execution,
+    make_pipeline,
+    make_project,
+    make_run,
+    make_test_case,
+)
 
 
 @pytest.fixture()
@@ -269,3 +277,132 @@ async def test_many_touched_ids_stay_under_the_bind_limit(db, gh_settings):
     ids = sorted([tc.id, *range(10_000_000, 10_040_000)])
     await github_integration.file_issues_for(db, ids, transport=transport)
     assert len(calls) == 1
+
+
+# --- Job issue filing (task 10) ------------------------------------------
+
+
+async def _flaky_job(
+    db,
+    provider="github",
+    name="e2e (ubuntu-latest)",
+    *,
+    pipeline=".github/workflows/ci.yml",
+    flakiness_score=0.6,
+    confirmed_flake_count=1,
+    **fields,
+):
+    pipe = await make_pipeline(db, "acme/app", pipeline, provider=provider)
+    job = await make_job(
+        db, pipe, name=name, flakiness_score=flakiness_score, confirmed_flake_count=confirmed_flake_count, **fields
+    )
+    await db.commit()
+    return job
+
+
+async def _job_exec(db, job, ci_job_id, explained=False, status="failed"):
+    """Add a Job execution, optionally linked to a failing Test (explained)."""
+    await make_job_execution(db, job, status=status, ci_job_id=ci_job_id, branch="main")
+    if explained:
+        proj = (
+            await db.execute(
+                select(Project)
+                .join(Repo, Project.repo_id == Repo.id)
+                .where(Repo.name == "acme/app", Project.name == "backend")
+            )
+        ).scalar_one_or_none()
+        if proj is None:
+            proj = await make_project(db, "acme/app", "backend")
+        tc = await make_test_case(db, proj, name=f"t-{ci_job_id}")
+        run = await make_run(db, proj, commit_sha="s", ci_job_id=ci_job_id)
+        await make_execution(db, tc, run, status="failed")
+    await db.commit()
+
+
+async def test_job_files_issue_with_expected_title_and_label(db, gh_settings):
+    job = await _flaky_job(db)
+    await _job_exec(db, job, "1", explained=True)
+    calls, transport = _recorder()
+    await github_integration.file_job_issues_for(db, [job.id], transport=transport)
+    (req,) = calls
+    assert req.url.path == "/repos/acme/app/issues"
+    body = json.loads(req.content)
+    assert body["title"] == "[FlakeRadar] Flaky CI job: .github/workflows/ci.yml / e2e (ubuntu-latest)"
+    assert body["labels"] == ["flakeradar"]
+    assert "**Job:** `e2e (ubuntu-latest)`" in body["body"]
+    assert "Unexplained failures" in body["body"] and "Explained by tests" in body["body"]
+    await db.refresh(job)
+    assert job.github_issue_number == 77
+
+
+async def test_job_does_not_refile(db, gh_settings):
+    job = await _flaky_job(db)
+    await _job_exec(db, job, "1")
+    _, transport = _recorder()
+    await github_integration.file_job_issues_for(db, [job.id], transport=transport)
+    calls, transport = _recorder()
+    await github_integration.file_job_issues_for(db, [job.id], transport=transport)
+    assert calls == []
+
+
+async def test_gitlab_job_is_not_filed(db, gh_settings):
+    job = await _flaky_job(db, provider="gitlab")
+    await _job_exec(db, job, "1")
+    calls, transport = _recorder()
+    await github_integration.file_job_issues_for(db, [job.id], transport=transport)
+    assert calls == []
+
+
+async def test_job_unexplained_failure_gate(db, gh_settings):
+    gh_settings.github_issue_min_failures = 2
+    # Three failures, all explained -> not filed.
+    all_explained = await _flaky_job(db, name="all-explained", pipeline=".github/workflows/a.yml")
+    for i in range(3):
+        await _job_exec(db, all_explained, f"ex-{i}", explained=True)
+    calls, transport = _recorder()
+    await github_integration.file_job_issues_for(db, [all_explained.id], transport=transport)
+    assert calls == []
+    # Two unexplained (plus one explained) -> filed.
+    mixed = await _flaky_job(db, name="mixed", pipeline=".github/workflows/b.yml")
+    await _job_exec(db, mixed, "mix-1", explained=True)
+    await _job_exec(db, mixed, "mix-2")
+    await _job_exec(db, mixed, "mix-3")
+    calls, transport = _recorder()
+    await github_integration.file_job_issues_for(db, [mixed.id], transport=transport)
+    assert len(calls) == 1
+
+
+async def test_job_sync_rearms_closed_issue_and_refiles(db, gh_settings, session_factory):
+    job = await _flaky_job(db)
+    await _job_exec(db, job, "1")
+    _, transport = _recorder()
+    await github_integration.file_job_issues_for(db, [job.id], transport=transport)
+    await db.refresh(job)
+    assert job.github_issue_number == 77
+
+    def closed(request):
+        return httpx.Response(200, json={"state": "closed"})
+
+    await github_integration.sync_closed_issues(session_factory, transport=httpx.MockTransport(closed))
+    await db.refresh(job)
+    assert job.github_issue_number is None
+
+    calls, transport = _recorder()
+    await github_integration.file_job_issues_for(db, [job.id], transport=transport)
+    assert len(calls) == 1
+
+
+async def test_job_rate_limit_stops_batch(db, gh_settings):
+    a = await _flaky_job(db, name="a", pipeline=".github/workflows/a.yml")
+    b = await _flaky_job(db, name="b", pipeline=".github/workflows/b.yml")
+    calls, transport = _recorder(status=403, headers={"x-ratelimit-remaining": "0"})
+    await github_integration.file_job_issues_for(db, [a.id, b.id], transport=transport)
+    assert len(calls) == 1
+
+
+async def test_job_unconfigured_is_noop(db):
+    job = await _flaky_job(db)
+    await _job_exec(db, job, "1")
+    calls, transport = _recorder()
+    await github_integration.file_job_issues_for(db, [job.id], transport=transport)
+    assert calls == []

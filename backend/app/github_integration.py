@@ -1,18 +1,19 @@
-"""GitHub issue automation, filed in each Test's own Repo.
+"""GitHub issue automation, filed in each Test's (and Job's) own Repo.
 
-When a Test crosses the *filing gate*, file an issue in that Test's Repo
-(``owner/name``) with the evidence. Runs after the processor finishes a Report
-(never on the upload path), so a slow or unreachable GitHub API never delays
-CI.
+When a Test or a Job crosses the *filing gate*, file an issue in that entity's
+Repo (``owner/name``) with the evidence. Runs after the processor finishes a
+Report (never on the upload path), so a slow or unreachable GitHub API never
+delays CI.
 
 Filing gate (all configured minimums must be met; 0 disables a signal):
   - ``github_issue_min_score``             — flakiness score (0..1)
   - ``github_issue_min_proven_flakes``     — same-commit fail+pass count
   - ``github_issue_min_failures``          — failures in the recent window
-Deduplication works because a filed issue's number is stored on the Test; an
-issue is only ever re-filed after GitHub reports it closed (``sync_closed_issues``
-clears the stored number, and the next Report that touches the Test re-files it
-if it still meets the gate).
+    (for Jobs: **unexplained** failures only — explained failures are Tests')
+Deduplication works because a filed issue's number is stored on the Test/Job;
+an issue is only ever re-filed after GitHub reports it closed
+(``sync_closed_issues`` clears the stored number, and the next Report that
+touches the entity re-files it if it still meets the gate).
 
 Error handling: never raises.
 - No token configured            -> silent no-op (self-host without GitHub).
@@ -28,8 +29,18 @@ import httpx
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from . import queries
 from .config import Settings, get_settings
-from .models import REPORT_PROCESSED, Project, Repo, TestCase, TestExecution, TestRun
+from .models import (
+    REPORT_PROCESSED,
+    Job,
+    Pipeline,
+    Project,
+    Repo,
+    TestCase,
+    TestExecution,
+    TestRun,
+)
 from .processing import CHUNK, ProcessOutcome
 from .scoring import FAILING
 
@@ -271,25 +282,154 @@ async def file_issues_for(
         logger.warning("GitHub unreachable, skipping issue filing: %s", exc)
 
 
+async def _job_candidates(db: AsyncSession, job_ids: list[int]) -> list[tuple[Job, str, str]]:
+    """github-provider Jobs that meet the gate and still have no open issue.
+
+    Returns [(Job, pipeline_name, repo_name)]. `min_failures`, when configured,
+    requires that many UNEXPLAINED failures in the newest `score_window` Job
+    executions — reusing task 05's explanation (via queries.get_job).
+    """
+    s = get_settings()
+    gate = _FilingGate.from_settings(s)
+    candidates: list[tuple[Job, str, str]] = []
+    for chunk in _chunks(job_ids):
+        candidates += (
+            await db.execute(
+                select(Job, Pipeline.name, Repo.name)
+                .join(Pipeline, Job.pipeline_id == Pipeline.id)
+                .join(Repo, Pipeline.repo_id == Repo.id)
+                .where(
+                    Job.id.in_(chunk),
+                    Pipeline.provider == "github",
+                    Job.flakiness_score >= gate.min_score,
+                    Job.confirmed_flake_count >= gate.min_proven_flakes,
+                    Job.github_issue_number.is_(None),
+                )
+                .order_by(Job.id)
+            )
+        ).all()
+    if gate.min_failures > 0 and candidates:
+        kept: list[tuple[Job, str, str]] = []
+        for job, pipeline, repo in candidates:
+            hist = await queries.get_job(
+                db, job.id, threshold=get_settings().flake_threshold, executions_limit=s.score_window
+            )
+            if hist is not None and hist.unexplained_failures >= gate.min_failures:
+                kept.append((job, pipeline, repo))
+        candidates = kept
+    return candidates
+
+
+async def _job_issue_body(db: AsyncSession, job: Job, pipeline: str, repo: str) -> str:
+    """Render a self-contained issue body for a flaky CI Job."""
+    s = get_settings()
+    hist = await queries.get_job(db, job.id, threshold=get_settings().flake_threshold, executions_limit=10)
+    lines = [
+        f"FlakeRadar detected a flaky CI job: `{pipeline}` / `{job.name}`",
+        "",
+        f"- **Repo:** `{repo}`",
+        f"- **Pipeline:** `{pipeline}`",
+        f"- **Job:** `{job.name}`",
+        f"- **Flakiness score:** {job.flakiness_score:.2f} (filed at ≥ {s.github_issue_min_score:.2f})",
+        f"- **Proven flakes (same commit failed *and* passed):** {job.confirmed_flake_count}",
+    ]
+    if hist is not None:
+        lines += [
+            f"- **Unexplained failures:** {hist.unexplained_failures} (failures with no failing test in the job)",
+            f"- **Explained by tests:** {hist.explained_failures}",
+        ]
+    lines += [
+        "",
+        "Job scores count only **unexplained** failures — a failure that a failing Test in the same job",
+        "explains is not counted. An unexplained failure points at setup, network, runner capacity,",
+        "timeouts, or a crash before the tests run. If the failures cluster on one runner, that runner",
+        "may be the cause. Open the job and fix the failing step, then re-run.",
+        "",
+        "### Last 10 executions",
+        "",
+        "| Outcome | Commit | Branch | Attempt | Runner | Job |",
+        "|---|---|---|---|---|---|",
+    ]
+    if hist is not None:
+        for e in hist.executions:
+            link = f"[job]({e.url})" if e.url else "—"
+            runner = e.runner_name or "—"
+            lines.append(
+                f"| {e.outcome} | `{e.commit_sha[:10]}` | {e.branch} | {e.ci_run_attempt} | {runner} | {link} |"
+            )
+    return "\n".join(lines)
+
+
+async def file_job_issues_for(
+    db: AsyncSession,
+    job_ids: list[int],
+    *,
+    transport: httpx.AsyncBaseTransport | None = None,
+) -> None:
+    """File issues for github-provider Jobs that now meet the filing gate. Never raises.
+
+    `transport` exists for tests (httpx.MockTransport); production passes None.
+    """
+    if not configured() or not job_ids:
+        return
+    s = get_settings()
+    candidates = await _job_candidates(db, job_ids)
+    if not candidates:
+        return
+    try:
+        async with httpx.AsyncClient(
+            base_url=API_BASE, headers=_headers(s.github_token), timeout=15, transport=transport
+        ) as client:
+            for job, pipeline, repo in candidates:
+                resp = await client.post(
+                    f"/repos/{repo}/issues",
+                    json={
+                        "title": f"[FlakeRadar] Flaky CI job: {pipeline} / {job.name}",
+                        "body": await _job_issue_body(db, job, pipeline, repo),
+                        "labels": [s.github_issue_label],
+                    },
+                )
+                if resp.status_code == 201:
+                    job.github_issue_number = resp.json()["number"]
+                    await db.commit()
+                    logger.info("Filed issue %s#%s for job %s", repo, job.github_issue_number, job.id)
+                elif resp.status_code in (403, 429):
+                    logger.warning(
+                        "GitHub rate limit / forbidden (remaining=%s); stopping batch",
+                        resp.headers.get("x-ratelimit-remaining"),
+                    )
+                    return
+                else:
+                    logger.warning(
+                        "GitHub issue creation failed for job %s in %s: %s %s",
+                        job.id,
+                        repo,
+                        resp.status_code,
+                        resp.text[:300],
+                    )
+    except httpx.HTTPError as exc:
+        logger.warning("GitHub unreachable, skipping job issue filing: %s", exc)
+
+
 async def sync_closed_issues(
     session_factory: async_sessionmaker[AsyncSession], *, transport: httpx.AsyncBaseTransport | None = None
 ) -> None:
-    """Re-arm deduplication for Tests whose GitHub issue has been closed.
+    """Re-arm deduplication for Tests and Jobs whose GitHub issue has been closed.
 
-    A filed issue's number is stored on the Test and blocks re-filing. When
+    A filed issue's number is stored on the entity and blocks re-filing. When
     GitHub reports that issue closed (or gone), clear the stored number so the
-    next Report that touches the Test can re-file a fresh issue if it still
+    next Report that touches the entity can re-file a fresh issue if it still
     meets the filing gate. Leader-only maintenance; checks each open issue with
-    its own sequential GET (capped at the 2000 most stale rows per run — the
-    GitHub REST API has no bulk lookup by arbitrary issue numbers). Never raises.
+    its own sequential GET (capped at the 2000 most stale rows per run for each
+    of Tests and Jobs — the GitHub REST API has no bulk lookup by arbitrary
+    issue numbers). Never raises.
 
     `transport` exists for tests (httpx.MockTransport); production passes None.
     """
     if not configured():
         return
-    s = get_settings()
     async with session_factory() as db:
-        rows = (
+        test_rows = (
             await db.execute(
                 select(TestCase, Repo.name)
                 .join(Project, TestCase.project_id == Project.id)
@@ -299,36 +439,67 @@ async def sync_closed_issues(
                 .limit(2000)
             )
         ).all()
-        if not rows:
+        job_rows = (
+            await db.execute(
+                select(Job, Repo.name)
+                .join(Pipeline, Job.pipeline_id == Pipeline.id)
+                .join(Repo, Pipeline.repo_id == Repo.id)
+                .where(Job.github_issue_number.is_not(None))
+                .order_by(Job.id)
+                .limit(2000)
+            )
+        ).all()
+        if not test_rows and not job_rows:
             return
         changed = False
+        stopped = False
         try:
             async with httpx.AsyncClient(
-                base_url=API_BASE, headers=_headers(s.github_token), timeout=15, transport=transport
+                base_url=API_BASE, headers=_headers(get_settings().github_token), timeout=15, transport=transport
             ) as client:
-                for tc, repo in rows:
-                    resp = await client.get(f"/repos/{repo}/issues/{tc.github_issue_number}")
-                    if resp.status_code in (403, 429):
-                        logger.warning("GitHub rate limit / forbidden in sync; stopping")
+                for tc, repo in test_rows:
+                    if stopped:
                         break
-                    if resp.status_code == 200 and resp.json().get("state") == "closed":
-                        logger.info("Issue closed %s#%s; re-arming test %s", repo, tc.github_issue_number, tc.id)
-                        tc.github_issue_number = None
-                        changed = True
-                    elif resp.status_code == 404:
-                        # Issue deleted or token can no longer see it — do not hold dedup forever.
-                        logger.info("Issue gone %s#%s; re-arming test %s", repo, tc.github_issue_number, tc.id)
-                        tc.github_issue_number = None
-                        changed = True
+                    ok, changed = await _clear_if_closed(client, tc, repo, "test", changed)
+                    stopped = not ok
+                for job, repo in job_rows:
+                    if stopped:
+                        break
+                    ok, changed = await _clear_if_closed(client, job, repo, "job", changed)
+                    stopped = not ok
         except httpx.HTTPError as exc:
             logger.warning("GitHub unreachable, skipping issue-state sync: %s", exc)
         if changed:
             await db.commit()
 
 
+async def _clear_if_closed(
+    client: httpx.AsyncClient, obj: Job | TestCase, repo: str, entity: str, changed: bool
+) -> tuple[bool, bool]:
+    """Check one issue; clear its number on the ORM object when closed/gone.
+
+    Returns (continue_batch, changed); continue_batch is False on 403/429.
+    """
+    resp = await client.get(f"/repos/{repo}/issues/{obj.github_issue_number}")
+    if resp.status_code in (403, 429):
+        logger.warning("GitHub rate limit / forbidden in sync; stopping")
+        return False, changed
+    if resp.status_code == 200 and resp.json().get("state") == "closed":
+        logger.info("Issue closed %s#%s; re-arming %s %s", repo, obj.github_issue_number, entity, obj.id)
+        obj.github_issue_number = None
+        return True, True
+    if resp.status_code == 404:
+        # Issue deleted or token can no longer see it — do not hold dedup forever.
+        logger.info("Issue gone %s#%s; re-arming %s %s", repo, obj.github_issue_number, entity, obj.id)
+        obj.github_issue_number = None
+        return True, True
+    return True, changed
+
+
 async def on_report_processed(session_factory: async_sessionmaker[AsyncSession], outcome: ProcessOutcome) -> None:
-    """ReportWorker hook: file issues for the Tests a processed Report touched."""
+    """ReportWorker hook: file issues for the Tests and Jobs a processed Report touched."""
     if outcome.status != REPORT_PROCESSED or not configured():
         return
     async with session_factory() as db:
         await file_issues_for(db, outcome.touched_test_ids)
+        await file_job_issues_for(db, outcome.touched_job_ids)
