@@ -17,6 +17,11 @@ function fmtWhen(iso: string): string {
   });
 }
 
+/** " · retry 2" for a retry, "" for a first try. */
+export function retryLabel(attempt: number): string {
+  return attempt > 0 ? ` · retry ${attempt}` : "";
+}
+
 /** Execution history strip: oldest -> newest, left -> right.
  *  Hover any mark for commit/branch/time/message. */
 function ExecutionStrip({ executions }: { executions: Execution[] }) {
@@ -74,6 +79,7 @@ function ExecutionStrip({ executions }: { executions: Execution[] }) {
           <div className="flex items-center gap-1.5 font-semibold">
             <StatusMark status={hover.e.status} size={9} /> {hover.e.status}
             {hover.e.duration > 0 && ` · ${hover.e.duration.toFixed(2)}s`}
+            {retryLabel(hover.e.attempt)}
           </div>
           <div className="text-text-2">
             <span className="font-mono">{hover.e.commit_sha.slice(0, 10)}</span> on {hover.e.branch}{" "}
@@ -188,6 +194,7 @@ export function TestDetail({
               <td>
                 <span className="inline-flex items-center gap-1.5 text-text-2">
                   <StatusMark status={e.status} size={9} /> {e.status}
+                  {retryLabel(e.attempt)}
                 </span>
               </td>
               <td className="font-mono">{e.commit_sha.slice(0, 10)}</td>

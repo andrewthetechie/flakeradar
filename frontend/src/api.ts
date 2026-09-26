@@ -51,6 +51,7 @@ export interface Execution {
   commit_sha: string;
   branch: string;
   ci_run_id: string;
+  attempt: number; // 0 = first try in its Run; >0 = a retry
 }
 
 export interface Location {

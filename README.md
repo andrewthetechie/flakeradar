@@ -246,6 +246,24 @@ Runners without a file attribute (Go, cargo-nextest) still work — the test is
 identified by its classname and name, and the full failure traceback (which
 usually contains `file:line`) is kept for every failure.
 
+## Retries
+
+When a runner retries a test inside one run, FlakeRadar stores every attempt.
+A test that fails and then passes on retry has a fail and a pass on the same
+commit, so it is a **proven flake** from its first run.
+
+| Runner | Setting |
+|---|---|
+| Playwright ≥ 1.59 | `reporter: [["junit", { outputFile: "junit.xml", includeRetries: true }]]` (or `PLAYWRIGHT_JUNIT_INCLUDE_RETRIES=1`) |
+| Maven Surefire / Failsafe | `-Dsurefire.rerunFailingTestsCount=2` (retries are written as `<flakyFailure>` / `<rerunFailure>`) |
+
+Runners that write each attempt as its own `<testcase>` with the same name
+also work. Without these settings, a retried test that finally passes looks
+like a clean pass.
+
+Each failed retry counts as one failure, including for
+`FLAKERADAR_GITHUB_ISSUE_MIN_FAILURES`. With 2 retries, one run can add 3 failures.
+
 ## Quarantine workflow
 
 Mark an unreliable test **Quarantine** in the dashboard. Your test runner then
@@ -341,7 +359,7 @@ is filed only when it meets **every** configured (non-zero) minimum:
 ```
 FLAKERADAR_GITHUB_ISSUE_MIN_SCORE=0.30          # flakiness score (0..1) min
 FLAKERADAR_GITHUB_ISSUE_MIN_PROVEN_FLAKES=0     # same-commit fail+pass min
-FLAKERADAR_GITHUB_ISSUE_MIN_FAILURES=0          # failures in recent window min
+FLAKERADAR_GITHUB_ISSUE_MIN_FAILURES=0          # failures in recent window min (each failed retry counts)
 ```
 
 Set any signal's minimum to `0` to skip it, so you can gate on score, proven

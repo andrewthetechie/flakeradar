@@ -2,6 +2,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { History } from "../api";
+import { retryLabel } from "./TestDetail";
 import { TestDrawer } from "./TestDrawer";
 
 const history: History = {
@@ -35,6 +36,18 @@ const history: History = {
   jobs: [],
   executions: [
     {
+      id: 3,
+      status: "failed",
+      duration: 5.1,
+      message: "expected 3",
+      details: "Traceback\n  at src/app.test.ts:14",
+      created_at: "2026-09-25T02:00:00Z",
+      commit_sha: "bbb222",
+      branch: "feat",
+      ci_run_id: "2",
+      attempt: 1,
+    },
+    {
       id: 2,
       status: "passed",
       duration: 0.1,
@@ -44,6 +57,7 @@ const history: History = {
       commit_sha: "bbb222",
       branch: "feat",
       ci_run_id: "2",
+      attempt: 0,
     },
     {
       id: 1,
@@ -55,6 +69,7 @@ const history: History = {
       commit_sha: "aaa111",
       branch: "main",
       ci_run_id: "1",
+      attempt: 0,
     },
   ],
 };
@@ -74,6 +89,16 @@ function renderDrawer(overrides: Partial<History> = {}, onClose = vi.fn(), onQ =
 }
 
 describe("TestDrawer", () => {
+  it("marks retries in the execution table", () => {
+    renderDrawer();
+    expect(screen.getByText(/failed · retry 1/)).toBeInTheDocument();
+  });
+
+  it("renders a retry label for a retry and nothing for a first try", () => {
+    expect(retryLabel(0)).toBe("");
+    expect(retryLabel(2)).toBe(" · retry 2");
+  });
+
   it("shows breadcrumb, permalink and the latest failure details", () => {
     renderDrawer();
     expect(screen.getByRole("dialog", { name: "Test detail" })).toBeInTheDocument();
