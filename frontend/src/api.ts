@@ -2,6 +2,14 @@
 
 export type Tier = "flaky" | "suspect" | "stable";
 export type SortKey = "score" | "last_seen" | "proven";
+export type FailureCategory = "network" | "environment" | "timing" | "assertion" | "other";
+export const FAILURE_CATEGORIES: readonly FailureCategory[] = [
+  "network",
+  "environment",
+  "timing",
+  "assertion",
+  "other",
+];
 
 export interface TestCase {
   id: number;
@@ -16,6 +24,7 @@ export interface TestCase {
   flakiness_score: number;
   tier: Tier;
   confirmed_flake_count: number;
+  failure_category: FailureCategory | null;
   last_status: string;
   last_seen_at: string;
   quarantined: boolean;
@@ -52,6 +61,7 @@ export interface Execution {
   branch: string;
   ci_run_id: string;
   attempt: number; // 0 = first try in its Run; >0 = a retry
+  failure_category: FailureCategory | null;
 }
 
 export interface Location {
@@ -83,6 +93,7 @@ export interface Summary {
   total_runs: number;
   total_executions: number;
   flake_threshold: number;
+  category_counts: Record<FailureCategory, number>;
 }
 
 /** Which Tests a view covers. `project` is only meaningful with `repo`. */
@@ -96,6 +107,7 @@ export interface TestQuery extends Scope {
   pageSize: number;
   sort: SortKey;
   showStable: boolean;
+  category: FailureCategory | null;
 }
 
 async function getJson<T>(url: string): Promise<T> {
@@ -129,6 +141,7 @@ export function fetchTests(q: TestQuery): Promise<TestPage> {
   params.set("page_size", String(q.pageSize));
   params.set("sort", q.sort);
   if (q.showStable) params.set("include_stable", "true");
+  if (q.category) params.set("category", q.category);
   return getJson<TestPage>(withQuery("/api/tests", params));
 }
 

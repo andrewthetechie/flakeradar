@@ -16,6 +16,7 @@ const test: TestCase = {
   flakiness_score: 0.7,
   tier: "flaky",
   confirmed_flake_count: 2,
+  failure_category: "timing",
   last_status: "failed",
   last_seen_at: "2026-09-25T00:00:00Z",
   quarantined: false,
@@ -46,7 +47,22 @@ describe("Leaderboard", () => {
     );
     expect(screen.getByText("andrewthetechie/writers-app · backend")).toBeInTheDocument();
     expect(screen.getByText("flaky")).toBeInTheDocument();
+    expect(screen.getByText("likely: timing")).toBeInTheDocument();
     expect(screen.getByText(/2× proven/)).toBeInTheDocument();
+  });
+
+  it("shows no likely-cause badge when the test has no category", () => {
+    render(
+      <Leaderboard
+        tests={[{ ...test, failure_category: null }]}
+        scope={{ repo: null, project: null }}
+        showStable={false}
+        selectedId={null}
+        onSelect={() => {}}
+        onToggleQuarantine={() => {}}
+      />,
+    );
+    expect(screen.queryByText(/likely:/)).toBeNull();
   });
 
   it("explains the empty state when stable tests are hidden", () => {

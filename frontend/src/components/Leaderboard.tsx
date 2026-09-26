@@ -99,6 +99,14 @@ export function Leaderboard({
                   </span>
                 </div>
                 <span className={`mt-1 inline-block text-xs ${TIER_CLASS[t.tier]}`}>{t.tier}</span>
+                {t.failure_category && (
+                  <span
+                    className="mt-1 ml-2 inline-block rounded border border-line px-1 text-[11px] text-text-2"
+                    title="Likely cause, from failure messages"
+                  >
+                    likely: {t.failure_category}
+                  </span>
+                )}
               </td>
               <td className="col-proof px-4 py-2.5 align-top text-xs whitespace-nowrap">
                 {t.confirmed_flake_count > 0 ? (

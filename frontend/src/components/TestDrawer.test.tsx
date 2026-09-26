@@ -19,6 +19,7 @@ const history: History = {
     flakiness_score: 0.6,
     tier: "flaky",
     confirmed_flake_count: 1,
+    failure_category: "assertion",
     last_status: "passed",
     last_seen_at: "2026-09-25T00:00:00Z",
     quarantined: false,
@@ -46,6 +47,7 @@ const history: History = {
       branch: "feat",
       ci_run_id: "2",
       attempt: 1,
+      failure_category: "assertion",
     },
     {
       id: 2,
@@ -58,6 +60,7 @@ const history: History = {
       branch: "feat",
       ci_run_id: "2",
       attempt: 0,
+      failure_category: null,
     },
     {
       id: 1,
@@ -70,6 +73,7 @@ const history: History = {
       branch: "main",
       ci_run_id: "1",
       attempt: 0,
+      failure_category: "assertion",
     },
   ],
 };
@@ -97,6 +101,12 @@ describe("TestDrawer", () => {
   it("renders a retry label for a retry and nothing for a first try", () => {
     expect(retryLabel(0)).toBe("");
     expect(retryLabel(2)).toBe(" · retry 2");
+  });
+
+  it("shows the likely cause and a Cause column", () => {
+    renderDrawer();
+    expect(screen.getByText("Likely cause")).toBeInTheDocument();
+    expect(screen.getAllByText("assertion").length).toBeGreaterThan(0);
   });
 
   it("shows breadcrumb, permalink and the latest failure details", () => {

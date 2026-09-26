@@ -120,6 +120,10 @@ export function TestDetail({
           </div>
         </div>
         <div>
+          <div className="text-xs text-muted">Likely cause</div>
+          <div className="text-lg font-semibold">{history.test.failure_category ?? "—"}</div>
+        </div>
+        <div>
           <div className="text-xs text-muted">Failures (window)</div>
           <div className="text-lg font-semibold tabular-nums">
             {fails}/{executions.length}
@@ -179,6 +183,7 @@ export function TestDetail({
         <thead>
           <tr className="border-b border-line text-left text-muted">
             <th className="py-1.5 pr-3 font-medium">Status</th>
+            <th className="py-1.5 pr-3 font-medium">Cause</th>
             <th className="py-1.5 pr-3 font-medium">Commit</th>
             <th className="py-1.5 pr-3 font-medium">Branch</th>
             <th className="py-1.5 pr-3 font-medium">When</th>
@@ -197,6 +202,7 @@ export function TestDetail({
                   {retryLabel(e.attempt)}
                 </span>
               </td>
+              <td className="text-text-2">{e.failure_category ?? "—"}</td>
               <td className="font-mono">{e.commit_sha.slice(0, 10)}</td>
               <td>{e.branch}</td>
               <td>{fmtWhen(e.created_at)}</td>
