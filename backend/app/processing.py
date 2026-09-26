@@ -12,7 +12,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any
 
-from sqlalchemy import func, insert, or_, select, update
+from sqlalchemy import exists, func, insert, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -212,6 +212,17 @@ async def _job_history(
         .over(partition_by=(JobExecution.job_id, on_default), order_by=JobExecution.id.desc())
         .label("rn_def")
     )
+    explained_pred = exists(
+        select(1)
+        .select_from(TestRun)
+        .join(Project, Project.id == TestRun.project_id)
+        .join(TestExecution, TestExecution.test_run_id == TestRun.id)
+        .where(
+            TestRun.ci_job_id == JobExecution.ci_job_id,
+            Project.repo_id == Pipeline.repo_id,
+            TestExecution.status.in_(("failed", "error")),
+        )
+    )
     history: dict[int, list[tuple[str, str, str]]] = defaultdict(list)
     branches: dict[int, str | None] = {}
     for chunk in _chunks(job_ids):
@@ -222,6 +233,7 @@ async def _job_history(
                 JobExecution.commit_sha,
                 JobExecution.branch,
                 JobExecution.status,
+                explained_pred.label("explained"),
                 Repo.default_branch,
                 rn_all,
                 rn_def,
@@ -233,11 +245,20 @@ async def _job_history(
             .subquery()
         )
         rows = await db.execute(
-            select(ranked.c.job_id, ranked.c.commit_sha, ranked.c.branch, ranked.c.status, ranked.c.default_branch)
+            select(
+                ranked.c.job_id,
+                ranked.c.commit_sha,
+                ranked.c.branch,
+                ranked.c.status,
+                ranked.c.explained,
+                ranked.c.default_branch,
+            )
             .where((ranked.c.rn_all <= settings.score_window) | (ranked.c.rn_def <= settings.score_window))
             .order_by(ranked.c.job_id, ranked.c.id.desc())
         )
-        for job_id, sha, branch, status, def_branch in rows.all():
+        for job_id, sha, branch, status, explained, def_branch in rows.all():
+            if explained and status == "failed":
+                status = "skipped"
             history[job_id].append((sha, branch, status))
             branches.setdefault(job_id, def_branch)
     return {jid: (branches.get(jid), history[jid]) for jid in job_ids}
@@ -259,6 +280,47 @@ async def rescore_jobs(db: AsyncSession, job_ids: list[int]) -> None:
         updates.append({"id": job_id, "flakiness_score": score, "confirmed_flake_count": confirmed})
     for chunk in _chunks(updates):
         await db.execute(update(Job), chunk)
+
+
+async def explained_ci_job_ids(db: AsyncSession, repo_id: int, ci_job_ids: list[str]) -> set[str]:
+    """The subset of ci_job_ids that have a failing Test execution in this Repo.
+
+    Matches the scoring query: a Job execution is explained when a `test_runs`
+    row with the same ci_job_id (in the same Repo) has a failed/error execution.
+    """
+    wanted = {c for c in ci_job_ids if c}
+    if not wanted:
+        return set()
+    rows = await db.execute(
+        select(TestRun.ci_job_id)
+        .join(Project, Project.id == TestRun.project_id)
+        .join(TestExecution, TestExecution.test_run_id == TestRun.id)
+        .where(
+            TestRun.ci_job_id.in_(wanted),
+            Project.repo_id == repo_id,
+            TestExecution.status.in_(("failed", "error")),
+        )
+    )
+    return set(rows.scalars())
+
+
+async def _rescore_jobs_for_ci_job_id(db: AsyncSession, repo_id: int, ci_job_id: str) -> list[int]:
+    """Rescore every Job that carries this ci_job_id in the Repo; return their ids."""
+    job_ids = sorted(
+        set(
+            (
+                await db.execute(
+                    select(JobExecution.job_id)
+                    .join(Job, Job.id == JobExecution.job_id)
+                    .join(Pipeline, Pipeline.id == Job.pipeline_id)
+                    .where(JobExecution.ci_job_id == ci_job_id, Pipeline.repo_id == repo_id)
+                )
+            ).scalars()
+        )
+    )
+    if job_ids:
+        await rescore_jobs(db, job_ids)
+    return job_ids
 
 
 async def process_pipeline_report(db: AsyncSession, report: Report) -> ProcessOutcome:
@@ -386,6 +448,9 @@ async def process_report(db: AsyncSession, report: Report) -> ProcessOutcome:
         branch=report.branch,
         ci_run_id=report.ci_run_id,
         created_at=now,
+        ci_job_id=report.ci_job_id,
+        ci_run_attempt=report.ci_run_attempt,
+        pipeline=report.pipeline,
     )
     db.add(run)
     await db.flush()
@@ -426,13 +491,25 @@ async def process_report(db: AsyncSession, report: Report) -> ProcessOutcome:
     if branch_changed:
         await rescore_repo(db, report.repo_id)
 
+    # A linked JUnit report explains (or un-explains) Job failures: rescore the
+    # Jobs that carry this ci_job_id, so order of arrival does not matter.
+    touched_jobs: list[int] = []
+    if report.ci_job_id is not None:
+        touched_jobs = await _rescore_jobs_for_ci_job_id(db, report.repo_id, report.ci_job_id)
+
     report.status = REPORT_PROCESSED
     report.counts = counts
     report.run_id = run.id
     report.error = None
     report.processed_at = now
     return ProcessOutcome(
-        report_id=report.id, status=REPORT_PROCESSED, run_id=run.id, counts=counts, touched_test_ids=touched, error=None
+        report_id=report.id,
+        status=REPORT_PROCESSED,
+        run_id=run.id,
+        counts=counts,
+        touched_test_ids=touched,
+        error=None,
+        touched_job_ids=touched_jobs,
     )
 
 

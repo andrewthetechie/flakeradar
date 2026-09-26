@@ -51,6 +51,9 @@ async def ingest_endpoint(
     branch: str = Query(default="main", max_length=255),
     ci_run_id: str = Query(default="", max_length=255),
     default_branch: str | None = Query(default=None, max_length=255),
+    ci_job_id: str | None = Query(default=None, max_length=255),
+    ci_run_attempt: int | None = Query(default=None, ge=1),
+    pipeline: str | None = Query(default=None, max_length=512),
     db: AsyncSession = Depends(get_db),
 ):
     """Accept a JUnit XML report as multipart upload (`report`) or raw body.
@@ -76,6 +79,8 @@ async def ingest_endpoint(
 
     proj = await get_or_create_project(db, repo_name, project_name)
     db_default_branch = (default_branch or "").strip() or None
+    db_ci_job_id = (ci_job_id or "").strip() or None
+    db_pipeline = (pipeline or "").strip() or None
     row = Report(
         kind=REPORT_KIND_JUNIT,
         project_id=proj.id,
@@ -87,6 +92,9 @@ async def ingest_endpoint(
         body=content,
         status=REPORT_PENDING,
         default_branch=db_default_branch,
+        ci_job_id=db_ci_job_id,
+        ci_run_attempt=ci_run_attempt,
+        pipeline=db_pipeline,
     )
     db.add(row)
     await db.commit()

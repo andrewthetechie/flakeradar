@@ -62,6 +62,39 @@ async def test_ingest_empty_default_branch_becomes_none(client, db):
     assert report.default_branch is None
 
 
+async def test_ingest_attribution_params_round_trip(client, db):
+    resp = await client.post(
+        _url(ci_job_id="  42 ", ci_run_attempt="2", pipeline=".github/workflows/ci.yml"),
+        content=make_junit([("t1", "passed")]),
+        headers=AUTH,
+    )
+    assert resp.status_code == 202
+    report = (await db.execute(select(Report).where(Report.id == resp.json()["report_id"]))).scalar_one()
+    assert report.ci_job_id == "42"
+    assert report.ci_run_attempt == 2
+    assert report.pipeline == ".github/workflows/ci.yml"
+
+
+async def test_ingest_empty_attribution_params_become_none(client, db):
+    resp = await client.post(
+        _url(ci_job_id="   ", pipeline="   "),
+        content=make_junit([("t1", "passed")]),
+        headers=AUTH,
+    )
+    assert resp.status_code == 202
+    report = (await db.execute(select(Report).where(Report.id == resp.json()["report_id"]))).scalar_one()
+    assert report.ci_job_id is None and report.pipeline is None and report.ci_run_attempt is None
+
+
+async def test_ingest_rejects_ci_run_attempt_zero(client):
+    resp = await client.post(
+        _url(ci_run_attempt="0"),
+        content=make_junit([("t1", "passed")]),
+        headers=AUTH,
+    )
+    assert resp.status_code == 422
+
+
 async def test_ingest_multipart_upload(client):
     resp = await client.post(
         _url(),
