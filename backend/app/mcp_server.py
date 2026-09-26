@@ -33,6 +33,11 @@ Each test has a failure_category: the LIKELY cause of its recent failures
 (network, environment, timing, assertion or other), from rules over the
 failure messages. It is a hint, not a diagnosis; read the failure details
 before you conclude. Filter with top_flaky_tests(category=...).
+Tests also carry clean_streak (passing runs on the default branch since the
+last failure) and trend (worsening/improving/steady versus 14 days ago, or
+null when there is not enough history). get_test returns score_history: the
+daily score for up to the last 30 days. A fix that held shows a growing
+clean_streak and a falling score.
 FlakeRadar also tracks CI jobs: a Pipeline is a named workflow (e.g.
 .github/workflows/ci.yml), a Job is one job inside it. Job scores count only
 UNEXPLAINED failures (a failure with no failing test in the same job is
@@ -219,6 +224,9 @@ def build_mcp(session_factory: async_sessionmaker[AsyncSession], *, api_token: s
                 for e in history.executions
             ],
             "jobs": [j.model_dump(mode="json") for j in history.jobs],
+            "score_history": [
+                {"day": p.day.isoformat(), "flakiness_score": p.flakiness_score} for p in history.score_history[-30:]
+            ],
         }
 
     @mcp.tool

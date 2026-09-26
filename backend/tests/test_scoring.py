@@ -129,3 +129,15 @@ def test_combined_score_capped_at_one():
     with_sha += [("dup", "passed"), ("dup", "failed")] * 10
     score, _ = scoring.combined_score(statuses, with_sha, 0.85, 50)
     assert score <= 1.0
+
+
+def test_clean_streak_counts_passes_since_the_newest_failure():
+    assert scoring.clean_streak(["passed", "skipped", "passed", "failed", "passed"]) == 2
+    assert scoring.clean_streak(["error", "passed"]) == 0
+    assert scoring.clean_streak([]) == 0
+
+
+def test_branch_scoped_streak_filters_by_default_branch():
+    history = [("a", "feat", "failed"), ("b", "main", "passed"), ("c", "main", "passed")]
+    assert scoring.branch_scoped_streak(history, "main") == 2
+    assert scoring.branch_scoped_streak(history, None) == 0

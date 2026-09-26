@@ -1,6 +1,6 @@
 """Pydantic response models — the typed contract the frontend and MCP consume."""
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -118,6 +118,8 @@ class TestOut(BaseModel):
     tier: Tier
     confirmed_flake_count: int
     failure_category: str | None
+    clean_streak: int
+    trend: Literal["worsening", "improving", "steady"] | None = None
     last_status: str
     last_seen_at: datetime
     quarantined: bool
@@ -177,6 +179,14 @@ class TestJobLinkOut(BaseModel):
     name: str
 
 
+class ScorePointOut(BaseModel):
+    day: date
+    flakiness_score: float
+    confirmed_flake_count: int
+    executions: int
+    failures: int
+
+
 class HistoryOut(BaseModel):
     test: TestOut
     location: LocationOut | None  # None when the runner never reported a file
@@ -184,6 +194,7 @@ class HistoryOut(BaseModel):
     last_failing_branch: str | None
     executions: list[ExecutionOut]  # newest first
     jobs: list[TestJobLinkOut]  # "seen in Jobs": Jobs whose executions share a ci_job_id with these Runs
+    score_history: list[ScorePointOut]  # oldest first, the last HISTORY_DAYS days
 
 
 # --- Jobs (task 06) ----------------------------------------------------

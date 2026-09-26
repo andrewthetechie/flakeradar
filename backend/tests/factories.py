@@ -5,7 +5,7 @@ Each helper flushes (so ids are assigned) but does not commit; call
 """
 
 import itertools
-from datetime import datetime
+from datetime import date, datetime
 
 from app.identity import get_or_create_repo
 from app.models import (
@@ -20,6 +20,7 @@ from app.models import (
     TestCase,
     TestExecution,
     TestRun,
+    TestScoreHistory,
     utcnow,
 )
 from app.schemas import PipelineReportIn
@@ -248,3 +249,12 @@ async def make_job_execution(
     db.add(ex)
     await db.flush()
     return ex
+
+
+async def make_test_score(
+    db: AsyncSession, test_case: TestCase, day: date, flakiness_score: float, **fields
+) -> TestScoreHistory:
+    row = TestScoreHistory(test_case_id=test_case.id, day=day, flakiness_score=flakiness_score, **fields)
+    db.add(row)
+    await db.flush()
+    return row

@@ -19,6 +19,7 @@ from .models import (
     Report,
     TestExecution,
     TestRun,
+    TestScoreHistory,
     utcnow,
 )
 
@@ -31,9 +32,17 @@ class PruneResult:
     executions: int
     runs: int
     job_executions: int
+    score_history: int = 0
 
 
-async def prune(db: AsyncSession, *, now: datetime, report_days: int, execution_days: int) -> PruneResult:
+async def prune(
+    db: AsyncSession,
+    *,
+    now: datetime,
+    report_days: int,
+    execution_days: int,
+    history_days: int = 365,
+) -> PruneResult:
     """Delete expired rows. Caller owns the transaction."""
     report_cutoff = now - timedelta(days=report_days)
     execution_cutoff = now - timedelta(days=execution_days)
@@ -49,11 +58,15 @@ async def prune(db: AsyncSession, *, now: datetime, report_days: int, execution_
             ~exists(select(TestExecution.id).where(TestExecution.test_run_id == TestRun.id)),
         )
     )
+    score_history = await db.execute(
+        delete(TestScoreHistory).where(TestScoreHistory.day < (now - timedelta(days=history_days)).date())
+    )
     return PruneResult(
         reports=reports.rowcount,
         executions=executions.rowcount,
         runs=runs.rowcount,
         job_executions=job_executions.rowcount,
+        score_history=score_history.rowcount,
     )
 
 
@@ -65,12 +78,14 @@ async def run_prune(session_factory: async_sessionmaker[AsyncSession]) -> PruneR
             now=utcnow(),
             report_days=settings.report_retention_days,
             execution_days=settings.execution_retention_days,
+            history_days=settings.score_history_retention_days,
         )
     logger.info(
-        "Pruned %s reports, %s executions, %s job executions, %s runs",
+        "Pruned %s reports, %s executions, %s job executions, %s runs, %s score history rows",
         result.reports,
         result.executions,
         result.job_executions,
         result.runs,
+        result.score_history,
     )
     return result

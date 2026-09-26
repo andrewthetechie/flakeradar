@@ -141,6 +141,8 @@ async def test_get_test_by_id_and_by_name(mcp, db):
     assert [e["status"] for e in by_id["executions"]] == ["passed", "failed"]
     assert all("attempt" in e for e in by_id["executions"])
     assert all("failure_category" in e for e in by_id["executions"])
+    assert "score_history" in by_id
+    assert "clean_streak" in by_id["test"]
     assert "details" not in by_id["executions"][0]
     assert missing.is_error and "No test named 'nope'" in missing.content[0].text
     assert nothing.is_error

@@ -42,6 +42,7 @@ from .models import (
 )
 from .parsing import ParsedCase, fingerprint, parse_junit_xml
 from .schemas import PipelineReportIn
+from .score_history import upsert_test_history
 
 logger = logging.getLogger("flakeradar.processing")
 
@@ -104,12 +105,16 @@ async def _upsert_test_cases(db: AsyncSession, project_id: int, parsed: list[Par
     return ids
 
 
-async def rescore(db: AsyncSession, test_case_ids: list[int]) -> None:
+async def rescore(
+    db: AsyncSession, test_case_ids: list[int], *, day_counts: dict[int, tuple[int, int]] | None = None
+) -> None:
     """Recompute flakiness for the given Tests from their last `window` Executions.
 
     Flip scoring looks only at Executions on the Repo's Default branch, while
     Proven flakes (same-SHA flips) still count on every branch. A Repo whose
-    Default branch is unknown (NULL) scores exactly as before.
+    Default branch is unknown (NULL) scores exactly as before. `day_counts`
+    maps a test id to (executions, failures) added today, so each rescore also
+    writes that day's Score history row.
     """
     settings = get_settings()
     on_default = or_(Repo.default_branch.is_(None), TestRun.branch == Repo.default_branch)
@@ -177,10 +182,28 @@ async def rescore(db: AsyncSession, test_case_ids: list[int]) -> None:
                 "flakiness_score": score,
                 "confirmed_flake_count": confirmed,
                 "failure_category": dominant_category(categories.get(tc_id, [])[: settings.score_window]),
+                "clean_streak": scoring.branch_scoped_streak(execs, default_branch.get(tc_id)),
             }
         )
     for chunk in chunks(updates):
         await db.execute(update(TestCase), chunk)
+    if updates:
+        today = utcnow().date()
+        counts = day_counts or {}
+        await upsert_test_history(
+            db,
+            [
+                {
+                    "test_case_id": u["id"],
+                    "day": today,
+                    "flakiness_score": u["flakiness_score"],
+                    "confirmed_flake_count": u["confirmed_flake_count"],
+                    "executions": counts.get(u["id"], (0, 0))[0],
+                    "failures": counts.get(u["id"], (0, 0))[1],
+                }
+                for u in updates
+            ],
+        )
 
 
 async def apply_default_branch(db: AsyncSession, repo_id: int, value: str | None) -> bool:
@@ -485,7 +508,11 @@ async def process_report(db: AsyncSession, report: Report) -> ProcessOutcome:
         await db.execute(update(TestCase), chunk)
 
     touched = sorted(latest)
-    await rescore(db, touched)
+    day_counts: dict[int, tuple[int, int]] = {}
+    for ex in executions:
+        n, f = day_counts.get(ex["test_case_id"], (0, 0))
+        day_counts[ex["test_case_id"]] = (n + 1, f + (ex["status"] in scoring.FAILING))
+    await rescore(db, touched, day_counts=day_counts)
     if branch_changed:
         await rescore_repo(db, report.repo_id)
 

@@ -3,7 +3,7 @@
 import asyncio
 
 from app.config import Settings
-from app.models import Repo, Report, TestCase, TestExecution, TestRun
+from app.models import Repo, Report, TestCase, TestExecution, TestRun, TestScoreHistory, utcnow
 from app.processing import claim_next_report, process_next
 from sqlalchemy import func, select
 
@@ -278,3 +278,28 @@ async def test_default_branch_window_rescope(db, session_factory, monkeypatch):
     (tc,) = await _tests(db)
     # The 3 newest main rows must still be flip-scored despite 10 newer feat rows.
     assert tc.flakiness_score > 0
+
+
+async def test_same_day_reports_share_one_history_row(db, session_factory):
+    proj = await make_project(db, "acme/app", "backend")
+    await _queue(db, make_junit([("t", "failed")]), project=proj, commit_sha="s1", branch="main")
+    await _queue(db, make_junit([("t", "passed")]), project=proj, commit_sha="s1", branch="main")
+    await process_next(session_factory)
+    await process_next(session_factory)
+    (tc,) = await _tests(db)
+    rows = (await db.execute(select(TestScoreHistory))).scalars().all()
+    assert len(rows) == 1
+    row = rows[0]
+    assert (row.executions, row.failures) == (2, 1)
+    assert row.day == utcnow().date()
+    assert row.flakiness_score == tc.flakiness_score
+
+
+async def test_clean_streak_counts_passes_since_last_failure(db, session_factory):
+    proj = await make_project(db, "acme/app", "backend")
+    for status in ("failed", "passed", "passed"):
+        await _queue(db, make_junit([("t", status)]), project=proj, commit_sha="s1", branch="main")
+    for _ in range(3):
+        await process_next(session_factory)
+    (tc,) = await _tests(db)
+    assert tc.clean_streak == 2

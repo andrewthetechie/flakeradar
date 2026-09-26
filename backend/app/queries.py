@@ -5,6 +5,7 @@ front doors (HTTP and MCP) expose exactly the same data.
 """
 
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Literal
 
 from sqlalchemy import Select, func, select
@@ -12,8 +13,22 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from . import schemas
 from .attribution import explained_ci_job_ids
+from .batching import chunks
 from .classify import CATEGORIES, FailureCategory
-from .models import JOB_FAILED, Job, JobExecution, Pipeline, Project, Repo, TestCase, TestExecution, TestRun, utcnow
+from .models import (
+    JOB_FAILED,
+    Job,
+    JobExecution,
+    Pipeline,
+    Project,
+    Repo,
+    TestCase,
+    TestExecution,
+    TestRun,
+    TestScoreHistory,
+    utcnow,
+)
+from .score_history import HISTORY_DAYS, TREND_DAYS, Trend, trend_for
 from .scoring import FAILING
 
 SortKey = Literal["score", "last_seen", "proven"]  # shared by the Test and Job leaderboards
@@ -49,7 +64,7 @@ def issue_url(repo: str, number: int | None) -> str | None:
     return f"https://github.com/{repo}/issues/{number}" if number is not None else None
 
 
-def to_test_out(tc: TestCase, project: str, repo: str, threshold: float) -> schemas.TestOut:
+def to_test_out(tc: TestCase, project: str, repo: str, threshold: float, trend: Trend | None = None) -> schemas.TestOut:
     return schemas.TestOut(
         id=tc.id,
         repo=repo,
@@ -64,6 +79,8 @@ def to_test_out(tc: TestCase, project: str, repo: str, threshold: float) -> sche
         tier=tier_for(tc.flakiness_score, threshold),
         confirmed_flake_count=tc.confirmed_flake_count,
         failure_category=tc.failure_category,
+        clean_streak=tc.clean_streak,
+        trend=trend,
         last_status=tc.last_status,
         last_seen_at=tc.last_seen_at,
         quarantined=tc.quarantined,
@@ -71,6 +88,29 @@ def to_test_out(tc: TestCase, project: str, repo: str, threshold: float) -> sche
         github_issue_number=tc.github_issue_number,
         github_issue_url=issue_url(repo, tc.github_issue_number),
     )
+
+
+async def past_test_scores(db: AsyncSession, test_ids: list[int]) -> dict[int, float]:
+    """Score of each Test's newest history row at least TREND_DAYS old."""
+    cutoff = utcnow().date() - timedelta(days=TREND_DAYS)
+    found: dict[int, float] = {}
+    for chunk in chunks(test_ids):
+        rn = (
+            func.row_number()
+            .over(
+                partition_by=TestScoreHistory.test_case_id,
+                order_by=TestScoreHistory.day.desc(),
+            )
+            .label("rn")
+        )
+        ranked = (
+            select(TestScoreHistory.test_case_id, TestScoreHistory.flakiness_score, rn)
+            .where(TestScoreHistory.test_case_id.in_(chunk), TestScoreHistory.day <= cutoff)
+            .subquery()
+        )
+        rows = await db.execute(select(ranked.c.test_case_id, ranked.c.flakiness_score).where(ranked.c.rn == 1))
+        found.update(dict(rows.all()))
+    return found
 
 
 def tests_select() -> Select:
@@ -137,8 +177,12 @@ async def list_tests(
         "proven": (TestCase.confirmed_flake_count.desc(), TestCase.flakiness_score.desc(), TestCase.id),
     }[sort]
     rows = (await db.execute(stmt.order_by(*order).offset((page - 1) * page_size).limit(page_size))).all()
+    past = await past_test_scores(db, [tc.id for tc, _, _ in rows])
     return schemas.TestPage(
-        items=[to_test_out(tc, project, repo, threshold) for tc, project, repo in rows],
+        items=[
+            to_test_out(tc, project, repo, threshold, trend=trend_for(tc.flakiness_score, past.get(tc.id)))
+            for tc, project, repo in rows
+        ],
         total=total,
         page=page,
         page_size=page_size,
@@ -271,13 +315,38 @@ async def get_test(
             line=tc.line,
             url=permalink(repo, last_sha, root, tc.file, tc.line) if last_sha else None,
         )
+    past = await past_test_scores(db, [tc.id])
+    history_rows = (
+        (
+            await db.execute(
+                select(TestScoreHistory)
+                .where(
+                    TestScoreHistory.test_case_id == test_id,
+                    TestScoreHistory.day > utcnow().date() - timedelta(days=HISTORY_DAYS),
+                )
+                .order_by(TestScoreHistory.day)
+            )
+        )
+        .scalars()
+        .all()
+    )
     return schemas.HistoryOut(
-        test=to_test_out(tc, project, repo, threshold),
+        test=to_test_out(tc, project, repo, threshold, trend=trend_for(tc.flakiness_score, past.get(tc.id))),
         location=location,
         last_failing_sha=last_sha,
         last_failing_branch=last_branch,
         executions=executions,
         jobs=jobs,
+        score_history=[
+            schemas.ScorePointOut(
+                day=h.day,
+                flakiness_score=h.flakiness_score,
+                confirmed_flake_count=h.confirmed_flake_count,
+                executions=h.executions,
+                failures=h.failures,
+            )
+            for h in history_rows
+        ],
     )
 
 
@@ -336,7 +405,11 @@ async def search_tests(
         | TestCase.file.ilike(pattern, escape="\\")
     )
     rows = (await db.execute(stmt.order_by(TestCase.flakiness_score.desc(), TestCase.id).limit(limit))).all()
-    return [to_test_out(tc, project, repo, threshold) for tc, project, repo in rows]
+    past = await past_test_scores(db, [tc.id for tc, _, _ in rows])
+    return [
+        to_test_out(tc, project, repo, threshold, trend=trend_for(tc.flakiness_score, past.get(tc.id)))
+        for tc, project, repo in rows
+    ]
 
 
 async def find_test_ids(

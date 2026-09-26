@@ -21,7 +21,7 @@ TOKEN = "changeme"  # default Settings token; tests send it explicitly
 AUTH = {"X-API-Key": TOKEN}
 
 # Every app table, children first. RESTART IDENTITY makes ids start at 1.
-_TABLES = "reports, job_executions, jobs, pipelines, test_executions, test_runs, test_cases, projects, repos"
+_TABLES = "reports, job_executions, jobs, pipelines, test_score_history, test_executions, test_runs, test_cases, projects, repos"
 
 
 @pytest.fixture(scope="session")

@@ -13,13 +13,14 @@ Design notes:
   an explicit select()/join.
 """
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Literal, get_args
 
 from sqlalchemy import (
     BigInteger,
     Boolean,
     CheckConstraint,
+    Date,
     DateTime,
     Float,
     ForeignKey,
@@ -102,6 +103,9 @@ class TestCase(Base):
     flakiness_score: Mapped[float] = mapped_column(Float, default=0.0, server_default="0")
     confirmed_flake_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     failure_category: Mapped[str | None] = mapped_column(String(16), default=None)  # dominant over the score window
+    clean_streak: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0"
+    )  # non-skipped default-branch pass runs since last failure
     last_status: Mapped[str] = mapped_column(String(16), default="passed", server_default="passed")
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
@@ -144,6 +148,20 @@ class TestExecution(Base):
     attempt: Mapped[int] = mapped_column(Integer, default=0, server_default="0")  # 0 = first try in its Run
     failure_category: Mapped[str | None] = mapped_column(String(16), default=None)  # NULL unless failed/error
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
+class TestScoreHistory(Base):
+    """One row per Test per UTC day: end-of-day score plus that day's counts (ADR 0007)."""
+
+    __tablename__ = "test_score_history"
+    __test__ = False
+
+    test_case_id: Mapped[int] = mapped_column(ForeignKey("test_cases.id", ondelete="CASCADE"), primary_key=True)
+    day: Mapped[date] = mapped_column(Date, primary_key=True, index=True)
+    flakiness_score: Mapped[float] = mapped_column(Float)
+    confirmed_flake_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    executions: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    failures: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
 
 class Report(Base):

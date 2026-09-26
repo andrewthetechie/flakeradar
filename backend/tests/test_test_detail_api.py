@@ -1,7 +1,17 @@
 """Test detail (history, Location, permalink) and quarantine."""
 
+from datetime import timedelta
+
+from app.models import utcnow
+
 from tests.conftest import AUTH
-from tests.factories import make_execution, make_project, make_run, make_test_case
+from tests.factories import (
+    make_execution,
+    make_project,
+    make_run,
+    make_test_case,
+    make_test_score,
+)
 
 
 async def _seed(db, *, file="src/app.test.ts", line=12, root="frontend"):
@@ -104,3 +114,19 @@ async def test_quarantine_toggle_and_scoped_list(client, db):
     off = await client.post(f"/api/tests/{tc.id}/quarantine", json={"quarantined": False})
     assert off.json()["quarantined"] is False and off.json()["quarantined_at"] is None
     assert (await client.post("/api/tests/9999/quarantine", json={"quarantined": True})).status_code == 404
+
+
+async def test_score_history_embedded_oldest_first(client, db):
+    tc = await _seed(db)
+    today = utcnow().date()
+    await make_test_score(db, tc, today - timedelta(days=100), 0.9)
+    await make_test_score(db, tc, today - timedelta(days=5), 0.5)
+    await make_test_score(db, tc, today, 0.2)
+    await db.commit()
+
+    body = (await client.get(f"/api/tests/{tc.id}/history")).json()
+    assert [p["day"] for p in body["score_history"]] == [
+        (today - timedelta(days=5)).isoformat(),
+        today.isoformat(),
+    ]
+    assert body["score_history"][0]["flakiness_score"] == 0.5
