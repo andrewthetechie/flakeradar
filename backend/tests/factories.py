@@ -5,7 +5,7 @@ Each helper flushes (so ids are assigned) but does not commit; call
 """
 
 import itertools
-from datetime import datetime
+from datetime import date, datetime
 
 from app.identity import get_or_create_repo
 from app.models import (
@@ -13,6 +13,7 @@ from app.models import (
     REPORT_PENDING,
     Job,
     JobExecution,
+    JobScoreHistory,
     Pipeline,
     Project,
     Repo,
@@ -20,6 +21,7 @@ from app.models import (
     TestCase,
     TestExecution,
     TestRun,
+    TestScoreHistory,
     utcnow,
 )
 from app.schemas import PipelineReportIn
@@ -98,6 +100,8 @@ async def make_execution(
     status: str = "passed",
     message: str = "",
     details: str = "",
+    attempt: int = 0,
+    failure_category: str | None = None,
     created_at: datetime | None = None,
 ) -> TestExecution:
     ex = TestExecution(
@@ -106,6 +110,8 @@ async def make_execution(
         status=status,
         message=message,
         details=details,
+        attempt=attempt,
+        failure_category=failure_category,
         created_at=created_at or utcnow(),
     )
     db.add(ex)
@@ -244,3 +250,19 @@ async def make_job_execution(
     db.add(ex)
     await db.flush()
     return ex
+
+
+async def make_test_score(
+    db: AsyncSession, test_case: TestCase, day: date, flakiness_score: float, **fields
+) -> TestScoreHistory:
+    row = TestScoreHistory(test_case_id=test_case.id, day=day, flakiness_score=flakiness_score, **fields)
+    db.add(row)
+    await db.flush()
+    return row
+
+
+async def make_job_score(db: AsyncSession, job: Job, day: date, flakiness_score: float, **fields) -> JobScoreHistory:
+    row = JobScoreHistory(job_id=job.id, day=day, flakiness_score=flakiness_score, **fields)
+    db.add(row)
+    await db.flush()
+    return row

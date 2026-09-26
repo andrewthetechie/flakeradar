@@ -2,7 +2,7 @@
 // bookmarked or pasted into an issue / agent prompt.
 //   ?repo=owner/name&project=backend&test=42&view=jobs&job=3&page=2&sort=proven&stable=1
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { SortKey } from "./api";
+import { FAILURE_CATEGORIES, type FailureCategory, type SortKey } from "./api";
 
 export type ViewKind = "tests" | "jobs";
 
@@ -14,6 +14,7 @@ export interface ViewState {
   page: number;
   sort: SortKey;
   showStable: boolean;
+  cause: FailureCategory | null;
   view: ViewKind;
 }
 
@@ -25,6 +26,7 @@ export const DEFAULT_VIEW: ViewState = {
   page: 1,
   sort: "score",
   showStable: false,
+  cause: null,
   view: "tests",
 };
 
@@ -40,6 +42,7 @@ export function parseViewState(search: string): ViewState {
   const p = new URLSearchParams(search);
   const repo = p.get("repo") || null;
   const sort = p.get("sort");
+  const cause = p.get("cause");
   return {
     repo,
     project: repo ? p.get("project") || null : null,
@@ -48,6 +51,10 @@ export function parseViewState(search: string): ViewState {
     page: positiveInt(p.get("page")) ?? 1,
     sort: SORTS.includes(sort as SortKey) ? (sort as SortKey) : "score",
     showStable: p.get("stable") === "1",
+    cause:
+      cause && FAILURE_CATEGORIES.includes(cause as FailureCategory)
+        ? (cause as FailureCategory)
+        : null,
     view: p.get("view") === "jobs" ? "jobs" : "tests",
   };
 }
@@ -65,6 +72,7 @@ export function serializeViewState(s: ViewState): string {
   if (s.page !== 1) p.set("page", String(s.page));
   if (s.sort !== "score") p.set("sort", s.sort);
   if (s.showStable) p.set("stable", "1");
+  if (s.cause) p.set("cause", s.cause);
   const q = p.toString();
   return q ? `?${q}` : "";
 }
@@ -90,7 +98,7 @@ export function applyPatch(prev: ViewState, patch: Partial<ViewState>): ViewStat
   if (patch.test != null) next.job = null;
   if (patch.job != null) next.test = null;
 
-  const relisted = (["repo", "project", "sort", "showStable"] as const).some(
+  const relisted = (["repo", "project", "sort", "showStable", "cause"] as const).some(
     (k) => k in patch && patch[k] !== prev[k],
   );
   if (relisted && !("page" in patch)) next.page = 1;

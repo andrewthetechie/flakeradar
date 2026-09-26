@@ -11,6 +11,7 @@ describe("view state in the URL", () => {
       page: 3,
       sort: "proven" as const,
       showStable: true,
+      cause: null,
       view: "tests" as const,
     };
     const search = serializeViewState(view);
@@ -29,6 +30,7 @@ describe("view state in the URL", () => {
       page: 2,
       sort: "score" as const,
       showStable: false,
+      cause: null,
       view: "jobs" as const,
     };
     const search = serializeViewState(view);
@@ -48,6 +50,14 @@ describe("view state in the URL", () => {
       DEFAULT_VIEW,
     );
   });
+
+  it("parses, validates and serializes cause", () => {
+    expect(parseViewState("?cause=timing").cause).toBe("timing");
+    expect(parseViewState("?cause=nope").cause).toBeNull();
+    expect(serializeViewState({ ...DEFAULT_VIEW, showStable: true, cause: "network" })).toBe(
+      "?stable=1&cause=network",
+    );
+  });
 });
 
 describe("applyPatch", () => {
@@ -65,6 +75,7 @@ describe("applyPatch", () => {
   it("sort and stable toggle reset page; selecting a test does not", () => {
     expect(applyPatch(base, { sort: "last_seen" }).page).toBe(1);
     expect(applyPatch(base, { showStable: true }).page).toBe(1);
+    expect(applyPatch(base, { cause: "timing" }).page).toBe(1);
     expect(applyPatch(base, { test: 9 }).page).toBe(4);
     expect(applyPatch(base, { page: 5 }).page).toBe(5);
   });

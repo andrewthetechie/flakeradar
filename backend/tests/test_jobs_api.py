@@ -1,9 +1,14 @@
 """Jobs read API: leaderboard, history/outcome/explained-by, summary, test links."""
 
+from datetime import timedelta
+
+from app.models import utcnow
+
 from tests.factories import (
     make_execution,
     make_job,
     make_job_execution,
+    make_job_score,
     make_pipeline,
     make_project,
     make_run,
@@ -99,3 +104,22 @@ async def test_jobs_404_and_422(client, db):
     assert (await client.get("/api/jobs/99999/history")).status_code == 404
     assert (await client.get("/api/jobs?repo=bad")).status_code == 422
     assert (await client.get("/api/tests/99999/history")).status_code == 404
+
+
+async def test_job_trend_from_history_and_score_history(client, db):
+    p = await make_pipeline(db, "acme/app", ".github/workflows/ci.yml")
+    job = await make_job(db, p, name="e2e", flakiness_score=0.6)
+    today = utcnow().date()
+    await make_job_score(db, job, today - timedelta(days=20), 0.1)
+    await make_job_score(db, job, today, 0.6)
+    await db.commit()
+
+    body = (await client.get("/api/jobs?repo=acme/app")).json()
+    assert body["items"][0]["trend"] == "worsening"
+    assert body["items"][0]["clean_streak"] == 0
+
+    hist = (await client.get(f"/api/jobs/{job.id}/history")).json()
+    assert [p["day"] for p in hist["score_history"]] == [
+        (today - timedelta(days=20)).isoformat(),
+        today.isoformat(),
+    ]

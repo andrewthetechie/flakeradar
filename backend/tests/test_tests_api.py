@@ -9,6 +9,7 @@ from tests.factories import (
     make_project,
     make_run,
     make_test_case,
+    make_test_score,
 )
 
 
@@ -116,6 +117,40 @@ async def test_summary_scoped(client, db):
         "total_runs": 1,
         "total_executions": 1,
         "flake_threshold": 0.3,
+        "category_counts": {"network": 0, "environment": 0, "timing": 0, "assertion": 0, "other": 0},
     }
     one = (await client.get("/api/summary?repo=andrewthetechie/fantasy")).json()
     assert (one["total_tests"], one["flaky_tests"], one["total_runs"]) == (1, 1, 0)
+
+
+async def test_category_filter_and_counts(client, db):
+    proj = await make_project(db, "acme/app", "backend")
+    await make_test_case(db, proj, name="A", flakiness_score=0.8, failure_category="timing")
+    await make_test_case(db, proj, name="B", flakiness_score=0.2, failure_category="network")
+    await make_test_case(db, proj, name="C", flakiness_score=0.5, failure_category="timing")
+    await make_test_case(db, proj, name="D", flakiness_score=0.0, failure_category="timing")
+    await db.commit()
+
+    timing = (await client.get("/api/tests?repo=acme/app&category=timing")).json()
+    assert [t["name"] for t in timing["items"]] == ["A", "C"]
+    assert timing["total"] == 2
+    with_stable = (await client.get("/api/tests?repo=acme/app&category=timing&include_stable=true")).json()
+    assert [t["name"] for t in with_stable["items"]] == ["A", "C", "D"]
+    assert (await client.get("/api/tests?category=bogus")).status_code == 422
+    summary = (await client.get("/api/summary?repo=acme/app")).json()
+    assert summary["category_counts"] == {"network": 1, "environment": 0, "timing": 2, "assertion": 0, "other": 0}
+
+
+async def test_trend_from_history(client, db):
+    proj = await make_project(db, "acme/app", "backend")
+    a = await make_test_case(db, proj, name="A", flakiness_score=0.5)
+    b = await make_test_case(db, proj, name="B", flakiness_score=0.5)
+    await make_test_score(db, a, utcnow().date() - timedelta(days=20), 0.1)
+    await make_test_score(db, b, utcnow().date() - timedelta(days=3), 0.5)
+    await db.commit()
+
+    page = (await client.get("/api/tests?repo=acme/app")).json()
+    by_name = {t["name"]: t for t in page["items"]}
+    assert by_name["A"]["trend"] == "worsening"
+    assert by_name["B"]["trend"] is None
+    assert "clean_streak" in by_name["A"]

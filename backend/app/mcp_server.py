@@ -13,6 +13,7 @@ from fastmcp.server.auth.providers.jwt import StaticTokenVerifier
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from . import queries
+from .classify import CATEGORIES
 from .config import get_settings
 from .identity import DEFAULT_PROJECT, normalize_project, normalize_repo
 
@@ -28,6 +29,16 @@ A 'proven flake' is a commit where the same test both passed and failed.
 Start with list_repos, then top_flaky_tests(repo, project). Use get_test for
 Location (file/line/GitHub permalink at the last failing commit) and the
 failure traceback.
+Each test has a failure_category: the LIKELY cause of its recent failures
+(network, environment, timing, assertion or other), from rules over the
+failure messages. It is a hint, not a diagnosis; read the failure details
+before you conclude. Filter with top_flaky_tests(category=...).
+Tests also carry clean_streak (passing runs on the default branch since the
+last failure) and trend (worsening/improving/steady versus 14 days ago, or
+null when there is not enough history). get_test returns score_history: the
+daily score for up to the last 30 days. A fix that held shows a growing
+clean_streak and a falling score.
+Jobs have clean_streak, trend and score_history too (get_job).
 FlakeRadar also tracks CI jobs: a Pipeline is a named workflow (e.g.
 .github/workflows/ci.yml), a Job is one job inside it. Job scores count only
 UNEXPLAINED failures (a failure with no failing test in the same job is
@@ -111,13 +122,18 @@ def build_mcp(session_factory: async_sessionmaker[AsyncSession], *, api_token: s
         limit: int = 20,
         include_suspect: bool = True,
         file: str | None = None,
+        category: str | None = None,
     ) -> list[dict[str, Any]]:
         """Worst tests first in a Repo (optionally one Project).
 
         include_suspect=False returns only 'flaky' tier tests. `file` keeps
         tests whose reported file contains that text (e.g. 'tests/test_cron.py').
+        `category` keeps tests whose likely cause (Failure category) is one of
+        network, environment, timing, assertion, other.
         """
         _check_limit(limit)
+        if category is not None and category not in CATEGORIES:
+            raise ToolError("category must be one of: network, environment, timing, assertion, other")
         scope = _scope(repo, project)
         async with session_factory() as db:
             page = await queries.list_tests(
@@ -127,6 +143,7 @@ def build_mcp(session_factory: async_sessionmaker[AsyncSession], *, api_token: s
                 flaky_only=not include_suspect,
                 page_size=limit,
                 file=file,
+                category=category,
             )
         return [t.model_dump(mode="json") for t in page.items]
 
@@ -190,6 +207,7 @@ def build_mcp(session_factory: async_sessionmaker[AsyncSession], *, api_token: s
                 "details": _cap(failure.details),
                 "commit_sha": failure.commit_sha,
                 "branch": failure.branch,
+                "failure_category": failure.failure_category,
                 "created_at": failure.created_at.isoformat(),
             },
             "executions": [
@@ -201,10 +219,15 @@ def build_mcp(session_factory: async_sessionmaker[AsyncSession], *, api_token: s
                     "created_at": e.created_at.isoformat(),
                     "duration": e.duration,
                     "message": e.message,
+                    "attempt": e.attempt,
+                    "failure_category": e.failure_category,
                 }
                 for e in history.executions
             ],
             "jobs": [j.model_dump(mode="json") for j in history.jobs],
+            "score_history": [
+                {"day": p.day.isoformat(), "flakiness_score": p.flakiness_score} for p in history.score_history[-30:]
+            ],
         }
 
     @mcp.tool
@@ -266,15 +289,24 @@ def build_mcp(session_factory: async_sessionmaker[AsyncSession], *, api_token: s
             )
             if history is None:
                 raise ToolError(f"No job with id {job_id}.")
-        return history.model_dump(mode="json", include={"job", "unexplained_failures", "explained_failures"}) | {
-            "executions": [
-                e.model_dump(mode="json", include=_JOB_EXECUTION_FIELDS)
-                | {
-                    "created_at": e.created_at.isoformat(),
-                    "explained_by": [t.model_dump(mode="json") for t in e.explained_by[:_EXPLAINED_BY_MAX]],
-                }
-                for e in history.executions
-            ]
-        }
+        return (
+            history.model_dump(mode="json", include={"job", "unexplained_failures", "explained_failures"})
+            | {
+                "executions": [
+                    e.model_dump(mode="json", include=_JOB_EXECUTION_FIELDS)
+                    | {
+                        "created_at": e.created_at.isoformat(),
+                        "explained_by": [t.model_dump(mode="json") for t in e.explained_by[:_EXPLAINED_BY_MAX]],
+                    }
+                    for e in history.executions
+                ]
+            }
+            | {
+                "score_history": [
+                    {"day": p.day.isoformat(), "flakiness_score": p.flakiness_score}
+                    for p in history.score_history[-30:]
+                ]
+            }
+        )
 
     return mcp

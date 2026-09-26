@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { Execution, History } from "../api";
 import { formatScore } from "../format";
+import { Sparkline } from "./Sparkline";
 import { MarkShape, StatusMark, statusColor } from "./StatusMark";
 
 const CELL = 18; // horizontal step per execution
@@ -15,6 +16,11 @@ function fmtWhen(iso: string): string {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+/** " · retry 2" for a retry, "" for a first try. */
+export function retryLabel(attempt: number): string {
+  return attempt > 0 ? ` · retry ${attempt}` : "";
 }
 
 /** Execution history strip: oldest -> newest, left -> right.
@@ -74,6 +80,7 @@ function ExecutionStrip({ executions }: { executions: Execution[] }) {
           <div className="flex items-center gap-1.5 font-semibold">
             <StatusMark status={hover.e.status} size={9} /> {hover.e.status}
             {hover.e.duration > 0 && ` · ${hover.e.duration.toFixed(2)}s`}
+            {retryLabel(hover.e.attempt)}
           </div>
           <div className="text-text-2">
             <span className="font-mono">{hover.e.commit_sha.slice(0, 10)}</span> on {hover.e.branch}{" "}
@@ -114,11 +121,24 @@ export function TestDetail({
           </div>
         </div>
         <div>
+          <div className="text-xs text-muted">Clean streak</div>
+          <div className="text-lg font-semibold tabular-nums">{history.test.clean_streak}</div>
+        </div>
+        <div>
+          <div className="text-xs text-muted">Likely cause</div>
+          <div className="text-lg font-semibold">{history.test.failure_category ?? "—"}</div>
+        </div>
+        <div>
           <div className="text-xs text-muted">Failures (window)</div>
           <div className="text-lg font-semibold tabular-nums">
             {fails}/{executions.length}
           </div>
         </div>
+      </div>
+
+      <div className="mb-4">
+        <div className="mb-1 text-xs text-muted">Flakiness score, last 90 days</div>
+        <Sparkline points={history.score_history} label="Flakiness score" />
       </div>
 
       {history.jobs.length > 0 && (
@@ -173,6 +193,7 @@ export function TestDetail({
         <thead>
           <tr className="border-b border-line text-left text-muted">
             <th className="py-1.5 pr-3 font-medium">Status</th>
+            <th className="py-1.5 pr-3 font-medium">Cause</th>
             <th className="py-1.5 pr-3 font-medium">Commit</th>
             <th className="py-1.5 pr-3 font-medium">Branch</th>
             <th className="py-1.5 pr-3 font-medium">When</th>
@@ -188,8 +209,10 @@ export function TestDetail({
               <td>
                 <span className="inline-flex items-center gap-1.5 text-text-2">
                   <StatusMark status={e.status} size={9} /> {e.status}
+                  {retryLabel(e.attempt)}
                 </span>
               </td>
+              <td className="text-text-2">{e.failure_category ?? "—"}</td>
               <td className="font-mono">{e.commit_sha.slice(0, 10)}</td>
               <td>{e.branch}</td>
               <td>{fmtWhen(e.created_at)}</td>

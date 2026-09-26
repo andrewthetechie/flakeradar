@@ -2,11 +2,21 @@
 
 from app.attribution import explained_ci_job_ids, unexplained_failure_counts
 from app.models import Job, Repo, TestRun
-from app.processing import _job_history, process_next
+from app.processing import _job_history, process_next, rescore_jobs
 from sqlalchemy import select
 
 from tests.conftest import make_junit
-from tests.factories import make_pipeline_report, make_project, make_report
+from tests.factories import (
+    make_execution,
+    make_job,
+    make_job_execution,
+    make_pipeline,
+    make_pipeline_report,
+    make_project,
+    make_report,
+    make_run,
+    make_test_case,
+)
 
 
 def _job(ci_job_id: str, name: str = "test", status: str = "passed") -> dict:
@@ -157,3 +167,34 @@ async def test_unexplained_failure_counts_over_the_newest_window(db, session_fac
     assert await unexplained_failure_counts(db, [job.id], window=10) == {job.id: 2}
     assert await unexplained_failure_counts(db, [job.id], window=2) == {job.id: 1}
     assert await unexplained_failure_counts(db, [], window=10) == {}
+
+
+async def test_explained_failure_does_not_break_clean_streak(db):
+    proj = await make_project(db, "acme/app", "backend")
+    pipe = await make_pipeline(db, "acme/app")
+    job = await make_job(db, pipe, name="e2e")
+    for ci, status in [("J1", "passed"), ("J2", "failed"), ("J3", "passed")]:
+        await make_job_execution(db, job, ci_job_id=ci, status=status, branch="main")
+    # Explain J2: a failing Test in the same repo with the same ci_job_id.
+    tc = await make_test_case(db, proj)
+    run = await make_run(db, proj, ci_job_id="J2")
+    await make_execution(db, tc, run, status="failed")
+    await db.commit()
+
+    await rescore_jobs(db, [job.id])
+    await db.commit()
+    await db.refresh(job)
+    assert job.clean_streak == 2
+
+
+async def test_unexplained_failure_breaks_clean_streak(db):
+    pipe = await make_pipeline(db, "acme/app")
+    job = await make_job(db, pipe, name="e2e")
+    for ci, status in [("J1", "passed"), ("J2", "failed"), ("J3", "passed")]:
+        await make_job_execution(db, job, ci_job_id=ci, status=status, branch="main")
+    await db.commit()
+
+    await rescore_jobs(db, [job.id])
+    await db.commit()
+    await db.refresh(job)
+    assert job.clean_streak == 1

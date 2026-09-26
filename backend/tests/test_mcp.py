@@ -92,6 +92,19 @@ async def test_top_flaky_tests(mcp, db):
     assert bad.is_error
 
 
+async def test_top_flaky_tests_category(mcp, db):
+    proj = await make_project(db, "acme/app", "backend")
+    await make_test_case(db, proj, name="A", flakiness_score=0.8, failure_category="timing")
+    await make_test_case(db, proj, name="B", flakiness_score=0.2, failure_category="network")
+    await make_test_case(db, proj, name="C", flakiness_score=0.5, failure_category="timing")
+    await db.commit()
+    async with Client(mcp) as c:
+        network = (await c.call_tool("top_flaky_tests", {"repo": "acme/app", "category": "network"})).data
+        bad = await c.call_tool("top_flaky_tests", {"repo": "acme/app", "category": "nope"}, raise_on_error=False)
+    assert [t["name"] for t in network] == ["B"]
+    assert bad.is_error and "category must be one of" in bad.content[0].text
+
+
 async def test_search_tests_matches_name_classname_and_file(mcp, db):
     await _seed(db)
     async with Client(mcp) as c:
@@ -126,6 +139,10 @@ async def test_get_test_by_id_and_by_name(mcp, db):
     assert failure["message"] == "expected 3"
     assert len(failure["details"]) == 4096 + len("\n…[truncated]")
     assert [e["status"] for e in by_id["executions"]] == ["passed", "failed"]
+    assert all("attempt" in e for e in by_id["executions"])
+    assert all("failure_category" in e for e in by_id["executions"])
+    assert "score_history" in by_id
+    assert "clean_streak" in by_id["test"]
     assert "details" not in by_id["executions"][0]
     assert missing.is_error and "No test named 'nope'" in missing.content[0].text
     assert nothing.is_error
@@ -184,6 +201,8 @@ async def test_get_job_by_id_and_by_name_with_explained(mcp, db):
         by_name = (await c.call_tool("get_job", {"repo": "acme/app", "name": "test"})).data
         missing = await c.call_tool("get_job", {"repo": "acme/app", "name": "nope"}, raise_on_error=False)
     assert by_id == by_name
+    assert "score_history" in by_id
+    assert "clean_streak" in by_id["job"]
     assert len(by_id["executions"]) == 2
     outcomes = {e["ci_job_id"]: e["outcome"] for e in by_id["executions"]}
     assert outcomes["ex-1"] == "explained" and outcomes["ex-2"] == "passed"

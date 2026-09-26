@@ -12,6 +12,7 @@ Simulates 14 CI runs of one Repo with two Projects and a CI pipeline:
     5 stable tests                -> always pass
 - demo/shop : frontend
     Cart > updates the badge      -> flaky, reports its file (Location demo)
+    Checkout > shows the total   -> passes, but needs a retry every 4th run (flakyFailure)
 - pipeline .github/workflows/ci.yml with Jobs backend, frontend, lint, and
   "e2e (ubuntu-latest)" — an infrastructure flake that fails ~20% of the time
   with NO failing Tests (plus one same-SHA re-run attempt that passes).
@@ -56,6 +57,17 @@ def case_xml(name: str, status: str, classname: str = "tests.e2e.test_shop",
         )
     return (f'<testcase classname="{classname}" name="{name}" file="{file}" line="{line}" '
             f'time="{rng.uniform(0.1, 2.5):.2f}">{body}</testcase>')
+
+
+def retried_case_xml(name: str, classname: str, file: str, line: int) -> str:
+    """A Playwright-style test that failed once and passed on retry (includeRetries)."""
+    return (
+        f'<testcase classname="{classname}" name="{name}" file="{file}" line="{line}" time="1.40">'
+        '<flakyFailure message="Timed out 5000ms waiting for expect(locator).toHaveText(expected)" '
+        'type="FAILURE" time="5.10"><stackTrace>Error: Timed out 5000ms waiting for '
+        f"expect(locator).toHaveText(expected)\n    at " + file + ":" + str(line) + "</stackTrace>"
+        "</flakyFailure></testcase>"
+    )
 
 
 def report(suite: str, cases: list[str]) -> bytes:
@@ -133,6 +145,12 @@ def main():
                                              case_xml("Cart > updates the badge", badge,
                                                       classname="src/Cart.test.tsx",
                                                       file="src/Cart.test.tsx", line=21),
+                                             (retried_case_xml("Checkout > shows the total", "web/src/checkout.spec.ts",
+                                                               "src/checkout.spec.ts", 21)
+                                              if i % 4 == 0
+                                              else case_xml("Checkout > shows the total", "passed",
+                                                            classname="web/src/checkout.spec.ts",
+                                                            file="src/checkout.spec.ts", line=21)),
                                          ])))
             # The Pipeline report: backend + frontend + lint + the e2e infra flake.
             report_ids.append(post_pipeline(client, sha, f"run-{i}", 1, [

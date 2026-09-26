@@ -17,6 +17,9 @@ function page(name: string): TestPage {
     flakiness_score: 0.5,
     tier: "flaky",
     confirmed_flake_count: 0,
+    failure_category: null,
+    clean_streak: 0,
+    trend: null,
     last_status: "failed",
     last_seen_at: "2026-09-25T00:00:00Z",
     quarantined: false,
@@ -56,6 +59,7 @@ describe("App", () => {
           total_runs: 1,
           total_executions: 1,
           flake_threshold: 0.3,
+          category_counts: { network: 0, environment: 0, timing: 0, assertion: 0, other: 0 },
         });
       }),
     );
@@ -88,6 +92,8 @@ describe("App", () => {
           flakiness_score: 0.31,
           tier: "flaky",
           confirmed_flake_count: 0,
+          clean_streak: 0,
+          trend: null,
           last_status: "failed",
           last_seen_at: "2026-09-25T00:00:00Z",
           github_issue_number: null,

@@ -5,6 +5,7 @@ front doors (HTTP and MCP) expose exactly the same data.
 """
 
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Literal
 
 from sqlalchemy import Select, func, select
@@ -12,7 +13,23 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from . import schemas
 from .attribution import explained_ci_job_ids
-from .models import JOB_FAILED, Job, JobExecution, Pipeline, Project, Repo, TestCase, TestExecution, TestRun, utcnow
+from .batching import chunks
+from .classify import CATEGORIES, FailureCategory
+from .models import (
+    JOB_FAILED,
+    Job,
+    JobExecution,
+    JobScoreHistory,
+    Pipeline,
+    Project,
+    Repo,
+    TestCase,
+    TestExecution,
+    TestRun,
+    TestScoreHistory,
+    utcnow,
+)
+from .score_history import HISTORY_DAYS, TREND_DAYS, Trend, trend_for
 from .scoring import FAILING
 
 SortKey = Literal["score", "last_seen", "proven"]  # shared by the Test and Job leaderboards
@@ -48,7 +65,7 @@ def issue_url(repo: str, number: int | None) -> str | None:
     return f"https://github.com/{repo}/issues/{number}" if number is not None else None
 
 
-def to_test_out(tc: TestCase, project: str, repo: str, threshold: float) -> schemas.TestOut:
+def to_test_out(tc: TestCase, project: str, repo: str, threshold: float, trend: Trend | None = None) -> schemas.TestOut:
     return schemas.TestOut(
         id=tc.id,
         repo=repo,
@@ -62,6 +79,9 @@ def to_test_out(tc: TestCase, project: str, repo: str, threshold: float) -> sche
         flakiness_score=tc.flakiness_score,
         tier=tier_for(tc.flakiness_score, threshold),
         confirmed_flake_count=tc.confirmed_flake_count,
+        failure_category=tc.failure_category,
+        clean_streak=tc.clean_streak,
+        trend=trend,
         last_status=tc.last_status,
         last_seen_at=tc.last_seen_at,
         quarantined=tc.quarantined,
@@ -69,6 +89,29 @@ def to_test_out(tc: TestCase, project: str, repo: str, threshold: float) -> sche
         github_issue_number=tc.github_issue_number,
         github_issue_url=issue_url(repo, tc.github_issue_number),
     )
+
+
+async def past_test_scores(db: AsyncSession, test_ids: list[int]) -> dict[int, float]:
+    """Score of each Test's newest history row at least TREND_DAYS old."""
+    cutoff = utcnow().date() - timedelta(days=TREND_DAYS)
+    found: dict[int, float] = {}
+    for chunk in chunks(test_ids):
+        rn = (
+            func.row_number()
+            .over(
+                partition_by=TestScoreHistory.test_case_id,
+                order_by=TestScoreHistory.day.desc(),
+            )
+            .label("rn")
+        )
+        ranked = (
+            select(TestScoreHistory.test_case_id, TestScoreHistory.flakiness_score, rn)
+            .where(TestScoreHistory.test_case_id.in_(chunk), TestScoreHistory.day <= cutoff)
+            .subquery()
+        )
+        rows = await db.execute(select(ranked.c.test_case_id, ranked.c.flakiness_score).where(ranked.c.rn == 1))
+        found.update(dict(rows.all()))
+    return found
 
 
 def tests_select() -> Select:
@@ -115,6 +158,7 @@ async def list_tests(
     page: int = 1,
     page_size: int = 50,
     file: str | None = None,
+    category: FailureCategory | None = None,
 ) -> schemas.TestPage:
     stmt = _scoped(tests_select(), scope)
     if flaky_only:
@@ -123,6 +167,8 @@ async def list_tests(
         stmt = stmt.where(TestCase.flakiness_score > 0)
     if file:
         stmt = stmt.where(TestCase.file.ilike(f"%{escape_like(file)}%", escape="\\"))
+    if category:
+        stmt = stmt.where(TestCase.failure_category == category)
 
     total = (await db.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one()
 
@@ -132,8 +178,12 @@ async def list_tests(
         "proven": (TestCase.confirmed_flake_count.desc(), TestCase.flakiness_score.desc(), TestCase.id),
     }[sort]
     rows = (await db.execute(stmt.order_by(*order).offset((page - 1) * page_size).limit(page_size))).all()
+    past = await past_test_scores(db, [tc.id for tc, _, _ in rows])
     return schemas.TestPage(
-        items=[to_test_out(tc, project, repo, threshold) for tc, project, repo in rows],
+        items=[
+            to_test_out(tc, project, repo, threshold, trend=trend_for(tc.flakiness_score, past.get(tc.id)))
+            for tc, project, repo in rows
+        ],
         total=total,
         page=page,
         page_size=page_size,
@@ -177,6 +227,17 @@ async def summary(db: AsyncSession, scope: Scope, *, threshold: float) -> schema
             )
         )
     ).scalar_one()
+    rows = await db.execute(
+        _scoped(
+            select(TestCase.failure_category, func.count(TestCase.id))
+            .join(Project, TestCase.project_id == Project.id)
+            .join(Repo, Project.repo_id == Repo.id)
+            .where(TestCase.flakiness_score > 0, TestCase.failure_category.is_not(None))
+            .group_by(TestCase.failure_category),
+            scope,
+        )
+    )
+    category_counts = {c: 0 for c in CATEGORIES} | {cat: n for cat, n in rows.all() if cat in CATEGORIES}
     return schemas.SummaryOut(
         total_tests=total,
         flaky_tests=flaky,
@@ -185,6 +246,7 @@ async def summary(db: AsyncSession, scope: Scope, *, threshold: float) -> schema
         total_runs=runs,
         total_executions=executions,
         flake_threshold=threshold,
+        category_counts=category_counts,
     )
 
 
@@ -229,6 +291,8 @@ async def get_test(
             commit_sha=r.commit_sha,
             branch=r.branch,
             ci_run_id=r.ci_run_id,
+            attempt=e.attempt,
+            failure_category=e.failure_category,
         )
         for e, r in rows
     ]
@@ -252,13 +316,38 @@ async def get_test(
             line=tc.line,
             url=permalink(repo, last_sha, root, tc.file, tc.line) if last_sha else None,
         )
+    past = await past_test_scores(db, [tc.id])
+    history_rows = (
+        (
+            await db.execute(
+                select(TestScoreHistory)
+                .where(
+                    TestScoreHistory.test_case_id == test_id,
+                    TestScoreHistory.day > utcnow().date() - timedelta(days=HISTORY_DAYS),
+                )
+                .order_by(TestScoreHistory.day)
+            )
+        )
+        .scalars()
+        .all()
+    )
     return schemas.HistoryOut(
-        test=to_test_out(tc, project, repo, threshold),
+        test=to_test_out(tc, project, repo, threshold, trend=trend_for(tc.flakiness_score, past.get(tc.id))),
         location=location,
         last_failing_sha=last_sha,
         last_failing_branch=last_branch,
         executions=executions,
         jobs=jobs,
+        score_history=[
+            schemas.ScorePointOut(
+                day=h.day,
+                flakiness_score=h.flakiness_score,
+                confirmed_flake_count=h.confirmed_flake_count,
+                executions=h.executions,
+                failures=h.failures,
+            )
+            for h in history_rows
+        ],
     )
 
 
@@ -317,7 +406,11 @@ async def search_tests(
         | TestCase.file.ilike(pattern, escape="\\")
     )
     rows = (await db.execute(stmt.order_by(TestCase.flakiness_score.desc(), TestCase.id).limit(limit))).all()
-    return [to_test_out(tc, project, repo, threshold) for tc, project, repo in rows]
+    past = await past_test_scores(db, [tc.id for tc, _, _ in rows])
+    return [
+        to_test_out(tc, project, repo, threshold, trend=trend_for(tc.flakiness_score, past.get(tc.id)))
+        for tc, project, repo in rows
+    ]
 
 
 async def find_test_ids(
@@ -359,13 +452,17 @@ async def latest_failure(db: AsyncSession, test_id: int) -> schemas.ExecutionOut
         commit_sha=r.commit_sha,
         branch=r.branch,
         ci_run_id=r.ci_run_id,
+        attempt=e.attempt,
+        failure_category=e.failure_category,
     )
 
 
 # --- Jobs (task 06) ------------------------------------------------------
 
 
-def to_job_out(job: Job, pipeline: Pipeline, repo: Repo, threshold: float) -> schemas.JobOut:
+def to_job_out(
+    job: Job, pipeline: Pipeline, repo: Repo, threshold: float, trend: Trend | None = None
+) -> schemas.JobOut:
     return schemas.JobOut(
         id=job.id,
         repo=repo.name,
@@ -375,11 +472,36 @@ def to_job_out(job: Job, pipeline: Pipeline, repo: Repo, threshold: float) -> sc
         flakiness_score=job.flakiness_score,
         tier=tier_for(job.flakiness_score, threshold),
         confirmed_flake_count=job.confirmed_flake_count,
+        clean_streak=job.clean_streak,
+        trend=trend,
         last_status=job.last_status,
         last_seen_at=job.last_seen_at,
         github_issue_number=job.github_issue_number,
         github_issue_url=issue_url(repo.name, job.github_issue_number) if pipeline.provider == "github" else None,
     )
+
+
+async def past_job_scores(db: AsyncSession, job_ids: list[int]) -> dict[int, float]:
+    """Score of each Job's newest history row at least TREND_DAYS old."""
+    cutoff = utcnow().date() - timedelta(days=TREND_DAYS)
+    found: dict[int, float] = {}
+    for chunk in chunks(job_ids):
+        rn = (
+            func.row_number()
+            .over(
+                partition_by=JobScoreHistory.job_id,
+                order_by=JobScoreHistory.day.desc(),
+            )
+            .label("rn")
+        )
+        ranked = (
+            select(JobScoreHistory.job_id, JobScoreHistory.flakiness_score, rn)
+            .where(JobScoreHistory.job_id.in_(chunk), JobScoreHistory.day <= cutoff)
+            .subquery()
+        )
+        rows = await db.execute(select(ranked.c.job_id, ranked.c.flakiness_score).where(ranked.c.rn == 1))
+        found.update(dict(rows.all()))
+    return found
 
 
 def jobs_select() -> Select:
@@ -418,8 +540,12 @@ async def list_jobs(
         "proven": (Job.confirmed_flake_count.desc(), Job.flakiness_score.desc(), Job.id),
     }[sort]
     rows = (await db.execute(stmt.order_by(*order).offset((page - 1) * page_size).limit(page_size))).all()
+    past = await past_job_scores(db, [job.id for job, _, _ in rows])
     return schemas.JobPage(
-        items=[to_job_out(job, pipeline, repo, threshold) for job, pipeline, repo in rows],
+        items=[
+            to_job_out(job, pipeline, repo, threshold, trend=trend_for(job.flakiness_score, past.get(job.id)))
+            for job, pipeline, repo in rows
+        ],
         total=total,
         page=page,
         page_size=page_size,
@@ -547,11 +673,36 @@ async def get_job(
         for j in exec_outs:
             j.explained_by = by_exec.get(j.id, [])
 
+    past = await past_job_scores(db, [job.id])
+    history_rows = (
+        (
+            await db.execute(
+                select(JobScoreHistory)
+                .where(
+                    JobScoreHistory.job_id == job_id,
+                    JobScoreHistory.day > utcnow().date() - timedelta(days=HISTORY_DAYS),
+                )
+                .order_by(JobScoreHistory.day)
+            )
+        )
+        .scalars()
+        .all()
+    )
     return schemas.JobHistoryOut(
-        job=to_job_out(job, pipeline, repo, threshold),
+        job=to_job_out(job, pipeline, repo, threshold, trend=trend_for(job.flakiness_score, past.get(job.id))),
         unexplained_failures=unexplained,
         explained_failures=explained_failures,
         executions=exec_outs,
+        score_history=[
+            schemas.ScorePointOut(
+                day=h.day,
+                flakiness_score=h.flakiness_score,
+                confirmed_flake_count=h.confirmed_flake_count,
+                executions=h.executions,
+                failures=h.failures,
+            )
+            for h in history_rows
+        ],
     )
 
 
@@ -565,7 +716,11 @@ async def search_jobs(
         (Job.name.ilike(pattern, escape="\\")) | (Pipeline.name.ilike(pattern, escape="\\")),
     )
     rows = (await db.execute(stmt.order_by(Job.flakiness_score.desc(), Job.id).limit(limit))).all()
-    return [to_job_out(job, pipeline, reponame, threshold) for job, pipeline, reponame in rows]
+    past = await past_job_scores(db, [job.id for job, _, _ in rows])
+    return [
+        to_job_out(job, pipeline, reponame, threshold, trend=trend_for(job.flakiness_score, past.get(job.id)))
+        for job, pipeline, reponame in rows
+    ]
 
 
 async def find_job_ids(db: AsyncSession, repo: str, name: str, pipeline: str | None = None) -> list[int]:

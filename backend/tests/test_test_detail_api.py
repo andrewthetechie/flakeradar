@@ -1,20 +1,43 @@
 """Test detail (history, Location, permalink) and quarantine."""
 
+from datetime import timedelta
+
+from app.models import utcnow
+
 from tests.conftest import AUTH
-from tests.factories import make_execution, make_project, make_run, make_test_case
+from tests.factories import (
+    make_execution,
+    make_project,
+    make_run,
+    make_test_case,
+    make_test_score,
+)
 
 
 async def _seed(db, *, file="src/app.test.ts", line=12, root="frontend"):
     proj = await make_project(db, "andrewthetechie/writers-app", "frontend", root=root)
     tc = await make_test_case(
-        db, proj, name="renders", file=file, line=line, flakiness_score=0.6, confirmed_flake_count=1
+        db,
+        proj,
+        name="renders",
+        file=file,
+        line=line,
+        flakiness_score=0.6,
+        confirmed_flake_count=1,
+        failure_category="assertion",
     )
     r1 = await make_run(db, proj, commit_sha="aaa111", branch="main", ci_run_id="1")
     await make_execution(
-        db, tc, r1, status="failed", message="expected 3", details="Traceback\n  at src/app.test.ts:14"
+        db,
+        tc,
+        r1,
+        status="failed",
+        message="expected 3",
+        details="Traceback\n  at src/app.test.ts:14",
+        failure_category="assertion",
     )
     r2 = await make_run(db, proj, commit_sha="bbb222", branch="feat", ci_run_id="2")
-    await make_execution(db, tc, r2, status="passed")
+    await make_execution(db, tc, r2, status="passed", attempt=1)
     await db.commit()
     return tc
 
@@ -31,6 +54,9 @@ async def test_history_includes_location_permalink_and_details(client, db):
     }
     assert (body["last_failing_sha"], body["last_failing_branch"]) == ("aaa111", "main")
     assert [e["status"] for e in body["executions"]] == ["passed", "failed"]  # newest first
+    assert body["test"]["failure_category"] == "assertion"
+    assert body["executions"][1]["failure_category"] == "assertion"
+    assert body["executions"][0]["attempt"] == 1
     assert body["executions"][1]["details"] == "Traceback\n  at src/app.test.ts:14"
     assert body["executions"][1]["message"] == "expected 3"
 
@@ -88,3 +114,19 @@ async def test_quarantine_toggle_and_scoped_list(client, db):
     off = await client.post(f"/api/tests/{tc.id}/quarantine", json={"quarantined": False})
     assert off.json()["quarantined"] is False and off.json()["quarantined_at"] is None
     assert (await client.post("/api/tests/9999/quarantine", json={"quarantined": True})).status_code == 404
+
+
+async def test_score_history_embedded_oldest_first(client, db):
+    tc = await _seed(db)
+    today = utcnow().date()
+    await make_test_score(db, tc, today - timedelta(days=100), 0.9)
+    await make_test_score(db, tc, today - timedelta(days=5), 0.5)
+    await make_test_score(db, tc, today, 0.2)
+    await db.commit()
+
+    body = (await client.get(f"/api/tests/{tc.id}/history")).json()
+    assert [p["day"] for p in body["score_history"]] == [
+        (today - timedelta(days=5)).isoformat(),
+        today.isoformat(),
+    ]
+    assert body["score_history"][0]["flakiness_score"] == 0.5

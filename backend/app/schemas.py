@@ -1,6 +1,6 @@
 """Pydantic response models — the typed contract the frontend and MCP consume."""
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -117,6 +117,9 @@ class TestOut(BaseModel):
     flakiness_score: float
     tier: Tier
     confirmed_flake_count: int
+    failure_category: str | None
+    clean_streak: int
+    trend: Literal["worsening", "improving", "steady"] | None = None
     last_status: str
     last_seen_at: datetime
     quarantined: bool
@@ -142,6 +145,7 @@ class SummaryOut(BaseModel):
     total_runs: int
     total_executions: int
     flake_threshold: float
+    category_counts: dict[str, int]
 
 
 # --- Test detail and quarantine (task 09) -------------------------------
@@ -157,6 +161,8 @@ class ExecutionOut(BaseModel):
     commit_sha: str
     branch: str
     ci_run_id: str
+    attempt: int
+    failure_category: str | None
 
 
 class LocationOut(BaseModel):
@@ -173,6 +179,14 @@ class TestJobLinkOut(BaseModel):
     name: str
 
 
+class ScorePointOut(BaseModel):
+    day: date
+    flakiness_score: float
+    confirmed_flake_count: int
+    executions: int
+    failures: int
+
+
 class HistoryOut(BaseModel):
     test: TestOut
     location: LocationOut | None  # None when the runner never reported a file
@@ -180,6 +194,7 @@ class HistoryOut(BaseModel):
     last_failing_branch: str | None
     executions: list[ExecutionOut]  # newest first
     jobs: list[TestJobLinkOut]  # "seen in Jobs": Jobs whose executions share a ci_job_id with these Runs
+    score_history: list[ScorePointOut]  # oldest first, the last HISTORY_DAYS days
 
 
 # --- Jobs (task 06) ----------------------------------------------------
@@ -196,6 +211,8 @@ class JobOut(BaseModel):
     flakiness_score: float
     tier: Tier
     confirmed_flake_count: int
+    clean_streak: int
+    trend: Literal["worsening", "improving", "steady"] | None = None
     last_status: str
     last_seen_at: datetime
     github_issue_number: int | None
@@ -248,6 +265,7 @@ class JobHistoryOut(BaseModel):
     unexplained_failures: int  # over the returned executions
     explained_failures: int
     executions: list[JobExecutionOut]  # newest first
+    score_history: list[ScorePointOut]  # oldest first, the last HISTORY_DAYS days
 
 
 class JobSummaryOut(BaseModel):

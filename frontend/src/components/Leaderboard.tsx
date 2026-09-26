@@ -4,6 +4,7 @@ import { formatScore } from "../format";
 import { IssueLink } from "./IssueLink";
 import { scoreColor, TIER_CLASS } from "./scoreStyle";
 import { StatusMark } from "./StatusMark";
+import { TrendMark } from "./TrendMark";
 
 /** Where a row lives, shown only when the view spans more than that. */
 export function scopeLabel(t: TestCase, scope: Scope): string | null {
@@ -97,8 +98,17 @@ export function Leaderboard({
                   <span className="w-9 text-right tabular-nums text-text-2">
                     {formatScore(t.flakiness_score)}
                   </span>
+                  <TrendMark trend={t.trend} />
                 </div>
                 <span className={`mt-1 inline-block text-xs ${TIER_CLASS[t.tier]}`}>{t.tier}</span>
+                {t.failure_category && (
+                  <span
+                    className="mt-1 ml-2 inline-block rounded border border-line px-1 text-[11px] text-text-2"
+                    title="Likely cause, from failure messages"
+                  >
+                    likely: {t.failure_category}
+                  </span>
+                )}
               </td>
               <td className="col-proof px-4 py-2.5 align-top text-xs whitespace-nowrap">
                 {t.confirmed_flake_count > 0 ? (

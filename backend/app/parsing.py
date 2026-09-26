@@ -16,6 +16,12 @@ MESSAGE_MAX = 2000
 DETAILS_MAX = 16384
 TRUNCATION_MARKER = "\n…[truncated]"
 
+# Retry elements Playwright (1.59+, includeRetries) and Surefire write as
+# children of a <testcase>, which junitparser does not model. `flaky*` ran
+# before the final outcome; `rerun*` ran after the first (failed) one.
+RETRY_BEFORE = ("flakyFailure", "flakyError")  # attempts before the final outcome
+RETRY_AFTER = ("rerunFailure", "rerunError")  # attempts after the first (failed) one
+
 
 class ParseError(ValueError):
     """The uploaded bytes are not a usable JUnit XML report."""
@@ -95,6 +101,35 @@ def _load(content: bytes) -> JUnitXml | TestSuite:
         raise ParseError(f"Not a valid JUnit XML report: {exc}") from exc
 
 
+def _retry_outcome(elem) -> tuple[str, str, str, float]:
+    """(status, message, details, duration) of one retry element.
+
+    *Failure -> "failed", *Error -> "error". message = the `message`
+    attribute, stripped, else the first non-blank line of <stackTrace>.
+    details = <stackTrace> text, then "--- stdout ---\n…" and
+    "--- stderr ---\n…" from the element's own <system-out>/<system-err>,
+    joined by blank lines (same layout as _outcome). Both are capped with
+    _cap(…, MESSAGE_MAX / DETAILS_MAX). duration = float(time attr), or 0.0
+    when it is missing or not a number.
+    """
+    status = "failed" if elem.tag.endswith("Failure") else "error"
+    stack = (elem.findtext("stackTrace") or "").strip()
+    message = (elem.get("message") or "").strip() or _first_line(stack)
+    parts = [stack] if stack else []
+    out = (elem.findtext("system-out") or "").strip()
+    if out:
+        parts.append("--- stdout ---\n" + out)
+    err = (elem.findtext("system-err") or "").strip()
+    if err:
+        parts.append("--- stderr ---\n" + err)
+    details = "\n\n".join(parts)
+    try:
+        duration = float(elem.get("time") or 0.0)
+    except (TypeError, ValueError):
+        duration = 0.0
+    return status, _cap(message, MESSAGE_MAX), _cap(details, DETAILS_MAX), duration
+
+
 def parse_junit_xml(content: bytes) -> list[ParsedCase]:
     xml = _load(content)
 
@@ -107,21 +142,29 @@ def parse_junit_xml(content: bytes) -> list[ParsedCase]:
         for case in suite:
             if case.name is None:
                 continue
-            status, message, details = _outcome(case)
             file, line = _location(case)
+            classname = case.classname or ""
+            name = case.name
+            suite_name = suite.name or ""
+            # Retries that ran before the final outcome, then the case's own
+            # outcome, then retries that ran after it (document order).
+            children = list(case._elem) if case._elem is not None else []
+            for c in children:
+                if c.tag in RETRY_BEFORE:
+                    status, message, details, duration = _retry_outcome(c)
+                    parsed.append(
+                        ParsedCase(suite_name, classname, name, status, duration, message, details, file, line)
+                    )
+            status, message, details = _outcome(case)
             parsed.append(
-                ParsedCase(
-                    suite=suite.name or "",
-                    classname=case.classname or "",
-                    name=case.name,
-                    status=status,
-                    duration=float(case.time or 0.0),
-                    message=message,
-                    details=details,
-                    file=file,
-                    line=line,
-                )
+                ParsedCase(suite_name, classname, name, status, float(case.time or 0.0), message, details, file, line)
             )
+            for c in children:
+                if c.tag in RETRY_AFTER:
+                    status, message, details, duration = _retry_outcome(c)
+                    parsed.append(
+                        ParsedCase(suite_name, classname, name, status, duration, message, details, file, line)
+                    )
     if not parsed:
         raise ParseError("Report parsed but contained no test cases.")
     return parsed

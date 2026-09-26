@@ -1,6 +1,6 @@
 """Pipeline report processor: Jobs, Job executions, scoring, deduction, retention hook."""
 
-from app.models import Job, JobExecution, Pipeline, Report, TestCase
+from app.models import Job, JobExecution, JobScoreHistory, Pipeline, Report, TestCase
 from app.processing import process_next
 from sqlalchemy import func, select
 
@@ -187,3 +187,25 @@ async def test_malformed_pipeline_body_fails_and_queue_moves_on(db, session_fact
     assert second.status == "processed" and second.report_id == good.id
     await db.refresh(bad)
     assert bad.status == "failed"
+
+
+async def test_same_day_pipeline_reports_share_one_history_row(db, session_factory):
+    p1 = _payload([_job("1", "e2e", "failed")], ci_run_id="r1")
+    p2 = _payload([_job("2", "e2e", "passed")], ci_run_id="r2")
+    await _queue_pipeline(db, p1)
+    await _queue_pipeline(db, p2)
+    await process_next(session_factory)
+    await process_next(session_factory)
+
+    (job,) = (await db.execute(select(Job).where(Job.name == "e2e"))).scalars()
+    rows = (await db.execute(select(JobScoreHistory))).scalars().all()
+    assert len(rows) == 1
+    row = rows[0]
+    assert (row.executions, row.failures) == (2, 1)
+    assert row.flakiness_score == job.flakiness_score
+
+    # Re-sending the second report (same ci_job_id) adds no counts.
+    await _queue_pipeline(db, p2)
+    await process_next(session_factory)
+    (row,) = (await db.execute(select(JobScoreHistory))).scalars().all()
+    assert row.executions == 2

@@ -16,6 +16,9 @@ const test: TestCase = {
   flakiness_score: 0.7,
   tier: "flaky",
   confirmed_flake_count: 2,
+  failure_category: "timing",
+  clean_streak: 0,
+  trend: "worsening",
   last_status: "failed",
   last_seen_at: "2026-09-25T00:00:00Z",
   quarantined: false,
@@ -46,7 +49,24 @@ describe("Leaderboard", () => {
     );
     expect(screen.getByText("andrewthetechie/writers-app · backend")).toBeInTheDocument();
     expect(screen.getByText("flaky")).toBeInTheDocument();
+    expect(screen.getByText("likely: timing")).toBeInTheDocument();
+    expect(screen.getByLabelText(/^Worsening/)).toBeInTheDocument();
     expect(screen.getByText(/2× proven/)).toBeInTheDocument();
+  });
+
+  it("shows no trend mark and no likely-cause badge when there is none", () => {
+    render(
+      <Leaderboard
+        tests={[{ ...test, trend: null, failure_category: null }]}
+        scope={{ repo: null, project: null }}
+        showStable={false}
+        selectedId={null}
+        onSelect={() => {}}
+        onToggleQuarantine={() => {}}
+      />,
+    );
+    expect(screen.queryByText(/likely:/)).toBeNull();
+    expect(screen.queryByLabelText(/Worsening|Improving|Steady/)).toBeNull();
   });
 
   it("explains the empty state when stable tests are hidden", () => {

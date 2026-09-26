@@ -26,6 +26,9 @@ flakiness statistically. A test that fails and then passes on the same commit is
 - [CI integration](#ci-integration)
 - [Repos and projects](#repos-and-projects)
 - [Test locations and failure details](#test-locations-and-failure-details)
+- [Retries](#retries)
+- [Failure categories](#failure-categories)
+- [Score history and trends](#score-history-and-trends)
 - [Quarantine workflow](#quarantine-workflow)
 - [MCP server for agents](#mcp-server-for-agents)
 - [GitHub issue automation](#github-issue-automation)
@@ -66,6 +69,8 @@ the missing middle.
 - **Evidence you can act on** — the test's file and line (when your runner
   reports them), a GitHub permalink at the last failing commit, and the full
   traceback plus captured output of every failure.
+- **Likely cause for every failure** — failures are sorted into network, environment, timing, assertion or other by fixed rules over the failure message, so you can fix one kind of flake at a time.
+- **Trends and fix verification** — a daily score history per test and job, a worsening/improving trend on the leaderboard, and a clean streak that shows whether a fix held.
 - **Dashboard** — repo and project pickers, a paginated leaderboard of flaky and
   suspect tests, a slide-over detail panel, and shareable URLs for every view.
 - **MCP server** — AI agents can ask for the top flaky tests in a repo and get
@@ -246,6 +251,39 @@ Runners without a file attribute (Go, cargo-nextest) still work — the test is
 identified by its classname and name, and the full failure traceback (which
 usually contains `file:line`) is kept for every failure.
 
+## Retries
+
+When a runner retries a test inside one run, FlakeRadar stores every attempt.
+A test that fails and then passes on retry has a fail and a pass on the same
+commit, so it is a **proven flake** from its first run.
+
+| Runner | Setting |
+|---|---|
+| Playwright ≥ 1.59 | `reporter: [["junit", { outputFile: "junit.xml", includeRetries: true }]]` (or `PLAYWRIGHT_JUNIT_INCLUDE_RETRIES=1`) |
+| Maven Surefire / Failsafe | `-Dsurefire.rerunFailingTestsCount=2` (retries are written as `<flakyFailure>` / `<rerunFailure>`) |
+
+Runners that write each attempt as its own `<testcase>` with the same name
+also work. Without these settings, a retried test that finally passes looks
+like a clean pass.
+
+Each failed retry counts as one failure, including for
+`FLAKERADAR_GITHUB_ISSUE_MIN_FAILURES`. With 2 retries, one run can add 3 failures.
+
+## Failure categories
+
+Every failing test execution gets a **likely cause**: `network`, `environment`,
+`timing`, `assertion` or `other`. Fixed rules assign it, tried from most to
+least specific: network → environment → timing → assertion. A failure that
+matches no rule is `other`. The failure **message** is checked first; the
+failure details only when the message matches nothing.
+
+For example, `Timed out 5000ms waiting for expect(...)` is `timing`, and
+`connect ECONNREFUSED` is `network`. A test's category is the most common one
+across its last `SCORE_WINDOW` executions. Treat it as a **likely** cause, not a
+diagnosis — read the failure details before you conclude.
+
+Failures stored before this release have no category (`null`).
+
 ## Quarantine workflow
 
 Mark an unreliable test **Quarantine** in the dashboard. Your test runner then
@@ -310,9 +348,12 @@ in the clear.
 |---|---|
 | `list_repos` | every repo with its projects |
 | `list_projects(repo)` | one repo's projects |
-| `top_flaky_tests(repo, project?, limit=20, include_suspect=true, file?)` | worst tests first |
+| `top_flaky_tests(repo, project?, limit=20, include_suspect=true, file?, category?)` | worst tests first; `category` (network/environment/timing/assertion/other) filters by likely cause |
 | `search_tests(repo, query, project?, limit=20)` | tests whose name, classname or file contains `query` |
-| `get_test(test_id \| repo+project+name[+classname], executions_limit=20)` | location + GitHub permalink, last failing commit, latest failure message and traceback (≤4 KB), recent executions |
+| `get_test(test_id \| repo+project+name[+classname], executions_limit=20)` | location + GitHub permalink, last failing commit, latest failure message and traceback (≤4 KB), recent executions, score history (30 days) |
+| `top_flaky_jobs(repo, limit=20, include_suspect=true)` | worst CI jobs first (scores count only unexplained failures) |
+| `search_jobs(repo, query, limit=20)` | jobs whose name or pipeline contains `query` |
+| `get_job(job_id \| repo+name[+pipeline], executions_limit=20)` | unexplained vs explained failures, recent executions with the explaining tests, score history (30 days) |
 
 ## GitHub issue automation
 
@@ -341,7 +382,7 @@ is filed only when it meets **every** configured (non-zero) minimum:
 ```
 FLAKERADAR_GITHUB_ISSUE_MIN_SCORE=0.30          # flakiness score (0..1) min
 FLAKERADAR_GITHUB_ISSUE_MIN_PROVEN_FLAKES=0     # same-commit fail+pass min
-FLAKERADAR_GITHUB_ISSUE_MIN_FAILURES=0          # failures in recent window min
+FLAKERADAR_GITHUB_ISSUE_MIN_FAILURES=0          # failures in recent window min (each failed retry counts)
 ```
 
 Set any signal's minimum to `0` to skip it, so you can gate on score, proven
@@ -391,6 +432,19 @@ because a same-commit flip is nondeterminism on identical code. Until the
 default branch is known (no report has named it), every branch counts — the
 original behaviour.
 
+## Score history and trends
+
+FlakeRadar records a **daily score history**: one row per test (and per job)
+per UTC day, holding the end-of-day flakiness score and proven-flake count plus
+that day's executions and failures. Each test and job also carries a **trend**
+(`worsening`, `improving` or `steady`) read against the newest history row at
+least 14 days old, and a **clean streak** — the non-skipped default-branch
+executions since its last failure. An explained job failure does not break a
+job's streak.
+
+The detail drawer shows the last **90 days** of the score as a sparkline. Old
+history is deleted after **365 days** (`SCORE_HISTORY_RETENTION_DAYS`).
+
 ## Configuration
 
 Environment variables (prefix `FLAKERADAR_`, `.env` supported):
@@ -405,6 +459,7 @@ Environment variables (prefix `FLAKERADAR_`, `.env` supported):
 | `WORKER_POLL_SECONDS` | `1.0` | processor idle poll interval |
 | `REPORT_RETENTION_DAYS` | `7` | processed raw reports are deleted after this (failed ones are kept) |
 | `EXECUTION_RETENTION_DAYS` | `90` | older executions are deleted |
+| `SCORE_HISTORY_RETENTION_DAYS` | `365` | daily score history rows older than this are deleted |
 | `PRUNE_INTERVAL_SECONDS` | `3600` | how often retention runs |
 | `CORS_ORIGINS` | `http://localhost:5173` | dev-server origin |
 
@@ -419,18 +474,18 @@ Environment variables (prefix `FLAKERADAR_`, `.env` supported):
 | `GET /api/reports/summary` | — | `{pending, failed}` |
 | `POST /api/reports/{id}/retry` | `X-API-Key` | Re-queue a failed report |
 | `GET /api/repos` | — | Repos with their projects |
-| `GET /api/tests?repo=&project=&include_stable=&sort=&page=&page_size=&file=` | — | Paginated leaderboard (`sort`: `score`, `last_seen`, `proven`) |
-| `GET /api/tests/{id}/history?limit=` | — | One test: location + permalink, last failing commit, executions with failure details, and the Jobs its Runs came from |
+| `GET /api/tests?repo=&project=&include_stable=&sort=&page=&page_size=&file=&category=` | — | Paginated leaderboard (`sort`: `score`, `last_seen`, `proven`); `category` filters by likely cause |
+| `GET /api/tests/{id}/history?limit=` | — | One test: location + permalink, last failing commit, executions with failure details, the Jobs its Runs came from; `score_history` (90 days), `clean_streak`, `trend` |
 | `GET /api/jobs?repo=&include_stable=&sort=&page=&page_size=` | — | Jobs leaderboard for a Repo (worst first) |
 | `GET /api/jobs/summary?repo=` | — | Job summary tiles |
-| `GET /api/jobs/{id}/history?limit=` | — | One job: recent Job executions, each tagged `passed`/`failed`/`explained`/`skipped`, with the explaining Tests |
-| `GET /api/summary?repo=&project=` | — | Dashboard tiles (Tests) |
+| `GET /api/jobs/{id}/history?limit=` | — | One job: recent Job executions, each tagged `passed`/`failed`/`explained`/`skipped`, with the explaining Tests; `score_history` (90 days), `clean_streak`, `trend` |
+| `GET /api/summary?repo=&project=` | — | Dashboard tiles (Tests); `category_counts` (flaky + suspect tests per likely cause) |
 | `POST /api/tests/{id}/quarantine` | — | Toggle quarantine (body `{"quarantined": bool}`) |
 | `GET /api/quarantine?repo=&project=` | `X-API-Key` | Quarantined tests for one repo + project (for the test runner) |
 | `/mcp/` | Bearer token | MCP server (see above) |
 | `GET /api/health` | — | Liveness |
 
-`project` filters require `repo`. Interactive docs at `/docs` (OpenAPI).
+`project` filters require `repo`. Interactive docs at `/docs` (OpenAPI). Test executions carry `attempt` (0 = first try in its Run) and `failure_category`.
 
 ## Architecture
 

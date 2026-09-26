@@ -15,6 +15,7 @@ describe("StatTiles", () => {
           total_runs: 40,
           total_executions: 4800,
           flake_threshold: 0.3,
+          category_counts: { network: 0, environment: 0, timing: 0, assertion: 0, other: 0 },
         }}
       />,
     );

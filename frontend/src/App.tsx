@@ -49,7 +49,7 @@ export default function App() {
   const [jobHistory, setJobHistory] = useState<JobHistory | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const { repo, project, sort, showStable, view: kind } = view;
+  const { repo, project, sort, showStable, cause, view: kind } = view;
   const pageNumber = view.page;
 
   // Only the newest refresh may write state: a slow response for the old
@@ -78,7 +78,14 @@ export default function App() {
         const [r, s, t, q] = await Promise.all([
           fetchRepos(),
           fetchSummary(scope),
-          fetchTests({ ...scope, page: pageNumber, pageSize: PAGE_SIZE, sort, showStable }),
+          fetchTests({
+            ...scope,
+            page: pageNumber,
+            pageSize: PAGE_SIZE,
+            sort,
+            showStable,
+            category: cause,
+          }),
           queueQ,
         ]);
         if (request !== latestRefresh.current) return;
@@ -92,7 +99,7 @@ export default function App() {
       if (request !== latestRefresh.current) return;
       setError(e instanceof Error ? e.message : String(e));
     }
-  }, [kind, repo, project, pageNumber, sort, showStable]);
+  }, [kind, repo, project, pageNumber, sort, showStable, cause]);
 
   useEffect(() => {
     void refresh();
@@ -205,8 +212,11 @@ export default function App() {
             sort={sort}
             showStable={showStable}
             stableLabel={kind === "jobs" ? "Show stable jobs" : "Show stable tests"}
+            cause={cause}
+            causeCounts={summary?.category_counts ?? null}
             onSort={(s) => setView({ sort: s })}
             onShowStable={(v) => setView({ showStable: v })}
+            onCause={kind === "tests" ? (c) => setView({ cause: c }) : undefined}
           />
         </div>
         <div className="overflow-x-auto">

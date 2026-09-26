@@ -3,7 +3,7 @@
 import asyncio
 
 from app.config import Settings
-from app.models import Repo, Report, TestCase, TestExecution, TestRun
+from app.models import Repo, Report, TestCase, TestExecution, TestRun, TestScoreHistory, utcnow
 from app.processing import claim_next_report, process_next
 from sqlalchemy import func, select
 
@@ -32,7 +32,7 @@ async def test_processes_report_into_run(db, session_factory):
     )
     outcome = await process_next(session_factory)
     assert outcome.status == "processed" and outcome.report_id == rep.id
-    assert outcome.counts == {"passed": 1, "failed": 1, "error": 0, "skipped": 0}
+    assert outcome.counts == {"passed": 1, "failed": 1, "error": 0, "skipped": 0, "retried": 0}
 
     await db.refresh(rep)
     assert rep.status == "processed" and rep.run_id == outcome.run_id
@@ -70,6 +70,54 @@ async def test_same_test_twice_in_one_report(db, session_factory):
     assert outcome.counts["failed"] == 1 and outcome.counts["passed"] == 1
     n = (await db.execute(select(func.count(TestExecution.id)))).scalar()
     assert n == 2
+    atts = (await db.execute(select(TestExecution.attempt).order_by(TestExecution.id))).scalars().all()
+    assert atts == [0, 1]
+
+
+async def test_flaky_retry_is_proven_flake_from_one_report(db, session_factory):
+    xml = (
+        b'<testsuite name="unit"><testcase classname="tests.test_mod" name="t">'
+        b'<flakyFailure message="Timeout 30000ms exceeded" type="FAILURE" time="30.1">'
+        b"<stackTrace>Error: boom</stackTrace></flakyFailure></testcase>"
+        b'<testcase classname="c" name="plain"/></testsuite>'
+    )
+    await _queue(db, xml)
+    outcome = await process_next(session_factory)
+    assert outcome.counts == {"passed": 2, "failed": 1, "error": 0, "skipped": 0, "retried": 1}
+    (flaky,) = (await db.execute(select(TestCase).where(TestCase.name == "t"))).scalars()
+    assert flaky.confirmed_flake_count == 1 and flaky.flakiness_score >= 0.6
+    rows = (
+        await db.execute(
+            select(TestExecution.status, TestExecution.attempt)
+            .where(TestExecution.test_case_id == flaky.id)
+            .order_by(TestExecution.id)
+        )
+    ).all()
+    assert [(s, a) for s, a in rows] == [("failed", 0), ("passed", 1)]
+
+
+async def test_failures_are_classified_and_test_gets_dominant_category(db, session_factory):
+    xml = (
+        b'<testsuite name="s"><testcase classname="c" name="t">'
+        b'<failure message="Test timeout of 30000ms exceeded.">trace</failure></testcase>'
+        b'<testcase classname="c" name="ok"/></testsuite>'
+    )
+    await _queue(db, xml)
+    await process_next(session_factory)
+    by_name = {
+        name: (status, category)
+        for name, status, category in (
+            await db.execute(
+                select(TestCase.name, TestExecution.status, TestExecution.failure_category).join(
+                    TestCase, TestCase.id == TestExecution.test_case_id
+                )
+            )
+        ).all()
+    }
+    assert by_name["t"] == ("failed", "timing")  # the failing attempt is categorized
+    assert by_name["ok"] == ("passed", None)  # passing rows stay NULL
+    (t,) = (await db.execute(select(TestCase).where(TestCase.name == "t"))).scalars()
+    assert t.failure_category == "timing"  # cached dominant category
 
 
 async def test_same_name_in_two_projects_is_two_tests(db, session_factory):
@@ -230,3 +278,28 @@ async def test_default_branch_window_rescope(db, session_factory, monkeypatch):
     (tc,) = await _tests(db)
     # The 3 newest main rows must still be flip-scored despite 10 newer feat rows.
     assert tc.flakiness_score > 0
+
+
+async def test_same_day_reports_share_one_history_row(db, session_factory):
+    proj = await make_project(db, "acme/app", "backend")
+    await _queue(db, make_junit([("t", "failed")]), project=proj, commit_sha="s1", branch="main")
+    await _queue(db, make_junit([("t", "passed")]), project=proj, commit_sha="s1", branch="main")
+    await process_next(session_factory)
+    await process_next(session_factory)
+    (tc,) = await _tests(db)
+    rows = (await db.execute(select(TestScoreHistory))).scalars().all()
+    assert len(rows) == 1
+    row = rows[0]
+    assert (row.executions, row.failures) == (2, 1)
+    assert row.day == utcnow().date()
+    assert row.flakiness_score == tc.flakiness_score
+
+
+async def test_clean_streak_counts_passes_since_last_failure(db, session_factory):
+    proj = await make_project(db, "acme/app", "backend")
+    for status in ("failed", "passed", "passed"):
+        await _queue(db, make_junit([("t", status)]), project=proj, commit_sha="s1", branch="main")
+    for _ in range(3):
+        await process_next(session_factory)
+    (tc,) = await _tests(db)
+    assert tc.clean_streak == 2
