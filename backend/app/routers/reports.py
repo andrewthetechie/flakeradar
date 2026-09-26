@@ -19,6 +19,7 @@ from ..identity import (
 )
 from ..models import (
     REPORT_FAILED,
+    REPORT_KIND_JUNIT,
     REPORT_PENDING,
     REPORT_STATUSES,
     Project,
@@ -71,7 +72,9 @@ async def ingest_endpoint(
 
     proj = await get_or_create_project(db, repo_name, project_name)
     row = Report(
+        kind=REPORT_KIND_JUNIT,
         project_id=proj.id,
+        repo_id=proj.repo_id,
         commit_sha=commit_sha,
         branch=branch,
         ci_run_id=ci_run_id,
