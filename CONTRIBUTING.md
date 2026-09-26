@@ -1,8 +1,8 @@
 # Contributing to FlakeRadar
 
 Domain terms (Repo, Project, Report, Run, Execution, flaky/suspect/stable, …)
-are defined in [CONTEXT.md](CONTEXT.md); architectural decisions live in
-[docs/adr/](docs/adr/). Use the same words in code, UI text and docs.
+are defined in [CONTEXT.md](CONTEXT.md). Architecture decisions are in
+[docs/adr/](docs/adr/). The [design notes](#design-notes) below link to each one. Use the same words in code, UI text and docs.
 
 ## Dev setup
 
@@ -52,3 +52,47 @@ cd backend
 
 Migrations run automatically on app startup (serialized across uvicorn
 workers by an advisory lock).
+
+## Architecture
+
+```
+backend/   FastAPI + async SQLAlchemy 2 + asyncpg + PostgreSQL
+  app/
+    routers/reports.py  ingest (validate, queue, 202) and Report status
+    routers/tests.py    Repos, Test leaderboard, summary, Test detail, quarantine
+    routers/jobs.py     Job leaderboard, summary, Job detail
+    queries.py          read services that REST and MCP share
+    parsing.py          JUnit parsing: identity, Location, Failure details, retries
+    processing.py       one Report -> one Run (or Job executions), batched upserts, rescoring
+    attribution.py      explained vs unexplained Job failures
+    classify.py         Failure category rules
+    score_history.py    daily Score history, trend
+    worker.py           the single Report processor (Postgres advisory lock)
+    retention.py        pruning
+    scoring.py          flip score and same-SHA proof (pure functions)
+    github_integration.py  per-Repo issue filing
+    mcp_server.py       read-only MCP tools (fastmcp)
+  migrations/     Alembic (async), applied on startup
+  tests/          pytest against a real Postgres (testcontainers)
+frontend/  React 18 + Vite + TypeScript, Vitest; no runtime chart dependencies
+samples/   CI snippets and a demo-data simulator
+```
+
+## Design notes
+
+- Queued ingest ([ADR 0002](docs/adr/0002-queued-ingest.md)). An upload only
+  validates and stores the raw Report. One Report processor, elected with a
+  Postgres advisory lock across uvicorn workers, turns Reports into Runs in
+  upload order. Scoring depends on that order.
+- PostgreSQL only, fully async ([ADR 0003](docs/adr/0003-postgres-only-async.md)).
+- Repos and Projects ([ADR 0001](docs/adr/0001-repo-project-split.md)).
+- Pushed CI jobs and attribution ([ADR 0004](docs/adr/0004-pushed-ci-jobs-and-attribution.md)).
+- Retry attempts from JUnit ([ADR 0005](docs/adr/0005-retry-attempts-from-junit.md)).
+- Rule-based Failure categories ([ADR 0006](docs/adr/0006-rule-based-failure-categories.md)).
+- Daily Score history ([ADR 0007](docs/adr/0007-daily-score-history.md)).
+- The read APIs and the quarantine toggle are unauthenticated by design,
+  because the dashboard is expected to be on a private network. The CI
+  endpoints and the MCP server need the token.
+- The UI marks each Execution status with a shape (filled circle, filled
+  square, filled diamond, hollow circle) as well as a color. Green and red are
+  hard to tell apart with deuteranopia, so color never carries meaning alone.
