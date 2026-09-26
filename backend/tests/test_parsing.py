@@ -96,6 +96,41 @@ def test_duplicate_testcases_are_all_returned():
     assert [c.status for c in cases] == ["failed", "passed"]
 
 
+def test_flaky_failure_becomes_a_failed_attempt_before_the_pass():
+    xml = (
+        '<testsuite name="s"><testcase classname="c" name="t" time="1.2">'
+        '<flakyFailure message="Timeout 30000ms exceeded" type="FAILURE" time="30.1">'
+        "<stackTrace>Error: boom\n at x</stackTrace><system-out>out1</system-out></flakyFailure>"
+        "<system-out>final</system-out></testcase></testsuite>"
+    )
+    cases = parse_junit_xml(xml.encode())
+    assert [c.status for c in cases] == ["failed", "passed"]
+    assert cases[0].message == "Timeout 30000ms exceeded"
+    assert cases[0].duration == 30.1
+    assert cases[0].details == "Error: boom\n at x\n\n--- stdout ---\nout1"
+
+
+def test_rerun_elements_follow_the_failure():
+    xml = (
+        '<testsuite name="s"><testcase classname="c" name="t">'
+        '<failure message="first">t</failure>'
+        '<rerunError message="again"/><rerunError message="again"/></testcase></testsuite>'
+    )
+    cases = parse_junit_xml(xml.encode())
+    assert [c.status for c in cases] == ["failed", "error", "error"]
+
+
+def test_retry_without_message_uses_stacktrace_first_line():
+    xml = (
+        '<testsuite name="s"><testcase classname="c" name="t">'
+        "<flakyError><stackTrace>\n  TypeError: x\n  at y</stackTrace></flakyError></testcase></testsuite>"
+    )
+    c = parse_junit_xml(xml.encode())[0]
+    assert c.message == "TypeError: x"
+    assert c.status == "error"
+    assert c.duration == 0.0
+
+
 def test_declared_encoding_is_honored():
     body = (
         '<?xml version="1.0" encoding="ISO-8859-1"?>'

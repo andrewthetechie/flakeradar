@@ -98,6 +98,7 @@ async def make_execution(
     status: str = "passed",
     message: str = "",
     details: str = "",
+    attempt: int = 0,
     created_at: datetime | None = None,
 ) -> TestExecution:
     ex = TestExecution(
@@ -106,6 +107,7 @@ async def make_execution(
         status=status,
         message=message,
         details=details,
+        attempt=attempt,
         created_at=created_at or utcnow(),
     )
     db.add(ex)

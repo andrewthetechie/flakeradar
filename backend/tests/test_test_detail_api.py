@@ -14,7 +14,7 @@ async def _seed(db, *, file="src/app.test.ts", line=12, root="frontend"):
         db, tc, r1, status="failed", message="expected 3", details="Traceback\n  at src/app.test.ts:14"
     )
     r2 = await make_run(db, proj, commit_sha="bbb222", branch="feat", ci_run_id="2")
-    await make_execution(db, tc, r2, status="passed")
+    await make_execution(db, tc, r2, status="passed", attempt=1)
     await db.commit()
     return tc
 
@@ -31,6 +31,7 @@ async def test_history_includes_location_permalink_and_details(client, db):
     }
     assert (body["last_failing_sha"], body["last_failing_branch"]) == ("aaa111", "main")
     assert [e["status"] for e in body["executions"]] == ["passed", "failed"]  # newest first
+    assert body["executions"][0]["attempt"] == 1
     assert body["executions"][1]["details"] == "Traceback\n  at src/app.test.ts:14"
     assert body["executions"][1]["message"] == "expected 3"
 

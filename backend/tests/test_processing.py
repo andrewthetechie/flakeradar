@@ -32,7 +32,7 @@ async def test_processes_report_into_run(db, session_factory):
     )
     outcome = await process_next(session_factory)
     assert outcome.status == "processed" and outcome.report_id == rep.id
-    assert outcome.counts == {"passed": 1, "failed": 1, "error": 0, "skipped": 0}
+    assert outcome.counts == {"passed": 1, "failed": 1, "error": 0, "skipped": 0, "retried": 0}
 
     await db.refresh(rep)
     assert rep.status == "processed" and rep.run_id == outcome.run_id
@@ -70,6 +70,30 @@ async def test_same_test_twice_in_one_report(db, session_factory):
     assert outcome.counts["failed"] == 1 and outcome.counts["passed"] == 1
     n = (await db.execute(select(func.count(TestExecution.id)))).scalar()
     assert n == 2
+    atts = (await db.execute(select(TestExecution.attempt).order_by(TestExecution.id))).scalars().all()
+    assert atts == [0, 1]
+
+
+async def test_flaky_retry_is_proven_flake_from_one_report(db, session_factory):
+    xml = (
+        b'<testsuite name="unit"><testcase classname="tests.test_mod" name="t">'
+        b'<flakyFailure message="Timeout 30000ms exceeded" type="FAILURE" time="30.1">'
+        b"<stackTrace>Error: boom</stackTrace></flakyFailure></testcase>"
+        b'<testcase classname="c" name="plain"/></testsuite>'
+    )
+    await _queue(db, xml)
+    outcome = await process_next(session_factory)
+    assert outcome.counts == {"passed": 2, "failed": 1, "error": 0, "skipped": 0, "retried": 1}
+    (flaky,) = (await db.execute(select(TestCase).where(TestCase.name == "t"))).scalars()
+    assert flaky.confirmed_flake_count == 1 and flaky.flakiness_score >= 0.6
+    rows = (
+        await db.execute(
+            select(TestExecution.status, TestExecution.attempt)
+            .where(TestExecution.test_case_id == flaky.id)
+            .order_by(TestExecution.id)
+        )
+    ).all()
+    assert [(s, a) for s, a in rows] == [("failed", 0), ("passed", 1)]
 
 
 async def test_same_name_in_two_projects_is_two_tests(db, session_factory):

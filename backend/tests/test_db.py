@@ -44,7 +44,7 @@ async def test_migrations_are_idempotent(engine):
     await run_migrations(engine)  # second run is a no-op, must not raise
     async with engine.connect() as conn:
         version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar()
-    assert version == "0002"
+    assert version == "0003"
 
 
 async def test_project_name_unique_within_repo(db):

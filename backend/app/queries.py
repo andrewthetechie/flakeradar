@@ -229,6 +229,7 @@ async def get_test(
             commit_sha=r.commit_sha,
             branch=r.branch,
             ci_run_id=r.ci_run_id,
+            attempt=e.attempt,
         )
         for e, r in rows
     ]
@@ -359,6 +360,7 @@ async def latest_failure(db: AsyncSession, test_id: int) -> schemas.ExecutionOut
         commit_sha=r.commit_sha,
         branch=r.branch,
         ci_run_id=r.ci_run_id,
+        attempt=e.attempt,
     )
 
 

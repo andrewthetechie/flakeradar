@@ -424,10 +424,13 @@ async def process_report(db: AsyncSession, report: Report) -> ProcessOutcome:
     ids = await _upsert_test_cases(db, report.project_id, parsed)
 
     counts = {"passed": 0, "failed": 0, "error": 0, "skipped": 0}
+    attempts: dict[int, int] = {}  # per Test: Executions seen so far in this report
     executions: list[dict[str, Any]] = []
     latest: dict[int, dict[str, Any]] = {}  # per Test: last occurrence in the report wins
     for pc in parsed:
         tc_id = ids[fingerprint(pc.suite, pc.classname, pc.name)]
+        attempt = attempts.get(tc_id, 0)
+        attempts[tc_id] = attempt + 1
         counts[pc.status] += 1
         executions.append(
             {
@@ -437,6 +440,7 @@ async def process_report(db: AsyncSession, report: Report) -> ProcessOutcome:
                 "duration": pc.duration,
                 "message": pc.message,
                 "details": pc.details,
+                "attempt": attempt,
                 "created_at": now,
             }
         )
@@ -446,6 +450,8 @@ async def process_report(db: AsyncSession, report: Report) -> ProcessOutcome:
         if pc.file is not None:  # a report without Location never erases one
             row["file"] = pc.file
             row["line"] = pc.line
+
+    counts["retried"] = sum(1 for n in attempts.values() if n > 1)
 
     for chunk in chunks(executions):
         await db.execute(insert(TestExecution), chunk)

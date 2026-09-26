@@ -126,6 +126,7 @@ async def test_get_test_by_id_and_by_name(mcp, db):
     assert failure["message"] == "expected 3"
     assert len(failure["details"]) == 4096 + len("\n…[truncated]")
     assert [e["status"] for e in by_id["executions"]] == ["passed", "failed"]
+    assert all("attempt" in e for e in by_id["executions"])
     assert "details" not in by_id["executions"][0]
     assert missing.is_error and "No test named 'nope'" in missing.content[0].text
     assert nothing.is_error

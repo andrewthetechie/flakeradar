@@ -140,6 +140,7 @@ class TestExecution(Base):
     duration: Mapped[float] = mapped_column(Float, default=0.0, server_default="0")
     message: Mapped[str] = mapped_column(Text, default="", server_default="")
     details: Mapped[str] = mapped_column(Text, default="", server_default="")
+    attempt: Mapped[int] = mapped_column(Integer, default=0, server_default="0")  # 0 = first try in its Run
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
 
 

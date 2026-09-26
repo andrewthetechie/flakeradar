@@ -157,6 +157,7 @@ class ExecutionOut(BaseModel):
     commit_sha: str
     branch: str
     ci_run_id: str
+    attempt: int
 
 
 class LocationOut(BaseModel):

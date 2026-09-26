@@ -201,6 +201,7 @@ def build_mcp(session_factory: async_sessionmaker[AsyncSession], *, api_token: s
                     "created_at": e.created_at.isoformat(),
                     "duration": e.duration,
                     "message": e.message,
+                    "attempt": e.attempt,
                 }
                 for e in history.executions
             ],
