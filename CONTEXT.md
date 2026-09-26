@@ -1,6 +1,6 @@
 # FlakeRadar
 
-Self-hosted flaky-test detection: CI uploads JUnit reports, and FlakeRadar scores how often each test's outcome flips between pass and fail.
+Self-hosted flaky-test and flaky-job detection: CI uploads JUnit reports and CI job results, and FlakeRadar scores how often each Test's or Job's outcome flips between pass and fail.
 
 ## Language
 
@@ -21,22 +21,34 @@ _Avoid_: Test case (in user-facing text), spec
 **Project root**:
 The directory of a Project inside its Repo, such as `frontend`. File paths that a Project reports are relative to it.
 
+**Pipeline**:
+A named CI workflow in a Repo, such as the GitHub Actions workflow `.github/workflows/ci.yml`. It groups Jobs and is not scored itself.
+_Avoid_: Workflow (in provider-neutral text), build
+
+**Job**:
+One job within a Pipeline, identified by its name within its Pipeline. Each matrix leg is its own Job, such as `test (ubuntu, 3.12)`. A Job belongs to a Repo, not to a Project, because one Job can run several Projects' tests.
+_Avoid_: Check, step, Run (that is a processed Report)
+
 **Location**:
 The file (relative to the Project root) and line where a Test is defined, as the latest report gave them. A Location is not part of a Test's identity, and many runners report none.
 
 ### What CI reports
 
 **Report**:
-One JUnit XML file that CI uploads for a Repo and Project. It is pending until it is processed. Then it has either become a Run, or it has failed and is kept with its error.
+One upload from CI, of one of two kinds. A JUnit report is one JUnit XML file for a Repo and Project, and it becomes a Run. A Pipeline report is the Job results of one attempt of one Pipeline run, and it becomes Job executions. A Report is pending until it is processed. Then it has either been processed, or it has failed and is kept with its error.
 _Avoid_: Upload, payload
 
 **Run**:
 The processed result of one Report: the Executions for one Repo and Project at a specific commit SHA.
-_Avoid_: Build, job
+_Avoid_: Build, Job (that is a CI job)
 
 **Execution**:
 One Test's outcome (passed, failed, error or skipped) within one Run.
 _Avoid_: Result, attempt
+
+**Job execution**:
+One Job's outcome (passed, failed or skipped) in one attempt at a specific commit SHA. A re-run of the same CI run is a new attempt and a new Job execution. A cancelled Job counts as skipped.
+_Avoid_: Job run, build
 
 **Failure message**:
 The short, one-line reason that a failing Execution gives, such as `AssertionError: expected 3, got 4`.
@@ -48,11 +60,20 @@ _Avoid_: Stack trace (details can hold more than a trace)
 ### How flakiness is judged
 
 **Flakiness score**:
-A number from 0 to 1 that measures how often a Test's outcome flips between pass and fail, with recent flips weighted more. A Test that always fails scores 0: it is broken, not flaky.
+A number from 0 to 1 that measures how often a Test's or Job's outcome flips between pass and fail, with recent flips weighted more. A Test that always fails scores 0: it is broken, not flaky. Flips count only on the Repo's Default branch. On other branches, only Proven flakes count, because a fail then a pass on a new commit there is usually a fix, not a flake.
+
+**Default branch**:
+The Repo's main line of development, such as `main`, as CI last reported it. Until it is known, every branch counts as the Default branch.
 
 **Proven flake**:
-A commit SHA on which the same Test both passed and failed. This proves nondeterminism and puts a floor under the Flakiness score.
+A commit SHA on which the same Test or Job both passed and failed. This proves nondeterminism and puts a floor under the Flakiness score.
 _Avoid_: Confirmed flake, same-SHA flip (in user-facing text)
+
+**Explained failure**:
+A failed Job execution in which at least one Test execution uploaded by that same Job attempt also failed. The failing Tests explain it, so it does not count against the Job's Flakiness score.
+
+**Unexplained failure**:
+A failed Job execution with no failing Test execution from the same Job attempt: a failure from setup, infrastructure or a step outside the test runner. Only these count against a Job's Flakiness score.
 
 **Flake threshold**:
 The Flakiness score at or above which a Test counts as a Flaky test.
