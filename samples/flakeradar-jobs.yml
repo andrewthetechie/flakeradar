@@ -32,8 +32,11 @@ jobs:
               url: j.html_url ?? "", runner_name: j.runner_name ?? "",
               runner_labels: j.labels ?? [], started_at: j.started_at, completed_at: j.completed_at }));
             if (results.length === 0) { core.info("No reportable jobs."); return; }
+            // Some events (e.g. a tag push) have no head_branch. A Job execution
+            // needs a branch, so skip this attempt instead of failing the run.
+            if (!run.head_branch) { core.notice("workflow_run has no head_branch; not reported."); return; }
             const fork = run.head_repository && run.head_repository.full_name !== repo.full_name;
-            const branch = fork ? `${run.head_repository.owner.login}:${run.head_branch ?? ""}` : (run.head_branch ?? "");
+            const branch = fork ? `${run.head_repository.owner.login}:${run.head_branch}` : run.head_branch;
             const body = {
               repo: repo.full_name, provider: "github", pipeline: run.path,
               commit_sha: run.head_sha,

@@ -164,7 +164,9 @@ list the workflows you want tracked by their exact `name:` (no globs). After
 every attempt of those workflows it fetches that attempt's job results and
 POSTs them to `POST /api/ingest/pipeline`. It needs `FLAKERADAR_URL` and
 `FLAKERADAR_TOKEN` secrets, and `actions: read` permission. FlakeRadar never
-calls GitHub — your workflow pushes results to it.
+calls GitHub — your workflow pushes results to it. An attempt with no branch
+(for example, a workflow run started by a tag push) is skipped with a notice,
+because every Job execution needs a branch.
 
 The JUnit snippet above sends `ci_job_id`, `ci_run_attempt` and `pipeline` so
 that each test Run is linked to the Job execution that produced it.
@@ -185,12 +187,12 @@ that each test Run is linked to the Job execution that produced it.
 
 A failed **Test** frequently explains a failed **Job** — the test broke, so the
 job failed. Counting those against the Job would just double-count a flaky
-test. So a failed Job execution is **explained** when a JUnit upload from the
+test. So a failed Job execution is **explained** when a JUnit report with the
 same `ci_job_id` (same Repo) contains a failing or errored Test. Explained
 failures are scored as `skipped`; only **unexplained** failures (setup, network,
 runners, a crash before the tests run) move a Job's score.
 
-To make attribution work, **every JUnit upload must send `ci_job_id`** — this
+To make attribution work, **every JUnit report must send `ci_job_id`** — this
 is why the snippet sends `ci_job_id=${{ job.check_run_id }}`. Without it, that
 Job's failures are all unexplained and can look flaky even when a test broke.
 

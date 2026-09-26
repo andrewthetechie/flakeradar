@@ -50,6 +50,18 @@ async def test_valid_pipeline_report_is_queued(client, db):
     assert stored["repo"] == "acme/app" and stored["provider"] == "github"
 
 
+async def test_pipeline_ingest_strips_names(client, db):
+    payload = _payload(pipeline="  ci.yml ", branch=" feat ", default_branch="  ")
+    payload["jobs"][0]["name"] = " build "
+    resp = await client.post("/api/ingest/pipeline", json=payload, headers=AUTH)
+    assert resp.status_code == 202, resp.text
+    rep = (await db.execute(select(Report).where(Report.id == resp.json()["report_id"]))).scalar_one()
+    stored = json.loads(rep.body)
+    assert (stored["pipeline"], stored["branch"], stored["default_branch"]) == ("ci.yml", "feat", None)
+    assert stored["jobs"][0]["name"] == "build"
+    assert (rep.pipeline, rep.branch, rep.default_branch) == ("ci.yml", "feat", None)
+
+
 async def test_pipeline_ingest_requires_token(client):
     assert (await client.post("/api/ingest/pipeline", json=_payload())).status_code == 401
 
@@ -60,6 +72,10 @@ async def test_pipeline_ingest_validation(client):
         {"provider": "has space"},
         {"jobs": []},  # empty
         {"jobs": [{"ci_job_id": "1", "name": "n", "status": "bogus"}]},  # unknown status
+        {"pipeline": "   "},  # blank after stripping
+        {"branch": " "},
+        {"jobs": [{"ci_job_id": "1", "name": "  ", "status": "passed"}]},
+        {"jobs": [{"ci_job_id": " ", "name": "n", "status": "passed"}]},
     ]
     for kwargs in cases:
         resp = await client.post("/api/ingest/pipeline", json=_payload(**kwargs), headers=AUTH)
@@ -74,7 +90,7 @@ async def test_pipeline_ingest_rejects_duplicate_ci_job_id(client, db):
     ]
     resp = await client.post("/api/ingest/pipeline", json=payload, headers=AUTH)
     assert resp.status_code == 422
-    assert resp.json()["detail"] == "duplicate ci_job_id in jobs"
+    assert "duplicate ci_job_id in jobs" in resp.text
 
 
 async def test_pipeline_report_auto_creates_repo(client, db):

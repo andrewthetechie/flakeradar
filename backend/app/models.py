@@ -14,7 +14,7 @@ Design notes:
 """
 
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal, get_args
 
 from sqlalchemy import (
     BigInteger,
@@ -44,7 +44,12 @@ REPORT_KIND_JUNIT = "junit"
 REPORT_KIND_PIPELINE = "pipeline"
 REPORT_KINDS = (REPORT_KIND_JUNIT, REPORT_KIND_PIPELINE)
 
-JOB_STATUSES = ("passed", "failed", "skipped")
+# A Job execution's status, already normalized by the CI reporter.
+JobStatus = Literal["passed", "failed", "skipped"]
+JOB_PASSED: JobStatus = "passed"
+JOB_FAILED: JobStatus = "failed"
+JOB_SKIPPED: JobStatus = "skipped"
+JOB_STATUSES: tuple[JobStatus, ...] = get_args(JobStatus)
 
 
 def utcnow() -> datetime:

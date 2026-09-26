@@ -1,7 +1,8 @@
 """Job attribution: linked JUnit reports explain Job failures; only unexplained count."""
 
+from app.attribution import explained_ci_job_ids, unexplained_failure_counts
 from app.models import Job, Repo, TestRun
-from app.processing import _job_history, explained_ci_job_ids, process_next
+from app.processing import _job_history, process_next
 from sqlalchemy import select
 
 from tests.conftest import make_junit
@@ -141,3 +142,18 @@ async def test_explained_ci_job_ids_agrees_with_scoring(db, session_factory):
     await process_next(session_factory)
     await process_next(session_factory)
     assert await explained_ci_job_ids(db, repo.id, ["J2"]) == set()
+
+
+async def test_unexplained_failure_counts_over_the_newest_window(db, session_factory):
+    proj = await make_project(db, "acme/app", "backend")
+    await _junit(db, proj, [("t1", "failed")], ci_job_id="J1", sha="s")
+    await process_next(session_factory)
+    # Oldest to newest: explained failure, unexplained failure, pass, unexplained failure.
+    for ci_job_id, status in [("J1", "failed"), ("J2", "failed"), ("J3", "passed"), ("J4", "failed")]:
+        await _pipeline(db, [_job(ci_job_id, status=status)], sha="s")
+        await process_next(session_factory)
+
+    job = await _job_row(db)
+    assert await unexplained_failure_counts(db, [job.id], window=10) == {job.id: 2}
+    assert await unexplained_failure_counts(db, [job.id], window=2) == {job.id: 1}
+    assert await unexplained_failure_counts(db, [], window=10) == {}

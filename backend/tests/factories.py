@@ -116,15 +116,15 @@ async def make_execution(
 async def make_pipeline_report(
     db: AsyncSession,
     repo: str = "acme/app",
-    payload: dict | None = None,
+    report_json: dict | None = None,
 ) -> Report:
     """Seed a pending `pipeline` Report for a Repo (creating the Repo if needed).
 
-    `payload` is the raw body dict; it is normalized and serialized the same
-    way the ingest endpoint would (PipelineReportIn.model_dump_json).
+    `report_json` is the raw JSON dict; it is validated, normalized and
+    serialized the same way the ingest endpoint does it.
     """
-    if payload is None:
-        payload = {
+    if report_json is None:
+        report_json = {
             "repo": repo,
             "provider": "github",
             "pipeline": ".github/workflows/ci.yml",
@@ -135,19 +135,19 @@ async def make_pipeline_report(
             "ci_run_attempt": 1,
             "jobs": [{"ci_job_id": "1", "name": "test", "status": "passed"}],
         }
-    repo_row = await get_or_create_repo(db, payload.get("repo", repo))
-    body = PipelineReportIn(**payload).model_dump_json().encode()
+    report_in = PipelineReportIn(**{"repo": repo, **report_json})
+    repo_row = await get_or_create_repo(db, report_in.repo)
     rep = Report(
         kind="pipeline",
         repo_id=repo_row.id,
         project_id=None,
-        commit_sha=payload["commit_sha"],
-        branch=payload["branch"],
-        ci_run_id=payload.get("ci_run_id", ""),
-        ci_run_attempt=payload.get("ci_run_attempt", 1),
-        pipeline=payload["pipeline"],
-        default_branch=payload.get("default_branch"),
-        body=body,
+        commit_sha=report_in.commit_sha,
+        branch=report_in.branch,
+        ci_run_id=report_in.ci_run_id,
+        ci_run_attempt=report_in.ci_run_attempt,
+        pipeline=report_in.pipeline,
+        default_branch=report_in.default_branch,
+        body=report_in.model_dump_json().encode(),
         status=REPORT_PENDING,
     )
     db.add(rep)

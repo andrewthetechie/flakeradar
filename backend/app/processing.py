@@ -12,13 +12,17 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any
 
-from sqlalchemy import exists, func, insert, or_, select, update
+from sqlalchemy import func, insert, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from . import scoring
+from .attribution import explained
 from .config import get_settings
 from .models import (
+    JOB_FAILED,
+    JOB_SKIPPED,
+    JOB_STATUSES,
     REPORT_FAILED,
     REPORT_KIND_PIPELINE,
     REPORT_PENDING,
@@ -212,17 +216,6 @@ async def _job_history(
         .over(partition_by=(JobExecution.job_id, on_default), order_by=JobExecution.id.desc())
         .label("rn_def")
     )
-    explained_pred = exists(
-        select(1)
-        .select_from(TestRun)
-        .join(Project, Project.id == TestRun.project_id)
-        .join(TestExecution, TestExecution.test_run_id == TestRun.id)
-        .where(
-            TestRun.ci_job_id == JobExecution.ci_job_id,
-            Project.repo_id == Pipeline.repo_id,
-            TestExecution.status.in_(("failed", "error")),
-        )
-    )
     history: dict[int, list[tuple[str, str, str]]] = defaultdict(list)
     branches: dict[int, str | None] = {}
     for chunk in _chunks(job_ids):
@@ -233,7 +226,7 @@ async def _job_history(
                 JobExecution.commit_sha,
                 JobExecution.branch,
                 JobExecution.status,
-                explained_pred.label("explained"),
+                explained(JobExecution.ci_job_id, Pipeline.repo_id).label("explained"),
                 Repo.default_branch,
                 rn_all,
                 rn_def,
@@ -256,9 +249,9 @@ async def _job_history(
             .where((ranked.c.rn_all <= settings.score_window) | (ranked.c.rn_def <= settings.score_window))
             .order_by(ranked.c.job_id, ranked.c.id.desc())
         )
-        for job_id, sha, branch, status, explained, def_branch in rows.all():
-            if explained and status == "failed":
-                status = "skipped"
+        for job_id, sha, branch, status, is_explained, def_branch in rows.all():
+            if is_explained and status == JOB_FAILED:
+                status = JOB_SKIPPED
             history[job_id].append((sha, branch, status))
             branches.setdefault(job_id, def_branch)
     return {jid: (branches.get(jid), history[jid]) for jid in job_ids}
@@ -282,28 +275,6 @@ async def rescore_jobs(db: AsyncSession, job_ids: list[int]) -> None:
         await db.execute(update(Job), chunk)
 
 
-async def explained_ci_job_ids(db: AsyncSession, repo_id: int, ci_job_ids: list[str]) -> set[str]:
-    """The subset of ci_job_ids that have a failing Test execution in this Repo.
-
-    Matches the scoring query: a Job execution is explained when a `test_runs`
-    row with the same ci_job_id (in the same Repo) has a failed/error execution.
-    """
-    wanted = {c for c in ci_job_ids if c}
-    if not wanted:
-        return set()
-    rows = await db.execute(
-        select(TestRun.ci_job_id)
-        .join(Project, Project.id == TestRun.project_id)
-        .join(TestExecution, TestExecution.test_run_id == TestRun.id)
-        .where(
-            TestRun.ci_job_id.in_(wanted),
-            Project.repo_id == repo_id,
-            TestExecution.status.in_(("failed", "error")),
-        )
-    )
-    return set(rows.scalars())
-
-
 async def _rescore_jobs_for_ci_job_id(db: AsyncSession, repo_id: int, ci_job_id: str) -> list[int]:
     """Rescore every Job that carries this ci_job_id in the Repo; return their ids."""
     job_ids = sorted(
@@ -325,29 +296,29 @@ async def _rescore_jobs_for_ci_job_id(db: AsyncSession, repo_id: int, ci_job_id:
 
 async def process_pipeline_report(db: AsyncSession, report: Report) -> ProcessOutcome:
     """Persist one Pipeline report as Job executions. Caller owns the transaction."""
-    payload = PipelineReportIn.model_validate_json(report.body)
+    pipeline_report = PipelineReportIn.model_validate_json(report.body)
     now = utcnow()
 
-    changed = await apply_default_branch(db, report.repo_id, payload.default_branch)
+    branch_changed = await apply_default_branch(db, report.repo_id, pipeline_report.default_branch)
 
     # Upsert the Pipeline, then the Jobs, then insert Job executions (dedupe by
     # ci_job_id). Only brand-new executions count toward scoring.
     await db.execute(
         pg_insert(Pipeline)
-        .values(repo_id=report.repo_id, provider=payload.provider, name=payload.pipeline)
+        .values(repo_id=report.repo_id, provider=pipeline_report.provider, name=pipeline_report.pipeline)
         .on_conflict_do_nothing(constraint="uq_pipelines_repo_provider_name")
     )
     pipeline_id = (
         await db.execute(
             select(Pipeline.id).where(
                 Pipeline.repo_id == report.repo_id,
-                Pipeline.provider == payload.provider,
-                Pipeline.name == payload.pipeline,
+                Pipeline.provider == pipeline_report.provider,
+                Pipeline.name == pipeline_report.pipeline,
             )
         )
     ).scalar_one()
 
-    job_names = sorted({j.name for j in payload.jobs})
+    job_names = sorted({j.name for j in pipeline_report.jobs})
     for chunk in _chunks(job_names):
         await db.execute(
             pg_insert(Job)
@@ -360,15 +331,15 @@ async def process_pipeline_report(db: AsyncSession, report: Report) -> ProcessOu
         job_ids.update(dict(rows.all()))
 
     exec_rows = []
-    for j in payload.jobs:
+    for j in pipeline_report.jobs:
         exec_rows.append(
             {
                 "job_id": job_ids[j.name],
                 "ci_job_id": j.ci_job_id,
-                "ci_run_id": payload.ci_run_id,
-                "ci_run_attempt": payload.ci_run_attempt,
-                "commit_sha": payload.commit_sha,
-                "branch": payload.branch,
+                "ci_run_id": pipeline_report.ci_run_id,
+                "ci_run_attempt": pipeline_report.ci_run_attempt,
+                "commit_sha": pipeline_report.commit_sha,
+                "branch": pipeline_report.branch,
                 "status": j.status,
                 "url": j.url,
                 "runner_name": j.runner_name,
@@ -379,25 +350,25 @@ async def process_pipeline_report(db: AsyncSession, report: Report) -> ProcessOu
             }
         )
 
-    sees_new: set[int] = set()
-    new_counts = {"passed": 0, "failed": 0, "skipped": 0}
+    jobs_with_new_exec: set[int] = set()
+    new_counts = dict.fromkeys(JOB_STATUSES, 0)
     for chunk in _chunks(exec_rows):
         inserted = (
             await db.execute(
                 pg_insert(JobExecution)
                 .values(chunk)
                 .on_conflict_do_nothing(constraint="uq_job_executions_job_ci_job_id")
-                .returning(JobExecution.id, JobExecution.job_id, JobExecution.status)
+                .returning(JobExecution.job_id, JobExecution.status)
             )
         ).all()
-        for exec_id, job_id, status in inserted:
-            sees_new.add(job_id)
+        for job_id, status in inserted:
+            jobs_with_new_exec.add(job_id)
             new_counts[status] += 1
 
     # Update last status for every Job that got a new execution.
     status_by_job: dict[int, str] = {}
-    for j in payload.jobs:
-        if job_ids[j.name] in sees_new:
+    for j in pipeline_report.jobs:
+        if job_ids[j.name] in jobs_with_new_exec:
             status_by_job[job_ids[j.name]] = j.status
     if status_by_job:
         for chunk in _chunks(list(status_by_job.items())):
@@ -406,13 +377,13 @@ async def process_pipeline_report(db: AsyncSession, report: Report) -> ProcessOu
                 [{"id": jid, "last_status": s, "last_seen_at": now} for jid, s in chunk],
             )
 
-    touched = sorted(sees_new)
+    touched = sorted(jobs_with_new_exec)
     await rescore_jobs(db, touched)
-    if changed:
+    if branch_changed:
         await rescore_repo(db, report.repo_id)
 
     report.status = REPORT_PROCESSED
-    report.counts = {**new_counts, "duplicate": len(payload.jobs) - len(sees_new)}
+    report.counts = {**new_counts, "duplicate": len(pipeline_report.jobs) - sum(new_counts.values())}
     report.run_id = None
     report.error = None
     report.processed_at = now

@@ -25,7 +25,7 @@ def _repo(repo: str | None) -> str | None:
 async def list_jobs(
     repo: str | None = Query(default=None, max_length=255),
     include_stable: bool = Query(default=False),
-    sort: queries.JobSortKey = Query(default="score"),
+    sort: queries.SortKey = Query(default="score"),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=100),
     db: AsyncSession = Depends(get_db),

@@ -16,11 +16,11 @@ Simulates 14 CI runs of one Repo with two Projects and a CI pipeline:
   "e2e (ubuntu-latest)" — an infrastructure flake that fails ~20% of the time
   with NO failing Tests (plus one same-SHA re-run attempt that passes).
 
-The JUnit uploads carry the matching ci_job_id, so backend/frontend failures
+The JUnit reports carry the matching ci_job_id, so backend/frontend failures
 EXPLAIN those Jobs' failures; e2e has no JUnit, so its failures are
 unexplained and it should score higher (flakier) than backend.
 
-Uploads are queued (202); the script waits until every Report is processed.
+Reports are queued (202); the script waits until every Report is processed.
 """
 import random
 import sys
@@ -125,7 +125,7 @@ def main():
             frontend_status = "failed" if badge == "failed" else "passed"
             e2e_status = "failed" if rng.random() < 0.20 else "passed"
 
-            # JUnit uploads linked to their Job executions for attribution.
+            # JUnit reports linked to their Job executions for attribution.
             report_ids.append(post_junit(client, "backend", "", sha, f"run-{i}", f"b-{i}", 1,
                                          report("backend", backend_cases(checkout, gateway))))
             report_ids.append(post_junit(client, "frontend", "web", sha, f"run-{i}", f"f-{i}", 1,

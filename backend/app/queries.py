@@ -11,11 +11,11 @@ from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from . import schemas
-from .models import Job, JobExecution, Pipeline, Project, Repo, TestCase, TestExecution, TestRun, utcnow
-from .processing import explained_ci_job_ids
+from .attribution import explained_ci_job_ids
+from .models import JOB_FAILED, Job, JobExecution, Pipeline, Project, Repo, TestCase, TestExecution, TestRun, utcnow
+from .scoring import FAILING
 
-SortKey = Literal["score", "last_seen", "proven"]
-JobSortKey = Literal["score", "last_seen", "proven"]
+SortKey = Literal["score", "last_seen", "proven"]  # shared by the Test and Job leaderboards
 
 
 @dataclass(frozen=True)
@@ -43,6 +43,11 @@ def escape_like(text: str) -> str:
     return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
+def issue_url(repo: str, number: int | None) -> str | None:
+    """The GitHub issue a Test or Job was filed as, if any."""
+    return f"https://github.com/{repo}/issues/{number}" if number is not None else None
+
+
 def to_test_out(tc: TestCase, project: str, repo: str, threshold: float) -> schemas.TestOut:
     return schemas.TestOut(
         id=tc.id,
@@ -62,9 +67,7 @@ def to_test_out(tc: TestCase, project: str, repo: str, threshold: float) -> sche
         quarantined=tc.quarantined,
         quarantined_at=tc.quarantined_at,
         github_issue_number=tc.github_issue_number,
-        github_issue_url=(
-            f"https://github.com/{repo}/issues/{tc.github_issue_number}" if tc.github_issue_number is not None else None
-        ),
+        github_issue_url=issue_url(repo, tc.github_issue_number),
     )
 
 
@@ -186,8 +189,6 @@ async def summary(db: AsyncSession, scope: Scope, *, threshold: float) -> schema
 
 
 # --- Test detail and quarantine (task 09) -------------------------------
-
-FAILING = ("failed", "error")
 
 
 def repo_path(root: str, file: str) -> str:
@@ -365,11 +366,6 @@ async def latest_failure(db: AsyncSession, test_id: int) -> schemas.ExecutionOut
 
 
 def to_job_out(job: Job, pipeline: Pipeline, repo: Repo, threshold: float) -> schemas.JobOut:
-    url = (
-        f"https://github.com/{repo.name}/issues/{job.github_issue_number}"
-        if job.github_issue_number is not None and pipeline.provider == "github"
-        else None
-    )
     return schemas.JobOut(
         id=job.id,
         repo=repo.name,
@@ -382,7 +378,7 @@ def to_job_out(job: Job, pipeline: Pipeline, repo: Repo, threshold: float) -> sc
         last_status=job.last_status,
         last_seen_at=job.last_seen_at,
         github_issue_number=job.github_issue_number,
-        github_issue_url=url,
+        github_issue_url=issue_url(repo.name, job.github_issue_number) if pipeline.provider == "github" else None,
     )
 
 
@@ -402,7 +398,7 @@ async def list_jobs(
     threshold: float,
     include_stable: bool = False,
     flaky_only: bool = False,
-    sort: JobSortKey = "score",
+    sort: SortKey = "score",
     page: int = 1,
     page_size: int = 50,
 ) -> schemas.JobPage:
@@ -493,7 +489,7 @@ async def get_job(
     exec_outs: list[schemas.JobExecutionOut] = []
     unexplained = explained_failures = 0
     for e in execs:
-        if e.status == "failed":
+        if e.status == JOB_FAILED:
             if e.ci_job_id in explained:
                 outcome = "explained"
                 explained_failures += 1

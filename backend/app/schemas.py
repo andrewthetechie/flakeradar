@@ -3,7 +3,10 @@
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from .identity import normalize_provider, normalize_repo
+from .models import JobStatus
 
 
 class IngestAccepted(BaseModel):
@@ -12,9 +15,12 @@ class IngestAccepted(BaseModel):
 
 
 class JobResultIn(BaseModel):
+    # Strip before the length checks, so a blank name is rejected, not stored as "".
+    model_config = ConfigDict(str_strip_whitespace=True)
+
     ci_job_id: str = Field(min_length=1, max_length=255)
     name: str = Field(min_length=1, max_length=512)
-    status: Literal["passed", "failed", "skipped"]
+    status: JobStatus
     url: str = Field(default="", max_length=2048)
     runner_name: str = Field(default="", max_length=255)
     runner_labels: list[Annotated[str, Field(max_length=255)]] = Field(default_factory=list, max_length=50)
@@ -23,6 +29,11 @@ class JobResultIn(BaseModel):
 
 
 class PipelineReportIn(BaseModel):
+    """One attempt of one Pipeline run. Validation also normalizes, so the
+    stored body is canonical and processing can trust it."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
     repo: str = Field(max_length=255)
     provider: str = Field(max_length=32)
     pipeline: str = Field(min_length=1, max_length=512)
@@ -32,6 +43,27 @@ class PipelineReportIn(BaseModel):
     ci_run_id: str = Field(default="", max_length=255)
     ci_run_attempt: int = Field(default=1, ge=1)
     jobs: list[JobResultIn] = Field(min_length=1, max_length=1000)
+
+    @field_validator("repo")
+    @classmethod
+    def _normalize_repo(cls, v: str) -> str:
+        return normalize_repo(v)
+
+    @field_validator("provider")
+    @classmethod
+    def _normalize_provider(cls, v: str) -> str:
+        return normalize_provider(v)
+
+    @field_validator("default_branch")
+    @classmethod
+    def _blank_default_branch_is_unknown(cls, v: str | None) -> str | None:
+        return v or None
+
+    @model_validator(mode="after")
+    def _unique_ci_job_ids(self) -> "PipelineReportIn":
+        if len({j.ci_job_id for j in self.jobs}) != len(self.jobs):
+            raise ValueError("duplicate ci_job_id in jobs")
+        return self
 
 
 class ReportOut(BaseModel):

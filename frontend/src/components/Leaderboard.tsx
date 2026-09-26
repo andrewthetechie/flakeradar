@@ -2,21 +2,8 @@ import type { Scope, TestCase } from "../api";
 import { breakable } from "../breakable";
 import { formatScore } from "../format";
 import { IssueLink } from "./IssueLink";
+import { scoreColor, TIER_CLASS } from "./scoreStyle";
 import { StatusMark } from "./StatusMark";
-
-// Sequential blue: stronger = worse (the scale flips per theme in styles.css).
-function scoreColor(score: number): string {
-  if (score >= 0.75) return "var(--seq-650)";
-  if (score >= 0.5) return "var(--seq-550)";
-  if (score >= 0.25) return "var(--seq-400)";
-  return "var(--seq-250)";
-}
-
-const TIER_CLASS: Record<TestCase["tier"], string> = {
-  flaky: "font-semibold text-signal",
-  suspect: "text-text-2",
-  stable: "text-muted",
-};
 
 /** Where a row lives, shown only when the view spans more than that. */
 export function scopeLabel(t: TestCase, scope: Scope): string | null {

@@ -51,6 +51,32 @@ def _check_limit(limit: int) -> None:
         raise ToolError(f"limit must be between 1 and {MAX_LIMIT}")
 
 
+def _only_id(ids: list[int], noun: str, name: str, where: str, narrow_by: str) -> int:
+    """The single id a name lookup found; a ToolError that lists ids when ambiguous."""
+    if not ids:
+        raise ToolError(f"No {noun} named {name!r} in {where}.")
+    if len(ids) > 1:
+        raise ToolError(f"{len(ids)} {noun}s are named {name!r}; pass {narrow_by} or one of {noun}_id {ids}.")
+    return ids[0]
+
+
+# Job execution fields an agent needs; the rest (ids, timings) only add tokens.
+_JOB_EXECUTION_FIELDS = {
+    "outcome",
+    "status",
+    "commit_sha",
+    "branch",
+    "ci_run_attempt",
+    "ci_job_id",
+    "url",
+    "runner_name",
+    "runner_labels",
+    "created_at",
+    "explained_by",
+}
+_EXPLAINED_BY_MAX = 5
+
+
 def _cap(text: str) -> str:
     return text if len(text) <= DETAILS_MAX else text[:DETAILS_MAX] + "\n…[truncated]"
 
@@ -141,11 +167,7 @@ def build_mcp(session_factory: async_sessionmaker[AsyncSession], *, api_token: s
                     raise ToolError("Pass test_id, or repo + name (+ project, classname).")
                 scope = _scope(repo, project)
                 ids = await queries.find_test_ids(db, scope.repo, scope.project, name, classname)
-                if not ids:
-                    raise ToolError(f"No test named {name!r} in {scope.repo} / {scope.project}.")
-                if len(ids) > 1:
-                    raise ToolError(f"{len(ids)} tests are named {name!r}; pass classname or one of test_id {ids}.")
-                test_id = ids[0]
+                test_id = _only_id(ids, "test", name, f"{scope.repo} / {scope.project}", "classname")
             history = await queries.get_test(
                 db,
                 test_id,
@@ -235,11 +257,7 @@ def build_mcp(session_factory: async_sessionmaker[AsyncSession], *, api_token: s
                     raise ToolError("Pass job_id, or repo + name (+ pipeline when ambiguous).")
                 repo_name = _scope(repo, None).repo
                 ids = await queries.find_job_ids(db, repo_name, name, pipeline)
-                if not ids:
-                    raise ToolError(f"No job named {name!r} in {repo_name}.")
-                if len(ids) > 1:
-                    raise ToolError(f"{len(ids)} jobs are named {name!r}; pass pipeline or one of job_id {ids}.")
-                job_id = ids[0]
+                job_id = _only_id(ids, "job", name, repo_name, "pipeline")
             history = await queries.get_job(
                 db,
                 job_id,
@@ -248,26 +266,10 @@ def build_mcp(session_factory: async_sessionmaker[AsyncSession], *, api_token: s
             )
             if history is None:
                 raise ToolError(f"No job with id {job_id}.")
-        return {
-            "job": history.job.model_dump(mode="json"),
-            "unexplained_failures": history.unexplained_failures,
-            "explained_failures": history.explained_failures,
-            "executions": [
-                {
-                    "outcome": e.outcome,
-                    "status": e.status,
-                    "commit_sha": e.commit_sha,
-                    "branch": e.branch,
-                    "ci_run_attempt": e.ci_run_attempt,
-                    "ci_job_id": e.ci_job_id,
-                    "url": e.url,
-                    "runner_name": e.runner_name,
-                    "runner_labels": e.runner_labels,
-                    "created_at": e.created_at.isoformat(),
-                    "explained_by": [t.model_dump(mode="json") for t in e.explained_by[:5]],
-                }
-                for e in history.executions
-            ],
+        for e in history.executions:
+            e.explained_by = e.explained_by[:_EXPLAINED_BY_MAX]
+        return history.model_dump(mode="json", include={"job", "unexplained_failures", "explained_failures"}) | {
+            "executions": [e.model_dump(mode="json", include=_JOB_EXECUTION_FIELDS) for e in history.executions]
         }
 
     return mcp

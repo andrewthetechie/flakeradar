@@ -30,6 +30,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from . import queries
+from .attribution import unexplained_failure_counts
 from .config import Settings, get_settings
 from .models import (
     REPORT_PROCESSED,
@@ -287,7 +288,7 @@ async def _job_candidates(db: AsyncSession, job_ids: list[int]) -> list[tuple[Jo
 
     Returns [(Job, pipeline_name, repo_name)]. `min_failures`, when configured,
     requires that many UNEXPLAINED failures in the newest `score_window` Job
-    executions — reusing task 05's explanation (via queries.get_job).
+    executions.
     """
     s = get_settings()
     gate = _FilingGate.from_settings(s)
@@ -308,22 +309,16 @@ async def _job_candidates(db: AsyncSession, job_ids: list[int]) -> list[tuple[Jo
                 .order_by(Job.id)
             )
         ).all()
-    if gate.min_failures > 0 and candidates:
-        kept: list[tuple[Job, str, str]] = []
-        for job, pipeline, repo in candidates:
-            hist = await queries.get_job(
-                db, job.id, threshold=get_settings().flake_threshold, executions_limit=s.score_window
-            )
-            if hist is not None and hist.unexplained_failures >= gate.min_failures:
-                kept.append((job, pipeline, repo))
-        candidates = kept
+    if gate.min_failures > 0:
+        failures = await unexplained_failure_counts(db, [r[0].id for r in candidates], s.score_window)
+        candidates = [r for r in candidates if failures.get(r[0].id, 0) >= gate.min_failures]
     return candidates
 
 
 async def _job_issue_body(db: AsyncSession, job: Job, pipeline: str, repo: str) -> str:
     """Render a self-contained issue body for a flaky CI Job."""
     s = get_settings()
-    hist = await queries.get_job(db, job.id, threshold=get_settings().flake_threshold, executions_limit=10)
+    hist = await queries.get_job(db, job.id, threshold=s.flake_threshold, executions_limit=10)
     lines = [
         f"FlakeRadar detected a flaky CI job: `{pipeline}` / `{job.name}`",
         "",
@@ -451,49 +446,36 @@ async def sync_closed_issues(
         ).all()
         if not test_rows and not job_rows:
             return
-        changed = False
-        stopped = False
+        rows = [(tc, repo, "test") for tc, repo in test_rows] + [(job, repo, "job") for job, repo in job_rows]
         try:
             async with httpx.AsyncClient(
                 base_url=API_BASE, headers=_headers(get_settings().github_token), timeout=15, transport=transport
             ) as client:
-                for tc, repo in test_rows:
-                    if stopped:
+                for obj, repo, entity in rows:
+                    if not await _clear_if_closed(client, obj, repo, entity):
                         break
-                    ok, changed = await _clear_if_closed(client, tc, repo, "test", changed)
-                    stopped = not ok
-                for job, repo in job_rows:
-                    if stopped:
-                        break
-                    ok, changed = await _clear_if_closed(client, job, repo, "job", changed)
-                    stopped = not ok
         except httpx.HTTPError as exc:
             logger.warning("GitHub unreachable, skipping issue-state sync: %s", exc)
-        if changed:
-            await db.commit()
+        await db.commit()  # keeps whatever was cleared before a stop or a network error
 
 
-async def _clear_if_closed(
-    client: httpx.AsyncClient, obj: Job | TestCase, repo: str, entity: str, changed: bool
-) -> tuple[bool, bool]:
+async def _clear_if_closed(client: httpx.AsyncClient, obj: Job | TestCase, repo: str, entity: str) -> bool:
     """Check one issue; clear its number on the ORM object when closed/gone.
 
-    Returns (continue_batch, changed); continue_batch is False on 403/429.
+    Returns False on 403/429, when the batch must stop.
     """
     resp = await client.get(f"/repos/{repo}/issues/{obj.github_issue_number}")
     if resp.status_code in (403, 429):
         logger.warning("GitHub rate limit / forbidden in sync; stopping")
-        return False, changed
+        return False
     if resp.status_code == 200 and resp.json().get("state") == "closed":
         logger.info("Issue closed %s#%s; re-arming %s %s", repo, obj.github_issue_number, entity, obj.id)
         obj.github_issue_number = None
-        return True, True
-    if resp.status_code == 404:
+    elif resp.status_code == 404:
         # Issue deleted or token can no longer see it — do not hold dedup forever.
         logger.info("Issue gone %s#%s; re-arming %s %s", repo, obj.github_issue_number, entity, obj.id)
         obj.github_issue_number = None
-        return True, True
-    return True, changed
+    return True
 
 
 async def on_report_processed(session_factory: async_sessionmaker[AsyncSession], outcome: ProcessOutcome) -> None:

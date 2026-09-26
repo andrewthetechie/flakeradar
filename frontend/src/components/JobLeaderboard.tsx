@@ -2,20 +2,8 @@ import type { Job } from "../api";
 import { breakable } from "../breakable";
 import { formatScore } from "../format";
 import { IssueLink } from "./IssueLink";
+import { scoreColor, TIER_CLASS } from "./scoreStyle";
 import { StatusMark } from "./StatusMark";
-
-function scoreColor(score: number): string {
-  if (score >= 0.75) return "var(--seq-650)";
-  if (score >= 0.5) return "var(--seq-550)";
-  if (score >= 0.25) return "var(--seq-400)";
-  return "var(--seq-250)";
-}
-
-const TIER_CLASS: Record<Job["tier"], string> = {
-  flaky: "font-semibold text-signal",
-  suspect: "text-text-2",
-  stable: "text-muted",
-};
 
 function jobLabel(job: Job, repo: string | null): string | null {
   // Show the Repo when the view spans repos, otherwise the Pipeline is enough.

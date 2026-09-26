@@ -189,6 +189,19 @@ async def test_get_job_by_id_and_by_name_with_explained(mcp, db):
     assert outcomes["ex-1"] == "explained" and outcomes["ex-2"] == "passed"
     explained = next(e for e in by_id["executions"] if e["ci_job_id"] == "ex-1")
     assert [t["name"] for t in explained["explained_by"]] == ["t1"]
+    assert set(explained) == {
+        "outcome",
+        "status",
+        "commit_sha",
+        "branch",
+        "ci_run_attempt",
+        "ci_job_id",
+        "url",
+        "runner_name",
+        "runner_labels",
+        "created_at",
+        "explained_by",
+    }
     assert missing.is_error and "No job named 'nope'" in missing.content[0].text
 
 
