@@ -1,6 +1,7 @@
 """Foundation: migrations build the schema; the app boots its health route."""
 
 import pytest
+from app import db as db_module
 from app.config import Settings
 from app.migrate import run_migrations
 from app.models import Job, JobExecution, Report, TestCase
@@ -44,7 +45,22 @@ async def test_migrations_are_idempotent(engine):
     await run_migrations(engine)  # second run is a no-op, must not raise
     async with engine.connect() as conn:
         version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar()
-    assert version == "0006"
+    assert version == "0007"
+
+
+def test_make_engine_sets_command_timeout(monkeypatch):
+    """The asyncpg command_timeout is forwarded as a connect argument."""
+    captured = {}
+
+    def fake_create_engine(url, **kwargs):
+        captured["url"] = url
+        captured["kwargs"] = kwargs
+        raise AssertionError("stop before creating a real engine")
+
+    monkeypatch.setattr(db_module, "create_async_engine", fake_create_engine)
+    with pytest.raises(AssertionError):
+        db_module.make_engine("postgresql+asyncpg://u:p@h:5432/d")
+    assert captured["kwargs"]["connect_args"] == {"command_timeout": 30.0}
 
 
 async def test_project_name_unique_within_repo(db):

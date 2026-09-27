@@ -5,7 +5,9 @@ import asyncio
 from app.config import Settings
 from app.models import Repo, Report, TestCase, TestExecution, TestRun, TestScoreHistory, utcnow
 from app.processing import claim_next_report, process_next
+from sqlalchemy import event as sa_event
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError, OperationalError
 
 from tests.conftest import make_junit
 from tests.factories import make_project, make_report
@@ -169,7 +171,85 @@ async def test_bad_report_is_marked_failed_and_queue_moves_on(db, session_factor
     assert second.status == "processed" and second.report_id == good.id
     await db.refresh(bad)
     assert bad.status == "failed" and bad.error == first.error
+    assert bad.retry_count == 0  # a permanent data error never consumes retry budget
     assert (await db.execute(select(func.count(TestRun.id)))).scalar() == 1
+
+
+async def test_project_root_written_only_when_changed(db, session_factory, engine):
+    """projects.root is rewritten only when its value actually changes."""
+    proj = await make_project(db, "acme/app", "backend", root="backend")
+    await make_report(db, proj, make_junit([("t", "passed")]), root="backend")  # same value
+    await db.commit()
+
+    rows_rewritten = []
+
+    def capture(conn, cursor, statement, parameters, context, executemany):
+        if "UPDATE projects" in statement:
+            rows_rewritten.append(cursor.rowcount)
+
+    sa_event.listen(engine.sync_engine, "after_cursor_execute", capture)
+    try:
+        await process_next(session_factory)
+    finally:
+        sa_event.remove(engine.sync_engine, "after_cursor_execute", capture)
+    assert rows_rewritten == [0], "same root must not rewrite any Project row"
+    await db.refresh(proj)
+    assert proj.root == "backend"
+
+    rows_rewritten.clear()
+    await make_report(db, proj, make_junit([("t", "passed")]), root="frontend")
+    await db.commit()
+    sa_event.listen(engine.sync_engine, "after_cursor_execute", capture)
+    try:
+        await process_next(session_factory)
+    finally:
+        sa_event.remove(engine.sync_engine, "after_cursor_execute", capture)
+    assert any(n > 0 for n in rows_rewritten), "a different root must rewrite the Project row"
+    await db.refresh(proj)
+    assert proj.root == "frontend"
+
+
+async def test_transient_failure_is_retried_then_capped(db, session_factory, monkeypatch):
+    """A transient DB failure is re-queued up to the cap, then marked failed."""
+    proj = await make_project(db, "acme/app", "backend")
+
+    async def boom(db, report):
+        raise OperationalError("stmt", {}, Exception("connection reset"))
+
+    monkeypatch.setattr("app.processing.process_report", boom)
+    monkeypatch.setattr("app.processing.get_settings", lambda: Settings(max_report_retries=3))
+    rep = await make_report(db, proj, make_junit([("t", "passed")]))
+    await db.commit()
+
+    # max_report_retries=3 permits one initial attempt plus three retries.
+    for expected_rc in (1, 2, 3):
+        outcome = await process_next(session_factory)
+        assert outcome.status == "pending" and outcome.report_id == rep.id
+        await db.refresh(rep)
+        assert (rep.status, rep.retry_count) == ("pending", expected_rc)
+
+    outcome = await process_next(session_factory)
+    assert outcome.status == "failed"
+    await db.refresh(rep)
+    assert (rep.status, rep.retry_count) == ("failed", 3)
+
+
+async def test_permanent_db_error_not_retried(db, session_factory, monkeypatch):
+    """A permanent DBAPIError (e.g. a constraint violation) fails on the first
+    attempt and never consumes retry budget."""
+    proj = await make_project(db, "acme/app", "backend")
+
+    async def boom(db, report):
+        raise IntegrityError("stmt", {}, Exception("duplicate key"))
+
+    monkeypatch.setattr("app.processing.process_report", boom)
+    rep = await make_report(db, proj, make_junit([("t", "passed")]))
+    await db.commit()
+
+    outcome = await process_next(session_factory)
+    assert outcome.status == "failed"
+    await db.refresh(rep)
+    assert rep.status == "failed" and rep.retry_count == 0
 
 
 async def test_claim_skips_locked_rows(db, session_factory):

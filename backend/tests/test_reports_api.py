@@ -1,5 +1,6 @@
 """Report status, listing, summary and retry."""
 
+from app.config import Settings
 from app.models import REPORT_FAILED, REPORT_PROCESSED
 
 from tests.conftest import AUTH
@@ -62,3 +63,15 @@ async def test_retry(client, db):
     conflict = await client.post(f"/api/reports/{pending.id}/retry", headers=AUTH)
     assert conflict.status_code == 409
     assert conflict.json()["detail"] == "Only failed reports can be retried"
+
+
+async def test_retry_respects_cap(client, db, monkeypatch):
+    from app.routers import reports as reports_router
+
+    monkeypatch.setattr(reports_router, "get_settings", lambda: Settings(max_report_retries=2))
+    _, failed, _, _ = await _seed(db)
+    failed.retry_count = 2  # at the cap
+    await db.commit()
+    resp = await client.post(f"/api/reports/{failed.id}/retry", headers=AUTH)
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == "Max retries reached for this report"

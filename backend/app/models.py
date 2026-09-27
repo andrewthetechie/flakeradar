@@ -188,6 +188,9 @@ class Report(Base):
     body: Mapped[bytes] = mapped_column(LargeBinary)
     status: Mapped[str] = mapped_column(String(16), default=REPORT_PENDING, server_default=REPORT_PENDING)
     error: Mapped[str | None] = mapped_column(Text, default=None)
+    # Number of times this Report has been re-processed after a failed attempt
+    # (transient auto-retries and manual retries). Capped by max_report_retries.
+    retry_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     counts: Mapped[dict[str, Any] | None] = mapped_column(JSONB, default=None)
     run_id: Mapped[int | None] = mapped_column(ForeignKey("test_runs.id", ondelete="SET NULL"), default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

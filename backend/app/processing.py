@@ -14,6 +14,7 @@ from typing import Any
 
 from sqlalchemy import func, insert, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import InterfaceError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from . import scoring
@@ -488,7 +489,11 @@ async def process_report(db: AsyncSession, report: Report) -> ProcessOutcome:
     branch_changed = await apply_default_branch(db, report.repo_id, report.default_branch)
 
     if report.root is not None:
-        await db.execute(update(Project).where(Project.id == report.project_id).values(root=report.root))
+        # Write only when the value actually changes, so a run of reports with the
+        # same root never rewrites (and briefly locks) the Project row.
+        await db.execute(
+            update(Project).where(Project.id == report.project_id, Project.root != report.root).values(root=report.root)
+        )
 
     run = TestRun(
         project_id=report.project_id,
@@ -572,15 +577,33 @@ async def process_report(db: AsyncSession, report: Report) -> ProcessOutcome:
     )
 
 
+# DBAPIError subclasses that denote permanent data/schema problems: retrying
+# them can never succeed, so they must not be treated as transient.
+def _is_retryable(exc: BaseException) -> bool:
+    """True for failures that may succeed on a later attempt.
+
+    Only the connection/operational DBAPI family (a dropped connection, a
+    cancelled/hung statement, a deadlock, a serialization failure) is treated
+    as transient. Data errors (a malformed body, schema-validation failures)
+    and other DBAPI errors are permanent and are never retried, so they fail
+    immediately without consuming retry budget.
+    """
+    return isinstance(exc, (OperationalError, InterfaceError))
+
+
 async def process_next(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> ProcessOutcome | None:
     """Claim and process the oldest pending Report. None when the queue is empty.
 
-    Work happens in a SAVEPOINT: on any error it is rolled back, and the
-    Report (still row-locked) is marked failed with the error in the same
-    transaction, so a bad Report can never block the queue.
+    Work happens in a SAVEPOINT: on any error it is rolled back and, in the
+    same transaction, the Report is either re-queued for retry or permanently
+    marked failed with the error — so a bad Report can never block the queue.
+    Transient (DB-level) failures are re-queued up to `max_report_retries`;
+    data errors fail immediately. Each retry is a fresh session/connection, so
+    a genuinely transient DB blip is given another chance.
     """
+    retry_limit = get_settings().max_report_retries
     async with session_factory() as db, db.begin():
         report = await claim_next_report(db)
         if report is None:
@@ -589,8 +612,34 @@ async def process_next(
             async with db.begin_nested():
                 return await process_report(db, report)
         except Exception as exc:
-            logger.exception("Report %s failed to process", report.id)
             error = f"{type(exc).__name__}: {exc}"[:ERROR_MAX]
+            # Only transient (DB-level) failures consume retry budget; a permanent
+            # data error (malformed body, validation) never does. retry_count is
+            # the number of retries already used, so a report gets one initial
+            # attempt plus up to `retry_limit` retries before giving up.
+            if _is_retryable(exc) and (report.retry_count or 0) < retry_limit:
+                report.retry_count = (report.retry_count or 0) + 1
+                logger.warning(
+                    "Report %s transient failure (retry %d/%d): %s",
+                    report.id,
+                    report.retry_count,
+                    retry_limit,
+                    error,
+                )
+                # Rolled back by the SAVEPOINT; keep it pending so the next poll
+                # retries it (bounded by the cap).
+                report.status = REPORT_PENDING
+                report.error = error
+                report.processed_at = None
+                return ProcessOutcome(
+                    report_id=report.id,
+                    status=REPORT_PENDING,
+                    run_id=None,
+                    counts=None,
+                    touched_test_ids=[],
+                    error=error,
+                )
+            logger.exception("Report %s failed to process", report.id)
             report.status = REPORT_FAILED
             report.error = error
             report.processed_at = utcnow()

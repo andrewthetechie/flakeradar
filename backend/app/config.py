@@ -50,6 +50,16 @@ class Settings(BaseSettings):
     # Report processor: idle poll interval when the queue is empty.
     worker_poll_seconds: float = 1.0
 
+    # DB statement/command timeout in seconds (asyncpg command_timeout). A hung
+    # statement is cancelled rather than holding a connection forever.
+    db_command_timeout_seconds: float = 30.0
+
+    # How many times a Report may be re-processed after a transient failure
+    # before it is permanently marked failed, so one persistently-bad Report
+    # cannot keep re-entering the queue forever. Data errors (e.g. a malformed
+    # body) fail immediately and never consume this budget.
+    max_report_retries: int = 3
+
     # Retention (pruned hourly by the Report processor).
     report_retention_days: int = 7  # processed Reports; failed ones are kept
     execution_retention_days: int = 90  # Executions (and Runs left empty)

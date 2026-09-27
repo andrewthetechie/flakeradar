@@ -17,7 +17,14 @@ WORKER_LOCK_KEY = 726_300_002  # elects the single Report processor (ADR 0002)
 
 
 def make_engine(url: str | None = None) -> AsyncEngine:
-    return create_async_engine(url or get_settings().database_url, pool_pre_ping=True)
+    settings = get_settings()
+    return create_async_engine(
+        url or settings.database_url,
+        pool_pre_ping=True,
+        # Cancel any statement that hangs longer than this instead of tying up a
+        # pooled connection (asyncpg command_timeout).
+        connect_args={"command_timeout": settings.db_command_timeout_seconds},
+    )
 
 
 def make_session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:

@@ -53,3 +53,23 @@ async def test_get_or_create_project_is_idempotent(db):
     assert a.id == b.id != c.id
     assert (await db.execute(select(func.count(Repo.id)))).scalar() == 2
     assert (await db.execute(select(func.count(Project.id)))).scalar() == 2
+
+
+async def test_get_or_create_project_selects_first_when_it_exists(db, monkeypatch):
+    """The hot path (Project already exists) performs a SELECT only, no INSERT."""
+    from app import identity
+
+    a = await get_or_create_project(db, "acme/app", "backend")
+
+    calls = []
+    real_insert = identity.pg_insert
+
+    def counting_insert(*args, **kwargs):
+        calls.append(1)
+        return real_insert(*args, **kwargs)
+
+    monkeypatch.setattr(identity, "pg_insert", counting_insert)
+    before = len(calls)
+    b = await get_or_create_project(db, "acme/app", "backend")
+    assert b.id == a.id
+    assert len(calls) == before  # no INSERT attempted on the existing-row path

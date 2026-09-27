@@ -78,6 +78,7 @@ class ReportOut(BaseModel):
     error: str | None
     counts: dict[str, Any] | None
     run_id: int | None
+    retry_count: int  # re-process attempts so far; capped by max_report_retries
     created_at: datetime
     processed_at: datetime | None
 

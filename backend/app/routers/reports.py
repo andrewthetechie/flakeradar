@@ -9,6 +9,7 @@ from starlette.datastructures import UploadFile
 
 from .. import schemas
 from ..auth import require_token
+from ..config import get_settings
 from ..db import get_db
 from ..identity import (
     DEFAULT_PROJECT,
@@ -137,6 +138,7 @@ def _report_out(report: Report, repo: str, project: str | None) -> schemas.Repor
         error=report.error,
         counts=report.counts,
         run_id=report.run_id,
+        retry_count=report.retry_count,
         created_at=report.created_at,
         processed_at=report.processed_at,
     )
@@ -224,6 +226,9 @@ async def retry_report(report_id: int, db: AsyncSession = Depends(get_db)):
     report, repo, project = row
     if report.status != REPORT_FAILED:
         raise HTTPException(status_code=409, detail="Only failed reports can be retried")
+    if report.retry_count >= get_settings().max_report_retries:
+        raise HTTPException(status_code=409, detail="Max retries reached for this report")
+    report.retry_count += 1
     report.status = REPORT_PENDING
     report.error = None
     report.processed_at = None
