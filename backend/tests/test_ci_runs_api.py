@@ -1,9 +1,11 @@
 """CI run failures API: which CI run attempt, report counts, 404s (issue #5)."""
 
+from app import queries
 from app.config import get_settings
 
 from tests.conftest import AUTH, make_junit
 from tests.factories import (
+    make_execution,
     make_job,
     make_job_execution,
     make_pipeline,
@@ -11,6 +13,7 @@ from tests.factories import (
     make_project,
     make_report,
     make_run,
+    make_test_case,
 )
 
 
@@ -141,3 +144,182 @@ async def test_top_level_fields(client, db):
     assert body["repo"] == "acme/app"
     assert body["ci_run_id"] == "100"
     assert body["flake_threshold"] == get_settings().flake_threshold
+
+
+async def test_failures_of_two_attempts(client, db):
+    proj = await make_project(db, "acme/app", "backend")
+    t1 = await make_test_case(db, proj, name="t1")
+    t2 = await make_test_case(db, proj, name="t2")
+    run_a = await make_run(db, proj, ci_run_id="100", ci_run_attempt=1)
+    await make_execution(db, t1, run_a, status="failed")
+    await make_execution(db, t2, run_a, status="passed")
+    run_b = await make_run(db, proj, ci_run_id="100", ci_run_attempt=2)
+    await make_execution(db, t1, run_b, status="passed")
+    await make_execution(db, t2, run_b, status="failed")
+    await db.commit()
+
+    body = (await client.get(_url("100"))).json()
+    assert body["ci_run_attempt"] == 2
+    assert [f["name"] for f in body["failures"]] == ["t2"]
+
+    body = (await client.get(_url("100", ci_run_attempt=1))).json()
+    assert [f["name"] for f in body["failures"]] == ["t1"]
+
+
+async def test_failure_entry_fields(client, db):
+    proj = await make_project(db, "acme/app", "backend")
+    t1 = await make_test_case(
+        db,
+        proj,
+        name="t1",
+        flakiness_score=0.5,
+        confirmed_flake_count=2,
+        clean_streak=3,
+        quarantined=True,
+        github_issue_number=9,
+    )
+    run = await make_run(db, proj, ci_run_id="100", ci_run_attempt=1, ci_job_id="J1")
+    await make_execution(db, t1, run, status="error", message="boom", failure_category="network")
+    await db.commit()
+
+    body = (await client.get(_url("100"))).json()
+    assert body["failures"] == [
+        {
+            "test_id": t1.id,
+            "project": "backend",
+            "suite": "unit",
+            "classname": "tests.test_mod",
+            "name": "t1",
+            "run_id": run.id,
+            "ci_job_id": "J1",
+            "status": "error",
+            "failed_attempts": 1,
+            "failure_category": "network",
+            "message": "boom",
+            "tier": "flaky",
+            "flakiness_score": 0.5,
+            "confirmed_flake_count": 2,
+            "clean_streak": 3,
+            "quarantined": True,
+            "github_issue_number": 9,
+            "github_issue_url": "https://github.com/acme/app/issues/9",
+        }
+    ]
+    assert body["total_failures"] == 1
+    assert body["truncated"] is False
+
+
+async def test_retries_in_one_run(client, db):
+    proj = await make_project(db, "acme/app", "backend")
+    t1 = await make_test_case(db, proj, name="t1")
+    t2 = await make_test_case(db, proj, name="t2")
+    t3 = await make_test_case(db, proj, name="t3")
+    run = await make_run(db, proj, ci_run_id="100", ci_run_attempt=1)
+    await make_execution(db, t1, run, status="failed", message="first", failure_category="timing", attempt=0)
+    await make_execution(db, t1, run, status="passed", attempt=1)
+    await make_execution(db, t2, run, status="failed", message="a", attempt=0)
+    await make_execution(db, t2, run, status="failed", message="b", failure_category="assertion", attempt=1)
+    await make_execution(db, t3, run, status="passed")
+    await db.commit()
+
+    body = (await client.get(_url("100"))).json()
+    assert len(body["failures"]) == 2
+    by_name = {f["name"]: f for f in body["failures"]}
+    assert (
+        by_name["t1"]["status"],
+        by_name["t1"]["failed_attempts"],
+        by_name["t1"]["message"],
+        by_name["t1"]["failure_category"],
+    ) == ("passed", 1, "first", "timing")
+    assert (
+        by_name["t2"]["status"],
+        by_name["t2"]["failed_attempts"],
+        by_name["t2"]["message"],
+        by_name["t2"]["failure_category"],
+    ) == ("failed", 2, "b", "assertion")
+
+
+async def test_same_test_in_two_runs_is_two_entries(client, db):
+    proj = await make_project(db, "acme/app", "backend")
+    t1 = await make_test_case(db, proj, name="t1")
+    run_a = await make_run(db, proj, ci_run_id="100", ci_run_attempt=1, ci_job_id="A")
+    run_b = await make_run(db, proj, ci_run_id="100", ci_run_attempt=1, ci_job_id="B")
+    await make_execution(db, t1, run_a, status="failed")
+    await make_execution(db, t1, run_b, status="failed")
+    await db.commit()
+
+    body = (await client.get(_url("100"))).json()
+    assert [f["ci_job_id"] for f in body["failures"]] == ["A", "B"]
+    assert [f["run_id"] for f in body["failures"]] == [run_a.id, run_b.id]
+
+
+async def test_skipped_and_passing_tests_are_not_listed(client, db):
+    proj = await make_project(db, "acme/app", "backend")
+    t1 = await make_test_case(db, proj, name="t1")
+    t2 = await make_test_case(db, proj, name="t2")
+    run = await make_run(db, proj, ci_run_id="100", ci_run_attempt=1)
+    await make_execution(db, t1, run, status="passed")
+    await make_execution(db, t2, run, status="skipped")
+    await db.commit()
+
+    body = (await client.get(_url("100"))).json()
+    assert body["failures"] == []
+    assert body["total_failures"] == 0
+
+
+async def test_message_is_capped(client, db):
+    proj = await make_project(db, "acme/app", "backend")
+    t1 = await make_test_case(db, proj, name="t1")
+    run = await make_run(db, proj, ci_run_id="100", ci_run_attempt=1)
+    await make_execution(db, t1, run, status="failed", message="x" * 5000)
+    await db.commit()
+
+    body = (await client.get(_url("100"))).json()
+    assert len(body["failures"][0]["message"]) == 1024
+
+
+async def test_order(client, db):
+    api = await make_project(db, "acme/app", "api")
+    backend = await make_project(db, "acme/app", "backend")
+    z = await make_test_case(db, backend, name="z", classname="tests.b")
+    y = await make_test_case(db, backend, name="y", classname="tests.a")
+    x = await make_test_case(db, api, name="x", classname="tests.a")
+    run = await make_run(db, api, ci_run_id="100", ci_run_attempt=1)
+    for tc in (z, y, x):
+        await make_execution(db, tc, run, status="failed")
+    await db.commit()
+
+    body = (await client.get(_url("100"))).json()
+    assert [(f["project"], f["name"]) for f in body["failures"]] == [
+        ("api", "x"),
+        ("backend", "y"),
+        ("backend", "z"),
+    ]
+
+
+async def test_other_ci_runs_are_ignored(client, db):
+    proj = await make_project(db, "acme/app", "backend")
+    t1 = await make_test_case(db, proj, name="t1")
+    other = await make_run(db, proj, ci_run_id="999", ci_run_attempt=1)
+    await make_execution(db, t1, other, status="failed")
+    this = await make_run(db, proj, ci_run_id="100", ci_run_attempt=1)
+    await make_execution(db, t1, this, status="passed")
+    await db.commit()
+
+    body = (await client.get(_url("100"))).json()
+    assert body["failures"] == []
+
+
+async def test_cap_and_truncated(db):
+    proj = await make_project(db, "acme/app", "backend")
+    run = await make_run(db, proj, ci_run_id="100", ci_run_attempt=1)
+    for name in ("t1", "t2", "t3"):
+        tc = await make_test_case(db, proj, name=name)
+        await make_execution(db, tc, run, status="failed")
+    await db.commit()
+
+    result = await queries.ci_run_failures(db, "acme/app", "100", None, threshold=0.3, limit=2)
+    assert result.total_failures == 3
+    assert result.truncated is True
+    assert len(result.failures) == 2
+    assert [f.name for f in result.failures] == ["t1", "t2"]

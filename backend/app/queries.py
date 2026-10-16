@@ -795,15 +795,16 @@ async def ci_run_failures(
         attempt = ci_run_attempt
     else:
         raise CiRunNotFound("CI run attempt not found")
+    failures, total = await _ci_run_test_failures(db, repo_row, ci_run_id, attempt, threshold=threshold, limit=limit)
     return schemas.CiRunFailuresOut(
         repo=repo_row.name,
         ci_run_id=ci_run_id,
         ci_run_attempt=attempt,
         flake_threshold=threshold,
         reports=await _ci_run_report_counts(db, repo_row.id, ci_run_id, attempt),
-        total_failures=0,
-        truncated=False,
-        failures=[],
+        total_failures=total,
+        truncated=total > len(failures),
+        failures=failures,
         failed_jobs=[],
     )
 
@@ -850,3 +851,87 @@ async def _ci_run_report_counts(
         processed=counts.get(REPORT_PROCESSED, 0),
         failed=counts.get(REPORT_FAILED, 0),
     )
+
+
+async def _ci_run_test_failures(
+    db: AsyncSession, repo: Repo, ci_run_id: str, attempt: int, *, threshold: float, limit: int
+) -> tuple[list[schemas.CiRunTestFailureOut], int]:
+    """Failing (Test, Run) pairs of one CI run attempt, capped at `limit`; also the uncapped count."""
+    run_ids = (
+        select(TestRun.id)
+        .join(Project, Project.id == TestRun.project_id)
+        .where(
+            Project.repo_id == repo.id,
+            TestRun.ci_run_id == ci_run_id,
+            func.coalesce(TestRun.ci_run_attempt, 1) == attempt,
+        )
+        .scalar_subquery()
+    )
+    pairs = (
+        select(TestExecution.test_case_id, TestExecution.test_run_id)
+        .where(TestExecution.test_run_id.in_(run_ids), TestExecution.status.in_(FAILING))
+        .distinct()
+        .subquery()
+    )
+    total = (await db.execute(select(func.count()).select_from(pairs))).scalar_one()
+    if total == 0:
+        return [], 0
+
+    page = (
+        await db.execute(
+            select(TestCase, Project.name, TestRun.id, TestRun.ci_job_id)
+            .select_from(pairs)
+            .join(TestCase, TestCase.id == pairs.c.test_case_id)
+            .join(TestRun, TestRun.id == pairs.c.test_run_id)
+            .join(Project, Project.id == TestCase.project_id)
+            .order_by(Project.name, TestCase.suite, TestCase.classname, TestCase.name, TestRun.id)
+            .limit(limit)
+        )
+    ).all()
+    # Both IN lists hold at most `limit` ids, so no chunking is needed here.
+    executions = (
+        (
+            await db.execute(
+                select(TestExecution)
+                .where(
+                    TestExecution.test_run_id.in_({run_id for _, _, run_id, _ in page}),
+                    TestExecution.test_case_id.in_({tc.id for tc, _, _, _ in page}),
+                )
+                .order_by(TestExecution.attempt, TestExecution.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    by_pair: dict[tuple[int, int], list[TestExecution]] = {}
+    for e in executions:
+        by_pair.setdefault((e.test_case_id, e.test_run_id), []).append(e)
+
+    items: list[schemas.CiRunTestFailureOut] = []
+    for tc, project, run_id, ci_job_id in page:
+        execs = by_pair[(tc.id, run_id)]  # the pair is failing, so it has at least one Execution
+        failing = [e for e in execs if e.status in FAILING]
+        last_failing = failing[-1]
+        items.append(
+            schemas.CiRunTestFailureOut(
+                test_id=tc.id,
+                project=project,
+                suite=tc.suite,
+                classname=tc.classname,
+                name=tc.name,
+                run_id=run_id,
+                ci_job_id=ci_job_id,
+                status=execs[-1].status,
+                failed_attempts=len(failing),
+                failure_category=last_failing.failure_category,
+                message=last_failing.message[:MESSAGE_MAX],
+                tier=tier_for(tc.flakiness_score, threshold),
+                flakiness_score=tc.flakiness_score,
+                confirmed_flake_count=tc.confirmed_flake_count,
+                clean_streak=tc.clean_streak,
+                quarantined=tc.quarantined,
+                github_issue_number=tc.github_issue_number,
+                github_issue_url=issue_url(repo.name, tc.github_issue_number),
+            )
+        )
+    return items, total
