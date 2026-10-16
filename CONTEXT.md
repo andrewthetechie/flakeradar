@@ -29,6 +29,14 @@ _Avoid_: Workflow (in provider-neutral text), build
 One job within a Pipeline, identified by its name within its Pipeline. Each matrix leg is its own Job, such as `test (ubuntu, 3.12)`. A Job belongs to a Repo, not to a Project, because one Job can run several Projects' tests.
 _Avoid_: Check, step, Run (that is a processed Report)
 
+**CI run**:
+One run of a Pipeline in the CI provider, identified by its CI run ID within a Repo. Its Jobs upload Reports, so one CI run can produce many Runs and Job executions.
+_Avoid_: Run (that is a processed Report), build, workflow run (in provider-neutral text)
+
+**CI run attempt**:
+One try of a CI run, numbered from 1. A re-run of the CI run is a new attempt with the same CI run ID. A Report that gives no attempt number counts as attempt 1.
+_Avoid_: Attempt (alone: an Execution's attempt is a retry inside one Run, numbered from 0), retry
+
 **Location**:
 The file (relative to the Project root) and line where a Test is defined, as the latest report gave them. A Location is not part of a Test's identity, and many runners report none.
 
