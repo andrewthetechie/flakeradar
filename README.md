@@ -28,6 +28,7 @@ test is nondeterministic.
 - [Quick start for local development](#quick-start-for-local-development)
 - [CI integration](#ci-integration)
 - [CI jobs](#ci-jobs)
+- [Failures of one CI run](#failures-of-one-ci-run)
 - [Repos and projects](#repos-and-projects)
 - [Test locations and failure details](#test-locations-and-failure-details)
 - [Retries](#retries)
@@ -250,6 +251,39 @@ can map `CI_JOB_ID`, `CI_JOB_NAME`, `CI_PIPELINE_ID`, `CI_DEFAULT_BRANCH` and
 `CI_COMMIT_SHA` to the fields above. This project has no GitLab example, and
 this mapping is not tested.
 
+## Failures of one CI run
+
+A CI gate or bot that sees a red CI run can ask which tests failed in that
+run, and whether FlakeRadar already knows them as flaky:
+
+```bash
+curl -s "https://flakeradar.example.com/api/ci-runs/$GITHUB_RUN_ID/failures?repo=owner/name&ci_run_attempt=$GITHUB_RUN_ATTEMPT"
+```
+
+The response is for one attempt of the CI run. Without `ci_run_attempt`, it
+is the latest attempt that FlakeRadar has seen. Pass the attempt when you
+know it.
+
+- `reports` counts the run attempt's reports (JUnit and pipeline) as
+  `pending`, `processed` and `failed`. Ingest answers before it processes a
+  report. Poll until `pending` is 0 before you trust an empty list.
+  `failed` above 0 means some results are missing.
+- `failures` has one entry for each test that failed or errored in a run of
+  that attempt. Each entry has the test's current `tier`, `flakiness_score`,
+  `confirmed_flake_count`, `clean_streak` and `quarantined`, so you can
+  apply your own threshold. `status` is the test's last try in that run. A
+  test that passed on retry has `status: "passed"` and `failed_attempts`
+  above 0. `message` is the first 1 KB of the failure message. The list
+  holds at most 500 entries. Then `truncated` is `true`, and
+  `total_failures` gives the full count.
+- `failed_jobs` lists the failed jobs of that attempt. `outcome` is
+  `explained` when a failing test in the same job explains the failure, and
+  `unexplained` for a failure in setup or infrastructure. A run can be red
+  with an empty `failures` list and an `unexplained` job.
+- An unknown repo, CI run or attempt returns `404`. Processed reports are
+  deleted after `REPORT_RETENTION_DAYS`. After that, `reports` shows 0 but
+  the failures stay until `EXECUTION_RETENTION_DAYS`.
+
 ## Repos and projects
 
 A **repo** is a repository (`owner/name`). A **project** is a test suite in a
@@ -395,6 +429,7 @@ In production, always use HTTPS, so that the token is not sent as clear text.
 | `top_flaky_jobs(repo, limit=20, include_suspect=true)` | The worst CI jobs first. Scores count only unexplained failures. |
 | `search_jobs(repo, query, limit=20)` | Jobs whose name or pipeline contains `query`. |
 | `get_job(job_id \| repo+name[+pipeline], executions_limit=20)` | Unexplained and explained failures, recent executions with the tests that explain them, and up to 30 days of score history. |
+| `ci_run_failures(repo, ci_run_id, ci_run_attempt?)` | The failing tests of one CI run attempt (the latest by default) with their current tier and score, its failed jobs (explained or unexplained), and its report counts. |
 
 ## GitHub issue automation
 
@@ -550,6 +585,7 @@ token.
 | `GET /api/jobs?repo=&include_stable=&sort=&page=&page_size=` | none | The jobs leaderboard for a repo, worst first. |
 | `GET /api/jobs/summary?repo=` | none | Job summary tiles. |
 | `GET /api/jobs/{id}/history?limit=` | none | One job: recent job executions, each marked `passed`, `failed`, `explained` or `skipped`, with the tests that explain them, `score_history` (90 days), `clean_streak` and `trend`. |
+| `GET /api/ci-runs/{ci_run_id}/failures?repo=&ci_run_attempt=` | none | The failing tests and failed jobs of one CI run attempt, with each one's current tier and the attempt's report counts. See [Failures of one CI run](#failures-of-one-ci-run). |
 | `GET /api/summary?repo=&project=` | none | Dashboard tiles for tests. `category_counts` gives the number of flaky and suspect tests for each likely cause. |
 | `POST /api/tests/{id}/quarantine` | none | Set or clear quarantine (body `{"quarantined": bool}`). |
 | `GET /api/quarantine?repo=&project=` | `X-API-Key` | Quarantined tests for one repo and project, for the test runner. |
