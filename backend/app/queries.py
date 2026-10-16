@@ -805,7 +805,7 @@ async def ci_run_failures(
         total_failures=total,
         truncated=total > len(failures),
         failures=failures,
-        failed_jobs=[],
+        failed_jobs=await _ci_run_failed_jobs(db, repo_row, ci_run_id, attempt, threshold=threshold),
     )
 
 
@@ -935,3 +935,41 @@ async def _ci_run_test_failures(
             )
         )
     return items, total
+
+
+async def _ci_run_failed_jobs(
+    db: AsyncSession, repo: Repo, ci_run_id: str, attempt: int, *, threshold: float
+) -> list[schemas.CiRunFailedJobOut]:
+    """Failed Job executions of one CI run attempt, each explained or unexplained."""
+    rows = (
+        await db.execute(
+            select(JobExecution, Job, Pipeline)
+            .join(Job, Job.id == JobExecution.job_id)
+            .join(Pipeline, Pipeline.id == Job.pipeline_id)
+            .where(
+                Pipeline.repo_id == repo.id,
+                JobExecution.ci_run_id == ci_run_id,
+                JobExecution.ci_run_attempt == attempt,
+                JobExecution.status == JOB_FAILED,
+            )
+            .order_by(Pipeline.name, Job.name, JobExecution.id)
+        )
+    ).all()
+    explained = await explained_ci_job_ids(db, repo.id, [e.ci_job_id for e, _, _ in rows])
+    return [
+        schemas.CiRunFailedJobOut(
+            job_id=job.id,
+            pipeline=pipeline.name,
+            name=job.name,
+            ci_job_id=e.ci_job_id,
+            url=e.url,
+            outcome="explained" if e.ci_job_id in explained else "unexplained",
+            tier=tier_for(job.flakiness_score, threshold),
+            flakiness_score=job.flakiness_score,
+            confirmed_flake_count=job.confirmed_flake_count,
+            clean_streak=job.clean_streak,
+            github_issue_number=job.github_issue_number,
+            github_issue_url=issue_url(repo.name, job.github_issue_number) if pipeline.provider == "github" else None,
+        )
+        for e, job, pipeline in rows
+    ]

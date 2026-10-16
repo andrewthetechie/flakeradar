@@ -323,3 +323,94 @@ async def test_cap_and_truncated(db):
     assert result.truncated is True
     assert len(result.failures) == 2
     assert [f.name for f in result.failures] == ["t1", "t2"]
+
+
+async def test_failed_jobs_explained_and_unexplained(client, db):
+    proj = await make_project(db, "acme/app", "backend")
+    pipe = await make_pipeline(db, "acme/app", ".github/workflows/ci.yml")
+    backend = await make_job(db, pipe, name="backend")
+    e2e = await make_job(db, pipe, name="e2e")
+    lint = await make_job(db, pipe, name="lint")
+    await make_job_execution(db, backend, "failed", ci_job_id="J-B", ci_run_id="100", ci_run_attempt=1)
+    await make_job_execution(db, e2e, "failed", ci_job_id="J-E", ci_run_id="100", ci_run_attempt=1)
+    await make_job_execution(db, lint, "passed", ci_job_id="J-L", ci_run_id="100", ci_run_attempt=1)
+    tc = await make_test_case(db, proj, name="t1")
+    run = await make_run(db, proj, ci_run_id="100", ci_run_attempt=1, ci_job_id="J-B")
+    await make_execution(db, tc, run, status="failed")
+    await db.commit()
+
+    body = (await client.get(_url("100"))).json()
+    assert [(j["name"], j["outcome"]) for j in body["failed_jobs"]] == [
+        ("backend", "explained"),
+        ("e2e", "unexplained"),
+    ]
+    assert [f["name"] for f in body["failures"]] == ["t1"]
+
+
+async def test_red_without_failing_tests(client, db):
+    pipe = await make_pipeline(db, "acme/app", ".github/workflows/ci.yml")
+    e2e = await make_job(db, pipe, name="e2e")
+    await make_job_execution(db, e2e, "failed", ci_job_id="J-E", ci_run_id="100", ci_run_attempt=1)
+    await db.commit()
+
+    body = (await client.get(_url("100"))).json()
+    assert body["failures"] == []
+    assert body["reports"] == {"pending": 0, "processed": 0, "failed": 0}
+    assert len(body["failed_jobs"]) == 1
+    assert body["failed_jobs"][0]["outcome"] == "unexplained"
+
+
+async def test_failed_job_fields(client, db):
+    pipe = await make_pipeline(db, "acme/app", ".github/workflows/ci.yml")
+    job = await make_job(
+        db,
+        pipe,
+        name="e2e",
+        flakiness_score=0.1,
+        confirmed_flake_count=1,
+        clean_streak=2,
+        github_issue_number=4,
+    )
+    await make_job_execution(db, job, "failed", ci_job_id="J-E", ci_run_id="100", ci_run_attempt=1, url="https://ci/1")
+    await db.commit()
+
+    body = (await client.get(_url("100"))).json()
+    assert body["failed_jobs"] == [
+        {
+            "job_id": job.id,
+            "pipeline": ".github/workflows/ci.yml",
+            "name": "e2e",
+            "ci_job_id": "J-E",
+            "url": "https://ci/1",
+            "outcome": "unexplained",
+            "tier": "suspect",
+            "flakiness_score": 0.1,
+            "confirmed_flake_count": 1,
+            "clean_streak": 2,
+            "github_issue_number": 4,
+            "github_issue_url": "https://github.com/acme/app/issues/4",
+        }
+    ]
+
+
+async def test_failed_job_issue_url_null_for_non_github(client, db):
+    pipe = await make_pipeline(db, "acme/app", "ci.yml", provider="gitlab")
+    job = await make_job(db, pipe, name="e2e", github_issue_number=4)
+    await make_job_execution(db, job, "failed", ci_job_id="J-E", ci_run_id="100", ci_run_attempt=1)
+    await db.commit()
+
+    body = (await client.get(_url("100"))).json()
+    assert body["failed_jobs"][0]["github_issue_number"] == 4
+    assert body["failed_jobs"][0]["github_issue_url"] is None
+
+
+async def test_failed_jobs_of_other_attempts_are_ignored(client, db):
+    pipe = await make_pipeline(db, "acme/app", ".github/workflows/ci.yml")
+    e2e = await make_job(db, pipe, name="e2e")
+    await make_job_execution(db, e2e, "failed", ci_job_id="J-1", ci_run_id="100", ci_run_attempt=1)
+    await make_job_execution(db, e2e, "passed", ci_job_id="J-2", ci_run_id="100", ci_run_attempt=2)
+    await db.commit()
+
+    assert (await client.get(_url("100"))).json()["failed_jobs"] == []
+    body = (await client.get(_url("100", ci_run_attempt=1))).json()
+    assert [(j["name"], j["outcome"]) for j in body["failed_jobs"]] == [("e2e", "unexplained")]
