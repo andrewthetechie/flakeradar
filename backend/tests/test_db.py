@@ -45,7 +45,7 @@ async def test_migrations_are_idempotent(engine):
     await run_migrations(engine)  # second run is a no-op, must not raise
     async with engine.connect() as conn:
         version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar()
-    assert version == "0007"
+    assert version == "0008"
 
 
 def test_make_engine_sets_command_timeout(monkeypatch):

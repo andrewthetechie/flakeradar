@@ -120,6 +120,7 @@ class TestCase(Base):
 class TestRun(Base):
     __tablename__ = "test_runs"
     __test__ = False
+    __table_args__ = (Index("ix_test_runs_ci_run_id", "ci_run_id"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
@@ -168,6 +169,7 @@ class Report(Base):
     __tablename__ = "reports"
     __table_args__ = (
         Index("ix_reports_status_id", "status", "id"),
+        Index("ix_reports_repo_ci_run_id", "repo_id", "ci_run_id"),
         CheckConstraint("kind <> 'junit' OR project_id IS NOT NULL", name="ck_reports_junit_has_project"),
     )
 
@@ -249,6 +251,7 @@ class JobExecution(Base):
     __table_args__ = (
         UniqueConstraint("job_id", "ci_job_id", name="uq_job_executions_job_ci_job_id"),
         Index("ix_job_exec_job_id", "job_id", "id"),
+        Index("ix_job_executions_ci_run_id", "ci_run_id"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
