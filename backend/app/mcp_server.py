@@ -74,7 +74,7 @@ def _check_limit(limit: int) -> None:
         raise ToolError(f"limit must be between 1 and {MAX_LIMIT}")
 
 
-def _one_target(test_id: int | None, job_id: int | None) -> None:
+def _require_one_target(test_id: int | None, job_id: int | None) -> None:
     if (test_id is None) == (job_id is None):
         raise ToolError("Pass exactly one of test_id or job_id.")
 
@@ -360,7 +360,7 @@ def build_mcp(session_factory: async_sessionmaker[AsyncSession], *, api_token: s
         job's own repo. FlakeRadar then shows the issue and files none of its
         own, and clears the link when the issue closes. Fails when a different
         issue is already linked, unless replace=True. Returns the test or job."""
-        _one_target(test_id, job_id)
+        _require_one_target(test_id, job_id)
         threshold = get_settings().flake_threshold
         async with session_factory() as db:
             try:
@@ -378,7 +378,7 @@ def build_mcp(session_factory: async_sessionmaker[AsyncSession], *, api_token: s
     async def unlink_issue(test_id: int | None = None, job_id: int | None = None) -> dict[str, Any]:
         """Remove the GitHub issue link of a test or job (exactly one of test_id
         or job_id), for example a link to the wrong issue. Returns the test or job."""
-        _one_target(test_id, job_id)
+        _require_one_target(test_id, job_id)
         threshold = get_settings().flake_threshold
         async with session_factory() as db:
             try:

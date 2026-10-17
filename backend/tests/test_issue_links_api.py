@@ -154,7 +154,7 @@ async def test_service_rules(db):
     assert out.github_issue_number == 11
 
 
-# --- Jobs (task 02) ---
+# --- Jobs (issue #6) ---
 
 
 async def test_link_job_issue(client, db):
