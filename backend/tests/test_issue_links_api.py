@@ -4,7 +4,7 @@ import pytest
 from app import issue_links
 
 from tests.conftest import AUTH
-from tests.factories import make_project, make_test_case
+from tests.factories import make_job, make_pipeline, make_project, make_test_case
 
 
 async def _test(db, name="t1", repo="acme/app", project="backend", **fields):
@@ -12,6 +12,13 @@ async def _test(db, name="t1", repo="acme/app", project="backend", **fields):
     tc = await make_test_case(db, proj, name=name, **fields)
     await db.commit()
     return tc
+
+
+async def _job(db, name="e2e", repo="acme/app", pipeline=".github/workflows/ci.yml", provider="github", **fields):
+    pipe = await make_pipeline(db, repo, pipeline, provider=provider)
+    job = await make_job(db, pipe, name=name, **fields)
+    await db.commit()
+    return job
 
 
 async def test_link_test_issue(client, db):
@@ -145,3 +152,90 @@ async def test_service_rules(db):
 
     out = await issue_links.link_test_issue(db, test_id, 11, threshold=0.3)
     assert out.github_issue_number == 11
+
+
+# --- Jobs (task 02) ---
+
+
+async def test_link_job_issue(client, db):
+    job = await _job(db)
+    resp = await client.put(f"/api/jobs/{job.id}/issue", json={"number": 42}, headers=AUTH)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["id"] == job.id
+    assert body["github_issue_number"] == 42
+    assert body["github_issue_url"] == "https://github.com/acme/app/issues/42"
+    await db.refresh(job)
+    assert job.github_issue_number == 42
+
+    history = await client.get(f"/api/jobs/{job.id}/history")
+    assert history.json()["job"]["github_issue_number"] == 42
+
+
+async def test_job_on_a_non_github_pipeline_cannot_be_linked(client, db):
+    job = await _job(db, provider="gitlab", github_issue_number=3)
+    resp = await client.put(f"/api/jobs/{job.id}/issue", json={"number": 4}, headers=AUTH)
+    assert resp.status_code == 422
+    assert resp.json()["detail"] == "Only Jobs of GitHub Pipelines can link a GitHub issue"
+    await db.refresh(job)
+    assert job.github_issue_number == 3
+
+    resp = await client.delete(f"/api/jobs/{job.id}/issue", headers=AUTH)
+    assert resp.status_code == 200
+    assert resp.json()["github_issue_number"] is None
+
+
+async def test_job_conflict_and_replace(client, db):
+    job = await _job(db, github_issue_number=4)
+    resp = await client.put(f"/api/jobs/{job.id}/issue", json={"number": 5}, headers=AUTH)
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == "Job already links issue #4; pass replace=true to replace it"
+
+    resp = await client.put(f"/api/jobs/{job.id}/issue?replace=true", json={"number": 5}, headers=AUTH)
+    assert resp.status_code == 200
+    assert resp.json()["github_issue_number"] == 5
+
+
+async def test_job_url_must_be_the_issue_in_the_jobs_repo(client, db):
+    job = await _job(db)
+    resp = await client.put(
+        f"/api/jobs/{job.id}/issue",
+        json={"number": 6, "url": "https://github.com/other/repo/issues/6"},
+        headers=AUTH,
+    )
+    assert resp.status_code == 422
+    assert (
+        resp.json()["detail"]
+        == "url must be https://github.com/acme/app/issues/6: the issue must be in the Job's own Repo"
+    )
+
+    resp = await client.put(
+        f"/api/jobs/{job.id}/issue",
+        json={"number": 6, "url": "https://github.com/acme/app/issues/6"},
+        headers=AUTH,
+    )
+    assert resp.status_code == 200
+
+
+async def test_unknown_job_and_missing_token(client, db):
+    resp = await client.put("/api/jobs/99999/issue", json={"number": 1}, headers=AUTH)
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "Job not found"
+    assert (await client.delete("/api/jobs/99999/issue", headers=AUTH)).status_code == 404
+
+    job = await _job(db)
+    assert (await client.put(f"/api/jobs/{job.id}/issue", json={"number": 1})).status_code == 401
+    assert (await client.delete(f"/api/jobs/{job.id}/issue")).status_code == 401
+
+
+async def test_unlink_job_issue(client, db):
+    job = await _job(db, github_issue_number=8)
+    resp = await client.delete(f"/api/jobs/{job.id}/issue", headers=AUTH)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["github_issue_number"] is None
+    assert body["github_issue_url"] is None
+
+    resp = await client.delete(f"/api/jobs/{job.id}/issue", headers=AUTH)
+    assert resp.status_code == 200
+    assert resp.json()["github_issue_number"] is None

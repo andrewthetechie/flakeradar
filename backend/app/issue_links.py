@@ -13,8 +13,8 @@ import logging
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from . import schemas
-from .models import TestCase
-from .queries import issue_url, tests_select, to_test_out
+from .models import Job, TestCase
+from .queries import issue_url, jobs_select, tests_select, to_job_out, to_test_out
 from .schemas import MAX_ISSUE_NUMBER
 
 logger = logging.getLogger("flakeradar.issues")
@@ -75,3 +75,33 @@ async def unlink_test_issue(db: AsyncSession, test_id: int, *, threshold: float)
     if previous is not None:
         logger.info("Unlinked issue %s#%s from test %s", repo, previous, tc.id)
     return to_test_out(tc, project, repo, threshold)
+
+
+async def link_job_issue(
+    db: AsyncSession, job_id: int, number: int, *, url: str | None = None, replace: bool = False, threshold: float
+) -> schemas.JobOut:
+    row = (await db.execute(jobs_select().where(Job.id == job_id).with_for_update(of=Job))).first()
+    if row is None:
+        raise IssueLinkTargetNotFound("Job not found")
+    job, pipeline, repo = row
+    if pipeline.provider != "github":
+        raise IssueNotLinkable("Only Jobs of GitHub Pipelines can link a GitHub issue")
+    _check_link("Job", job.github_issue_number, number, repo=repo.name, url=url, replace=replace)
+    previous = job.github_issue_number
+    job.github_issue_number = number
+    await db.commit()
+    logger.info("Linked issue %s#%s to job %s (was %s)", repo.name, number, job.id, previous)
+    return to_job_out(job, pipeline, repo, threshold)
+
+
+async def unlink_job_issue(db: AsyncSession, job_id: int, *, threshold: float) -> schemas.JobOut:
+    row = (await db.execute(jobs_select().where(Job.id == job_id).with_for_update(of=Job))).first()
+    if row is None:
+        raise IssueLinkTargetNotFound("Job not found")
+    job, pipeline, repo = row
+    previous = job.github_issue_number
+    job.github_issue_number = None
+    await db.commit()
+    if previous is not None:
+        logger.info("Unlinked issue %s#%s from job %s", repo.name, previous, job.id)
+    return to_job_out(job, pipeline, repo, threshold)

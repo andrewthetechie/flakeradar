@@ -3,7 +3,8 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .. import queries, schemas
+from .. import issue_links, queries, schemas
+from ..auth import require_token
 from ..config import get_settings
 from ..db import get_db
 from ..identity import normalize_repo
@@ -57,3 +58,28 @@ async def job_history(
     if history is None:
         raise HTTPException(status_code=404, detail="Job not found")
     return history
+
+
+@router.put("/api/jobs/{job_id}/issue", response_model=schemas.JobOut, dependencies=[Depends(require_token)])
+async def link_issue(
+    job_id: int,
+    body: schemas.IssueLinkIn,
+    replace: bool = Query(default=False),
+    db: AsyncSession = Depends(get_db),
+):
+    """Link a GitHub issue filed elsewhere; FlakeRadar then files none for this Job."""
+    try:
+        return await issue_links.link_job_issue(
+            db, job_id, body.number, url=body.url, replace=replace, threshold=get_settings().flake_threshold
+        )
+    except issue_links.IssueLinkError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+
+@router.delete("/api/jobs/{job_id}/issue", response_model=schemas.JobOut, dependencies=[Depends(require_token)])
+async def unlink_issue(job_id: int, db: AsyncSession = Depends(get_db)):
+    """Remove the Job's Issue link."""
+    try:
+        return await issue_links.unlink_job_issue(db, job_id, threshold=get_settings().flake_threshold)
+    except issue_links.IssueLinkError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
