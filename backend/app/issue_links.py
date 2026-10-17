@@ -20,6 +20,8 @@ from .schemas import MAX_ISSUE_NUMBER
 
 logger = logging.getLogger("flakeradar.issues")
 
+LinkTarget = Literal["Test", "Job"]
+
 
 class IssueLinkError(Exception):
     """A request the Issue link rules refuse; str(exc) is the error detail."""
@@ -40,7 +42,7 @@ class IssueNotLinkable(IssueLinkError):
 
 
 def _check_link(
-    kind: Literal["Test", "Job"], current: int | None, number: int, *, repo: str, url: str | None, replace: bool
+    kind: LinkTarget, current: int | None, number: int, *, repo: str, url: str | None, replace: bool
 ) -> None:
     """The number, url and conflict rules of a link."""
     if not 1 <= number <= MAX_ISSUE_NUMBER:
