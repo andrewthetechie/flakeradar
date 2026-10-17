@@ -3,10 +3,12 @@
 cargo-nextest with `flaky-result = "fail"` writes the final try of a flaky
 test, which passed, as a <failure> with the message "test passed on attempt
 N/M but is configured to fail when flaky". Reports parsed before issue #8
-stored that try as failed. This marks those Executions passed, the same as
-the parser now does. Each Test is rescored from its stored Executions on its
-next Report, so no rescore runs here. Score history and report counts keep
-their old values.
+stored that try as failed. This marks those Executions passed. Stored rows
+do not record which JUnit element an attempt came from, so the rule is close
+to the parser's, not the same: any earlier failed attempt of the Test in the
+Run counts, where the parser needs a <flakyFailure> or <flakyError>. Each
+Test is rescored from its stored Executions on its next Report, so no rescore
+runs here. Score history and report counts keep their old values.
 
 Revision ID: 0009
 Revises: 0008
@@ -20,8 +22,9 @@ down_revision = "0008"
 branch_labels = None
 depends_on = None
 
-# The parser's rule, in SQL: a marker message on a try that follows a failing
-# try of the same Test in the same Run passed. `~` is Postgres regex match.
+# The parser's rule, as close as stored rows allow: a marker message on an
+# attempt that follows a failed attempt of the same Test in the same Run
+# passed. `~` is Postgres regex match.
 BACKFILL_SQL = """
 UPDATE test_executions AS e
 SET status = 'passed', message = '', details = '', failure_category = NULL

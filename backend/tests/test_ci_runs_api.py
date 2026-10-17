@@ -422,8 +422,8 @@ async def test_failed_jobs_of_other_attempts_are_ignored(client, db):
     assert [(j["name"], j["outcome"]) for j in body["failed_jobs"]] == [("e2e", "unexplained")]
 
 
-async def test_nextest_flaky_fail_is_a_known_flake_in_its_ci_run(client, db, session_factory):
-    """A nextest flaky-fail retry explains its Job and is a known flake, not a failure."""
+async def test_nextest_flaky_fail_is_a_proven_flake_in_its_ci_run(client, db, session_factory):
+    """A nextest flaky-fail retry explains its Job and is a proven flake, not a failure."""
     proj = await make_project(db, "acme/app", "default")
     await make_report(
         db,

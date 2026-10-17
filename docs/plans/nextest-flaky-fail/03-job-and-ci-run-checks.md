@@ -39,7 +39,7 @@ Tests only. No change to `attribution.py` or `queries.py`. If the test fails, th
 
 ## Implementation Contract
 - Expected files: `backend/tests/test_ci_runs_api.py`.
-- Interfaces and names: one new test, `test_nextest_flaky_fail_is_a_known_flake_in_its_ci_run(client, db, session_factory)`.
+- Interfaces and names: one new test, `test_nextest_flaky_fail_is_a_proven_flake_in_its_ci_run(client, db, session_factory)`.
 - Behavior rules (the test's steps):
   1. `proj = await make_project(db, "acme/app", "default")`.
   2. `await make_report(db, proj, fixture_bytes, commit_sha="777022bf", ci_run_id="38994487107", ci_job_id="J1")`. Read the fixture with `FIXTURES = Path(__file__).parent / "fixtures"`, as in task 01.

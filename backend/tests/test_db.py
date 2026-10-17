@@ -177,7 +177,7 @@ async def test_upgrade_backfills_report_repo_id(db):
 
 
 async def test_upgrade_marks_nextest_flaky_marker_passed(db):
-    """0009 turns stored nextest flaky markers into passes, like the parser now does."""
+    """0009 turns stored nextest flaky markers that follow a failed attempt into passes."""
     marker = "test passed on attempt 2/2 but is configured to fail when flaky"
     proj = await make_project(db)
     tc = await make_test_case(db, proj, name="t")
