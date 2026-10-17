@@ -107,3 +107,9 @@ A Test whose Flakiness score is 0.
 
 **Quarantine**:
 A reversible human decision that marks a Test as one the test runner may skip. FlakeRadar never quarantines a Test on its own, and agents cannot quarantine through the MCP server.
+
+### Tracking work
+
+**Issue link**:
+The GitHub issue that tracks a flaky Test or Job, stored as its issue number. The issue is in the Test's or Job's own Repo. FlakeRadar's filer sets it when it files an issue, and any other filer (a bot, an agent or a person) can set or clear it through the API or the MCP server. While a Test or Job has an Issue link, FlakeRadar files no issue for it. The link is cleared when GitHub reports the issue closed or gone.
+_Avoid_: Ticket, bug (for the issue)
