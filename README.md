@@ -83,11 +83,12 @@ A solo developer with a 30-second test suite does not need FlakeRadar.
   detail panel. Its paginated leaderboard shows flaky and suspect tests and
   jobs. Each view has a URL that you can share.
 - **MCP server.** AI agents can get the worst flaky tests in a repo, with the
-  data they need to find and fix each test.
+  data they need to find and fix each test, and link the issues they file.
 - **Quarantine.** Mark a test as quarantined in the dashboard. Your test runner
   then gets the list of tests to skip from the API.
 - **GitHub issues (optional).** When a test or job crosses the flakiness
   threshold, FlakeRadar opens an issue in the repository of that test or job.
+  Issues filed by other tools or by hand can be linked instead.
 
 ## Quick start with Docker
 
@@ -381,9 +382,11 @@ a test.
 
 ## MCP server for agents
 
-FlakeRadar has a read-only [MCP](https://modelcontextprotocol.io) server. It
-uses the streamable HTTP transport. The endpoint accepts JSON-RPC `POST`
-requests. It is not a web page.
+FlakeRadar has an [MCP](https://modelcontextprotocol.io) server. It uses the
+streamable HTTP transport. The endpoint accepts JSON-RPC `POST` requests. It
+is not a web page. Its tools only read, except `link_issue` and
+`unlink_issue`, which link a GitHub issue to a test or job (see
+[Issues filed elsewhere](#issues-filed-elsewhere)).
 
 ### Endpoint
 
@@ -438,6 +441,12 @@ In production, always use HTTPS, so that the token is not sent as clear text.
 | `search_jobs(repo, query, limit=20)` | Jobs whose name or pipeline contains `query`. |
 | `get_job(job_id \| repo+name[+pipeline], executions_limit=20)` | Unexplained and explained failures, recent executions with the tests that explain them, and up to 30 days of score history. |
 | `ci_run_failures(repo, ci_run_id, ci_run_attempt?)` | The failing tests of one CI run attempt (the latest by default) with their current tier and score, its failed jobs (explained or unexplained), and its report counts. |
+| `link_issue(number, test_id \| job_id, replace=false)` | **Writes.** Links GitHub issue `number`, in the repo of the test or job, so FlakeRadar shows it and files no issue of its own. A different linked issue is an error unless `replace` is true. Returns the test or job. |
+| `unlink_issue(test_id \| job_id)` | **Writes.** Removes the issue link of a test or job. Returns the test or job. |
+
+The read tools have the MCP annotation `readOnlyHint: true`. The two write
+tools have `readOnlyHint: false`, so your client can ask you before it calls
+them.
 
 ## GitHub issue automation
 
@@ -501,6 +510,38 @@ panel. The API and MCP server also return it, as `github_issue_number` and
 `github_issue_url`, from `/api/tests`, `/api/tests/{id}/history`, and the
 `get_test` and `top_flaky_tests` tools.
 
+### Issues filed elsewhere
+
+Another tool or a person can file the issue instead: a triage bot, an
+agent, or you by hand. Link the issue to the test or job. FlakeRadar then
+treats it as an issue that it filed itself. The UI and API show the link,
+FlakeRadar files no duplicate, and the maintenance sync clears the link when
+the issue is closed.
+
+```bash
+curl -X PUT "https://flakeradar.example.com/api/tests/$TEST_ID/issue" \
+  -H "X-API-Key: $FLAKERADAR_API_TOKEN" -H "Content-Type: application/json" \
+  -d '{"number": 123, "url": "https://github.com/owner/name/issues/123"}'
+```
+
+- For a job, use `/api/jobs/{id}/issue`. Get the id from `/api/tests`,
+  `/api/jobs` or the MCP tools.
+- The issue must be in the repo of the test or job. `url` is optional. If
+  you send it, it must be the URL of that issue, or the request fails with
+  `422`.
+- You can link an issue to a job only when its pipeline runs on GitHub
+  Actions.
+- If the test or job already has a link to a different issue, the request
+  fails with `409`. Add `?replace=true` to replace the link. The same number
+  again succeeds and changes nothing.
+- `DELETE` on the same path removes the link.
+- Agents can use the MCP tools `link_issue` and `unlink_issue`.
+
+The sync needs `FLAKERADAR_GITHUB_TOKEN`. Without it, a link stays until you
+delete it. With it, the token must be able to read the issues of each repo
+where you link issues: when GitHub answers `404`, FlakeRadar treats the
+issue as deleted and clears the link.
+
 ## How scoring works
 
 For each test, FlakeRadar uses the last 50 executions. You can change this
@@ -563,7 +604,7 @@ reads a `.env` file.
 | `DATABASE_URL` | `postgresql+asyncpg://flakeradar:flakeradar@localhost:5432/flakeradar` | PostgreSQL only. `postgresql://` URLs also work. |
 | `FLAKE_THRESHOLD` | `0.30` | The score at which a test is flaky. |
 | `SCORE_WINDOW` / `SCORE_DECAY` | `50` / `0.85` | The number of executions to score, and the weight for recent executions. |
-| `GITHUB_TOKEN` | empty (disabled) | The token for GitHub issue automation. |
+| `GITHUB_TOKEN` | empty (disabled) | The token for GitHub issue automation. It also checks linked issues, so it needs read access to the issues of those repos. |
 | `GITHUB_ISSUE_LABEL` | `flakeradar` | The label on each issue that FlakeRadar opens. |
 | `GITHUB_ISSUE_MIN_SCORE` / `GITHUB_ISSUE_MIN_PROVEN_FLAKES` / `GITHUB_ISSUE_MIN_FAILURES` | `0.30` / `0` / `0` | The filing gate. |
 | `WORKER_POLL_SECONDS` | `1.0` | How often the report processor checks an empty queue. |
@@ -576,8 +617,8 @@ reads a `.env` file.
 ## API
 
 The read APIs and the quarantine toggle have no authentication. Put the
-dashboard on a private network. The CI endpoints and the MCP server need the
-token.
+dashboard on a private network. The CI endpoints, the issue link endpoints
+and the MCP server need the token.
 
 | Endpoint | Auth | Purpose |
 |---|---|---|
@@ -596,6 +637,9 @@ token.
 | `GET /api/ci-runs/{ci_run_id}/failures?repo=&ci_run_attempt=` | none | The failing tests and failed jobs of one CI run attempt, with each one's current tier and the attempt's report counts. See [Failures of one CI run](#failures-of-one-ci-run). |
 | `GET /api/summary?repo=&project=` | none | Dashboard tiles for tests. `category_counts` gives the number of flaky and suspect tests for each likely cause. |
 | `POST /api/tests/{id}/quarantine` | none | Set or clear quarantine (body `{"quarantined": bool}`). |
+| `PUT /api/tests/{id}/issue?replace=` | `X-API-Key` | Link a GitHub issue filed elsewhere (body `{"number": int, "url"?: str}`). `409` when a different issue is linked and `replace` is not `true`. See [Issues filed elsewhere](#issues-filed-elsewhere). |
+| `DELETE /api/tests/{id}/issue` | `X-API-Key` | Remove the issue link of a test. |
+| `PUT /api/jobs/{id}/issue?replace=`, `DELETE /api/jobs/{id}/issue` | `X-API-Key` | The same for a job. GitHub pipelines only. |
 | `GET /api/quarantine?repo=&project=` | `X-API-Key` | Quarantined tests for one repo and project, for the test runner. |
 | `/mcp/` | Bearer token | The MCP server. |
 | `GET /api/health` | none | Liveness check. |
