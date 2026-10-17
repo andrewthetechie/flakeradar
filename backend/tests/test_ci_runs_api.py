@@ -1,7 +1,11 @@
 """CI run failures API: which CI run attempt, report counts, 404s (issue #5)."""
 
+from pathlib import Path
+
 from app import queries
+from app.attribution import explained_ci_job_ids
 from app.config import get_settings
+from app.processing import process_next
 
 from tests.conftest import AUTH, make_junit
 from tests.factories import (
@@ -15,6 +19,8 @@ from tests.factories import (
     make_run,
     make_test_case,
 )
+
+FIXTURES = Path(__file__).parent / "fixtures"
 
 
 def _url(ci_run_id: str, repo: str = "acme/app", **params) -> str:
@@ -414,3 +420,59 @@ async def test_failed_jobs_of_other_attempts_are_ignored(client, db):
     assert (await client.get(_url("100"))).json()["failed_jobs"] == []
     body = (await client.get(_url("100", ci_run_attempt=1))).json()
     assert [(j["name"], j["outcome"]) for j in body["failed_jobs"]] == [("e2e", "unexplained")]
+
+
+async def test_nextest_flaky_fail_is_a_proven_flake_in_its_ci_run(client, db, session_factory):
+    """A nextest flaky-fail retry explains its Job and is a proven flake, not a failure."""
+    proj = await make_project(db, "acme/app", "default")
+    await make_report(
+        db,
+        proj,
+        (FIXTURES / "nextest_flaky_fail.xml").read_bytes(),
+        commit_sha="777022bf",
+        ci_run_id="38994487107",
+        ci_job_id="J1",
+    )
+    await make_pipeline_report(
+        db,
+        "acme/app",
+        {
+            "repo": "acme/app",
+            "provider": "github",
+            "pipeline": ".github/workflows/ci.yml",
+            "commit_sha": "777022bf",
+            "branch": "main",
+            "default_branch": "main",
+            "ci_run_id": "38994487107",
+            "ci_run_attempt": 1,
+            "jobs": [
+                {
+                    "ci_job_id": "J1",
+                    "name": "test",
+                    "status": "failed",
+                    "url": "",
+                    "runner_name": "",
+                    "runner_labels": [],
+                }
+            ],
+        },
+    )
+    await db.commit()
+    await process_next(session_factory)  # the junit Report
+    await process_next(session_factory)  # the pipeline Report
+
+    assert await explained_ci_job_ids(db, proj.repo_id, ["J1"]) == {"J1"}
+
+    body = (await client.get(_url("38994487107"))).json()
+    assert body["reports"] == {"pending": 0, "processed": 2, "failed": 0}
+    (entry,) = [
+        f for f in body["failures"] if f["name"].endswith("invalidate_priority_readiness_drops_from_each_driver")
+    ]
+    assert entry["status"] == "passed"
+    assert entry["failed_attempts"] == 1
+    assert entry["message"].startswith("thread 'embedding::reindexer")
+    assert entry["confirmed_flake_count"] == 1
+    assert entry["ci_job_id"] == "J1"
+    assert len(body["failures"]) == 1  # the passing Test is not listed
+    (job,) = body["failed_jobs"]
+    assert (job["outcome"], job["ci_job_id"]) == ("explained", "J1")

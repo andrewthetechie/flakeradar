@@ -7,6 +7,7 @@ captured stdout/stderr). Sizes are capped here so storage never sees more.
 """
 
 import hashlib
+import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 
@@ -21,6 +22,11 @@ TRUNCATION_MARKER = "\n…[truncated]"
 # before the final outcome; `rerun*` ran after the first (failed) one.
 RETRY_BEFORE = ("flakyFailure", "flakyError")  # attempts before the final outcome
 RETRY_AFTER = ("rerunFailure", "rerunError")  # attempts after the first (failed) one
+
+# cargo-nextest with `flaky-result = "fail"` writes the final try of a flaky
+# test, which passed, as the testcase's own <failure> with this message. The
+# failed tries before it are <flakyFailure>/<flakyError> children.
+NEXTEST_FLAKY_MARKER = re.compile(r"test passed on attempt \d+/\d+ but is configured to fail when flaky")
 
 
 class ParseError(ValueError):
@@ -156,6 +162,12 @@ def parse_junit_xml(content: bytes) -> list[ParsedCase]:
                         ParsedCase(suite_name, classname, name, status, duration, message, details, file, line)
                     )
             status, message, details = _outcome(case)
+            if (
+                status in ("failed", "error")
+                and NEXTEST_FLAKY_MARKER.fullmatch(message)
+                and any(c.tag in RETRY_BEFORE for c in children)
+            ):
+                status, message, details = "passed", "", ""  # the nextest flaky marker: that try passed
             parsed.append(
                 ParsedCase(suite_name, classname, name, status, float(case.time or 0.0), message, details, file, line)
             )
