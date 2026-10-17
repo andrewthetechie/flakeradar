@@ -229,6 +229,27 @@ For this to work, each JUnit report must send `ci_job_id`. The snippet sends
 of that job are unexplained. The job can then look flaky when a test caused
 the failure.
 
+### Summary jobs (alls-green)
+
+A summary job like [`alls-green`](https://github.com/marketplace/actions/alls-green#why)
+runs no tests. It only reports whether the jobs it `needs` succeeded, so it
+fails whenever any of them fails. That failure says nothing about the summary
+job itself. Mark it in the pipeline report with `summary: true` (the sample
+reporter's `SUMMARY_JOBS` list does this):
+
+```json
+{"ci_job_id": "789", "name": "alls-green", "status": "failed", "summary": true}
+```
+
+A failed summary job is **explained** when a non-summary job failed in the
+same CI run attempt, and FlakeRadar never scores an explained failure. So it
+does not appear as `unexplained` in `failed_jobs`, and it does not raise its
+own score. If a summary job fails with no failed non-summary job beside it (its
+own step broke), the failure stays **unexplained** and counts against it.
+FlakeRadar only accepts a failure of a non-summary job as the explanation, so a
+chain of summary jobs cannot blame each other. No CI API publishes a job's
+`needs`, so `SUMMARY_JOBS` must name them.
+
 ### Other CI providers
 
 Any CI can send the same JSON to `POST /api/ingest/pipeline`:
@@ -278,9 +299,11 @@ know it.
   holds at most 500 entries. Then `truncated` is `true`, and
   `total_failures` gives the full count.
 - `failed_jobs` lists the failed jobs of that attempt. `outcome` is
-  `explained` when a failing test in the same job explains the failure, and
-  `unexplained` for a failure in setup or infrastructure. A CI run can be red
-  with an empty `failures` list and an `unexplained` job.
+  `explained` when a failing test in the same job explains the failure, or
+  when the job is a summary job (`summary: true`) and another non-summary job
+  in the attempt failed, and `unexplained` for a failure in setup or
+  infrastructure. A CI run can be red with an empty `failures` list and an
+  `unexplained` job.
 - An unknown repo, CI run or attempt returns `404`. Processed reports are
   deleted after `REPORT_RETENTION_DAYS`. After that, `reports` shows 0 but
   the failures stay until `EXECUTION_RETENTION_DAYS`.

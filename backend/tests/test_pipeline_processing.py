@@ -209,3 +209,18 @@ async def test_same_day_pipeline_reports_share_one_history_row(db, session_facto
     await process_next(session_factory)
     (row,) = (await db.execute(select(JobScoreHistory))).scalars().all()
     assert row.executions == 2
+
+
+async def test_summary_flag_defaults_false_and_flips(db, session_factory):
+    """`summary` is a Job trait: absent means false, and the newest report wins."""
+    await _queue_pipeline(db, _payload([_job("1", "alls-green", "passed", summary=True), _job("2", "test", "passed")]))
+    await process_next(session_factory)
+
+    flags = dict((await db.execute(select(Job.name, Job.summary))).all())
+    assert flags == {"alls-green": True, "test": False}
+
+    # A later report that drops the marker makes the Job a normal one again.
+    await _queue_pipeline(db, _payload([_job("3", "alls-green", "passed"), _job("4", "test", "passed")]))
+    await process_next(session_factory)
+    summary_job = (await db.execute(select(Job).where(Job.name == "alls-green"))).scalar_one()
+    assert summary_job.summary is False

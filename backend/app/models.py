@@ -222,6 +222,9 @@ class Job(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     pipeline_id: Mapped[int] = mapped_column(ForeignKey("pipelines.id", ondelete="CASCADE"), index=True)
     name: Mapped[str] = mapped_column(String(512))
+    # A failed summary Job (CONTEXT.md) is explained, and so never scored, when a
+    # non-summary Job failed in the same CI run attempt.
+    summary: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
     flakiness_score: Mapped[float] = mapped_column(Float, default=0.0, server_default="0")
     confirmed_flake_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     clean_streak: Mapped[int] = mapped_column(Integer, default=0, server_default="0")

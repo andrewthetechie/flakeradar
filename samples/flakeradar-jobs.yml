@@ -2,6 +2,12 @@
 # Copy to .github/workflows/flakeradar-jobs.yml on your DEFAULT branch
 # (workflow_run only fires from there). List workflows by their `name:`
 # (exact names, no globs). Needs FLAKERADAR_URL and FLAKERADAR_TOKEN secrets.
+#
+# SUMMARY_JOBS lists the summary jobs that run no tests and only report whether
+# the jobs they `needs` succeeded (the alls-green pattern). Their failure is
+# explained, and not scored, when a non-summary job failed in the same CI run
+# attempt. The GitHub API does not expose a job's `needs`,
+# so list them by name here.
 name: FlakeRadar jobs
 on:
   workflow_run:
@@ -27,10 +33,12 @@ jobs:
                 run_id: run.id, attempt_number: run.run_attempt, per_page: 100 });
             const STATUS = { success: "passed", failure: "failed", timed_out: "failed",
                              cancelled: "skipped", skipped: "skipped", neutral: "skipped" };
+            const SUMMARY_JOBS = ["alls-green"];  // <- your summary job names
             const results = jobs.filter(j => STATUS[j.conclusion]).map(j => ({
               ci_job_id: String(j.id), name: j.name, status: STATUS[j.conclusion],
               url: j.html_url ?? "", runner_name: j.runner_name ?? "",
-              runner_labels: j.labels ?? [], started_at: j.started_at, completed_at: j.completed_at }));
+              runner_labels: j.labels ?? [], started_at: j.started_at, completed_at: j.completed_at,
+              summary: SUMMARY_JOBS.includes(j.name) }));
             if (results.length === 0) { core.info("No reportable jobs."); return; }
             // Some events (e.g. a tag push) have no head_branch. A Job execution
             // needs a branch, so skip this attempt instead of failing the run.

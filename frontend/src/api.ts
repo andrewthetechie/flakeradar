@@ -174,6 +174,7 @@ export interface Job {
   trend: Trend | null;
   last_status: string;
   last_seen_at: string;
+  summary: boolean; // a summary Job (CONTEXT.md) that runs no tests; its explained failures are never scored
   github_issue_number: number | null;
   github_issue_url: string | null;
 }

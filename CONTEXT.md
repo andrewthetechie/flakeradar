@@ -82,10 +82,14 @@ A commit SHA on which the same Test or Job both passed and failed. This proves n
 _Avoid_: Confirmed flake, same-SHA flip (in user-facing text)
 
 **Explained failure**:
-A failed Job execution in which at least one Test execution uploaded by that same Job attempt also failed. The failing Tests explain it, so it does not count against the Job's Flakiness score.
+A failed Job execution in which at least one Test execution uploaded by that same Job attempt also failed, or a failed **Summary Job** with another failed non-summary Job in the same CI run attempt. The failing Tests or Job explain it, so it does not count against the Job's Flakiness score.
 
 **Unexplained failure**:
-A failed Job execution with no failing Test execution from the same Job attempt: a failure from setup, infrastructure or a step outside the test runner. Only these count against a Job's Flakiness score.
+A failed Job execution with no failing Test execution from the same Job attempt and, for a Summary Job, no failed non-summary Job in the same CI run attempt: a failure from setup, infrastructure or a step outside the test runner. Only these count against a Job's Flakiness score.
+
+**Summary Job**:
+A Job that runs no Tests and only reports whether the Jobs it `needs` succeeded (the alls-green pattern). A reporter marks it with `summary: true`. Its failure is explained by another failed non-summary Job in the same CI run attempt, and an explained failure is never scored. A failure with no such Job (its own step broke) is unexplained and counts against it.
+_Avoid_: Gate job, aggregator job
 
 **Score history**:
 A Test's or Job's Flakiness score and Proven flake count at the end of each day, with that day's counts of Executions and failures. It shows whether a Test or Job is getting worse or better.

@@ -26,6 +26,10 @@ class JobResultIn(BaseModel):
     runner_labels: list[Annotated[str, Field(max_length=255)]] = Field(default_factory=list, max_length=50)
     started_at: datetime | None = None
     completed_at: datetime | None = None
+    # A summary Job (CONTEXT.md) runs no tests and only reports whether the Jobs
+    # it needs succeeded. A failed one is explained, and so never scored, when a
+    # non-summary Job failed in the same CI run attempt.
+    summary: bool = False
 
 
 class PipelineReportIn(BaseModel):
@@ -216,6 +220,7 @@ class JobOut(BaseModel):
     trend: Literal["worsening", "improving", "steady"] | None = None
     last_status: str
     last_seen_at: datetime
+    summary: bool  # a summary Job (CONTEXT.md); its explained failures are never scored
     github_issue_number: int | None
     github_issue_url: str | None  # only when provider == "github"
 
@@ -331,6 +336,7 @@ class CiRunFailedJobOut(BaseModel):
     ci_job_id: str
     url: str
     outcome: Literal["explained", "unexplained"]
+    summary: bool  # a summary Job is explained by a failed non-summary Job, not by a test
     tier: Tier
     flakiness_score: float
     confirmed_flake_count: int
