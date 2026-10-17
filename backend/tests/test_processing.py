@@ -1,6 +1,7 @@
 """Report processor: Runs, Executions, Tests, Location, scoring, failures."""
 
 import asyncio
+from pathlib import Path
 
 from app.config import Settings
 from app.models import Repo, Report, TestCase, TestExecution, TestRun, TestScoreHistory, utcnow
@@ -11,6 +12,8 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 
 from tests.conftest import make_junit
 from tests.factories import make_project, make_report
+
+FIXTURES = Path(__file__).parent / "fixtures"
 
 
 async def _queue(db, body: bytes, project=None, **kw) -> Report:
@@ -96,6 +99,26 @@ async def test_flaky_retry_is_proven_flake_from_one_report(db, session_factory):
         )
     ).all()
     assert [(s, a) for s, a in rows] == [("failed", 0), ("passed", 1)]
+
+
+async def test_nextest_flaky_fail_is_proven_flake_from_one_report(db, session_factory):
+    await _queue(db, (FIXTURES / "nextest_flaky_fail.xml").read_bytes(), commit_sha="777022bf")
+    outcome = await process_next(session_factory)
+    assert outcome.counts == {"passed": 2, "failed": 1, "error": 0, "skipped": 0, "retried": 1}
+    name = "embedding::reindexer::worker::tests::invalidate_priority_readiness_drops_from_each_driver"
+    (flaky,) = (await db.execute(select(TestCase).where(TestCase.name == name))).scalars()
+    assert flaky.confirmed_flake_count == 1 and flaky.flakiness_score >= 0.6
+    assert flaky.last_status == "passed"
+    rows = (
+        await db.execute(
+            select(TestExecution.status, TestExecution.attempt, TestExecution.failure_category)
+            .where(TestExecution.test_case_id == flaky.id)
+            .order_by(TestExecution.id)
+        )
+    ).all()
+    assert [(status, attempt) for status, attempt, _ in rows] == [("failed", 0), ("passed", 1)]
+    assert rows[0].failure_category is not None  # the failed try is still classified
+    assert rows[1].failure_category is None  # the converted pass is not
 
 
 async def test_failures_are_classified_and_test_gets_dominant_category(db, session_factory):

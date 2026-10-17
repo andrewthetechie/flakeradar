@@ -1,5 +1,7 @@
 """Pure JUnit parsing: identity, outcome, Location, Failure message/details."""
 
+from pathlib import Path
+
 import pytest
 from app.parsing import (
     DETAILS_MAX,
@@ -8,6 +10,8 @@ from app.parsing import (
     fingerprint,
     parse_junit_xml,
 )
+
+FIXTURES = Path(__file__).parent / "fixtures"
 
 
 def _one(xml: str):
@@ -108,6 +112,51 @@ def test_flaky_failure_becomes_a_failed_attempt_before_the_pass():
     assert cases[0].message == "Timeout 30000ms exceeded"
     assert cases[0].duration == 30.1
     assert cases[0].details == "Error: boom\n at x\n\n--- stdout ---\nout1"
+
+
+def test_nextest_flaky_marker_is_a_passed_attempt():
+    cases = parse_junit_xml((FIXTURES / "nextest_flaky_fail.xml").read_bytes())
+    flaky = [c for c in cases if c.name.endswith("invalidate_priority_readiness_drops_from_each_driver")]
+    assert [c.status for c in flaky] == ["failed", "passed"]
+    assert flaky[0].message.startswith("thread 'embedding::reindexer")
+    assert flaky[0].message.endswith("worker.rs:2706:17")
+    assert flaky[0].duration == 0.398
+    assert (flaky[1].message, flaky[1].details, flaky[1].duration) == ("", "", 0.412)
+    other = [c for c in cases if c not in flaky]
+    assert [(c.name, c.status) for c in other] == [("embedding::chunker::tests::splits_on_headings", "passed")]
+
+
+def test_nextest_flaky_marker_in_error_is_a_passed_attempt():
+    xml = (
+        '<testsuite name="s"><testcase classname="c" name="t">'
+        '<flakyError message="boom"/><flakyError message="boom"/>'
+        '<error message="test passed on attempt 3/3 but is configured to fail when flaky"/>'
+        "</testcase></testsuite>"
+    )
+    cases = parse_junit_xml(xml.encode())
+    assert [c.status for c in cases] == ["error", "error", "passed"]
+
+
+def test_nextest_flaky_marker_without_earlier_tries_stays_failed():
+    xml = (
+        '<testsuite name="s"><testcase classname="c" name="t">'
+        '<failure message="test passed on attempt 2/2 but is configured to fail when flaky"/>'
+        "</testcase></testsuite>"
+    )
+    cases = parse_junit_xml(xml.encode())
+    assert [c.status for c in cases] == ["failed"]
+    assert cases[0].message == "test passed on attempt 2/2 but is configured to fail when flaky"
+
+
+def test_message_that_only_starts_like_the_marker_stays_failed():
+    xml = (
+        '<testsuite name="s"><testcase classname="c" name="t">'
+        '<flakyFailure message="x"/>'
+        '<failure message="test passed on attempt 2/2 but is configured to fail when flaky, and more"/>'
+        "</testcase></testsuite>"
+    )
+    cases = parse_junit_xml(xml.encode())
+    assert [c.status for c in cases] == ["failed", "failed"]
 
 
 def test_rerun_elements_follow_the_failure():
