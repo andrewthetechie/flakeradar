@@ -1,14 +1,34 @@
 """Foundation: migrations build the schema; the app boots its health route."""
 
+import importlib.util
+from pathlib import Path
+
 import pytest
 from app import db as db_module
 from app.config import Settings
 from app.migrate import run_migrations
-from app.models import Job, JobExecution, Report, TestCase
+from app.models import Job, JobExecution, Report, TestCase, TestExecution
 from sqlalchemy import inspect, select, text
 from sqlalchemy.exc import IntegrityError
 
-from tests.factories import make_job, make_job_execution, make_pipeline, make_project, make_report
+from tests.factories import (
+    make_execution,
+    make_job,
+    make_job_execution,
+    make_pipeline,
+    make_project,
+    make_report,
+    make_run,
+    make_test_case,
+)
+
+
+def _migration(name: str):
+    path = Path(__file__).resolve().parents[1] / "migrations" / "versions" / f"{name}.py"
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 async def test_migrations_create_every_table(engine):
@@ -45,7 +65,7 @@ async def test_migrations_are_idempotent(engine):
     await run_migrations(engine)  # second run is a no-op, must not raise
     async with engine.connect() as conn:
         version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar()
-    assert version == "0008"
+    assert version == "0009"
 
 
 def test_make_engine_sets_command_timeout(monkeypatch):
@@ -154,6 +174,56 @@ async def test_upgrade_backfills_report_repo_id(db):
     row = (await db.execute(select(Report).where(Report.id == rep.id))).scalar_one()
     assert row.repo_id == proj.repo_id
     assert row.kind == "junit"
+
+
+async def test_upgrade_marks_nextest_flaky_marker_passed(db):
+    """0009 turns stored nextest flaky markers into passes, like the parser now does."""
+    marker = "test passed on attempt 2/2 but is configured to fail when flaky"
+    proj = await make_project(db)
+    tc = await make_test_case(db, proj, name="t")
+    other = await make_test_case(db, proj, name="u")
+    run = await make_run(db, proj)
+
+    failed_first = await make_execution(
+        db, tc, run, status="failed", message="panicked", attempt=0, failure_category="assertion"
+    )
+    marker_after_failure = await make_execution(
+        db, tc, run, status="failed", message=marker, details="d", attempt=1, failure_category="other"
+    )
+    marker_at_zero = await make_execution(db, other, run, status="failed", message=marker, attempt=0)
+    marker_after_zero = await make_execution(db, other, run, status="failed", message=marker, attempt=1)
+    # A second Run: the try before the marker passed, so the marker stays failed.
+    run2 = await make_run(db, proj, commit_sha="sha2")
+    await make_execution(db, tc, run2, status="passed", attempt=0)
+    marker_after_pass = await make_execution(db, other, run2, status="failed", message=marker, attempt=1)
+    partial_marker = await make_execution(db, other, run2, status="failed", message=marker + " and more", attempt=1)
+    await make_execution(db, other, run2, status="failed", message="x", attempt=0)
+
+    await db.commit()
+    await db.execute(text(_migration("0009_nextest_flaky_marker").BACKFILL_SQL))
+    await db.commit()
+
+    # Column select, so nothing stale comes back from the identity map.
+    by_id = {
+        row.id: (row.status, row.message, row.details, row.failure_category)
+        for row in (
+            await db.execute(
+                select(
+                    TestExecution.id,
+                    TestExecution.status,
+                    TestExecution.message,
+                    TestExecution.details,
+                    TestExecution.failure_category,
+                )
+            )
+        ).all()
+    }
+    assert by_id[failed_first.id] == ("failed", "panicked", "", "assertion")
+    assert by_id[marker_after_failure.id] == ("passed", "", "", None)
+    assert by_id[marker_at_zero.id] == ("failed", marker, "", None)
+    assert by_id[marker_after_zero.id] == ("passed", "", "", None)
+    assert by_id[marker_after_pass.id] == ("failed", marker, "", None)
+    assert by_id[partial_marker.id] == ("failed", marker + " and more", "", None)
 
 
 def test_database_url_rewritten_to_asyncpg():
