@@ -72,7 +72,8 @@ backend/   FastAPI + async SQLAlchemy 2 + asyncpg + PostgreSQL
     retention.py        pruning
     scoring.py          flip score and same-SHA proof (pure functions)
     github_integration.py  per-Repo issue filing
-    mcp_server.py       read-only MCP tools (fastmcp)
+    issue_links.py      set or clear a Test's or Job's Issue link (REST and MCP share it)
+    mcp_server.py       MCP tools (fastmcp): reads, plus link_issue and unlink_issue
   migrations/     Alembic (async), applied on startup
   tests/          pytest against a real Postgres (testcontainers)
 frontend/  React 18 + Vite + TypeScript, Vitest; no runtime chart dependencies
@@ -91,9 +92,11 @@ samples/   CI snippets and a demo-data simulator
 - Retry attempts from JUnit ([ADR 0005](docs/adr/0005-retry-attempts-from-junit.md)).
 - Rule-based Failure categories ([ADR 0006](docs/adr/0006-rule-based-failure-categories.md)).
 - Daily Score history ([ADR 0007](docs/adr/0007-daily-score-history.md)).
+- Issue links from other filers ([ADR 0008](docs/adr/0008-issue-links-from-other-filers.md)).
 - The read APIs and the quarantine toggle are unauthenticated by design,
   because the dashboard is expected to be on a private network. The CI
-  endpoints and the MCP server need the token.
+  endpoints, the Issue link endpoints (`PUT`/`DELETE …/issue`) and the MCP
+  server need the token.
 - The UI marks each Execution status with a shape (filled circle, filled
   square, filled diamond, hollow circle) as well as a color. Green and red are
   hard to tell apart with deuteranopia, so color never carries meaning alone.

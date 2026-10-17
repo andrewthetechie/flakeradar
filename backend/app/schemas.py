@@ -349,3 +349,13 @@ class CiRunFailuresOut(BaseModel):
     truncated: bool
     failures: list[CiRunTestFailureOut]
     failed_jobs: list[CiRunFailedJobOut]
+
+
+# --- Issue links (issue #6) ---
+
+MAX_ISSUE_NUMBER = 2_147_483_647  # github_issue_number is a PostgreSQL INTEGER
+
+
+class IssueLinkIn(BaseModel):
+    number: int = Field(ge=1, le=MAX_ISSUE_NUMBER)
+    url: str | None = Field(default=None, max_length=2048)  # optional; must be this issue in the entity's own Repo
