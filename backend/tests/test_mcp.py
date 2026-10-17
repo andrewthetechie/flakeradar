@@ -1,4 +1,4 @@
-"""MCP server: read-only tools over the same queries as REST; token-gated over HTTP."""
+"""MCP server: read tools and the Issue link write tools over the same services as REST; token-gated over HTTP."""
 
 import pytest
 from app.mcp_server import build_mcp
@@ -52,12 +52,14 @@ async def test_tools_are_listed(mcp):
         "ci_run_failures",
         "get_job",
         "get_test",
+        "link_issue",
         "list_projects",
         "list_repos",
         "search_jobs",
         "search_tests",
         "top_flaky_jobs",
         "top_flaky_tests",
+        "unlink_issue",
     ]
 
 
@@ -291,3 +293,103 @@ async def test_ci_run_failures_errors(mcp, db):
     assert unknown_attempt.is_error and "CI run attempt not found" in unknown_attempt.content[0].text
     assert unknown_repo.is_error and "Repo not found" in unknown_repo.content[0].text
     assert bad_repo.is_error
+
+
+async def test_tool_annotations(mcp):
+    async with Client(mcp) as c:
+        tools = {t.name: t.annotations for t in await c.list_tools()}
+    assert set(tools) == {
+        "ci_run_failures",
+        "get_job",
+        "get_test",
+        "link_issue",
+        "list_projects",
+        "list_repos",
+        "search_jobs",
+        "search_tests",
+        "top_flaky_jobs",
+        "top_flaky_tests",
+        "unlink_issue",
+    }
+    for name, annotations in tools.items():
+        if name in ("link_issue", "unlink_issue"):
+            continue
+        assert annotations.read_only_hint is True, name
+    link = tools["link_issue"]
+    assert link.read_only_hint is False
+    assert link.destructive_hint is False
+    assert link.idempotent_hint is True
+    assert link.open_world_hint is False
+    unlink = tools["unlink_issue"]
+    assert unlink.read_only_hint is False
+    assert unlink.destructive_hint is True
+    assert unlink.idempotent_hint is True
+    assert unlink.open_world_hint is False
+
+
+async def test_link_and_unlink_a_test_issue(mcp, db):
+    flaky = await _seed(db)
+    async with Client(mcp) as c:
+        linked = (await c.call_tool("link_issue", {"number": 31, "test_id": flaky.id})).data
+        got = (await c.call_tool("get_test", {"test_id": flaky.id})).data
+        unlinked = (await c.call_tool("unlink_issue", {"test_id": flaky.id})).data
+    assert linked["id"] == flaky.id
+    assert linked["github_issue_number"] == 31
+    assert linked["github_issue_url"] == "https://github.com/andrewthetechie/writers-app/issues/31"
+    assert got["test"]["github_issue_number"] == 31
+    assert unlinked["github_issue_number"] is None
+
+
+async def test_link_and_unlink_a_job_issue(mcp, db):
+    pipe = await make_pipeline(db, "acme/app")
+    job = await make_job(db, pipe, name="e2e")
+    await db.commit()
+    async with Client(mcp) as c:
+        linked = (await c.call_tool("link_issue", {"number": 9, "job_id": job.id})).data
+        unlinked = (await c.call_tool("unlink_issue", {"job_id": job.id})).data
+    assert linked["id"] == job.id
+    assert linked["github_issue_number"] == 9
+    assert linked["github_issue_url"] == "https://github.com/acme/app/issues/9"
+    assert unlinked["github_issue_number"] is None
+
+
+async def test_link_issue_errors(mcp, db):
+    flaky = await _seed(db)
+    pipe = await make_pipeline(db, "acme/app")
+    job = await make_job(db, pipe, name="e2e")
+    gl_pipe = await make_pipeline(db, "acme/app", ".gitlab-ci.yml", provider="gitlab")
+    gl = await make_job(db, gl_pipe, name="gl")
+    await db.commit()
+    async with Client(mcp) as c:
+        both = await c.call_tool("link_issue", {"number": 1}, raise_on_error=False)
+        two = await c.call_tool(
+            "link_issue", {"number": 1, "test_id": flaky.id, "job_id": job.id}, raise_on_error=False
+        )
+        no_test = await c.call_tool("link_issue", {"number": 1, "test_id": 99999}, raise_on_error=False)
+        no_job = await c.call_tool("link_issue", {"number": 1, "job_id": 99999}, raise_on_error=False)
+        bad_number = await c.call_tool("link_issue", {"number": 0, "test_id": flaky.id}, raise_on_error=False)
+        gitlab = await c.call_tool("link_issue", {"number": 1, "job_id": gl.id}, raise_on_error=False)
+        no_target = await c.call_tool("unlink_issue", {}, raise_on_error=False)
+        unknown = await c.call_tool("unlink_issue", {"test_id": 99999}, raise_on_error=False)
+    assert both.is_error and "Pass exactly one of test_id or job_id." in both.content[0].text
+    assert two.is_error and "Pass exactly one of test_id or job_id." in two.content[0].text
+    assert no_test.is_error and "Test not found" in no_test.content[0].text
+    assert no_job.is_error and "Job not found" in no_job.content[0].text
+    assert bad_number.is_error and "number must be between 1 and 2147483647" in bad_number.content[0].text
+    assert gitlab.is_error and "Only Jobs of GitHub Pipelines can link a GitHub issue" in gitlab.content[0].text
+    assert no_target.is_error and "Pass exactly one of test_id or job_id." in no_target.content[0].text
+    assert unknown.is_error and "Test not found" in unknown.content[0].text
+
+
+async def test_link_issue_conflict_and_replace(mcp, db):
+    flaky = await _seed(db)
+    async with Client(mcp) as c:
+        first = (await c.call_tool("link_issue", {"number": 31, "test_id": flaky.id})).data
+        conflict = await c.call_tool("link_issue", {"number": 32, "test_id": flaky.id}, raise_on_error=False)
+        replaced = (await c.call_tool("link_issue", {"number": 32, "test_id": flaky.id, "replace": True})).data
+        again = (await c.call_tool("link_issue", {"number": 32, "test_id": flaky.id})).data
+    assert first["github_issue_number"] == 31
+    assert conflict.is_error
+    assert "Test already links issue #31; pass replace=true to replace it" in conflict.content[0].text
+    assert replaced["github_issue_number"] == 32
+    assert again["github_issue_number"] == 32
