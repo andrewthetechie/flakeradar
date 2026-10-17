@@ -195,7 +195,7 @@ async def test_upgrade_marks_nextest_flaky_marker_passed(db):
     # A second Run: the try before the marker passed, so the marker stays failed.
     run2 = await make_run(db, proj, commit_sha="sha2")
     await make_execution(db, tc, run2, status="passed", attempt=0)
-    marker_after_pass = await make_execution(db, other, run2, status="failed", message=marker, attempt=1)
+    marker_after_pass = await make_execution(db, tc, run2, status="failed", message=marker, attempt=1)
     partial_marker = await make_execution(db, other, run2, status="failed", message=marker + " and more", attempt=1)
     await make_execution(db, other, run2, status="failed", message="x", attempt=0)
 
