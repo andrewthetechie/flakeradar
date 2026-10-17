@@ -4,7 +4,7 @@ import json
 
 import httpx
 import pytest
-from app import github_integration
+from app import github_integration, issue_links
 from app.config import Settings
 from app.models import Project, Repo, TestCase
 from app.processing import ProcessOutcome
@@ -406,3 +406,75 @@ async def test_job_unconfigured_is_noop(db):
     calls, transport = _recorder()
     await github_integration.file_job_issues_for(db, [job.id], transport=transport)
     assert calls == []
+
+
+# --- Issue links from other filers (issue #6) ---
+
+
+async def test_linked_test_is_not_filed(db, gh_settings):
+    linked = await _flaky_test(db, name="linked")
+    other = await _flaky_test(db, repo="acme/other", name="other")
+    await issue_links.link_test_issue(db, linked.id, 300, threshold=0.3)
+    calls, transport = _recorder()
+    await github_integration.file_issues_for(db, [linked.id, other.id], transport=transport)
+    assert len(calls) == 1
+    assert calls[0].url.path == "/repos/acme/other/issues"
+    await db.refresh(linked)
+    assert linked.github_issue_number == 300
+
+
+async def test_linked_job_is_not_filed(db, gh_settings):
+    job = await _flaky_job(db)
+    await _job_exec(db, job, "1")
+    await issue_links.link_job_issue(db, job.id, 301, threshold=0.3)
+    calls, transport = _recorder()
+    await github_integration.file_job_issues_for(db, [job.id], transport=transport)
+    assert calls == []
+    await db.refresh(job)
+    assert job.github_issue_number == 301
+
+
+async def test_sync_rearms_a_linked_test_and_the_filer_files_again(db, gh_settings, session_factory):
+    tc = await _flaky_test(db)
+    await issue_links.link_test_issue(db, tc.id, 300, threshold=0.3)
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(200, json={"state": "closed"})
+
+    await github_integration.sync_closed_issues(session_factory, transport=httpx.MockTransport(handler))
+    assert len(calls) == 1
+    assert calls[0].url.path == "/repos/acme/app/issues/300"
+    await db.refresh(tc)
+    assert tc.github_issue_number is None
+
+    filed, transport = _recorder()
+    await github_integration.file_issues_for(db, [tc.id], transport=transport)
+    assert len(filed) == 1
+    await db.refresh(tc)
+    assert tc.github_issue_number == 77
+
+
+async def test_sync_keeps_a_linked_issue_while_it_is_open(db, gh_settings, session_factory):
+    tc = await _flaky_test(db)
+    await issue_links.link_test_issue(db, tc.id, 300, threshold=0.3)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"state": "open"})
+
+    await github_integration.sync_closed_issues(session_factory, transport=httpx.MockTransport(handler))
+    await db.refresh(tc)
+    assert tc.github_issue_number == 300
+
+
+async def test_sync_rearms_a_linked_job(db, gh_settings, session_factory):
+    job = await _flaky_job(db)
+    await issue_links.link_job_issue(db, job.id, 301, threshold=0.3)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"state": "closed"})
+
+    await github_integration.sync_closed_issues(session_factory, transport=httpx.MockTransport(handler))
+    await db.refresh(job)
+    assert job.github_issue_number is None
