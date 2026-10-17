@@ -49,6 +49,7 @@ async def test_tools_are_listed(mcp):
     async with Client(mcp) as c:
         names = sorted(t.name for t in await c.list_tools())
     assert names == [
+        "ci_run_failures",
         "get_job",
         "get_test",
         "list_projects",
@@ -246,3 +247,47 @@ async def test_get_test_includes_jobs(mcp, db):
         got = (await c.call_tool("get_test", {"test_id": tc.id})).data
     assert len(got["jobs"]) == 1
     assert got["jobs"][0]["pipeline"] == "ci.yml" and got["jobs"][0]["name"] == "test"
+
+
+async def test_ci_run_failures(mcp, db):
+    proj = await make_project(db, "acme/app", "backend")
+    t1 = await make_test_case(db, proj, name="t1", flakiness_score=0.5)
+    run = await make_run(db, proj, ci_run_id="100", ci_run_attempt=1)
+    await make_execution(db, t1, run, status="failed", message="boom")
+    await db.commit()
+
+    async with Client(mcp) as c:
+        data = (await c.call_tool("ci_run_failures", {"repo": "ACME/App", "ci_run_id": "100"})).data
+    assert data["repo"] == "acme/app"
+    assert data["ci_run_attempt"] == 1
+    assert [(f["name"], f["tier"], f["message"]) for f in data["failures"]] == [("t1", "flaky", "boom")]
+    assert data["failed_jobs"] == []
+    assert set(data["reports"]) == {"pending", "processed", "failed"}
+
+
+async def test_ci_run_failures_errors(mcp, db):
+    proj = await make_project(db, "acme/app", "backend")
+    t1 = await make_test_case(db, proj, name="t1")
+    run = await make_run(db, proj, ci_run_id="100", ci_run_attempt=1)
+    await make_execution(db, t1, run, status="failed")
+    await db.commit()
+
+    async with Client(mcp) as c:
+        unknown_run = await c.call_tool(
+            "ci_run_failures", {"repo": "acme/app", "ci_run_id": "nope"}, raise_on_error=False
+        )
+        bad_attempt = await c.call_tool(
+            "ci_run_failures", {"repo": "acme/app", "ci_run_id": "100", "ci_run_attempt": 0}, raise_on_error=False
+        )
+        unknown_attempt = await c.call_tool(
+            "ci_run_failures", {"repo": "acme/app", "ci_run_id": "100", "ci_run_attempt": 5}, raise_on_error=False
+        )
+        unknown_repo = await c.call_tool(
+            "ci_run_failures", {"repo": "nobody/here", "ci_run_id": "100"}, raise_on_error=False
+        )
+        bad_repo = await c.call_tool("ci_run_failures", {"repo": "nope", "ci_run_id": "100"}, raise_on_error=False)
+    assert unknown_run.is_error and "CI run not found" in unknown_run.content[0].text
+    assert bad_attempt.is_error and "ci_run_attempt must be 1 or more" in bad_attempt.content[0].text
+    assert unknown_attempt.is_error and "CI run attempt not found" in unknown_attempt.content[0].text
+    assert unknown_repo.is_error and "Repo not found" in unknown_repo.content[0].text
+    assert bad_repo.is_error

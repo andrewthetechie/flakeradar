@@ -292,3 +292,60 @@ class QuarantineItem(BaseModel):
     file: str | None
     line: int | None
     quarantined_at: datetime | None
+
+
+# --- CI run failures (issue #5) ---
+
+
+class ReportCountsOut(BaseModel):
+    pending: int
+    processed: int
+    failed: int
+
+
+class CiRunTestFailureOut(BaseModel):
+    test_id: int
+    project: str
+    suite: str
+    classname: str
+    name: str
+    run_id: int
+    ci_job_id: str | None
+    status: str  # the Test's last Execution in this Run: failed | error | passed (passed on retry) | skipped
+    failed_attempts: int  # failed + error Executions of this Test in this Run
+    failure_category: str | None  # of the last failing Execution
+    message: str  # Failure message of the last failing Execution, first 1024 characters
+    tier: Tier
+    flakiness_score: float
+    confirmed_flake_count: int
+    clean_streak: int
+    quarantined: bool
+    github_issue_number: int | None
+    github_issue_url: str | None
+
+
+class CiRunFailedJobOut(BaseModel):
+    job_id: int
+    pipeline: str
+    name: str
+    ci_job_id: str
+    url: str
+    outcome: Literal["explained", "unexplained"]
+    tier: Tier
+    flakiness_score: float
+    confirmed_flake_count: int
+    clean_streak: int
+    github_issue_number: int | None
+    github_issue_url: str | None  # only when the Pipeline's provider is github
+
+
+class CiRunFailuresOut(BaseModel):
+    repo: str
+    ci_run_id: str
+    ci_run_attempt: int
+    flake_threshold: float
+    reports: ReportCountsOut  # both Report kinds, this CI run attempt only
+    total_failures: int  # (Test, Run) pairs before the cap
+    truncated: bool
+    failures: list[CiRunTestFailureOut]
+    failed_jobs: list[CiRunFailedJobOut]

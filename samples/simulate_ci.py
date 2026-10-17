@@ -164,9 +164,9 @@ def main():
             # same commit. Replay run 6's backend failure as a same-SHA retry
             # that passes, and its infra e2e failure as an attempt-2 pass.
             if i == 6:
-                report_ids.append(post_junit(client, "backend", "", sha, "run-6-retry", f"b-6-2", 2,
+                report_ids.append(post_junit(client, "backend", "", sha, "run-6", f"b-6-2", 2,
                                              report("backend", backend_cases("passed", gateway))))
-                report_ids.append(post_pipeline(client, sha, "run-6-retry", 2, [
+                report_ids.append(post_pipeline(client, sha, "run-6", 2, [
                     job(f"b-6-2", "backend", "passed"),
                     job(f"e-6-2", "e2e (ubuntu-latest)", "passed"),
                 ]))

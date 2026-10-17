@@ -17,12 +17,16 @@ from .batching import chunks
 from .classify import CATEGORIES, FailureCategory
 from .models import (
     JOB_FAILED,
+    REPORT_FAILED,
+    REPORT_PENDING,
+    REPORT_PROCESSED,
     Job,
     JobExecution,
     JobScoreHistory,
     Pipeline,
     Project,
     Repo,
+    Report,
     TestCase,
     TestExecution,
     TestRun,
@@ -63,6 +67,11 @@ def escape_like(text: str) -> str:
 def issue_url(repo: str, number: int | None) -> str | None:
     """The GitHub issue a Test or Job was filed as, if any."""
     return f"https://github.com/{repo}/issues/{number}" if number is not None else None
+
+
+def job_issue_url(repo: str, pipeline: Pipeline, job: Job) -> str | None:
+    """The GitHub issue a Job was filed as; only GitHub Pipelines file issues."""
+    return issue_url(repo, job.github_issue_number) if pipeline.provider == "github" else None
 
 
 def to_test_out(tc: TestCase, project: str, repo: str, threshold: float, trend: Trend | None = None) -> schemas.TestOut:
@@ -477,7 +486,7 @@ def to_job_out(
         last_status=job.last_status,
         last_seen_at=job.last_seen_at,
         github_issue_number=job.github_issue_number,
-        github_issue_url=issue_url(repo.name, job.github_issue_number) if pipeline.provider == "github" else None,
+        github_issue_url=job_issue_url(repo.name, pipeline, job),
     )
 
 
@@ -753,3 +762,219 @@ async def _test_job_links(db: AsyncSession, repo_name: str, ci_job_ids: set[str]
         )
     ).all()
     return [schemas.TestJobLinkOut(job_id=jid, pipeline=p, name=n) for jid, p, n in rows]
+
+
+# --- CI run failures (issue #5) -----------------------------------------
+
+FAILURES_LIMIT = 500
+CI_RUN_MESSAGE_MAX = 1024
+
+
+class CiRunNotFound(LookupError):
+    """The Repo, CI run or CI run attempt is unknown; str(exc) is the 404 detail."""
+
+
+async def ci_run_failures(
+    db: AsyncSession,
+    repo: str,
+    ci_run_id: str,
+    ci_run_attempt: int | None,
+    *,
+    threshold: float,
+    limit: int = FAILURES_LIMIT,
+) -> schemas.CiRunFailuresOut:
+    """The failing Tests and failed Jobs of one CI run attempt (issue #5).
+
+    `repo` is already normalized. ci_run_attempt=None means the highest known attempt.
+    Raises CiRunNotFound.
+    """
+    repo_row = (await db.execute(select(Repo).where(Repo.name == repo))).scalar_one_or_none()
+    if repo_row is None:
+        raise CiRunNotFound("Repo not found")
+    attempts = await _ci_run_attempts(db, repo_row.id, ci_run_id)
+    if not attempts:
+        raise CiRunNotFound("CI run not found")
+    if ci_run_attempt is None:
+        ci_run_attempt = max(attempts)
+    elif ci_run_attempt not in attempts:
+        raise CiRunNotFound("CI run attempt not found")
+    failures, total = await _ci_run_test_failures(
+        db, repo_row, ci_run_id, ci_run_attempt, threshold=threshold, limit=limit
+    )
+    return schemas.CiRunFailuresOut(
+        repo=repo_row.name,
+        ci_run_id=ci_run_id,
+        ci_run_attempt=ci_run_attempt,
+        flake_threshold=threshold,
+        reports=await _ci_run_report_counts(db, repo_row.id, ci_run_id, ci_run_attempt),
+        total_failures=total,
+        truncated=total > len(failures),
+        failures=failures,
+        failed_jobs=await _ci_run_failed_jobs(db, repo_row, ci_run_id, ci_run_attempt, threshold=threshold),
+    )
+
+
+async def _ci_run_attempts(db: AsyncSession, repo_id: int, ci_run_id: str) -> set[int]:
+    """Every known attempt of one CI run in one Repo (NULL counts as 1)."""
+    reports = await db.execute(
+        select(func.coalesce(Report.ci_run_attempt, 1))
+        .where(Report.repo_id == repo_id, Report.ci_run_id == ci_run_id)
+        .distinct()
+    )
+    runs = await db.execute(
+        select(func.coalesce(TestRun.ci_run_attempt, 1))
+        .join(Project, Project.id == TestRun.project_id)
+        .where(Project.repo_id == repo_id, TestRun.ci_run_id == ci_run_id)
+        .distinct()
+    )
+    jobs = await db.execute(
+        select(JobExecution.ci_run_attempt)
+        .join(Job, Job.id == JobExecution.job_id)
+        .join(Pipeline, Pipeline.id == Job.pipeline_id)
+        .where(Pipeline.repo_id == repo_id, JobExecution.ci_run_id == ci_run_id)
+        .distinct()
+    )
+    return set(reports.scalars()) | set(runs.scalars()) | set(jobs.scalars())
+
+
+async def _ci_run_report_counts(
+    db: AsyncSession, repo_id: int, ci_run_id: str, ci_run_attempt: int
+) -> schemas.ReportCountsOut:
+    """Counts of both Report kinds for one Repo and CI run attempt."""
+    rows = await db.execute(
+        select(Report.status, func.count())
+        .where(
+            Report.repo_id == repo_id,
+            Report.ci_run_id == ci_run_id,
+            func.coalesce(Report.ci_run_attempt, 1) == ci_run_attempt,
+        )
+        .group_by(Report.status)
+    )
+    counts = dict(rows.all())
+    return schemas.ReportCountsOut(
+        pending=counts.get(REPORT_PENDING, 0),
+        processed=counts.get(REPORT_PROCESSED, 0),
+        failed=counts.get(REPORT_FAILED, 0),
+    )
+
+
+async def _ci_run_test_failures(
+    db: AsyncSession, repo: Repo, ci_run_id: str, ci_run_attempt: int, *, threshold: float, limit: int
+) -> tuple[list[schemas.CiRunTestFailureOut], int]:
+    """Failing (Test, Run) pairs of one CI run attempt, capped at `limit`; also the uncapped count."""
+    run_ids = (
+        select(TestRun.id)
+        .join(Project, Project.id == TestRun.project_id)
+        .where(
+            Project.repo_id == repo.id,
+            TestRun.ci_run_id == ci_run_id,
+            func.coalesce(TestRun.ci_run_attempt, 1) == ci_run_attempt,
+        )
+        .scalar_subquery()
+    )
+    pairs = (
+        select(TestExecution.test_case_id, TestExecution.test_run_id)
+        .where(TestExecution.test_run_id.in_(run_ids), TestExecution.status.in_(FAILING))
+        .distinct()
+        .subquery()
+    )
+    total = (await db.execute(select(func.count()).select_from(pairs))).scalar_one()
+    if total == 0:
+        return [], 0
+
+    page = (
+        await db.execute(
+            select(TestCase, Project.name, TestRun.id, TestRun.ci_job_id)
+            .select_from(pairs)
+            .join(TestCase, TestCase.id == pairs.c.test_case_id)
+            .join(TestRun, TestRun.id == pairs.c.test_run_id)
+            .join(Project, Project.id == TestCase.project_id)
+            .order_by(Project.name, TestCase.suite, TestCase.classname, TestCase.name, TestRun.id)
+            .limit(limit)
+        )
+    ).all()
+    # Both IN lists hold at most `limit` ids, so no chunking is needed here.
+    executions = (
+        (
+            await db.execute(
+                select(TestExecution)
+                .where(
+                    TestExecution.test_run_id.in_({run_id for _, _, run_id, _ in page}),
+                    TestExecution.test_case_id.in_({tc.id for tc, _, _, _ in page}),
+                )
+                .order_by(TestExecution.attempt, TestExecution.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    by_pair: dict[tuple[int, int], list[TestExecution]] = {}
+    for e in executions:
+        by_pair.setdefault((e.test_case_id, e.test_run_id), []).append(e)
+
+    items: list[schemas.CiRunTestFailureOut] = []
+    for tc, project, run_id, ci_job_id in page:
+        execs = by_pair[(tc.id, run_id)]  # the pair is failing, so it has at least one Execution
+        failing = [e for e in execs if e.status in FAILING]
+        last_failing = failing[-1]
+        items.append(
+            schemas.CiRunTestFailureOut(
+                test_id=tc.id,
+                project=project,
+                suite=tc.suite,
+                classname=tc.classname,
+                name=tc.name,
+                run_id=run_id,
+                ci_job_id=ci_job_id,
+                status=execs[-1].status,
+                failed_attempts=len(failing),
+                failure_category=last_failing.failure_category,
+                message=last_failing.message[:CI_RUN_MESSAGE_MAX],
+                tier=tier_for(tc.flakiness_score, threshold),
+                flakiness_score=tc.flakiness_score,
+                confirmed_flake_count=tc.confirmed_flake_count,
+                clean_streak=tc.clean_streak,
+                quarantined=tc.quarantined,
+                github_issue_number=tc.github_issue_number,
+                github_issue_url=issue_url(repo.name, tc.github_issue_number),
+            )
+        )
+    return items, total
+
+
+async def _ci_run_failed_jobs(
+    db: AsyncSession, repo: Repo, ci_run_id: str, ci_run_attempt: int, *, threshold: float
+) -> list[schemas.CiRunFailedJobOut]:
+    """Failed Job executions of one CI run attempt, each explained or unexplained."""
+    rows = (
+        await db.execute(
+            select(JobExecution, Job, Pipeline)
+            .join(Job, Job.id == JobExecution.job_id)
+            .join(Pipeline, Pipeline.id == Job.pipeline_id)
+            .where(
+                Pipeline.repo_id == repo.id,
+                JobExecution.ci_run_id == ci_run_id,
+                JobExecution.ci_run_attempt == ci_run_attempt,
+                JobExecution.status == JOB_FAILED,
+            )
+            .order_by(Pipeline.name, Job.name, JobExecution.id)
+        )
+    ).all()
+    explained = await explained_ci_job_ids(db, repo.id, [e.ci_job_id for e, _, _ in rows])
+    return [
+        schemas.CiRunFailedJobOut(
+            job_id=job.id,
+            pipeline=pipeline.name,
+            name=job.name,
+            ci_job_id=e.ci_job_id,
+            url=e.url,
+            outcome="explained" if e.ci_job_id in explained else "unexplained",
+            tier=tier_for(job.flakiness_score, threshold),
+            flakiness_score=job.flakiness_score,
+            confirmed_flake_count=job.confirmed_flake_count,
+            clean_streak=job.clean_streak,
+            github_issue_number=job.github_issue_number,
+            github_issue_url=job_issue_url(repo.name, pipeline, job),
+        )
+        for e, job, pipeline in rows
+    ]
