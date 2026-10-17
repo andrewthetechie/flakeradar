@@ -3,7 +3,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .. import queries, schemas
+from .. import issue_links, queries, schemas
 from ..auth import require_token
 from ..classify import FailureCategory
 from ..config import get_settings
@@ -86,6 +86,31 @@ async def set_quarantine(
     if result is None:
         raise HTTPException(status_code=404, detail="Test not found")
     return result
+
+
+@router.put("/api/tests/{test_id}/issue", response_model=schemas.TestOut, dependencies=[Depends(require_token)])
+async def link_issue(
+    test_id: int,
+    body: schemas.IssueLinkIn,
+    replace: bool = Query(default=False),
+    db: AsyncSession = Depends(get_db),
+):
+    """Link a GitHub issue filed elsewhere; FlakeRadar then files none for this Test."""
+    try:
+        return await issue_links.link_test_issue(
+            db, test_id, body.number, url=body.url, replace=replace, threshold=get_settings().flake_threshold
+        )
+    except issue_links.IssueLinkError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+
+@router.delete("/api/tests/{test_id}/issue", response_model=schemas.TestOut, dependencies=[Depends(require_token)])
+async def unlink_issue(test_id: int, db: AsyncSession = Depends(get_db)):
+    """Remove the Test's Issue link."""
+    try:
+        return await issue_links.unlink_test_issue(db, test_id, threshold=get_settings().flake_threshold)
+    except issue_links.IssueLinkError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
 
 @router.get(
