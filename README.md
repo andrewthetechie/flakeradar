@@ -322,10 +322,18 @@ commit. Thus it is a **proven flake** from its first run.
 |---|---|
 | Playwright 1.59 or later | `reporter: [["junit", { outputFile: "junit.xml", includeRetries: true }]]`, or `PLAYWRIGHT_JUNIT_INCLUDE_RETRIES=1` |
 | Maven Surefire / Failsafe | `-Dsurefire.rerunFailingTestsCount=2` (retries are written as `<flakyFailure>` or `<rerunFailure>`) |
+| cargo-nextest | `retries = 2` in a profile in `.config/nextest.toml`, with `[profile.<name>.junit] path = "junit.xml"` (retries are written as `<flakyFailure>`) |
 
 Runners that write each attempt as a separate `<testcase>` with the same name
 also work. Without these settings, a retried test that passes at the end looks
 like a clean pass.
+
+With `flaky-result = "fail"`, nextest fails a test that passed only on retry.
+It writes the passing try as a `<failure>` with the message `test passed on
+attempt N/M but is configured to fail when flaky`. FlakeRadar stores that
+try as a pass, so the test is still a proven flake and
+`/api/ci-runs/{ci_run_id}/failures` shows it with `status: "passed"`. The
+job still fails, and the failed tries explain it.
 
 Each failed retry counts as one failure. This includes the count for
 `FLAKERADAR_GITHUB_ISSUE_MIN_FAILURES`. With 2 retries, one run can add 3
