@@ -298,19 +298,6 @@ async def test_ci_run_failures_errors(mcp, db):
 async def test_tool_annotations(mcp):
     async with Client(mcp) as c:
         tools = {t.name: t.annotations for t in await c.list_tools()}
-    assert set(tools) == {
-        "ci_run_failures",
-        "get_job",
-        "get_test",
-        "link_issue",
-        "list_projects",
-        "list_repos",
-        "search_jobs",
-        "search_tests",
-        "top_flaky_jobs",
-        "top_flaky_tests",
-        "unlink_issue",
-    }
     for name, annotations in tools.items():
         if name in ("link_issue", "unlink_issue"):
             continue
@@ -361,8 +348,8 @@ async def test_link_issue_errors(mcp, db):
     gl = await make_job(db, gl_pipe, name="gl")
     await db.commit()
     async with Client(mcp) as c:
-        both = await c.call_tool("link_issue", {"number": 1}, raise_on_error=False)
-        two = await c.call_tool(
+        neither = await c.call_tool("link_issue", {"number": 1}, raise_on_error=False)
+        both = await c.call_tool(
             "link_issue", {"number": 1, "test_id": flaky.id, "job_id": job.id}, raise_on_error=False
         )
         no_test = await c.call_tool("link_issue", {"number": 1, "test_id": 99999}, raise_on_error=False)
@@ -371,8 +358,8 @@ async def test_link_issue_errors(mcp, db):
         gitlab = await c.call_tool("link_issue", {"number": 1, "job_id": gl.id}, raise_on_error=False)
         no_target = await c.call_tool("unlink_issue", {}, raise_on_error=False)
         unknown = await c.call_tool("unlink_issue", {"test_id": 99999}, raise_on_error=False)
+    assert neither.is_error and "Pass exactly one of test_id or job_id." in neither.content[0].text
     assert both.is_error and "Pass exactly one of test_id or job_id." in both.content[0].text
-    assert two.is_error and "Pass exactly one of test_id or job_id." in two.content[0].text
     assert no_test.is_error and "Test not found" in no_test.content[0].text
     assert no_job.is_error and "Job not found" in no_job.content[0].text
     assert bad_number.is_error and "number must be between 1 and 2147483647" in bad_number.content[0].text

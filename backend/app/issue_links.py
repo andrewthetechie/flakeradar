@@ -9,6 +9,7 @@ issue must be in the entity's own Repo, because the sync looks it up there
 """
 
 import logging
+from typing import Literal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -38,8 +39,10 @@ class IssueNotLinkable(IssueLinkError):
     status_code = 422
 
 
-def _check_link(kind: str, current: int | None, number: int, *, repo: str, url: str | None, replace: bool) -> None:
-    """The number, url and conflict rules of a link; `kind` is "Test" or "Job"."""
+def _check_link(
+    kind: Literal["Test", "Job"], current: int | None, number: int, *, repo: str, url: str | None, replace: bool
+) -> None:
+    """The number, url and conflict rules of a link."""
     if not 1 <= number <= MAX_ISSUE_NUMBER:
         raise IssueNotLinkable(f"number must be between 1 and {MAX_ISSUE_NUMBER}")
     expected = issue_url(repo, number)
