@@ -51,7 +51,7 @@ The processed result of one Report: the Executions for one Repo and Project at a
 _Avoid_: Build, Job (that is a CI job)
 
 **Execution**:
-One try of a Test by the test runner, and its outcome (passed, failed, error or skipped), within one Run. When the test runner retries a Test inside the same Run, each retry is its own Execution, numbered from 0 in the order they ran. A CI re-run is not a retry: it produces a new Run.
+One try of a Test by the test runner, and its outcome (passed, failed, error or skipped), within one Run. The outcome is what that try did: a retry that passed is passed, even when a runner setting reports the Test as failed because it needed a retry. When the test runner retries a Test inside the same Run, each retry is its own Execution, numbered from 0 in the order they ran. A CI re-run is not a retry: it produces a new Run.
 _Avoid_: Result
 
 **Job execution**:
