@@ -100,6 +100,16 @@ async def test_test_history_includes_seen_in_jobs(client, db):
     assert body["jobs"] == [{"job_id": job.id, "pipeline": "ci.yml", "name": "test"}]
 
 
+async def test_job_out_includes_summary_flag(client, db):
+    p = await make_pipeline(db, "acme/app", "ci.yml")
+    await make_job(db, p, name="alls-green", summary=True)
+    await make_job(db, p, name="test")
+    await db.commit()
+
+    body = (await client.get("/api/jobs?repo=acme/app&include_stable=true")).json()
+    assert {j["name"]: j["summary"] for j in body["items"]} == {"alls-green": True, "test": False}
+
+
 async def test_jobs_404_and_422(client, db):
     assert (await client.get("/api/jobs/99999/history")).status_code == 404
     assert (await client.get("/api/jobs?repo=bad")).status_code == 422

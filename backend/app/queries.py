@@ -485,6 +485,7 @@ def to_job_out(
         trend=trend,
         last_status=job.last_status,
         last_seen_at=job.last_seen_at,
+        summary=job.summary,
         github_issue_number=job.github_issue_number,
         github_issue_url=job_issue_url(repo.name, pipeline, job),
     )
@@ -969,6 +970,7 @@ async def _ci_run_failed_jobs(
             ci_job_id=e.ci_job_id,
             url=e.url,
             outcome="explained" if e.ci_job_id in explained else "unexplained",
+            summary=job.summary,
             tier=tier_for(job.flakiness_score, threshold),
             flakiness_score=job.flakiness_score,
             confirmed_flake_count=job.confirmed_flake_count,

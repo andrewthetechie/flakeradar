@@ -17,6 +17,7 @@ function job(overrides: Partial<Job> = {}): Job {
     trend: null,
     last_status: "failed",
     last_seen_at: "2026-09-25T00:00:00Z",
+    summary: false,
     github_issue_number: null,
     github_issue_url: null,
     ...overrides,

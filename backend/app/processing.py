@@ -18,7 +18,7 @@ from sqlalchemy.exc import InterfaceError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from . import scoring
-from .attribution import explained_clause
+from .attribution import job_failure_explained_clause
 from .batching import chunks
 from .classify import classify_failure, dominant_category
 from .config import get_settings
@@ -269,7 +269,13 @@ async def _job_history(
                 JobExecution.commit_sha,
                 JobExecution.branch,
                 JobExecution.status,
-                explained_clause(JobExecution.ci_job_id, Pipeline.repo_id).label("explained"),
+                job_failure_explained_clause(
+                    JobExecution.ci_job_id,
+                    JobExecution.ci_run_id,
+                    JobExecution.ci_run_attempt,
+                    Pipeline.repo_id,
+                    Job.summary,
+                ).label("explained"),
                 Repo.default_branch,
                 rn_all,
                 rn_def,
@@ -393,12 +399,28 @@ async def process_pipeline_report(db: AsyncSession, report: Report) -> ProcessOu
     ).scalar_one()
 
     job_names = sorted({j.name for j in pipeline_report.jobs})
+    # A single report names each Job once, so the last `summary` flag wins if a
+    # caller ever repeats a name.
+    summary_by_name = {j.name: j.summary for j in pipeline_report.jobs}
+    flag_changed: set[int] = set()
     for chunk in chunks(job_names):
-        await db.execute(
-            pg_insert(Job)
-            .values([{"pipeline_id": pipeline_id, "name": n, "last_seen_at": now} for n in chunk])
-            .on_conflict_do_nothing(constraint="uq_jobs_pipeline_name")
+        stmt = pg_insert(Job).values(
+            [{"pipeline_id": pipeline_id, "name": n, "summary": summary_by_name[n], "last_seen_at": now} for n in chunk]
         )
+        # last-write-wins on `summary`, so a workflow that starts marking a summary
+        # Job is picked up on the next report. RETURNING yields the rows that were
+        # inserted or whose flag actually changed, so a flag flip rescores even when
+        # the report added no new executions.
+        changed = (
+            await db.execute(
+                stmt.on_conflict_do_update(
+                    constraint="uq_jobs_pipeline_name",
+                    set_={"summary": stmt.excluded.summary},
+                    where=Job.summary.is_distinct_from(stmt.excluded.summary),
+                ).returning(Job.id)
+            )
+        ).scalars()
+        flag_changed.update(changed)
     job_ids: dict[str, int] = {}
     for chunk in chunks(job_names):
         rows = await db.execute(select(Job.name, Job.id).where(Job.pipeline_id == pipeline_id, Job.name.in_(chunk)))
@@ -454,7 +476,7 @@ async def process_pipeline_report(db: AsyncSession, report: Report) -> ProcessOu
                 [{"id": jid, "last_status": s, "last_seen_at": now} for jid, s in chunk],
             )
 
-    touched = sorted(jobs_with_new_exec)
+    touched = sorted(jobs_with_new_exec | flag_changed)
     await rescore_jobs(db, touched, day_counts=day_counts)
     if branch_changed:
         await rescore_repo(db, report.repo_id)

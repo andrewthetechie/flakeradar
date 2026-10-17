@@ -389,6 +389,7 @@ async def test_failed_job_fields(client, db):
             "ci_job_id": "J-E",
             "url": "https://ci/1",
             "outcome": "unexplained",
+            "summary": False,
             "tier": "suspect",
             "flakiness_score": 0.1,
             "confirmed_flake_count": 1,
@@ -396,6 +397,42 @@ async def test_failed_job_fields(client, db):
             "github_issue_number": 4,
             "github_issue_url": "https://github.com/acme/app/issues/4",
         }
+    ]
+
+
+async def test_summary_job_explained_by_a_failed_job(client, db):
+    """Issue #9: `alls-green-playwright` fails with its flaky Job, so it is explained."""
+    proj = await make_project(db, "acme/app", "backend")
+    pipe = await make_pipeline(db, "acme/app", ".github/workflows/playwright.yml")
+    tests = await make_job(db, pipe, name="test-playwright")
+    gate = await make_job(db, pipe, name="alls-green-playwright", summary=True)
+    await make_job_execution(db, tests, "failed", ci_job_id="J-T", ci_run_id="38973797537", ci_run_attempt=1)
+    await make_job_execution(db, gate, "failed", ci_job_id="J-G", ci_run_id="38973797537", ci_run_attempt=1)
+    tc = await make_test_case(db, proj, name="Squad screen controls renders stat tile values unbroken")
+    run = await make_run(db, proj, ci_run_id="38973797537", ci_run_attempt=1, ci_job_id="J-T")
+    await make_execution(db, tc, run, status="failed")
+    await db.commit()
+
+    body = (await client.get(_url("38973797537"))).json()
+    assert [(j["name"], j["outcome"], j["summary"]) for j in body["failed_jobs"]] == [
+        ("alls-green-playwright", "explained", True),
+        ("test-playwright", "explained", False),
+    ]
+    assert [f["name"] for f in body["failures"]] == ["Squad screen controls renders stat tile values unbroken"]
+
+
+async def test_summary_job_is_unexplained_without_a_failed_sibling(client, db):
+    """A gate that fails on its own (no failed Job in the attempt) is still unexplained."""
+    pipe = await make_pipeline(db, "acme/app", ".github/workflows/ci.yml")
+    gate = await make_job(db, pipe, name="alls-green", summary=True)
+    await make_job_execution(db, gate, "failed", ci_job_id="J-G", ci_run_id="100", ci_run_attempt=1)
+    lint = await make_job(db, pipe, name="lint")
+    await make_job_execution(db, lint, "passed", ci_job_id="J-L", ci_run_id="100", ci_run_attempt=1)
+    await db.commit()
+
+    body = (await client.get(_url("100"))).json()
+    assert [(j["name"], j["outcome"], j["summary"]) for j in body["failed_jobs"]] == [
+        ("alls-green", "unexplained", True)
     ]
 
 
