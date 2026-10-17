@@ -264,7 +264,7 @@ The response is for one attempt of the CI run. Without `ci_run_attempt`, it
 is the latest attempt that FlakeRadar has seen. Pass the attempt when you
 know it.
 
-- `reports` counts the run attempt's reports (JUnit and pipeline) as
+- `reports` counts the CI run attempt's reports (JUnit and pipeline) as
   `pending`, `processed` and `failed`. Ingest answers before it processes a
   report. Poll until `pending` is 0 before you trust an empty list.
   `failed` above 0 means some results are missing.
@@ -278,7 +278,7 @@ know it.
   `total_failures` gives the full count.
 - `failed_jobs` lists the failed jobs of that attempt. `outcome` is
   `explained` when a failing test in the same job explains the failure, and
-  `unexplained` for a failure in setup or infrastructure. A run can be red
+  `unexplained` for a failure in setup or infrastructure. A CI run can be red
   with an empty `failures` list and an `unexplained` job.
 - An unknown repo, CI run or attempt returns `404`. Processed reports are
   deleted after `REPORT_RETENTION_DAYS`. After that, `reports` shows 0 but

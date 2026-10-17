@@ -69,6 +69,11 @@ def issue_url(repo: str, number: int | None) -> str | None:
     return f"https://github.com/{repo}/issues/{number}" if number is not None else None
 
 
+def job_issue_url(repo: str, pipeline: Pipeline, job: Job) -> str | None:
+    """The GitHub issue a Job was filed as; only GitHub Pipelines file issues."""
+    return issue_url(repo, job.github_issue_number) if pipeline.provider == "github" else None
+
+
 def to_test_out(tc: TestCase, project: str, repo: str, threshold: float, trend: Trend | None = None) -> schemas.TestOut:
     return schemas.TestOut(
         id=tc.id,
@@ -481,7 +486,7 @@ def to_job_out(
         last_status=job.last_status,
         last_seen_at=job.last_seen_at,
         github_issue_number=job.github_issue_number,
-        github_issue_url=issue_url(repo.name, job.github_issue_number) if pipeline.provider == "github" else None,
+        github_issue_url=job_issue_url(repo.name, pipeline, job),
     )
 
 
@@ -762,7 +767,7 @@ async def _test_job_links(db: AsyncSession, repo_name: str, ci_job_ids: set[str]
 # --- CI run failures (issue #5) -----------------------------------------
 
 FAILURES_LIMIT = 500
-MESSAGE_MAX = 1024
+CI_RUN_MESSAGE_MAX = 1024
 
 
 class CiRunNotFound(LookupError):
@@ -790,27 +795,27 @@ async def ci_run_failures(
     if not attempts:
         raise CiRunNotFound("CI run not found")
     if ci_run_attempt is None:
-        attempt = max(attempts)
-    elif ci_run_attempt in attempts:
-        attempt = ci_run_attempt
-    else:
+        ci_run_attempt = max(attempts)
+    elif ci_run_attempt not in attempts:
         raise CiRunNotFound("CI run attempt not found")
-    failures, total = await _ci_run_test_failures(db, repo_row, ci_run_id, attempt, threshold=threshold, limit=limit)
+    failures, total = await _ci_run_test_failures(
+        db, repo_row, ci_run_id, ci_run_attempt, threshold=threshold, limit=limit
+    )
     return schemas.CiRunFailuresOut(
         repo=repo_row.name,
         ci_run_id=ci_run_id,
-        ci_run_attempt=attempt,
+        ci_run_attempt=ci_run_attempt,
         flake_threshold=threshold,
-        reports=await _ci_run_report_counts(db, repo_row.id, ci_run_id, attempt),
+        reports=await _ci_run_report_counts(db, repo_row.id, ci_run_id, ci_run_attempt),
         total_failures=total,
         truncated=total > len(failures),
         failures=failures,
-        failed_jobs=await _ci_run_failed_jobs(db, repo_row, ci_run_id, attempt, threshold=threshold),
+        failed_jobs=await _ci_run_failed_jobs(db, repo_row, ci_run_id, ci_run_attempt, threshold=threshold),
     )
 
 
 async def _ci_run_attempts(db: AsyncSession, repo_id: int, ci_run_id: str) -> set[int]:
-    """Every attempt number known for one CI run in one Repo (NULL counts as 1)."""
+    """Every known attempt of one CI run in one Repo (NULL counts as 1)."""
     reports = await db.execute(
         select(func.coalesce(Report.ci_run_attempt, 1))
         .where(Report.repo_id == repo_id, Report.ci_run_id == ci_run_id)
@@ -833,15 +838,15 @@ async def _ci_run_attempts(db: AsyncSession, repo_id: int, ci_run_id: str) -> se
 
 
 async def _ci_run_report_counts(
-    db: AsyncSession, repo_id: int, ci_run_id: str, attempt: int
+    db: AsyncSession, repo_id: int, ci_run_id: str, ci_run_attempt: int
 ) -> schemas.ReportCountsOut:
-    """Counts of both Report kinds for one Repo, CI run and attempt."""
+    """Counts of both Report kinds for one Repo and CI run attempt."""
     rows = await db.execute(
         select(Report.status, func.count())
         .where(
             Report.repo_id == repo_id,
             Report.ci_run_id == ci_run_id,
-            func.coalesce(Report.ci_run_attempt, 1) == attempt,
+            func.coalesce(Report.ci_run_attempt, 1) == ci_run_attempt,
         )
         .group_by(Report.status)
     )
@@ -854,7 +859,7 @@ async def _ci_run_report_counts(
 
 
 async def _ci_run_test_failures(
-    db: AsyncSession, repo: Repo, ci_run_id: str, attempt: int, *, threshold: float, limit: int
+    db: AsyncSession, repo: Repo, ci_run_id: str, ci_run_attempt: int, *, threshold: float, limit: int
 ) -> tuple[list[schemas.CiRunTestFailureOut], int]:
     """Failing (Test, Run) pairs of one CI run attempt, capped at `limit`; also the uncapped count."""
     run_ids = (
@@ -863,7 +868,7 @@ async def _ci_run_test_failures(
         .where(
             Project.repo_id == repo.id,
             TestRun.ci_run_id == ci_run_id,
-            func.coalesce(TestRun.ci_run_attempt, 1) == attempt,
+            func.coalesce(TestRun.ci_run_attempt, 1) == ci_run_attempt,
         )
         .scalar_subquery()
     )
@@ -924,7 +929,7 @@ async def _ci_run_test_failures(
                 status=execs[-1].status,
                 failed_attempts=len(failing),
                 failure_category=last_failing.failure_category,
-                message=last_failing.message[:MESSAGE_MAX],
+                message=last_failing.message[:CI_RUN_MESSAGE_MAX],
                 tier=tier_for(tc.flakiness_score, threshold),
                 flakiness_score=tc.flakiness_score,
                 confirmed_flake_count=tc.confirmed_flake_count,
@@ -938,7 +943,7 @@ async def _ci_run_test_failures(
 
 
 async def _ci_run_failed_jobs(
-    db: AsyncSession, repo: Repo, ci_run_id: str, attempt: int, *, threshold: float
+    db: AsyncSession, repo: Repo, ci_run_id: str, ci_run_attempt: int, *, threshold: float
 ) -> list[schemas.CiRunFailedJobOut]:
     """Failed Job executions of one CI run attempt, each explained or unexplained."""
     rows = (
@@ -949,7 +954,7 @@ async def _ci_run_failed_jobs(
             .where(
                 Pipeline.repo_id == repo.id,
                 JobExecution.ci_run_id == ci_run_id,
-                JobExecution.ci_run_attempt == attempt,
+                JobExecution.ci_run_attempt == ci_run_attempt,
                 JobExecution.status == JOB_FAILED,
             )
             .order_by(Pipeline.name, Job.name, JobExecution.id)
@@ -969,7 +974,7 @@ async def _ci_run_failed_jobs(
             confirmed_flake_count=job.confirmed_flake_count,
             clean_streak=job.clean_streak,
             github_issue_number=job.github_issue_number,
-            github_issue_url=issue_url(repo.name, job.github_issue_number) if pipeline.provider == "github" else None,
+            github_issue_url=job_issue_url(repo.name, pipeline, job),
         )
         for e, job, pipeline in rows
     ]

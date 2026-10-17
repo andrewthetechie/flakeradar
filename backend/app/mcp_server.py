@@ -43,8 +43,8 @@ FlakeRadar also tracks CI jobs: a Pipeline is a named workflow (e.g.
 .github/workflows/ci.yml), a Job is one job inside it. Job scores count only
 UNEXPLAINED failures (a failure with no failing test in the same job is
 infrastructure, not a flaky test). Start with top_flaky_jobs(repo) for
-CI-level problems, then get_job. For one red CI run (the provider's workflow
-run ID), call ci_run_failures(repo, ci_run_id): the tests that failed in its
+CI-level problems, then get_job. For one red CI run (by its CI run ID, e.g.
+GITHUB_RUN_ID), call ci_run_failures(repo, ci_run_id): the tests that failed in its
 latest attempt (or ci_run_attempt=N) with each test's current tier and score,
 and its failed jobs marked explained or unexplained. While reports.pending is
 above 0 the results are not complete yet.
