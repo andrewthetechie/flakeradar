@@ -4,9 +4,9 @@
 # (exact names, no globs). Needs FLAKERADAR_URL and FLAKERADAR_TOKEN secrets.
 #
 # SUMMARY_JOBS lists the summary jobs that run no tests and only report whether
-# the jobs they `needs` succeeded (the alls-green pattern). FlakeRadar never
-# scores those jobs, and their failure is explained when another job in the
-# same run attempt failed. The GitHub API does not expose a job's `needs`,
+# the jobs they `needs` succeeded (the alls-green pattern). Their failure is
+# explained, and not scored, when a non-summary job failed in the same CI run
+# attempt. The GitHub API does not expose a job's `needs`,
 # so list them by name here.
 name: FlakeRadar jobs
 on:

@@ -18,7 +18,7 @@ from sqlalchemy.exc import InterfaceError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from . import scoring
-from .attribution import job_failure_explained_clause
+from .attribution import job_execution_explained
 from .batching import chunks
 from .classify import classify_failure, dominant_category
 from .config import get_settings
@@ -269,13 +269,7 @@ async def _job_history(
                 JobExecution.commit_sha,
                 JobExecution.branch,
                 JobExecution.status,
-                job_failure_explained_clause(
-                    JobExecution.ci_job_id,
-                    JobExecution.ci_run_id,
-                    JobExecution.ci_run_attempt,
-                    Pipeline.repo_id,
-                    Job.summary,
-                ).label("explained"),
+                job_execution_explained().label("explained"),
                 Repo.default_branch,
                 rn_all,
                 rn_def,

@@ -1,4 +1,4 @@
-"""Job attribution: which failed Job executions a failing Test or summary Job explains.
+"""Job attribution: which failed Job executions are explained, and by what.
 
 A failed Job execution is *explained* when:
 
@@ -45,7 +45,7 @@ def summary_explained_clause(
     repo_id: ColumnElement[int],
     summary_flag: ColumnElement[bool],
 ) -> ColumnElement[bool]:
-    """True when this execution is a summary Job whose attempt also failed a real Job.
+    """True when this execution is a summary Job whose attempt also failed a non-summary Job.
 
     A summary Job (alls-green) fails whenever any Job it ``needs`` fails, so on
     its own its failure says nothing about the summary Job. The sibling tables
@@ -93,6 +93,17 @@ def job_failure_explained_clause(
     return or_(
         explained_clause(ci_job_id, repo_id),
         summary_explained_clause(ci_run_id, ci_run_attempt, repo_id, summary_flag),
+    )
+
+
+def job_execution_explained() -> ColumnElement[bool]:
+    """`job_failure_explained_clause` for a query that joins JobExecution, Job and Pipeline."""
+    return job_failure_explained_clause(
+        JobExecution.ci_job_id,
+        JobExecution.ci_run_id,
+        JobExecution.ci_run_attempt,
+        Pipeline.repo_id,
+        Job.summary,
     )
 
 
@@ -144,13 +155,7 @@ async def unexplained_failure_counts(db: AsyncSession, job_ids: list[int], windo
             select(
                 JobExecution.job_id,
                 JobExecution.status,
-                job_failure_explained_clause(
-                    JobExecution.ci_job_id,
-                    JobExecution.ci_run_id,
-                    JobExecution.ci_run_attempt,
-                    Pipeline.repo_id,
-                    Job.summary,
-                ).label("explained"),
+                job_execution_explained().label("explained"),
                 rn,
             )
             .join(Job, Job.id == JobExecution.job_id)

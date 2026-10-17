@@ -27,8 +27,8 @@ class JobResultIn(BaseModel):
     started_at: datetime | None = None
     completed_at: datetime | None = None
     # A summary Job (CONTEXT.md) runs no tests and only reports whether the Jobs
-    # it needs succeeded. It is never scored, and a failed one is explained by a
-    # failed non-summary Job in the same CI run attempt.
+    # it needs succeeded. A failed one is explained, and so never scored, when a
+    # non-summary Job failed in the same CI run attempt.
     summary: bool = False
 
 
@@ -220,7 +220,7 @@ class JobOut(BaseModel):
     trend: Literal["worsening", "improving", "steady"] | None = None
     last_status: str
     last_seen_at: datetime
-    summary: bool  # a summary Job (CONTEXT.md); never scored
+    summary: bool  # a summary Job (CONTEXT.md); its explained failures are never scored
     github_issue_number: int | None
     github_issue_url: str | None  # only when provider == "github"
 
@@ -336,7 +336,7 @@ class CiRunFailedJobOut(BaseModel):
     ci_job_id: str
     url: str
     outcome: Literal["explained", "unexplained"]
-    summary: bool  # a summary Job is explained by another failed Job, not by a test
+    summary: bool  # a summary Job is explained by a failed non-summary Job, not by a test
     tier: Tier
     flakiness_score: float
     confirmed_flake_count: int

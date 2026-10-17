@@ -241,13 +241,14 @@ reporter's `SUMMARY_JOBS` list does this):
 {"ci_job_id": "789", "name": "alls-green", "status": "failed", "summary": true}
 ```
 
-A failed summary job is **explained** when another failed job in the same run
-attempt exists, and FlakeRadar never scores it. So it does not appear as
-`unexplained` in `failed_jobs`, and it does not raise its own score. If a
-summary job fails with no failed job beside it (its own step broke), the
-failure stays **unexplained**. FlakeRadar only accepts a failure of a
-non-summary job as the explanation, so a chain of summary jobs cannot blame each
-other. No CI API publishes a job's `needs`, so `SUMMARY_JOBS` must name them.
+A failed summary job is **explained** when a non-summary job failed in the
+same CI run attempt, and FlakeRadar never scores an explained failure. So it
+does not appear as `unexplained` in `failed_jobs`, and it does not raise its
+own score. If a summary job fails with no failed non-summary job beside it (its
+own step broke), the failure stays **unexplained** and counts against it.
+FlakeRadar only accepts a failure of a non-summary job as the explanation, so a
+chain of summary jobs cannot blame each other. No CI API publishes a job's
+`needs`, so `SUMMARY_JOBS` must name them.
 
 ### Other CI providers
 
