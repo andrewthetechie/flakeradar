@@ -1,8 +1,9 @@
 """Retention: delete old processed Reports and old Executions.
 
-Scores are cached on each Test, so pruning history never changes a score
-until the Test's next Run rescores it from what remains. Failed Reports are
-kept until a human deals with them.
+The prune rescores every Test and Job whose Executions it deletes, in the
+same transaction, so a Test or Job that stops running decays to a score of 0
+(and leaves the default leaderboard) instead of keeping its last cached score
+forever. Failed Reports are kept until a human deals with them.
 """
 
 import logging
@@ -23,6 +24,7 @@ from .models import (
     TestScoreHistory,
     utcnow,
 )
+from .processing import rescore, rescore_jobs
 
 logger = logging.getLogger("flakeradar.retention")
 
@@ -51,6 +53,22 @@ async def prune(
     reports = await db.execute(
         delete(Report).where(Report.status == REPORT_PROCESSED, Report.processed_at < report_cutoff)
     )
+    # Collect the ids before the deletes, so the rows that will disappear can still be
+    # rescored afterwards (the caller owns the transaction, so this stays atomic).
+    stale_test_ids = list(
+        (
+            await db.execute(
+                select(TestExecution.test_case_id).where(TestExecution.created_at < execution_cutoff).distinct()
+            )
+        ).scalars()
+    )
+    stale_job_ids = list(
+        (
+            await db.execute(
+                select(JobExecution.job_id).where(JobExecution.created_at < execution_cutoff).distinct()
+            )
+        ).scalars()
+    )
     executions = await db.execute(delete(TestExecution).where(TestExecution.created_at < execution_cutoff))
     job_executions = await db.execute(delete(JobExecution).where(JobExecution.created_at < execution_cutoff))
     runs = await db.execute(
@@ -65,6 +83,13 @@ async def prune(
     job_score_history = await db.execute(
         delete(JobScoreHistory).where(JobScoreHistory.day < (now - timedelta(days=history_days)).date())
     )
+    # Rescore the Tests and Jobs whose Executions were deleted, in this same
+    # transaction: a Test with no Executions left scores 0 and leaves the default
+    # leaderboard; one with Executions left is scored on what remains.
+    if stale_test_ids:
+        await rescore(db, stale_test_ids)
+    if stale_job_ids:
+        await rescore_jobs(db, stale_job_ids)
     return PruneResult(
         reports=reports.rowcount,
         executions=executions.rowcount,

@@ -6,9 +6,11 @@ from datetime import timedelta
 from app.models import (
     REPORT_FAILED,
     REPORT_PROCESSED,
+    Job,
     JobExecution,
     JobScoreHistory,
     Report,
+    TestCase,
     TestExecution,
     TestRun,
     TestScoreHistory,
@@ -130,3 +132,95 @@ async def test_prune_deletes_old_job_score_history_rows(db):
     assert result.score_history == 1
     remaining = (await db.execute(select(func.count()).select_from(JobScoreHistory))).scalar()
     assert remaining == 1
+
+
+async def test_prune_rescores_test_with_no_executions_left(db, client):
+    now = utcnow()
+    old = now - timedelta(days=100)
+    proj = await make_project(db)
+    tc = await make_test_case(db, proj, flakiness_score=0.5, clean_streak=3)
+    run = await make_run(db, proj, commit_sha="old", created_at=old)
+    await make_execution(db, tc, run, created_at=old)
+    await db.commit()
+
+    result = await prune(db, now=now, report_days=7, execution_days=90)
+    await db.commit()
+    assert result.executions == 1
+
+    row = (await db.execute(select(TestCase).where(TestCase.id == tc.id))).scalar_one()
+    await db.refresh(row)
+    assert row.flakiness_score == 0.0
+    assert row.clean_streak == 0
+
+    page = (await client.get("/api/tests")).json()
+    assert page["total"] == 0
+    page = (await client.get("/api/tests?include_stable=true")).json()
+    assert [t["tier"] for t in page["items"]] == ["stable"]
+
+
+async def test_prune_rescores_test_from_remaining_executions(db):
+    now = utcnow()
+    old, recent = now - timedelta(days=100), now - timedelta(days=1)
+    proj = await make_project(db)
+    tc = await make_test_case(db, proj, flakiness_score=0.9, clean_streak=3)
+    old_run = await make_run(db, proj, commit_sha="old1", created_at=old)
+    await make_execution(db, tc, old_run, status="failed", created_at=old)
+    old_run2 = await make_run(db, proj, commit_sha="old2", created_at=old)
+    await make_execution(db, tc, old_run2, status="passed", created_at=old)
+    new_run = await make_run(db, proj, commit_sha="new1", created_at=recent)
+    await make_execution(db, tc, new_run, created_at=recent)
+    new_run2 = await make_run(db, proj, commit_sha="new2", created_at=recent)
+    await make_execution(db, tc, new_run2, created_at=recent)
+    await db.commit()
+
+    result = await prune(db, now=now, report_days=7, execution_days=90)
+    await db.commit()
+    assert result.executions == 2
+
+    row = (await db.execute(select(TestCase).where(TestCase.id == tc.id))).scalar_one()
+    await db.refresh(row)
+    assert row.flakiness_score == 0.0  # not the stale 0.9: the two remaining passes score 0
+    assert row.clean_streak == 2
+
+
+async def test_prune_rescores_job_with_no_executions_left(db, client):
+    now = utcnow()
+    old = now - timedelta(days=100)
+    pipe = await make_pipeline(db)
+    job = await make_job(db, pipe, flakiness_score=0.5, clean_streak=3)
+    await make_job_execution(db, job, ci_job_id="old", created_at=old)
+    await db.commit()
+
+    result = await prune(db, now=now, report_days=7, execution_days=90)
+    await db.commit()
+    assert result.job_executions == 1
+
+    row = (await db.execute(select(Job).where(Job.id == job.id))).scalar_one()
+    await db.refresh(row)
+    assert row.flakiness_score == 0.0
+    assert row.clean_streak == 0
+
+    page = (await client.get("/api/jobs?repo=acme/app")).json()
+    assert page["total"] == 0
+    page = (await client.get("/api/jobs?repo=acme/app&include_stable=true")).json()
+    assert [j["tier"] for j in page["items"]] == ["stable"]
+
+
+async def test_prune_rescores_job_from_remaining_executions(db):
+    now = utcnow()
+    old, recent = now - timedelta(days=100), now - timedelta(days=1)
+    pipe = await make_pipeline(db)
+    job = await make_job(db, pipe, flakiness_score=0.9, clean_streak=3)
+    await make_job_execution(db, job, status="failed", ci_job_id="old", created_at=old)
+    await make_job_execution(db, job, ci_job_id="new1", created_at=recent)
+    await make_job_execution(db, job, ci_job_id="new2", created_at=recent)
+    await db.commit()
+
+    result = await prune(db, now=now, report_days=7, execution_days=90)
+    await db.commit()
+    assert result.job_executions == 1
+
+    row = (await db.execute(select(Job).where(Job.id == job.id))).scalar_one()
+    await db.refresh(row)
+    assert row.flakiness_score == 0.0  # not the stale 0.9: the two remaining passes score 0
+    assert row.clean_streak == 2

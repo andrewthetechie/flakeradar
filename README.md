@@ -615,6 +615,10 @@ Each test and job also has:
 
 The detail panel shows the score for the last 90 days as a sparkline.
 FlakeRadar deletes history after 365 days (`SCORE_HISTORY_RETENTION_DAYS`).
+When retention deletes a test's or job's executions
+(`EXECUTION_RETENTION_DAYS`), its score is recomputed from the executions
+that remain; with none left it becomes 0 and the test or job leaves the
+default leaderboard.
 
 ## Configuration
 
