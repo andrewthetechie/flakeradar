@@ -1,6 +1,7 @@
 """GitHub issues are filed in each Test's own Repo; failures never raise."""
 
 import json
+import logging
 
 import httpx
 import pytest
@@ -126,6 +127,30 @@ def test_run_hint_matches_the_test_framework_by_file_extension():
     )
 
 
+def test_rate_limited_classifies_only_throttling():
+    """429s and real rate-limit 403s only; a permission 403 must not look like one."""
+    rl = github_integration._rate_limited
+
+    def resp(status: int, *, headers=None, body=None, raw: str | None = None) -> httpx.Response:
+        if raw is not None:
+            return httpx.Response(status, headers=headers or {}, text=raw)
+        return httpx.Response(status, headers=headers or {}, json=body if body is not None else {})
+
+    assert rl(resp(429))
+    assert rl(resp(403, headers={"x-ratelimit-remaining": "0"}))
+    assert rl(resp(403, headers={"retry-after": "60"}))
+    assert rl(resp(403, body={"message": "You have exceeded a secondary rate limit"}))
+    assert rl(resp(403, body={"message": "You have exceeded a Secondary Rate Limit"}))
+    assert not rl(resp(403, body={"message": "Resource not accessible by personal access token"}))
+    assert not rl(resp(403, body={}))
+    assert not rl(resp(403, raw="<html>Gateway</html>"))  # non-JSON body must not raise
+    assert not rl(resp(403, raw="[1, 2]"))  # JSON, but not an object
+    assert not rl(resp(403, raw="null"))
+    assert not rl(resp(404))
+    assert not rl(resp(410))
+    assert not rl(resp(201, body={"number": 5}))
+
+
 async def test_does_not_refile_or_file_below_threshold(db, gh_settings):
     filed = await _flaky_test(db, name="filed", github_issue_number=5)
     proj = await make_project(db, "acme/other")
@@ -148,6 +173,63 @@ async def test_rate_limit_stops_batch_and_404_continues(db, gh_settings):
     assert len(calls) == 2
     await db.refresh(a)
     assert a.github_issue_number is None
+
+
+async def test_permission_403_skips_repo_and_files_other_repos(db, gh_settings, caplog):
+    """A 403 that is not a rate limit (bad token for one repo) costs only that repo."""
+    a1 = await _flaky_test(db, repo="acme/a", project="p1", name="a1")
+    a2 = await _flaky_test(db, repo="acme/a", project="p2", name="a2")
+    b = await _flaky_test(db, repo="acme/b", name="b")
+    # A body longer than 300 characters: only its first 300 belong in the log.
+    detail = "Resource not accessible by personal access token" + "x" * 400
+    body = json.dumps({"message": detail})
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if request.url.path.startswith("/repos/acme/a/"):
+            return httpx.Response(403, text=body)
+        return httpx.Response(201, json={"number": 88})
+
+    with caplog.at_level(logging.WARNING, logger="flakeradar.github"):
+        await github_integration.file_issues_for(db, [a1.id, a2.id, b.id], transport=httpx.MockTransport(handler))
+    # a2 is never retried: the whole repo is skipped for the rest of the batch.
+    assert [r.url.path for r in calls] == ["/repos/acme/a/issues", "/repos/acme/b/issues"]
+    warnings = [r.getMessage() for r in caplog.records if "skipped for repo" in r.getMessage()]
+    assert len(warnings) == 1
+    assert "acme/a" in warnings[0] and "403" in warnings[0]
+    assert body[:300] in warnings[0] and body[300:] not in warnings[0]
+    await db.refresh(a1)
+    await db.refresh(a2)
+    await db.refresh(b)
+    assert a1.github_issue_number is None
+    assert a2.github_issue_number is None
+    assert b.github_issue_number == 88
+
+
+@pytest.mark.parametrize("status", [404, 410])
+async def test_404_and_410_skip_repo_for_rest_of_batch(db, gh_settings, caplog, status):
+    """Issues disabled (404) or a moved repo (410): one warning per repo, then go on."""
+    a1 = await _flaky_test(db, repo="acme/a", project="p1", name="a1")
+    a2 = await _flaky_test(db, repo="acme/a", project="p2", name="a2")
+    b = await _flaky_test(db, repo="acme/b", name="b")
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if request.url.path.startswith("/repos/acme/a/"):
+            return httpx.Response(status, json={"message": "Not Found"})
+        return httpx.Response(201, json={"number": 99})
+
+    with caplog.at_level(logging.WARNING, logger="flakeradar.github"):
+        await github_integration.file_issues_for(db, [a1.id, a2.id, b.id], transport=httpx.MockTransport(handler))
+    # a2 is never retried: the repo is skipped for the rest of the batch.
+    assert [r.url.path for r in calls] == ["/repos/acme/a/issues", "/repos/acme/b/issues"]
+    skip_warnings = [r.getMessage() for r in caplog.records if "skipped for repo acme/a" in r.getMessage()]
+    assert len(skip_warnings) == 1
+    assert str(status) in skip_warnings[0]
+    await db.refresh(b)
+    assert b.github_issue_number == 99
 
 
 async def test_network_error_never_raises(db, gh_settings):
@@ -287,12 +369,13 @@ async def _flaky_job(
     provider="github",
     name="e2e (ubuntu-latest)",
     *,
+    repo="acme/app",
     pipeline=".github/workflows/ci.yml",
     flakiness_score=0.6,
     confirmed_flake_count=1,
     **fields,
 ):
-    pipe = await make_pipeline(db, "acme/app", pipeline, provider=provider)
+    pipe = await make_pipeline(db, repo, pipeline, provider=provider)
     job = await make_job(
         db, pipe, name=name, flakiness_score=flakiness_score, confirmed_flake_count=confirmed_flake_count, **fields
     )
@@ -397,6 +480,40 @@ async def test_job_rate_limit_stops_batch(db, gh_settings):
     b = await _flaky_job(db, name="b", pipeline=".github/workflows/b.yml")
     calls, transport = _recorder(status=403, headers={"x-ratelimit-remaining": "0"})
     await github_integration.file_job_issues_for(db, [a.id, b.id], transport=transport)
+    assert len(calls) == 1
+
+
+async def test_job_permission_403_skips_repo_and_files_other_repos(db, gh_settings):
+    a = await _flaky_job(db, repo="acme/a", name="a", pipeline=".github/workflows/a.yml")
+    b = await _flaky_job(db, repo="acme/b", name="b", pipeline=".github/workflows/b.yml")
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if request.url.path.startswith("/repos/acme/a/"):
+            return httpx.Response(403, json={"message": "Resource not accessible by personal access token"})
+        return httpx.Response(201, json={"number": 88})
+
+    await github_integration.file_job_issues_for(db, [a.id, b.id], transport=httpx.MockTransport(handler))
+    assert [r.url.path for r in calls] == ["/repos/acme/a/issues", "/repos/acme/b/issues"]
+    await db.refresh(a)
+    await db.refresh(b)
+    assert a.github_issue_number is None
+    assert b.github_issue_number == 88
+
+
+async def test_429_stops_the_batch(db, gh_settings):
+    """A 429 is a rate limit like a primary 403: one request, then stop."""
+    ta = await _flaky_test(db, repo="acme/a", name="a")
+    tb = await _flaky_test(db, repo="acme/b", name="b")
+    calls, transport = _recorder(status=429)
+    await github_integration.file_issues_for(db, [ta.id, tb.id], transport=transport)
+    assert len(calls) == 1
+
+    ja = await _flaky_job(db, repo="acme/c", name="a", pipeline=".github/workflows/a.yml")
+    jb = await _flaky_job(db, repo="acme/d", name="b", pipeline=".github/workflows/b.yml")
+    calls, transport = _recorder(status=429)
+    await github_integration.file_job_issues_for(db, [ja.id, jb.id], transport=transport)
     assert len(calls) == 1
 
 
