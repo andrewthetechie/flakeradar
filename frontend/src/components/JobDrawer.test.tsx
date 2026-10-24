@@ -49,6 +49,7 @@ const history: JobHistory = {
           status: "failed",
         },
       ],
+      explained_by_jobs: [],
     },
     {
       id: 1,
@@ -66,6 +67,7 @@ const history: JobHistory = {
       completed_at: null,
       created_at: "2026-09-25T00:00:00Z",
       explained_by: [],
+      explained_by_jobs: [],
     },
   ],
   score_history: [],
@@ -73,15 +75,17 @@ const history: JobHistory = {
 
 function renderDrawer(overrides: Partial<JobHistory> = {}, onClose = vi.fn()) {
   const onOpenTest = vi.fn();
+  const onOpenJob = vi.fn();
   render(
     <JobDrawer
       jobId={3}
       history={{ ...history, ...overrides }}
       onClose={onClose}
       onOpenTest={onOpenTest}
+      onOpenJob={onOpenJob}
     />,
   );
-  return { onClose, onOpenTest };
+  return { onClose, onOpenTest, onOpenJob };
 }
 
 describe("JobDrawer", () => {
@@ -104,6 +108,44 @@ describe("JobDrawer", () => {
     expect(screen.getByText("backend · test_login (failed)")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "backend · test_login (failed)" }));
     expect(onOpenTest).toHaveBeenCalledWith(9);
+  });
+
+  it("shows the summary badge and buttons for the explaining sibling Jobs", async () => {
+    const { onOpenJob } = renderDrawer({
+      job: { ...history.job, summary: true, name: "alls-green" },
+      executions: [
+        {
+          ...history.executions[0],
+          explained_by: [],
+          explained_by_jobs: [
+            {
+              job_id: 7,
+              pipeline: ".github/workflows/ci.yml",
+              name: "test (ubuntu)",
+              url: "https://github.com/acme/app/actions/runs/1/jobs/2",
+            },
+          ],
+        },
+      ],
+    });
+    expect(
+      screen.getByRole("button", { name: ".github/workflows/ci.yml · test (ubuntu)" }),
+    ).toBeInTheDocument();
+    await userEvent.click(
+      screen.getByRole("button", { name: ".github/workflows/ci.yml · test (ubuntu)" }),
+    );
+    expect(onOpenJob).toHaveBeenCalledWith(7);
+    expect(
+      screen.getByTitle("Runs no tests; explained by a failed job in the same CI run attempt"),
+    ).toBeInTheDocument();
+  });
+
+  it("shows no badge and no sibling Job buttons for a non-summary Job", () => {
+    renderDrawer();
+    expect(
+      screen.queryByTitle("Runs no tests; explained by a failed job in the same CI run attempt"),
+    ).toBeNull();
+    expect(screen.queryAllByTitle("Open this Job")).toHaveLength(0);
   });
 
   it("renders the CI link when present", () => {

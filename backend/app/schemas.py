@@ -244,6 +244,15 @@ class ExplainingTestOut(BaseModel):
     status: str  # failed | error
 
 
+class ExplainingJobOut(BaseModel):
+    __test__ = False
+
+    job_id: int
+    pipeline: str
+    name: str
+    url: str  # the sibling execution's CI url ("" when the reporter sent none)
+
+
 class JobExecutionOut(BaseModel):
     __test__ = False
 
@@ -262,6 +271,7 @@ class JobExecutionOut(BaseModel):
     completed_at: datetime | None
     created_at: datetime
     explained_by: list[ExplainingTestOut]  # empty unless outcome == "explained"
+    explained_by_jobs: list[ExplainingJobOut]  # failed sibling Jobs; only a summary Job's explained executions
 
 
 class JobHistoryOut(BaseModel):

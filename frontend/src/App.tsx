@@ -264,6 +264,7 @@ export default function App() {
           history={jobHistory}
           onClose={closeDrawer}
           onOpenTest={openTestFromJob}
+          onOpenJob={(jobId) => setView({ job: jobId })}
         />
       )}
 

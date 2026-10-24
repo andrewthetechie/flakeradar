@@ -250,6 +250,10 @@ FlakeRadar only accepts a failure of a non-summary job as the explanation, so a
 chain of summary jobs cannot blame each other. No CI API publishes a job's
 `needs`, so `SUMMARY_JOBS` must name them.
 
+The job history API and MCP `get_job` return those failed sibling jobs in
+`explained_by_jobs` on each explained execution, and the UI's job drawer links
+straight to them. Summary jobs are marked with a `summary` badge.
+
 ### Other CI providers
 
 Any CI can send the same JSON to `POST /api/ingest/pipeline`:

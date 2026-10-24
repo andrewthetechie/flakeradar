@@ -14,14 +14,40 @@ job results and JUnit reports arrive in either order.
 """
 
 from collections import defaultdict
+from collections.abc import Iterable
 
-from sqlalchemy import ColumnElement, Exists, and_, exists, func, or_, select
+from sqlalchemy import ColumnElement, Exists, and_, exists, func, or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from .batching import chunks
 from .models import JOB_FAILED, Job, JobExecution, Pipeline, Project, TestExecution, TestRun
 from .scoring import FAILING
+
+# Most explaining sibling Jobs listed per (ci_run_id, ci_run_attempt) pair.
+SIBLING_MAX = 20
+
+
+def _sibling_conditions(
+    status: ColumnElement[str],
+    summary_flag: ColumnElement[bool],
+    sibling_repo_id: ColumnElement[int],
+    repo_id: ColumnElement[int] | int,
+) -> list[ColumnElement[bool]]:
+    """What makes a Job execution an *explaining sibling*: a failed execution of a
+    non-summary Job in the given Repo.
+
+    Takes the sibling columns (aliased or plain) so it is shared by
+    `summary_explained_clause`, which adds the same-attempt correlation and the
+    empty-run-id guard, and `summary_explaining_siblings`, which selects the
+    siblings of whole (ci_run_id, ci_run_attempt) pairs — so the rule cannot drift
+    between scoring, the read API and issue filing.
+    """
+    return [
+        status == JOB_FAILED,
+        summary_flag.is_(False),
+        sibling_repo_id == repo_id,
+    ]
 
 
 def explained_clause(ci_job_id: ColumnElement[str], repo_id: ColumnElement[int]) -> Exists:
@@ -70,9 +96,7 @@ def summary_explained_clause(
             .where(
                 sibling.ci_run_id == ci_run_id,
                 sibling.ci_run_attempt == ci_run_attempt,
-                sibling.status == JOB_FAILED,
-                sibling_job.summary.is_(False),
-                sibling_pipeline.repo_id == repo_id,
+                *_sibling_conditions(sibling.status, sibling_job.summary, sibling_pipeline.repo_id, repo_id),
             )
         ),
     )
@@ -141,6 +165,48 @@ async def explained_ci_job_ids(db: AsyncSession, repo_id: int, ci_job_ids: list[
         )
         found.update(rows.scalars())
     return found
+
+
+async def summary_explaining_siblings(
+    db: AsyncSession, repo_id: int, pairs: Iterable[tuple[str, int]]
+) -> dict[tuple[str, int], list[tuple[int, str, str, str]]]:
+    """The failed non-summary Jobs that explain each (ci_run_id, ci_run_attempt) pair.
+
+    The sibling half of `summary_explained_clause`, stated once here: the read API
+    labels a summary Job's execution ``explained`` with that clause and lists these
+    Jobs beside it, so both must answer to one rule. Pairs with an empty ci_run_id
+    are dropped (see `summary_explained_clause`). One query covers every pair; each
+    pair gets at most SIBLING_MAX Jobs, oldest first, as rows
+    (job_id, pipeline, name, url).
+    """
+    wanted = sorted({pair for pair in pairs if pair[0] != ""})
+    if not wanted:
+        return {}
+    rows = (
+        await db.execute(
+            select(
+                JobExecution.ci_run_id,
+                JobExecution.ci_run_attempt,
+                Job.id,
+                Pipeline.name,
+                Job.name,
+                JobExecution.url,
+            )
+            .join(Job, Job.id == JobExecution.job_id)
+            .join(Pipeline, Pipeline.id == Job.pipeline_id)
+            .where(
+                tuple_(JobExecution.ci_run_id, JobExecution.ci_run_attempt).in_(wanted),
+                *_sibling_conditions(JobExecution.status, Job.summary, Pipeline.repo_id, repo_id),
+            )
+            .order_by(JobExecution.id)
+        )
+    ).all()
+    by_pair: dict[tuple[str, int], list[tuple[int, str, str, str]]] = {}
+    for run_id, attempt, job_id, pipeline, name, url in rows:
+        siblings = by_pair.setdefault((run_id, attempt), [])
+        if len(siblings) < SIBLING_MAX:
+            siblings.append((job_id, pipeline, name, url))
+    return by_pair
 
 
 async def unexplained_failure_counts(db: AsyncSession, job_ids: list[int], window: int) -> dict[int, int]:
