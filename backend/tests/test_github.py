@@ -414,6 +414,38 @@ async def test_sync_never_raises_and_rate_limit_stops(db, gh_settings, session_f
     assert len(calls) == 1
 
 
+async def test_sync_commits_stamps_before_an_early_stop(db, gh_settings, session_factory):
+    """A rate-limit stop still commits the stamps of the rows checked before it."""
+    a = await _flaky_test(db, name="a", repo="acme/a", github_issue_number=1)
+    b = await _flaky_test(db, name="b", repo="acme/b", github_issue_number=2)
+
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if request.url.path == "/repos/acme/a/issues/1":
+            return httpx.Response(200, json={"state": "open"})
+        return httpx.Response(403, headers={"x-ratelimit-remaining": "0"})
+
+    await github_integration.sync_closed_issues(session_factory, transport=httpx.MockTransport(handler))
+    # The stop happens on the second request, after a was checked.
+    assert [r.url.path for r in calls] == ["/repos/acme/a/issues/1", "/repos/acme/b/issues/2"]
+    await db.refresh(a)
+    await db.refresh(b)
+    assert a.github_issue_checked_at is not None  # committed despite the early stop
+    assert b.github_issue_checked_at is None  # the rate-limited row was never stamped
+
+    calls.clear()
+
+    def open_handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(200, json={"state": "open"})
+
+    await github_integration.sync_closed_issues(session_factory, transport=httpx.MockTransport(open_handler))
+    # Rotation continues from the committed stamp: the unstamped row goes first.
+    assert [r.url.path for r in calls] == ["/repos/acme/b/issues/2", "/repos/acme/a/issues/1"]
+
+
 async def test_sync_permission_403_keeps_link_and_syncs_other_repos(db, gh_settings, session_factory):
     denied = await _flaky_test(db, name="denied", repo="acme/a", github_issue_number=11)
     closed = await _flaky_test(db, name="closed", repo="acme/b", github_issue_number=22)
