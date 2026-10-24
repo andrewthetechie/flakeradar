@@ -179,9 +179,11 @@ example during a redeploy.
 
 A retry can also happen after the server stored the report but the response was
 lost. Ingest then recognises the upload as a duplicate: the same body bytes
-under the same project, commit, `ci_run_id`, `ci_run_attempt` and `ci_job_id`
-return the first report's id and current status with `"duplicate": true`, and
-nothing new is queued, so the retry does not create a second Run. The check is
+under the same project, commit, `ci_run_id`, `ci_run_attempt`, `ci_job_id` and
+`line_base` return the first report's id and current status with
+`"duplicate": true`, and nothing new is queued, so the retry does not create a
+second Run. An upload with a *different* `line_base` is not that retry but a
+corrected report, so it is queued and processed like any other. The check is
 best effort: there is no unique constraint, so two identical uploads running in
 parallel can both be stored. And once `REPORT_RETENTION_DAYS` deletes the
 processed report, a later retry is ingested again; that is acceptable because a

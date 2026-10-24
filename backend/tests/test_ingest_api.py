@@ -194,3 +194,19 @@ async def test_ingest_duplicate_check_keys_on_job_and_project(client, db):
     assert retry.json()["duplicate"] is True
     assert retry.json()["report_id"] == responses[0].json()["report_id"]
     assert (await db.execute(select(func.count()).select_from(Report))).scalar_one() == 3
+
+
+async def test_ingest_duplicate_check_keys_on_line_base(client, db):
+    """A corrected re-upload (same bytes, other line_base) must be queued."""
+    content = make_junit([("t1", "failed")])
+    default = await client.post(_url(ci_run_id="61"), content=content, headers=AUTH)
+    corrected = await client.post(_url(ci_run_id="61", line_base="0"), content=content, headers=AUTH)
+    assert default.status_code == corrected.status_code == 202
+    assert corrected.json()["duplicate"] is False
+    assert corrected.json()["report_id"] != default.json()["report_id"]
+    # The same line_base again is still the retry of that upload.
+    retry = await client.post(_url(ci_run_id="61", line_base="0"), content=content, headers=AUTH)
+    assert retry.json()["duplicate"] is True
+    assert retry.json()["report_id"] == corrected.json()["report_id"]
+    assert (await db.execute(select(func.count()).select_from(Report))).scalar_one() == 2
+

@@ -99,6 +99,10 @@ async def ingest_endpoint(
                 Report.ci_run_id == ci_run_id,
                 Report.ci_run_attempt == ci_run_attempt,
                 Report.ci_job_id == db_ci_job_id,
+                # A retry repeats this Report's own line_base, so an upload with a
+                # different one is a corrected re-upload and must be queued. A
+                # stored NULL predates the parameter and is read as 1 (models.Report).
+                func.coalesce(Report.line_base, 1) == line_base,
                 Report.body_sha256 == digest,
             )
             .order_by(Report.id.desc())
