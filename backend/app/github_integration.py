@@ -24,7 +24,8 @@ Error handling: never raises.
   Repo, an archived Repo), or 404/410 (issues disabled) -> skip that Repo for
   the rest of the batch, log one warning per Repo, go on with the other Repos.
 - In the sync (`sync_closed_issues`), a permission 403 leaves the Issue link
-  as it is and skips that Repo for the rest of the run; 404 still re-arms.
+  as it is, skips that Repo for the rest of the run, and stamps the rows of
+  that Repo so they rotate; 404 still re-arms.
 - A response body FlakeRadar cannot use (a 201 without an issue number, a
   sync 200 that is not a JSON object with a `state`) -> log a warning, go on;
   nothing is stored and no link is cleared.
@@ -541,6 +542,7 @@ async def sync_closed_issues(
             ) as client:
                 for obj, repo, entity in rows:
                     if repo in skipped:
+                        obj.github_issue_checked_at = utcnow()  # unreadable repo this run; rotate it like a checked row
                         continue
                     if not await _clear_if_closed(client, obj, repo, entity, skipped):
                         break
@@ -555,11 +557,12 @@ async def _clear_if_closed(
     """Check one issue; clear its number on the ORM object when closed/gone.
 
     Returns False on a rate limit, when the batch must stop; a permission 403
-    adds `repo` to `skipped` and leaves the link as it is, as does a body this
-    cannot read. A row whose state this learned (a usable 200, open or closed,
-    or a 404) is stamped with `github_issue_checked_at`, which is what the
-    sync's ordering rotates on; the other outcomes stay at the front of the
-    queue and are retried first.
+    adds `repo` to `skipped`, stamps the row it hit, and leaves the link as it
+    is. A usable 200 (open or closed) and a 404 stamp it too, and so does the
+    sync's loop for rows skipped because their Repo is already in `skipped`:
+    `github_issue_checked_at` is what the sync's ordering rotates on. The only
+    unstamped outcomes are a rate-limit stop and a body this cannot read; those
+    stay at the front of the queue and are retried first.
     """
     resp = await client.get(f"/repos/{repo}/issues/{obj.github_issue_number}")
     if _rate_limited(resp):
@@ -574,6 +577,7 @@ async def _clear_if_closed(
             resp.status_code,
             resp.text[:300],
         )
+        obj.github_issue_checked_at = utcnow()  # the check happened: a denied Repo cannot pin the NULLS FIRST queue
         skipped.add(repo)
         return True
     if resp.status_code == 200:

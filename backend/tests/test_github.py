@@ -428,6 +428,7 @@ async def test_sync_permission_403_keeps_link_and_syncs_other_repos(db, gh_setti
     await db.refresh(closed)
     # A permission 403 is not a rate limit: the link stays as it is and repo B is still synced.
     assert denied.github_issue_number == 11
+    assert denied.github_issue_checked_at is not None  # the denied row rotates like a checked one
     assert closed.github_issue_number is None
 
 
@@ -455,6 +456,40 @@ async def test_sync_permission_403_skips_later_rows_in_that_repo(db, gh_settings
     assert a1.github_issue_number == 11
     assert a2.github_issue_number == 12
     assert b.github_issue_number is None
+    # The 403 row and the row skipped for its Repo both rotate instead of pinning the queue.
+    assert a1.github_issue_checked_at is not None
+    assert a2.github_issue_checked_at is not None
+
+
+async def test_sync_rotates_past_a_denied_repo(db, gh_settings, session_factory):
+    """A permanently denied Repo cannot pin the queue: the next run reaches the other Repo."""
+    gh_settings.github_sync_batch = 2
+    a1 = await _flaky_test(db, repo="acme/a", project="p1", name="a1", github_issue_number=11)
+    a2 = await _flaky_test(db, repo="acme/a", project="p2", name="a2", github_issue_number=12)
+    b = await _flaky_test(db, repo="acme/b", name="b", github_issue_number=22)
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if request.url.path.startswith("/repos/acme/a/"):
+            return httpx.Response(403, json={"message": "Resource not accessible by personal access token"})
+        return httpx.Response(200, json={"state": "closed"})
+
+    await github_integration.sync_closed_issues(session_factory, transport=httpx.MockTransport(handler))
+    # The cap holds a1 and a2: a1 takes the 403, a2 is skipped for its Repo and issues no GET.
+    assert [r.url.path for r in calls] == ["/repos/acme/a/issues/11"]
+
+    calls.clear()
+    await github_integration.sync_closed_issues(session_factory, transport=httpx.MockTransport(handler))
+    # The denied rows were stamped, so the never-checked Test of the other Repo sorts first.
+    assert [r.url.path for r in calls] == ["/repos/acme/b/issues/22", "/repos/acme/a/issues/11"]
+    await db.refresh(a1)
+    await db.refresh(a2)
+    await db.refresh(b)
+    assert a1.github_issue_number == 11  # a permission 403 clears nothing
+    assert a2.github_issue_number == 12
+    assert b.github_issue_number is None  # rotation reached repo B and its closed issue re-arms
+    assert b.github_issue_checked_at is not None
 
 
 @pytest.mark.parametrize("raw", ["", "<html>Gateway</html>", "[1, 2]", "null", '{"state": ["closed"]}'])
