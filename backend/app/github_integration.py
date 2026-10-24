@@ -17,8 +17,18 @@ touches the entity re-files it if it still meets the gate).
 
 Error handling: never raises.
 - No token configured            -> silent no-op (self-host without GitHub).
-- 403/429 (rate limit/forbidden) -> stop this batch, log a warning.
-- Any other failure (404, network) -> log, go on.
+- Rate limit on create (429, or a 403 that is one: `x-ratelimit-remaining: 0`,
+  a `retry-after` header, or a body message containing "rate limit") -> stop
+  this batch, log a warning.
+- Any other 403 on create (a permission error: a token without access to that
+  Repo, an archived Repo), or 404/410 (issues disabled) -> skip that Repo for
+  the rest of the batch, log one warning per Repo, go on with the other Repos.
+- In the sync (`sync_closed_issues`), a permission 403 leaves the Issue link
+  as it is and skips that Repo for the rest of the run; 404 still re-arms.
+- A response body FlakeRadar cannot use (a 201 without an issue number, a
+  sync 200 that is not a JSON object with a `state`) -> log a warning, go on;
+  nothing is stored and no link is cleared.
+- Any other failure (network) -> log, go on.
 """
 
 import logging
@@ -73,6 +83,48 @@ def _headers(token: str) -> dict[str, str]:
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
     }
+
+
+def _json_object(resp: httpx.Response) -> dict | None:
+    """The body parsed as a JSON object, or None when it is not one. Never raises."""
+    try:
+        payload = resp.json()
+    except ValueError:  # non-JSON body (a proxy error page, an empty response)
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _issue_number(resp: httpx.Response) -> int | None:
+    """The number of a created issue, or None when the 201 body does not carry one."""
+    body = _json_object(resp)
+    number = body.get("number") if body is not None else None
+    return number if isinstance(number, int) and not isinstance(number, bool) else None
+
+
+def _issue_state(resp: httpx.Response) -> str | None:
+    """The state of a fetched issue, or None when the 200 body does not report one."""
+    body = _json_object(resp)
+    state = body.get("state") if body is not None else None
+    return state if isinstance(state, str) else None
+
+
+def _rate_limited(resp: httpx.Response) -> bool:
+    """True when GitHub is throttling: 429, or a 403 that is a (primary or secondary) rate limit.
+
+    A 403 also means *permission* ("Resource not accessible by personal access
+    token", a token without access to one repo, an archived repo); treating
+    those as rate limits would stop the batch for every other Repo. Never
+    raises: an unparseable body simply is not a rate limit.
+    """
+    if resp.status_code == 429:
+        return True
+    if resp.status_code != 403:
+        return False
+    if resp.headers.get("x-ratelimit-remaining") == "0" or resp.headers.get("retry-after"):
+        return True
+    body = _json_object(resp)
+    message = body.get("message", "") if body is not None else ""
+    return "rate limit" in str(message).lower()
 
 
 _RUN_HINT_TEMPLATES: dict[str, str] = {
@@ -244,7 +296,10 @@ async def file_issues_for(
         async with httpx.AsyncClient(
             base_url=API_BASE, headers=_headers(s.github_token), timeout=15, transport=transport
         ) as client:
+            skipped: set[str] = set()
             for tc, repo, project, root in candidates:
+                if repo in skipped:
+                    continue
                 resp = await client.post(
                     f"/repos/{repo}/issues",
                     json={
@@ -254,15 +309,31 @@ async def file_issues_for(
                     },
                 )
                 if resp.status_code == 201:
-                    tc.github_issue_number = resp.json()["number"]
-                    await db.commit()
-                    logger.info("Filed issue %s#%s for test %s", repo, tc.github_issue_number, tc.id)
-                elif resp.status_code in (403, 429):
+                    number = _issue_number(resp)
+                    if number is None:
+                        logger.warning(
+                            "GitHub issue creation in %s returned 201 with no issue number: %s", repo, resp.text[:300]
+                        )
+                    else:
+                        tc.github_issue_number = number
+                        await db.commit()
+                        logger.info("Filed issue %s#%s for test %s", repo, tc.github_issue_number, tc.id)
+                elif _rate_limited(resp):
                     logger.warning(
-                        "GitHub rate limit / forbidden (remaining=%s); stopping batch",
+                        "GitHub rate limit (remaining=%s); stopping batch",
                         resp.headers.get("x-ratelimit-remaining"),
                     )
                     return
+                elif resp.status_code in (403, 404, 410):
+                    # Permission error, or issues disabled on this Repo: it costs
+                    # this Repo only, the rest of the batch goes on.
+                    logger.warning(
+                        "GitHub issue creation skipped for repo %s: %s %s",
+                        repo,
+                        resp.status_code,
+                        resp.text[:300],
+                    )
+                    skipped.add(repo)
                 else:
                     logger.warning(
                         "GitHub issue creation failed for test %s in %s: %s %s",
@@ -367,7 +438,10 @@ async def file_job_issues_for(
         async with httpx.AsyncClient(
             base_url=API_BASE, headers=_headers(s.github_token), timeout=15, transport=transport
         ) as client:
+            skipped: set[str] = set()
             for job, pipeline, repo in candidates:
+                if repo in skipped:
+                    continue
                 resp = await client.post(
                     f"/repos/{repo}/issues",
                     json={
@@ -377,15 +451,31 @@ async def file_job_issues_for(
                     },
                 )
                 if resp.status_code == 201:
-                    job.github_issue_number = resp.json()["number"]
-                    await db.commit()
-                    logger.info("Filed issue %s#%s for job %s", repo, job.github_issue_number, job.id)
-                elif resp.status_code in (403, 429):
+                    number = _issue_number(resp)
+                    if number is None:
+                        logger.warning(
+                            "GitHub issue creation in %s returned 201 with no issue number: %s", repo, resp.text[:300]
+                        )
+                    else:
+                        job.github_issue_number = number
+                        await db.commit()
+                        logger.info("Filed issue %s#%s for job %s", repo, job.github_issue_number, job.id)
+                elif _rate_limited(resp):
                     logger.warning(
-                        "GitHub rate limit / forbidden (remaining=%s); stopping batch",
+                        "GitHub rate limit (remaining=%s); stopping batch",
                         resp.headers.get("x-ratelimit-remaining"),
                     )
                     return
+                elif resp.status_code in (403, 404, 410):
+                    # Permission error, or issues disabled on this Repo: it costs
+                    # this Repo only, the rest of the batch goes on.
+                    logger.warning(
+                        "GitHub issue creation skipped for repo %s: %s %s",
+                        repo,
+                        resp.status_code,
+                        resp.text[:300],
+                    )
+                    skipped.add(repo)
                 else:
                     logger.warning(
                         "GitHub issue creation failed for job %s in %s: %s %s",
@@ -439,30 +529,58 @@ async def sync_closed_issues(
         if not test_rows and not job_rows:
             return
         rows = [(tc, repo, "test") for tc, repo in test_rows] + [(job, repo, "job") for job, repo in job_rows]
+        skipped: set[str] = set()
         try:
             async with httpx.AsyncClient(
                 base_url=API_BASE, headers=_headers(get_settings().github_token), timeout=15, transport=transport
             ) as client:
                 for obj, repo, entity in rows:
-                    if not await _clear_if_closed(client, obj, repo, entity):
+                    if repo in skipped:
+                        continue
+                    if not await _clear_if_closed(client, obj, repo, entity, skipped):
                         break
         except httpx.HTTPError as exc:
             logger.warning("GitHub unreachable, skipping issue-state sync: %s", exc)
         await db.commit()  # keeps whatever was cleared before a stop or a network error
 
 
-async def _clear_if_closed(client: httpx.AsyncClient, obj: Job | TestCase, repo: str, entity: str) -> bool:
+async def _clear_if_closed(
+    client: httpx.AsyncClient, obj: Job | TestCase, repo: str, entity: str, skipped: set[str]
+) -> bool:
     """Check one issue; clear its number on the ORM object when closed/gone.
 
-    Returns False on 403/429, when the batch must stop.
+    Returns False on a rate limit, when the batch must stop; a permission 403
+    adds `repo` to `skipped` and leaves the link as it is, as does a body this
+    cannot read.
     """
     resp = await client.get(f"/repos/{repo}/issues/{obj.github_issue_number}")
-    if resp.status_code in (403, 429):
-        logger.warning("GitHub rate limit / forbidden in sync; stopping")
+    if _rate_limited(resp):
+        logger.warning("GitHub rate limit in sync; stopping")
         return False
-    if resp.status_code == 200 and resp.json().get("state") == "closed":
-        logger.info("Issue closed %s#%s; re-arming %s %s", repo, obj.github_issue_number, entity, obj.id)
-        obj.github_issue_number = None
+    if resp.status_code == 403:
+        # Permission error: this Repo's links stay as they are; skip it for the
+        # rest of the sync and go on with the other Repos.
+        logger.warning(
+            "GitHub issue-state sync skipped for repo %s: %s %s",
+            repo,
+            resp.status_code,
+            resp.text[:300],
+        )
+        skipped.add(repo)
+        return True
+    if resp.status_code == 200:
+        state = _issue_state(resp)
+        if state is None:
+            # An unreadable body says nothing about the issue: leave the link alone.
+            logger.warning(
+                "GitHub issue-state sync got an unusable 200 body for %s#%s: %s",
+                repo,
+                obj.github_issue_number,
+                resp.text[:300],
+            )
+        elif state == "closed":
+            logger.info("Issue closed %s#%s; re-arming %s %s", repo, obj.github_issue_number, entity, obj.id)
+            obj.github_issue_number = None
     elif resp.status_code == 404:
         # Issue deleted or token can no longer see it — do not hold dedup forever.
         logger.info("Issue gone %s#%s; re-arming %s %s", repo, obj.github_issue_number, entity, obj.id)
