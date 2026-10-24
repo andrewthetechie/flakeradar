@@ -689,11 +689,7 @@ async def get_job(
         # the failed non-summary Jobs of the same CI run attempt. attribution owns
         # that rule — including the empty-run-id guard — so the "explained" outcome
         # and the Jobs listed beside it cannot drift apart.
-        pairs = {
-            (e.ci_run_id, e.ci_run_attempt)
-            for e in execs
-            if e.status == JOB_FAILED and e.ci_job_id in explained
-        }
+        pairs = {(e.ci_run_id, e.ci_run_attempt) for e in execs if e.status == JOB_FAILED and e.ci_job_id in explained}
         by_pair = await summary_explaining_siblings(db, repo.id, pairs)
         for j in exec_outs:
             if j.outcome == "explained":
