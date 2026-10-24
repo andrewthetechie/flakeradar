@@ -64,6 +64,8 @@ async def link_test_issue(
     _check_link("Test", tc.github_issue_number, number, repo=repo, url=url, replace=replace)
     previous = tc.github_issue_number
     tc.github_issue_number = number
+    if previous != number:
+        tc.github_issue_checked_at = None  # a new link is checked first
     await db.commit()
     logger.info("Linked issue %s#%s to test %s (was %s)", repo, number, tc.id, previous)
     return to_test_out(tc, project, repo, threshold)
@@ -76,6 +78,8 @@ async def unlink_test_issue(db: AsyncSession, test_id: int, *, threshold: float)
     tc, project, repo = row
     previous = tc.github_issue_number
     tc.github_issue_number = None
+    if previous is not None:
+        tc.github_issue_checked_at = None
     await db.commit()
     if previous is not None:
         logger.info("Unlinked issue %s#%s from test %s", repo, previous, tc.id)
@@ -94,6 +98,8 @@ async def link_job_issue(
     _check_link("Job", job.github_issue_number, number, repo=repo.name, url=url, replace=replace)
     previous = job.github_issue_number
     job.github_issue_number = number
+    if previous != number:
+        job.github_issue_checked_at = None  # a new link is checked first
     await db.commit()
     logger.info("Linked issue %s#%s to job %s (was %s)", repo.name, number, job.id, previous)
     return to_job_out(job, pipeline, repo, threshold)
@@ -106,6 +112,8 @@ async def unlink_job_issue(db: AsyncSession, job_id: int, *, threshold: float) -
     job, pipeline, repo = row
     previous = job.github_issue_number
     job.github_issue_number = None
+    if previous is not None:
+        job.github_issue_checked_at = None
     await db.commit()
     if previous is not None:
         logger.info("Unlinked issue %s#%s from job %s", repo.name, previous, job.id)

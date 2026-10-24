@@ -41,6 +41,10 @@ class Settings(BaseSettings):
     github_issue_min_proven_flakes: int = 0
     github_issue_min_failures: int = 0
 
+    # The maintenance sync checks this many linked Tests (and separately,
+    # linked Jobs) per run, oldest check first.
+    github_sync_batch: int = 2000
+
     # Tier classification threshold for the UI/API ("flaky" vs "suspect").
     # Independent of the GitHub filing gate above.
     flake_threshold: float = 0.30

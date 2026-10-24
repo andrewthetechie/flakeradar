@@ -23,11 +23,15 @@ Error handling: never raises.
 - Any other 403 on create (a permission error: a token without access to that
   Repo, an archived Repo), or 404/410 (issues disabled) -> skip that Repo for
   the rest of the batch, log one warning per Repo, go on with the other Repos.
-- In the sync (`sync_closed_issues`), a permission 403 leaves the Issue link
-  as it is and skips that Repo for the rest of the run; 404 still re-arms.
+- In the sync (`sync_closed_issues`), a definitive Repo-wide client error
+  (a permission 403, bad credentials 401, a gone Repo 410) leaves the Issue
+  link as it is, skips that Repo for the rest of the run, and stamps the rows
+  of that Repo so they rotate; 404 still re-arms.
 - A response body FlakeRadar cannot use (a 201 without an issue number, a
   sync 200 that is not a JSON object with a `state`) -> log a warning, go on;
-  nothing is stored and no link is cleared.
+  no issue number is stored and no link is cleared (the sync still stamps the
+  row's check time, so an unreadable link keeps rotating instead of pinning
+  the front of the queue).
 - Any other failure (network) -> log, go on.
 """
 
@@ -51,6 +55,7 @@ from .models import (
     TestCase,
     TestExecution,
     TestRun,
+    utcnow,
 )
 from .processing import ProcessOutcome
 from .scoring import FAILING
@@ -316,6 +321,7 @@ async def file_issues_for(
                         )
                     else:
                         tc.github_issue_number = number
+                        tc.github_issue_checked_at = None  # a new link is checked first
                         await db.commit()
                         logger.info("Filed issue %s#%s for test %s", repo, tc.github_issue_number, tc.id)
                 elif _rate_limited(resp):
@@ -458,6 +464,7 @@ async def file_job_issues_for(
                         )
                     else:
                         job.github_issue_number = number
+                        job.github_issue_checked_at = None  # a new link is checked first
                         await db.commit()
                         logger.info("Filed issue %s#%s for job %s", repo, job.github_issue_number, job.id)
                 elif _rate_limited(resp):
@@ -497,23 +504,25 @@ async def sync_closed_issues(
     GitHub reports that issue closed (or gone), clear the stored number so the
     next Report that touches the entity can re-file a fresh issue if it still
     meets the filing gate. Leader-only maintenance; checks each open issue with
-    its own sequential GET (capped at the 2000 most stale rows per run for each
-    of Tests and Jobs — the GitHub REST API has no bulk lookup by arbitrary
-    issue numbers). Never raises.
+    its own sequential GET (capped at the `FLAKERADAR_GITHUB_SYNC_BATCH` most
+    stale rows per run for each of Tests and Jobs, oldest check first
+    (`github_issue_checked_at` NULLS FIRST) — the GitHub REST API has no bulk
+    lookup by arbitrary issue numbers). Never raises.
 
     `transport` exists for tests (httpx.MockTransport); production passes None.
     """
     if not configured():
         return
     async with session_factory() as db:
+        batch = get_settings().github_sync_batch
         test_rows = (
             await db.execute(
                 select(TestCase, Repo.name)
                 .join(Project, TestCase.project_id == Project.id)
                 .join(Repo, Project.repo_id == Repo.id)
                 .where(TestCase.github_issue_number.is_not(None))
-                .order_by(TestCase.id)
-                .limit(2000)
+                .order_by(TestCase.github_issue_checked_at.asc().nulls_first(), TestCase.id)
+                .limit(batch)
             )
         ).all()
         job_rows = (
@@ -522,8 +531,8 @@ async def sync_closed_issues(
                 .join(Pipeline, Job.pipeline_id == Pipeline.id)
                 .join(Repo, Pipeline.repo_id == Repo.id)
                 .where(Job.github_issue_number.is_not(None))
-                .order_by(Job.id)
-                .limit(2000)
+                .order_by(Job.github_issue_checked_at.asc().nulls_first(), Job.id)
+                .limit(batch)
             )
         ).all()
         if not test_rows and not job_rows:
@@ -536,6 +545,7 @@ async def sync_closed_issues(
             ) as client:
                 for obj, repo, entity in rows:
                     if repo in skipped:
+                        obj.github_issue_checked_at = utcnow()  # unreadable repo this run; rotate it like a checked row
                         continue
                     if not await _clear_if_closed(client, obj, repo, entity, skipped):
                         break
@@ -549,17 +559,30 @@ async def _clear_if_closed(
 ) -> bool:
     """Check one issue; clear its number on the ORM object when closed/gone.
 
-    Returns False on a rate limit, when the batch must stop; a permission 403
-    adds `repo` to `skipped` and leaves the link as it is, as does a body this
-    cannot read.
+    Returns False on a rate limit, when the batch must stop; a definitive
+    Repo-wide client error (a permission 403, bad credentials 401, a gone
+    Repo 410) adds `repo` to `skipped` and leaves the link as it is.
+
+    Every row this got an answer for is stamped with `utcnow()` — open,
+    closed, gone, a Repo-wide client error, an unexpected status, and even a
+    body this cannot read — and so is a row skipped because its Repo is
+    already in `skipped`. `github_issue_checked_at` is what the sync's
+    ordering rotates on: an unstamped row sorts NULLS FIRST, so a link whose
+    answer keeps arriving unusable would take a batch slot on every single
+    run and starve the links behind it whenever the cap is below the linked
+    set. Only a rate-limit stop and a transport error leave a row unstamped,
+    so those are retried first.
     """
     resp = await client.get(f"/repos/{repo}/issues/{obj.github_issue_number}")
     if _rate_limited(resp):
         logger.warning("GitHub rate limit in sync; stopping")
         return False
-    if resp.status_code == 403:
-        # Permission error: this Repo's links stay as they are; skip it for the
-        # rest of the sync and go on with the other Repos.
+    # The request was answered, whatever it said: this row has been checked.
+    obj.github_issue_checked_at = utcnow()
+    if resp.status_code in (401, 403, 410):
+        # Definitive, Repo-wide client error (bad credentials, a permission
+        # error, a gone Repo): this Repo's links stay as they are; skip it for
+        # the rest of the sync and go on with the other Repos.
         logger.warning(
             "GitHub issue-state sync skipped for repo %s: %s %s",
             repo,

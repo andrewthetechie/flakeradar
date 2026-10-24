@@ -347,6 +347,54 @@ async def test_sync_rearms_closed_issue_only(db, gh_settings, session_factory):
     assert still_open.github_issue_number == 22
 
 
+async def test_sync_rotates_past_the_cap(db, gh_settings, session_factory):
+    """With a cap of 2 and 3 linked Tests, the third Test is checked on the second run."""
+    gh_settings.github_sync_batch = 2
+    first = await _flaky_test(db, project="p1", name="t1", github_issue_number=11)
+    await _flaky_test(db, project="p2", name="t2", github_issue_number=22)
+    await _flaky_test(db, project="p3", name="t3", github_issue_number=33)
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(200, json={"state": "open"})
+
+    await github_integration.sync_closed_issues(session_factory, transport=httpx.MockTransport(handler))
+    # Every stamp is NULL, so the first run takes the two lowest ids and clears nothing.
+    assert [r.url.path for r in calls] == ["/repos/acme/app/issues/11", "/repos/acme/app/issues/22"]
+    await db.refresh(first)
+    assert first.github_issue_number == 11
+    assert first.github_issue_checked_at is not None  # an open issue is still a check
+
+    calls.clear()
+    await github_integration.sync_closed_issues(session_factory, transport=httpx.MockTransport(handler))
+    # The never-checked Test is in the batch now, next to the oldest stamped row.
+    assert [r.url.path for r in calls] == ["/repos/acme/app/issues/33", "/repos/acme/app/issues/11"]
+
+
+async def test_sync_checks_never_checked_links_first(db, gh_settings, session_factory):
+    """A link that was never checked goes before links checked in an earlier run."""
+    gh_settings.github_sync_batch = 2
+    await _flaky_test(db, project="p1", name="t1", github_issue_number=11)
+    await _flaky_test(db, project="p2", name="t2", github_issue_number=22)
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(200, json={"state": "open"})
+
+    await github_integration.sync_closed_issues(session_factory, transport=httpx.MockTransport(handler))
+    assert len(calls) == 2  # both links carry a stamp from this run
+
+    fresh = await _flaky_test(db, project="p3", name="t3", github_issue_number=33)
+    gh_settings.github_sync_batch = 1
+    calls.clear()
+    await github_integration.sync_closed_issues(session_factory, transport=httpx.MockTransport(handler))
+    assert [r.url.path for r in calls] == ["/repos/acme/app/issues/33"]
+    await db.refresh(fresh)
+    assert fresh.github_issue_checked_at is not None
+
+
 async def test_sync_never_raises_and_rate_limit_stops(db, gh_settings, session_factory):
     await _flaky_test(db, name="a", repo="acme/a", github_issue_number=1)
     await _flaky_test(db, name="b", repo="acme/b", github_issue_number=2)
@@ -366,6 +414,38 @@ async def test_sync_never_raises_and_rate_limit_stops(db, gh_settings, session_f
     assert len(calls) == 1
 
 
+async def test_sync_commits_stamps_before_an_early_stop(db, gh_settings, session_factory):
+    """A rate-limit stop still commits the stamps of the rows checked before it."""
+    a = await _flaky_test(db, name="a", repo="acme/a", github_issue_number=1)
+    b = await _flaky_test(db, name="b", repo="acme/b", github_issue_number=2)
+
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if request.url.path == "/repos/acme/a/issues/1":
+            return httpx.Response(200, json={"state": "open"})
+        return httpx.Response(403, headers={"x-ratelimit-remaining": "0"})
+
+    await github_integration.sync_closed_issues(session_factory, transport=httpx.MockTransport(handler))
+    # The stop happens on the second request, after a was checked.
+    assert [r.url.path for r in calls] == ["/repos/acme/a/issues/1", "/repos/acme/b/issues/2"]
+    await db.refresh(a)
+    await db.refresh(b)
+    assert a.github_issue_checked_at is not None  # committed despite the early stop
+    assert b.github_issue_checked_at is None  # the rate-limited row was never stamped
+
+    calls.clear()
+
+    def open_handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(200, json={"state": "open"})
+
+    await github_integration.sync_closed_issues(session_factory, transport=httpx.MockTransport(open_handler))
+    # Rotation continues from the committed stamp: the unstamped row goes first.
+    assert [r.url.path for r in calls] == ["/repos/acme/b/issues/2", "/repos/acme/a/issues/1"]
+
+
 async def test_sync_permission_403_keeps_link_and_syncs_other_repos(db, gh_settings, session_factory):
     denied = await _flaky_test(db, name="denied", repo="acme/a", github_issue_number=11)
     closed = await _flaky_test(db, name="closed", repo="acme/b", github_issue_number=22)
@@ -380,6 +460,7 @@ async def test_sync_permission_403_keeps_link_and_syncs_other_repos(db, gh_setti
     await db.refresh(closed)
     # A permission 403 is not a rate limit: the link stays as it is and repo B is still synced.
     assert denied.github_issue_number == 11
+    assert denied.github_issue_checked_at is not None  # the denied row rotates like a checked one
     assert closed.github_issue_number is None
 
 
@@ -407,6 +488,70 @@ async def test_sync_permission_403_skips_later_rows_in_that_repo(db, gh_settings
     assert a1.github_issue_number == 11
     assert a2.github_issue_number == 12
     assert b.github_issue_number is None
+    # The 403 row and the row skipped for its Repo both rotate instead of pinning the queue.
+    assert a1.github_issue_checked_at is not None
+    assert a2.github_issue_checked_at is not None
+
+
+async def test_sync_rotates_past_a_denied_repo(db, gh_settings, session_factory):
+    """A permanently denied Repo cannot pin the queue: the next run reaches the other Repo."""
+    gh_settings.github_sync_batch = 2
+    a1 = await _flaky_test(db, repo="acme/a", project="p1", name="a1", github_issue_number=11)
+    a2 = await _flaky_test(db, repo="acme/a", project="p2", name="a2", github_issue_number=12)
+    b = await _flaky_test(db, repo="acme/b", name="b", github_issue_number=22)
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if request.url.path.startswith("/repos/acme/a/"):
+            return httpx.Response(403, json={"message": "Resource not accessible by personal access token"})
+        return httpx.Response(200, json={"state": "closed"})
+
+    await github_integration.sync_closed_issues(session_factory, transport=httpx.MockTransport(handler))
+    # The cap holds a1 and a2: a1 takes the 403, a2 is skipped for its Repo and issues no GET.
+    assert [r.url.path for r in calls] == ["/repos/acme/a/issues/11"]
+
+    calls.clear()
+    await github_integration.sync_closed_issues(session_factory, transport=httpx.MockTransport(handler))
+    # The denied rows were stamped, so the never-checked Test of the other Repo sorts first.
+    assert [r.url.path for r in calls] == ["/repos/acme/b/issues/22", "/repos/acme/a/issues/11"]
+    await db.refresh(a1)
+    await db.refresh(a2)
+    await db.refresh(b)
+    assert a1.github_issue_number == 11  # a permission 403 clears nothing
+    assert a2.github_issue_number == 12
+    assert b.github_issue_number is None  # rotation reached repo B and its closed issue re-arms
+    assert b.github_issue_checked_at is not None
+
+
+@pytest.mark.parametrize("status", [401, 410])
+async def test_sync_definitive_client_error_keeps_link_and_skips_repo(db, gh_settings, session_factory, status):
+    """A bad-credentials 401 or a gone-Repo 410 behaves like a permission 403.
+
+    Anything else would leave those rows forever unstamped, at the front of
+    the NULLS FIRST queue, starving the other Repos' links of batch slots.
+    """
+    a1 = await _flaky_test(db, repo="acme/a", project="p1", name="a1", github_issue_number=11)
+    a2 = await _flaky_test(db, repo="acme/a", project="p2", name="a2", github_issue_number=12)
+    closed = await _flaky_test(db, repo="acme/b", name="closed", github_issue_number=22)
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if request.url.path.startswith("/repos/acme/a/"):
+            return httpx.Response(status, json={"message": "no"})
+        return httpx.Response(200, json={"state": "closed"})
+
+    await github_integration.sync_closed_issues(session_factory, transport=httpx.MockTransport(handler))
+    # a1 takes the error, a2 is skipped for its Repo without a GET, repo B still syncs.
+    assert [r.url.path for r in calls] == ["/repos/acme/a/issues/11", "/repos/acme/b/issues/22"]
+    await db.refresh(a1)
+    await db.refresh(a2)
+    await db.refresh(closed)
+    assert a1.github_issue_number == 11  # a definitive client error clears nothing
+    assert a1.github_issue_checked_at is not None  # but the row rotates like a checked one
+    assert a2.github_issue_checked_at is not None
+    assert closed.github_issue_number is None  # the other Repos' links still re-arm
 
 
 @pytest.mark.parametrize("raw", ["", "<html>Gateway</html>", "[1, 2]", "null", '{"state": ["closed"]}'])
@@ -432,6 +577,35 @@ async def test_sync_malformed_200_body_never_raises_and_keeps_the_link(db, gh_se
     warnings = [r.getMessage() for r in caplog.records if "unusable" in r.getMessage()]
     assert len(warnings) == 1
     assert "acme/a#11" in warnings[0]
+
+
+async def test_sync_rotates_past_an_unreadable_link(db, gh_settings, session_factory):
+    """A permanently unreadable 200 body rotates instead of starving the other links."""
+    gh_settings.github_sync_batch = 2
+    bad = await _flaky_test(db, repo="acme/a", project="p1", name="a", github_issue_number=11)
+    await _flaky_test(db, repo="acme/b", project="p2", name="b", github_issue_number=22)
+    third = await _flaky_test(db, repo="acme/c", project="p3", name="c", github_issue_number=33)
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if request.url.path.startswith("/repos/acme/a/"):
+            return httpx.Response(200, text="<html>Gateway</html>")
+        return httpx.Response(200, json={"state": "open"})
+
+    await github_integration.sync_closed_issues(session_factory, transport=httpx.MockTransport(handler))
+    # Every stamp is NULL, so the first run takes the two lowest ids.
+    assert [r.url.path for r in calls] == ["/repos/acme/a/issues/11", "/repos/acme/b/issues/22"]
+    await db.refresh(bad)
+    assert bad.github_issue_number == 11  # an unusable body clears nothing
+    assert bad.github_issue_checked_at is not None  # but the row rotates like a checked one
+
+    calls.clear()
+    await github_integration.sync_closed_issues(session_factory, transport=httpx.MockTransport(handler))
+    # The never-checked Test reaches the batch instead of queueing behind the bad link forever.
+    assert [r.url.path for r in calls] == ["/repos/acme/c/issues/33", "/repos/acme/a/issues/11"]
+    await db.refresh(third)
+    assert third.github_issue_checked_at is not None
 
 
 async def test_hook_ignores_failed_reports(session_factory, gh_settings, monkeypatch):
@@ -569,6 +743,9 @@ async def test_job_sync_rearms_closed_issue_and_refiles(db, gh_settings, session
     calls, transport = _recorder()
     await github_integration.file_job_issues_for(db, [job.id], transport=transport)
     assert len(calls) == 1
+    await db.refresh(job)
+    assert job.github_issue_number == 77
+    assert job.github_issue_checked_at is None  # a new link is checked first
 
 
 async def test_job_rate_limit_stops_batch(db, gh_settings):
@@ -695,6 +872,7 @@ async def test_sync_rearms_a_linked_test_and_the_filer_files_again(db, gh_settin
     assert len(filed) == 1
     await db.refresh(tc)
     assert tc.github_issue_number == 77
+    assert tc.github_issue_checked_at is None  # a new link is checked first
 
 
 async def test_sync_keeps_a_linked_issue_while_it_is_open(db, gh_settings, session_factory):
@@ -719,3 +897,94 @@ async def test_sync_rearms_a_linked_job(db, gh_settings, session_factory):
     await github_integration.sync_closed_issues(session_factory, transport=httpx.MockTransport(handler))
     await db.refresh(job)
     assert job.github_issue_number is None
+
+
+async def test_relinked_issue_is_checked_first(db, gh_settings, session_factory):
+    """A link whose number changed goes before links checked in an earlier run."""
+    gh_settings.github_sync_batch = 2
+    a = await _flaky_test(db, project="p1", name="t1", github_issue_number=11)
+    await _flaky_test(db, project="p2", name="t2", github_issue_number=22)
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(200, json={"state": "open"})
+
+    await github_integration.sync_closed_issues(session_factory, transport=httpx.MockTransport(handler))
+    assert len(calls) == 2  # both links carry a stamp from this run
+    await db.refresh(a)
+    assert a.github_issue_checked_at is not None
+
+    await issue_links.link_test_issue(db, a.id, 44, replace=True, threshold=0.3)
+    await db.refresh(a)
+    assert a.github_issue_number == 44
+    assert a.github_issue_checked_at is None  # the new link moves to the front
+
+    gh_settings.github_sync_batch = 1
+    calls.clear()
+    await github_integration.sync_closed_issues(session_factory, transport=httpx.MockTransport(handler))
+    assert [r.url.path for r in calls] == ["/repos/acme/app/issues/44"]
+
+
+async def test_unlink_clears_the_check_stamp(db, gh_settings, session_factory):
+    gh_settings.github_sync_batch = 2
+    tc = await _flaky_test(db, project="p1", name="t1", github_issue_number=300)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"state": "open"})
+
+    await github_integration.sync_closed_issues(session_factory, transport=httpx.MockTransport(handler))
+    await db.refresh(tc)
+    assert tc.github_issue_checked_at is not None
+
+    await issue_links.unlink_test_issue(db, tc.id, threshold=0.3)
+    await db.refresh(tc)
+    assert tc.github_issue_number is None
+    assert tc.github_issue_checked_at is None
+
+
+async def test_same_number_link_keeps_the_check_stamp(db, gh_settings, session_factory):
+    """Linking the number it already has is a no-op: the stamp stays."""
+    gh_settings.github_sync_batch = 2
+    tc = await _flaky_test(db, project="p1", name="t1", github_issue_number=300)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"state": "open"})
+
+    await github_integration.sync_closed_issues(session_factory, transport=httpx.MockTransport(handler))
+    await db.refresh(tc)
+    before = tc.github_issue_checked_at
+    assert before is not None
+
+    await issue_links.link_test_issue(db, tc.id, 300, threshold=0.3)
+    await db.refresh(tc)
+    assert tc.github_issue_number == 300
+    assert tc.github_issue_checked_at == before
+
+
+async def test_job_link_change_and_unlink_reset_the_check_stamp(db, gh_settings, session_factory):
+    gh_settings.github_sync_batch = 2
+    job = await _flaky_job(db)
+    await _job_exec(db, job, "1")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"state": "open"})
+
+    await issue_links.link_job_issue(db, job.id, 301, threshold=0.3)
+    await github_integration.sync_closed_issues(session_factory, transport=httpx.MockTransport(handler))
+    await db.refresh(job)
+    assert job.github_issue_checked_at is not None
+
+    await issue_links.link_job_issue(db, job.id, 44, replace=True, threshold=0.3)
+    await db.refresh(job)
+    assert job.github_issue_number == 44
+    assert job.github_issue_checked_at is None
+
+    await github_integration.sync_closed_issues(session_factory, transport=httpx.MockTransport(handler))
+    await db.refresh(job)
+    assert job.github_issue_checked_at is not None
+
+    await issue_links.unlink_job_issue(db, job.id, threshold=0.3)
+    await db.refresh(job)
+    assert job.github_issue_number is None
+    assert job.github_issue_checked_at is None
