@@ -101,6 +101,7 @@ _JOB_EXECUTION_FIELDS = {
     "runner_labels",
     "created_at",
     "explained_by",
+    "explained_by_jobs",
 }
 _EXPLAINED_BY_MAX = 5
 
@@ -319,6 +320,9 @@ def build_mcp(session_factory: async_sessionmaker[AsyncSession], *, api_token: s
                     | {
                         "created_at": e.created_at.isoformat(),
                         "explained_by": [t.model_dump(mode="json") for t in e.explained_by[:_EXPLAINED_BY_MAX]],
+                        "explained_by_jobs": [
+                            j.model_dump(mode="json") for j in e.explained_by_jobs[:_EXPLAINED_BY_MAX]
+                        ],
                     }
                     for e in history.executions
                 ]

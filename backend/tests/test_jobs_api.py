@@ -54,12 +54,47 @@ async def test_job_history_outcomes_and_explained_by(client, db):
     assert outcomes["J-F"]["outcome"] == "explained"
     assert outcomes["J-F"]["status"] == "failed"
     assert [(x["name"], x["status"]) for x in outcomes["J-F"]["explained_by"]] == [("t1", "failed")]
+    # A non-summary Job is explained by failing Tests, never by sibling Jobs.
+    assert outcomes["J-F"]["explained_by_jobs"] == []
     assert body["explained_failures"] == 1
     assert body["unexplained_failures"] == 0
 
     body2 = (await client.get(f"/api/jobs/{job2.id}/history")).json()
     assert body2["executions"][0]["outcome"] == "failed"
     assert body2["unexplained_failures"] == 1 and body2["explained_failures"] == 0
+
+
+async def test_summary_job_history_lists_explaining_sibling_jobs(client, db):
+    p = await make_pipeline(db, "acme/app", ".github/workflows/ci.yml")
+    summary = await make_job(db, p, name="alls-green", summary=True)
+    sibling = await make_job(db, p, name="test")
+    await make_job_execution(db, summary, status="failed", ci_job_id="J-S", ci_run_id="run-1")
+    await make_job_execution(
+        db,
+        sibling,
+        status="failed",
+        ci_job_id="J-T",
+        ci_run_id="run-1",
+        url="https://github.com/acme/app/actions/runs/1/jobs/2",
+    )
+    await make_job_execution(db, summary, status="failed", ci_job_id="J-S2", ci_run_id="run-2")
+    await db.commit()
+
+    body = (await client.get(f"/api/jobs/{summary.id}/history")).json()
+    by_run = {e["ci_run_id"]: e for e in body["executions"]}
+    assert by_run["run-1"]["outcome"] == "explained"
+    assert by_run["run-1"]["explained_by"] == []
+    assert by_run["run-1"]["explained_by_jobs"] == [
+        {
+            "job_id": sibling.id,
+            "pipeline": ".github/workflows/ci.yml",
+            "name": "test",
+            "url": "https://github.com/acme/app/actions/runs/1/jobs/2",
+        }
+    ]
+    assert body["explained_failures"] == 1
+    assert by_run["run-2"]["outcome"] == "failed"  # no sibling failure in run-2
+    assert by_run["run-2"]["explained_by_jobs"] == []
 
 
 async def test_github_issue_url_null_for_non_github(client, db):

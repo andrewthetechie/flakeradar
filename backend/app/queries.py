@@ -652,6 +652,7 @@ async def get_job(
                 completed_at=e.completed_at,
                 created_at=e.created_at,
                 explained_by=[],
+                explained_by_jobs=[],
             )
         )
 
@@ -682,6 +683,43 @@ async def get_job(
             )
         for j in exec_outs:
             j.explained_by = by_exec.get(j.id, [])
+
+    if job.summary:
+        # A summary Job runs no Tests, so its explained executions are explained by
+        # the failed non-summary Jobs of the same CI run attempt: the same rule as
+        # attribution.summary_explained_clause, whose ci_run_id != "" guard is
+        # mirrored here so an empty run id never matches siblings across runs.
+        pairs = {
+            (e.ci_run_id, e.ci_run_attempt)
+            for e in execs
+            if e.status == JOB_FAILED and e.ci_job_id in explained and e.ci_run_id != ""
+        }
+        by_pair: dict[tuple[str, int], list[schemas.ExplainingJobOut]] = {}
+        for run_id, attempt in sorted(pairs):
+            sibling_rows = (
+                await db.execute(
+                    select(Job.id, Pipeline.name, Job.name, JobExecution.url)
+                    .select_from(JobExecution)
+                    .join(Job, Job.id == JobExecution.job_id)
+                    .join(Pipeline, Pipeline.id == Job.pipeline_id)
+                    .where(
+                        Pipeline.repo_id == repo.id,
+                        JobExecution.ci_run_id == run_id,
+                        JobExecution.ci_run_attempt == attempt,
+                        JobExecution.status == JOB_FAILED,
+                        Job.summary.is_(False),
+                    )
+                    .order_by(JobExecution.id)
+                    .limit(20)
+                )
+            ).all()
+            by_pair[(run_id, attempt)] = [
+                schemas.ExplainingJobOut(job_id=jid, pipeline=pipe, name=jname, url=url)
+                for jid, pipe, jname, url in sibling_rows
+            ]
+        for j in exec_outs:
+            if j.outcome == "explained" and j.ci_run_id != "":
+                j.explained_by_jobs = by_pair.get((j.ci_run_id, j.ci_run_attempt), [])
 
     past = await past_job_scores(db, [job.id])
     history_rows = (

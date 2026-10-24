@@ -211,6 +211,7 @@ async def test_get_job_by_id_and_by_name_with_explained(mcp, db):
     assert outcomes["ex-1"] == "explained" and outcomes["ex-2"] == "passed"
     explained = next(e for e in by_id["executions"] if e["ci_job_id"] == "ex-1")
     assert [t["name"] for t in explained["explained_by"]] == ["t1"]
+    assert explained["explained_by_jobs"] == []  # a non-summary Job is explained by Tests
     assert set(explained) == {
         "outcome",
         "status",
@@ -223,6 +224,7 @@ async def test_get_job_by_id_and_by_name_with_explained(mcp, db):
         "runner_labels",
         "created_at",
         "explained_by",
+        "explained_by_jobs",
     }
     assert explained["created_at"].endswith("+00:00")  # isoformat(), as before the schema dump
     assert missing.is_error and "No job named 'nope'" in missing.content[0].text
