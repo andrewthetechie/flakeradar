@@ -203,6 +203,13 @@ export interface ExplainingTest {
   status: string;
 }
 
+export interface ExplainingJob {
+  job_id: number;
+  pipeline: string;
+  name: string;
+  url: string;
+}
+
 export interface JobExecution {
   id: number;
   status: string; // passed | failed | skipped (as stored)
@@ -219,6 +226,7 @@ export interface JobExecution {
   completed_at: string | null;
   created_at: string;
   explained_by: ExplainingTest[];
+  explained_by_jobs: ExplainingJob[]; // failed sibling Jobs; only a summary Job's explained executions
 }
 
 export interface JobHistory {

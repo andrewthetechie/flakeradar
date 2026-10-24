@@ -34,11 +34,13 @@ export function JobDrawer({
   history,
   onClose,
   onOpenTest,
+  onOpenJob,
 }: {
   jobId: number;
   history: JobHistory | null;
   onClose: () => void;
   onOpenTest: (testId: number) => void;
+  onOpenJob: (jobId: number) => void;
 }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -76,6 +78,14 @@ export function JobDrawer({
           <>
             <h2 className="text-lg font-semibold leading-snug [overflow-wrap:anywhere]">
               {breakable(job.name)}
+              {job.summary && (
+                <span
+                  title="Runs no tests; explained by a failed job in the same CI run attempt"
+                  className="ml-2 rounded-full border border-line px-2 py-0.5 align-middle text-xs font-normal text-muted"
+                >
+                  summary
+                </span>
+              )}
             </h2>
             <div className="mb-3 text-xs text-muted">
               {job.github_issue_number != null && (
@@ -134,6 +144,21 @@ export function JobDrawer({
                               title="Open this Test"
                             >
                               {t.project} · {t.name} ({t.status})
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                      {e.outcome === "explained" && e.explained_by_jobs.length > 0 && (
+                        <div className="mt-1 flex flex-wrap gap-1 whitespace-normal">
+                          {e.explained_by_jobs.map((j, i) => (
+                            <button
+                              key={`${j.job_id}-${i}`}
+                              type="button"
+                              onClick={() => onOpenJob(j.job_id)}
+                              className="rounded border border-line bg-surface px-1.5 py-0.5 text-xs text-link hover:underline"
+                              title="Open this Job"
+                            >
+                              {j.pipeline} · {j.name}
                             </button>
                           ))}
                         </div>

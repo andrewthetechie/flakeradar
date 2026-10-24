@@ -66,7 +66,17 @@ export function JobLeaderboard({
             >
               <td className="px-4 py-2.5 align-top">
                 {label && <div className="text-xs text-link [overflow-wrap:anywhere]">{label}</div>}
-                <div className="font-semibold [overflow-wrap:anywhere]">{breakable(j.name)}</div>
+                <div className="font-semibold [overflow-wrap:anywhere]">
+                  {breakable(j.name)}
+                  {j.summary && (
+                    <span
+                      title="Runs no tests; explained by a failed job in the same CI run attempt"
+                      className="ml-1.5 rounded-full border border-line px-2 py-0.5 align-middle text-xs font-normal text-muted"
+                    >
+                      summary
+                    </span>
+                  )}
+                </div>
               </td>
               <td className="px-4 py-2.5 align-top">
                 <div className="flex min-w-18 items-center gap-2 sm:min-w-32">
