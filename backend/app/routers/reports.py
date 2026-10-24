@@ -1,6 +1,7 @@
 """Ingest (accept-then-process, ADR 0002) and the Report status endpoints."""
 
 import asyncio
+import hashlib
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import Select, func, select
@@ -81,6 +82,30 @@ async def ingest_endpoint(
     db_default_branch = (default_branch or "").strip() or None
     db_ci_job_id = (ci_job_id or "").strip() or None
     db_pipeline = (pipeline or "").strip() or None
+    # A CI retry whose response was lost uploads the same bytes again. Real
+    # reports differ in timestamps and durations, so identical bytes under the
+    # same identity mean that retry: return the stored Report instead of queueing
+    # a second Run with the same Executions. Best effort — no unique constraint,
+    # so two parallel identical uploads can both insert.
+    digest = hashlib.sha256(content).hexdigest()
+    existing = (
+        await db.execute(
+            select(Report)
+            .where(
+                Report.kind == REPORT_KIND_JUNIT,
+                Report.project_id == proj.id,
+                Report.commit_sha == commit_sha,
+                Report.ci_run_id == ci_run_id,
+                Report.ci_run_attempt == ci_run_attempt,
+                Report.ci_job_id == db_ci_job_id,
+                Report.body_sha256 == digest,
+            )
+            .order_by(Report.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        return schemas.IngestAccepted(report_id=existing.id, status=existing.status, duplicate=True)
     row = Report(
         kind=REPORT_KIND_JUNIT,
         project_id=proj.id,
@@ -90,6 +115,7 @@ async def ingest_endpoint(
         ci_run_id=ci_run_id,
         root=root_value,
         body=content,
+        body_sha256=digest,
         status=REPORT_PENDING,
         default_branch=db_default_branch,
         ci_job_id=db_ci_job_id,
