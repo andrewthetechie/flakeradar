@@ -48,6 +48,7 @@ async def ingest_endpoint(
     repo: str = Query(..., max_length=255),
     project: str = Query(default=DEFAULT_PROJECT, max_length=100),
     root: str | None = Query(default=None, max_length=1024),
+    line_base: int = Query(default=1, ge=0, le=1),
     commit_sha: str = Query(..., min_length=1, max_length=64),
     branch: str = Query(default="main", max_length=255),
     ci_run_id: str = Query(default="", max_length=255),
@@ -74,7 +75,7 @@ async def ingest_endpoint(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     try:
         # Parsing is CPU-bound: keep it off the event loop.
-        await asyncio.to_thread(parse_junit_xml, content)
+        await asyncio.to_thread(parse_junit_xml, content, line_base)
     except ParseError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -114,6 +115,7 @@ async def ingest_endpoint(
         branch=branch,
         ci_run_id=ci_run_id,
         root=root_value,
+        line_base=line_base,
         body=content,
         body_sha256=digest,
         status=REPORT_PENDING,

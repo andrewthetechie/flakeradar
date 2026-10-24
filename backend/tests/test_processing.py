@@ -173,6 +173,21 @@ async def test_location_latest_wins_but_is_never_erased(db, session_factory):
     assert (tc.file, tc.line) == ("tests/b.py", 9)
 
 
+async def test_line_base_zero_stores_one_based_location(db, session_factory):
+    proj = await make_project(db, "acme/app", "backend")
+    pytest_like = b'<testsuite name="s"><testcase classname="c" name="t" file="tests/a.py" line="11"/></testsuite>'
+    await _queue(db, pytest_like, project=proj, line_base=0)
+    await process_next(session_factory)
+    (tc,) = await _tests(db)
+    assert (tc.file, tc.line) == ("tests/a.py", 12)
+    # A later default report (line_base=1, or NULL from before the migration)
+    # stores the reported line as is.
+    await _queue(db, pytest_like.replace(b'line="11"', b'line="5"'), project=proj)
+    await process_next(session_factory)
+    await db.refresh(tc)
+    assert (tc.file, tc.line) == ("tests/a.py", 5)
+
+
 async def test_root_is_set_only_when_sent(db, session_factory):
     proj = await make_project(db, "acme/app", "backend")
     await _queue(db, make_junit([("t", "passed")]), project=proj, root="server")

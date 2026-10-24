@@ -192,6 +192,9 @@ class Report(Base):
     ci_run_id: Mapped[str] = mapped_column(String(255), default="", server_default="")
     # Project root sent with this upload; None means "leave the Project's root alone".
     root: Mapped[str | None] = mapped_column(String(1024), default=None)
+    # How this report's JUnit `line` attribute is numbered: 0 (pytest xunit1)
+    # or 1. NULL on reports ingested before the parameter existed; read as 1.
+    line_base: Mapped[int | None] = mapped_column(Integer, default=None)
     # A JUnit Report can name the Job execution (ci_job_id) that produced it.
     ci_job_id: Mapped[str | None] = mapped_column(String(255), default=None)
     ci_run_attempt: Mapped[int | None] = mapped_column(Integer, default=None)

@@ -96,6 +96,33 @@ async def test_ingest_rejects_ci_run_attempt_zero(client):
     assert resp.status_code == 422
 
 
+async def test_ingest_rejects_line_base_two(client):
+    resp = await client.post(
+        _url(line_base="2"),
+        content=make_junit([("t1", "passed")]),
+        headers=AUTH,
+    )
+    assert resp.status_code == 422
+
+
+async def test_ingest_stores_line_base(client, db):
+    resp = await client.post(
+        _url(line_base="0"),
+        content=make_junit([("t1", "passed")]),
+        headers=AUTH,
+    )
+    assert resp.status_code == 202, resp.text
+    report = (await db.execute(select(Report).where(Report.id == resp.json()["report_id"]))).scalar_one()
+    assert report.line_base == 0
+
+
+async def test_ingest_line_base_defaults_to_one(client, db):
+    resp = await client.post(_url(), content=make_junit([("t1", "passed")]), headers=AUTH)
+    assert resp.status_code == 202, resp.text
+    report = (await db.execute(select(Report).where(Report.id == resp.json()["report_id"]))).scalar_one()
+    assert report.line_base == 1
+
+
 async def test_ingest_multipart_upload(client):
     resp = await client.post(
         _url(),

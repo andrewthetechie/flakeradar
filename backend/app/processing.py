@@ -50,11 +50,11 @@ logger = logging.getLogger("flakeradar.processing")
 ERROR_MAX = 2000
 
 
-def _parse_and_classify(body: bytes) -> list[tuple[ParsedCase, str | None]]:
+def _parse_and_classify(body: bytes, line_base: int = 1) -> list[tuple[ParsedCase, str | None]]:
     """Parse a JUnit body and classify each failing case (CPU work: runs in a thread)."""
     return [
         (pc, classify_failure(pc.message, pc.details) if pc.status in scoring.FAILING else None)
-        for pc in parse_junit_xml(body)
+        for pc in parse_junit_xml(body, line_base)
     ]
 
 
@@ -495,7 +495,9 @@ async def process_report(db: AsyncSession, report: Report) -> ProcessOutcome:
     """Persist one Report. Caller owns the transaction (no commit here)."""
     if report.kind == REPORT_KIND_PIPELINE:
         return await process_pipeline_report(db, report)
-    classified = await asyncio.to_thread(_parse_and_classify, report.body)
+    # NULL means the Report predates the `line_base` parameter: read it as 1.
+    line_base = 1 if report.line_base is None else report.line_base
+    classified = await asyncio.to_thread(_parse_and_classify, report.body, line_base)
     parsed = [pc for pc, _ in classified]
     now = utcnow()
 

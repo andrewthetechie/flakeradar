@@ -48,6 +48,26 @@ def test_bad_line_is_ignored():
     assert (c.file, c.line) == ("a.py", None)
 
 
+def test_line_base_zero_shifts_lines_to_one_based():
+    xml = '<testsuite name="s"><testcase classname="c" name="t" file="tests/a.py" line="11"/></testsuite>'
+    assert parse_junit_xml(xml.encode(), 0)[0].line == 12
+    # Default and explicit 1 store the reported line unchanged.
+    assert parse_junit_xml(xml.encode())[0].line == 11
+    assert parse_junit_xml(xml.encode(), 1)[0].line == 11
+
+
+def test_line_base_zero_shifts_line_zero_to_one():
+    # The case that previously lost its `#L` anchor entirely.
+    xml = '<testsuite name="s"><testcase classname="c" name="t" file="tests/a.py" line="0"/></testsuite>'
+    assert parse_junit_xml(xml.encode(), 0)[0].line == 1
+
+
+def test_line_base_zero_leaves_non_digit_lines_as_none():
+    xml = '<testsuite name="s"><testcase classname="c" name="t" file="a.py" line="abc"/></testsuite>'
+    case = parse_junit_xml(xml.encode(), 0)[0]
+    assert (case.file, case.line) == ("a.py", None)
+
+
 def test_failure_message_and_details_include_traceback_and_output():
     c = _one(
         '<testsuite name="s"><testcase classname="c" name="t">'

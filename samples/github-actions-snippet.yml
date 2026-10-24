@@ -2,7 +2,8 @@
 # Requires: FLAKERADAR_URL (e.g. https://flakeradar.example.com) as a variable
 #           or secret, and FLAKERADAR_TOKEN (your FLAKERADAR_API_TOKEN) as a secret.
 # Works with any runner that produces a JUnit XML report, e.g.:
-#   pytest --junitxml=junit.xml -o junit_family=xunit1   (Python; xunit1 adds file/line)
+#   pytest --junitxml=junit.xml -o junit_family=xunit1   (Python; xunit1 adds file/line,
+#           numbered from 0, so pytest uploads also add line_base=0 to QUERY)
 #   vitest --reporter=junit --outputFile=junit.xml        (JS/TS; set addFileAttribute)
 #   go test ... | go-junit-report > junit.xml              (Go)
 # One step per project: set `project` (and `root`, its directory) for each suite.
