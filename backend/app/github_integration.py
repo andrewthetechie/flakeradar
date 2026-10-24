@@ -51,6 +51,7 @@ from .models import (
     TestCase,
     TestExecution,
     TestRun,
+    utcnow,
 )
 from .processing import ProcessOutcome
 from .scoring import FAILING
@@ -497,23 +498,25 @@ async def sync_closed_issues(
     GitHub reports that issue closed (or gone), clear the stored number so the
     next Report that touches the entity can re-file a fresh issue if it still
     meets the filing gate. Leader-only maintenance; checks each open issue with
-    its own sequential GET (capped at the 2000 most stale rows per run for each
-    of Tests and Jobs — the GitHub REST API has no bulk lookup by arbitrary
-    issue numbers). Never raises.
+    its own sequential GET (capped at the `FLAKERADAR_GITHUB_SYNC_BATCH` most
+    stale rows per run for each of Tests and Jobs, oldest check first
+    (`github_issue_checked_at` NULLS FIRST) — the GitHub REST API has no bulk
+    lookup by arbitrary issue numbers). Never raises.
 
     `transport` exists for tests (httpx.MockTransport); production passes None.
     """
     if not configured():
         return
     async with session_factory() as db:
+        batch = get_settings().github_sync_batch
         test_rows = (
             await db.execute(
                 select(TestCase, Repo.name)
                 .join(Project, TestCase.project_id == Project.id)
                 .join(Repo, Project.repo_id == Repo.id)
                 .where(TestCase.github_issue_number.is_not(None))
-                .order_by(TestCase.id)
-                .limit(2000)
+                .order_by(TestCase.github_issue_checked_at.asc().nulls_first(), TestCase.id)
+                .limit(batch)
             )
         ).all()
         job_rows = (
@@ -522,8 +525,8 @@ async def sync_closed_issues(
                 .join(Pipeline, Job.pipeline_id == Pipeline.id)
                 .join(Repo, Pipeline.repo_id == Repo.id)
                 .where(Job.github_issue_number.is_not(None))
-                .order_by(Job.id)
-                .limit(2000)
+                .order_by(Job.github_issue_checked_at.asc().nulls_first(), Job.id)
+                .limit(batch)
             )
         ).all()
         if not test_rows and not job_rows:
@@ -551,7 +554,10 @@ async def _clear_if_closed(
 
     Returns False on a rate limit, when the batch must stop; a permission 403
     adds `repo` to `skipped` and leaves the link as it is, as does a body this
-    cannot read.
+    cannot read. A row whose state this learned (a usable 200, open or closed,
+    or a 404) is stamped with `github_issue_checked_at`, which is what the
+    sync's ordering rotates on; the other outcomes stay at the front of the
+    queue and are retried first.
     """
     resp = await client.get(f"/repos/{repo}/issues/{obj.github_issue_number}")
     if _rate_limited(resp):
@@ -578,13 +584,16 @@ async def _clear_if_closed(
                 obj.github_issue_number,
                 resp.text[:300],
             )
-        elif state == "closed":
-            logger.info("Issue closed %s#%s; re-arming %s %s", repo, obj.github_issue_number, entity, obj.id)
-            obj.github_issue_number = None
+        else:
+            obj.github_issue_checked_at = utcnow()  # open or closed: the check happened
+            if state == "closed":
+                logger.info("Issue closed %s#%s; re-arming %s %s", repo, obj.github_issue_number, entity, obj.id)
+                obj.github_issue_number = None
     elif resp.status_code == 404:
         # Issue deleted or token can no longer see it — do not hold dedup forever.
         logger.info("Issue gone %s#%s; re-arming %s %s", repo, obj.github_issue_number, entity, obj.id)
         obj.github_issue_number = None
+        obj.github_issue_checked_at = utcnow()
     return True
 
 

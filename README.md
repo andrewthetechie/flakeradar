@@ -630,6 +630,7 @@ reads a `.env` file.
 | `GITHUB_TOKEN` | empty (disabled) | The token for GitHub issue automation. It also checks linked issues, so it needs read access to the issues of those repos. |
 | `GITHUB_ISSUE_LABEL` | `flakeradar` | The label on each issue that FlakeRadar opens. |
 | `GITHUB_ISSUE_MIN_SCORE` / `GITHUB_ISSUE_MIN_PROVEN_FLAKES` / `GITHUB_ISSUE_MIN_FAILURES` | `0.30` / `0` / `0` | The filing gate. |
+| `GITHUB_SYNC_BATCH` | `2000` | How many linked Tests (and, separately, linked Jobs) the maintenance sync checks per run. The oldest checks run first. |
 | `WORKER_POLL_SECONDS` | `1.0` | How often the report processor checks an empty queue. |
 | `REPORT_RETENTION_DAYS` | `7` | FlakeRadar deletes processed raw reports after this time. It keeps failed reports. |
 | `EXECUTION_RETENTION_DAYS` | `90` | FlakeRadar deletes older executions. |
