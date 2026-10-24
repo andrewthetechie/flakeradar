@@ -4,6 +4,7 @@ import { formatScore } from "../format";
 import { IssueLink } from "./IssueLink";
 import { scoreColor, TIER_CLASS } from "./scoreStyle";
 import { StatusMark } from "./StatusMark";
+import { SummaryBadge } from "./SummaryBadge";
 import { TrendMark } from "./TrendMark";
 
 function jobLabel(job: Job, repo: string | null): string | null {
@@ -68,14 +69,7 @@ export function JobLeaderboard({
                 {label && <div className="text-xs text-link [overflow-wrap:anywhere]">{label}</div>}
                 <div className="font-semibold [overflow-wrap:anywhere]">
                   {breakable(j.name)}
-                  {j.summary && (
-                    <span
-                      title="Runs no tests; explained by a failed job in the same CI run attempt"
-                      className="ml-1.5 rounded-full border border-line px-2 py-0.5 align-middle text-xs font-normal text-muted"
-                    >
-                      summary
-                    </span>
-                  )}
+                  {j.summary && <SummaryBadge className="ml-1.5" />}
                 </div>
               </td>
               <td className="px-4 py-2.5 align-top">

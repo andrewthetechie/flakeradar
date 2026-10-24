@@ -4,6 +4,7 @@ import { breakable } from "../breakable";
 import { IssueLink } from "./IssueLink";
 import { Sparkline } from "./Sparkline";
 import { StatusMark } from "./StatusMark";
+import { SummaryBadge } from "./SummaryBadge";
 
 function fmtWhen(iso: string): string {
   const d = new Date(iso);
@@ -78,14 +79,7 @@ export function JobDrawer({
           <>
             <h2 className="text-lg font-semibold leading-snug [overflow-wrap:anywhere]">
               {breakable(job.name)}
-              {job.summary && (
-                <span
-                  title="Runs no tests; explained by a failed job in the same CI run attempt"
-                  className="ml-2 rounded-full border border-line px-2 py-0.5 align-middle text-xs font-normal text-muted"
-                >
-                  summary
-                </span>
-              )}
+              {job.summary && <SummaryBadge className="ml-2" />}
             </h2>
             <div className="mb-3 text-xs text-muted">
               {job.github_issue_number != null && (
