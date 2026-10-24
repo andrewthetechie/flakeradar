@@ -43,7 +43,7 @@ class ParsedCase:
     message: str  # Failure message ("" when passed)
     details: str  # Failure details ("" unless failed/error)
     file: str | None  # Location file as reported, "./" stripped
-    line: int | None  # Location line as reported (pytest xunit1 is 0-based)
+    line: int | None  # Location line, normalized to 1-based (a line_base=0 report is shifted by 1)
 
 
 def fingerprint(suite: str, classname: str, name: str) -> str:
@@ -64,13 +64,13 @@ def _first_line(text: str) -> str:
     return ""
 
 
-def _location(case) -> tuple[str | None, int | None]:
+def _location(case, line_base: int) -> tuple[str | None, int | None]:
     raw_file = (case._elem.get("file") or "").strip()  # no public accessor in junitparser
     while raw_file.startswith("./"):
         raw_file = raw_file[2:]
     file = raw_file or None
     raw_line = (case._elem.get("line") or "").strip()
-    line = int(raw_line) if raw_line.isdigit() else None
+    line = int(raw_line) + (1 if line_base == 0 else 0) if raw_line.isdigit() else None
     return file, line
 
 
@@ -136,7 +136,7 @@ def _retry_outcome(elem) -> tuple[str, str, str, float]:
     return status, _cap(message, MESSAGE_MAX), _cap(details, DETAILS_MAX), duration
 
 
-def parse_junit_xml(content: bytes) -> list[ParsedCase]:
+def parse_junit_xml(content: bytes, line_base: int = 1) -> list[ParsedCase]:
     xml = _load(content)
 
     # A file may be a <testsuites> wrapper or a single bare <testsuite>.
@@ -148,7 +148,7 @@ def parse_junit_xml(content: bytes) -> list[ParsedCase]:
         for case in suite:
             if case.name is None:
                 continue
-            file, line = _location(case)
+            file, line = _location(case, line_base)
             classname = case.classname or ""
             name = case.name
             suite_name = suite.name or ""

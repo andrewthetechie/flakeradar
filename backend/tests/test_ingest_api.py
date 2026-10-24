@@ -96,6 +96,33 @@ async def test_ingest_rejects_ci_run_attempt_zero(client):
     assert resp.status_code == 422
 
 
+async def test_ingest_rejects_line_base_two(client):
+    resp = await client.post(
+        _url(line_base="2"),
+        content=make_junit([("t1", "passed")]),
+        headers=AUTH,
+    )
+    assert resp.status_code == 422
+
+
+async def test_ingest_stores_line_base(client, db):
+    resp = await client.post(
+        _url(line_base="0"),
+        content=make_junit([("t1", "passed")]),
+        headers=AUTH,
+    )
+    assert resp.status_code == 202, resp.text
+    report = (await db.execute(select(Report).where(Report.id == resp.json()["report_id"]))).scalar_one()
+    assert report.line_base == 0
+
+
+async def test_ingest_line_base_defaults_to_one(client, db):
+    resp = await client.post(_url(), content=make_junit([("t1", "passed")]), headers=AUTH)
+    assert resp.status_code == 202, resp.text
+    report = (await db.execute(select(Report).where(Report.id == resp.json()["report_id"]))).scalar_one()
+    assert report.line_base == 1
+
+
 async def test_ingest_multipart_upload(client):
     resp = await client.post(
         _url(),
@@ -167,3 +194,18 @@ async def test_ingest_duplicate_check_keys_on_job_and_project(client, db):
     assert retry.json()["duplicate"] is True
     assert retry.json()["report_id"] == responses[0].json()["report_id"]
     assert (await db.execute(select(func.count()).select_from(Report))).scalar_one() == 3
+
+
+async def test_ingest_duplicate_check_keys_on_line_base(client, db):
+    """A corrected re-upload (same bytes, other line_base) must be queued."""
+    content = make_junit([("t1", "failed")])
+    default = await client.post(_url(ci_run_id="61"), content=content, headers=AUTH)
+    corrected = await client.post(_url(ci_run_id="61", line_base="0"), content=content, headers=AUTH)
+    assert default.status_code == corrected.status_code == 202
+    assert corrected.json()["duplicate"] is False
+    assert corrected.json()["report_id"] != default.json()["report_id"]
+    # The same line_base again is still the retry of that upload.
+    retry = await client.post(_url(ci_run_id="61", line_base="0"), content=content, headers=AUTH)
+    assert retry.json()["duplicate"] is True
+    assert retry.json()["report_id"] == corrected.json()["report_id"]
+    assert (await db.execute(select(func.count()).select_from(Report))).scalar_one() == 2

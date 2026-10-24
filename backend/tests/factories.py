@@ -175,6 +175,7 @@ async def make_report(
     ci_run_attempt: int | None = None,
     pipeline: str | None = None,
     default_branch: str | None = None,
+    line_base: int | None = None,
 ) -> Report:
     rep = Report(
         project_id=None if kind == "pipeline" else project.id,
@@ -190,6 +191,7 @@ async def make_report(
         ci_run_attempt=ci_run_attempt,
         pipeline=pipeline,
         default_branch=default_branch,
+        line_base=line_base,
     )
     db.add(rep)
     await db.flush()

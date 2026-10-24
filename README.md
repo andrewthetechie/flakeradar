@@ -170,6 +170,7 @@ Add one step after your tests. The same step, with comments, is in
 | `ci_job_id` | no | The ID of this job (`${{ job.check_run_id }}`). It links the run to a job execution, so that failing tests can explain a failed job. |
 | `pipeline` | no | The workflow file path, for example `.github/workflows/ci.yml`. The snippet gets it from `GITHUB_WORKFLOW_REF`. |
 | `default_branch` | no | The default branch of the repo. Flips on other branches do not count. |
+| `line_base` | no (`1`) | `0` when the runner writes 0-based line numbers (pytest's `junit_family=xunit1`). FlakeRadar stores 1-based lines so permalinks point at the test. |
 
 The server answers `202 {"report_id": 7, "status": "pending"}` when it has
 stored the report. `GET /api/reports/7` shows when processing is complete. The
@@ -178,9 +179,11 @@ example during a redeploy.
 
 A retry can also happen after the server stored the report but the response was
 lost. Ingest then recognises the upload as a duplicate: the same body bytes
-under the same project, commit, `ci_run_id`, `ci_run_attempt` and `ci_job_id`
-return the first report's id and current status with `"duplicate": true`, and
-nothing new is queued, so the retry does not create a second Run. The check is
+under the same project, commit, `ci_run_id`, `ci_run_attempt`, `ci_job_id` and
+`line_base` return the first report's id and current status with
+`"duplicate": true`, and nothing new is queued, so the retry does not create a
+second Run. An upload with a *different* `line_base` is not that retry but a
+corrected report, so it is queued and processed like any other. The check is
 best effort: there is no unique constraint, so two identical uploads running in
 parallel can both be stored. And once `REPORT_RETENTION_DAYS` deletes the
 processed report, a later retry is ingested again; that is acceptable because a
@@ -342,7 +345,7 @@ need a setting to write the file and line:
 
 | Runner | Setting |
 |---|---|
-| pytest | `pytest --junitxml=junit.xml -o junit_family=xunit1` (line numbers start at 0) |
+| pytest | `pytest --junitxml=junit.xml -o junit_family=xunit1` (line numbers start at 0, so pytest uploads add `line_base=0`; FlakeRadar then stores 1-based lines) |
 | Vitest | `reporters: [["junit", { addFileAttribute: true }]]` |
 | Jest (jest-junit) | `JEST_JUNIT_ADD_FILE_ATTRIBUTE=true` |
 
@@ -664,7 +667,7 @@ and the MCP server need the token.
 
 | Endpoint | Auth | Purpose |
 |---|---|---|
-| `POST /api/ingest?repo=&project=&root=&commit_sha=&branch=&ci_run_id=&ci_run_attempt=&ci_job_id=&pipeline=&default_branch=` | `X-API-Key` | Queue a JUnit XML report (raw body or multipart `report` field, 20 MB maximum). Returns `202` with `{report_id, status, duplicate}`; `duplicate` is `true` when an identical upload under the same identity was already stored, and its report is returned instead of a new one. |
+| `POST /api/ingest?repo=&project=&root=&line_base=&commit_sha=&branch=&ci_run_id=&ci_run_attempt=&ci_job_id=&pipeline=&default_branch=` | `X-API-Key` | Queue a JUnit XML report (raw body or multipart `report` field, 20 MB maximum). Returns `202` with `{report_id, status, duplicate}`; `duplicate` is `true` when an identical upload under the same identity was already stored, and its report is returned instead of a new one. |
 | `POST /api/ingest/pipeline` | `X-API-Key` | Queue a pipeline report (JSON) with `jobs`. Returns `202`. |
 | `GET /api/reports/{id}` | none | The status of one report (`pending`, `processed` or `failed`), its counts, and its error. |
 | `GET /api/reports?status=&limit=` | none | Recent reports, newest first. |
