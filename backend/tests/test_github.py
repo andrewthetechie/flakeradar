@@ -524,6 +524,36 @@ async def test_sync_rotates_past_a_denied_repo(db, gh_settings, session_factory)
     assert b.github_issue_checked_at is not None
 
 
+@pytest.mark.parametrize("status", [401, 410])
+async def test_sync_definitive_client_error_keeps_link_and_skips_repo(db, gh_settings, session_factory, status):
+    """A bad-credentials 401 or a gone-Repo 410 behaves like a permission 403.
+
+    Anything else would leave those rows forever unstamped, at the front of
+    the NULLS FIRST queue, starving the other Repos' links of batch slots.
+    """
+    a1 = await _flaky_test(db, repo="acme/a", project="p1", name="a1", github_issue_number=11)
+    a2 = await _flaky_test(db, repo="acme/a", project="p2", name="a2", github_issue_number=12)
+    closed = await _flaky_test(db, repo="acme/b", name="closed", github_issue_number=22)
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if request.url.path.startswith("/repos/acme/a/"):
+            return httpx.Response(status, json={"message": "no"})
+        return httpx.Response(200, json={"state": "closed"})
+
+    await github_integration.sync_closed_issues(session_factory, transport=httpx.MockTransport(handler))
+    # a1 takes the error, a2 is skipped for its Repo without a GET, repo B still syncs.
+    assert [r.url.path for r in calls] == ["/repos/acme/a/issues/11", "/repos/acme/b/issues/22"]
+    await db.refresh(a1)
+    await db.refresh(a2)
+    await db.refresh(closed)
+    assert a1.github_issue_number == 11  # a definitive client error clears nothing
+    assert a1.github_issue_checked_at is not None  # but the row rotates like a checked one
+    assert a2.github_issue_checked_at is not None
+    assert closed.github_issue_number is None  # the other Repos' links still re-arm
+
+
 @pytest.mark.parametrize("raw", ["", "<html>Gateway</html>", "[1, 2]", "null", '{"state": ["closed"]}'])
 async def test_sync_malformed_200_body_never_raises_and_keeps_the_link(db, gh_settings, session_factory, caplog, raw):
     """An unreadable 200 says nothing about the issue: keep the link, log it, go on."""

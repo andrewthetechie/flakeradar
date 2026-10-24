@@ -23,9 +23,10 @@ Error handling: never raises.
 - Any other 403 on create (a permission error: a token without access to that
   Repo, an archived Repo), or 404/410 (issues disabled) -> skip that Repo for
   the rest of the batch, log one warning per Repo, go on with the other Repos.
-- In the sync (`sync_closed_issues`), a permission 403 leaves the Issue link
-  as it is, skips that Repo for the rest of the run, and stamps the rows of
-  that Repo so they rotate; 404 still re-arms.
+- In the sync (`sync_closed_issues`), a definitive Repo-wide client error
+  (a permission 403, bad credentials 401, a gone Repo 410) leaves the Issue
+  link as it is, skips that Repo for the rest of the run, and stamps the rows
+  of that Repo so they rotate; 404 still re-arms.
 - A response body FlakeRadar cannot use (a 201 without an issue number, a
   sync 200 that is not a JSON object with a `state`) -> log a warning, go on;
   nothing is stored and no link is cleared.
@@ -556,28 +557,31 @@ async def _clear_if_closed(
 ) -> bool:
     """Check one issue; clear its number on the ORM object when closed/gone.
 
-    Returns False on a rate limit, when the batch must stop; a permission 403
-    adds `repo` to `skipped`, stamps the row it hit, and leaves the link as it
-    is. A usable 200 (open or closed) and a 404 stamp it too, and so does the
-    sync's loop for rows skipped because their Repo is already in `skipped`:
-    `github_issue_checked_at` is what the sync's ordering rotates on. The only
-    unstamped outcomes are a rate-limit stop and a body this cannot read; those
-    stay at the front of the queue and are retried first.
+    Returns False on a rate limit, when the batch must stop; a definitive
+    Repo-wide client error (a permission 403, bad credentials 401, a gone
+    Repo 410) adds `repo` to `skipped`, stamps the row it hit, and leaves
+    the link as it is. A usable 200 (open or closed) and a 404 stamp it too,
+    and so does the sync's loop for rows skipped because their Repo is
+    already in `skipped`: `github_issue_checked_at` is what the sync's
+    ordering rotates on. The unstamped outcomes are a rate-limit stop, an
+    unexpected status (a transient 5xx and friends), and a body this cannot
+    read; those stay at the front of the queue and are retried first.
     """
     resp = await client.get(f"/repos/{repo}/issues/{obj.github_issue_number}")
     if _rate_limited(resp):
         logger.warning("GitHub rate limit in sync; stopping")
         return False
-    if resp.status_code == 403:
-        # Permission error: this Repo's links stay as they are; skip it for the
-        # rest of the sync and go on with the other Repos.
+    if resp.status_code in (401, 403, 410):
+        # Definitive, Repo-wide client error (bad credentials, a permission
+        # error, a gone Repo): this Repo's links stay as they are; skip it for
+        # the rest of the sync and go on with the other Repos.
         logger.warning(
             "GitHub issue-state sync skipped for repo %s: %s %s",
             repo,
             resp.status_code,
             resp.text[:300],
         )
-        obj.github_issue_checked_at = utcnow()  # the check happened: a denied Repo cannot pin the NULLS FIRST queue
+        obj.github_issue_checked_at = utcnow()  # the check happened: an unreadable Repo cannot pin the rotation queue
         skipped.add(repo)
         return True
     if resp.status_code == 200:

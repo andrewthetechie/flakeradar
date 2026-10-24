@@ -86,6 +86,14 @@ class TestCase(Base):
     __table_args__ = (
         UniqueConstraint("project_id", "fingerprint", name="uq_test_cases_project_fingerprint"),
         Index("ix_test_cases_project_score", "project_id", "flakiness_score"),
+        # Serves the maintenance sync's linked-Tests batch select: partial on
+        # linked rows, ordered like the query (checked_at NULLS FIRST, then id).
+        Index(
+            "ix_test_cases_issue_check",
+            text("github_issue_checked_at NULLS FIRST"),
+            "id",
+            postgresql_where=text("github_issue_number IS NOT NULL"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -218,6 +226,13 @@ class Job(Base):
     __table_args__ = (
         UniqueConstraint("pipeline_id", "name", name="uq_jobs_pipeline_name"),
         Index("ix_jobs_pipeline_score", "pipeline_id", "flakiness_score"),
+        # Same shape as ix_test_cases_issue_check, for the sync's linked-Jobs batch select.
+        Index(
+            "ix_jobs_issue_check",
+            text("github_issue_checked_at NULLS FIRST"),
+            "id",
+            postgresql_where=text("github_issue_number IS NOT NULL"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
