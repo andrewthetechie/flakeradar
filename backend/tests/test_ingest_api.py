@@ -167,4 +167,3 @@ async def test_ingest_duplicate_check_keys_on_job_and_project(client, db):
     assert retry.json()["duplicate"] is True
     assert retry.json()["report_id"] == responses[0].json()["report_id"]
     assert (await db.execute(select(func.count()).select_from(Report))).scalar_one() == 3
-
