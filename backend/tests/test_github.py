@@ -579,6 +579,35 @@ async def test_sync_malformed_200_body_never_raises_and_keeps_the_link(db, gh_se
     assert "acme/a#11" in warnings[0]
 
 
+async def test_sync_rotates_past_an_unreadable_link(db, gh_settings, session_factory):
+    """A permanently unreadable 200 body rotates instead of starving the other links."""
+    gh_settings.github_sync_batch = 2
+    bad = await _flaky_test(db, repo="acme/a", project="p1", name="a", github_issue_number=11)
+    await _flaky_test(db, repo="acme/b", project="p2", name="b", github_issue_number=22)
+    third = await _flaky_test(db, repo="acme/c", project="p3", name="c", github_issue_number=33)
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if request.url.path.startswith("/repos/acme/a/"):
+            return httpx.Response(200, text="<html>Gateway</html>")
+        return httpx.Response(200, json={"state": "open"})
+
+    await github_integration.sync_closed_issues(session_factory, transport=httpx.MockTransport(handler))
+    # Every stamp is NULL, so the first run takes the two lowest ids.
+    assert [r.url.path for r in calls] == ["/repos/acme/a/issues/11", "/repos/acme/b/issues/22"]
+    await db.refresh(bad)
+    assert bad.github_issue_number == 11  # an unusable body clears nothing
+    assert bad.github_issue_checked_at is not None  # but the row rotates like a checked one
+
+    calls.clear()
+    await github_integration.sync_closed_issues(session_factory, transport=httpx.MockTransport(handler))
+    # The never-checked Test reaches the batch instead of queueing behind the bad link forever.
+    assert [r.url.path for r in calls] == ["/repos/acme/c/issues/33", "/repos/acme/a/issues/11"]
+    await db.refresh(third)
+    assert third.github_issue_checked_at is not None
+
+
 async def test_hook_ignores_failed_reports(session_factory, gh_settings, monkeypatch):
     called = []
 

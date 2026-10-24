@@ -29,7 +29,9 @@ Error handling: never raises.
   of that Repo so they rotate; 404 still re-arms.
 - A response body FlakeRadar cannot use (a 201 without an issue number, a
   sync 200 that is not a JSON object with a `state`) -> log a warning, go on;
-  nothing is stored and no link is cleared.
+  no issue number is stored and no link is cleared (the sync still stamps the
+  row's check time, so an unreadable link keeps rotating instead of pinning
+  the front of the queue).
 - Any other failure (network) -> log, go on.
 """
 
@@ -559,18 +561,24 @@ async def _clear_if_closed(
 
     Returns False on a rate limit, when the batch must stop; a definitive
     Repo-wide client error (a permission 403, bad credentials 401, a gone
-    Repo 410) adds `repo` to `skipped`, stamps the row it hit, and leaves
-    the link as it is. A usable 200 (open or closed) and a 404 stamp it too,
-    and so does the sync's loop for rows skipped because their Repo is
-    already in `skipped`: `github_issue_checked_at` is what the sync's
-    ordering rotates on. The unstamped outcomes are a rate-limit stop, an
-    unexpected status (a transient 5xx and friends), and a body this cannot
-    read; those stay at the front of the queue and are retried first.
+    Repo 410) adds `repo` to `skipped` and leaves the link as it is.
+
+    Every row this got an answer for is stamped with `utcnow()` — open,
+    closed, gone, a Repo-wide client error, an unexpected status, and even a
+    body this cannot read — and so is a row skipped because its Repo is
+    already in `skipped`. `github_issue_checked_at` is what the sync's
+    ordering rotates on: an unstamped row sorts NULLS FIRST, so a link whose
+    answer keeps arriving unusable would take a batch slot on every single
+    run and starve the links behind it whenever the cap is below the linked
+    set. Only a rate-limit stop and a transport error leave a row unstamped,
+    so those are retried first.
     """
     resp = await client.get(f"/repos/{repo}/issues/{obj.github_issue_number}")
     if _rate_limited(resp):
         logger.warning("GitHub rate limit in sync; stopping")
         return False
+    # The request was answered, whatever it said: this row has been checked.
+    obj.github_issue_checked_at = utcnow()
     if resp.status_code in (401, 403, 410):
         # Definitive, Repo-wide client error (bad credentials, a permission
         # error, a gone Repo): this Repo's links stay as they are; skip it for
@@ -581,7 +589,6 @@ async def _clear_if_closed(
             resp.status_code,
             resp.text[:300],
         )
-        obj.github_issue_checked_at = utcnow()  # the check happened: an unreadable Repo cannot pin the rotation queue
         skipped.add(repo)
         return True
     if resp.status_code == 200:
@@ -594,16 +601,13 @@ async def _clear_if_closed(
                 obj.github_issue_number,
                 resp.text[:300],
             )
-        else:
-            obj.github_issue_checked_at = utcnow()  # open or closed: the check happened
-            if state == "closed":
-                logger.info("Issue closed %s#%s; re-arming %s %s", repo, obj.github_issue_number, entity, obj.id)
-                obj.github_issue_number = None
+        elif state == "closed":
+            logger.info("Issue closed %s#%s; re-arming %s %s", repo, obj.github_issue_number, entity, obj.id)
+            obj.github_issue_number = None
     elif resp.status_code == 404:
         # Issue deleted or token can no longer see it — do not hold dedup forever.
         logger.info("Issue gone %s#%s; re-arming %s %s", repo, obj.github_issue_number, entity, obj.id)
         obj.github_issue_number = None
-        obj.github_issue_checked_at = utcnow()
     return True
 
 
