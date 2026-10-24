@@ -338,6 +338,49 @@ async def test_sync_never_raises_and_rate_limit_stops(db, gh_settings, session_f
     assert len(calls) == 1
 
 
+async def test_sync_permission_403_keeps_link_and_syncs_other_repos(db, gh_settings, session_factory):
+    denied = await _flaky_test(db, name="denied", repo="acme/a", github_issue_number=11)
+    closed = await _flaky_test(db, name="closed", repo="acme/b", github_issue_number=22)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.startswith("/repos/acme/a/"):
+            return httpx.Response(403, json={"message": "Resource not accessible by personal access token"})
+        return httpx.Response(200, json={"state": "closed"})
+
+    await github_integration.sync_closed_issues(session_factory, transport=httpx.MockTransport(handler))
+    await db.refresh(denied)
+    await db.refresh(closed)
+    # A permission 403 is not a rate limit: the link stays as it is and repo B is still synced.
+    assert denied.github_issue_number == 11
+    assert closed.github_issue_number is None
+
+
+async def test_sync_permission_403_skips_later_rows_in_that_repo(db, gh_settings, session_factory):
+    a1 = await _flaky_test(db, repo="acme/a", project="p1", name="a1", github_issue_number=11)
+    a2 = await _flaky_test(db, repo="acme/a", project="p2", name="a2", github_issue_number=12)
+    b = await _flaky_test(db, repo="acme/b", name="b", github_issue_number=22)
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if request.url.path.startswith("/repos/acme/a/"):
+            return httpx.Response(403, json={"message": "Resource not accessible by personal access token"})
+        return httpx.Response(200, json={"state": "closed"})
+
+    await github_integration.sync_closed_issues(session_factory, transport=httpx.MockTransport(handler))
+    # acme/a is skipped for the rest of the sync: its later row issues no GET.
+    assert sorted(r.url.path for r in calls) == [
+        "/repos/acme/a/issues/11",
+        "/repos/acme/b/issues/22",
+    ]
+    await db.refresh(a1)
+    await db.refresh(a2)
+    await db.refresh(b)
+    assert a1.github_issue_number == 11
+    assert a2.github_issue_number == 12
+    assert b.github_issue_number is None
+
+
 async def test_hook_ignores_failed_reports(session_factory, gh_settings, monkeypatch):
     called = []
 

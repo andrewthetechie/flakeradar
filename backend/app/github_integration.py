@@ -23,6 +23,8 @@ Error handling: never raises.
 - Any other 403 on create (a permission error: a token without access to that
   Repo, an archived Repo), or 404/410 (issues disabled) -> skip that Repo for
   the rest of the batch, log one warning per Repo, go on with the other Repos.
+- In the sync (`sync_closed_issues`), a permission 403 leaves the Issue link
+  as it is and skips that Repo for the rest of the run; 404 still re-arms.
 - Any other failure (network) -> log, go on.
 """
 
@@ -492,27 +494,44 @@ async def sync_closed_issues(
         if not test_rows and not job_rows:
             return
         rows = [(tc, repo, "test") for tc, repo in test_rows] + [(job, repo, "job") for job, repo in job_rows]
+        skipped: set[str] = set()
         try:
             async with httpx.AsyncClient(
                 base_url=API_BASE, headers=_headers(get_settings().github_token), timeout=15, transport=transport
             ) as client:
                 for obj, repo, entity in rows:
-                    if not await _clear_if_closed(client, obj, repo, entity):
+                    if repo in skipped:
+                        continue
+                    if not await _clear_if_closed(client, obj, repo, entity, skipped):
                         break
         except httpx.HTTPError as exc:
             logger.warning("GitHub unreachable, skipping issue-state sync: %s", exc)
         await db.commit()  # keeps whatever was cleared before a stop or a network error
 
 
-async def _clear_if_closed(client: httpx.AsyncClient, obj: Job | TestCase, repo: str, entity: str) -> bool:
+async def _clear_if_closed(
+    client: httpx.AsyncClient, obj: Job | TestCase, repo: str, entity: str, skipped: set[str]
+) -> bool:
     """Check one issue; clear its number on the ORM object when closed/gone.
 
-    Returns False on 403/429, when the batch must stop.
+    Returns False on a rate limit, when the batch must stop; a permission 403
+    adds `repo` to `skipped` and leaves the link as it is.
     """
     resp = await client.get(f"/repos/{repo}/issues/{obj.github_issue_number}")
-    if resp.status_code in (403, 429):
-        logger.warning("GitHub rate limit / forbidden in sync; stopping")
+    if _rate_limited(resp):
+        logger.warning("GitHub rate limit in sync; stopping")
         return False
+    if resp.status_code == 403:
+        # Permission error: this Repo's links stay as they are; skip it for the
+        # rest of the sync and go on with the other Repos.
+        logger.warning(
+            "GitHub issue-state sync skipped for repo %s: %s %s",
+            repo,
+            resp.status_code,
+            resp.text[:300],
+        )
+        skipped.add(repo)
+        return True
     if resp.status_code == 200 and resp.json().get("state") == "closed":
         logger.info("Issue closed %s#%s; re-arming %s %s", repo, obj.github_issue_number, entity, obj.id)
         obj.github_issue_number = None
