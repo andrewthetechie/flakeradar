@@ -64,9 +64,7 @@ async def prune(
     )
     stale_job_ids = list(
         (
-            await db.execute(
-                select(JobExecution.job_id).where(JobExecution.created_at < execution_cutoff).distinct()
-            )
+            await db.execute(select(JobExecution.job_id).where(JobExecution.created_at < execution_cutoff).distinct())
         ).scalars()
     )
     executions = await db.execute(delete(TestExecution).where(TestExecution.created_at < execution_cutoff))
