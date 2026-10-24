@@ -1,0 +1,42 @@
+version = 1
+
+# backend/tests/conftest.py starts a testcontainers PostgreSQL unless
+# FLAKERADAR_TEST_DATABASE_URL is set. The sandbox has no Docker, so the image's own
+# PostgreSQL (fabro-pg-ensure) is reached over localhost instead.
+[env]
+FLAKERADAR_TEST_DATABASE_URL = "postgresql+asyncpg://test:test@localhost:5432/test"
+
+[prepare]
+inputs = []
+timeout = 300
+# Recreates the test databases on every call.
+run = ["fabro-pg-ensure"]
+
+[targets.backend]
+about = "backend pytest; pass test files or node ids"
+cwd = "backend"
+run = ".venv/bin/pytest -q"
+tests = ["backend/tests/**"]
+timeout = 300
+
+[targets.frontend]
+about = "frontend vitest unit suite; pass test files, relative to frontend/"
+cwd = "frontend"
+run = "npx vitest run"
+tests = ["frontend/src/**"]
+timeout = 300
+
+[checks.ruff]
+about = "ruff lint over the backend (ci.sh's ruff check)"
+cwd = "backend"
+run = ".venv/bin/ruff check ."
+watch = ["backend/**/*.py"]
+files = false
+
+[checks.typecheck]
+about = "frontend TypeScript type check (npm run typecheck)"
+cwd = "frontend"
+run = "npm run typecheck"
+watch = ["frontend/**"]
+files = false
+timeout = 300

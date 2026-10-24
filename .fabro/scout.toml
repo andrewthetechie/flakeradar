@@ -1,0 +1,11 @@
+# The scout (ADR 0027 in andrewthetechie/fabro-workflows). It runs daily, reads this file, and
+# files one `agent` issue per Ratchet rule below and per Flaky CI job it finds. A PR that edits
+# this file is never auto-merged (config_changed).
+#
+# filing = false: the scout reads everything and files nothing; its plan is posted as DRY RUN.
+# Set it to true once the first dry run looks right.
+version = 1
+filing = false
+
+# No Ratchet rules yet. This repository does not upload its own JUnit to FlakeRadar, so the
+# scout reads flaky CI jobs only.
