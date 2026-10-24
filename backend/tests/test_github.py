@@ -617,6 +617,9 @@ async def test_job_sync_rearms_closed_issue_and_refiles(db, gh_settings, session
     calls, transport = _recorder()
     await github_integration.file_job_issues_for(db, [job.id], transport=transport)
     assert len(calls) == 1
+    await db.refresh(job)
+    assert job.github_issue_number == 77
+    assert job.github_issue_checked_at is None  # a new link is checked first
 
 
 async def test_job_rate_limit_stops_batch(db, gh_settings):
@@ -743,6 +746,7 @@ async def test_sync_rearms_a_linked_test_and_the_filer_files_again(db, gh_settin
     assert len(filed) == 1
     await db.refresh(tc)
     assert tc.github_issue_number == 77
+    assert tc.github_issue_checked_at is None  # a new link is checked first
 
 
 async def test_sync_keeps_a_linked_issue_while_it_is_open(db, gh_settings, session_factory):
@@ -767,3 +771,94 @@ async def test_sync_rearms_a_linked_job(db, gh_settings, session_factory):
     await github_integration.sync_closed_issues(session_factory, transport=httpx.MockTransport(handler))
     await db.refresh(job)
     assert job.github_issue_number is None
+
+
+async def test_relinked_issue_is_checked_first(db, gh_settings, session_factory):
+    """A link whose number changed goes before links checked in an earlier run."""
+    gh_settings.github_sync_batch = 2
+    a = await _flaky_test(db, project="p1", name="t1", github_issue_number=11)
+    await _flaky_test(db, project="p2", name="t2", github_issue_number=22)
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(200, json={"state": "open"})
+
+    await github_integration.sync_closed_issues(session_factory, transport=httpx.MockTransport(handler))
+    assert len(calls) == 2  # both links carry a stamp from this run
+    await db.refresh(a)
+    assert a.github_issue_checked_at is not None
+
+    await issue_links.link_test_issue(db, a.id, 44, replace=True, threshold=0.3)
+    await db.refresh(a)
+    assert a.github_issue_number == 44
+    assert a.github_issue_checked_at is None  # the new link moves to the front
+
+    gh_settings.github_sync_batch = 1
+    calls.clear()
+    await github_integration.sync_closed_issues(session_factory, transport=httpx.MockTransport(handler))
+    assert [r.url.path for r in calls] == ["/repos/acme/app/issues/44"]
+
+
+async def test_unlink_clears_the_check_stamp(db, gh_settings, session_factory):
+    gh_settings.github_sync_batch = 2
+    tc = await _flaky_test(db, project="p1", name="t1", github_issue_number=300)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"state": "open"})
+
+    await github_integration.sync_closed_issues(session_factory, transport=httpx.MockTransport(handler))
+    await db.refresh(tc)
+    assert tc.github_issue_checked_at is not None
+
+    await issue_links.unlink_test_issue(db, tc.id, threshold=0.3)
+    await db.refresh(tc)
+    assert tc.github_issue_number is None
+    assert tc.github_issue_checked_at is None
+
+
+async def test_same_number_link_keeps_the_check_stamp(db, gh_settings, session_factory):
+    """Linking the number it already has is a no-op: the stamp stays."""
+    gh_settings.github_sync_batch = 2
+    tc = await _flaky_test(db, project="p1", name="t1", github_issue_number=300)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"state": "open"})
+
+    await github_integration.sync_closed_issues(session_factory, transport=httpx.MockTransport(handler))
+    await db.refresh(tc)
+    before = tc.github_issue_checked_at
+    assert before is not None
+
+    await issue_links.link_test_issue(db, tc.id, 300, threshold=0.3)
+    await db.refresh(tc)
+    assert tc.github_issue_number == 300
+    assert tc.github_issue_checked_at == before
+
+
+async def test_job_link_change_and_unlink_reset_the_check_stamp(db, gh_settings, session_factory):
+    gh_settings.github_sync_batch = 2
+    job = await _flaky_job(db)
+    await _job_exec(db, job, "1")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"state": "open"})
+
+    await issue_links.link_job_issue(db, job.id, 301, threshold=0.3)
+    await github_integration.sync_closed_issues(session_factory, transport=httpx.MockTransport(handler))
+    await db.refresh(job)
+    assert job.github_issue_checked_at is not None
+
+    await issue_links.link_job_issue(db, job.id, 44, replace=True, threshold=0.3)
+    await db.refresh(job)
+    assert job.github_issue_number == 44
+    assert job.github_issue_checked_at is None
+
+    await github_integration.sync_closed_issues(session_factory, transport=httpx.MockTransport(handler))
+    await db.refresh(job)
+    assert job.github_issue_checked_at is not None
+
+    await issue_links.unlink_job_issue(db, job.id, threshold=0.3)
+    await db.refresh(job)
+    assert job.github_issue_number is None
+    assert job.github_issue_checked_at is None

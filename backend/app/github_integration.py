@@ -317,6 +317,7 @@ async def file_issues_for(
                         )
                     else:
                         tc.github_issue_number = number
+                        tc.github_issue_checked_at = None  # a new link is checked first
                         await db.commit()
                         logger.info("Filed issue %s#%s for test %s", repo, tc.github_issue_number, tc.id)
                 elif _rate_limited(resp):
@@ -459,6 +460,7 @@ async def file_job_issues_for(
                         )
                     else:
                         job.github_issue_number = number
+                        job.github_issue_checked_at = None  # a new link is checked first
                         await db.commit()
                         logger.info("Filed issue %s#%s for job %s", repo, job.github_issue_number, job.id)
                 elif _rate_limited(resp):
