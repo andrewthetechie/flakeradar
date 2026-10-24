@@ -176,6 +176,16 @@ stored the report. `GET /api/reports/7` shows when processing is complete. The
 `--retry` flags help when the server is not available for a short time, for
 example during a redeploy.
 
+A retry can also happen after the server stored the report but the response was
+lost. Ingest then recognises the upload as a duplicate: the same body bytes
+under the same project, commit, `ci_run_id`, `ci_run_attempt` and `ci_job_id`
+return the first report's id and current status with `"duplicate": true`, and
+nothing new is queued, so the retry does not create a second Run. The check is
+best effort: there is no unique constraint, so two identical uploads running in
+parallel can both be stored. And once `REPORT_RETENTION_DAYS` deletes the
+processed report, a later retry is ingested again; that is acceptable because a
+client retries within seconds.
+
 ## CI jobs
 
 FlakeRadar also scores CI jobs for flakiness, with the same rules as tests. A
@@ -654,7 +664,7 @@ and the MCP server need the token.
 
 | Endpoint | Auth | Purpose |
 |---|---|---|
-| `POST /api/ingest?repo=&project=&root=&commit_sha=&branch=&ci_run_id=&ci_run_attempt=&ci_job_id=&pipeline=&default_branch=` | `X-API-Key` | Queue a JUnit XML report (raw body or multipart `report` field, 20 MB maximum). Returns `202`. |
+| `POST /api/ingest?repo=&project=&root=&commit_sha=&branch=&ci_run_id=&ci_run_attempt=&ci_job_id=&pipeline=&default_branch=` | `X-API-Key` | Queue a JUnit XML report (raw body or multipart `report` field, 20 MB maximum). Returns `202` with `{report_id, status, duplicate}`; `duplicate` is `true` when an identical upload under the same identity was already stored, and its report is returned instead of a new one. |
 | `POST /api/ingest/pipeline` | `X-API-Key` | Queue a pipeline report (JSON) with `jobs`. Returns `202`. |
 | `GET /api/reports/{id}` | none | The status of one report (`pending`, `processed` or `failed`), its counts, and its error. |
 | `GET /api/reports?status=&limit=` | none | Recent reports, newest first. |

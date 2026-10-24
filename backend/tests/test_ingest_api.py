@@ -1,7 +1,8 @@
 """Queued ingest: validate, store a pending Report, answer 202."""
 
-from app.models import Project, Repo, Report
-from sqlalchemy import select
+from app.models import Project, Repo, Report, TestRun
+from app.processing import process_next
+from sqlalchemy import func, select
 
 from tests.conftest import AUTH, make_junit
 
@@ -130,3 +131,40 @@ async def test_ingest_rejects_empty_and_garbage(client, db):
     assert garbage.status_code == 422
     assert "Not a valid JUnit XML report" in garbage.json()["detail"]
     assert (await db.execute(select(Report))).first() is None
+
+
+async def test_ingest_retried_upload_is_a_duplicate(client, db, session_factory):
+    """curl --retry after a lost response must not create a second Run."""
+    url = _url(ci_run_id="55", ci_job_id="7", ci_run_attempt="1")
+    content = make_junit([("t1", "failed")])
+    first = await client.post(url, content=content, headers=AUTH)
+    second = await client.post(url, content=content, headers=AUTH)
+    assert first.status_code == second.status_code == 202
+    assert first.json()["report_id"] == second.json()["report_id"]
+    assert first.json()["duplicate"] is False and second.json()["duplicate"] is True
+
+    while await process_next(session_factory):
+        pass
+    assert (await db.execute(select(func.count()).select_from(Report))).scalar_one() == 1
+    assert (await db.execute(select(func.count()).select_from(TestRun))).scalar_one() == 1
+
+
+async def test_ingest_duplicate_check_keys_on_job_and_project(client, db):
+    content = make_junit([("t1", "passed")])
+    responses = [
+        await client.post(url, content=content, headers=AUTH)
+        for url in (
+            _url(ci_job_id="1"),
+            _url(ci_job_id="2"),
+            _url(project="other", ci_job_id="1"),
+        )
+    ]
+    assert all(r.status_code == 202 for r in responses)
+    assert [r.json()["duplicate"] for r in responses] == [False, False, False]
+    assert len({r.json()["report_id"] for r in responses}) == 3
+    # The very same upload again is a duplicate of the first one.
+    retry = await client.post(_url(ci_job_id="1"), content=content, headers=AUTH)
+    assert retry.json()["duplicate"] is True
+    assert retry.json()["report_id"] == responses[0].json()["report_id"]
+    assert (await db.execute(select(func.count()).select_from(Report))).scalar_one() == 3
+

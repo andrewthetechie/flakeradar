@@ -11,7 +11,10 @@ from .models import JobStatus
 
 class IngestAccepted(BaseModel):
     report_id: int
-    status: str  # always "pending"
+    # "pending" for a new Report; a duplicate returns the stored Report's
+    # current status instead.
+    status: str
+    duplicate: bool = False
 
 
 class JobResultIn(BaseModel):

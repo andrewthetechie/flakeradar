@@ -179,6 +179,7 @@ class Report(Base):
     __table_args__ = (
         Index("ix_reports_status_id", "status", "id"),
         Index("ix_reports_repo_ci_run_id", "repo_id", "ci_run_id"),
+        Index("ix_reports_project_body_sha256", "project_id", "body_sha256"),
         CheckConstraint("kind <> 'junit' OR project_id IS NOT NULL", name="ck_reports_junit_has_project"),
     )
 
@@ -197,6 +198,9 @@ class Report(Base):
     pipeline: Mapped[str | None] = mapped_column(String(512), default=None)
     default_branch: Mapped[str | None] = mapped_column(String(255), default=None)
     body: Mapped[bytes] = mapped_column(LargeBinary)
+    # SHA-256 of the body, for the duplicate check on ingest (see ingest_endpoint).
+    # Old rows have none and never match a retry.
+    body_sha256: Mapped[str | None] = mapped_column(String(64), default=None)
     status: Mapped[str] = mapped_column(String(16), default=REPORT_PENDING, server_default=REPORT_PENDING)
     error: Mapped[str | None] = mapped_column(Text, default=None)
     # Number of times this Report has been re-processed after a failed attempt
