@@ -209,4 +209,3 @@ async def test_ingest_duplicate_check_keys_on_line_base(client, db):
     assert retry.json()["duplicate"] is True
     assert retry.json()["report_id"] == corrected.json()["report_id"]
     assert (await db.execute(select(func.count()).select_from(Report))).scalar_one() == 2
-
