@@ -232,6 +232,34 @@ async def test_404_and_410_skip_repo_for_rest_of_batch(db, gh_settings, caplog, 
     assert b.github_issue_number == 99
 
 
+@pytest.mark.parametrize(
+    "raw",
+    ["<html>Bad Gateway</html>", "[1, 2]", "null", '{"number": "not-a-number"}', "{}"],
+)
+async def test_malformed_201_body_never_raises_and_keeps_the_batch(db, gh_settings, caplog, raw):
+    """A 201 whose body is not a usable issue is logged, not stored and not raised."""
+    a = await _flaky_test(db, repo="acme/a", name="a")
+    b = await _flaky_test(db, repo="acme/b", name="b")
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if request.url.path.startswith("/repos/acme/a/"):
+            return httpx.Response(201, text=raw)
+        return httpx.Response(201, json={"number": 91})
+
+    with caplog.at_level(logging.WARNING, logger="flakeradar.github"):
+        await github_integration.file_issues_for(db, [a.id, b.id], transport=httpx.MockTransport(handler))
+    assert [r.url.path for r in calls] == ["/repos/acme/a/issues", "/repos/acme/b/issues"]
+    await db.refresh(a)
+    await db.refresh(b)
+    assert a.github_issue_number is None  # nothing stored, so a later Report can re-file
+    assert b.github_issue_number == 91
+    warnings = [r.getMessage() for r in caplog.records if "no issue number" in r.getMessage()]
+    assert len(warnings) == 1
+    assert "acme/a" in warnings[0] and raw[:300] in warnings[0]
+
+
 async def test_network_error_never_raises(db, gh_settings):
     tc = await _flaky_test(db)
 
@@ -379,6 +407,31 @@ async def test_sync_permission_403_skips_later_rows_in_that_repo(db, gh_settings
     assert a1.github_issue_number == 11
     assert a2.github_issue_number == 12
     assert b.github_issue_number is None
+
+
+@pytest.mark.parametrize("raw", ["", "<html>Gateway</html>", "[1, 2]", "null", '{"state": ["closed"]}'])
+async def test_sync_malformed_200_body_never_raises_and_keeps_the_link(db, gh_settings, session_factory, caplog, raw):
+    """An unreadable 200 says nothing about the issue: keep the link, log it, go on."""
+    unreadable = await _flaky_test(db, repo="acme/a", name="a", github_issue_number=11)
+    closed = await _flaky_test(db, repo="acme/b", name="b", github_issue_number=22)
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if request.url.path.startswith("/repos/acme/a/"):
+            return httpx.Response(200, text=raw)
+        return httpx.Response(200, json={"state": "closed"})
+
+    with caplog.at_level(logging.WARNING, logger="flakeradar.github"):
+        await github_integration.sync_closed_issues(session_factory, transport=httpx.MockTransport(handler))
+    assert [r.url.path for r in calls] == ["/repos/acme/a/issues/11", "/repos/acme/b/issues/22"]
+    await db.refresh(unreadable)
+    await db.refresh(closed)
+    assert unreadable.github_issue_number == 11
+    assert closed.github_issue_number is None
+    warnings = [r.getMessage() for r in caplog.records if "unusable" in r.getMessage()]
+    assert len(warnings) == 1
+    assert "acme/a#11" in warnings[0]
 
 
 async def test_hook_ignores_failed_reports(session_factory, gh_settings, monkeypatch):
@@ -543,6 +596,21 @@ async def test_job_permission_403_skips_repo_and_files_other_repos(db, gh_settin
     await db.refresh(b)
     assert a.github_issue_number is None
     assert b.github_issue_number == 88
+
+
+async def test_job_malformed_201_body_never_raises(db, gh_settings, caplog):
+    """Same on the Job path: an unusable 201 body is logged, never stored or raised."""
+    job = await _flaky_job(db, repo="acme/a", name="a", pipeline=".github/workflows/a.yml")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(201, text="not json")
+
+    with caplog.at_level(logging.WARNING, logger="flakeradar.github"):
+        await github_integration.file_job_issues_for(db, [job.id], transport=httpx.MockTransport(handler))
+    await db.refresh(job)
+    assert job.github_issue_number is None
+    warnings = [r.getMessage() for r in caplog.records if "no issue number" in r.getMessage()]
+    assert len(warnings) == 1 and "acme/a" in warnings[0]
 
 
 async def test_429_stops_the_batch(db, gh_settings):
