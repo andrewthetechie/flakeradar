@@ -242,7 +242,8 @@ def job_execution_window_ids(job_ids: Sequence[int], window: int, *, include_def
     """The newest `window` Job-execution ids per Job: unnest + LATERAL ... LIMIT.
 
     Each lateral stops after `window` rows per Job on ix_job_exec_job_id, so the
-    cost tracks the window, not the Job's retained history. With
+    cost tracks the window, not the Job's retained history (measured before and
+    after: docs/perf/21-job-rescore-explain.md). With
     `include_default_branch`, also the newest `window` per Job on its Repo's
     Default branch (a NULL Default branch matches every branch), UNION-deduped:
     the newest `window` rows overall plus the newest `window` on the Default
