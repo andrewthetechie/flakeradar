@@ -119,7 +119,42 @@ async def test_job_summary_counts(client, db):
     assert body["flaky_jobs"] == 1
     assert body["suspect_jobs"] == 1
     assert body["confirmed_flaky_jobs"] == 1
+    assert body["new_flaky_7d"] == 1  # the flaky Job has no history at all, so it is new
     assert body["total_job_executions"] == 1
+
+
+async def test_job_summary_new_flaky_7d(client, db):
+    """new_flaky_7d on Jobs: flaky now, with no history row at least 7 days old at or above the threshold."""
+    app = await make_pipeline(db, "acme/app", "ci.yml")
+    other = await make_pipeline(db, "acme/other", "ci.yml")
+    crossed = await make_job(db, app, name="crossed", flakiness_score=0.6)
+    at_threshold = await make_job(db, app, name="at_threshold", flakiness_score=0.6)
+    old_flaky = await make_job(db, app, name="old_flaky", flakiness_score=0.6)
+    boundary = await make_job(db, app, name="boundary", flakiness_score=0.6)
+    recent = await make_job(db, app, name="recent", flakiness_score=0.6)
+    newest_old_low = await make_job(db, app, name="newest_old_low", flakiness_score=0.6)
+    newest_old_high = await make_job(db, app, name="newest_old_high", flakiness_score=0.6)
+    await make_job(db, app, name="suspect", flakiness_score=0.1)
+    await make_job(db, other, name="elsewhere", flakiness_score=0.6)
+    today = utcnow().date()
+    await make_job_score(db, crossed, today - timedelta(days=20), 0.1)  # newest old row is below
+    await make_job_score(db, crossed, today - timedelta(days=3), 0.6)  # several rows: counted once
+    await make_job_score(db, at_threshold, today - timedelta(days=10), 0.3)  # exactly at the threshold
+    await make_job_score(db, old_flaky, today - timedelta(days=30), 0.6)
+    await make_job_score(db, boundary, today - timedelta(days=7), 0.6)  # exactly 7 days old counts as old
+    await make_job_score(db, recent, today - timedelta(days=6), 0.6)  # nothing 7 days old yet
+    await make_job_score(db, newest_old_low, today - timedelta(days=25), 0.6)
+    await make_job_score(db, newest_old_low, today - timedelta(days=10), 0.1)  # the NEWEST old row is below
+    await make_job_score(db, newest_old_high, today - timedelta(days=25), 0.1)
+    await make_job_score(db, newest_old_high, today - timedelta(days=10), 0.6)  # the newest old row is at it
+    await db.commit()
+
+    scoped = (await client.get("/api/jobs/summary?repo=acme/app")).json()
+    assert scoped["flaky_jobs"] == 7
+    # crossed, recent and newest_old_low; the other four were already flaky 7 days ago
+    assert scoped["new_flaky_7d"] == 3
+    assert (await client.get("/api/jobs/summary?repo=acme/other")).json()["new_flaky_7d"] == 1
+    assert (await client.get("/api/jobs/summary")).json()["new_flaky_7d"] == 4  # + elsewhere, with no history
 
 
 async def test_test_history_includes_seen_in_jobs(client, db):

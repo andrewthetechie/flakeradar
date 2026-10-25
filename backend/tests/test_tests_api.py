@@ -114,6 +114,7 @@ async def test_summary_scoped(client, db):
         "flaky_tests": 2,
         "suspect_tests": 2,
         "confirmed_flaky_tests": 1,
+        "new_flaky_7d": 2,  # neither flaky Test has any history, so both are new
         "total_runs": 1,
         "total_executions": 1,
         "flake_threshold": 0.3,
@@ -121,6 +122,45 @@ async def test_summary_scoped(client, db):
     }
     one = (await client.get("/api/summary?repo=andrewthetechie/fantasy")).json()
     assert (one["total_tests"], one["flaky_tests"], one["total_runs"]) == (1, 1, 0)
+
+
+async def test_summary_new_flaky_7d(client, db):
+    """new_flaky_7d: flaky now, with no history row at least 7 days old at or above the threshold."""
+    backend = await make_project(db, "acme/app", "backend")
+    frontend = await make_project(db, "acme/app", "frontend")
+    other = await make_project(db, "acme/other", "backend")
+    crossed = await make_test_case(db, backend, name="crossed", flakiness_score=0.6)
+    at_threshold = await make_test_case(db, backend, name="at_threshold", flakiness_score=0.6)
+    old_flaky = await make_test_case(db, backend, name="old_flaky", flakiness_score=0.6)
+    boundary = await make_test_case(db, backend, name="boundary", flakiness_score=0.6)
+    recent = await make_test_case(db, backend, name="recent", flakiness_score=0.6)
+    newest_old_low = await make_test_case(db, backend, name="newest_old_low", flakiness_score=0.6)
+    newest_old_high = await make_test_case(db, backend, name="newest_old_high", flakiness_score=0.6)
+    await make_test_case(db, backend, name="suspect", flakiness_score=0.1)
+    await make_test_case(db, frontend, name="fresh", flakiness_score=0.6)
+    await make_test_case(db, other, name="elsewhere", flakiness_score=0.6)
+    today = utcnow().date()
+    await make_test_score(db, crossed, today - timedelta(days=20), 0.1)  # newest old row is below
+    await make_test_score(db, crossed, today - timedelta(days=3), 0.6)  # several rows: counted once
+    await make_test_score(db, at_threshold, today - timedelta(days=10), 0.3)  # exactly at the threshold
+    await make_test_score(db, old_flaky, today - timedelta(days=30), 0.6)
+    await make_test_score(db, boundary, today - timedelta(days=7), 0.6)  # exactly 7 days old counts as old
+    await make_test_score(db, recent, today - timedelta(days=6), 0.6)  # nothing 7 days old yet
+    await make_test_score(db, newest_old_low, today - timedelta(days=25), 0.6)
+    await make_test_score(db, newest_old_low, today - timedelta(days=10), 0.1)  # the NEWEST old row is below
+    await make_test_score(db, newest_old_high, today - timedelta(days=25), 0.1)
+    await make_test_score(db, newest_old_high, today - timedelta(days=10), 0.6)  # the newest old row is at it
+
+    await db.commit()
+
+    scoped = (await client.get("/api/summary?repo=acme/app&project=backend")).json()
+    assert scoped["flaky_tests"] == 7
+    # crossed, recent and newest_old_low; at_threshold, old_flaky, boundary and newest_old_high were already flaky
+    assert scoped["new_flaky_7d"] == 3
+    repo = (await client.get("/api/summary?repo=acme/app")).json()
+    assert (repo["flaky_tests"], repo["new_flaky_7d"]) == (8, 4)  # + fresh, which has no history
+    assert (await client.get("/api/summary?repo=acme/other")).json()["new_flaky_7d"] == 1
+    assert (await client.get("/api/summary")).json()["new_flaky_7d"] == 5
 
 
 async def test_category_filter_and_counts(client, db):

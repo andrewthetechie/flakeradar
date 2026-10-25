@@ -37,6 +37,7 @@ from .score_history import HISTORY_DAYS, TREND_DAYS, Trend, trend_for
 from .scoring import FAILING
 
 SortKey = Literal["score", "last_seen", "proven"]  # shared by the Test and Job leaderboards
+NEW_FLAKY_DAYS = 7  # the "became flaky recently" window in the dashboard tiles
 
 
 @dataclass(frozen=True)
@@ -261,6 +262,14 @@ async def summary(db: AsyncSession, scope: Scope, *, threshold: float) -> schema
         await db.execute(tests_count(TestCase.flakiness_score > 0, TestCase.flakiness_score < threshold))
     ).scalar_one()
     confirmed = (await db.execute(tests_count(TestCase.confirmed_flake_count > 0))).scalar_one()
+    oldest = _newest_history_before(TestScoreHistory, TestScoreHistory.test_case_id, TestCase.id, NEW_FLAKY_DAYS)
+    new_flaky = (
+        await db.execute(
+            tests_count(TestCase.flakiness_score >= threshold)
+            .outerjoin(oldest, true())
+            .where(_became_flaky_clause(oldest, threshold))
+        )
+    ).scalar_one()
     runs = (
         await db.execute(
             _scoped(
@@ -298,6 +307,7 @@ async def summary(db: AsyncSession, scope: Scope, *, threshold: float) -> schema
         flaky_tests=flaky,
         suspect_tests=suspect,
         confirmed_flaky_tests=confirmed,
+        new_flaky_7d=new_flaky,
         total_runs=runs,
         total_executions=executions,
         flake_threshold=threshold,
@@ -638,6 +648,14 @@ async def job_summary(db: AsyncSession, repo: str | None, *, threshold: float) -
     flaky = (await db.execute(jobs_count(Job.flakiness_score >= threshold))).scalar_one()
     suspect = (await db.execute(jobs_count(Job.flakiness_score > 0, Job.flakiness_score < threshold))).scalar_one()
     confirmed = (await db.execute(jobs_count(Job.confirmed_flake_count > 0))).scalar_one()
+    oldest = _newest_history_before(JobScoreHistory, JobScoreHistory.job_id, Job.id, NEW_FLAKY_DAYS)
+    new_flaky = (
+        await db.execute(
+            jobs_count(Job.flakiness_score >= threshold)
+            .outerjoin(oldest, true())
+            .where(_became_flaky_clause(oldest, threshold))
+        )
+    ).scalar_one()
 
     exec_stmt = (
         select(func.count(JobExecution.id))
@@ -659,6 +677,7 @@ async def job_summary(db: AsyncSession, repo: str | None, *, threshold: float) -
         flaky_jobs=flaky,
         suspect_jobs=suspect,
         confirmed_flaky_jobs=confirmed,
+        new_flaky_7d=new_flaky,
         total_job_executions=total_exec,
         flake_threshold=threshold,
         pipelines=pipelines,
