@@ -4,6 +4,7 @@ import asyncio
 from datetime import timedelta
 
 from app import retention
+from app.config import Settings
 from app.models import (
     REPORT_FAILED,
     REPORT_PROCESSED,
@@ -237,7 +238,7 @@ async def test_run_prune_deletes_in_batches(db, session_factory, monkeypatch):
         await make_execution(db, tc, run, created_at=old)
     await db.commit()
 
-    monkeypatch.setattr(retention, "PRUNE_BATCH", 2)
+    monkeypatch.setattr(retention, "get_settings", lambda: Settings(prune_batch=2))
     rounds: list[int] = []
     real_prune = retention.prune
 
@@ -269,7 +270,7 @@ async def test_run_prune_drains_both_score_history_tables(db, session_factory, m
         await make_job_score(db, job, (now - timedelta(days=400 + i)).date(), 0.5)
     await db.commit()
 
-    monkeypatch.setattr(retention, "PRUNE_BATCH", 2)
+    monkeypatch.setattr(retention, "get_settings", lambda: Settings(prune_batch=2))
     rounds: list[int] = []
     real_prune = retention.prune
 
@@ -282,7 +283,7 @@ async def test_run_prune_drains_both_score_history_tables(db, session_factory, m
     result = await retention.run_prune(session_factory)
 
     # Each round deletes a full batch from BOTH history tables, so the summed count would
-    # never equal PRUNE_BATCH; the loop must check the tables separately.
+    # never equal the batch size; the loop must check the tables separately.
     assert len(rounds) == 3  # (2, 2) + (2, 2) + (1, 1) rows
     assert result.score_history == 10
     assert (await db.execute(select(func.count()).select_from(TestScoreHistory))).scalar() == 0
@@ -299,9 +300,10 @@ async def test_run_prune_stops_at_time_budget(db, session_factory, monkeypatch):
         await make_execution(db, tc, run, created_at=old)
     await db.commit()
 
-    monkeypatch.setattr(retention, "PRUNE_BATCH", 2)
+    settings = Settings(prune_batch=2)
+    monkeypatch.setattr(retention, "get_settings", lambda: settings)
     # The first reading sets the deadline; the later ones are past it.
-    past_deadline = iter([0.0] + [retention.PRUNE_TIME_BUDGET_SECONDS + 1.0] * 8)
+    past_deadline = iter([0.0] + [settings.prune_time_budget_seconds + 1.0] * 8)
     monkeypatch.setattr(retention, "_monotonic", lambda: next(past_deadline))
 
     result = await retention.run_prune(session_factory)  # returns normally, no exception

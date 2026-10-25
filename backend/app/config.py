@@ -69,6 +69,11 @@ class Settings(BaseSettings):
     execution_retention_days: int = 90  # Executions (and Runs left empty)
     score_history_retention_days: int = 365  # Score history rows (ADR 0007)
     prune_interval_seconds: float = 3600.0
+    # Rows one prune batch deletes per table, and the wall-clock budget of one
+    # prune run. Bounded batches keep every DELETE well under
+    # db_command_timeout_seconds even when a large backlog has built up.
+    prune_batch: int = 5000
+    prune_time_budget_seconds: float = 60.0
 
     @field_validator("database_url")
     @classmethod
