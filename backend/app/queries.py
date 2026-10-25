@@ -96,6 +96,8 @@ def to_test_out(tc: TestCase, project: str, repo: str, threshold: float, trend: 
         last_seen_at=tc.last_seen_at,
         quarantined=tc.quarantined,
         quarantined_at=tc.quarantined_at,
+        quarantine_reason=tc.quarantine_reason,
+        quarantine_expires_at=tc.quarantine_expires_at,
         github_issue_number=tc.github_issue_number,
         github_issue_url=issue_url(repo, tc.github_issue_number),
     )
@@ -417,7 +419,13 @@ async def get_test(
 
 
 async def set_quarantine(
-    db: AsyncSession, test_id: int, quarantined: bool, *, threshold: float
+    db: AsyncSession,
+    test_id: int,
+    quarantined: bool,
+    *,
+    reason: str | None = None,
+    expires_in_days: int | None = None,
+    threshold: float,
 ) -> schemas.TestOut | None:
     row = (await db.execute(tests_select().where(TestCase.id == test_id))).first()
     if row is None:
@@ -425,6 +433,12 @@ async def set_quarantine(
     tc, project, repo = row
     tc.quarantined = quarantined
     tc.quarantined_at = utcnow() if quarantined else None
+    # Every write stores the body's values, so re-quarantining without a reason
+    # or expiry clears the old ones instead of keeping a stale decision.
+    tc.quarantine_reason = reason if quarantined else None
+    tc.quarantine_expires_at = (
+        utcnow() + timedelta(days=expires_in_days) if quarantined and expires_in_days is not None else None
+    )
     await db.commit()
     return to_test_out(tc, project, repo, threshold)
 
@@ -452,6 +466,8 @@ async def quarantine_list(db: AsyncSession, repo: str, project: str) -> list[sch
             file=tc.file,
             line=tc.line,
             quarantined_at=tc.quarantined_at,
+            reason=tc.quarantine_reason,
+            expires_at=tc.quarantine_expires_at,
         )
         for tc in rows
     ]

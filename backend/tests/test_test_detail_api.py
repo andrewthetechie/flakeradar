@@ -1,8 +1,9 @@
 """Test detail (history, Location, permalink) and quarantine."""
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 
-from app.models import utcnow
+from app.models import TestCase, utcnow
+from sqlalchemy import select
 
 from tests.conftest import AUTH
 from tests.factories import (
@@ -40,6 +41,15 @@ async def _seed(db, *, file="src/app.test.ts", line=12, root="frontend"):
     await make_execution(db, tc, r2, status="passed", attempt=1)
     await db.commit()
     return tc
+
+
+async def _quarantine_columns(db, test_id: int):
+    """The stored values, read straight from the row (no identity map, no response model)."""
+    return (
+        await db.execute(
+            select(TestCase.quarantine_reason, TestCase.quarantine_expires_at).where(TestCase.id == test_id)
+        )
+    ).one()
 
 
 async def test_history_includes_location_permalink_and_details(client, db):
@@ -107,12 +117,46 @@ async def test_quarantine_toggle_and_scoped_list(client, db):
     assert (await client.get(url)).status_code == 401
     items = (await client.get(url, headers=AUTH)).json()
     assert [(i["name"], i["file"], i["line"]) for i in items] == [("renders", "src/app.test.ts", 12)]
+
+    reason_on = await client.post(
+        f"/api/tests/{tc.id}/quarantine",
+        json={"quarantined": True, "reason": "flaky on windows", "expires_in_days": 7},
+    )
+    assert reason_on.status_code == 200
+    assert reason_on.json()["quarantine_reason"] == "flaky on windows"
+    expected_expiry = utcnow() + timedelta(days=7)
+    actual_expiry = datetime.fromisoformat(reason_on.json()["quarantine_expires_at"])
+    assert abs(actual_expiry - expected_expiry) < timedelta(minutes=5)
+    items = (await client.get(url, headers=AUTH)).json()
+    assert [(i["reason"], i["expires_at"]) for i in items] == [
+        ("flaky on windows", reason_on.json()["quarantine_expires_at"])
+    ]
+
+    for days in (0, 366):
+        bad = await client.post(f"/api/tests/{tc.id}/quarantine", json={"quarantined": True, "expires_in_days": days})
+        assert bad.status_code == 422
+    assert (
+        await client.post(
+            f"/api/tests/{tc.id}/quarantine",
+            json={"quarantined": True, "reason": "x" * 501},
+        )
+    ).status_code == 422
+    # A rejected body never touches the stored decision.
+    stored = await _quarantine_columns(db, tc.id)
+    assert stored[0] == "flaky on windows"
+    assert stored[1] == datetime.fromisoformat(reason_on.json()["quarantine_expires_at"])
+
+    re_on = await client.post(f"/api/tests/{tc.id}/quarantine", json={"quarantined": True})
+    assert re_on.json()["quarantine_reason"] is None and re_on.json()["quarantine_expires_at"] is None
+
     default = (await client.get("/api/quarantine?repo=andrewthetechie/writers-app", headers=AUTH)).json()
     assert default == []  # project defaults to "default", which has nothing
     assert (await client.get("/api/quarantine?project=frontend", headers=AUTH)).status_code == 422
 
     off = await client.post(f"/api/tests/{tc.id}/quarantine", json={"quarantined": False})
     assert off.json()["quarantined"] is False and off.json()["quarantined_at"] is None
+    assert off.json()["quarantine_reason"] is None and off.json()["quarantine_expires_at"] is None
+    assert await _quarantine_columns(db, tc.id) == (None, None)
     assert (await client.post("/api/tests/9999/quarantine", json={"quarantined": True})).status_code == 404
 
 
