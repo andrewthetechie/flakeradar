@@ -571,9 +571,7 @@ async def list_jobs(
     if pipeline is not None:
         stmt = stmt.where(Pipeline.name == pipeline)
     if has_issue is not None:
-        stmt = stmt.where(
-            Job.github_issue_number.is_not(None) if has_issue else Job.github_issue_number.is_(None)
-        )
+        stmt = stmt.where(Job.github_issue_number.is_not(None) if has_issue else Job.github_issue_number.is_(None))
 
     total = (await db.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one()
 

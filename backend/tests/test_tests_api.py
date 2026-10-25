@@ -206,7 +206,6 @@ async def _seed_quarantine(db):
     await db.commit()
 
 
-
 async def test_quarantined_filter_includes_stable_tests(client, db):
     await _seed_quarantine(db)
     page = (await client.get("/api/tests?repo=acme/app&quarantined=true")).json()
