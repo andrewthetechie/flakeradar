@@ -168,16 +168,24 @@ async def list_tests(
     page_size: int = 50,
     file: str | None = None,
     category: FailureCategory | None = None,
+    q: str | None = None,
 ) -> schemas.TestPage:
     stmt = _scoped(tests_select(), scope)
     if flaky_only:
         stmt = stmt.where(TestCase.flakiness_score >= threshold)
-    elif not include_stable:
+    elif not include_stable and not q:
         stmt = stmt.where(TestCase.flakiness_score > 0)
     if file:
         stmt = stmt.where(TestCase.file.ilike(f"%{escape_like(file)}%", escape="\\"))
     if category:
         stmt = stmt.where(TestCase.failure_category == category)
+    if q:
+        pattern = f"%{escape_like(q)}%"
+        stmt = stmt.where(
+            TestCase.name.ilike(pattern, escape="\\")
+            | TestCase.classname.ilike(pattern, escape="\\")
+            | TestCase.file.ilike(pattern, escape="\\")
+        )
 
     total = (await db.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one()
 
@@ -533,14 +541,18 @@ async def list_jobs(
     sort: SortKey = "score",
     page: int = 1,
     page_size: int = 50,
+    q: str | None = None,
 ) -> schemas.JobPage:
     stmt = jobs_select()
     if repo is not None:
         stmt = stmt.where(Repo.name == repo)
     if flaky_only:
         stmt = stmt.where(Job.flakiness_score >= threshold)
-    elif not include_stable:
+    elif not include_stable and not q:
         stmt = stmt.where(Job.flakiness_score > 0)
+    if q:
+        pattern = f"%{escape_like(q)}%"
+        stmt = stmt.where((Job.name.ilike(pattern, escape="\\")) | (Pipeline.name.ilike(pattern, escape="\\")))
 
     total = (await db.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one()
 

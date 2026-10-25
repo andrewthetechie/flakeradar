@@ -154,3 +154,54 @@ async def test_trend_from_history(client, db):
     assert by_name["A"]["trend"] == "worsening"
     assert by_name["B"]["trend"] is None
     assert "clean_streak" in by_name["A"]
+
+
+async def test_q_filter_matches_name_across_repos(client, db):
+    await _seed(db)
+    page = (await client.get("/api/tests?q=flaky")).json()
+    assert [t["name"] for t in page["items"]] == ["test_flaky", "test_flaky"]
+    assert page["total"] == 2
+
+
+async def test_q_filter_is_case_insensitive_substring(client, db):
+    await _seed(db)
+    page = (await client.get("/api/tests?q=APP.TEST")).json()  # matches file and classname
+    assert [t["name"] for t in page["items"]] == ["renders"]
+
+
+async def test_q_filter_includes_stable_tests(client, db):
+    await _seed(db)
+    page = (await client.get("/api/tests?q=stable")).json()  # no include_stable=true
+    assert [t["name"] for t in page["items"]] == ["test_stable"]
+    assert page["total"] == 1
+
+
+async def test_q_filter_composes_with_project(client, db):
+    await _seed(db)
+    page = (await client.get("/api/tests?repo=andrewthetechie/writers-app&project=backend&q=stable")).json()
+    assert [t["name"] for t in page["items"]] == ["test_stable"]
+
+
+async def test_q_filter_is_literal_substring(client, db):
+    await _seed(db)
+    assert (await client.get("/api/tests?q=%25")).json()["total"] == 0  # "%" is literal
+    assert (await client.get("/api/tests?q=")).json()["total"] == 4  # empty q behaves as absent
+
+
+async def test_q_filter_rejects_overlong_query(client, db):
+    await _seed(db)
+    assert (await client.get(f"/api/tests?q={'a' * 201}")).status_code == 422
+
+
+async def test_q_filter_composes_with_category(client, db):
+    proj = await make_project(db, "acme/app", "backend")
+    # Classnames carry no "d" so q=D can only hit the name.
+    await make_test_case(db, proj, name="A", classname="grp", flakiness_score=0.8, failure_category="timing")
+    await make_test_case(db, proj, name="B", classname="grp", flakiness_score=0.2, failure_category="network")
+    await make_test_case(db, proj, name="C", classname="grp", flakiness_score=0.5, failure_category="timing")
+    await make_test_case(db, proj, name="D", classname="grp", flakiness_score=0.0, failure_category="timing")
+    await db.commit()
+
+    page = (await client.get("/api/tests?repo=acme/app&category=timing&q=D")).json()
+    assert [t["name"] for t in page["items"]] == ["D"]  # stable included, category still applied
+    assert page["total"] == 1
