@@ -42,6 +42,8 @@ export interface TestCase {
   last_seen_at: string;
   quarantined: boolean;
   quarantined_at: string | null;
+  quarantine_reason: string | null;
+  quarantine_expires_at: string | null;
   github_issue_number: number | null;
   github_issue_url: string | null;
 }
@@ -291,11 +293,20 @@ export const fetchJobSummary = (repo: string | null) =>
 export const fetchJobHistory = (id: number) =>
   getJson<JobHistory>(`/api/jobs/${id}/history?limit=60`);
 
-export async function setQuarantine(id: number, quarantined: boolean): Promise<TestCase> {
+/** `reason` and `expires_in_days` only mean something when quarantining; the backend
+ *  clears both on un-quarantine, so leaving them out sends nothing new. */
+export async function setQuarantine(
+  id: number,
+  quarantined: boolean,
+  opts?: { reason?: string | null; expiresInDays?: number | null },
+): Promise<TestCase> {
+  const body: Record<string, boolean | string | number> = { quarantined };
+  if (opts?.reason != null) body.reason = opts.reason;
+  if (opts?.expiresInDays != null) body.expires_in_days = opts.expiresInDays;
   const resp = await fetch(`/api/tests/${id}/quarantine`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ quarantined }),
+    body: JSON.stringify(body),
   });
   if (!resp.ok) throw new Error(`quarantine ${id} -> ${resp.status}`);
   return resp.json() as Promise<TestCase>;
