@@ -29,6 +29,7 @@ from .models import (
     JobExecution,
     JobScoreHistory,
     Report,
+    TestCase,
     TestExecution,
     TestRun,
     TestScoreHistory,
@@ -52,6 +53,8 @@ class PruneResult:
     # continuation check needs each table separately.
     test_score_history: int = 0
     job_score_history: int = 0
+    # Quarantines whose human-set expiry has passed, cleared in this round.
+    expired_quarantines: int = 0
 
 
 async def _oldest_ids(
@@ -157,6 +160,24 @@ async def prune(
         await rescore(db, stale_test_ids)
     if stale_job_ids:
         await rescore_jobs(db, stale_job_ids)
+    # A quarantine is a human decision with an optional expiry: once that expiry passes the
+    # leader clears it so the Test runs again. Not batched, and not part of the continuation
+    # check in run_prune, because these are few and one round clears all of them.
+    due_quarantines = (
+        (
+            await db.execute(
+                select(TestCase).where(TestCase.quarantined.is_(True), TestCase.quarantine_expires_at <= now)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for tc in due_quarantines:
+        logger.info("Quarantine expired; cleared for Test %s (%s)", tc.id, tc.name)
+        tc.quarantined = False
+        tc.quarantined_at = None
+        tc.quarantine_reason = None
+        tc.quarantine_expires_at = None
     return PruneResult(
         reports=reports.rowcount,
         executions=executions.rowcount,
@@ -165,6 +186,7 @@ async def prune(
         score_history=test_history + job_history,
         test_score_history=test_history,
         job_score_history=job_history,
+        expired_quarantines=len(due_quarantines),
     )
 
 
@@ -198,6 +220,7 @@ async def run_prune(session_factory: async_sessionmaker[AsyncSession]) -> PruneR
             score_history=totals.score_history + result.score_history,
             test_score_history=totals.test_score_history + result.test_score_history,
             job_score_history=totals.job_score_history + result.job_score_history,
+            expired_quarantines=totals.expired_quarantines + result.expired_quarantines,
         )
         # A full batch means that table may have more expired rows; an all-empty round
         # deletes nothing, so the loop always terminates. The two score history tables
@@ -221,11 +244,13 @@ async def run_prune(session_factory: async_sessionmaker[AsyncSession]) -> PruneR
             )
             break
     logger.info(
-        "Pruned %s reports, %s executions, %s job executions, %s runs, %s score history rows",
+        "Pruned %s reports, %s executions, %s job executions, %s runs, %s score history rows, "
+        "cleared %s expired quarantines",
         totals.reports,
         totals.executions,
         totals.job_executions,
         totals.runs,
         totals.score_history,
+        totals.expired_quarantines,
     )
     return totals
