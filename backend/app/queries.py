@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import Literal
 
-from sqlalchemy import ColumnElement, Select, func, select
+from sqlalchemy import ColumnElement, Select, func, or_, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from . import schemas
@@ -37,6 +37,7 @@ from .score_history import HISTORY_DAYS, TREND_DAYS, Trend, trend_for
 from .scoring import FAILING
 
 SortKey = Literal["score", "last_seen", "proven"]  # shared by the Test and Job leaderboards
+NEW_FLAKY_DAYS = 7  # the "became flaky recently" window in the dashboard tiles
 
 
 @dataclass(frozen=True)
@@ -123,6 +124,27 @@ async def past_test_scores(db: AsyncSession, test_ids: list[int]) -> dict[int, f
     return found
 
 
+def _newest_history_before(model, fk_col: ColumnElement[int], parent_col: ColumnElement[int], days: int):
+    """Lateral subquery: this row's newest Score history at least `days` old, or NULL (ADR 0007).
+
+    The same lookup `past_test_scores`/`past_job_scores` do in Python, as a per-row SQL
+    condition so a list query can filter with it before counting and paginating.
+    """
+    cutoff = utcnow().date() - timedelta(days=days)
+    return (
+        select(model.flakiness_score.label("score"))
+        .where(fk_col == parent_col, model.day <= cutoff)
+        .order_by(model.day.desc())
+        .limit(1)
+        .lateral()
+    )
+
+
+def _became_flaky_clause(past, threshold: float) -> ColumnElement[bool]:
+    """True when the joined `_newest_history_before` row is missing or below the threshold."""
+    return or_(past.c.score.is_(None), past.c.score < threshold)
+
+
 def tests_select() -> Select:
     """SELECT TestCase, Project.name, Repo.name — the row shape to_test_out() takes."""
     return (
@@ -181,9 +203,10 @@ async def list_tests(
     q: str | None = None,
     quarantined: bool | None = None,
     has_issue: bool | None = None,
+    new_within_days: int | None = None,
 ) -> schemas.TestPage:
     stmt = _scoped(tests_select(), scope)
-    if flaky_only:
+    if flaky_only or new_within_days is not None:
         stmt = stmt.where(TestCase.flakiness_score >= threshold)
     elif not include_stable and not q and quarantined is not True:
         stmt = stmt.where(TestCase.flakiness_score > 0)
@@ -199,6 +222,9 @@ async def list_tests(
         stmt = stmt.where(
             TestCase.github_issue_number.is_not(None) if has_issue else TestCase.github_issue_number.is_(None)
         )
+    if new_within_days is not None:
+        oldest = _newest_history_before(TestScoreHistory, TestScoreHistory.test_case_id, TestCase.id, new_within_days)
+        stmt = stmt.outerjoin(oldest, true()).where(_became_flaky_clause(oldest, threshold))
 
     total = (await db.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one()
 
@@ -236,6 +262,14 @@ async def summary(db: AsyncSession, scope: Scope, *, threshold: float) -> schema
         await db.execute(tests_count(TestCase.flakiness_score > 0, TestCase.flakiness_score < threshold))
     ).scalar_one()
     confirmed = (await db.execute(tests_count(TestCase.confirmed_flake_count > 0))).scalar_one()
+    oldest = _newest_history_before(TestScoreHistory, TestScoreHistory.test_case_id, TestCase.id, NEW_FLAKY_DAYS)
+    new_flaky = (
+        await db.execute(
+            tests_count(TestCase.flakiness_score >= threshold)
+            .outerjoin(oldest, true())
+            .where(_became_flaky_clause(oldest, threshold))
+        )
+    ).scalar_one()
     runs = (
         await db.execute(
             _scoped(
@@ -273,6 +307,7 @@ async def summary(db: AsyncSession, scope: Scope, *, threshold: float) -> schema
         flaky_tests=flaky,
         suspect_tests=suspect,
         confirmed_flaky_tests=confirmed,
+        new_flaky_7d=new_flaky,
         total_runs=runs,
         total_executions=executions,
         flake_threshold=threshold,
@@ -558,11 +593,12 @@ async def list_jobs(
     q: str | None = None,
     pipeline: str | None = None,
     has_issue: bool | None = None,
+    new_within_days: int | None = None,
 ) -> schemas.JobPage:
     stmt = jobs_select()
     if repo is not None:
         stmt = stmt.where(Repo.name == repo)
-    if flaky_only:
+    if flaky_only or new_within_days is not None:
         stmt = stmt.where(Job.flakiness_score >= threshold)
     elif not include_stable and not q:
         stmt = stmt.where(Job.flakiness_score > 0)
@@ -572,6 +608,9 @@ async def list_jobs(
         stmt = stmt.where(Pipeline.name == pipeline)
     if has_issue is not None:
         stmt = stmt.where(Job.github_issue_number.is_not(None) if has_issue else Job.github_issue_number.is_(None))
+    if new_within_days is not None:
+        oldest = _newest_history_before(JobScoreHistory, JobScoreHistory.job_id, Job.id, new_within_days)
+        stmt = stmt.outerjoin(oldest, true()).where(_became_flaky_clause(oldest, threshold))
 
     total = (await db.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one()
 
@@ -609,6 +648,14 @@ async def job_summary(db: AsyncSession, repo: str | None, *, threshold: float) -
     flaky = (await db.execute(jobs_count(Job.flakiness_score >= threshold))).scalar_one()
     suspect = (await db.execute(jobs_count(Job.flakiness_score > 0, Job.flakiness_score < threshold))).scalar_one()
     confirmed = (await db.execute(jobs_count(Job.confirmed_flake_count > 0))).scalar_one()
+    oldest = _newest_history_before(JobScoreHistory, JobScoreHistory.job_id, Job.id, NEW_FLAKY_DAYS)
+    new_flaky = (
+        await db.execute(
+            jobs_count(Job.flakiness_score >= threshold)
+            .outerjoin(oldest, true())
+            .where(_became_flaky_clause(oldest, threshold))
+        )
+    ).scalar_one()
 
     exec_stmt = (
         select(func.count(JobExecution.id))
@@ -630,6 +677,7 @@ async def job_summary(db: AsyncSession, repo: str | None, *, threshold: float) -
         flaky_jobs=flaky,
         suspect_jobs=suspect,
         confirmed_flaky_jobs=confirmed,
+        new_flaky_7d=new_flaky,
         total_job_executions=total_exec,
         flake_threshold=threshold,
         pipelines=pipelines,

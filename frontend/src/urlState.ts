@@ -4,6 +4,7 @@
 //   ?repo=owner/name&view=ci-run&ci_run=12345678&attempt=2
 //   ?repo=owner/name&quarantined=1&issue=linked
 //   ?repo=owner/name&view=jobs&pipeline=.github/workflows/nightly.yml&issue=none
+//   ?repo=owner/name&new=7
 import { useCallback, useEffect, useRef, useState } from "react";
 import { FAILURE_CATEGORIES, type FailureCategory, type IssueFilter, type SortKey } from "./api";
 
@@ -24,6 +25,8 @@ export interface ViewState {
   issue: IssueFilter | null;
   /** Jobs view: exact Pipeline name to list, or null for every pipeline. */
   pipeline: string | null;
+  /** Leaderboard: list only what became flaky in the last N days, or null for any. */
+  newDays: number | null;
   view: ViewKind;
   /** CI run id of the ci-run view; only meaningful with `view: "ci-run"`. */
   ci_run: string | null;
@@ -45,6 +48,7 @@ export const DEFAULT_VIEW: ViewState = {
   quarantined: false,
   issue: null,
   pipeline: null,
+  newDays: null,
   view: "tests",
   ci_run: null,
   attempt: null,
@@ -81,6 +85,7 @@ export function parseViewState(search: string): ViewState {
     quarantined: p.get("quarantined") === "1",
     issue: ISSUE_FILTERS.includes(issue as IssueFilter) ? (issue as IssueFilter) : null,
     pipeline: p.get("pipeline") || null,
+    newDays: positiveInt(p.get("new")),
     view: p.get("view") === "jobs" ? "jobs" : p.get("view") === "ci-run" ? "ci-run" : "tests",
     ci_run: p.get("ci_run") || null,
     attempt: positiveInt(p.get("attempt")),
@@ -114,6 +119,7 @@ export function serializeViewState(s: ViewState): string {
   if (s.quarantined) p.set("quarantined", "1");
   if (s.issue) p.set("issue", s.issue);
   if (s.pipeline) p.set("pipeline", s.pipeline);
+  if (s.newDays != null) p.set("new", String(s.newDays));
   const q = p.toString();
   return q ? `?${q}` : "";
 }
@@ -153,6 +159,7 @@ export function applyPatch(prev: ViewState, patch: Partial<ViewState>): ViewStat
       "quarantined",
       "issue",
       "pipeline",
+      "newDays",
       "q",
     ] as const
   ).some((k) => k in patch && patch[k] !== prev[k]);

@@ -103,6 +103,9 @@ The Flakiness score at or above which a Test counts as a Flaky test.
 **Flaky test**:
 A Test whose Flakiness score is at or above the Flake threshold.
 
+**New flaky test**:
+A Flaky test (or Job) that became flaky within the last N days: its Flakiness score is at or above the Flake threshold now, and N days ago it was below the threshold — or it has no Score history that old. The leaderboard's `new=7` toggle and the `new_within_days` API and MCP argument list them.
+
 **Suspect test**:
 A Test whose Flakiness score is above 0 but below the Flake threshold.
 

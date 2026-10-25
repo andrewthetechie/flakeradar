@@ -1,17 +1,22 @@
 """MCP server: read tools and the Issue link write tools over the same services as REST; token-gated over HTTP."""
 
+from datetime import timedelta
+
 import pytest
 from app.mcp_server import build_mcp
+from app.models import utcnow
 from fastmcp import Client
 
 from tests.factories import (
     make_execution,
     make_job,
     make_job_execution,
+    make_job_score,
     make_pipeline,
     make_project,
     make_run,
     make_test_case,
+    make_test_score,
 )
 
 
@@ -106,6 +111,40 @@ async def test_top_flaky_tests_category(mcp, db):
         bad = await c.call_tool("top_flaky_tests", {"repo": "acme/app", "category": "nope"}, raise_on_error=False)
     assert [t["name"] for t in network] == ["B"]
     assert bad.is_error and "category must be one of" in bad.content[0].text
+
+
+async def test_top_flaky_new_within_days(mcp, db):
+    """new_within_days=N on both tools: flaky now, with no Score row at/above the threshold N days ago."""
+    proj = await make_project(db, "acme/app", "backend")
+    crossed = await make_test_case(db, proj, name="crossed", flakiness_score=0.6)
+    old_flaky = await make_test_case(db, proj, name="old_flaky", flakiness_score=0.6)
+    p = await make_pipeline(db, "acme/app", ".github/workflows/ci.yml")
+    job_crossed = await make_job(db, p, name="crossed", flakiness_score=0.6)
+    job_old = await make_job(db, p, name="old_flaky", flakiness_score=0.6)
+    today = utcnow().date()
+    await make_test_score(db, crossed, today - timedelta(days=20), 0.1)  # newest old row is below: became flaky
+    await make_test_score(db, crossed, today - timedelta(days=3), 0.6)
+    await make_test_score(db, old_flaky, today - timedelta(days=30), 0.6)  # flaky for a month
+    await make_job_score(db, job_crossed, today - timedelta(days=20), 0.1)
+    await make_job_score(db, job_crossed, today - timedelta(days=3), 0.6)
+    await make_job_score(db, job_old, today - timedelta(days=30), 0.6)
+    await db.commit()
+
+    async with Client(mcp) as c:
+        tests_week = (await c.call_tool("top_flaky_tests", {"repo": "acme/app", "new_within_days": 7})).data
+        tests_48h = (await c.call_tool("top_flaky_tests", {"repo": "acme/app", "new_within_days": 2})).data
+        jobs_week = (await c.call_tool("top_flaky_jobs", {"repo": "acme/app", "new_within_days": 7})).data
+        jobs_48h = (await c.call_tool("top_flaky_jobs", {"repo": "acme/app", "new_within_days": 2})).data
+        zero = await c.call_tool("top_flaky_tests", {"repo": "acme/app", "new_within_days": 0}, raise_on_error=False)
+        too_many = await c.call_tool(
+            "top_flaky_jobs", {"repo": "acme/app", "new_within_days": 91}, raise_on_error=False
+        )
+    assert [t["name"] for t in tests_week] == ["crossed"]  # old_flaky was already flaky 7 days ago
+    assert tests_48h == []  # crossed's newest row within 2 days is at/above the threshold
+    assert [j["name"] for j in jobs_week] == ["crossed"]
+    assert jobs_48h == []
+    assert zero.is_error and "new_within_days must be between 1 and 90" in zero.content[0].text
+    assert too_many.is_error and "new_within_days must be between 1 and 90" in too_many.content[0].text
 
 
 async def test_search_tests_matches_name_classname_and_file(mcp, db):

@@ -76,7 +76,9 @@ A solo developer with a 30-second test suite does not need FlakeRadar.
   one type of flaky test at a time.
 - **Trends.** FlakeRadar keeps a daily score history for each test and job.
   The leaderboard shows if a test becomes worse or better. A clean streak
-  shows if a fix continues to work.
+  shows if a fix continues to work. The leaderboard and the API can also list
+  what became flaky in the last N days (a *new flaky test*), which the trend
+  arrow cannot show because it also fires when an old flaky test gets worse.
 - **Flaky CI jobs.** FlakeRadar also scores CI jobs. A job failure that a
   failing test explains does not count against the job.
 - **Dashboard.** The dashboard has a repo and project picker and a slide-over
@@ -479,10 +481,10 @@ In production, always use HTTPS, so that the token is not sent as clear text.
 |---|---|
 | `list_repos` | All repos, with their projects. |
 | `list_projects(repo)` | The projects of one repo. |
-| `top_flaky_tests(repo, project?, limit=20, include_suspect=true, file?, category?)` | The worst tests first. `category` (network, environment, timing, assertion or other) filters by likely cause. |
+| `top_flaky_tests(repo, project?, limit=20, include_suspect=true, file?, category?, new_within_days?)` | The worst tests first. `category` (network, environment, timing, assertion or other) filters by likely cause. `new_within_days=N` (1 to 90) lists only what became flaky in the last N days. |
 | `search_tests(repo, query, project?, limit=20)` | Tests whose name, classname or file contains `query`. |
 | `get_test(test_id \| repo+project+name[+classname], executions_limit=20)` | The location and GitHub permalink, the last failing commit, the latest failure message and traceback (4 KB maximum), recent executions, and up to 30 days of score history. |
-| `top_flaky_jobs(repo, limit=20, include_suspect=true)` | The worst CI jobs first. Scores count only unexplained failures. |
+| `top_flaky_jobs(repo, limit=20, include_suspect=true, new_within_days?)` | The worst CI jobs first. Scores count only unexplained failures. `new_within_days=N` (1 to 90) lists only what became flaky in the last N days. |
 | `search_jobs(repo, query, limit=20)` | Jobs whose name or pipeline contains `query`. |
 | `get_job(job_id \| repo+name[+pipeline], executions_limit=20)` | Unexplained and explained failures, recent executions with the tests that explain them, and up to 30 days of score history. |
 | `ci_run_failures(repo, ci_run_id, ci_run_attempt?)` | The failing tests of one CI run attempt (the latest by default) with their current tier and score, its failed jobs (explained or unexplained), and its report counts. |
@@ -679,9 +681,9 @@ and the MCP server need the token.
 | `GET /api/reports/summary` | none | `{pending, failed}` |
 | `POST /api/reports/{id}/retry` | `X-API-Key` | Put a failed report back in the queue. |
 | `GET /api/repos` | none | Repos with their projects. |
-| `GET /api/tests?repo=&project=&include_stable=&sort=&page=&page_size=&file=&category=&q=&quarantined=&has_issue=` | none | The paginated leaderboard. `sort` is `score`, `last_seen` or `proven`. `category` filters by likely cause. `q` (max 200 chars) filters by literal substring over name, classname or file, and includes stable tests. `quarantined=true` lists every quarantined test including stable ones; `has_issue` filters by linked GitHub issue. |
+| `GET /api/tests?repo=&project=&include_stable=&sort=&page=&page_size=&file=&category=&q=&quarantined=&has_issue=&new_within_days=` | none | The paginated leaderboard. `sort` is `score`, `last_seen` or `proven`. `category` filters by likely cause. `q` (max 200 chars) filters by literal substring over name, classname or file, and includes stable tests. `quarantined=true` lists every quarantined test including stable ones; `has_issue` filters by linked GitHub issue. `new_within_days` (1 to 90) lists only new flaky tests, i.e. tests that became flaky in the last N days, and implies flaky-only. |
 | `GET /api/tests/{id}/history?limit=` | none | One test: location and permalink, last failing commit, executions with failure details, the jobs that its runs came from, `score_history` (90 days), `clean_streak` and `trend`. |
-| `GET /api/jobs?repo=&include_stable=&sort=&page=&page_size=&q=&pipeline=&has_issue=` | none | The jobs leaderboard for a repo, worst first. `q` (max 200 chars) filters by literal substring over job or pipeline name, and includes stable jobs. `pipeline` filters by exact Pipeline name; `has_issue` filters by linked GitHub issue. |
+| `GET /api/jobs?repo=&include_stable=&sort=&page=&page_size=&q=&pipeline=&has_issue=&new_within_days=` | none | The jobs leaderboard for a repo, worst first. `q` (max 200 chars) filters by literal substring over job or pipeline name, and includes stable jobs. `pipeline` filters by exact Pipeline name; `has_issue` filters by linked GitHub issue. `new_within_days` (1 to 90) lists only new flaky jobs, i.e. jobs that became flaky in the last N days, and implies flaky-only. |
 | `GET /api/jobs/summary?repo=` | none | Job summary tiles, plus `pipelines`: the distinct Pipeline names of the scope (that repo, or every repo without `repo`), sorted. |
 | `GET /api/jobs/{id}/history?limit=` | none | One job: recent job executions, each marked `passed`, `failed`, `explained` or `skipped`, with the tests that explain them, `score_history` (90 days), `clean_streak` and `trend`. |
 | `GET /api/ci-runs/{ci_run_id}/failures?repo=&ci_run_attempt=` | none | The failing tests and failed jobs of one CI run attempt, with each one's current tier and the attempt's report counts. See [Failures of one CI run](#failures-of-one-ci-run). |

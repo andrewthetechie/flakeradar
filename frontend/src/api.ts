@@ -104,6 +104,8 @@ export interface Summary {
   flaky_tests: number;
   suspect_tests: number;
   confirmed_flaky_tests: number;
+  /** Tests that became flaky in the last 7 days. */
+  new_flaky_7d: number;
   total_runs: number;
   total_executions: number;
   flake_threshold: number;
@@ -124,6 +126,8 @@ export interface TestQuery extends Scope {
   category: FailureCategory | null;
   quarantined: boolean;
   issue: IssueFilter | null;
+  /** List only Tests that became flaky in the last N days, or null for any. */
+  newWithinDays: number | null;
   q: string;
 }
 
@@ -161,6 +165,7 @@ export function fetchTests(q: TestQuery): Promise<TestPage> {
   if (q.category) params.set("category", q.category);
   if (q.quarantined) params.set("quarantined", "true");
   if (q.issue) params.set("has_issue", String(q.issue === "linked"));
+  if (q.newWithinDays != null) params.set("new_within_days", String(q.newWithinDays));
   if (q.q) params.set("q", q.q);
   return getJson<TestPage>(withQuery("/api/tests", params));
 }
@@ -199,6 +204,8 @@ export interface JobSummary {
   flaky_jobs: number;
   suspect_jobs: number;
   confirmed_flaky_jobs: number;
+  /** Jobs that became flaky in the last 7 days. */
+  new_flaky_7d: number;
   total_job_executions: number;
   flake_threshold: number;
   /** Distinct Pipeline names of the scope, sorted; feeds the Jobs filter. */
@@ -257,6 +264,8 @@ export interface JobQuery {
   pipeline: string | null;
   /** Filter by Issue link, or null for any. */
   issue: IssueFilter | null;
+  /** List only Jobs that became flaky in the last N days, or null for any. */
+  newWithinDays: number | null;
   q: string;
 }
 
@@ -270,6 +279,7 @@ export function fetchJobs(q: JobQuery): Promise<JobPage> {
   if (q.q) params.set("q", q.q);
   if (q.pipeline) params.set("pipeline", q.pipeline);
   if (q.issue) params.set("has_issue", String(q.issue === "linked"));
+  if (q.newWithinDays != null) params.set("new_within_days", String(q.newWithinDays));
   return getJson<JobPage>(withQuery("/api/jobs", params));
 }
 

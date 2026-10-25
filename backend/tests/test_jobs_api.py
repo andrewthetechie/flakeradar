@@ -119,7 +119,42 @@ async def test_job_summary_counts(client, db):
     assert body["flaky_jobs"] == 1
     assert body["suspect_jobs"] == 1
     assert body["confirmed_flaky_jobs"] == 1
+    assert body["new_flaky_7d"] == 1  # the flaky Job has no history at all, so it is new
     assert body["total_job_executions"] == 1
+
+
+async def test_job_summary_new_flaky_7d(client, db):
+    """new_flaky_7d on Jobs: flaky now, with no history row at least 7 days old at or above the threshold."""
+    app = await make_pipeline(db, "acme/app", "ci.yml")
+    other = await make_pipeline(db, "acme/other", "ci.yml")
+    crossed = await make_job(db, app, name="crossed", flakiness_score=0.6)
+    at_threshold = await make_job(db, app, name="at_threshold", flakiness_score=0.6)
+    old_flaky = await make_job(db, app, name="old_flaky", flakiness_score=0.6)
+    boundary = await make_job(db, app, name="boundary", flakiness_score=0.6)
+    recent = await make_job(db, app, name="recent", flakiness_score=0.6)
+    newest_old_low = await make_job(db, app, name="newest_old_low", flakiness_score=0.6)
+    newest_old_high = await make_job(db, app, name="newest_old_high", flakiness_score=0.6)
+    await make_job(db, app, name="suspect", flakiness_score=0.1)
+    await make_job(db, other, name="elsewhere", flakiness_score=0.6)
+    today = utcnow().date()
+    await make_job_score(db, crossed, today - timedelta(days=20), 0.1)  # newest old row is below
+    await make_job_score(db, crossed, today - timedelta(days=3), 0.6)  # several rows: counted once
+    await make_job_score(db, at_threshold, today - timedelta(days=10), 0.3)  # exactly at the threshold
+    await make_job_score(db, old_flaky, today - timedelta(days=30), 0.6)
+    await make_job_score(db, boundary, today - timedelta(days=7), 0.6)  # exactly 7 days old counts as old
+    await make_job_score(db, recent, today - timedelta(days=6), 0.6)  # nothing 7 days old yet
+    await make_job_score(db, newest_old_low, today - timedelta(days=25), 0.6)
+    await make_job_score(db, newest_old_low, today - timedelta(days=10), 0.1)  # the NEWEST old row is below
+    await make_job_score(db, newest_old_high, today - timedelta(days=25), 0.1)
+    await make_job_score(db, newest_old_high, today - timedelta(days=10), 0.6)  # the newest old row is at it
+    await db.commit()
+
+    scoped = (await client.get("/api/jobs/summary?repo=acme/app")).json()
+    assert scoped["flaky_jobs"] == 7
+    # crossed, recent and newest_old_low; the other four were already flaky 7 days ago
+    assert scoped["new_flaky_7d"] == 3
+    assert (await client.get("/api/jobs/summary?repo=acme/other")).json()["new_flaky_7d"] == 1
+    assert (await client.get("/api/jobs/summary")).json()["new_flaky_7d"] == 4  # + elsewhere, with no history
 
 
 async def test_test_history_includes_seen_in_jobs(client, db):
@@ -168,6 +203,38 @@ async def test_job_trend_from_history_and_score_history(client, db):
         (today - timedelta(days=20)).isoformat(),
         today.isoformat(),
     ]
+
+
+async def test_new_within_days_filter_on_jobs(client, db):
+    """new_within_days=N on Jobs: flaky now, and no old-enough history row at or above the threshold."""
+    p = await make_pipeline(db, "acme/app", ".github/workflows/ci.yml")
+    crossed = await make_job(db, p, name="crossed", flakiness_score=0.6)
+    old_flaky = await make_job(db, p, name="old_flaky", flakiness_score=0.6)
+    no_old_history = await make_job(db, p, name="no_old_history", flakiness_score=0.6)
+    await make_job(db, p, name="suspect", flakiness_score=0.1)
+    today = utcnow().date()
+    await make_job_score(db, crossed, today - timedelta(days=20), 0.1)
+    await make_job_score(db, crossed, today - timedelta(days=3), 0.6)
+    await make_job_score(db, old_flaky, today - timedelta(days=30), 0.6)
+    await make_job_score(db, no_old_history, today - timedelta(days=1), 0.6)
+    await db.commit()
+
+    week = (await client.get("/api/jobs?repo=acme/app&new_within_days=7")).json()
+    assert sorted(j["name"] for j in week["items"]) == ["crossed", "no_old_history"]
+    assert week["total"] == 2  # old_flaky and the below-threshold suspect go before pagination
+    # The filter runs in SQL, so it paginates over the filtered set only.
+    first_page = (await client.get("/api/jobs?repo=acme/app&new_within_days=7&page_size=1&page=1")).json()
+    assert len(first_page["items"]) == 1
+    assert first_page["total"] == 2
+    second_page = (await client.get("/api/jobs?repo=acme/app&new_within_days=7&page_size=1&page=2")).json()
+    assert sorted(j["name"] for j in first_page["items"] + second_page["items"]) == ["crossed", "no_old_history"]
+
+    days2 = (await client.get("/api/jobs?repo=acme/app&new_within_days=2")).json()
+    assert sorted(j["name"] for j in days2["items"]) == ["no_old_history"]  # crossed's -3 row is at 0.6
+    assert days2["total"] == 1
+
+    assert (await client.get("/api/jobs?repo=acme/app&new_within_days=0")).status_code == 422
+    assert (await client.get("/api/jobs?repo=acme/app&new_within_days=91")).status_code == 422
 
 
 async def _seed_jobs_q(db):

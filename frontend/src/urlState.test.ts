@@ -15,6 +15,7 @@ describe("view state in the URL", () => {
       quarantined: false,
       issue: null,
       pipeline: null,
+      newDays: null,
       view: "tests" as const,
       ci_run: null,
       attempt: null,
@@ -40,6 +41,7 @@ describe("view state in the URL", () => {
       quarantined: false,
       issue: null,
       pipeline: null,
+      newDays: null,
       view: "jobs" as const,
       ci_run: null,
       attempt: null,
@@ -65,6 +67,7 @@ describe("view state in the URL", () => {
       quarantined: false,
       issue: null,
       pipeline: null,
+      newDays: null,
       view: "ci-run" as const,
       ci_run: "12345678",
       attempt: 2,
@@ -118,6 +121,24 @@ describe("view state in the URL", () => {
     expect(serializeViewState({ ...DEFAULT_VIEW, issue: "none" })).toBe("?issue=none");
   });
 
+  it("round-trips the new-in-the-last-7-days filter", () => {
+    const view = { ...DEFAULT_VIEW, repo: "a/b", newDays: 7 };
+    expect(serializeViewState(view)).toBe("?repo=a%2Fb&new=7");
+    expect(parseViewState("?repo=a%2Fb&new=7")).toEqual(view);
+    expect(serializeViewState({ ...DEFAULT_VIEW, newDays: null })).toBe("");
+    // Unscoped by view, like cause and issue: it survives the Jobs view too.
+    expect(serializeViewState({ ...DEFAULT_VIEW, view: "jobs", newDays: 7 })).toBe(
+      "?view=jobs&new=7",
+    );
+  });
+
+  it("ignores a non-positive or invalid new filter", () => {
+    expect(parseViewState("?new=0").newDays).toBeNull();
+    expect(parseViewState("?new=abc").newDays).toBeNull();
+    expect(parseViewState("?new=").newDays).toBeNull();
+    expect(parseViewState("").newDays).toBeNull();
+  });
+
   it("round-trips the jobs pipeline filter, omitted when unset", () => {
     const view = {
       ...DEFAULT_VIEW,
@@ -167,6 +188,8 @@ describe("applyPatch", () => {
     expect(applyPatch(base, { quarantined: true }).page).toBe(1);
     expect(applyPatch(base, { issue: "linked" }).page).toBe(1);
     expect(applyPatch(base, { pipeline: ".github/workflows/nightly.yml" }).page).toBe(1);
+    expect(applyPatch(base, { newDays: 7 }).page).toBe(1);
+    expect(applyPatch({ ...base, newDays: 7 }, { newDays: null }).page).toBe(1);
     expect(applyPatch(base, { q: "login" }).page).toBe(1);
     expect(applyPatch(base, { test: 9 }).page).toBe(4);
     expect(applyPatch(base, { page: 5 }).page).toBe(5);

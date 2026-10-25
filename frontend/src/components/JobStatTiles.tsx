@@ -17,6 +17,11 @@ export function JobStatTiles({ summary }: { summary: JobSummary }) {
           value: summary.confirmed_flaky_jobs,
           alert: summary.confirmed_flaky_jobs > 0,
         },
+        {
+          label: "New in 7 days",
+          value: summary.new_flaky_7d,
+          alert: summary.new_flaky_7d > 0,
+        },
         { label: "Job executions recorded", value: summary.total_job_executions },
       ]}
     />

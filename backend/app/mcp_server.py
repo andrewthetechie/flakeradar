@@ -20,6 +20,7 @@ from .identity import DEFAULT_PROJECT, normalize_project, normalize_repo
 
 DETAILS_MAX = 4096
 MAX_LIMIT = 100
+MAX_NEW_WITHIN_DAYS = 90  # same bound as the REST ?new_within_days= parameter
 
 INSTRUCTIONS = """\
 FlakeRadar tracks flaky tests from CI JUnit reports.
@@ -39,6 +40,10 @@ last failure) and trend (worsening/improving/steady versus 14 days ago, or
 null when there is not enough history). get_test returns score_history: the
 daily score for up to the last 30 days. A fix that held shows a growing
 clean_streak and a falling score.
+To find what became flaky recently rather than what has always been flaky,
+call top_flaky_tests or top_flaky_jobs with new_within_days=N: it keeps what
+is flaky now but was below the threshold N days ago, or has no history that
+old. Unlike trend, it never fires for an old flaky test that merely got worse.
 Jobs have clean_streak, trend and score_history too (get_job).
 FlakeRadar also tracks CI jobs: a Pipeline is a named workflow (e.g.
 .github/workflows/ci.yml), a Job is one job inside it. Job scores count only
@@ -72,6 +77,11 @@ def _scope(repo: str, project: str | None) -> queries.Scope:
 def _check_limit(limit: int) -> None:
     if not 1 <= limit <= MAX_LIMIT:
         raise ToolError(f"limit must be between 1 and {MAX_LIMIT}")
+
+
+def _check_new_within_days(days: int) -> None:
+    if not 1 <= days <= MAX_NEW_WITHIN_DAYS:
+        raise ToolError(f"new_within_days must be between 1 and {MAX_NEW_WITHIN_DAYS}")
 
 
 def _require_one_target(test_id: int | None, job_id: int | None) -> None:
@@ -146,17 +156,22 @@ def build_mcp(session_factory: async_sessionmaker[AsyncSession], *, api_token: s
         include_suspect: bool = True,
         file: str | None = None,
         category: str | None = None,
+        new_within_days: int | None = None,
     ) -> list[dict[str, Any]]:
         """Worst tests first in a Repo (optionally one Project).
 
         include_suspect=False returns only 'flaky' tier tests. `file` keeps
         tests whose reported file contains that text (e.g. 'tests/test_cron.py').
         `category` keeps tests whose likely cause (Failure category) is one of
-        network, environment, timing, assertion, other.
+        network, environment, timing, assertion, other. new_within_days=N keeps
+        only tests that became flaky in the last N days: score at/above the
+        threshold now, below it N days ago or with no history that old.
         """
         _check_limit(limit)
         if category is not None and category not in CATEGORIES:
             raise ToolError("category must be one of: network, environment, timing, assertion, other")
+        if new_within_days is not None:
+            _check_new_within_days(new_within_days)
         scope = _scope(repo, project)
         async with session_factory() as db:
             page = await queries.list_tests(
@@ -167,6 +182,7 @@ def build_mcp(session_factory: async_sessionmaker[AsyncSession], *, api_token: s
                 page_size=limit,
                 file=file,
                 category=category,
+                new_within_days=new_within_days,
             )
         return [t.model_dump(mode="json") for t in page.items]
 
@@ -254,10 +270,16 @@ def build_mcp(session_factory: async_sessionmaker[AsyncSession], *, api_token: s
         }
 
     @mcp.tool(annotations=_READ_ONLY)
-    async def top_flaky_jobs(repo: str, limit: int = 20, include_suspect: bool = True) -> list[dict[str, Any]]:
+    async def top_flaky_jobs(
+        repo: str, limit: int = 20, include_suspect: bool = True, new_within_days: int | None = None
+    ) -> list[dict[str, Any]]:
         """Worst CI jobs first in a Repo. Job scores count only UNEXPLAINED failures
-        (failures with no failing test in the same job)."""
+        (failures with no failing test in the same job). new_within_days=N keeps
+        only jobs that became flaky in the last N days: score at/above the
+        threshold now, below it N days ago or with no history that old."""
         _check_limit(limit)
+        if new_within_days is not None:
+            _check_new_within_days(new_within_days)
         name = _scope(repo, None).repo
         async with session_factory() as db:
             page = await queries.list_jobs(
@@ -266,6 +288,7 @@ def build_mcp(session_factory: async_sessionmaker[AsyncSession], *, api_token: s
                 threshold=get_settings().flake_threshold,
                 flaky_only=not include_suspect,
                 page_size=limit,
+                new_within_days=new_within_days,
             )
         return [j.model_dump(mode="json") for j in page.items]
 

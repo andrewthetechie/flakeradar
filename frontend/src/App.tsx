@@ -58,6 +58,7 @@ export default function App() {
     cause,
     quarantined,
     issue,
+    newDays,
     pipeline,
     q,
     view: kind,
@@ -91,6 +92,7 @@ export default function App() {
             showStable,
             pipeline,
             issue,
+            newWithinDays: newDays,
             q,
           }),
           queueQ,
@@ -115,6 +117,7 @@ export default function App() {
             category: cause,
             quarantined,
             issue,
+            newWithinDays: newDays,
             q,
           }),
           queueQ,
@@ -130,7 +133,20 @@ export default function App() {
       if (request !== latestRefresh.current) return;
       setError(e instanceof Error ? e.message : String(e));
     }
-  }, [kind, repo, project, pageNumber, sort, showStable, cause, quarantined, issue, pipeline, q]);
+  }, [
+    kind,
+    repo,
+    project,
+    pageNumber,
+    sort,
+    showStable,
+    cause,
+    quarantined,
+    issue,
+    newDays,
+    pipeline,
+    q,
+  ]);
 
   // Stable identity: the search box's debounce timer must not restart on the
   // 30 s polling re-renders.
@@ -283,6 +299,7 @@ export default function App() {
               causeCounts={summary?.category_counts ?? null}
               quarantined={quarantined}
               issue={issue}
+              newDays={newDays}
               pipelines={jobSummary?.pipelines ?? []}
               pipeline={pipeline}
               search={q}
@@ -293,6 +310,7 @@ export default function App() {
               onQuarantined={kind === "tests" ? (v) => setView({ quarantined: v }) : undefined}
               onPipeline={kind === "jobs" ? (p) => setView({ pipeline: p }) : undefined}
               onIssue={(i) => setView({ issue: i })}
+              onNewDays={(d) => setView({ newDays: d })}
               onSearch={onSearch}
             />
           </div>
