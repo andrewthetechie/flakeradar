@@ -575,4 +575,83 @@ describe("App", () => {
     expect(param(lastUrl("/api/jobs"), "new_within_days")).toBe("7");
     expect(window.location.search).toBe("?view=jobs&new=7");
   });
+
+  /** The Tests list, with the row's quarantine state chosen by the caller. */
+  function stubTests(quarantined: boolean) {
+    const calls: { url: string; body: Record<string, unknown> | null }[] = [];
+    const row: TestCase = {
+      ...page("login").items[0],
+      quarantined,
+      quarantined_at: quarantined ? "2026-09-25T00:00:00Z" : null,
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string, init?: RequestInit) => {
+        const body =
+          init?.body == null ? null : (JSON.parse(String(init.body)) as Record<string, unknown>);
+        calls.push({ url, body });
+        if (url.includes("/quarantine")) return json({ ...row, ...body });
+        if (url.startsWith("/api/tests"))
+          return json({ items: [row], total: 1, page: 1, page_size: 50 });
+        if (url.startsWith("/api/repos")) return json([]);
+        if (url.startsWith("/api/reports/summary")) return json({ pending: 0, failed: 0 });
+        return json({
+          total_tests: 1,
+          flaky_tests: 1,
+          suspect_tests: 0,
+          confirmed_flaky_tests: 0,
+          total_runs: 1,
+          total_executions: 1,
+          flake_threshold: 0.3,
+          new_flaky_7d: 0,
+          category_counts: { network: 0, environment: 0, timing: 0, assertion: 0, other: 0 },
+        });
+      }),
+    );
+    const posts = () => calls.filter((c) => c.url.includes("/quarantine"));
+    const lists = () => calls.filter((c) => c.url.startsWith("/api/tests?")).length;
+    return { posts, lists };
+  }
+
+  it("asks for a reason and an expiry, then posts them and refreshes", async () => {
+    const { posts, lists } = stubTests(false);
+    render(<App />);
+    expect(await screen.findByText("login")).toBeInTheDocument();
+    expect(posts()).toHaveLength(0);
+
+    await userEvent.click(screen.getByRole("button", { name: "Quarantine" }));
+    // Nothing is posted until the person confirms the decision.
+    expect(posts()).toHaveLength(0);
+    const dialog = await screen.findByRole("dialog", { name: /Quarantine login/ });
+    await userEvent.type(within(dialog).getByRole("textbox", { name: /Reason/ }), "flaky on CI");
+    await userEvent.click(within(dialog).getByRole("radio", { name: "14 days" }));
+    const listsBefore = lists();
+    await userEvent.click(within(dialog).getByRole("button", { name: "Confirm" }));
+    await act(async () => {});
+
+    expect(posts()).toHaveLength(1);
+    expect(posts()[0].url).toBe("/api/tests/5/quarantine");
+    expect(posts()[0].body).toEqual({
+      quarantined: true,
+      reason: "flaky on CI",
+      expires_in_days: 14,
+    });
+    // Confirming refetches the lists so the row shows as quarantined.
+    expect(lists()).toBeGreaterThan(listsBefore);
+    expect(screen.queryByRole("dialog", { name: /Quarantine login/ })).not.toBeInTheDocument();
+  });
+
+  it("un-quarantines with one click and no dialog", async () => {
+    const { posts, lists } = stubTests(true);
+    render(<App />);
+    expect(await screen.findByText("login")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Un-quarantine" }));
+    await act(async () => {});
+
+    expect(posts()).toHaveLength(1);
+    expect(posts()[0].body).toEqual({ quarantined: false });
+    expect(lists()).toBeGreaterThan(1);
+    expect(screen.queryByRole("dialog", { name: /Quarantine login/ })).not.toBeInTheDocument();
+  });
 });
