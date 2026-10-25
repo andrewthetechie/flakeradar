@@ -156,6 +156,43 @@ async def test_trend_from_history(client, db):
     assert "clean_streak" in by_name["A"]
 
 
+async def test_new_within_days_filter(client, db):
+    """new_within_days=N: flaky now, and no old-enough history row at or above the threshold."""
+    proj = await make_project(db, "acme/app", "backend")
+    crossed = await make_test_case(db, proj, name="crossed", flakiness_score=0.6)
+    old_flaky = await make_test_case(db, proj, name="old_flaky", flakiness_score=0.6)
+    brand_new = await make_test_case(db, proj, name="brand_new", flakiness_score=0.6)
+    await make_test_case(db, proj, name="no_history", flakiness_score=0.6)
+    await make_test_case(db, proj, name="suspect", flakiness_score=0.1)
+    today = utcnow().date()
+    await make_test_score(db, crossed, today - timedelta(days=20), 0.1)
+    await make_test_score(db, crossed, today - timedelta(days=3), 0.6)
+    await make_test_score(db, old_flaky, today - timedelta(days=30), 0.6)
+    await make_test_score(db, brand_new, today - timedelta(days=1), 0.6)
+    await db.commit()
+
+    week = (await client.get("/api/tests?repo=acme/app&new_within_days=7")).json()
+    assert sorted(t["name"] for t in week["items"]) == ["brand_new", "crossed", "no_history"]
+    assert week["total"] == 3  # old_flaky and the below-threshold suspect are excluded before pagination
+    # The filter runs in SQL, so it paginates over the filtered set only.
+    first_page = (await client.get("/api/tests?repo=acme/app&new_within_days=7&page_size=2&page=1")).json()
+    assert len(first_page["items"]) == 2
+    assert first_page["total"] == 3
+    second_page = (await client.get("/api/tests?repo=acme/app&new_within_days=7&page_size=2&page=2")).json()
+    assert sorted(t["name"] for t in first_page["items"] + second_page["items"]) == [
+        "brand_new",
+        "crossed",
+        "no_history",
+    ]
+
+    days2 = (await client.get("/api/tests?repo=acme/app&new_within_days=2")).json()
+    assert sorted(t["name"] for t in days2["items"]) == ["brand_new", "no_history"]  # crossed's -3 row is at 0.6
+    assert days2["total"] == 2
+
+    assert (await client.get("/api/tests?repo=acme/app&new_within_days=0")).status_code == 422
+    assert (await client.get("/api/tests?repo=acme/app&new_within_days=91")).status_code == 422
+
+
 async def test_q_filter_matches_name_across_repos(client, db):
     await _seed(db)
     page = (await client.get("/api/tests?q=flaky")).json()

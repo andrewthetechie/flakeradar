@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import Literal
 
-from sqlalchemy import ColumnElement, Select, func, select
+from sqlalchemy import ColumnElement, Select, func, or_, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from . import schemas
@@ -123,6 +123,27 @@ async def past_test_scores(db: AsyncSession, test_ids: list[int]) -> dict[int, f
     return found
 
 
+def _newest_history_before(model, fk_col: ColumnElement[int], parent_col: ColumnElement[int], days: int):
+    """Lateral subquery: this row's newest Score history at least `days` old, or NULL (ADR 0007).
+
+    The same lookup `past_test_scores`/`past_job_scores` do in Python, as a per-row SQL
+    condition so a list query can filter with it before counting and paginating.
+    """
+    cutoff = utcnow().date() - timedelta(days=days)
+    return (
+        select(model.flakiness_score.label("score"))
+        .where(fk_col == parent_col, model.day <= cutoff)
+        .order_by(model.day.desc())
+        .limit(1)
+        .lateral()
+    )
+
+
+def _became_flaky_clause(past, threshold: float) -> ColumnElement[bool]:
+    """True when the joined `_newest_history_before` row is missing or below the threshold."""
+    return or_(past.c.score.is_(None), past.c.score < threshold)
+
+
 def tests_select() -> Select:
     """SELECT TestCase, Project.name, Repo.name — the row shape to_test_out() takes."""
     return (
@@ -181,9 +202,10 @@ async def list_tests(
     q: str | None = None,
     quarantined: bool | None = None,
     has_issue: bool | None = None,
+    new_within_days: int | None = None,
 ) -> schemas.TestPage:
     stmt = _scoped(tests_select(), scope)
-    if flaky_only:
+    if flaky_only or new_within_days is not None:
         stmt = stmt.where(TestCase.flakiness_score >= threshold)
     elif not include_stable and not q and quarantined is not True:
         stmt = stmt.where(TestCase.flakiness_score > 0)
@@ -199,6 +221,9 @@ async def list_tests(
         stmt = stmt.where(
             TestCase.github_issue_number.is_not(None) if has_issue else TestCase.github_issue_number.is_(None)
         )
+    if new_within_days is not None:
+        oldest = _newest_history_before(TestScoreHistory, TestScoreHistory.test_case_id, TestCase.id, new_within_days)
+        stmt = stmt.outerjoin(oldest, true()).where(_became_flaky_clause(oldest, threshold))
 
     total = (await db.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one()
 
