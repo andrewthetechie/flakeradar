@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import Literal
 
-from sqlalchemy import Select, func, select
+from sqlalchemy import ColumnElement, Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from . import schemas
@@ -141,6 +141,16 @@ def _scoped(stmt: Select, scope: Scope) -> Select:
     return stmt
 
 
+def test_search_clause(text: str) -> ColumnElement[bool]:
+    """Case-insensitive literal substring over name, classname and file."""
+    pattern = f"%{escape_like(text)}%"
+    return (
+        TestCase.name.ilike(pattern, escape="\\")
+        | TestCase.classname.ilike(pattern, escape="\\")
+        | TestCase.file.ilike(pattern, escape="\\")
+    )
+
+
 async def list_repos(db: AsyncSession) -> list[schemas.RepoOut]:
     rows = (
         await db.execute(
@@ -180,12 +190,7 @@ async def list_tests(
     if category:
         stmt = stmt.where(TestCase.failure_category == category)
     if q:
-        pattern = f"%{escape_like(q)}%"
-        stmt = stmt.where(
-            TestCase.name.ilike(pattern, escape="\\")
-            | TestCase.classname.ilike(pattern, escape="\\")
-            | TestCase.file.ilike(pattern, escape="\\")
-        )
+        stmt = stmt.where(test_search_clause(q))
 
     total = (await db.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one()
 
@@ -416,12 +421,7 @@ async def search_tests(
     db: AsyncSession, scope: Scope, query: str, *, threshold: float, limit: int = 20
 ) -> list[schemas.TestOut]:
     """Case-insensitive literal substring over name, classname and file; worst first."""
-    pattern = f"%{escape_like(query)}%"
-    stmt = _scoped(tests_select(), scope).where(
-        TestCase.name.ilike(pattern, escape="\\")
-        | TestCase.classname.ilike(pattern, escape="\\")
-        | TestCase.file.ilike(pattern, escape="\\")
-    )
+    stmt = _scoped(tests_select(), scope).where(test_search_clause(query))
     rows = (await db.execute(stmt.order_by(TestCase.flakiness_score.desc(), TestCase.id).limit(limit))).all()
     past = await past_test_scores(db, [tc.id for tc, _, _ in rows])
     return [
@@ -531,6 +531,12 @@ def jobs_select() -> Select:
     )
 
 
+def job_search_clause(text: str) -> ColumnElement[bool]:
+    """Case-insensitive literal substring over Job name and Pipeline name."""
+    pattern = f"%{escape_like(text)}%"
+    return (Job.name.ilike(pattern, escape="\\")) | (Pipeline.name.ilike(pattern, escape="\\"))
+
+
 async def list_jobs(
     db: AsyncSession,
     repo: str | None,
@@ -551,8 +557,7 @@ async def list_jobs(
     elif not include_stable and not q:
         stmt = stmt.where(Job.flakiness_score > 0)
     if q:
-        pattern = f"%{escape_like(q)}%"
-        stmt = stmt.where((Job.name.ilike(pattern, escape="\\")) | (Pipeline.name.ilike(pattern, escape="\\")))
+        stmt = stmt.where(job_search_clause(q))
 
     total = (await db.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one()
 
@@ -747,10 +752,9 @@ async def search_jobs(
     db: AsyncSession, repo: str, query: str, *, threshold: float, limit: int = 20
 ) -> list[schemas.JobOut]:
     """Case-insensitive literal substring over Job and Pipeline name; worst first."""
-    pattern = f"%{escape_like(query)}%"
     stmt = jobs_select().where(
         Repo.name == repo,
-        (Job.name.ilike(pattern, escape="\\")) | (Pipeline.name.ilike(pattern, escape="\\")),
+        job_search_clause(query),
     )
     rows = (await db.execute(stmt.order_by(Job.flakiness_score.desc(), Job.id).limit(limit))).all()
     past = await past_job_scores(db, [job.id for job, _, _ in rows])
