@@ -3,6 +3,8 @@
 import asyncio
 from datetime import timedelta
 
+from app import retention
+from app.config import Settings
 from app.models import (
     REPORT_FAILED,
     REPORT_PROCESSED,
@@ -224,3 +226,87 @@ async def test_prune_rescores_job_from_remaining_executions(db):
     await db.refresh(row)
     assert row.flakiness_score == 0.0  # not the stale 0.9: the two remaining passes score 0
     assert row.clean_streak == 2
+
+
+async def test_run_prune_deletes_in_batches(db, session_factory, monkeypatch):
+    now = utcnow()
+    old = now - timedelta(days=100)  # older than the default execution_retention_days
+    proj = await make_project(db)
+    tc = await make_test_case(db, proj, flakiness_score=0.5, clean_streak=3)
+    run = await make_run(db, proj, commit_sha="old", created_at=old)
+    for _ in range(5):
+        await make_execution(db, tc, run, created_at=old)
+    await db.commit()
+
+    monkeypatch.setattr(retention, "get_settings", lambda: Settings(prune_batch=2))
+    rounds: list[int] = []
+    real_prune = retention.prune
+
+    async def counting_prune(session, **kwargs):
+        rounds.append(1)
+        return await real_prune(session, **kwargs)
+
+    monkeypatch.setattr(retention, "prune", counting_prune)
+
+    result = await retention.run_prune(session_factory)
+
+    assert len(rounds) == 3  # 2 + 2 + 1 rows
+    assert result.executions == 5
+    assert await _count(db, TestExecution.id) == 0
+    row = (await db.execute(select(TestCase).where(TestCase.id == tc.id))).scalar_one()
+    await db.refresh(row)
+    assert row.flakiness_score == 0.0  # every batch rescored the Test it deleted
+    assert row.clean_streak == 0
+
+
+async def test_run_prune_drains_both_score_history_tables(db, session_factory, monkeypatch):
+    now = utcnow()
+    proj = await make_project(db)
+    tc = await make_test_case(db, proj)
+    pipe = await make_pipeline(db)
+    job = await make_job(db, pipe)
+    for i in range(5):  # composite primary keys require distinct days
+        await make_test_score(db, tc, (now - timedelta(days=400 + i)).date(), 0.5)
+        await make_job_score(db, job, (now - timedelta(days=400 + i)).date(), 0.5)
+    await db.commit()
+
+    monkeypatch.setattr(retention, "get_settings", lambda: Settings(prune_batch=2))
+    rounds: list[int] = []
+    real_prune = retention.prune
+
+    async def counting_prune(session, **kwargs):
+        rounds.append(1)
+        return await real_prune(session, **kwargs)
+
+    monkeypatch.setattr(retention, "prune", counting_prune)
+
+    result = await retention.run_prune(session_factory)
+
+    # Each round deletes a full batch from BOTH history tables, so the summed count would
+    # never equal the batch size; the loop must check the tables separately.
+    assert len(rounds) == 3  # (2, 2) + (2, 2) + (1, 1) rows
+    assert result.score_history == 10
+    assert (await db.execute(select(func.count()).select_from(TestScoreHistory))).scalar() == 0
+    assert (await db.execute(select(func.count()).select_from(JobScoreHistory))).scalar() == 0
+
+
+async def test_run_prune_stops_at_time_budget(db, session_factory, monkeypatch):
+    now = utcnow()
+    old = now - timedelta(days=100)
+    proj = await make_project(db)
+    tc = await make_test_case(db, proj)
+    run = await make_run(db, proj, commit_sha="old", created_at=old)
+    for _ in range(6):
+        await make_execution(db, tc, run, created_at=old)
+    await db.commit()
+
+    settings = Settings(prune_batch=2)
+    monkeypatch.setattr(retention, "get_settings", lambda: settings)
+    # The first reading sets the deadline; the later ones are past it.
+    past_deadline = iter([0.0] + [settings.prune_time_budget_seconds + 1.0] * 8)
+    monkeypatch.setattr(retention, "_monotonic", lambda: next(past_deadline))
+
+    result = await retention.run_prune(session_factory)  # returns normally, no exception
+
+    assert result.executions == 2  # only the first committed batch
+    assert await _count(db, TestExecution.id) == 4  # the backlog waits for the next interval
