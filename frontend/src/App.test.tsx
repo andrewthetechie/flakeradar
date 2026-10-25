@@ -131,6 +131,63 @@ describe("App", () => {
     expect(screen.getByPlaceholderText("Job or pipeline")).toBeInTheDocument();
   });
 
+  it("renders the CI run view instead of the leaderboard for ?view=ci-run", async () => {
+    const ciRun = {
+      repo: "a/b",
+      ci_run_id: "99",
+      ci_run_attempt: 1,
+      flake_threshold: 0.3,
+      reports: { pending: 0, processed: 2, failed: 0 },
+      total_failures: 1,
+      truncated: false,
+      failures: [
+        {
+          test_id: 4,
+          project: "backend",
+          suite: "",
+          classname: "tests.test_login",
+          name: "login_page",
+          run_id: 8,
+          ci_job_id: "99.1",
+          status: "passed",
+          failed_attempts: 1,
+          failure_category: null,
+          message: "Connection refused",
+          tier: "flaky",
+          flakiness_score: 0.5,
+          confirmed_flake_count: 1,
+          clean_streak: 0,
+          quarantined: false,
+          github_issue_number: null,
+          github_issue_url: null,
+        },
+      ],
+      failed_jobs: [],
+    };
+    const urls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        urls.push(url);
+        if (url.startsWith("/api/ci-runs/")) return json(ciRun);
+        if (url.startsWith("/api/repos")) return json([]);
+        if (url.startsWith("/api/reports/summary")) return json({ pending: 0, failed: 0 });
+        return json({});
+      }),
+    );
+    window.history.replaceState(null, "", "/?view=ci-run&repo=a%2Fb&ci_run=99");
+    render(<App />);
+
+    expect(await screen.findByText("passed on retry")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "login_page" })).toBeInTheDocument();
+    expect(urls.some((u) => u.startsWith("/api/ci-runs/99/failures?repo=a%2Fb"))).toBe(true);
+    // The CI run view replaces the leaderboard and must not query it.
+    expect(screen.queryByText("Flakiness leaderboard")).not.toBeInTheDocument();
+    expect(urls.filter((u) => u.startsWith("/api/tests") || u.startsWith("/api/summary"))).toEqual(
+      [],
+    );
+  });
+
   it("sends the stored search term to /api/jobs and says no jobs match", async () => {
     const urls: string[] = [];
     vi.stubGlobal(
