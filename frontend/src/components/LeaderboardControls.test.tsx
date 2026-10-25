@@ -43,6 +43,27 @@ describe("LeaderboardControls quarantine and issue filters", () => {
     expect(onQuarantined).toHaveBeenCalledWith(true);
   });
 
+  it("the new-flaky checkbox reports the window, or null when unticked", () => {
+    const onNewDays = vi.fn();
+    const { unmount } = render(
+      <LeaderboardControls {...base} newDays={null} onNewDays={onNewDays} />,
+    );
+    // Rendered whenever the view wires it, i.e. in the Tests and Jobs views alike.
+    fireEvent.click(screen.getByRole("checkbox", { name: /new in the last 7 days/i }));
+    expect(onNewDays).toHaveBeenLastCalledWith(7);
+    unmount();
+    render(<LeaderboardControls {...base} newDays={7} onNewDays={onNewDays} />);
+    fireEvent.click(screen.getByRole("checkbox", { name: /new in the last 7 days/i }));
+    expect(onNewDays).toHaveBeenLastCalledWith(null);
+  });
+
+  it("shows no new-flaky checkbox for a view without the handler", () => {
+    render(<LeaderboardControls {...base} />);
+    expect(
+      screen.queryByRole("checkbox", { name: /new in the last 7 days/i }),
+    ).not.toBeInTheDocument();
+  });
+
   it("the issue select reports linked, none and any", () => {
     const onIssue = vi.fn();
     render(<LeaderboardControls {...base} issue={null} onIssue={onIssue} />);

@@ -500,4 +500,68 @@ describe("App", () => {
     // The Pipeline filter belongs to the Jobs view only.
     expect(screen.queryByRole("combobox", { name: /pipeline/i })).not.toBeInTheDocument();
   });
+
+  it("sends new_within_days for the new-flaky toggle, in both views", async () => {
+    const urls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        urls.push(url);
+        if (url.startsWith("/api/jobs/summary"))
+          return json({
+            total_jobs: 1,
+            flaky_jobs: 1,
+            suspect_jobs: 0,
+            confirmed_flaky_jobs: 0,
+            total_job_executions: 4,
+            flake_threshold: 0.3,
+            pipelines: [],
+          });
+        if (url.startsWith("/api/jobs"))
+          return json({ items: [], total: 0, page: 1, page_size: 50 });
+        if (url.startsWith("/api/tests")) return json(page("login"));
+        if (url.startsWith("/api/repos")) return json([]);
+        if (url.startsWith("/api/reports/summary")) return json({ pending: 0, failed: 0 });
+        return json({
+          total_tests: 1,
+          flaky_tests: 1,
+          suspect_tests: 0,
+          confirmed_flaky_tests: 0,
+          total_runs: 1,
+          total_executions: 1,
+          flake_threshold: 0.3,
+          new_flaky_7d: 0,
+          category_counts: { network: 0, environment: 0, timing: 0, assertion: 0, other: 0 },
+        });
+      }),
+    );
+    render(<App />);
+    await act(async () => {});
+    const lastUrl = (prefix: string) => urls.filter((u) => u.startsWith(prefix)).at(-1) ?? "";
+    const param = (url: string, name: string) =>
+      new URL(url, "http://localhost").searchParams.get(name);
+    const toggle = () => screen.getByRole("checkbox", { name: /new in the last 7 days/i });
+
+    // Off by default: the API is asked without the parameter.
+    expect(param(lastUrl("/api/tests"), "new_within_days")).toBeNull();
+
+    await userEvent.click(toggle());
+    await act(async () => {});
+    expect(param(lastUrl("/api/tests"), "new_within_days")).toBe("7");
+    expect(window.location.search).toBe("?new=7");
+
+    // Toggling back clears the URL and the parameter.
+    await userEvent.click(toggle());
+    await act(async () => {});
+    expect(param(lastUrl("/api/tests"), "new_within_days")).toBeNull();
+    expect(window.location.search).toBe("");
+
+    // Jobs view: the same toggle, sent to /api/jobs.
+    await userEvent.click(toggle());
+    await act(async () => {});
+    await userEvent.click(screen.getByRole("button", { name: "jobs" }));
+    await act(async () => {});
+    expect(param(lastUrl("/api/jobs"), "new_within_days")).toBe("7");
+    expect(window.location.search).toBe("?view=jobs&new=7");
+  });
 });

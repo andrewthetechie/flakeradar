@@ -15,6 +15,9 @@ const ISSUE_LABELS: Record<IssueFilter, string> = {
 /** Keystrokes wait this long before the search hits the API. */
 const SEARCH_DEBOUNCE_MS = 300;
 
+/** Window of the "New in the last N days" filter, matching the API's new_flaky_7d. */
+const NEW_FLAKY_DAYS = 7;
+
 export function LeaderboardControls({
   sort,
   showStable,
@@ -23,6 +26,7 @@ export function LeaderboardControls({
   causeCounts,
   quarantined,
   issue,
+  newDays,
   pipelines,
   pipeline,
   search,
@@ -32,6 +36,7 @@ export function LeaderboardControls({
   onCause,
   onQuarantined,
   onIssue,
+  onNewDays,
   onPipeline,
   onSearch,
 }: {
@@ -42,6 +47,8 @@ export function LeaderboardControls({
   causeCounts?: Record<FailureCategory, number> | null;
   quarantined?: boolean;
   issue?: IssueFilter | null;
+  /** Both views: days window of the "new flaky" filter, or null when it is off. */
+  newDays?: number | null;
   /** Jobs view: Pipeline names of the current scope, from the job summary. */
   pipelines?: string[] | null;
   pipeline?: string | null;
@@ -52,6 +59,8 @@ export function LeaderboardControls({
   onCause?: (cause: FailureCategory | null) => void;
   onQuarantined?: (quarantined: boolean) => void;
   onIssue?: (issue: IssueFilter | null) => void;
+  /** Both views: turn the "new flaky" filter on with the day window, or off with null. */
+  onNewDays?: (newDays: number | null) => void;
   onPipeline?: (pipeline: string | null) => void;
   onSearch: (q: string) => void;
 }) {
@@ -162,6 +171,17 @@ export function LeaderboardControls({
             onChange={(e) => onQuarantined(e.target.checked)}
           />
           Quarantined only
+        </label>
+      )}
+      {onNewDays && (
+        <label className="flex cursor-pointer items-center gap-2">
+          <input
+            type="checkbox"
+            className="size-3.5 accent-(--signal)"
+            checked={newDays != null}
+            onChange={(e) => onNewDays(e.target.checked ? NEW_FLAKY_DAYS : null)}
+          />
+          New in the last {NEW_FLAKY_DAYS} days
         </label>
       )}
     </div>
