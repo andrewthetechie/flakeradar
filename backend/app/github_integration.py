@@ -611,10 +611,19 @@ async def _clear_if_closed(
     return True
 
 
-async def on_report_processed(session_factory: async_sessionmaker[AsyncSession], outcome: ProcessOutcome) -> None:
-    """ReportWorker hook: file issues for the Tests and Jobs a processed Report touched."""
+async def on_report_processed(
+    session_factory: async_sessionmaker[AsyncSession],
+    outcome: ProcessOutcome,
+    *,
+    transport: httpx.AsyncBaseTransport | None = None,
+) -> None:
+    """ReportWorker hook: file issues for the Tests and Jobs a processed Report touched.
+
+    `transport` exists for tests (httpx.MockTransport) and for the GitHub task;
+    production callers pass None.
+    """
     if outcome.status != REPORT_PROCESSED or not configured():
         return
     async with session_factory() as db:
-        await file_issues_for(db, outcome.touched_test_ids)
-        await file_job_issues_for(db, outcome.touched_job_ids)
+        await file_issues_for(db, outcome.touched_test_ids, transport=transport)
+        await file_job_issues_for(db, outcome.touched_job_ids, transport=transport)
