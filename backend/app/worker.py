@@ -21,7 +21,10 @@ one-processor rule of ADR 0002 is untouched.
 
 The lock is session-level and SURVIVES a connection being returned to the
 pool, so the leader keeps one dedicated AUTOCOMMIT connection for as long as
-it leads and unlocks explicitly before closing it.
+it leads and unlocks explicitly before closing it. Losing leadership stops the
+GitHub task before the unlock: a replacement leader must never see the lock
+free while this process still has an issue POST in flight, or both tasks could
+file the same issue.
 """
 
 import asyncio
@@ -185,20 +188,27 @@ class ReportWorker:
         return True
 
     async def _release(self) -> None:
-        conn, self._lock_conn = self._lock_conn, None
-        try:
-            if conn is not None:
-                try:
-                    await conn.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": WORKER_LOCK_KEY})
-                    await conn.close()
-                except (DBAPIError, InvalidRequestError):
-                    # Connection is broken: the server already dropped the lock.
-                    await conn.invalidate()
-        finally:
-            # Leadership ends here, however the connection went: the GitHub
-            # task is leader-only too.
-            if self._github is not None:
+        """End leadership: the GitHub task stops first, then the lock is given up.
+
+        The order matters. Unlocking while the GitHub task still has a call in
+        flight lets a replacement leader take the lock and file the same issue
+        twice, so the task is cancelled and awaited before the unlock. Stopping
+        is best effort: if it fails, the lock is released anyway rather than be
+        held by a process that no longer processes.
+        """
+        if self._github is not None:
+            try:
                 await self._github.stop()
+            except Exception:
+                logger.exception("Stopping the GitHub task failed; releasing the lock anyway")
+        conn, self._lock_conn = self._lock_conn, None
+        if conn is not None:
+            try:
+                await conn.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": WORKER_LOCK_KEY})
+                await conn.close()
+            except (DBAPIError, InvalidRequestError):
+                # Connection is broken: the server already dropped the lock.
+                await conn.invalidate()
 
     async def _lock_alive(self) -> None:
         assert self._lock_conn is not None

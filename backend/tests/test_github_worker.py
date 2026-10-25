@@ -6,10 +6,11 @@ import httpx
 import pytest
 from app import github_integration
 from app.config import Settings
+from app.db import WORKER_LOCK_KEY
 from app.models import Report, TestCase
 from app.processing import ProcessOutcome
 from app.worker import GitHubWorker
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from tests.conftest import make_junit
 from tests.factories import make_project, make_report
@@ -204,3 +205,74 @@ async def test_losing_the_connection_stops_the_github_task(engine, session_facto
     worker._lock_conn = None  # the lock connection is already broken
     await worker._release()
     assert not github.is_running
+
+
+class _BlockingGitHubWorker(GitHubWorker):
+    """A GitHub task whose stop waits, like an issue POST still in flight."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.stopping = asyncio.Event()
+        self.unblock = asyncio.Event()
+
+    async def stop(self) -> None:
+        self.stopping.set()
+        await self.unblock.wait()
+        await super().stop()
+
+
+async def _lock_is_free(engine) -> bool:
+    """True when another session can take the worker lock right now."""
+    async with engine.connect() as conn:
+        got = (await conn.execute(text("SELECT pg_try_advisory_lock(:k)"), {"k": WORKER_LOCK_KEY})).scalar()
+        if got:
+            await conn.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": WORKER_LOCK_KEY})
+    return bool(got)
+
+
+async def test_the_github_task_ends_before_the_lock_is_released(engine, session_factory):
+    """Unlocking while a call is in flight would let a replacement leader file it too."""
+    github = _BlockingGitHubWorker(session_factory, sync_interval_seconds=3600.0)
+    worker = _worker(engine, session_factory, github=github)
+    await worker.start()
+    await _wait_for(lambda: worker.is_leader)
+    assert github.is_running
+
+    releasing = asyncio.create_task(worker.stop())
+    try:
+        await _wait_for(github.stopping.is_set)  # the call is still in flight ...
+        assert not await _lock_is_free(engine)  # ... so the lock must still be held
+        await asyncio.sleep(0.2)
+        assert not await _lock_is_free(engine)
+    finally:
+        github.unblock.set()  # the call comes back
+        await releasing
+
+    assert not github.is_running
+    assert await _lock_is_free(engine)  # only now does leadership actually end
+
+
+async def test_the_replacement_leader_waits_for_the_former_github_task(engine, session_factory):
+    """A standby cannot lead, so its GitHub task cannot start, until the old one is done."""
+    former = _BlockingGitHubWorker(session_factory, sync_interval_seconds=3600.0)
+    successor = GitHubWorker(session_factory, sync_interval_seconds=3600.0)
+    leader = _worker(engine, session_factory, github=former)
+    standby = _worker(engine, session_factory, github=successor)
+    await leader.start()
+    await _wait_for(lambda: leader.is_leader)
+    await standby.start()
+    assert not successor.is_running
+
+    releasing = asyncio.create_task(leader.stop())
+    try:
+        await _wait_for(former.stopping.is_set)
+        await asyncio.sleep(0.3)  # several standby polls, and one leader poll
+        assert not standby.is_leader
+        assert not successor.is_running
+    finally:
+        former.unblock.set()
+        await releasing
+
+    await _wait_for(lambda: standby.is_leader)
+    assert successor.is_running
+    await standby.stop()
