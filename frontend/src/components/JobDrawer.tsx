@@ -36,12 +36,14 @@ export function JobDrawer({
   onClose,
   onOpenTest,
   onOpenJob,
+  onOpenCiRun,
 }: {
   jobId: number;
   history: JobHistory | null;
   onClose: () => void;
   onOpenTest: (testId: number) => void;
   onOpenJob: (jobId: number) => void;
+  onOpenCiRun: (repo: string, ciRun: string, attempt: number | null) => void;
 }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -125,6 +127,14 @@ export function JobDrawer({
                     <td className="min-w-32">
                       <div className="flex items-center gap-1.5 whitespace-nowrap">
                         <OutcomeCell e={e} />
+                        <button
+                          type="button"
+                          onClick={() => onOpenCiRun(job.repo, e.ci_run_id, e.ci_run_attempt)}
+                          className="text-link underline-offset-2 hover:underline"
+                          title={`Open CI run ${e.ci_run_id}, attempt ${e.ci_run_attempt}`}
+                        >
+                          run {e.ci_run_id}
+                        </button>
                         <span className="text-muted">attempt {e.ci_run_attempt}</span>
                       </div>
                       {e.outcome === "explained" && e.explained_by.length > 0 && (

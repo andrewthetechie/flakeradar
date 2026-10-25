@@ -303,6 +303,11 @@ The response is for one attempt of the CI run. Without `ci_run_attempt`, it
 is the latest attempt that FlakeRadar has seen. Pass the attempt when you
 know it.
 
+The same data is in the dashboard at
+`?view=ci-run&repo=owner/name&ci_run=$GITHUB_RUN_ID`, or from the "Open CI
+run" input in the header once a repo is selected. The `ci_run_id` in the
+execution rows of the Test and Job drawers links to it too.
+
 - `reports` counts the CI run attempt's reports (JUnit and pipeline) as
   `pending`, `processed` and `failed`. Ingest answers before it processes a
   report. Poll until `pending` is 0 before you trust an empty list.

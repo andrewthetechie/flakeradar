@@ -186,6 +186,11 @@ export default function App() {
     (testId: number) => setView({ view: "tests", test: testId }),
     [setView],
   );
+  const openCiRun = useCallback(
+    (repo: string, ciRun: string, attempt: number | null) =>
+      setView({ view: "ci-run", repo, ci_run: ciRun, attempt }),
+    [setView],
+  );
 
   const visiblePage = kind === "jobs" ? jobPage : page;
 
@@ -208,6 +213,7 @@ export default function App() {
             showProject={kind === "tests"}
             onChange={(scope) => setView(scope)}
           />
+          {repo && <CiRunForm repo={repo} onOpen={(ciRun) => openCiRun(repo, ciRun, null)} />}
           <ThemeToggle />
         </div>
       </header>
@@ -301,6 +307,7 @@ export default function App() {
           onClose={closeDrawer}
           onToggleQuarantine={onToggleQuarantine}
           onOpenJob={openJobFromTest}
+          onOpenCiRun={openCiRun}
         />
       )}
       {kind === "jobs" && view.job != null && (
@@ -310,6 +317,7 @@ export default function App() {
           onClose={closeDrawer}
           onOpenTest={openTestFromJob}
           onOpenJob={(jobId) => setView({ job: jobId })}
+          onOpenCiRun={openCiRun}
         />
       )}
 
@@ -328,6 +336,37 @@ export default function App() {
         to your repo — see the README.
       </footer>
     </div>
+  );
+}
+
+/** Header entry point to the CI run view: the run id the developer reads off
+ *  the CI page, for the repo the ScopePicker already selected. */
+function CiRunForm({ repo, onOpen }: { repo: string; onOpen: (ciRun: string) => void }) {
+  const [ciRun, setCiRun] = useState("");
+  const trimmed = ciRun.trim();
+  return (
+    <form
+      className="flex items-center gap-1"
+      title={`Open a CI run of ${repo}`}
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (trimmed) onOpen(trimmed);
+      }}
+    >
+      <label className="text-xs whitespace-nowrap text-muted" htmlFor="open-ci-run">
+        Open CI run
+      </label>
+      <input
+        id="open-ci-run"
+        className="control w-24 py-0.5 text-xs"
+        value={ciRun}
+        placeholder="run id"
+        onChange={(e) => setCiRun(e.target.value)}
+      />
+      <button type="submit" className="btn px-2 py-0.5 text-xs" disabled={!trimmed}>
+        Open
+      </button>
+    </form>
   );
 }
 
