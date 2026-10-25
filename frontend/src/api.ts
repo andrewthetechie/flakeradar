@@ -2,6 +2,8 @@
 
 export type Tier = "flaky" | "suspect" | "stable";
 export type SortKey = "score" | "last_seen" | "proven";
+/** Issue link filter: Tests with a linked GitHub issue, or without one. */
+export type IssueFilter = "linked" | "none";
 export type FailureCategory = "network" | "environment" | "timing" | "assertion" | "other";
 export const FAILURE_CATEGORIES: readonly FailureCategory[] = [
   "network",
@@ -120,6 +122,8 @@ export interface TestQuery extends Scope {
   sort: SortKey;
   showStable: boolean;
   category: FailureCategory | null;
+  quarantined: boolean;
+  issue: IssueFilter | null;
   q: string;
 }
 
@@ -155,6 +159,8 @@ export function fetchTests(q: TestQuery): Promise<TestPage> {
   params.set("sort", q.sort);
   if (q.showStable) params.set("include_stable", "true");
   if (q.category) params.set("category", q.category);
+  if (q.quarantined) params.set("quarantined", "true");
+  if (q.issue) params.set("has_issue", String(q.issue === "linked"));
   if (q.q) params.set("q", q.q);
   return getJson<TestPage>(withQuery("/api/tests", params));
 }
@@ -195,6 +201,8 @@ export interface JobSummary {
   confirmed_flaky_jobs: number;
   total_job_executions: number;
   flake_threshold: number;
+  /** Distinct Pipeline names of the scope, sorted; feeds the Jobs filter. */
+  pipelines: string[];
 }
 
 export interface ExplainingTest {
@@ -245,6 +253,10 @@ export interface JobQuery {
   pageSize: number;
   sort: SortKey;
   showStable: boolean;
+  /** Exact Pipeline name to list, or null for every pipeline. */
+  pipeline: string | null;
+  /** Filter by Issue link, or null for any. */
+  issue: IssueFilter | null;
   q: string;
 }
 
@@ -256,6 +268,8 @@ export function fetchJobs(q: JobQuery): Promise<JobPage> {
   params.set("sort", q.sort);
   if (q.showStable) params.set("include_stable", "true");
   if (q.q) params.set("q", q.q);
+  if (q.pipeline) params.set("pipeline", q.pipeline);
+  if (q.issue) params.set("has_issue", String(q.issue === "linked"));
   return getJson<JobPage>(withQuery("/api/jobs", params));
 }
 

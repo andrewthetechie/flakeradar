@@ -205,3 +205,53 @@ async def test_q_filter_composes_with_sort(client, db):
     page = (await client.get("/api/jobs?repo=acme/app&q=fast&sort=last_seen")).json()
     assert [j["name"] for j in page["items"]] == ["lint-fast"]
     assert page["page"] == 1
+
+
+async def test_pipeline_filter_is_an_exact_name_match(client, db):
+    await _seed_jobs_q(db)
+    page = (await client.get("/api/jobs?repo=acme/app&pipeline=.github/workflows/nightly.yml")).json()
+    assert [j["name"] for j in page["items"]] == ["e2e"]
+    # The stable job of the other pipeline stays hidden, as it does unfiltered.
+    page = (await client.get("/api/jobs?repo=acme/app&pipeline=.github/workflows/ci.yml")).json()
+    assert [j["name"] for j in page["items"]] == ["build-thing"]
+    assert (await client.get("/api/jobs?repo=acme/app&pipeline=nightly.yml")).json()["total"] == 0
+    assert (await client.get("/api/jobs?repo=acme/app&pipeline=.github/workflows/NIGHTLY.yml")).json()["total"] == 0
+
+
+async def test_pipeline_filter_composes_with_include_stable(client, db):
+    await _seed_jobs_q(db)
+    page = (await client.get("/api/jobs?repo=acme/app&pipeline=.github/workflows/ci.yml&include_stable=true")).json()
+    assert [j["name"] for j in page["items"]] == ["build-thing", "lint-fast"]
+
+
+async def test_has_issue_filter_on_jobs(client, db):
+    p = await make_pipeline(db, "acme/app", ".github/workflows/ci.yml")
+    await make_job(db, p, name="tracked", flakiness_score=0.6, github_issue_number=7)
+    await make_job(db, p, name="untracked", flakiness_score=0.4)
+    await db.commit()
+
+    assert [j["name"] for j in (await client.get("/api/jobs?repo=acme/app&has_issue=true")).json()["items"]] == [
+        "tracked"
+    ]
+    assert [j["name"] for j in (await client.get("/api/jobs?repo=acme/app&has_issue=false")).json()["items"]] == [
+        "untracked"
+    ]
+    assert (await client.get("/api/jobs?repo=acme/app")).json()["total"] == 2  # no filter: both
+
+
+async def test_job_summary_lists_pipelines(client, db):
+    await _seed_jobs_q(db)
+    other = await make_pipeline(db, "acme/other", ".github/workflows/release.yml")
+    await make_job(db, other, name="publish", flakiness_score=0.2)
+    await db.commit()
+
+    scoped = (await client.get("/api/jobs/summary?repo=acme/app")).json()
+    assert scoped["pipelines"] == [".github/workflows/ci.yml", ".github/workflows/nightly.yml"]
+    # Without a repo, the pipelines of every repo are listed.
+    unscoped = (await client.get("/api/jobs/summary")).json()
+    assert unscoped["pipelines"] == [
+        ".github/workflows/ci.yml",
+        ".github/workflows/nightly.yml",
+        ".github/workflows/release.yml",
+    ]
+    assert (await client.get("/api/jobs/summary?repo=acme/nothing")).json()["pipelines"] == []

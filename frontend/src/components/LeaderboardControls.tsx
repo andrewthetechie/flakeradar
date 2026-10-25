@@ -1,10 +1,15 @@
 import { useEffect, useState } from "react";
-import { FAILURE_CATEGORIES, type FailureCategory, type SortKey } from "../api";
+import { FAILURE_CATEGORIES, type FailureCategory, type IssueFilter, type SortKey } from "../api";
 
 const SORT_LABELS: Record<SortKey, string> = {
   score: "Flakiness score",
   last_seen: "Last seen",
   proven: "Proven flakes",
+};
+
+const ISSUE_LABELS: Record<IssueFilter, string> = {
+  linked: "Linked",
+  none: "None",
 };
 
 /** Keystrokes wait this long before the search hits the API. */
@@ -16,11 +21,18 @@ export function LeaderboardControls({
   stableLabel = "Show stable tests",
   cause,
   causeCounts,
+  quarantined,
+  issue,
+  pipelines,
+  pipeline,
   search,
   searchPlaceholder,
   onSort,
   onShowStable,
   onCause,
+  onQuarantined,
+  onIssue,
+  onPipeline,
   onSearch,
 }: {
   sort: SortKey;
@@ -28,11 +40,19 @@ export function LeaderboardControls({
   stableLabel?: string;
   cause?: FailureCategory | null;
   causeCounts?: Record<FailureCategory, number> | null;
+  quarantined?: boolean;
+  issue?: IssueFilter | null;
+  /** Jobs view: Pipeline names of the current scope, from the job summary. */
+  pipelines?: string[] | null;
+  pipeline?: string | null;
   search: string;
   searchPlaceholder?: string;
   onSort: (sort: SortKey) => void;
   onShowStable: (show: boolean) => void;
   onCause?: (cause: FailureCategory | null) => void;
+  onQuarantined?: (quarantined: boolean) => void;
+  onIssue?: (issue: IssueFilter | null) => void;
+  onPipeline?: (pipeline: string | null) => void;
   onSearch: (q: string) => void;
 }) {
   // Local text so typing stays instant; the URL (and a fetch) only sees the
@@ -90,6 +110,40 @@ export function LeaderboardControls({
           </select>
         </label>
       )}
+      {onPipeline && (
+        <label className="flex items-center gap-2">
+          Pipeline
+          <select
+            className="control py-0.5 text-xs"
+            value={pipeline ?? ""}
+            onChange={(e) => onPipeline(e.target.value || null)}
+          >
+            <option value="">All</option>
+            {(pipelines ?? []).map((name) => (
+              <option key={name} value={name}>
+                {name}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+      {onIssue && (
+        <label className="flex items-center gap-2">
+          Issue
+          <select
+            className="control py-0.5 text-xs"
+            value={issue ?? ""}
+            onChange={(e) => onIssue((e.target.value || null) as IssueFilter | null)}
+          >
+            <option value="">Any</option>
+            {(Object.keys(ISSUE_LABELS) as IssueFilter[]).map((i) => (
+              <option key={i} value={i}>
+                {ISSUE_LABELS[i]}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
       <label className="flex cursor-pointer items-center gap-2">
         <input
           type="checkbox"
@@ -99,6 +153,17 @@ export function LeaderboardControls({
         />
         {stableLabel}
       </label>
+      {onQuarantined && (
+        <label className="flex cursor-pointer items-center gap-2">
+          <input
+            type="checkbox"
+            className="size-3.5 accent-(--signal)"
+            checked={quarantined ?? false}
+            onChange={(e) => onQuarantined(e.target.checked)}
+          />
+          Quarantined only
+        </label>
+      )}
     </div>
   );
 }

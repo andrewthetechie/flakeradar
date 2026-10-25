@@ -50,7 +50,18 @@ export default function App() {
   const [jobHistory, setJobHistory] = useState<JobHistory | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const { repo, project, sort, showStable, cause, q, view: kind } = view;
+  const {
+    repo,
+    project,
+    sort,
+    showStable,
+    cause,
+    quarantined,
+    issue,
+    pipeline,
+    q,
+    view: kind,
+  } = view;
   const pageNumber = view.page;
 
   // Only the newest refresh may write state: a slow response for the old
@@ -72,7 +83,16 @@ export default function App() {
         const [r, s, jobs, queue] = await Promise.all([
           fetchRepos(),
           fetchJobSummary(repo),
-          fetchJobs({ repo, page: pageNumber, pageSize: PAGE_SIZE, sort, showStable, q }),
+          fetchJobs({
+            repo,
+            page: pageNumber,
+            pageSize: PAGE_SIZE,
+            sort,
+            showStable,
+            pipeline,
+            issue,
+            q,
+          }),
           queueQ,
         ]);
         if (request !== latestRefresh.current) return;
@@ -93,6 +113,8 @@ export default function App() {
             sort,
             showStable,
             category: cause,
+            quarantined,
+            issue,
             q,
           }),
           queueQ,
@@ -108,7 +130,7 @@ export default function App() {
       if (request !== latestRefresh.current) return;
       setError(e instanceof Error ? e.message : String(e));
     }
-  }, [kind, repo, project, pageNumber, sort, showStable, cause, q]);
+  }, [kind, repo, project, pageNumber, sort, showStable, cause, quarantined, issue, pipeline, q]);
 
   // Stable identity: the search box's debounce timer must not restart on the
   // 30 s polling re-renders.
@@ -259,11 +281,18 @@ export default function App() {
               stableLabel={kind === "jobs" ? "Show stable jobs" : "Show stable tests"}
               cause={cause}
               causeCounts={summary?.category_counts ?? null}
+              quarantined={quarantined}
+              issue={issue}
+              pipelines={jobSummary?.pipelines ?? []}
+              pipeline={pipeline}
               search={q}
               searchPlaceholder={kind === "jobs" ? "Job or pipeline" : "Name, classname or file"}
               onSort={(s) => setView({ sort: s })}
               onShowStable={(v) => setView({ showStable: v })}
               onCause={kind === "tests" ? (c) => setView({ cause: c }) : undefined}
+              onQuarantined={kind === "tests" ? (v) => setView({ quarantined: v }) : undefined}
+              onPipeline={kind === "jobs" ? (p) => setView({ pipeline: p }) : undefined}
+              onIssue={(i) => setView({ issue: i })}
               onSearch={onSearch}
             />
           </div>

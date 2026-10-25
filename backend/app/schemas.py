@@ -296,6 +296,7 @@ class JobSummaryOut(BaseModel):
     confirmed_flaky_jobs: int
     total_job_executions: int
     flake_threshold: float
+    pipelines: list[str]
 
 
 class QuarantineIn(BaseModel):

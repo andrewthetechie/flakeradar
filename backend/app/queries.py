@@ -179,11 +179,13 @@ async def list_tests(
     file: str | None = None,
     category: FailureCategory | None = None,
     q: str | None = None,
+    quarantined: bool | None = None,
+    has_issue: bool | None = None,
 ) -> schemas.TestPage:
     stmt = _scoped(tests_select(), scope)
     if flaky_only:
         stmt = stmt.where(TestCase.flakiness_score >= threshold)
-    elif not include_stable and not q:
+    elif not include_stable and not q and quarantined is not True:
         stmt = stmt.where(TestCase.flakiness_score > 0)
     if file:
         stmt = stmt.where(TestCase.file.ilike(f"%{escape_like(file)}%", escape="\\"))
@@ -191,6 +193,12 @@ async def list_tests(
         stmt = stmt.where(TestCase.failure_category == category)
     if q:
         stmt = stmt.where(test_search_clause(q))
+    if quarantined is not None:
+        stmt = stmt.where(TestCase.quarantined.is_(quarantined))
+    if has_issue is not None:
+        stmt = stmt.where(
+            TestCase.github_issue_number.is_not(None) if has_issue else TestCase.github_issue_number.is_(None)
+        )
 
     total = (await db.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one()
 
@@ -548,6 +556,8 @@ async def list_jobs(
     page: int = 1,
     page_size: int = 50,
     q: str | None = None,
+    pipeline: str | None = None,
+    has_issue: bool | None = None,
 ) -> schemas.JobPage:
     stmt = jobs_select()
     if repo is not None:
@@ -558,6 +568,10 @@ async def list_jobs(
         stmt = stmt.where(Job.flakiness_score > 0)
     if q:
         stmt = stmt.where(job_search_clause(q))
+    if pipeline is not None:
+        stmt = stmt.where(Pipeline.name == pipeline)
+    if has_issue is not None:
+        stmt = stmt.where(Job.github_issue_number.is_not(None) if has_issue else Job.github_issue_number.is_(None))
 
     total = (await db.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one()
 
@@ -606,6 +620,11 @@ async def job_summary(db: AsyncSession, repo: str | None, *, threshold: float) -
         exec_stmt = exec_stmt.where(Repo.name == repo)
     total_exec = (await db.execute(exec_stmt)).scalar_one()
 
+    pipe_stmt = select(Pipeline.name).join(Repo, Pipeline.repo_id == Repo.id)
+    if repo is not None:
+        pipe_stmt = pipe_stmt.where(Repo.name == repo)
+    pipelines = list((await db.execute(pipe_stmt.distinct().order_by(Pipeline.name))).scalars())
+
     return schemas.JobSummaryOut(
         total_jobs=total,
         flaky_jobs=flaky,
@@ -613,6 +632,7 @@ async def job_summary(db: AsyncSession, repo: str | None, *, threshold: float) -
         confirmed_flaky_jobs=confirmed,
         total_job_executions=total_exec,
         flake_threshold=threshold,
+        pipelines=pipelines,
     )
 
 
