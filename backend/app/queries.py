@@ -583,11 +583,12 @@ async def list_jobs(
     q: str | None = None,
     pipeline: str | None = None,
     has_issue: bool | None = None,
+    new_within_days: int | None = None,
 ) -> schemas.JobPage:
     stmt = jobs_select()
     if repo is not None:
         stmt = stmt.where(Repo.name == repo)
-    if flaky_only:
+    if flaky_only or new_within_days is not None:
         stmt = stmt.where(Job.flakiness_score >= threshold)
     elif not include_stable and not q:
         stmt = stmt.where(Job.flakiness_score > 0)
@@ -597,6 +598,9 @@ async def list_jobs(
         stmt = stmt.where(Pipeline.name == pipeline)
     if has_issue is not None:
         stmt = stmt.where(Job.github_issue_number.is_not(None) if has_issue else Job.github_issue_number.is_(None))
+    if new_within_days is not None:
+        oldest = _newest_history_before(JobScoreHistory, JobScoreHistory.job_id, Job.id, new_within_days)
+        stmt = stmt.outerjoin(oldest, true()).where(_became_flaky_clause(oldest, threshold))
 
     total = (await db.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one()
 

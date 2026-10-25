@@ -170,6 +170,38 @@ async def test_job_trend_from_history_and_score_history(client, db):
     ]
 
 
+async def test_new_within_days_filter_on_jobs(client, db):
+    """new_within_days=N on Jobs: flaky now, and no old-enough history row at or above the threshold."""
+    p = await make_pipeline(db, "acme/app", ".github/workflows/ci.yml")
+    crossed = await make_job(db, p, name="crossed", flakiness_score=0.6)
+    old_flaky = await make_job(db, p, name="old_flaky", flakiness_score=0.6)
+    no_old_history = await make_job(db, p, name="no_old_history", flakiness_score=0.6)
+    await make_job(db, p, name="suspect", flakiness_score=0.1)
+    today = utcnow().date()
+    await make_job_score(db, crossed, today - timedelta(days=20), 0.1)
+    await make_job_score(db, crossed, today - timedelta(days=3), 0.6)
+    await make_job_score(db, old_flaky, today - timedelta(days=30), 0.6)
+    await make_job_score(db, no_old_history, today - timedelta(days=1), 0.6)
+    await db.commit()
+
+    week = (await client.get("/api/jobs?repo=acme/app&new_within_days=7")).json()
+    assert sorted(j["name"] for j in week["items"]) == ["crossed", "no_old_history"]
+    assert week["total"] == 2  # old_flaky and the below-threshold suspect go before pagination
+    # The filter runs in SQL, so it paginates over the filtered set only.
+    first_page = (await client.get("/api/jobs?repo=acme/app&new_within_days=7&page_size=1&page=1")).json()
+    assert len(first_page["items"]) == 1
+    assert first_page["total"] == 2
+    second_page = (await client.get("/api/jobs?repo=acme/app&new_within_days=7&page_size=1&page=2")).json()
+    assert sorted(j["name"] for j in first_page["items"] + second_page["items"]) == ["crossed", "no_old_history"]
+
+    days2 = (await client.get("/api/jobs?repo=acme/app&new_within_days=2")).json()
+    assert sorted(j["name"] for j in days2["items"]) == ["no_old_history"]  # crossed's -3 row is at 0.6
+    assert days2["total"] == 1
+
+    assert (await client.get("/api/jobs?repo=acme/app&new_within_days=0")).status_code == 422
+    assert (await client.get("/api/jobs?repo=acme/app&new_within_days=91")).status_code == 422
+
+
 async def _seed_jobs_q(db):
     """ci.yml: build-thing 0.6, lint-fast 0.0 (stable). nightly.yml: e2e 0.3."""
     ci = await make_pipeline(db, "acme/app", ".github/workflows/ci.yml")

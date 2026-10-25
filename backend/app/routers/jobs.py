@@ -32,6 +32,7 @@ async def list_jobs(
     q: str | None = Query(default=None, max_length=200),
     pipeline: str | None = Query(default=None, max_length=512),
     has_issue: bool | None = Query(default=None),
+    new_within_days: int | None = Query(default=None, ge=1, le=90),
     db: AsyncSession = Depends(get_db),
 ):
     return await queries.list_jobs(
@@ -45,6 +46,7 @@ async def list_jobs(
         q=q,
         pipeline=pipeline,
         has_issue=has_issue,
+        new_within_days=new_within_days,
     )
 
 
