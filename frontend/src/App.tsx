@@ -20,6 +20,7 @@ import {
   type TestCase,
   type TestPage,
 } from "./api";
+import { CiRunView } from "./components/CiRunView";
 import { JobDrawer } from "./components/JobDrawer";
 import { JobLeaderboard } from "./components/JobLeaderboard";
 import { JobStatTiles } from "./components/JobStatTiles";
@@ -60,7 +61,14 @@ export default function App() {
     const request = ++latestRefresh.current;
     try {
       const queueQ = fetchReportSummary();
-      if (kind === "jobs") {
+      if (kind === "ci-run") {
+        // CiRunView fetches the CI run itself; the header needs repos + queue.
+        const [r, queue] = await Promise.all([fetchRepos(), queueQ]);
+        if (request !== latestRefresh.current) return;
+        setRepos(r);
+        setQueue(queue);
+        setError(null);
+      } else if (kind === "jobs") {
         const [r, s, jobs, queue] = await Promise.all([
           fetchRepos(),
           fetchJobSummary(repo),
@@ -113,6 +121,12 @@ export default function App() {
   }, [refresh]);
 
   useEffect(() => {
+    if (kind === "ci-run") {
+      // The CI run view has no drawers and no leaderboard histories.
+      setHistory(null);
+      setJobHistory(null);
+      return;
+    }
     if (kind === "jobs") {
       if (view.job == null) {
         setJobHistory(null);
@@ -172,6 +186,11 @@ export default function App() {
     (testId: number) => setView({ view: "tests", test: testId }),
     [setView],
   );
+  const openCiRun = useCallback(
+    (repo: string, ciRun: string, attempt: number | null) =>
+      setView({ view: "ci-run", repo, ci_run: ciRun, attempt }),
+    [setView],
+  );
 
   const visiblePage = kind === "jobs" ? jobPage : page;
 
@@ -194,6 +213,7 @@ export default function App() {
             showProject={kind === "tests"}
             onChange={(scope) => setView(scope)}
           />
+          {repo && <CiRunForm repo={repo} onOpen={(ciRun) => openCiRun(repo, ciRun, null)} />}
           <ThemeToggle />
         </div>
       </header>
@@ -210,54 +230,75 @@ export default function App() {
       {kind === "tests" && summary && <StatTiles summary={summary} />}
       {kind === "jobs" && jobSummary && <JobStatTiles summary={jobSummary} />}
 
-      <section className="rounded-xl border border-line bg-surface">
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-4 py-3">
-          <h2 className="text-[15px] font-semibold">Flakiness leaderboard</h2>
-          <LeaderboardControls
-            sort={sort}
-            showStable={showStable}
-            stableLabel={kind === "jobs" ? "Show stable jobs" : "Show stable tests"}
-            cause={cause}
-            causeCounts={summary?.category_counts ?? null}
-            search={q}
-            searchPlaceholder={kind === "jobs" ? "Job or pipeline" : "Name, classname or file"}
-            onSort={(s) => setView({ sort: s })}
-            onShowStable={(v) => setView({ showStable: v })}
-            onCause={kind === "tests" ? (c) => setView({ cause: c }) : undefined}
-            onSearch={onSearch}
+      {kind === "ci-run" ? (
+        repo && view.ci_run ? (
+          <CiRunView
+            repo={repo}
+            ciRun={view.ci_run}
+            attempt={view.attempt}
+            onAttempt={(a) => setView({ attempt: a })}
+            onOpenTest={openTestFromJob}
+            onOpenJob={openJobFromTest}
           />
-        </div>
-        <div className="overflow-x-auto">
-          {kind === "jobs" ? (
-            <JobLeaderboard
-              jobs={jobPage?.items ?? []}
-              repo={repo}
+        ) : (
+          <section className="rounded-xl border border-line bg-surface px-4 py-10 text-center text-text-2">
+            No CI run selected. Open one from a Test or Job execution, or add{" "}
+            <code className="font-mono text-text">
+              ?view=ci-run&amp;repo=owner/name&amp;ci_run=12345678
+            </code>{" "}
+            to the URL.
+          </section>
+        )
+      ) : (
+        <section className="rounded-xl border border-line bg-surface">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-4 py-3">
+            <h2 className="text-[15px] font-semibold">Flakiness leaderboard</h2>
+            <LeaderboardControls
+              sort={sort}
               showStable={showStable}
+              stableLabel={kind === "jobs" ? "Show stable jobs" : "Show stable tests"}
+              cause={cause}
+              causeCounts={summary?.category_counts ?? null}
               search={q}
-              selectedId={view.job}
-              onSelect={(id) => setView({ job: id })}
+              searchPlaceholder={kind === "jobs" ? "Job or pipeline" : "Name, classname or file"}
+              onSort={(s) => setView({ sort: s })}
+              onShowStable={(v) => setView({ showStable: v })}
+              onCause={kind === "tests" ? (c) => setView({ cause: c }) : undefined}
+              onSearch={onSearch}
             />
-          ) : (
-            <Leaderboard
-              tests={page?.items ?? []}
-              scope={{ repo, project }}
-              showStable={showStable}
-              search={q}
-              selectedId={view.test}
-              onSelect={(id) => setView({ test: id })}
-              onToggleQuarantine={onToggleQuarantine}
+          </div>
+          <div className="overflow-x-auto">
+            {kind === "jobs" ? (
+              <JobLeaderboard
+                jobs={jobPage?.items ?? []}
+                repo={repo}
+                showStable={showStable}
+                search={q}
+                selectedId={view.job}
+                onSelect={(id) => setView({ job: id })}
+              />
+            ) : (
+              <Leaderboard
+                tests={page?.items ?? []}
+                scope={{ repo, project }}
+                showStable={showStable}
+                search={q}
+                selectedId={view.test}
+                onSelect={(id) => setView({ test: id })}
+                onToggleQuarantine={onToggleQuarantine}
+              />
+            )}
+          </div>
+          {visiblePage && visiblePage.total > 0 && (
+            <Pagination
+              page={visiblePage.page}
+              pageSize={visiblePage.page_size}
+              total={visiblePage.total}
+              onPage={(p) => setView({ page: p })}
             />
           )}
-        </div>
-        {visiblePage && visiblePage.total > 0 && (
-          <Pagination
-            page={visiblePage.page}
-            pageSize={visiblePage.page_size}
-            total={visiblePage.total}
-            onPage={(p) => setView({ page: p })}
-          />
-        )}
-      </section>
+        </section>
+      )}
 
       {kind === "tests" && view.test != null && (
         <TestDrawer
@@ -266,6 +307,7 @@ export default function App() {
           onClose={closeDrawer}
           onToggleQuarantine={onToggleQuarantine}
           onOpenJob={openJobFromTest}
+          onOpenCiRun={openCiRun}
         />
       )}
       {kind === "jobs" && view.job != null && (
@@ -275,6 +317,7 @@ export default function App() {
           onClose={closeDrawer}
           onOpenTest={openTestFromJob}
           onOpenJob={(jobId) => setView({ job: jobId })}
+          onOpenCiRun={openCiRun}
         />
       )}
 
@@ -293,6 +336,37 @@ export default function App() {
         to your repo — see the README.
       </footer>
     </div>
+  );
+}
+
+/** Header entry point to the CI run view: the run id the developer reads off
+ *  the CI page, for the repo the ScopePicker already selected. */
+function CiRunForm({ repo, onOpen }: { repo: string; onOpen: (ciRun: string) => void }) {
+  const [ciRun, setCiRun] = useState("");
+  const trimmed = ciRun.trim();
+  return (
+    <form
+      className="flex items-center gap-1"
+      title={`Open a CI run of ${repo}`}
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (trimmed) onOpen(trimmed);
+      }}
+    >
+      <label className="text-xs whitespace-nowrap text-muted" htmlFor="open-ci-run">
+        Open CI run
+      </label>
+      <input
+        id="open-ci-run"
+        className="control w-24 py-0.5 text-xs"
+        value={ciRun}
+        placeholder="run id"
+        onChange={(e) => setCiRun(e.target.value)}
+      />
+      <button type="submit" className="btn px-2 py-0.5 text-xs" disabled={!trimmed}>
+        Open
+      </button>
+    </form>
   );
 }
 

@@ -91,6 +91,7 @@ const history: History = {
 
 function renderDrawer(overrides: Partial<History> = {}, onClose = vi.fn(), onQ = vi.fn()) {
   const onOpenJob = vi.fn();
+  const onOpenCiRun = vi.fn();
   render(
     <TestDrawer
       testId={7}
@@ -98,9 +99,10 @@ function renderDrawer(overrides: Partial<History> = {}, onClose = vi.fn(), onQ =
       onClose={onClose}
       onToggleQuarantine={onQ}
       onOpenJob={onOpenJob}
+      onOpenCiRun={onOpenCiRun}
     />,
   );
-  return { onClose, onQ, onOpenJob };
+  return { onClose, onQ, onOpenJob, onOpenCiRun };
 }
 
 describe("TestDrawer", () => {
@@ -163,6 +165,7 @@ describe("TestDrawer", () => {
         onClose={() => {}}
         onToggleQuarantine={() => {}}
         onOpenJob={() => {}}
+        onOpenCiRun={() => {}}
       />,
     );
     expect(screen.getByText("Loading…")).toBeInTheDocument();
@@ -173,5 +176,12 @@ describe("TestDrawer", () => {
     expect(await screen.findByText("Seen in Jobs:")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "ci.yml · test" }));
     expect(onOpenJob).toHaveBeenCalledWith(3);
+  });
+
+  it("opens the CI run view from an execution row", async () => {
+    const { onOpenCiRun } = renderDrawer();
+    // Executions carry no CI run attempt, so the view opens the latest one.
+    await userEvent.click(screen.getByRole("button", { name: "1" }));
+    expect(onOpenCiRun).toHaveBeenCalledWith("andrewthetechie/writers-app", "1", null);
   });
 });

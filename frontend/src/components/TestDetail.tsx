@@ -96,9 +96,11 @@ function ExecutionStrip({ executions }: { executions: Execution[] }) {
 export function TestDetail({
   history,
   onOpenJob,
+  onOpenCiRun,
 }: {
   history: History;
   onOpenJob: (jobId: number) => void;
+  onOpenCiRun: (repo: string, ciRun: string, attempt: number | null) => void;
 }) {
   const { executions } = history;
   const fails = executions.filter((e) => e.status === "failed" || e.status === "error").length;
@@ -197,6 +199,7 @@ export function TestDetail({
             <th className="py-1.5 pr-3 font-medium">Commit</th>
             <th className="py-1.5 pr-3 font-medium">Branch</th>
             <th className="py-1.5 pr-3 font-medium">When</th>
+            <th className="py-1.5 pr-3 font-medium">CI run</th>
             <th className="py-1.5 font-medium">Message</th>
           </tr>
         </thead>
@@ -216,6 +219,16 @@ export function TestDetail({
               <td className="font-mono">{e.commit_sha.slice(0, 10)}</td>
               <td>{e.branch}</td>
               <td>{fmtWhen(e.created_at)}</td>
+              <td>
+                <button
+                  type="button"
+                  onClick={() => onOpenCiRun(history.test.repo, e.ci_run_id, null)}
+                  className="text-link underline-offset-2 hover:underline"
+                  title="Open this CI run"
+                >
+                  {e.ci_run_id}
+                </button>
+              </td>
               <td className="min-w-40 whitespace-normal text-text-2 [overflow-wrap:anywhere]">
                 {e.message || "—"}
               </td>

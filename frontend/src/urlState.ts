@@ -1,10 +1,11 @@
 // The dashboard's view lives in the URL query string so any view can be
 // bookmarked or pasted into an issue / agent prompt.
 //   ?repo=owner/name&project=backend&test=42&view=jobs&job=3&page=2&sort=proven&stable=1
+//   ?repo=owner/name&view=ci-run&ci_run=12345678&attempt=2
 import { useCallback, useEffect, useRef, useState } from "react";
 import { FAILURE_CATEGORIES, type FailureCategory, type SortKey } from "./api";
 
-export type ViewKind = "tests" | "jobs";
+export type ViewKind = "tests" | "jobs" | "ci-run";
 
 export interface ViewState {
   repo: string | null;
@@ -16,6 +17,10 @@ export interface ViewState {
   showStable: boolean;
   cause: FailureCategory | null;
   view: ViewKind;
+  /** CI run id of the ci-run view; only meaningful with `view: "ci-run"`. */
+  ci_run: string | null;
+  /** CI run attempt, or null for the latest one the backend knows about. */
+  attempt: number | null;
   /** Leaderboard search term; "" means no search (keeps the input controlled). */
   q: string;
 }
@@ -30,6 +35,8 @@ export const DEFAULT_VIEW: ViewState = {
   showStable: false,
   cause: null,
   view: "tests",
+  ci_run: null,
+  attempt: null,
   q: "",
 };
 
@@ -58,7 +65,9 @@ export function parseViewState(search: string): ViewState {
       cause && FAILURE_CATEGORIES.includes(cause as FailureCategory)
         ? (cause as FailureCategory)
         : null,
-    view: p.get("view") === "jobs" ? "jobs" : "tests",
+    view: p.get("view") === "jobs" ? "jobs" : p.get("view") === "ci-run" ? "ci-run" : "tests",
+    ci_run: p.get("ci_run") || null,
+    attempt: positiveInt(p.get("attempt")),
     q: p.get("q") ?? "",
   };
 }
@@ -71,7 +80,14 @@ export function serializeViewState(s: ViewState): string {
     if (s.project) p.set("project", s.project);
   }
   if (s.q) p.set("q", s.q);
-  if (s.view === "jobs") p.set("view", "jobs");
+  if (s.view === "jobs") {
+    p.set("view", "jobs");
+  } else if (s.view === "ci-run") {
+    // The CI run parameters belong to this view only.
+    p.set("view", "ci-run");
+    if (s.ci_run) p.set("ci_run", s.ci_run);
+    if (s.attempt != null) p.set("attempt", String(s.attempt));
+  }
   if (s.test != null) p.set("test", String(s.test));
   if (s.job != null) p.set("job", String(s.job));
   if (s.page !== 1) p.set("page", String(s.page));

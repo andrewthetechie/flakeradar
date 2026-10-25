@@ -304,3 +304,75 @@ export const fetchReportSummary = () => getJson<ReportSummary>("/api/reports/sum
 
 export const fetchFailedReports = () =>
   getJson<ReportInfo[]>("/api/reports?status=failed&limit=20");
+
+// --- CI run failures (issue #26) -----------------------------------------
+
+export interface ReportCounts {
+  pending: number;
+  processed: number;
+  failed: number;
+}
+
+/** One failing (Test, Run) pair of a CI run attempt. */
+export interface CiRunTestFailure {
+  test_id: number;
+  project: string;
+  suite: string;
+  classname: string;
+  name: string;
+  run_id: number;
+  ci_job_id: string | null;
+  /** The Test's last Execution in this Run: failed | error | passed (on retry) | skipped. */
+  status: string;
+  /** Failed + error Executions of this Test in this Run. */
+  failed_attempts: number;
+  failure_category: FailureCategory | null;
+  message: string;
+  tier: Tier;
+  flakiness_score: number;
+  confirmed_flake_count: number;
+  clean_streak: number;
+  quarantined: boolean;
+  github_issue_number: number | null;
+  github_issue_url: string | null;
+}
+
+export interface CiRunFailedJob {
+  job_id: number;
+  pipeline: string;
+  name: string;
+  ci_job_id: string;
+  url: string;
+  outcome: "explained" | "unexplained";
+  /** A summary Job is explained by a failed non-summary Job, not by a test. */
+  summary: boolean;
+  tier: Tier;
+  flakiness_score: number;
+  confirmed_flake_count: number;
+  clean_streak: number;
+  github_issue_number: number | null;
+  github_issue_url: string | null; // only when the Pipeline's provider is github
+}
+
+export interface CiRunFailures {
+  repo: string;
+  ci_run_id: string;
+  ci_run_attempt: number;
+  flake_threshold: number;
+  /** Both Report kinds, this CI run attempt only. */
+  reports: ReportCounts;
+  /** (Test, Run) pairs before the cap. */
+  total_failures: number;
+  truncated: boolean;
+  failures: CiRunTestFailure[];
+  failed_jobs: CiRunFailedJob[];
+}
+
+/** `attempt` omitted or null means the latest attempt FlakeRadar has reports for. */
+export const fetchCiRunFailures = (repo: string, ciRun: string, attempt?: number | null) => {
+  const params = new URLSearchParams({ repo });
+  if (attempt != null) params.set("ci_run_attempt", String(attempt));
+  return getJson<CiRunFailures>(
+    withQuery(`/api/ci-runs/${encodeURIComponent(ciRun)}/failures`, params),
+  );
+};

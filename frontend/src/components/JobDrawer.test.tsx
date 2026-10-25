@@ -76,6 +76,7 @@ const history: JobHistory = {
 function renderDrawer(overrides: Partial<JobHistory> = {}, onClose = vi.fn()) {
   const onOpenTest = vi.fn();
   const onOpenJob = vi.fn();
+  const onOpenCiRun = vi.fn();
   render(
     <JobDrawer
       jobId={3}
@@ -83,9 +84,10 @@ function renderDrawer(overrides: Partial<JobHistory> = {}, onClose = vi.fn()) {
       onClose={onClose}
       onOpenTest={onOpenTest}
       onOpenJob={onOpenJob}
+      onOpenCiRun={onOpenCiRun}
     />,
   );
-  return { onClose, onOpenTest, onOpenJob };
+  return { onClose, onOpenTest, onOpenJob, onOpenCiRun };
 }
 
 describe("JobDrawer", () => {
@@ -108,6 +110,12 @@ describe("JobDrawer", () => {
     expect(screen.getByText("backend · test_login (failed)")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "backend · test_login (failed)" }));
     expect(onOpenTest).toHaveBeenCalledWith(9);
+  });
+
+  it("opens the CI run view from an execution row, with its attempt", async () => {
+    const { onOpenCiRun } = renderDrawer();
+    await userEvent.click(screen.getByRole("button", { name: "run 2" }));
+    expect(onOpenCiRun).toHaveBeenCalledWith("acme/app", "2", 1);
   });
 
   it("shows the summary badge and buttons for the explaining sibling Jobs", async () => {
