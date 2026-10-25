@@ -179,11 +179,13 @@ async def list_tests(
     file: str | None = None,
     category: FailureCategory | None = None,
     q: str | None = None,
+    quarantined: bool | None = None,
+    has_issue: bool | None = None,
 ) -> schemas.TestPage:
     stmt = _scoped(tests_select(), scope)
     if flaky_only:
         stmt = stmt.where(TestCase.flakiness_score >= threshold)
-    elif not include_stable and not q:
+    elif not include_stable and not q and quarantined is not True:
         stmt = stmt.where(TestCase.flakiness_score > 0)
     if file:
         stmt = stmt.where(TestCase.file.ilike(f"%{escape_like(file)}%", escape="\\"))
@@ -191,6 +193,12 @@ async def list_tests(
         stmt = stmt.where(TestCase.failure_category == category)
     if q:
         stmt = stmt.where(test_search_clause(q))
+    if quarantined is not None:
+        stmt = stmt.where(TestCase.quarantined.is_(quarantined))
+    if has_issue is not None:
+        stmt = stmt.where(
+            TestCase.github_issue_number.is_not(None) if has_issue else TestCase.github_issue_number.is_(None)
+        )
 
     total = (await db.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one()
 

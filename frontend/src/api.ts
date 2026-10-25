@@ -2,6 +2,8 @@
 
 export type Tier = "flaky" | "suspect" | "stable";
 export type SortKey = "score" | "last_seen" | "proven";
+/** Issue link filter: Tests with a linked GitHub issue, or without one. */
+export type IssueFilter = "linked" | "none";
 export type FailureCategory = "network" | "environment" | "timing" | "assertion" | "other";
 export const FAILURE_CATEGORIES: readonly FailureCategory[] = [
   "network",
@@ -120,6 +122,8 @@ export interface TestQuery extends Scope {
   sort: SortKey;
   showStable: boolean;
   category: FailureCategory | null;
+  quarantined: boolean;
+  issue: IssueFilter | null;
   q: string;
 }
 
@@ -155,6 +159,8 @@ export function fetchTests(q: TestQuery): Promise<TestPage> {
   params.set("sort", q.sort);
   if (q.showStable) params.set("include_stable", "true");
   if (q.category) params.set("category", q.category);
+  if (q.quarantined) params.set("quarantined", "true");
+  if (q.issue) params.set("has_issue", String(q.issue === "linked"));
   if (q.q) params.set("q", q.q);
   return getJson<TestPage>(withQuery("/api/tests", params));
 }

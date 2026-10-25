@@ -193,6 +193,55 @@ async def test_q_filter_rejects_overlong_query(client, db):
     assert (await client.get(f"/api/tests?q={'a' * 201}")).status_code == 422
 
 
+async def _seed_quarantine(db):
+    """acme/app/backend: a stable quarantined Test (issue 3), a stable one, a quarantined
+    flaky one and a flaky one with an issue link (4)."""
+    proj = await make_project(db, "acme/app", "backend")
+    await make_test_case(
+        db, proj, name="quarantined_stable", flakiness_score=0.0, quarantined=True, github_issue_number=3
+    )
+    await make_test_case(db, proj, name="stable", flakiness_score=0.0)
+    await make_test_case(db, proj, name="quarantined_flaky", flakiness_score=0.8, quarantined=True)
+    await make_test_case(db, proj, name="flaky", flakiness_score=0.6, github_issue_number=4)
+    await db.commit()
+
+
+
+async def test_quarantined_filter_includes_stable_tests(client, db):
+    await _seed_quarantine(db)
+    page = (await client.get("/api/tests?repo=acme/app&quarantined=true")).json()
+    assert [t["name"] for t in page["items"]] == ["quarantined_flaky", "quarantined_stable"]
+    assert page["total"] == 2
+    # Absent param is today's behavior: stable Tests hidden, quarantined ones not special.
+    default = (await client.get("/api/tests?repo=acme/app")).json()
+    assert [t["name"] for t in default["items"]] == ["quarantined_flaky", "flaky"]
+
+
+async def test_quarantined_false_excludes_quarantined_tests(client, db):
+    await _seed_quarantine(db)
+    page = (await client.get("/api/tests?repo=acme/app&quarantined=false")).json()
+    assert [t["name"] for t in page["items"]] == ["flaky"]  # stable still hidden by default
+    with_stable = (await client.get("/api/tests?repo=acme/app&quarantined=false&include_stable=true")).json()
+    assert [t["name"] for t in with_stable["items"]] == ["flaky", "stable"]
+
+
+async def test_has_issue_filter(client, db):
+    await _seed_quarantine(db)
+    linked = (await client.get("/api/tests?repo=acme/app&has_issue=true&include_stable=true")).json()
+    assert [t["name"] for t in linked["items"]] == ["flaky", "quarantined_stable"]
+    unlinked = (await client.get("/api/tests?repo=acme/app&has_issue=false&include_stable=true")).json()
+    assert [t["name"] for t in unlinked["items"]] == ["quarantined_flaky", "stable"]
+
+
+async def test_quarantined_and_has_issue_compose(client, db):
+    await _seed_quarantine(db)
+    page = (await client.get("/api/tests?repo=acme/app&quarantined=true&has_issue=false")).json()
+    assert [t["name"] for t in page["items"]] == ["quarantined_flaky"]
+    assert page["total"] == 1
+    linked = (await client.get("/api/tests?repo=acme/app&quarantined=true&has_issue=true")).json()
+    assert [t["name"] for t in linked["items"]] == ["quarantined_stable"]
+
+
 async def test_q_filter_composes_with_category(client, db):
     proj = await make_project(db, "acme/app", "backend")
     # Classnames carry no "d" so q=D can only hit the name.

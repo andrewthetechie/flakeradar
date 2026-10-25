@@ -679,7 +679,7 @@ and the MCP server need the token.
 | `GET /api/reports/summary` | none | `{pending, failed}` |
 | `POST /api/reports/{id}/retry` | `X-API-Key` | Put a failed report back in the queue. |
 | `GET /api/repos` | none | Repos with their projects. |
-| `GET /api/tests?repo=&project=&include_stable=&sort=&page=&page_size=&file=&category=&q=` | none | The paginated leaderboard. `sort` is `score`, `last_seen` or `proven`. `category` filters by likely cause. `q` (max 200 chars) filters by literal substring over name, classname or file, and includes stable tests. |
+| `GET /api/tests?repo=&project=&include_stable=&sort=&page=&page_size=&file=&category=&q=&quarantined=&has_issue=` | none | The paginated leaderboard. `sort` is `score`, `last_seen` or `proven`. `category` filters by likely cause. `q` (max 200 chars) filters by literal substring over name, classname or file, and includes stable tests. `quarantined=true` lists every quarantined test including stable ones; `has_issue` filters by linked GitHub issue. |
 | `GET /api/tests/{id}/history?limit=` | none | One test: location and permalink, last failing commit, executions with failure details, the jobs that its runs came from, `score_history` (90 days), `clean_streak` and `trend`. |
 | `GET /api/jobs?repo=&include_stable=&sort=&page=&page_size=&q=` | none | The jobs leaderboard for a repo, worst first. `q` (max 200 chars) filters by literal substring over job or pipeline name, and includes stable jobs. |
 | `GET /api/jobs/summary?repo=` | none | Job summary tiles. |

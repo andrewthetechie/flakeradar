@@ -12,6 +12,8 @@ describe("view state in the URL", () => {
       sort: "proven" as const,
       showStable: true,
       cause: null,
+      quarantined: false,
+      issue: null,
       view: "tests" as const,
       ci_run: null,
       attempt: null,
@@ -34,6 +36,8 @@ describe("view state in the URL", () => {
       sort: "score" as const,
       showStable: false,
       cause: null,
+      quarantined: false,
+      issue: null,
       view: "jobs" as const,
       ci_run: null,
       attempt: null,
@@ -56,6 +60,8 @@ describe("view state in the URL", () => {
       sort: "score" as const,
       showStable: false,
       cause: null,
+      quarantined: false,
+      issue: null,
       view: "ci-run" as const,
       ci_run: "12345678",
       attempt: 2,
@@ -101,6 +107,21 @@ describe("view state in the URL", () => {
       "?stable=1&cause=network",
     );
   });
+
+  it("round-trips the quarantined and issue filters", () => {
+    const view = { ...DEFAULT_VIEW, repo: "a/b", quarantined: true, issue: "linked" as const };
+    expect(serializeViewState(view)).toBe("?repo=a%2Fb&quarantined=1&issue=linked");
+    expect(parseViewState("?repo=a%2Fb&quarantined=1&issue=linked")).toEqual(view);
+    expect(serializeViewState({ ...DEFAULT_VIEW, issue: "none" })).toBe("?issue=none");
+  });
+
+  it("ignores an invalid issue filter and quarantined values other than 1", () => {
+    expect(parseViewState("?issue=bogus").issue).toBeNull();
+    expect(parseViewState("?issue=true").issue).toBeNull();
+    expect(parseViewState("?quarantined=0").quarantined).toBe(false);
+    expect(parseViewState("?quarantined=true").quarantined).toBe(false);
+    expect(parseViewState("").quarantined).toBe(false);
+  });
 });
 
 describe("applyPatch", () => {
@@ -119,6 +140,8 @@ describe("applyPatch", () => {
     expect(applyPatch(base, { sort: "last_seen" }).page).toBe(1);
     expect(applyPatch(base, { showStable: true }).page).toBe(1);
     expect(applyPatch(base, { cause: "timing" }).page).toBe(1);
+    expect(applyPatch(base, { quarantined: true }).page).toBe(1);
+    expect(applyPatch(base, { issue: "linked" }).page).toBe(1);
     expect(applyPatch(base, { q: "login" }).page).toBe(1);
     expect(applyPatch(base, { test: 9 }).page).toBe(4);
     expect(applyPatch(base, { page: 5 }).page).toBe(5);

@@ -42,6 +42,8 @@ async def list_tests(
     file: str | None = Query(default=None, max_length=1024),
     category: FailureCategory | None = Query(default=None),
     q: str | None = Query(default=None, max_length=200),
+    quarantined: bool | None = Query(default=None),
+    has_issue: bool | None = Query(default=None),
     db: AsyncSession = Depends(get_db),
 ):
     return await queries.list_tests(
@@ -55,6 +57,8 @@ async def list_tests(
         file=file,
         category=category,
         q=q,
+        quarantined=quarantined,
+        has_issue=has_issue,
     )
 
 
