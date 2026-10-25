@@ -8,16 +8,23 @@ leader's process or connection dies.
 The lock is session-level and SURVIVES a connection being returned to the
 pool, so the leader keeps one dedicated AUTOCOMMIT connection for as long as
 it leads and unlocks explicitly before closing it.
+
+``GitHubWorker`` is the second background task: it owns every GitHub API call
+(filing issues, syncing closed issue links) so none of them can stall Report
+processing. ``ReportWorker`` will hand it the outcome of each processed Report
+instead of awaiting it; that wiring is the next step.
 """
 
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 
+import httpx
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError, InvalidRequestError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, AsyncSession, async_sessionmaker
 
+from . import github_integration
 from .db import WORKER_LOCK_KEY
 from .processing import ProcessOutcome, process_next
 
@@ -25,6 +32,88 @@ logger = logging.getLogger("flakeradar.worker")
 
 OnProcessed = Callable[[ProcessOutcome], Awaitable[None]]
 Prune = Callable[[], Awaitable[object]]
+
+
+class GitHubWorker:
+    """Leader-only GitHub task: files issues for queued Report outcomes and re-arms closed links.
+
+    Every GitHub call runs here, never in the processor loop, so a slow or
+    hanging GitHub API cannot delay Report processing. ``enqueue`` is a
+    non-blocking ``put_nowait``; the worker's own task drains the queue and runs
+    ``sync_closed_issues`` on ``sync_interval_seconds``.
+
+    Queue contents live in this process only: if it dies, outcomes that were
+    queued but not filed are lost. That is acceptable — the next Report that
+    touches the Test or Job files it, the same as when GitHub cannot be reached.
+    """
+
+    def __init__(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        *,
+        sync_interval_seconds: float = 3600.0,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
+        self._session_factory = session_factory
+        self._sync_interval_seconds = sync_interval_seconds
+        self._transport = transport
+        self._queue: asyncio.Queue[ProcessOutcome] = asyncio.Queue()
+        self._last_sync: float | None = None  # loop.time() of the last sync
+        self._task: asyncio.Task | None = None
+
+    @property
+    def is_running(self) -> bool:
+        return self._task is not None and not self._task.done()
+
+    async def start(self) -> None:
+        self._task = asyncio.create_task(self._run(), name="flakeradar-github-worker")
+
+    async def stop(self) -> None:
+        if self._task is not None:
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+            self._task = None
+
+    async def enqueue(self, outcome: ProcessOutcome) -> None:
+        """Hand a processed Report to the GitHub task. Never waits for an API call."""
+        self._queue.put_nowait(outcome)
+
+    def _seconds_until_sync(self) -> float | None:
+        """Seconds until the next sync, or None when one is due right now."""
+        if self._last_sync is None:
+            return None
+        elapsed = asyncio.get_running_loop().time() - self._last_sync
+        if elapsed >= self._sync_interval_seconds:
+            return None
+        return self._sync_interval_seconds - elapsed
+
+    async def _file(self, outcome: ProcessOutcome) -> None:
+        try:
+            await github_integration.on_report_processed(self._session_factory, outcome, transport=self._transport)
+        except Exception:
+            logger.exception("GitHub issue filing failed for Report %s", outcome.report_id)
+
+    async def _sync(self) -> None:
+        self._last_sync = asyncio.get_running_loop().time()
+        try:
+            await github_integration.sync_closed_issues(self._session_factory, transport=self._transport)
+        except Exception:
+            logger.exception("GitHub issue-state sync failed; will retry next interval")
+
+    async def _run(self) -> None:
+        while True:
+            seconds = self._seconds_until_sync()
+            if seconds is None:
+                await self._sync()
+                continue
+            try:
+                outcome = await asyncio.wait_for(self._queue.get(), seconds)
+            except TimeoutError:
+                continue  # nothing queued before the sync came due
+            await self._file(outcome)
 
 
 class ReportWorker:
