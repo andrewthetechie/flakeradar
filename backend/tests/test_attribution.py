@@ -1,6 +1,7 @@
 """Job attribution: linked JUnit reports explain Job failures; only unexplained count."""
 
 from app.attribution import explained_ci_job_ids, unexplained_failure_counts
+from app.config import Settings
 from app.models import Job, Repo, TestRun
 from app.processing import _job_history, process_next, rescore_jobs
 from sqlalchemy import select
@@ -214,6 +215,56 @@ async def test_unexplained_failure_breaks_clean_streak(db):
     await db.commit()
     await db.refresh(job)
     assert job.clean_streak == 1
+
+
+async def test_old_explained_failures_beyond_the_window_do_not_change_the_score(db, monkeypatch):
+    monkeypatch.setattr("app.processing.get_settings", lambda: Settings(score_window=3))
+    proj = await make_project(db, "acme/app", "backend")
+    pipe = await make_pipeline(db, "acme/app")
+    twin = await make_job(db, pipe, name="recent-only")
+    full = await make_job(db, pipe, name="with-old-explained")
+    # 6 old explained failures on `full`: a failing Test run with the same ci_job_id explains each.
+    tc = await make_test_case(db, proj)
+    for i in range(6):
+        await make_job_execution(db, full, status="failed", ci_job_id=f"OLD{i}", branch="main", commit_sha=f"o{i}")
+        run = await make_run(db, proj, ci_job_id=f"OLD{i}")
+        await make_execution(db, tc, run, status="failed")
+    # Both Jobs then share the same newest 3 (unexplained) rows: failed, passed, failed.
+    for job in (twin, full):
+        for i, status in enumerate(["failed", "passed", "failed"]):
+            await make_job_execution(
+                db, job, status=status, ci_job_id=f"NEW{job.id}-{i}", branch="main", commit_sha=f"n{i}"
+            )
+    await db.commit()
+
+    await rescore_jobs(db, [twin.id, full.id])
+    await db.commit()
+    await db.refresh(twin)
+    await db.refresh(full)
+    assert full.flakiness_score == twin.flakiness_score > 0.0
+    assert full.confirmed_flake_count == twin.confirmed_flake_count
+    assert full.clean_streak == twin.clean_streak
+    assert await unexplained_failure_counts(db, [twin.id, full.id], window=3) == {twin.id: 2, full.id: 2}
+
+
+async def test_job_default_branch_window_survives_newer_feature_rows(db, monkeypatch):
+    monkeypatch.setattr("app.processing.get_settings", lambda: Settings(score_window=3))
+    pipe = await make_pipeline(db, "acme/app")
+    repo = (await db.execute(select(Repo))).scalar_one()
+    repo.default_branch = "main"
+    await db.flush()
+    job = await make_job(db, pipe, name="e2e")
+    for i, status in enumerate(["failed", "passed", "failed"]):
+        await make_job_execution(db, job, status=status, ci_job_id=f"M{i}", branch="main", commit_sha=f"m{i}")
+    for i in range(10):
+        await make_job_execution(db, job, status="passed", ci_job_id=f"F{i}", branch="feat", commit_sha=f"f{i}")
+    await db.commit()
+
+    await rescore_jobs(db, [job.id])
+    await db.commit()
+    await db.refresh(job)
+    # The 3 newest main flips still score despite 10 newer feat rows.
+    assert job.flakiness_score > 0.0
 
 
 # --- summary Jobs (issue #9) --------------------------------------------
