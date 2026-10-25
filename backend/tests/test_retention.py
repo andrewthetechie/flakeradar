@@ -258,6 +258,37 @@ async def test_run_prune_deletes_in_batches(db, session_factory, monkeypatch):
     assert row.clean_streak == 0
 
 
+async def test_run_prune_drains_both_score_history_tables(db, session_factory, monkeypatch):
+    now = utcnow()
+    proj = await make_project(db)
+    tc = await make_test_case(db, proj)
+    pipe = await make_pipeline(db)
+    job = await make_job(db, pipe)
+    for i in range(5):  # composite primary keys require distinct days
+        await make_test_score(db, tc, (now - timedelta(days=400 + i)).date(), 0.5)
+        await make_job_score(db, job, (now - timedelta(days=400 + i)).date(), 0.5)
+    await db.commit()
+
+    monkeypatch.setattr(retention, "PRUNE_BATCH", 2)
+    rounds: list[int] = []
+    real_prune = retention.prune
+
+    async def counting_prune(session, **kwargs):
+        rounds.append(1)
+        return await real_prune(session, **kwargs)
+
+    monkeypatch.setattr(retention, "prune", counting_prune)
+
+    result = await retention.run_prune(session_factory)
+
+    # Each round deletes a full batch from BOTH history tables, so the summed count would
+    # never equal PRUNE_BATCH; the loop must check the tables separately.
+    assert len(rounds) == 3  # (2, 2) + (2, 2) + (1, 1) rows
+    assert result.score_history == 10
+    assert (await db.execute(select(func.count()).select_from(TestScoreHistory))).scalar() == 0
+    assert (await db.execute(select(func.count()).select_from(JobScoreHistory))).scalar() == 0
+
+
 async def test_run_prune_stops_at_time_budget(db, session_factory, monkeypatch):
     now = utcnow()
     old = now - timedelta(days=100)

@@ -50,6 +50,9 @@ class PruneResult:
     runs: int
     job_executions: int
     score_history: int = 0
+    # Internal per-table history counts, used only by run_prune's continuation check.
+    test_score_history: int = 0
+    job_score_history: int = 0
 
 
 async def prune(
@@ -171,6 +174,8 @@ async def prune(
         runs=runs.rowcount,
         job_executions=job_executions.rowcount,
         score_history=score_history.rowcount + job_score_history.rowcount,
+        test_score_history=score_history.rowcount,
+        job_score_history=job_score_history.rowcount,
     )
 
 
@@ -201,11 +206,18 @@ async def run_prune(session_factory: async_sessionmaker[AsyncSession]) -> PruneR
             score_history=totals.score_history + result.score_history,
         )
         # A full batch means that table may have more expired rows; an all-empty round
-        # deletes nothing, so the loop always terminates. A summed score history count
-        # equal to the batch only costs one extra empty round.
+        # deletes nothing, so the loop always terminates. The two score history tables
+        # are checked separately: their summed total would miss a full batch in each.
         if not any(
             count == PRUNE_BATCH
-            for count in (result.reports, result.executions, result.runs, result.job_executions, result.score_history)
+            for count in (
+                result.reports,
+                result.executions,
+                result.runs,
+                result.job_executions,
+                result.test_score_history,
+                result.job_score_history,
+            )
         ):
             break
         if _monotonic() >= deadline:
