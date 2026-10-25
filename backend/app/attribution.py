@@ -245,8 +245,13 @@ def job_execution_window_ids(job_ids: Sequence[int], window: int, *, include_def
     cost tracks the window, not the Job's retained history. With
     `include_default_branch`, also the newest `window` per Job on its Repo's
     Default branch (a NULL Default branch matches every branch), UNION-deduped:
-    the id set the old (rn_all <= window) OR (rn_def <= window) filter selected.
-    Rows are (job_id, id); `job_ids` must be non-empty and within one chunk.
+    the newest `window` rows overall plus the newest `window` on the Default
+    branch. Unlike the old (rn_all | rn_def) filter it no longer admits the
+    newest `window` off-Default rows beyond the overall window; nothing consumed
+    them (scoring reads flips on the Default branch only, Proven flakes from the
+    overall window, and with an unknown Default branch the old on_default
+    matched every row anyway). Rows are (job_id, id); `job_ids` must be
+    non-empty and within one chunk.
     """
     windowed = _window_ids(job_ids, window, key="je_window_overall", on_default=False)
     if not include_default_branch:
