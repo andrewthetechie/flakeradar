@@ -41,6 +41,7 @@ async def list_tests(
     page_size: int = Query(default=50, ge=1, le=100),
     file: str | None = Query(default=None, max_length=1024),
     category: FailureCategory | None = Query(default=None),
+    q: str | None = Query(default=None, max_length=200),
     db: AsyncSession = Depends(get_db),
 ):
     return await queries.list_tests(
@@ -53,6 +54,7 @@ async def list_tests(
         page_size=page_size,
         file=file,
         category=category,
+        q=q,
     )
 
 

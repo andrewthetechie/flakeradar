@@ -17,6 +17,7 @@ export function Leaderboard({
   tests,
   scope,
   showStable,
+  search = "",
   selectedId,
   onSelect,
   onToggleQuarantine,
@@ -24,6 +25,7 @@ export function Leaderboard({
   tests: TestCase[];
   scope: Scope;
   showStable: boolean;
+  search?: string;
   selectedId: number | null;
   onSelect: (id: number) => void;
   onToggleQuarantine: (t: TestCase) => void;
@@ -31,7 +33,9 @@ export function Leaderboard({
   if (tests.length === 0) {
     return (
       <div className="px-4 py-10 text-center text-text-2">
-        {showStable ? (
+        {search ? (
+          <>No tests match.</>
+        ) : showStable ? (
           <>
             No test data yet. POST a JUnit XML report to{" "}
             <code className="font-mono text-text">/api/ingest</code> — see the README for the

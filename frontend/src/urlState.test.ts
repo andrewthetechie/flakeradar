@@ -13,6 +13,7 @@ describe("view state in the URL", () => {
       showStable: true,
       cause: null,
       view: "tests" as const,
+      q: "",
     };
     const search = serializeViewState(view);
     expect(search).toBe(
@@ -32,12 +33,21 @@ describe("view state in the URL", () => {
       showStable: false,
       cause: null,
       view: "jobs" as const,
+      q: "",
     };
     const search = serializeViewState(view);
     expect(search).toBe(
       "?repo=andrewthetechie%2Fwriters-app&project=backend&view=jobs&job=3&page=2",
     );
     expect(parseViewState(search)).toEqual(view);
+  });
+
+  it("round-trips a search term, omitted when empty", () => {
+    const view = { ...DEFAULT_VIEW, q: "login", page: 2 };
+    expect(serializeViewState(view)).toBe("?q=login&page=2");
+    expect(parseViewState("?q=login&page=2")).toEqual(view);
+    expect(serializeViewState({ ...DEFAULT_VIEW, q: "" })).toBe("");
+    expect(parseViewState("?q=").q).toBe("");
   });
 
   it("omits defaults and parses an empty query to the default view", () => {
@@ -76,6 +86,7 @@ describe("applyPatch", () => {
     expect(applyPatch(base, { sort: "last_seen" }).page).toBe(1);
     expect(applyPatch(base, { showStable: true }).page).toBe(1);
     expect(applyPatch(base, { cause: "timing" }).page).toBe(1);
+    expect(applyPatch(base, { q: "login" }).page).toBe(1);
     expect(applyPatch(base, { test: 9 }).page).toBe(4);
     expect(applyPatch(base, { page: 5 }).page).toBe(5);
   });

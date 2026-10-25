@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { FAILURE_CATEGORIES, type FailureCategory, type SortKey } from "../api";
 
 const SORT_LABELS: Record<SortKey, string> = {
@@ -6,27 +7,58 @@ const SORT_LABELS: Record<SortKey, string> = {
   proven: "Proven flakes",
 };
 
+/** Keystrokes wait this long before the search hits the API. */
+const SEARCH_DEBOUNCE_MS = 300;
+
 export function LeaderboardControls({
   sort,
   showStable,
   stableLabel = "Show stable tests",
   cause,
   causeCounts,
+  search,
+  searchPlaceholder,
   onSort,
   onShowStable,
   onCause,
+  onSearch,
 }: {
   sort: SortKey;
   showStable: boolean;
   stableLabel?: string;
   cause?: FailureCategory | null;
   causeCounts?: Record<FailureCategory, number> | null;
+  search: string;
+  searchPlaceholder?: string;
   onSort: (sort: SortKey) => void;
   onShowStable: (show: boolean) => void;
   onCause?: (cause: FailureCategory | null) => void;
+  onSearch: (q: string) => void;
 }) {
+  // Local text so typing stays instant; the URL (and a fetch) only sees the
+  // term once the keystrokes have been quiet for SEARCH_DEBOUNCE_MS.
+  const [text, setText] = useState(search);
+  // Keep in sync with the URL for back / forward navigation.
+  useEffect(() => setText(search), [search]);
+  useEffect(() => {
+    if (text === search) return;
+    const timer = setTimeout(() => onSearch(text), SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [text, search, onSearch]);
+
   return (
     <div className="flex flex-wrap items-center gap-4 text-xs text-text-2">
+      <label className="flex items-center gap-2">
+        Search
+        <input
+          type="search"
+          className="control py-0.5 text-xs"
+          value={text}
+          maxLength={200}
+          placeholder={searchPlaceholder}
+          onChange={(e) => setText(e.target.value)}
+        />
+      </label>
       <label className="flex items-center gap-2">
         Sort by
         <select

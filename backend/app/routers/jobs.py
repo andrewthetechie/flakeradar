@@ -29,6 +29,7 @@ async def list_jobs(
     sort: queries.SortKey = Query(default="score"),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=100),
+    q: str | None = Query(default=None, max_length=200),
     db: AsyncSession = Depends(get_db),
 ):
     return await queries.list_jobs(
@@ -39,6 +40,7 @@ async def list_jobs(
         sort=sort,
         page=page,
         page_size=page_size,
+        q=q,
     )
 
 

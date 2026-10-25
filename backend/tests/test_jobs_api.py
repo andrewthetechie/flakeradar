@@ -168,3 +168,40 @@ async def test_job_trend_from_history_and_score_history(client, db):
         (today - timedelta(days=20)).isoformat(),
         today.isoformat(),
     ]
+
+
+async def _seed_jobs_q(db):
+    """ci.yml: build-thing 0.6, lint-fast 0.0 (stable). nightly.yml: e2e 0.3."""
+    ci = await make_pipeline(db, "acme/app", ".github/workflows/ci.yml")
+    await make_job(db, ci, name="build-thing", flakiness_score=0.6)
+    await make_job(db, ci, name="lint-fast", flakiness_score=0.0)
+    nightly = await make_pipeline(db, "acme/app", ".github/workflows/nightly.yml")
+    await make_job(db, nightly, name="e2e", flakiness_score=0.3)
+    await db.commit()
+
+
+async def test_q_filter_matches_job_name_including_stable(client, db):
+    await _seed_jobs_q(db)
+    page = (await client.get("/api/jobs?repo=acme/app&q=FAST")).json()  # no include_stable=true
+    assert [j["name"] for j in page["items"]] == ["lint-fast"]
+    assert page["total"] == 1
+
+
+async def test_q_filter_matches_pipeline_name(client, db):
+    await _seed_jobs_q(db)
+    page = (await client.get("/api/jobs?repo=acme/app&q=nightly")).json()
+    assert [j["name"] for j in page["items"]] == ["e2e"]
+
+
+async def test_q_filter_is_literal_and_length_bounded(client, db):
+    await _seed_jobs_q(db)
+    assert (await client.get("/api/jobs?repo=acme/app&q=%25")).json()["total"] == 0  # "%" is literal
+    assert (await client.get("/api/jobs?repo=acme/app&q=")).json()["total"] == 2  # empty q: stable excluded
+    assert (await client.get(f"/api/jobs?repo=acme/app&q={'a' * 201}")).status_code == 422
+
+
+async def test_q_filter_composes_with_sort(client, db):
+    await _seed_jobs_q(db)
+    page = (await client.get("/api/jobs?repo=acme/app&q=fast&sort=last_seen")).json()
+    assert [j["name"] for j in page["items"]] == ["lint-fast"]
+    assert page["page"] == 1

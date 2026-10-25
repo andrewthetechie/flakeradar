@@ -82,4 +82,20 @@ describe("Leaderboard", () => {
     );
     expect(screen.getByText(/No flaky or suspect tests in this view/)).toBeInTheDocument();
   });
+
+  it("says no tests match when a search returns nothing", () => {
+    render(
+      <Leaderboard
+        tests={[]}
+        scope={{ repo: null, project: null }}
+        showStable={false}
+        search="nope"
+        selectedId={null}
+        onSelect={() => {}}
+        onToggleQuarantine={() => {}}
+      />,
+    );
+    expect(screen.getByText("No tests match.")).toBeInTheDocument();
+    expect(screen.queryByText(/Tick “Show stable tests”/)).toBeNull();
+  });
 });

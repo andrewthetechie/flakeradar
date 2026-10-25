@@ -16,6 +16,8 @@ export interface ViewState {
   showStable: boolean;
   cause: FailureCategory | null;
   view: ViewKind;
+  /** Leaderboard search term; "" means no search (keeps the input controlled). */
+  q: string;
 }
 
 export const DEFAULT_VIEW: ViewState = {
@@ -28,6 +30,7 @@ export const DEFAULT_VIEW: ViewState = {
   showStable: false,
   cause: null,
   view: "tests",
+  q: "",
 };
 
 const SORTS: readonly SortKey[] = ["score", "last_seen", "proven"];
@@ -56,6 +59,7 @@ export function parseViewState(search: string): ViewState {
         ? (cause as FailureCategory)
         : null,
     view: p.get("view") === "jobs" ? "jobs" : "tests",
+    q: p.get("q") ?? "",
   };
 }
 
@@ -66,6 +70,7 @@ export function serializeViewState(s: ViewState): string {
     p.set("repo", s.repo);
     if (s.project) p.set("project", s.project);
   }
+  if (s.q) p.set("q", s.q);
   if (s.view === "jobs") p.set("view", "jobs");
   if (s.test != null) p.set("test", String(s.test));
   if (s.job != null) p.set("job", String(s.job));
@@ -98,7 +103,7 @@ export function applyPatch(prev: ViewState, patch: Partial<ViewState>): ViewStat
   if (patch.test != null) next.job = null;
   if (patch.job != null) next.test = null;
 
-  const relisted = (["repo", "project", "sort", "showStable", "cause"] as const).some(
+  const relisted = (["repo", "project", "sort", "showStable", "cause", "q"] as const).some(
     (k) => k in patch && patch[k] !== prev[k],
   );
   if (relisted && !("page" in patch)) next.page = 1;

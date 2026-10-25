@@ -82,4 +82,19 @@ describe("JobLeaderboard", () => {
     );
     expect(screen.getByText(/No flaky or suspect jobs in this view/)).toBeInTheDocument();
   });
+
+  it("says no jobs match when a search returns nothing", () => {
+    render(
+      <JobLeaderboard
+        jobs={[]}
+        repo="acme/app"
+        showStable={false}
+        search="nope"
+        selectedId={null}
+        onSelect={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("No jobs match.")).toBeInTheDocument();
+    expect(screen.queryByText(/Tick “Show stable jobs”/)).toBeNull();
+  });
 });

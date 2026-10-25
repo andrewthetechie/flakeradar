@@ -120,6 +120,7 @@ export interface TestQuery extends Scope {
   sort: SortKey;
   showStable: boolean;
   category: FailureCategory | null;
+  q: string;
 }
 
 async function getJson<T>(url: string): Promise<T> {
@@ -154,6 +155,7 @@ export function fetchTests(q: TestQuery): Promise<TestPage> {
   params.set("sort", q.sort);
   if (q.showStable) params.set("include_stable", "true");
   if (q.category) params.set("category", q.category);
+  if (q.q) params.set("q", q.q);
   return getJson<TestPage>(withQuery("/api/tests", params));
 }
 
@@ -243,6 +245,7 @@ export interface JobQuery {
   pageSize: number;
   sort: SortKey;
   showStable: boolean;
+  q: string;
 }
 
 export function fetchJobs(q: JobQuery): Promise<JobPage> {
@@ -252,6 +255,7 @@ export function fetchJobs(q: JobQuery): Promise<JobPage> {
   params.set("page_size", String(q.pageSize));
   params.set("sort", q.sort);
   if (q.showStable) params.set("include_stable", "true");
+  if (q.q) params.set("q", q.q);
   return getJson<JobPage>(withQuery("/api/jobs", params));
 }
 
