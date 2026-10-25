@@ -9,14 +9,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastmcp.utilities.lifespan import combine_lifespans
 
-from . import github_integration
 from .config import DEFAULT_INSECURE_TOKEN, assert_secure_token, get_settings
 from .db import SessionLocal, engine
 from .mcp_server import build_mcp
 from .migrate import run_migrations
 from .retention import run_prune
 from .routers import ci_runs, jobs, reports, tests
-from .worker import ReportWorker
+from .worker import GitHubWorker, ReportWorker
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("flakeradar")
@@ -33,18 +32,15 @@ async def lifespan(app: FastAPI):
         logger.warning("FLAKERADAR_API_TOKEN is the default 'changeme' — set a real token.")
     await run_migrations(engine)
 
-    async def _maintenance() -> None:
-        """Leader-only housekeeping: retention prune + re-arm closed GitHub issues."""
-        await run_prune(SessionLocal)
-        await github_integration.sync_closed_issues(SessionLocal)
-
+    github = GitHubWorker(SessionLocal, sync_interval_seconds=settings.prune_interval_seconds)
     worker = ReportWorker(
         engine,
         SessionLocal,
         poll_seconds=settings.worker_poll_seconds,
-        on_processed=lambda outcome: github_integration.on_report_processed(SessionLocal, outcome),
-        prune=_maintenance,
+        on_processed=github.enqueue,
+        prune=lambda: run_prune(SessionLocal),
         prune_interval_seconds=settings.prune_interval_seconds,
+        github=github,
     )
     await worker.start()
     try:

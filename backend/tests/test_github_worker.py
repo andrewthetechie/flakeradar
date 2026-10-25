@@ -6,12 +6,15 @@ import httpx
 import pytest
 from app import github_integration
 from app.config import Settings
-from app.models import TestCase
+from app.models import Report, TestCase
 from app.processing import ProcessOutcome
 from app.worker import GitHubWorker
 from sqlalchemy import select
 
+from tests.conftest import make_junit
+from tests.factories import make_project, make_report
 from tests.test_github import _flaky_test
+from tests.test_worker import _worker
 
 
 @pytest.fixture()
@@ -143,3 +146,61 @@ async def test_outcome_files_through_the_worker_transport(session_factory, gh_se
         await worker.stop()
     assert [kind for kind, _ in seen] == ["test", "job"]
     assert all(got is transport for _, got in seen)
+
+
+async def _is_processed(session_factory, report_id: int) -> bool:
+    async with session_factory() as session:
+        report = await session.get(Report, report_id)
+        return report.status == "processed"
+
+
+async def test_github_work_does_not_block_processing(engine, session_factory, db, gh_settings):
+    """A 2 s issue POST must not delay the next pending Report."""
+    started = asyncio.Event()
+    returned = asyncio.Event()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        started.set()
+        await asyncio.sleep(2)
+        returned.set()
+        return httpx.Response(201, json={"number": 77})
+
+    proj = await make_project(db)
+    await make_report(db, proj, make_junit([("t", "failed"), ("t", "passed")]), commit_sha="a")
+    await db.commit()
+
+    github = GitHubWorker(session_factory, sync_interval_seconds=3600.0, transport=httpx.MockTransport(handler))
+    worker = _worker(engine, session_factory, on_processed=github.enqueue, github=github)
+    await worker.start()
+    try:
+        await _wait_for(started.is_set)  # the first issue POST is in flight
+
+        report2 = await make_report(db, proj, make_junit([("t", "failed"), ("t", "passed")]), commit_sha="b")
+        await db.commit()
+        await _wait_for(lambda: _is_processed(session_factory, report2.id), timeout=1.5)
+        assert not returned.is_set()  # processing got there before the call came back
+    finally:
+        await worker.stop()
+
+
+async def test_github_task_stops_with_leadership(engine, session_factory):
+    """ReportWorker starts the GitHub task when it leads and stops it when it does not."""
+    github = GitHubWorker(session_factory, sync_interval_seconds=3600.0)
+    worker = _worker(engine, session_factory, github=github)
+    await worker.start()
+    try:
+        await _wait_for(lambda: worker.is_leader)
+        assert github.is_running
+    finally:
+        await worker.stop()
+    assert not github.is_running
+
+
+async def test_losing_the_connection_stops_the_github_task(engine, session_factory):
+    """The error path releases through _release too, even with the connection gone."""
+    github = GitHubWorker(session_factory, sync_interval_seconds=3600.0)
+    worker = _worker(engine, session_factory, github=github)
+    await github.start()  # what _try_lead did while this process held the lock
+    worker._lock_conn = None  # the lock connection is already broken
+    await worker._release()
+    assert not github.is_running

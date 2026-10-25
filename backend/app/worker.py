@@ -1,18 +1,27 @@
-"""Background Report processor with Postgres advisory-lock leader election.
+"""Background tasks with Postgres advisory-lock leader election.
 
 Every uvicorn worker runs one ReportWorker. Only the one holding
-WORKER_LOCK_KEY processes Reports (ADR 0002: scoring depends on order, so
-exactly one processor); the rest stay on standby and take over if the
-leader's process or connection dies.
+WORKER_LOCK_KEY is the leader, and the leader runs the two background tasks
+(ADR 0002: scoring depends on order, so exactly one processor); the rest stay
+on standby and take over if the leader's process or connection dies.
+
+- The processor loop: one Report at a time (``process_next``), plus the
+  database-only retention prune.
+- The GitHub task (``GitHubWorker``): drains the queue of Test and Job ids the
+  processor touched, filing issues for them, and re-checks stored issue links
+  every ``prune_interval_seconds``.
+
+The processor hands outcomes over with the non-blocking ``GitHubWorker.enqueue``
+and never waits for an API call, so a slow or hanging GitHub cannot stop Report
+processing. Queue contents live in this process only: if it dies, ids queued but
+not yet filed are lost. That is acceptable — the next Report that touches the
+Test or Job files it, the same as when GitHub cannot be reached today. GitHub
+work never rescores and only writes ``github_issue_number``, so the
+one-processor rule of ADR 0002 is untouched.
 
 The lock is session-level and SURVIVES a connection being returned to the
 pool, so the leader keeps one dedicated AUTOCOMMIT connection for as long as
 it leads and unlocks explicitly before closing it.
-
-``GitHubWorker`` is the second background task: it owns every GitHub API call
-(filing issues, syncing closed issue links) so none of them can stall Report
-processing. ``ReportWorker`` will hand it the outcome of each processed Report
-instead of awaiting it; that wiring is the next step.
 """
 
 import asyncio
@@ -127,6 +136,7 @@ class ReportWorker:
         on_processed: OnProcessed | None = None,
         prune: Prune | None = None,
         prune_interval_seconds: float = 3600.0,
+        github: GitHubWorker | None = None,
     ) -> None:
         self._engine = engine
         self._session_factory = session_factory
@@ -135,6 +145,7 @@ class ReportWorker:
         self._on_processed = on_processed
         self._prune = prune
         self._prune_interval_seconds = prune_interval_seconds
+        self._github = github
         self._last_prune: float | None = None  # loop.time() of the last prune
         self._lock_conn: AsyncConnection | None = None
         self._task: asyncio.Task | None = None
@@ -168,19 +179,26 @@ class ReportWorker:
             await conn.close()
             return False
         self._lock_conn = conn
+        if self._github is not None:
+            await self._github.start()
         logger.info("This process is now the Report processor")
         return True
 
     async def _release(self) -> None:
         conn, self._lock_conn = self._lock_conn, None
-        if conn is None:
-            return
         try:
-            await conn.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": WORKER_LOCK_KEY})
-            await conn.close()
-        except (DBAPIError, InvalidRequestError):
-            # Connection is broken: the server already dropped the lock.
-            await conn.invalidate()
+            if conn is not None:
+                try:
+                    await conn.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": WORKER_LOCK_KEY})
+                    await conn.close()
+                except (DBAPIError, InvalidRequestError):
+                    # Connection is broken: the server already dropped the lock.
+                    await conn.invalidate()
+        finally:
+            # Leadership ends here, however the connection went: the GitHub
+            # task is leader-only too.
+            if self._github is not None:
+                await self._github.stop()
 
     async def _lock_alive(self) -> None:
         assert self._lock_conn is not None
