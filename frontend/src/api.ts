@@ -201,6 +201,8 @@ export interface JobSummary {
   confirmed_flaky_jobs: number;
   total_job_executions: number;
   flake_threshold: number;
+  /** Distinct Pipeline names of the scope, sorted; feeds the Jobs filter. */
+  pipelines: string[];
 }
 
 export interface ExplainingTest {
@@ -251,6 +253,10 @@ export interface JobQuery {
   pageSize: number;
   sort: SortKey;
   showStable: boolean;
+  /** Exact Pipeline name to list, or null for every pipeline. */
+  pipeline: string | null;
+  /** Filter by Issue link, or null for any. */
+  issue: IssueFilter | null;
   q: string;
 }
 
@@ -262,6 +268,8 @@ export function fetchJobs(q: JobQuery): Promise<JobPage> {
   params.set("sort", q.sort);
   if (q.showStable) params.set("include_stable", "true");
   if (q.q) params.set("q", q.q);
+  if (q.pipeline) params.set("pipeline", q.pipeline);
+  if (q.issue) params.set("has_issue", String(q.issue === "linked"));
   return getJson<JobPage>(withQuery("/api/jobs", params));
 }
 

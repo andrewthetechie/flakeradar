@@ -34,6 +34,7 @@ describe("StatTiles", () => {
           confirmed_flaky_jobs: 1,
           total_job_executions: 300,
           flake_threshold: 0.3,
+          pipelines: [],
         }}
       />,
     );

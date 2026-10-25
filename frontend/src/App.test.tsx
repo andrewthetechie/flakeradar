@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { TestCase, TestPage } from "./api";
@@ -130,9 +130,14 @@ describe("App", () => {
     expect(screen.getByRole("button", { name: "jobs" })).toHaveAttribute("aria-pressed", "true");
     // The Jobs view gets its own search box, wired to the same q.
     expect(screen.getByPlaceholderText("Job or pipeline")).toBeInTheDocument();
-    // The Tests view's filters are not on the Jobs view yet.
+    // The Tests view's quarantined toggle stays off the Jobs view; the Issue
+    // filter and the Pipeline filter are both wired here.
     expect(screen.queryByRole("checkbox", { name: /quarantined only/i })).not.toBeInTheDocument();
-    expect(screen.queryByRole("combobox", { name: /issue/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: /issue/i })).toBeInTheDocument();
+    // This summary carries no pipelines, so the Pipeline select lists only All.
+    expect(
+      within(screen.getByRole("combobox", { name: /pipeline/i })).getAllByRole("option"),
+    ).toHaveLength(1);
   });
 
   it("renders the CI run view instead of the leaderboard for ?view=ci-run", async () => {
@@ -328,6 +333,53 @@ describe("App", () => {
     expect(await screen.findByText(/CI run 4242/)).toBeInTheDocument();
   });
 
+  it("sends the stored pipeline and issue filters to /api/jobs", async () => {
+    const urls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        urls.push(url);
+        if (url.startsWith("/api/jobs/summary"))
+          return json({
+            total_jobs: 1,
+            flaky_jobs: 1,
+            suspect_jobs: 0,
+            confirmed_flaky_jobs: 0,
+            total_job_executions: 4,
+            flake_threshold: 0.3,
+            pipelines: ["ci.yml", "nightly.yml"],
+          });
+        if (url.startsWith("/api/jobs"))
+          return json({ items: [], total: 0, page: 1, page_size: 50 });
+        if (url.startsWith("/api/repos")) return json([]);
+        if (url.startsWith("/api/reports/summary")) return json({ pending: 0, failed: 0 });
+        return json({});
+      }),
+    );
+    window.history.replaceState(null, "", "/?view=jobs&pipeline=nightly.yml&issue=none");
+    render(<App />);
+
+    expect(await screen.findByText(/No flaky or suspect jobs in this view/)).toBeInTheDocument();
+    const jobsUrl = urls.filter((u) => u.startsWith("/api/jobs?")).at(-1);
+    expect(jobsUrl).toContain("pipeline=nightly.yml");
+    expect(jobsUrl).toContain("has_issue=false");
+    // The Pipeline select is filled from the summary, with the URL's value chosen.
+    const select = screen.getByRole("combobox", { name: /pipeline/i });
+    expect(
+      within(select)
+        .getAllByRole("option")
+        .map((o) => o.textContent),
+    ).toEqual(["All", "ci.yml", "nightly.yml"]);
+    expect(select).toHaveValue("nightly.yml");
+    expect(screen.getByRole("combobox", { name: /issue/i })).toHaveValue("none");
+
+    // Choosing another pipeline rewrites the URL and refetches the leaderboard.
+    await userEvent.selectOptions(select, "ci.yml");
+    await act(async () => {});
+    expect(window.location.search).toContain("pipeline=ci.yml");
+    expect(urls.filter((u) => u.startsWith("/api/jobs?")).at(-1)).toContain("pipeline=ci.yml");
+  });
+
   it("sends the stored search term to /api/jobs and says no jobs match", async () => {
     const urls: string[] = [];
     vi.stubGlobal(
@@ -445,5 +497,7 @@ describe("App", () => {
     // "none" means Tests with no Issue link, so has_issue=false.
     expect(param(testsUrl(), "has_issue")).toBe("false");
     expect(window.location.search).toBe("?quarantined=1&issue=none");
+    // The Pipeline filter belongs to the Jobs view only.
+    expect(screen.queryByRole("combobox", { name: /pipeline/i })).not.toBeInTheDocument();
   });
 });

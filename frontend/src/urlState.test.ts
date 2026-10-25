@@ -14,6 +14,7 @@ describe("view state in the URL", () => {
       cause: null,
       quarantined: false,
       issue: null,
+      pipeline: null,
       view: "tests" as const,
       ci_run: null,
       attempt: null,
@@ -38,6 +39,7 @@ describe("view state in the URL", () => {
       cause: null,
       quarantined: false,
       issue: null,
+      pipeline: null,
       view: "jobs" as const,
       ci_run: null,
       attempt: null,
@@ -62,6 +64,7 @@ describe("view state in the URL", () => {
       cause: null,
       quarantined: false,
       issue: null,
+      pipeline: null,
       view: "ci-run" as const,
       ci_run: "12345678",
       attempt: 2,
@@ -115,6 +118,18 @@ describe("view state in the URL", () => {
     expect(serializeViewState({ ...DEFAULT_VIEW, issue: "none" })).toBe("?issue=none");
   });
 
+  it("round-trips the jobs pipeline filter, omitted when unset", () => {
+    const view = {
+      ...DEFAULT_VIEW,
+      view: "jobs" as const,
+      pipeline: ".github/workflows/nightly.yml",
+    };
+    expect(serializeViewState(view)).toBe("?view=jobs&pipeline=.github%2Fworkflows%2Fnightly.yml");
+    expect(parseViewState("?view=jobs&pipeline=.github%2Fworkflows%2Fnightly.yml")).toEqual(view);
+    expect(serializeViewState({ ...DEFAULT_VIEW, pipeline: null })).toBe("");
+    expect(parseViewState("?pipeline=").pipeline).toBeNull();
+  });
+
   it("ignores an invalid issue filter and quarantined values other than 1", () => {
     expect(parseViewState("?issue=bogus").issue).toBeNull();
     expect(parseViewState("?issue=true").issue).toBeNull();
@@ -136,12 +151,22 @@ describe("applyPatch", () => {
     });
   });
 
+  it("changing repo clears the pipeline, but an explicit pipeline survives", () => {
+    const withPipeline = { ...base, pipeline: ".github/workflows/nightly.yml" };
+    expect(applyPatch(withPipeline, { repo: "c/d" })).toMatchObject({
+      repo: "c/d",
+      pipeline: null,
+    });
+    expect(applyPatch(withPipeline, { repo: "c/d", pipeline: "ci.yml" }).pipeline).toBe("ci.yml");
+  });
+
   it("sort and stable toggle reset page; selecting a test does not", () => {
     expect(applyPatch(base, { sort: "last_seen" }).page).toBe(1);
     expect(applyPatch(base, { showStable: true }).page).toBe(1);
     expect(applyPatch(base, { cause: "timing" }).page).toBe(1);
     expect(applyPatch(base, { quarantined: true }).page).toBe(1);
     expect(applyPatch(base, { issue: "linked" }).page).toBe(1);
+    expect(applyPatch(base, { pipeline: ".github/workflows/nightly.yml" }).page).toBe(1);
     expect(applyPatch(base, { q: "login" }).page).toBe(1);
     expect(applyPatch(base, { test: 9 }).page).toBe(4);
     expect(applyPatch(base, { page: 5 }).page).toBe(5);

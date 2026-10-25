@@ -23,6 +23,8 @@ export function LeaderboardControls({
   causeCounts,
   quarantined,
   issue,
+  pipelines,
+  pipeline,
   search,
   searchPlaceholder,
   onSort,
@@ -30,6 +32,7 @@ export function LeaderboardControls({
   onCause,
   onQuarantined,
   onIssue,
+  onPipeline,
   onSearch,
 }: {
   sort: SortKey;
@@ -39,6 +42,9 @@ export function LeaderboardControls({
   causeCounts?: Record<FailureCategory, number> | null;
   quarantined?: boolean;
   issue?: IssueFilter | null;
+  /** Jobs view: Pipeline names of the current scope, from the job summary. */
+  pipelines?: string[] | null;
+  pipeline?: string | null;
   search: string;
   searchPlaceholder?: string;
   onSort: (sort: SortKey) => void;
@@ -46,6 +52,7 @@ export function LeaderboardControls({
   onCause?: (cause: FailureCategory | null) => void;
   onQuarantined?: (quarantined: boolean) => void;
   onIssue?: (issue: IssueFilter | null) => void;
+  onPipeline?: (pipeline: string | null) => void;
   onSearch: (q: string) => void;
 }) {
   // Local text so typing stays instant; the URL (and a fetch) only sees the
@@ -98,6 +105,23 @@ export function LeaderboardControls({
             {FAILURE_CATEGORIES.map((c) => (
               <option key={c} value={c}>
                 {causeCounts ? `${c} (${causeCounts[c]})` : c}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+      {onPipeline && (
+        <label className="flex items-center gap-2">
+          Pipeline
+          <select
+            className="control py-0.5 text-xs"
+            value={pipeline ?? ""}
+            onChange={(e) => onPipeline(e.target.value || null)}
+          >
+            <option value="">All</option>
+            {(pipelines ?? []).map((name) => (
+              <option key={name} value={name}>
+                {name}
               </option>
             ))}
           </select>

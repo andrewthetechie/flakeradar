@@ -3,6 +3,7 @@
 //   ?repo=owner/name&project=backend&test=42&view=jobs&job=3&page=2&sort=proven&stable=1
 //   ?repo=owner/name&view=ci-run&ci_run=12345678&attempt=2
 //   ?repo=owner/name&quarantined=1&issue=linked
+//   ?repo=owner/name&view=jobs&pipeline=.github/workflows/nightly.yml&issue=none
 import { useCallback, useEffect, useRef, useState } from "react";
 import { FAILURE_CATEGORIES, type FailureCategory, type IssueFilter, type SortKey } from "./api";
 
@@ -21,6 +22,8 @@ export interface ViewState {
   quarantined: boolean;
   /** Tests view: filter by Issue link, or null for any. */
   issue: IssueFilter | null;
+  /** Jobs view: exact Pipeline name to list, or null for every pipeline. */
+  pipeline: string | null;
   view: ViewKind;
   /** CI run id of the ci-run view; only meaningful with `view: "ci-run"`. */
   ci_run: string | null;
@@ -41,6 +44,7 @@ export const DEFAULT_VIEW: ViewState = {
   cause: null,
   quarantined: false,
   issue: null,
+  pipeline: null,
   view: "tests",
   ci_run: null,
   attempt: null,
@@ -76,6 +80,7 @@ export function parseViewState(search: string): ViewState {
         : null,
     quarantined: p.get("quarantined") === "1",
     issue: ISSUE_FILTERS.includes(issue as IssueFilter) ? (issue as IssueFilter) : null,
+    pipeline: p.get("pipeline") || null,
     view: p.get("view") === "jobs" ? "jobs" : p.get("view") === "ci-run" ? "ci-run" : "tests",
     ci_run: p.get("ci_run") || null,
     attempt: positiveInt(p.get("attempt")),
@@ -108,6 +113,7 @@ export function serializeViewState(s: ViewState): string {
   // Unscoped by view, like cause: the params survive a view switch.
   if (s.quarantined) p.set("quarantined", "1");
   if (s.issue) p.set("issue", s.issue);
+  if (s.pipeline) p.set("pipeline", s.pipeline);
   const q = p.toString();
   return q ? `?${q}` : "";
 }
@@ -120,6 +126,10 @@ export function applyPatch(prev: ViewState, patch: Partial<ViewState>): ViewStat
   const next = { ...prev, ...patch };
   if ("repo" in patch && patch.repo !== prev.repo && !("project" in patch)) {
     next.project = null;
+  }
+  // Pipeline names are repo-scoped too: a stale one would filter the new repo to nothing.
+  if ("repo" in patch && patch.repo !== prev.repo && !("pipeline" in patch)) {
+    next.pipeline = null;
   }
   if (!next.repo) next.project = null;
 
@@ -134,7 +144,17 @@ export function applyPatch(prev: ViewState, patch: Partial<ViewState>): ViewStat
   if (patch.job != null) next.test = null;
 
   const relisted = (
-    ["repo", "project", "sort", "showStable", "cause", "quarantined", "issue", "q"] as const
+    [
+      "repo",
+      "project",
+      "sort",
+      "showStable",
+      "cause",
+      "quarantined",
+      "issue",
+      "pipeline",
+      "q",
+    ] as const
   ).some((k) => k in patch && patch[k] !== prev[k]);
   if (relisted && !("page" in patch)) next.page = 1;
   return next;
