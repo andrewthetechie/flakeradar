@@ -13,6 +13,8 @@ describe("view state in the URL", () => {
       showStable: true,
       cause: null,
       view: "tests" as const,
+      ci_run: null,
+      attempt: null,
       q: "",
     };
     const search = serializeViewState(view);
@@ -33,6 +35,8 @@ describe("view state in the URL", () => {
       showStable: false,
       cause: null,
       view: "jobs" as const,
+      ci_run: null,
+      attempt: null,
       q: "",
     };
     const search = serializeViewState(view);
@@ -40,6 +44,35 @@ describe("view state in the URL", () => {
       "?repo=andrewthetechie%2Fwriters-app&project=backend&view=jobs&job=3&page=2",
     );
     expect(parseViewState(search)).toEqual(view);
+  });
+
+  it("serializes and parses the ci-run view with its run id and attempt", () => {
+    const view = {
+      repo: "a/b",
+      project: null,
+      test: null,
+      job: null,
+      page: 1,
+      sort: "score" as const,
+      showStable: false,
+      cause: null,
+      view: "ci-run" as const,
+      ci_run: "12345678",
+      attempt: 2,
+      q: "",
+    };
+    expect(serializeViewState(view)).toBe("?repo=a%2Fb&view=ci-run&ci_run=12345678&attempt=2");
+    expect(parseViewState("?repo=a%2Fb&view=ci-run&ci_run=12345678&attempt=2")).toEqual(view);
+    // The attempt defaults to the latest one, so it is omitted when unset, and
+    // the CI run parameters never appear in the other views.
+    expect(serializeViewState({ ...view, attempt: null })).toBe(
+      "?repo=a%2Fb&view=ci-run&ci_run=12345678",
+    );
+    expect(parseViewState("?repo=a%2Fb&view=ci-run&ci_run=12345678").attempt).toBeNull();
+    expect(serializeViewState({ ...DEFAULT_VIEW, repo: "a/b", ci_run: "9", attempt: 3 })).toBe(
+      "?repo=a%2Fb",
+    );
+    expect(parseViewState("?view=ci-run")).toMatchObject({ view: "ci-run", ci_run: null });
   });
 
   it("round-trips a search term, omitted when empty", () => {
