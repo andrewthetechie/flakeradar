@@ -17,19 +17,23 @@ export function JobLeaderboard({
   jobs,
   repo,
   showStable,
+  search = "",
   selectedId,
   onSelect,
 }: {
   jobs: Job[];
   repo: string | null;
   showStable: boolean;
+  search?: string;
   selectedId: number | null;
   onSelect: (id: number) => void;
 }) {
   if (jobs.length === 0) {
     return (
       <div className="px-4 py-10 text-center text-text-2">
-        {showStable ? (
+        {search ? (
+          <>No jobs match.</>
+        ) : showStable ? (
           <>
             No job data yet. Copy the{" "}
             <code className="font-mono text-text">samples/flakeradar-jobs.yml</code> reporter

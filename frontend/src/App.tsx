@@ -49,7 +49,7 @@ export default function App() {
   const [jobHistory, setJobHistory] = useState<JobHistory | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const { repo, project, sort, showStable, cause, view: kind } = view;
+  const { repo, project, sort, showStable, cause, q, view: kind } = view;
   const pageNumber = view.page;
 
   // Only the newest refresh may write state: a slow response for the old
@@ -61,21 +61,21 @@ export default function App() {
     try {
       const queueQ = fetchReportSummary();
       if (kind === "jobs") {
-        const [r, s, jobs, q] = await Promise.all([
+        const [r, s, jobs, queue] = await Promise.all([
           fetchRepos(),
           fetchJobSummary(repo),
-          fetchJobs({ repo, page: pageNumber, pageSize: PAGE_SIZE, sort, showStable }),
+          fetchJobs({ repo, page: pageNumber, pageSize: PAGE_SIZE, sort, showStable, q }),
           queueQ,
         ]);
         if (request !== latestRefresh.current) return;
         setRepos(r);
         setJobSummary(s);
         setJobPage(jobs);
-        setQueue(q);
+        setQueue(queue);
         setError(null);
       } else {
         const scope = { repo, project };
-        const [r, s, t, q] = await Promise.all([
+        const [r, s, t, queue] = await Promise.all([
           fetchRepos(),
           fetchSummary(scope),
           fetchTests({
@@ -85,6 +85,7 @@ export default function App() {
             sort,
             showStable,
             category: cause,
+            q,
           }),
           queueQ,
         ]);
@@ -92,14 +93,18 @@ export default function App() {
         setRepos(r);
         setSummary(s);
         setPage(t);
-        setQueue(q);
+        setQueue(queue);
         setError(null);
       }
     } catch (e) {
       if (request !== latestRefresh.current) return;
       setError(e instanceof Error ? e.message : String(e));
     }
-  }, [kind, repo, project, pageNumber, sort, showStable, cause]);
+  }, [kind, repo, project, pageNumber, sort, showStable, cause, q]);
+
+  // Stable identity: the search box's debounce timer must not restart on the
+  // 30 s polling re-renders.
+  const onSearch = useCallback((text: string) => setView({ q: text }), [setView]);
 
   useEffect(() => {
     void refresh();
@@ -214,9 +219,12 @@ export default function App() {
             stableLabel={kind === "jobs" ? "Show stable jobs" : "Show stable tests"}
             cause={cause}
             causeCounts={summary?.category_counts ?? null}
+            search={q}
+            searchPlaceholder={kind === "jobs" ? "Job or pipeline" : "Name, classname or file"}
             onSort={(s) => setView({ sort: s })}
             onShowStable={(v) => setView({ showStable: v })}
             onCause={kind === "tests" ? (c) => setView({ cause: c }) : undefined}
+            onSearch={onSearch}
           />
         </div>
         <div className="overflow-x-auto">
@@ -225,6 +233,7 @@ export default function App() {
               jobs={jobPage?.items ?? []}
               repo={repo}
               showStable={showStable}
+              search={q}
               selectedId={view.job}
               onSelect={(id) => setView({ job: id })}
             />
@@ -233,6 +242,7 @@ export default function App() {
               tests={page?.items ?? []}
               scope={{ repo, project }}
               showStable={showStable}
+              search={q}
               selectedId={view.test}
               onSelect={(id) => setView({ test: id })}
               onToggleQuarantine={onToggleQuarantine}

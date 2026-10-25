@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { TestCase, TestPage } from "./api";
 import App from "./App";
@@ -34,6 +34,7 @@ const json = (body: unknown) => Promise.resolve(new Response(JSON.stringify(body
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.useRealTimers();
   window.history.replaceState(null, "", "/");
 });
 
@@ -126,5 +127,87 @@ describe("App", () => {
     render(<App />);
     expect(await screen.findByText("e2e")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "jobs" })).toHaveAttribute("aria-pressed", "true");
+    // The Jobs view gets its own search box, wired to the same q.
+    expect(screen.getByPlaceholderText("Job or pipeline")).toBeInTheDocument();
+  });
+
+  it("sends the stored search term to /api/jobs and says no jobs match", async () => {
+    const urls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        urls.push(url);
+        if (url.startsWith("/api/jobs/summary"))
+          return json({
+            total_jobs: 0,
+            flaky_jobs: 0,
+            suspect_jobs: 0,
+            confirmed_flaky_jobs: 0,
+            total_job_executions: 0,
+            flake_threshold: 0.3,
+          });
+        if (url.startsWith("/api/jobs"))
+          return json({ items: [], total: 0, page: 1, page_size: 50 });
+        if (url.startsWith("/api/repos")) return json([]);
+        if (url.startsWith("/api/reports/summary")) return json({ pending: 0, failed: 0 });
+        return json({});
+      }),
+    );
+    window.history.replaceState(null, "", "/?view=jobs&q=e2e");
+    render(<App />);
+
+    expect(await screen.findByText("No jobs match.")).toBeInTheDocument();
+    expect(urls.filter((u) => u.startsWith("/api/jobs?")).at(-1)).toContain("q=e2e");
+    expect(screen.getByPlaceholderText("Job or pipeline")).toHaveValue("e2e");
+  });
+
+  it("sends the debounced search term as q and keeps the URL in sync", async () => {
+    vi.useFakeTimers();
+    const urls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        urls.push(url);
+        if (url.startsWith("/api/tests")) return json(page("login"));
+        if (url.startsWith("/api/repos")) return json([]);
+        if (url.startsWith("/api/reports/summary")) return json({ pending: 0, failed: 0 });
+        return json({
+          total_tests: 1,
+          flaky_tests: 1,
+          suspect_tests: 0,
+          confirmed_flaky_tests: 0,
+          total_runs: 1,
+          total_executions: 1,
+          flake_threshold: 0.3,
+          category_counts: { network: 0, environment: 0, timing: 0, assertion: 0, other: 0 },
+        });
+      }),
+    );
+    render(<App />);
+    await act(async () => {});
+
+    const search = (url: string) => new URL(url, "http://localhost").searchParams.get("q");
+    const searched = () => urls.filter((u) => u.startsWith("/api/tests") && search(u) !== null);
+    const input = screen.getByPlaceholderText("Name, classname or file");
+
+    // The input is immediate; the request is not.
+    fireEvent.change(input, { target: { value: "log" } });
+    expect((input as HTMLInputElement).value).toBe("log");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(200);
+    });
+    // A new keystroke restarts the 300 ms window, so nothing has been sent yet.
+    fireEvent.change(input, { target: { value: "login" } });
+    expect((input as HTMLInputElement).value).toBe("login");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(200);
+    });
+    expect(searched()).toEqual([]);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100);
+    });
+    expect(searched().at(-1)).toContain("q=login");
+    expect(window.location.search).toBe("?q=login");
   });
 });
