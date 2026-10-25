@@ -23,6 +23,8 @@ const test: TestCase = {
   last_seen_at: "2026-09-25T00:00:00Z",
   quarantined: false,
   quarantined_at: null,
+  quarantine_reason: null,
+  quarantine_expires_at: null,
   github_issue_number: null,
   github_issue_url: null,
 };

@@ -86,8 +86,9 @@ A solo developer with a 30-second test suite does not need FlakeRadar.
   jobs. Each view has a URL that you can share.
 - **MCP server.** AI agents can get the worst flaky tests in a repo, with the
   data they need to find and fix each test, and link the issues they file.
-- **Quarantine.** Mark a test as quarantined in the dashboard. Your test runner
-  then gets the list of tests to skip from the API.
+- **Quarantine.** Mark a test as quarantined in the dashboard, where the
+  dialog also records a reason and an optional expiry. Your test runner then
+  gets the list of tests to skip from the API.
 - **GitHub issues (optional).** When a test or job crosses the flakiness
   threshold, FlakeRadar opens an issue in the repository of that test or job.
   Issues filed by other tools or by hand can be linked instead.
@@ -413,19 +414,23 @@ Failures that FlakeRadar stored before categories existed have no category
 
 ## Quarantine
 
-In the dashboard, mark an unreliable test as quarantined. Before a run, your
-test runner gets the quarantine list for its repo and project:
+In the dashboard, mark an unreliable test as quarantined. A small dialog lets
+you record why (an optional reason) and when to look again: Never, 7, 14 or
+30 days. Before a run, your test runner gets the quarantine list for its repo
+and project:
 
 ```
 curl -sS "$FLAKERADAR_URL/api/quarantine?repo=$GITHUB_REPOSITORY&project=backend" \
   -H "X-API-Key: $FLAKERADAR_TOKEN"
-# -> [{"suite","classname","name","fingerprint","file","line","quarantined_at"}, ...]
+# -> [{"suite","classname","name","fingerprint","file","line","quarantined_at","reason","expires_at"}, ...]
 ```
 
 The runner matches each item on `classname` and `name` to find the tests to
-skip. Only a person can quarantine a test, and a person can undo it.
-FlakeRadar never skips a test by itself, and the MCP server cannot quarantine
-a test.
+skip. Only a person can quarantine a test, and a person can undo it;
+unquarantining clears the reason and the expiry too. Once a quarantine's
+`expires_at` passes, maintenance clears it, so an expired quarantine never
+keeps skipping a test. FlakeRadar never skips a test by itself, and the MCP
+server cannot quarantine a test.
 
 ## MCP server for agents
 
@@ -688,11 +693,11 @@ and the MCP server need the token.
 | `GET /api/jobs/{id}/history?limit=` | none | One job: recent job executions, each marked `passed`, `failed`, `explained` or `skipped`, with the tests that explain them, `score_history` (90 days), `clean_streak` and `trend`. |
 | `GET /api/ci-runs/{ci_run_id}/failures?repo=&ci_run_attempt=` | none | The failing tests and failed jobs of one CI run attempt, with each one's current tier and the attempt's report counts. See [Failures of one CI run](#failures-of-one-ci-run). |
 | `GET /api/summary?repo=&project=` | none | Dashboard tiles for tests. `category_counts` gives the number of flaky and suspect tests for each likely cause. |
-| `POST /api/tests/{id}/quarantine` | none | Set or clear quarantine (body `{"quarantined": bool}`). |
+| `POST /api/tests/{id}/quarantine` | none | Set or clear quarantine (body `{"quarantined": bool, "reason"?: str (max 500), "expires_in_days"?: int (1 to 365)}`). The response is the test, with `quarantine_reason` and `quarantine_expires_at`. Unquarantining clears the reason and the expiry. |
 | `PUT /api/tests/{id}/issue?replace=` | `X-API-Key` | Link a GitHub issue filed elsewhere (body `{"number": int, "url"?: str}`). `409` when a different issue is linked and `replace` is not `true`. See [Issues filed elsewhere](#issues-filed-elsewhere). |
 | `DELETE /api/tests/{id}/issue` | `X-API-Key` | Remove the issue link of a test. |
 | `PUT /api/jobs/{id}/issue?replace=`, `DELETE /api/jobs/{id}/issue` | `X-API-Key` | The same for a job. GitHub pipelines only. |
-| `GET /api/quarantine?repo=&project=` | `X-API-Key` | Quarantined tests for one repo and project, for the test runner. |
+| `GET /api/quarantine?repo=&project=` | `X-API-Key` | Quarantined tests for one repo and project, for the test runner. Each item carries `reason` and `expires_at`. |
 | `/mcp/` | Bearer token | The MCP server. |
 | `GET /api/health` | none | Liveness check. |
 

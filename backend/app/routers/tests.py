@@ -90,7 +90,14 @@ async def set_quarantine(
     body: schemas.QuarantineIn,
     db: AsyncSession = Depends(get_db),
 ):
-    result = await queries.set_quarantine(db, test_id, body.quarantined, threshold=get_settings().flake_threshold)
+    result = await queries.set_quarantine(
+        db,
+        test_id,
+        body.quarantined,
+        reason=body.reason,
+        expires_in_days=body.expires_in_days,
+        threshold=get_settings().flake_threshold,
+    )
     if result is None:
         raise HTTPException(status_code=404, detail="Test not found")
     return result

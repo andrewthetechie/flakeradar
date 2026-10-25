@@ -26,6 +26,8 @@ const history: History = {
     last_seen_at: "2026-09-25T00:00:00Z",
     quarantined: false,
     quarantined_at: null,
+    quarantine_reason: null,
+    quarantine_expires_at: null,
     github_issue_number: null,
     github_issue_url: null,
   },
@@ -155,6 +157,39 @@ describe("TestDrawer", () => {
     const { onQ } = renderDrawer();
     await userEvent.click(screen.getByRole("button", { name: "Quarantine" }));
     expect(onQ).toHaveBeenCalledWith(history.test);
+  });
+
+  it("shows the stored reason and the expiry of a quarantined test", () => {
+    renderDrawer({
+      test: {
+        ...history.test,
+        quarantined: true,
+        quarantine_reason: "flaky on windows",
+        quarantine_expires_at: new Date(Date.now() + 10 * 86_400_000).toISOString(),
+      },
+    });
+    expect(screen.getByText(/flaky on windows/)).toBeInTheDocument();
+    expect(screen.getByText(/expires in 10 days/)).toBeInTheDocument();
+  });
+
+  it("shows no expiry line for a quarantine that never expires", () => {
+    renderDrawer({
+      test: { ...history.test, quarantined: true, quarantine_expires_at: null },
+    });
+    expect(screen.queryByText(/expires in/)).not.toBeInTheDocument();
+  });
+
+  it("shows neither the reason nor the expiry for an unquarantined test", () => {
+    renderDrawer({
+      test: {
+        ...history.test,
+        quarantined: false,
+        quarantine_reason: "stale note",
+        quarantine_expires_at: new Date(Date.now() + 10 * 86_400_000).toISOString(),
+      },
+    });
+    expect(screen.queryByText(/stale note/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/expires in/)).not.toBeInTheDocument();
   });
 
   it("shows a loading state until the right test's history arrives", () => {

@@ -4,6 +4,11 @@ import { breakable } from "../breakable";
 import { IssueLink } from "./IssueLink";
 import { TestDetail } from "./TestDetail";
 
+/** Whole days from now until an ISO timestamp, rounding a partial day up. */
+function daysUntil(iso: string): number {
+  return Math.ceil((Date.parse(iso) - Date.now()) / 86_400_000);
+}
+
 /** Slide-over panel for one Test. The leaderboard keeps the full width. */
 export function TestDrawer({
   testId,
@@ -104,6 +109,16 @@ export function TestDrawer({
                 {history.test.quarantined ? "Un-quarantine" : "Quarantine"}
               </button>
             </div>
+            {history.test.quarantined && (
+              <div className="-mt-2 mb-4 text-xs text-muted [overflow-wrap:anywhere]">
+                {history.test.quarantine_reason != null && (
+                  <div>Reason: {breakable(history.test.quarantine_reason)}</div>
+                )}
+                {history.test.quarantine_expires_at != null && (
+                  <div>expires in {daysUntil(history.test.quarantine_expires_at)} days</div>
+                )}
+              </div>
+            )}
             <TestDetail history={history} onOpenJob={onOpenJob} onOpenCiRun={onOpenCiRun} />
           </>
         )}

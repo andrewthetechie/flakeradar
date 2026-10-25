@@ -1,6 +1,7 @@
 """Retention: old processed Reports and old Executions go; the rest stays."""
 
 import asyncio
+import logging
 from datetime import timedelta
 
 from app import retention
@@ -67,6 +68,66 @@ async def test_prune_deletes_only_expired_rows(db):
     assert remaining == {fresh.id, failed.id}
     assert await _count(db, TestExecution.id) == 1
     assert (await db.execute(select(TestRun.commit_sha))).scalars().all() == ["new"]
+
+
+async def test_prune_clears_expired_quarantines_only(db, caplog):
+    now = utcnow()
+    proj = await make_project(db)
+    expired = await make_test_case(
+        db,
+        proj,
+        name="expired",
+        quarantined=True,
+        quarantined_at=now - timedelta(days=20),
+        quarantine_reason="flaky on arm",
+        quarantine_expires_at=now - timedelta(hours=1),
+    )
+    future = await make_test_case(
+        db,
+        proj,
+        name="future",
+        quarantined=True,
+        quarantined_at=now - timedelta(days=2),
+        quarantine_reason="waiting on upstream",
+        quarantine_expires_at=now + timedelta(days=5),
+    )
+    never = await make_test_case(
+        db, proj, name="never", quarantined=True, quarantined_at=now, quarantine_reason="owner decided"
+    )
+    future_expiry = future.quarantine_expires_at
+    await db.commit()
+
+    with caplog.at_level(logging.INFO, logger="flakeradar.retention"):
+        result = await prune(db, now=now, report_days=7, execution_days=90)
+        await db.commit()
+
+    assert result.expired_quarantines == 1
+    rows = {
+        tc.id: tc
+        for tc in (
+            await db.execute(select(TestCase).where(TestCase.id.in_([expired.id, future.id, never.id])))
+        ).scalars()
+    }
+    cleared = rows[expired.id]
+    assert (cleared.quarantined, cleared.quarantined_at, cleared.quarantine_reason, cleared.quarantine_expires_at) == (
+        False,
+        None,
+        None,
+        None,
+    )
+    kept_future = rows[future.id]
+    assert kept_future.quarantined is True
+    assert kept_future.quarantine_reason == "waiting on upstream"
+    assert kept_future.quarantine_expires_at == future_expiry
+    kept_never = rows[never.id]
+    assert kept_never.quarantined is True
+    assert kept_never.quarantine_reason == "owner decided"
+    assert kept_never.quarantine_expires_at is None
+
+    logs = [r.getMessage() for r in caplog.records if "Quarantine expired" in r.getMessage()]
+    assert len(logs) == 1
+    assert str(expired.id) in logs[0]
+    assert expired.name in logs[0]
 
 
 async def test_worker_prunes_once_per_interval(engine, session_factory):

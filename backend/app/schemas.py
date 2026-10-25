@@ -132,6 +132,8 @@ class TestOut(BaseModel):
     last_seen_at: datetime
     quarantined: bool
     quarantined_at: datetime | None
+    quarantine_reason: str | None
+    quarantine_expires_at: datetime | None
     github_issue_number: int | None
     github_issue_url: str | None
 
@@ -303,6 +305,8 @@ class JobSummaryOut(BaseModel):
 
 class QuarantineIn(BaseModel):
     quarantined: bool
+    reason: str | None = Field(default=None, max_length=500)
+    expires_in_days: int | None = Field(default=None, ge=1, le=365)
 
 
 class QuarantineItem(BaseModel):
@@ -313,6 +317,8 @@ class QuarantineItem(BaseModel):
     file: str | None
     line: int | None
     quarantined_at: datetime | None
+    reason: str | None
+    expires_at: datetime | None
 
 
 # --- CI run failures (issue #5) ---

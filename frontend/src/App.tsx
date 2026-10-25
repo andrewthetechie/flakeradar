@@ -28,6 +28,7 @@ import { Leaderboard } from "./components/Leaderboard";
 import { LeaderboardControls } from "./components/LeaderboardControls";
 import { Pagination } from "./components/Pagination";
 import { QueueIndicator } from "./components/QueueIndicator";
+import { QuarantineDialog, type QuarantineChoice } from "./components/QuarantineDialog";
 import { ScopePicker } from "./components/ScopePicker";
 import { StatTiles } from "./components/StatTiles";
 import { TestDrawer } from "./components/TestDrawer";
@@ -49,6 +50,7 @@ export default function App() {
   const [history, setHistory] = useState<History | null>(null);
   const [jobHistory, setJobHistory] = useState<JobHistory | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [pendingQuarantine, setPendingQuarantine] = useState<TestCase | null>(null);
 
   const {
     repo,
@@ -201,14 +203,37 @@ export default function App() {
 
   const onToggleQuarantine = useCallback(
     async (t: TestCase) => {
+      if (t.quarantined) {
+        try {
+          await setQuarantine(t.id, false);
+          await refresh();
+        } catch (e) {
+          setError(e instanceof Error ? e.message : String(e));
+        }
+        return;
+      }
+      // Quarantining is a human decision: ask for the reason and the expiry first.
+      setPendingQuarantine(t);
+    },
+    [refresh],
+  );
+
+  const confirmQuarantine = useCallback(
+    async (choice: QuarantineChoice) => {
+      const t = pendingQuarantine;
+      setPendingQuarantine(null);
+      if (t == null) return;
       try {
-        await setQuarantine(t.id, !t.quarantined);
+        await setQuarantine(t.id, true, {
+          reason: choice.reason,
+          expiresInDays: choice.expiresInDays,
+        });
         await refresh();
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
       }
     },
-    [refresh],
+    [pendingQuarantine, refresh],
   );
 
   const closeDrawer = useCallback(() => {
@@ -355,6 +380,13 @@ export default function App() {
           onToggleQuarantine={onToggleQuarantine}
           onOpenJob={openJobFromTest}
           onOpenCiRun={openCiRun}
+        />
+      )}
+      {pendingQuarantine != null && (
+        <QuarantineDialog
+          test={pendingQuarantine}
+          onClose={() => setPendingQuarantine(null)}
+          onConfirm={confirmQuarantine}
         />
       )}
       {kind === "jobs" && view.job != null && (

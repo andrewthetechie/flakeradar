@@ -113,7 +113,7 @@ A Test whose Flakiness score is above 0 but below the Flake threshold.
 A Test whose Flakiness score is 0.
 
 **Quarantine**:
-A reversible human decision that marks a Test as one the test runner may skip. FlakeRadar never quarantines a Test on its own, and agents cannot quarantine through the MCP server.
+A reversible human decision that marks a Test as one the test runner may skip. The person who quarantines can record a reason and set an expiry; when the expiry passes, maintenance (the prune step) clears the quarantine — still a human decision, because a person set the expiry. FlakeRadar never quarantines a Test on its own, and agents cannot quarantine through the MCP server.
 
 ### Tracking work
 

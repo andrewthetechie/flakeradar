@@ -120,6 +120,9 @@ class TestCase(Base):
     # Manual quarantine: a human marks a test skippable by the runner.
     quarantined: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
     quarantined_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    # Why the human decided, and when to look again (set with the quarantine, both optional).
+    quarantine_reason: Mapped[str | None] = mapped_column(Text, default=None)
+    quarantine_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
 
     # GitHub issue automation bookkeeping.
     github_issue_number: Mapped[int | None] = mapped_column(Integer, default=None)
