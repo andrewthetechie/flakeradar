@@ -12,6 +12,7 @@ describe("StatTiles", () => {
           flaky_tests: 3,
           suspect_tests: 9,
           confirmed_flaky_tests: 2,
+          new_flaky_7d: 4,
           total_runs: 40,
           total_executions: 4800,
           flake_threshold: 0.3,
@@ -19,9 +20,11 @@ describe("StatTiles", () => {
         }}
       />,
     );
-    expect(screen.getAllByTestId("stat-tile")).toHaveLength(6);
+    expect(screen.getAllByTestId("stat-tile")).toHaveLength(7);
     expect(screen.getByText("Tracked tests")).toBeInTheDocument();
     expect(screen.getByText("Proven flaky")).toBeInTheDocument();
+    expect(screen.getByText("New in 7 days")).toBeInTheDocument();
+    expect(screen.getByText("New in 7 days").nextElementSibling).toHaveTextContent("4");
   });
 
   it("shows one tile per Job statistic, with no empty tile", () => {
@@ -32,6 +35,7 @@ describe("StatTiles", () => {
           flaky_jobs: 1,
           suspect_jobs: 2,
           confirmed_flaky_jobs: 1,
+          new_flaky_7d: 2,
           total_job_executions: 300,
           flake_threshold: 0.3,
           pipelines: [],
@@ -39,9 +43,10 @@ describe("StatTiles", () => {
       />,
     );
     const tiles = screen.getAllByTestId("stat-tile");
-    expect(tiles).toHaveLength(5);
+    expect(tiles).toHaveLength(6);
     expect(tiles.every((t) => t.textContent !== "")).toBe(true);
     expect(screen.getByText("Tracked jobs")).toBeInTheDocument();
+    expect(screen.getByText("New in 7 days")).toBeInTheDocument();
     expect(screen.getByText("Job executions recorded")).toBeInTheDocument();
   });
 });

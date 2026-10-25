@@ -10,6 +10,7 @@ export interface Tile {
 const LG_COLS: Record<number, string> = {
   5: "lg:grid-cols-5",
   6: "lg:grid-cols-6",
+  7: "lg:grid-cols-7",
 };
 
 /** One strip of statistics split by hairlines (gap-px over the line color), not separate cards. */
@@ -51,6 +52,11 @@ export function StatTiles({ summary }: { summary: Summary }) {
           label: "Proven flaky",
           value: summary.confirmed_flaky_tests,
           alert: summary.confirmed_flaky_tests > 0,
+        },
+        {
+          label: "New in 7 days",
+          value: summary.new_flaky_7d,
+          alert: summary.new_flaky_7d > 0,
         },
         { label: "CI runs ingested", value: summary.total_runs },
         { label: "Executions recorded", value: summary.total_executions },

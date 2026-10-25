@@ -104,6 +104,8 @@ export interface Summary {
   flaky_tests: number;
   suspect_tests: number;
   confirmed_flaky_tests: number;
+  /** Tests that became flaky in the last 7 days. */
+  new_flaky_7d: number;
   total_runs: number;
   total_executions: number;
   flake_threshold: number;
@@ -202,6 +204,8 @@ export interface JobSummary {
   flaky_jobs: number;
   suspect_jobs: number;
   confirmed_flaky_jobs: number;
+  /** Jobs that became flaky in the last 7 days. */
+  new_flaky_7d: number;
   total_job_executions: number;
   flake_threshold: number;
   /** Distinct Pipeline names of the scope, sorted; feeds the Jobs filter. */

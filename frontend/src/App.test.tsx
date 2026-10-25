@@ -61,6 +61,7 @@ describe("App", () => {
           total_runs: 1,
           total_executions: 1,
           flake_threshold: 0.3,
+          new_flaky_7d: 0,
           category_counts: { network: 0, environment: 0, timing: 0, assertion: 0, other: 0 },
         });
       }),
@@ -113,6 +114,7 @@ describe("App", () => {
       confirmed_flaky_jobs: 0,
       total_job_executions: 10,
       flake_threshold: 0.3,
+      new_flaky_7d: 0,
     };
     vi.stubGlobal(
       "fetch",
@@ -224,6 +226,7 @@ describe("App", () => {
           total_runs: 1,
           total_executions: 1,
           flake_threshold: 0.3,
+          new_flaky_7d: 0,
           category_counts: { network: 0, environment: 0, timing: 0, assertion: 0, other: 0 },
         });
       }),
@@ -302,6 +305,7 @@ describe("App", () => {
             confirmed_flaky_jobs: 0,
             total_job_executions: 1,
             flake_threshold: 0.3,
+            new_flaky_7d: 0,
           });
         if (url.startsWith("/api/jobs"))
           return json({ items: [], total: 0, page: 1, page_size: 50 });
@@ -347,6 +351,7 @@ describe("App", () => {
             confirmed_flaky_jobs: 0,
             total_job_executions: 4,
             flake_threshold: 0.3,
+            new_flaky_7d: 0,
             pipelines: ["ci.yml", "nightly.yml"],
           });
         if (url.startsWith("/api/jobs"))
@@ -394,6 +399,7 @@ describe("App", () => {
             confirmed_flaky_jobs: 0,
             total_job_executions: 0,
             flake_threshold: 0.3,
+            new_flaky_7d: 0,
           });
         if (url.startsWith("/api/jobs"))
           return json({ items: [], total: 0, page: 1, page_size: 50 });
@@ -428,6 +434,7 @@ describe("App", () => {
           total_runs: 1,
           total_executions: 1,
           flake_threshold: 0.3,
+          new_flaky_7d: 0,
           category_counts: { network: 0, environment: 0, timing: 0, assertion: 0, other: 0 },
         });
       }),
@@ -477,6 +484,7 @@ describe("App", () => {
           total_runs: 1,
           total_executions: 1,
           flake_threshold: 0.3,
+          new_flaky_7d: 0,
           category_counts: { network: 0, environment: 0, timing: 0, assertion: 0, other: 0 },
         });
       }),
@@ -515,6 +523,7 @@ describe("App", () => {
             confirmed_flaky_jobs: 0,
             total_job_executions: 4,
             flake_threshold: 0.3,
+            new_flaky_7d: 0,
             pipelines: [],
           });
         if (url.startsWith("/api/jobs"))
