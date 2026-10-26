@@ -240,6 +240,15 @@ explained failure as `skipped`. Only **unexplained** failures change the score
 of a job. Examples are setup failures, network failures, runner failures, and
 crashes before the tests start.
 
+One bad runner often causes many of these failures. So, over a job's recent
+scoring window, FlakeRadar groups the job's failures by runner: by the sorted
+label set, and by runner name when a name repeats (GitHub-hosted runner names
+are unique per run, so a name group points at a self-hosted machine). Groups
+are sorted by unexplained-failure rate. The job drawer's "Failures by runner"
+table, the history API and MCP `get_job` (`runners`), and the body of the
+issue FlakeRadar files show the top groups, so a cluster on one runner is
+visible.
+
 For this to work, each JUnit report must send `ci_job_id`. The snippet sends
 `ci_job_id=${{ job.check_run_id }}` for this reason. Without it, all failures
 of that job are unexplained. The job can then look flaky when a test caused
