@@ -30,6 +30,10 @@ Error handling: never raises.
 - After an admin delete (`close_issues_for_deleted_repo`), any failure but a
   rate limit costs only that one Issue: the other numbers of the deleted scope
   are still commented on and closed.
+- An admin delete that commits between a filing POST and the filer's commit
+  (a StaleDataError on the vanished row) costs only that filing: the
+  just-created issue is commented on and closed best-effort, and the rest of
+  the batch goes on.
 - A response body FlakeRadar cannot use (a 201 without an issue number, a
   sync 200 that is not a JSON object with a `state`) -> log a warning, go on;
   no issue number is stored and no link is cleared (the sync still stamps the
@@ -44,6 +48,7 @@ from dataclasses import dataclass
 import httpx
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.orm.exc import StaleDataError
 
 from . import queries
 from .attribution import unexplained_failure_counts
@@ -323,9 +328,27 @@ async def file_issues_for(
                             "GitHub issue creation in %s returned 201 with no issue number: %s", repo, resp.text[:300]
                         )
                     else:
+                        test_id = tc.id  # the object is expired after the savepoint rollback
+                        # SAVEPOINT, so a row deleted under us (an admin delete
+                        # winning the race) costs only this filing, not the batch.
+                        nested = await db.begin_nested()
                         tc.github_issue_number = number
                         tc.github_issue_filed = True  # this is ours, so the admin delete may close it
                         tc.github_issue_checked_at = None  # a new link is checked first
+                        try:
+                            await nested.commit()
+                        except StaleDataError:
+                            # The Test vanished mid-filing: the number is referenced
+                            # nowhere, so close the issue we just created, best-effort.
+                            await nested.rollback()
+                            await close_issues_for_deleted_repo(repo, [number], transport=transport)
+                            logger.warning(
+                                "Test %s deleted (admin delete) while filing; closed issue %s#%s",
+                                test_id,
+                                repo,
+                                number,
+                            )
+                            continue
                         await db.commit()
                         logger.info("Filed issue %s#%s for test %s", repo, tc.github_issue_number, tc.id)
                 elif _rate_limited(resp):
@@ -473,9 +496,27 @@ async def file_job_issues_for(
                             "GitHub issue creation in %s returned 201 with no issue number: %s", repo, resp.text[:300]
                         )
                     else:
+                        job_id = job.id  # the object is expired after the savepoint rollback
+                        # SAVEPOINT, so a row deleted under us (an admin delete
+                        # winning the race) costs only this filing, not the batch.
+                        nested = await db.begin_nested()
                         job.github_issue_number = number
                         job.github_issue_filed = True  # this is ours, so the admin delete may close it
                         job.github_issue_checked_at = None  # a new link is checked first
+                        try:
+                            await nested.commit()
+                        except StaleDataError:
+                            # The Job vanished mid-filing: the number is referenced
+                            # nowhere, so close the issue we just created, best-effort.
+                            await nested.rollback()
+                            await close_issues_for_deleted_repo(repo, [number], transport=transport)
+                            logger.warning(
+                                "Job %s deleted (admin delete) while filing; closed issue %s#%s",
+                                job_id,
+                                repo,
+                                number,
+                            )
+                            continue
                         await db.commit()
                         logger.info("Filed issue %s#%s for job %s", repo, job.github_issue_number, job.id)
                 elif _rate_limited(resp):

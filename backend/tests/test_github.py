@@ -7,9 +7,9 @@ import httpx
 import pytest
 from app import github_integration, issue_links
 from app.config import Settings
-from app.models import Project, Repo, TestCase
+from app.models import Job, Project, Repo, TestCase
 from app.processing import ProcessOutcome
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from tests.factories import (
     make_execution,
@@ -103,6 +103,64 @@ async def test_files_issue_in_the_tests_own_repo(db, gh_settings):
     await db.refresh(tc)
     assert tc.github_issue_number == 77
     assert tc.github_issue_filed is True  # ours, so an admin delete may close it
+
+
+def _race_handler(session_factory, victims: dict[type, int], numbers: list[int]):
+    """MockTransport handler for the admin-delete race.
+
+    Each create POST answers with the next number from `numbers`; while answers
+    remain in `victims`, it first deletes that tracked row through a separate
+    session, simulating an admin delete committing between the POST and the
+    filer's commit. Comment POSTs answer 201, close PATCHes 200.
+    """
+    calls: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if request.url.path.endswith("/issues") and numbers:
+            if victims:
+                model, row_id = victims.popitem()
+                async with session_factory() as other:
+                    await other.execute(delete(model).where(model.id == row_id))
+                    await other.commit()
+            return httpx.Response(201, json={"number": numbers.pop(0)})
+        return httpx.Response(201 if request.method == "POST" else 200, json={})
+
+    return calls, httpx.MockTransport(handler)
+
+
+async def test_admin_delete_race_closes_the_just_filed_issue(db, gh_settings, session_factory, caplog):
+    """An admin delete that commits between the create POST and the filer's commit
+    must not strand the just-filed issue: the filer closes it best-effort."""
+    tc = await _flaky_test(db)
+    test_id = tc.id
+    calls, transport = _race_handler(session_factory, {TestCase: test_id}, [77])
+    with caplog.at_level(logging.WARNING, logger="flakeradar.github"):
+        await github_integration.file_issues_for(db, [test_id], transport=transport)
+    assert [(r.method, r.url.path) for r in calls] == [
+        ("POST", "/repos/acme/app/issues"),
+        ("POST", "/repos/acme/app/issues/77/comments"),
+        ("PATCH", "/repos/acme/app/issues/77"),
+    ]
+    assert any("closed issue" in r.getMessage() and "77" in r.getMessage() for r in caplog.records)
+
+
+async def test_admin_delete_race_keeps_the_rest_of_the_batch(db, gh_settings, session_factory):
+    """The raced filing costs only itself: the second candidate is still filed
+    and its number committed."""
+    a = await _flaky_test(db, project="p1", name="a")
+    b = await _flaky_test(db, project="p2", name="b")
+    calls, transport = _race_handler(session_factory, {TestCase: a.id}, [77, 88])
+    await github_integration.file_issues_for(db, [a.id, b.id], transport=transport)
+    assert [(r.method, r.url.path) for r in calls] == [
+        ("POST", "/repos/acme/app/issues"),
+        ("POST", "/repos/acme/app/issues/77/comments"),
+        ("PATCH", "/repos/acme/app/issues/77"),
+        ("POST", "/repos/acme/app/issues"),
+    ]
+    await db.refresh(b)
+    assert b.github_issue_number == 88  # the SAVEPOINT recovery kept the batch alive
+    assert b.github_issue_filed is True
 
 
 def test_run_hint_matches_the_test_framework_by_file_extension():
@@ -689,6 +747,22 @@ async def test_job_files_issue_with_expected_title_and_label(db, gh_settings):
     await db.refresh(job)
     assert job.github_issue_number == 77
     assert job.github_issue_filed is True  # ours, so an admin delete may close it
+
+
+async def test_job_admin_delete_race_closes_the_just_filed_issue(db, gh_settings, session_factory, caplog):
+    """Job side of the race: the just-filed issue is closed, never left stranded."""
+    job = await _flaky_job(db)
+    await _job_exec(db, job, "1")
+    job_id = job.id
+    calls, transport = _race_handler(session_factory, {Job: job_id}, [77])
+    with caplog.at_level(logging.WARNING, logger="flakeradar.github"):
+        await github_integration.file_job_issues_for(db, [job_id], transport=transport)
+    assert [(r.method, r.url.path) for r in calls] == [
+        ("POST", "/repos/acme/app/issues"),
+        ("POST", "/repos/acme/app/issues/77/comments"),
+        ("PATCH", "/repos/acme/app/issues/77"),
+    ]
+    assert any("closed issue" in r.getMessage() and "77" in r.getMessage() for r in caplog.records)
 
 
 async def test_job_issue_body_lists_top_runner_groups(db, gh_settings):
