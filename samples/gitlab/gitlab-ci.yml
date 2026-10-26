@@ -64,12 +64,13 @@ flakeradar:report:
 #       QUERY=$(curl -s -G -o /dev/null -w '%{url_effective}' \
 #         --data-urlencode "repo=$CI_PROJECT_PATH" \
 #         --data-urlencode "project=backend" \
+#         --data-urlencode "root=backend" \
 #         --data-urlencode "commit_sha=$CI_COMMIT_SHA" \
 #         --data-urlencode "branch=$CI_COMMIT_REF_NAME" \
 #         --data-urlencode "ci_run_id=$CI_PIPELINE_ID" \
 #         --data-urlencode "ci_run_attempt=1" \
 #         --data-urlencode "ci_job_id=$CI_JOB_ID" \
-#         --data-urlencode "pipeline=.gitlab-ci.yml" \
+#         --data-urlencode "pipeline=$CI_CONFIG_PATH" \
 #         --data-urlencode "default_branch=$CI_DEFAULT_BRANCH" \
 #         "http://query.invalid/" 2>/dev/null || true)
 #       QUERY=${QUERY#http://query.invalid/?}

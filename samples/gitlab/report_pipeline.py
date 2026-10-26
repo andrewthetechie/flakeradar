@@ -89,7 +89,10 @@ def build_report(jobs: list[dict], env: dict[str, str]) -> dict:
     return {
         "repo": env["CI_PROJECT_PATH"],
         "provider": "gitlab",
-        "pipeline": ".gitlab-ci.yml",
+        # The Pipeline is the CI configuration file: GitLab names it in the
+        # predefined CI_CONFIG_PATH (default .gitlab-ci.yml, but settable in
+        # Settings > CI/CD), so a custom path must not be recorded as the default.
+        "pipeline": env.get("CI_CONFIG_PATH") or ".gitlab-ci.yml",
         "commit_sha": env["CI_COMMIT_SHA"],
         "branch": env["CI_COMMIT_REF_NAME"],
         "default_branch": env["CI_DEFAULT_BRANCH"],

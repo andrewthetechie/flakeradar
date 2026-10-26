@@ -50,6 +50,7 @@ ENV = {
     "CI_COMMIT_SHA": "deadbeefcafebabe0123456789abcdef01234567",
     "CI_COMMIT_REF_NAME": "feature/flaky",
     "CI_DEFAULT_BRANCH": "main",
+    "CI_CONFIG_PATH": ".gitlab-ci.yml",
 }
 
 # Sorted by job id descending, as the Jobs API returns it. 102 and 110 are a retried pair:
@@ -121,6 +122,15 @@ def test_build_report_top_level_fields_come_from_the_ci_environment():
     assert payload["default_branch"] == "main"
     assert payload["ci_run_id"] == "541"
     assert payload["ci_run_attempt"] == 1
+
+
+def test_pipeline_name_is_the_real_ci_config_path_not_an_assumed_default():
+    # A repo with a custom CI/CD configuration file (Settings > CI/CD) must have
+    # its Pipeline recorded under that path, not the default .gitlab-ci.yml.
+    custom = dict(ENV, CI_CONFIG_PATH="ci/main.gitlab-ci.yml")
+    assert sample.build_report(PIPELINE_JOBS, custom)["pipeline"] == "ci/main.gitlab-ci.yml"
+    without = {k: v for k, v in ENV.items() if k != "CI_CONFIG_PATH"}
+    assert sample.build_report(PIPELINE_JOBS, without)["pipeline"] == ".gitlab-ci.yml"
 
 
 def test_build_report_carries_job_fields_onto_the_job_result():
