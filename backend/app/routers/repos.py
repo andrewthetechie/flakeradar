@@ -73,6 +73,43 @@ async def _count_repo_deletions(db: AsyncSession, repo_id: int) -> schemas.Delet
     )
 
 
+async def _issue_numbers(db: AsyncSession, *stmts) -> list[int]:
+    """Sorted, deduplicated issue numbers of the rows the given queries select.
+
+    The rows still have to exist, so this runs before the cascade: once the
+    Test/Job row is gone, `sync_closed_issues` no longer sees the issue and it
+    would stay open forever pointing at a dead permalink.
+    """
+    numbers: set[int] = set()
+    for stmt in stmts:
+        for number in (await db.execute(stmt)).scalars().all():
+            if number is not None:
+                numbers.add(number)
+    return sorted(numbers)
+
+
+async def _project_issue_numbers(db: AsyncSession, project_id: int) -> list[int]:
+    # Jobs hang off Pipelines, which belong to the Repo, so a Project delete strands no Job issue.
+    tests = select(TestCase.github_issue_number).where(
+        TestCase.project_id == project_id, TestCase.github_issue_number.is_not(None)
+    )
+    return await _issue_numbers(db, tests)
+
+
+async def _repo_issue_numbers(db: AsyncSession, repo_id: int) -> list[int]:
+    tests = (
+        select(TestCase.github_issue_number)
+        .join(Project, TestCase.project_id == Project.id)
+        .where(Project.repo_id == repo_id, TestCase.github_issue_number.is_not(None))
+    )
+    jobs = (
+        select(Job.github_issue_number)
+        .join(Pipeline, Job.pipeline_id == Pipeline.id)
+        .where(Pipeline.repo_id == repo_id, Job.github_issue_number.is_not(None))
+    )
+    return await _issue_numbers(db, tests, jobs)
+
+
 # Postgres SQLSTATEs an admin retry can resolve: deadlock_detected, serialization_failure.
 _DEADLOCK_SQLSTATES = frozenset({"40P01", "40001"})
 
@@ -113,6 +150,7 @@ async def delete_repo(owner: str, name: str, db: AsyncSession = Depends(get_db))
         raise HTTPException(status_code=404, detail="Repo not found")
 
     deleted = await _count_repo_deletions(db, repo.id)
+    issues = await _repo_issue_numbers(db, repo.id)
     try:
         await db.delete(repo)
         await db.commit()
@@ -121,7 +159,7 @@ async def delete_repo(owner: str, name: str, db: AsyncSession = Depends(get_db))
         if _is_deadlock(exc):
             raise HTTPException(status_code=503, detail="Delete raced with the report processor; retry.") from exc
         raise
-    return schemas.RepoDeleteOut(repo=repo.name, deleted=deleted)
+    return schemas.RepoDeleteOut(repo=repo.name, deleted=deleted, github_issue_numbers=issues)
 
 
 @router.delete(
@@ -150,6 +188,7 @@ async def delete_project(owner: str, name: str, project: str, db: AsyncSession =
         raise HTTPException(status_code=404, detail="Project not found")
 
     deleted = await _count_project_deletions(db, proj.id)
+    issues = await _project_issue_numbers(db, proj.id)
     try:
         await db.delete(proj)
         await db.commit()
@@ -158,4 +197,6 @@ async def delete_project(owner: str, name: str, project: str, db: AsyncSession =
         if _is_deadlock(exc):
             raise HTTPException(status_code=503, detail="Delete raced with the report processor; retry.") from exc
         raise
-    return schemas.ProjectDeleteOut(repo=repo.name, project=proj.name, deleted=deleted)
+    return schemas.ProjectDeleteOut(
+        repo=repo.name, project=proj.name, deleted=deleted, github_issue_numbers=issues
+    )

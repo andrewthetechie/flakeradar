@@ -368,7 +368,11 @@ curl -X DELETE -H "X-API-Key: $FLAKERADAR_API_TOKEN" \
 Both delete every row in their scope in one transaction — the tests, runs,
 executions and score history, and for a repo also its pipelines, jobs, job
 executions and reports — including reports that are still `pending` or
-`failed`. The response reports what was removed. There is deliberately no UI
+`failed`. The response reports what was removed. The delete does not touch
+GitHub: the auto-filed issues of the deleted tests and jobs stay open, pointing
+at permalinks that now 404, so they must be closed by hand. Their numbers are
+in the response as `github_issue_numbers` (empty when the GitHub integration was
+never used), so you know which ones to close. There is deliberately no UI
 button for this and no MCP tool: deleting data is an admin task, and the MCP
 server must not delete data.
 
@@ -713,8 +717,8 @@ and the MCP server need the token.
 | `GET /api/reports/summary` | none | `{pending, failed}` |
 | `POST /api/reports/{id}/retry` | `X-API-Key` | Put a failed report back in the queue. |
 | `GET /api/repos` | none | Repos with their projects. |
-| `DELETE /api/repos/{owner}/{name}` | `X-API-Key` | Admin: delete a Repo and, by cascade, all its projects, tests, runs, executions, score history, pipelines, jobs, job executions and reports (any status, pending included). Names are normalized (`ACME/App` deletes `acme/app`); an unknown repo gives `404`. Returns `{repo, deleted: {tests, executions, jobs, reports}}`. |
-| `DELETE /api/repos/{owner}/{name}/projects/{project}` | `X-API-Key` | Admin: delete one project of a Repo and, by cascade, its tests, runs, executions, score history and reports (any status). The repo, its other projects and its pipelines and jobs survive, so `jobs` is always `0`. An unknown project gives `404`. Returns `{repo, project, deleted: {tests, executions, jobs, reports}}`. |
+| `DELETE /api/repos/{owner}/{name}` | `X-API-Key` | Admin: delete a Repo and, by cascade, all its projects, tests, runs, executions, score history, pipelines, jobs, job executions and reports (any status, pending included). Names are normalized (`ACME/App` deletes `acme/app`); an unknown repo gives `404`. Returns `{repo, deleted: {tests, executions, jobs, reports}, github_issue_numbers}`. `github_issue_numbers` are the auto-filed issues of the deleted tests and jobs; the delete does not close them, so close them by hand. |
+| `DELETE /api/repos/{owner}/{name}/projects/{project}` | `X-API-Key` | Admin: delete one project of a Repo and, by cascade, its tests, runs, executions, score history and reports (any status). The repo, its other projects and its pipelines and jobs survive, so `jobs` is always `0` and `github_issue_numbers` lists only the deleted tests' issues, never a job's. An unknown project gives `404`. Returns `{repo, project, deleted: {tests, executions, jobs, reports}, github_issue_numbers}`; those issues stay open and must be closed by hand. |
 | `GET /api/tests?repo=&project=&include_stable=&sort=&page=&page_size=&file=&category=&q=&quarantined=&has_issue=&new_within_days=` | none | The paginated leaderboard. `sort` is `score`, `last_seen` or `proven`. `category` filters by likely cause. `q` (max 200 chars) filters by literal substring over name, classname or file, and includes stable tests. `quarantined=true` lists every quarantined test including stable ones; `has_issue` filters by linked GitHub issue. `new_within_days` (1 to 90) lists only new flaky tests, i.e. tests that became flaky in the last N days, and implies flaky-only. |
 | `GET /api/tests/{id}/history?limit=` | none | One test: location and permalink, last failing commit, executions with failure details, the jobs that its runs came from, `score_history` (90 days), `clean_streak` and `trend`. |
 | `GET /api/jobs?repo=&include_stable=&sort=&page=&page_size=&q=&pipeline=&has_issue=&new_within_days=` | none | The jobs leaderboard for a repo, worst first. `q` (max 200 chars) filters by literal substring over job or pipeline name, and includes stable jobs. `pipeline` filters by exact Pipeline name; `has_issue` filters by linked GitHub issue. `new_within_days` (1 to 90) lists only new flaky jobs, i.e. jobs that became flaky in the last N days, and implies flaky-only. |

@@ -122,12 +122,18 @@ class DeletedCountsOut(BaseModel):
 class RepoDeleteOut(BaseModel):
     repo: str
     deleted: DeletedCountsOut
+    # Auto-filed GitHub issues of the Tests/Jobs the cascade removed; empty when
+    # the integration was never used. The delete does not close them (README).
+    github_issue_numbers: list[int]
 
 
 class ProjectDeleteOut(BaseModel):
     repo: str
     project: str
     deleted: DeletedCountsOut
+    # Auto-filed GitHub issues of the deleted Tests; a Project never removes a
+    # Job, so this never carries a Job's issue number.
+    github_issue_numbers: list[int]
 
 
 class TestOut(BaseModel):

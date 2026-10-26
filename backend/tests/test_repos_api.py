@@ -66,6 +66,7 @@ async def test_delete_project_removes_only_its_own_rows(client, db):
         "repo": "acme/app",
         "project": "backend",
         "deleted": {"tests": 2, "executions": 2, "jobs": 0, "reports": 1},
+        "github_issue_numbers": [],
     }
 
     for model, clause in (
@@ -109,11 +110,45 @@ async def test_delete_repo_removes_everything_in_one_transaction(client, db):
     assert resp.json() == {
         "repo": "acme/app",
         "deleted": {"tests": 3, "executions": 2, "jobs": 1, "reports": 2},
+        "github_issue_numbers": [],
     }
 
     for model in (Repo, Project, TestCase, TestRun, TestExecution, Pipeline, Job, JobExecution, Report):
         assert await _count(db, model) == 0, model.__tablename__
     assert (await client.get("/api/repos")).json() == []
+
+
+async def test_delete_project_reports_the_issue_numbers_of_its_tests(client, db):
+    """A deleted Test's auto-filed issue is stranded: the response names it so a human can close it."""
+    proj = await make_project(db, "acme/app", "backend")
+    await make_test_case(db, proj, name="t0", github_issue_number=123)
+    # Jobs belong to the Repo and survive a Project delete, so 456 is not stranded by it.
+    pipe = await make_pipeline(db, "acme/app")
+    job = await make_job(db, pipe, name="test", github_issue_number=456)
+    await db.commit()
+
+    resp = await client.delete("/api/repos/acme/app/projects/backend", headers=AUTH)
+    assert resp.status_code == 200
+    assert resp.json()["github_issue_numbers"] == [123]
+    assert await _count(db, Job, Job.id == job.id) == 1
+
+
+async def test_delete_repo_reports_the_issue_numbers_of_its_tests_and_jobs(client, db):
+    """Repo delete reports both scopes, sorted and deduplicated; the counts stay unchanged."""
+    proj = await make_project(db, "acme/app", "backend")
+    await make_test_case(db, proj, name="t0", github_issue_number=123)
+    sibling = await make_project(db, "acme/app", "frontend")
+    await make_test_case(db, sibling, name="ui", github_issue_number=123)
+    await make_test_case(db, sibling, name="ui2")
+    pipe = await make_pipeline(db, "acme/app")
+    await make_job(db, pipe, name="test", github_issue_number=456)
+    await db.commit()
+
+    resp = await client.delete("/api/repos/acme/app", headers=AUTH)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["github_issue_numbers"] == [123, 456]
+    assert body["deleted"] == {"tests": 3, "executions": 0, "jobs": 1, "reports": 0}
 
 
 async def test_delete_requires_the_api_token(client, db):
