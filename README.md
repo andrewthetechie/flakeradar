@@ -694,6 +694,7 @@ and the MCP server need the token.
 | `GET /api/reports?status=&limit=` | none | Recent reports, newest first. |
 | `GET /api/reports/summary` | none | `{pending, failed}` |
 | `POST /api/reports/{id}/retry` | `X-API-Key` | Put a failed report back in the queue. |
+| `DELETE /api/reports/{id}` | `X-API-Key` | Dismiss a failed report by deleting it; returns `204`. `409` for a report that has not failed, `404` when it does not exist. |
 | `GET /api/repos` | none | Repos with their projects. |
 | `GET /api/tests?repo=&project=&include_stable=&sort=&page=&page_size=&file=&category=&q=&quarantined=&has_issue=&new_within_days=` | none | The paginated leaderboard. `sort` is `score`, `last_seen` or `proven`. `category` filters by likely cause. `q` (max 200 chars) filters by literal substring over name, classname or file, and includes stable tests. `quarantined=true` lists every quarantined test including stable ones; `has_issue` filters by linked GitHub issue. `new_within_days` (1 to 90) lists only new flaky tests, i.e. tests that became flaky in the last N days, and implies flaky-only. |
 | `GET /api/tests/{id}/history?limit=` | none | One test: location and permalink, last failing commit, executions with failure details, the jobs that its runs came from, `score_history` (90 days), `clean_streak` and `trend`. |
