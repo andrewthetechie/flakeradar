@@ -70,11 +70,17 @@ def map_job(job: dict) -> dict | None:
 def build_report(jobs: list[dict], env: dict[str, str]) -> dict:
     """GitLab API job objects + the CI environment -> a PipelineReportIn payload.
 
+    The ``jobs`` list is chronological (oldest job id first) even though the Jobs API
+    returns them by id descending: the backend resolves a repeated Job name by
+    newest-wins, taking ``last_status`` from the last payload entry and inserting
+    ``JobExecution`` rows in payload order. A retried Job therefore has to appear
+    last in the payload with its newest try.
+
     Callers must not post the result when ``jobs`` is empty: the schema requires at
     least one Job.
     """
     results = []
-    for job in jobs:
+    for job in sorted(jobs, key=lambda j: j["id"]):
         if str(job.get("id")) == env.get("CI_JOB_ID"):
             continue  # the reporter job never reports itself
         mapped = map_job(job)

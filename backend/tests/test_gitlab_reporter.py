@@ -105,7 +105,9 @@ def test_build_report_keeps_both_tries_of_a_retried_job():
     payload = sample.build_report(PIPELINE_JOBS, ENV)
     tests = [j for j in payload["jobs"] if j["name"] == "test"]
     # A retry is a new job id in the same pipeline, so both appear: a proven flake.
-    assert [(j["ci_job_id"], j["status"]) for j in tests] == [("110", "passed"), ("102", "failed")]
+    # The payload is chronological (oldest try first), so the backend's newest-wins
+    # semantics keep the passing retry as the Job's last_status.
+    assert [(j["ci_job_id"], j["status"]) for j in tests] == [("102", "failed"), ("110", "passed")]
     PipelineReportIn.model_validate(payload)
 
 
