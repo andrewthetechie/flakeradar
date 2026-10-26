@@ -12,7 +12,9 @@ off.
 Each batch rescores the Tests and Jobs whose Executions it deleted, in the same
 transaction, so a Test or Job that stops running decays to a score of 0
 (and leaves the default leaderboard) instead of keeping its last cached score
-forever. Failed Reports are kept until a human deals with them.
+forever. Failed Reports are kept until a human deals with them, unless
+``failed_report_retention_days`` (FLAKERADAR_FAILED_REPORT_RETENTION_DAYS) ages
+them out too.
 """
 
 import logging
@@ -20,11 +22,12 @@ import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
-from sqlalchemy import ColumnElement, delete, exists, select, tuple_
+from sqlalchemy import ColumnElement, delete, exists, func, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from .config import get_settings
 from .models import (
+    REPORT_FAILED,
     REPORT_PROCESSED,
     JobExecution,
     JobScoreHistory,
@@ -55,6 +58,8 @@ class PruneResult:
     job_score_history: int = 0
     # Quarantines whose human-set expiry has passed, cleared in this round.
     expired_quarantines: int = 0
+    # Failed Reports deleted by the optional failed_report_retention_days setting.
+    failed_reports: int = 0
 
 
 async def _oldest_ids(
@@ -100,12 +105,16 @@ async def prune(
     now: datetime,
     report_days: int,
     execution_days: int,
+    failed_report_days: int = 0,
     history_days: int = 365,
     batch: int | None = None,
 ) -> PruneResult:
     """Delete one batch of expired rows: at most `batch` per table. Caller owns the transaction.
 
     A count equal to `batch` means more expired rows may remain, so another round is worth running.
+
+    Failed Reports are kept forever unless `failed_report_days` is positive; their
+    age starts when they failed, or when they were ingested if they never got that far.
     """
     if batch is None:
         batch = get_settings().prune_batch
@@ -123,6 +132,28 @@ async def prune(
             )
         )
     )
+    # Zero and negative values keep the current behaviour of never pruning a
+    # failed Report, so a misconfigured zero cannot empty the queue.
+    failed_reports = 0
+    if failed_report_days > 0:
+        failed_cutoff = now - timedelta(days=failed_report_days)
+        failed_reports = (
+            await db.execute(
+                delete(Report).where(
+                    Report.id.in_(
+                        select(Report.id)
+                        .where(
+                            Report.status == REPORT_FAILED,
+                            # A failed Report carries the moment it failed; the
+                            # fallback covers a row that failed before it was processed.
+                            func.coalesce(Report.processed_at, Report.created_at) < failed_cutoff,
+                        )
+                        .order_by(Report.id)
+                        .limit(batch)
+                    )
+                )
+            )
+        ).rowcount
     # Collect the ids of this batch before deleting them, so the rows that will disappear can still be
     # rescored afterwards (the caller owns the transaction, so this stays atomic).
     batch_test_ids = await _oldest_ids(db, TestExecution.id, TestExecution.created_at < execution_cutoff, batch)
@@ -187,6 +218,7 @@ async def prune(
         test_score_history=test_history,
         job_score_history=job_history,
         expired_quarantines=len(due_quarantines),
+        failed_reports=failed_reports,
     )
 
 
@@ -208,6 +240,7 @@ async def run_prune(session_factory: async_sessionmaker[AsyncSession]) -> PruneR
                 db,
                 now=utcnow(),
                 report_days=settings.report_retention_days,
+                failed_report_days=settings.failed_report_retention_days,
                 execution_days=settings.execution_retention_days,
                 history_days=settings.score_history_retention_days,
                 batch=batch,
@@ -221,6 +254,7 @@ async def run_prune(session_factory: async_sessionmaker[AsyncSession]) -> PruneR
             test_score_history=totals.test_score_history + result.test_score_history,
             job_score_history=totals.job_score_history + result.job_score_history,
             expired_quarantines=totals.expired_quarantines + result.expired_quarantines,
+            failed_reports=totals.failed_reports + result.failed_reports,
         )
         # A full batch means that table may have more expired rows; an all-empty round
         # deletes nothing, so the loop always terminates. The two score history tables
@@ -229,6 +263,7 @@ async def run_prune(session_factory: async_sessionmaker[AsyncSession]) -> PruneR
             count == batch
             for count in (
                 result.reports,
+                result.failed_reports,
                 result.executions,
                 result.runs,
                 result.job_executions,
@@ -244,9 +279,10 @@ async def run_prune(session_factory: async_sessionmaker[AsyncSession]) -> PruneR
             )
             break
     logger.info(
-        "Pruned %s reports, %s executions, %s job executions, %s runs, %s score history rows, "
+        "Pruned %s reports, %s failed reports, %s executions, %s job executions, %s runs, %s score history rows, "
         "cleared %s expired quarantines",
         totals.reports,
+        totals.failed_reports,
         totals.executions,
         totals.job_executions,
         totals.runs,

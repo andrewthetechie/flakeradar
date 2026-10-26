@@ -674,7 +674,8 @@ reads a `.env` file.
 | `GITHUB_ISSUE_MIN_SCORE` / `GITHUB_ISSUE_MIN_PROVEN_FLAKES` / `GITHUB_ISSUE_MIN_FAILURES` | `0.30` / `0` / `0` | The filing gate. |
 | `GITHUB_SYNC_BATCH` | `2000` | How many linked Tests (and, separately, linked Jobs) the maintenance sync checks per run. The oldest checks run first. |
 | `WORKER_POLL_SECONDS` | `1.0` | How often the report processor checks an empty queue. |
-| `REPORT_RETENTION_DAYS` | `7` | FlakeRadar deletes processed raw reports after this time. It keeps failed reports. |
+| `REPORT_RETENTION_DAYS` | `7` | FlakeRadar deletes processed raw reports after this time. |
+| `FAILED_REPORT_RETENTION_DAYS` | `0` | Failed reports are kept until a human retries or dismisses one. Set this to delete failed reports older than this many days. |
 | `EXECUTION_RETENTION_DAYS` | `90` | FlakeRadar deletes older executions. |
 | `SCORE_HISTORY_RETENTION_DAYS` | `365` | FlakeRadar deletes older daily score history rows. |
 | `PRUNE_INTERVAL_SECONDS` | `3600` | How often retention runs. |
@@ -694,6 +695,7 @@ and the MCP server need the token.
 | `GET /api/reports?status=&limit=` | none | Recent reports, newest first. |
 | `GET /api/reports/summary` | none | `{pending, failed}` |
 | `POST /api/reports/{id}/retry` | `X-API-Key` | Put a failed report back in the queue. |
+| `DELETE /api/reports/{id}` | `X-API-Key` | Dismiss a failed report by deleting it; returns `204`. `409` for a report that has not failed, `404` when it does not exist. |
 | `GET /api/repos` | none | Repos with their projects. |
 | `GET /api/tests?repo=&project=&include_stable=&sort=&page=&page_size=&file=&category=&q=&quarantined=&has_issue=&new_within_days=` | none | The paginated leaderboard. `sort` is `score`, `last_seen` or `proven`. `category` filters by likely cause. `q` (max 200 chars) filters by literal substring over name, classname or file, and includes stable tests. `quarantined=true` lists every quarantined test including stable ones; `has_issue` filters by linked GitHub issue. `new_within_days` (1 to 90) lists only new flaky tests, i.e. tests that became flaky in the last N days, and implies flaky-only. |
 | `GET /api/tests/{id}/history?limit=` | none | One test: location and permalink, last failing commit, executions with failure details, the jobs that its runs came from, `score_history` (90 days), `clean_streak` and `trend`. |

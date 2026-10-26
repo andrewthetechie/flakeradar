@@ -1,6 +1,14 @@
 import { useState } from "react";
 import type { ReportInfo, ReportSummary } from "../api";
 
+/** "3 days ago" — how long a failed Report has been sitting in the queue. */
+function reportAge(iso: string): string {
+  const hours = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 3_600_000));
+  if (hours < 24) return hours <= 1 ? "1 hour ago" : `${hours} hours ago`;
+  const days = Math.floor(hours / 24);
+  return days === 1 ? "1 day ago" : `${days} days ago`;
+}
+
 /** "3 pending · 1 failed" — the only place a broken CI upload becomes visible.
  *  Hidden while the queue is empty and nothing has failed. */
 export function QueueIndicator({
@@ -61,6 +69,7 @@ export function QueueIndicator({
                       {r.commit_sha.slice(0, 10)}
                     </div>{" "}
                     <div className="text-critical [overflow-wrap:anywhere]">{r.error}</div>
+                    <div className="text-muted">{reportAge(r.created_at)}</div>
                   </li>
                 ))}
               </ul>
@@ -68,6 +77,14 @@ export function QueueIndicator({
                 Retry one with{" "}
                 <code className="font-mono text-text-2">POST /api/reports/&lt;id&gt;/retry</code>{" "}
                 (X-API-Key).
+              </div>
+              <div className="mt-1 text-muted">
+                Dismiss one with{" "}
+                <code className="font-mono text-text-2">
+                  curl -X DELETE -H "X-API-Key: $FLAKERADAR_API_TOKEN"
+                  $FLAKERADAR_URL/api/reports/&lt;id&gt;
+                </code>
+                .
               </div>
             </>
           )}
