@@ -6,11 +6,16 @@ source = app
 # only one arm ran, which hides untested guard and rejection paths. The report
 # total (and so `fail_under`) combines lines and branches.
 branch = true
+# SQLAlchemy's asyncio layer runs each query through a greenlet, and parsing
+# runs in a thread (asyncio.to_thread). Without `greenlet` the tracer loses the
+# coroutine after every `await db...` and reports the rest of the handler as
+# unrun.
+concurrency = greenlet, thread
 
 [report]
 show_missing = true
 sort = -Cover
 precision = 2
-# Combined line + branch total. Measured at 90.04 in CI when coverage was
-# turned on; ratchet up as coverage grows, never down.
-fail_under = 90
+# Combined line + branch total. Measured at 96.50 once greenlet tracing was on
+# (90.04 without it); ratchet up as coverage grows, never down.
+fail_under = 96
