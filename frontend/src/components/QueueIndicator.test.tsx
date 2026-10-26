@@ -1,8 +1,12 @@
-import { render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ReportInfo } from "../api";
 import { QueueIndicator } from "./QueueIndicator";
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 const failedReport: ReportInfo = {
   id: 12,
@@ -60,5 +64,23 @@ describe("QueueIndicator", () => {
     expect(
       await screen.findByText("#13 · andrewthetechie/writers-app · pipeline · abcdef1234"),
     ).toBeInTheDocument();
+  });
+
+  it("shows each failed report's age and the dismiss command", async () => {
+    // Frozen clock: the report was created 3 days before "now". Fake timers make
+    // findByText unusable (see CiRunView.test.tsx), so the row is flushed and read
+    // with getByText instead.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-28T00:00:00Z"));
+    const loadFailed = vi.fn().mockResolvedValue([failedReport]);
+    render(<QueueIndicator summary={{ pending: 0, failed: 1 }} loadFailed={loadFailed} />);
+    fireEvent.click(screen.getByRole("button"));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(screen.getByText("3 days ago")).toBeInTheDocument();
+    const dismiss = screen.getByText(/curl -X DELETE/);
+    expect(dismiss).toHaveTextContent('-H "X-API-Key: $FLAKERADAR_API_TOKEN"');
+    expect(dismiss).toHaveTextContent("/api/reports/<id>");
   });
 });
