@@ -82,3 +82,20 @@ async def test_stop_releases_the_lock(engine, session_factory):
         got = (await conn.execute(text("SELECT pg_try_advisory_lock(:k)"), {"k": WORKER_LOCK_KEY})).scalar()
         assert got is True
         await conn.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": WORKER_LOCK_KEY})
+
+
+async def test_release_with_a_dead_lock_connection(engine, session_factory):
+    """Unlocking a connection the server already closed invalidates it instead of raising."""
+    worker = _worker(engine, session_factory)
+    assert await worker._try_lead()
+    pid = (await worker._lock_conn.execute(text("SELECT pg_backend_pid()"))).scalar()
+    async with engine.connect() as conn:
+        await conn.execute(text("SELECT pg_terminate_backend(:pid)"), {"pid": pid})
+
+    await worker._release()
+
+    assert not worker.is_leader
+    async with engine.connect() as conn:
+        got = (await conn.execute(text("SELECT pg_try_advisory_lock(:k)"), {"k": WORKER_LOCK_KEY})).scalar()
+        assert got is True  # the server dropped the lock with the connection
+        await conn.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": WORKER_LOCK_KEY})
