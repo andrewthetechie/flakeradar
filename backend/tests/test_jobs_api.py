@@ -64,6 +64,53 @@ async def test_job_history_outcomes_and_explained_by(client, db):
     assert body2["unexplained_failures"] == 1 and body2["explained_failures"] == 0
 
 
+async def test_job_history_runner_stats(client, db):
+    p = await make_pipeline(db, "acme/app", ".github/workflows/ci.yml")
+    job = await make_job(db, p, name="test")
+    # Two label sets: the gpu one holds every unexplained failure; ubuntu is clean.
+    for i in range(2):
+        await make_job_execution(
+            db, job, status="failed", ci_job_id=f"GPU{i}", runner_name=f"gpu-node-{i}",
+            runner_labels=["self-hosted", "gpu"],
+        )
+    await make_job_execution(
+        db, job, status="passed", ci_job_id="GPU-OK", runner_name="gpu-node-2", runner_labels=["self-hosted", "gpu"]
+    )
+    for i in range(3):
+        await make_job_execution(
+            db, job, status="passed", ci_job_id=f"UBU{i}", runner_name=f"ubuntu-{i}", runner_labels=["ubuntu-latest"]
+        )
+    await db.commit()
+
+    body = (await client.get(f"/api/jobs/{job.id}/history")).json()
+    # Worst unexplained-failure rate first; labels sorted; no name groups, every name is unique.
+    assert body["runners"][0] == {
+        "labels": ["gpu", "self-hosted"],
+        "runner_name": None,
+        "executions": 3,
+        "unexplained_failures": 2,
+    }
+    assert body["runners"][1] == {
+        "labels": ["ubuntu-latest"],
+        "runner_name": None,
+        "executions": 3,
+        "unexplained_failures": 0,
+    }
+    assert all(r["runner_name"] is None for r in body["runners"])
+
+    # A runner_name that repeats (a self-hosted runner) gets its own group.
+    for i in range(2):
+        await make_job_execution(
+            db, job, status="failed", ci_job_id=f"BOX{i}", runner_name="gpu-box-1", runner_labels=["self-hosted", "gpu"]
+        )
+    await db.commit()
+
+    body = (await client.get(f"/api/jobs/{job.id}/history")).json()
+    assert [r for r in body["runners"] if r["runner_name"] == "gpu-box-1"] == [
+        {"labels": ["gpu", "self-hosted"], "runner_name": "gpu-box-1", "executions": 2, "unexplained_failures": 2}
+    ]
+
+
 async def test_summary_job_history_lists_explaining_sibling_jobs(client, db):
     p = await make_pipeline(db, "acme/app", ".github/workflows/ci.yml")
     summary = await make_job(db, p, name="alls-green", summary=True)

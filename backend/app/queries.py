@@ -4,6 +4,7 @@ Every function takes an AsyncSession and returns schemas.* models, so both
 front doors (HTTP and MCP) expose exactly the same data.
 """
 
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Literal
@@ -12,9 +13,15 @@ from sqlalchemy import ColumnElement, Select, func, or_, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from . import schemas
-from .attribution import explained_ci_job_ids, summary_explaining_siblings
+from .attribution import (
+    explained_ci_job_ids,
+    job_execution_explained,
+    job_execution_window_ids,
+    summary_explaining_siblings,
+)
 from .batching import chunks
 from .classify import CATEGORIES, FailureCategory
+from .config import get_settings
 from .models import (
     JOB_FAILED,
     REPORT_FAILED,
@@ -700,6 +707,59 @@ async def job_summary(db: AsyncSession, repo: str | None, *, threshold: float) -
     )
 
 
+RUNNER_STATS_LIMIT = 10  # groups returned by `get_job`, worst unexplained rate first
+
+
+async def _runner_stats(db: AsyncSession, job_id: int) -> list[schemas.RunnerStatOut]:
+    """Job executions grouped by runner over the Job's newest score_window executions.
+
+    One group per sorted label set, plus one per runner_name that appears on 2 or
+    more executions (GitHub-hosted names are unique per run, so only repeated,
+    typically self-hosted, names group). Unexplained means the same as everywhere
+    else: failed and not `job_execution_explained()`.
+    """
+    windowed = job_execution_window_ids([job_id], get_settings().score_window).subquery()
+    rows = (
+        await db.execute(
+            select(
+                JobExecution.runner_name,
+                JobExecution.runner_labels,
+                JobExecution.status,
+                job_execution_explained().label("explained"),
+            )
+            .join(Job, Job.id == JobExecution.job_id)
+            .join(Pipeline, Pipeline.id == Job.pipeline_id)
+            .where(JobExecution.id.in_(select(windowed.c.id)))
+        )
+    ).all()
+
+    label_counts: dict[tuple[str, ...], list[int]] = defaultdict(lambda: [0, 0])  # [executions, unexplained]
+    name_counts: dict[str, list[int]] = defaultdict(lambda: [0, 0])
+    name_labels: dict[str, set[str]] = defaultdict(set)
+    for runner_name, runner_labels, status, explained in rows:
+        labels = tuple(sorted(runner_labels or []))
+        unexplained = 1 if status == JOB_FAILED and not explained else 0
+        label_counts[labels][0] += 1
+        label_counts[labels][1] += unexplained
+        if runner_name:
+            name_counts[runner_name][0] += 1
+            name_counts[runner_name][1] += unexplained
+            name_labels[runner_name].update(labels)
+
+    stats = [
+        (labels, None, counts[0], counts[1]) for labels, counts in label_counts.items()
+    ] + [
+        (tuple(sorted(name_labels[name])), name, counts[0], counts[1])
+        for name, counts in name_counts.items()
+        if counts[0] >= 2
+    ]
+    stats.sort(key=lambda s: (s[3] / s[2], s[2], s[0], s[1] or ""), reverse=True)
+    return [
+        schemas.RunnerStatOut(labels=list(labels), runner_name=name, executions=execs, unexplained_failures=unexp)
+        for labels, name, execs, unexp in stats[:RUNNER_STATS_LIMIT]
+    ]
+
+
 async def get_job(
     db: AsyncSession, job_id: int, *, threshold: float, executions_limit: int = 60
 ) -> schemas.JobHistoryOut | None:
@@ -721,6 +781,7 @@ async def get_job(
         .all()
     )
     explained = await explained_ci_job_ids(db, repo.id, [e.ci_job_id for e in execs])
+    runners = await _runner_stats(db, job_id)
 
     failed_ci_to_exec: dict[str, int] = {}  # ci_job_id -> job_execution id (unique within a Job)
     exec_outs: list[schemas.JobExecutionOut] = []
@@ -819,6 +880,7 @@ async def get_job(
         unexplained_failures=unexplained,
         explained_failures=explained_failures,
         executions=exec_outs,
+        runners=runners,
         score_history=[
             schemas.ScorePointOut(
                 day=h.day,
