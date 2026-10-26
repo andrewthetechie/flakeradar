@@ -317,7 +317,8 @@ def build_mcp(session_factory: async_sessionmaker[AsyncSession], *, api_token: s
         pipeline: str | None = None,
         executions_limit: int = 20,
     ) -> dict[str, Any]:
-        """One Job: score, tier, unexplained vs explained failures, and recent
+        """One Job: score, tier, unexplained vs explained failures, failures grouped
+        by runner (label set, plus runner names seen more than once), and recent
         executions (outcome, sha, branch, attempt, runner, CI url, explaining tests)."""
         _check_limit(executions_limit)
         async with session_factory() as db:
@@ -336,7 +337,7 @@ def build_mcp(session_factory: async_sessionmaker[AsyncSession], *, api_token: s
             if history is None:
                 raise ToolError(f"No job with id {job_id}.")
         return (
-            history.model_dump(mode="json", include={"job", "unexplained_failures", "explained_failures"})
+            history.model_dump(mode="json", include={"job", "unexplained_failures", "explained_failures", "runners"})
             | {
                 "executions": [
                     e.model_dump(mode="json", include=_JOB_EXECUTION_FIELDS)

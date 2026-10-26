@@ -280,6 +280,15 @@ class JobExecutionOut(BaseModel):
     explained_by_jobs: list[ExplainingJobOut]  # failed sibling Jobs; only a summary Job's explained executions
 
 
+class RunnerStatOut(BaseModel):
+    __test__ = False
+
+    labels: list[str]  # sorted label set
+    runner_name: str | None  # None when grouped by label set only; a name appears on 2+ executions
+    executions: int
+    unexplained_failures: int
+
+
 class JobHistoryOut(BaseModel):
     __test__ = False
 
@@ -287,6 +296,7 @@ class JobHistoryOut(BaseModel):
     unexplained_failures: int  # over the returned executions
     explained_failures: int
     executions: list[JobExecutionOut]  # newest first
+    runners: list[RunnerStatOut]  # over the newest score_window executions; worst unexplained rate first
     score_history: list[ScorePointOut]  # oldest first, the last HISTORY_DAYS days
 
 

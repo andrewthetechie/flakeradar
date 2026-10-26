@@ -248,11 +248,19 @@ export interface JobExecution {
   explained_by_jobs: ExplainingJob[]; // failed sibling Jobs; only a summary Job's explained executions
 }
 
+export interface RunnerStat {
+  labels: string[]; // sorted label set
+  runner_name: string | null; // null when grouped by label set only; a name appears on 2+ executions
+  executions: number;
+  unexplained_failures: number;
+}
+
 export interface JobHistory {
   job: Job;
   unexplained_failures: number;
   explained_failures: number;
   executions: JobExecution[];
+  runners: RunnerStat[]; // over the newest score_window executions; worst unexplained rate first
   score_history: ScorePoint[];
 }
 

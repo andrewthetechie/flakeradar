@@ -402,6 +402,12 @@ async def _job_issue_body(db: AsyncSession, job: Job, pipeline: str, repo: str) 
             f"- **Unexplained failures:** {hist.unexplained_failures} (failures with no failing test in the job)",
             f"- **Explained by tests:** {hist.explained_failures}",
         ]
+        top_runners = [r for r in hist.runners if r.unexplained_failures > 0][:3]
+        if top_runners:
+            lines.append("- **Failures by runner:**")
+            for r in top_runners:
+                label = r.runner_name or ", ".join(r.labels) or "(no labels)"
+                lines.append(f"  - `{label}`: {r.unexplained_failures} unexplained of {r.executions} executions")
     lines += [
         "",
         "Job scores count only **unexplained** failures — a failure that a failing Test in the same job",

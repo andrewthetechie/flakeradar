@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { JobHistory } from "../api";
@@ -71,6 +71,20 @@ const history: JobHistory = {
     },
   ],
   score_history: [],
+  runners: [
+    {
+      labels: ["self-hosted", "gpu"],
+      runner_name: null,
+      executions: 3,
+      unexplained_failures: 2,
+    },
+    {
+      labels: ["ubuntu-latest"],
+      runner_name: null,
+      executions: 3,
+      unexplained_failures: 0,
+    },
+  ],
 };
 
 function renderDrawer(overrides: Partial<JobHistory> = {}, onClose = vi.fn()) {
@@ -103,6 +117,42 @@ describe("JobDrawer", () => {
     expect(screen.getByText("No score history yet.")).toBeInTheDocument();
     expect(screen.getAllByText("attempt 1").length).toBe(2);
     expect(screen.getByText("runner-1")).toBeInTheDocument();
+  });
+
+  it("renders the failures-by-runner table", () => {
+    renderDrawer();
+    const table = screen.getByRole("table", { name: "Failures by runner" });
+    const rows = within(table).getAllByRole("row");
+    expect(rows).toHaveLength(3); // header + 2 groups
+    const group = within(rows[1]);
+    expect(group.getByText("self-hosted, gpu")).toBeInTheDocument();
+    expect(group.getAllByRole("cell").map((cell) => cell.textContent)).toEqual([
+      "self-hosted, gpu",
+      "3",
+      "2",
+    ]);
+    expect(within(rows[2]).getByText("ubuntu-latest")).toBeInTheDocument();
+  });
+
+  it("shows the runner name instead of labels when a group is named", () => {
+    renderDrawer({
+      runners: [
+        {
+          labels: ["self-hosted"],
+          runner_name: "gpu-box-1",
+          executions: 4,
+          unexplained_failures: 1,
+        },
+      ],
+    });
+    const table = screen.getByRole("table", { name: "Failures by runner" });
+    expect(within(table).getByText("gpu-box-1")).toBeInTheDocument();
+    expect(within(table).queryByText("self-hosted")).toBeNull();
+  });
+
+  it("omits the failures-by-runner table when there are no groups", () => {
+    renderDrawer({ runners: [] });
+    expect(screen.queryByText("Failures by runner")).toBeNull();
   });
 
   it("lists explaining tests and opens the Test drawer on click", async () => {

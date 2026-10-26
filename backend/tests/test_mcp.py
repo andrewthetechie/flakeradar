@@ -269,6 +269,26 @@ async def test_get_job_by_id_and_by_name_with_explained(mcp, db):
     assert missing.is_error and "No job named 'nope'" in missing.content[0].text
 
 
+async def test_get_job_includes_runner_stats(mcp, db):
+    """get_job passes through the same runner grouping as the REST history."""
+    p = await make_pipeline(db, "acme/app", "ci.yml")
+    job = await make_job(db, p, name="test")
+    # Two unexplained failures on one label set, each on a distinct runner name.
+    for i in range(2):
+        await make_job_execution(
+            db, job, status="failed", ci_job_id=f"sh-{i}", runner_name=f"self-hosted-{i}", runner_labels=["self-hosted"]
+        )
+    await make_job_execution(db, job, status="passed", ci_job_id="gh-1", runner_labels=["ubuntu-latest"])
+    await db.commit()
+    async with Client(mcp) as c:
+        data = (await c.call_tool("get_job", {"job_id": job.id})).data
+    # Unique runner names are not grouped, so the label set is the only self-hosted item.
+    assert data["runners"] == [
+        {"labels": ["self-hosted"], "runner_name": None, "executions": 2, "unexplained_failures": 2},
+        {"labels": ["ubuntu-latest"], "runner_name": None, "executions": 1, "unexplained_failures": 0},
+    ]
+
+
 async def test_get_job_ambiguous_name_lists_ids(mcp, db):
     a = await make_pipeline(db, "acme/app", "a.yml")
     b = await make_pipeline(db, "acme/app", "b.yml")

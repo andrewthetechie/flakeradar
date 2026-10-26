@@ -108,6 +108,38 @@ export function JobDrawer({
               <Sparkline points={history.score_history} label="Flakiness score" />
             </div>
 
+            {history.runners.length > 0 && (
+              <div className="mb-4">
+                <div className="mb-1 text-xs text-muted" id="runner-stats-heading">
+                  Failures by runner
+                </div>
+                <table
+                  className="w-full border-collapse text-xs"
+                  aria-labelledby="runner-stats-heading"
+                >
+                  <thead>
+                    <tr className="border-b border-line text-left text-muted">
+                      <th className="py-1.5 pr-3 font-medium">Runner</th>
+                      <th className="py-1.5 pr-3 font-medium">Executions</th>
+                      <th className="py-1.5 pr-3 font-medium">Unexplained</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {history.runners.map((r, i) => (
+                      <tr
+                        key={`${r.runner_name ?? ""}|${r.labels.join(",")}|${i}`}
+                        className="border-b border-line tabular-nums [&>td]:py-2 [&>td]:pr-3"
+                      >
+                        <td>{r.runner_name ?? (r.labels.join(", ") || "(no labels)")}</td>
+                        <td>{r.executions}</td>
+                        <td>{r.unexplained_failures}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
             <table className="w-full border-collapse text-xs">
               <thead>
                 <tr className="border-b border-line text-left text-muted">
