@@ -294,6 +294,7 @@ describe("App", () => {
         },
       ],
       score_history: [],
+      runners: [],
     };
     vi.stubGlobal(
       "fetch",
