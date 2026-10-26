@@ -106,6 +106,24 @@ async def test_sync_runs_on_start_and_on_interval(session_factory, db, gh_settin
     assert all(req.method == "GET" for req in calls)
 
 
+async def test_idle_wait_times_out_into_the_next_sync(session_factory, monkeypatch):
+    """With nothing queued, the wait for work ends at the sync interval and the sync runs again."""
+    syncs: list[float] = []
+
+    async def fake_sync(session_factory, *, transport=None):
+        syncs.append(asyncio.get_running_loop().time())
+
+    monkeypatch.setattr(github_integration, "sync_closed_issues", fake_sync)
+    # The fake sync returns at once, so the worker always reaches the timed wait.
+    worker = GitHubWorker(session_factory, sync_interval_seconds=0.5)
+    await worker.start()
+    try:
+        await _wait_for(lambda: len(syncs) >= 2, timeout=5.0)
+    finally:
+        await worker.stop()
+    assert syncs[1] - syncs[0] >= 0.4  # the interval, less the time the first sync took to be recorded
+
+
 async def test_stop_cancels_the_task(session_factory, gh_settings):
     worker = GitHubWorker(session_factory, sync_interval_seconds=3600.0)
     assert not worker.is_running
