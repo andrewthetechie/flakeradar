@@ -133,12 +133,25 @@ def test_build_report_carries_job_fields_onto_the_job_result():
         "runner_labels": ["linux", "docker"],
         "started_at": "2026-10-26T09:00:00.000Z",
         "completed_at": "2026-10-26T09:01:02.722Z",
+        "summary": False,
     }
     # A job with no runner yet (manual) still maps, with empty runner fields.
     manual = next(j for j in payload["jobs"] if j["ci_job_id"] == "108")
     assert manual["runner_name"] == ""
     assert manual["runner_labels"] == []
     assert manual["completed_at"] is None
+
+
+def test_summary_jobs_are_flagged_in_the_payload(monkeypatch):
+    monkeypatch.setattr(sample, "SUMMARY_JOBS", {"alls-green"})
+    jobs = [_job(200, "alls-green", "failed"), _job(201, "test", "failed")]
+    payload = sample.build_report(jobs, ENV)
+    by_name = {j["name"]: j for j in payload["jobs"]}
+    assert by_name["alls-green"]["summary"] is True
+    assert by_name["test"]["summary"] is False
+    report = PipelineReportIn.model_validate(payload)
+    flagged = next(j for j in report.jobs if j.name == "alls-green")
+    assert flagged.summary is True
 
 
 def test_payload_validates_against_the_real_schema():

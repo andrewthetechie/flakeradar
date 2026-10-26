@@ -36,6 +36,12 @@ STATUS_MAP = {
     "manual": "skipped",
 }
 
+# Names of your summary Jobs (the alls-green pattern): they run no tests and only
+# report whether the Jobs they `needs` succeeded. No CI API exposes a job's needs,
+# so list them here -- a failed summary Job is then explained by a failed
+# non-summary sibling, and never scored (docs/adr/0004).
+SUMMARY_JOBS: set[str] = set()  # e.g. {"alls-green"}
+
 
 def map_job(job: dict) -> dict | None:
     """One GitLab API job object -> one JobResultIn-shaped dict.
@@ -57,6 +63,7 @@ def map_job(job: dict) -> dict | None:
         "runner_labels": list(job.get("tag_list") or []),
         "started_at": job.get("started_at"),
         "completed_at": job.get("finished_at"),
+        "summary": job["name"] in SUMMARY_JOBS,
     }
 
 

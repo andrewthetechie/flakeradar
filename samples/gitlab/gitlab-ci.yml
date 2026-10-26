@@ -28,6 +28,12 @@ flakeradar:report:
   # A retried GitLab job is a NEW job id in the SAME pipeline, so the reporter sends
   # both tries: a fail and a pass of one Job on one commit SHA — a proven flake —
   # while ci_run_attempt stays 1. The reporter never reports itself.
+  #
+  # Summary jobs: if you use the alls-green pattern, list those job names in the
+  # SUMMARY_JOBS set in report_pipeline.py. GitLab's API does not expose a job's
+  # `needs`, so the reporter can only mark them by name. A failed summary job is
+  # then explained by a failed non-summary job in the same pipeline, and never
+  # scored against it.
   script:
     - python ci/flakeradar/report_pipeline.py
 

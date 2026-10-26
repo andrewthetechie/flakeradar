@@ -303,6 +303,10 @@ A retried GitLab job is a **new job id in the same Pipeline**, not a new CI run
 attempt, so `ci_run_attempt` stays `1` and the reporter sends both tries. FlakeRadar
 records a fail and a pass of that Job on one commit SHA — a **proven flake**.
 
+No GitLab API publishes a job's `needs`, so a summary job must be named in the
+reporter's `SUMMARY_JOBS` list, exactly as in the GitHub sample, for its failure to
+be explained rather than scored (see _Summary jobs (alls-green)_ above).
+
 `CI_JOB_TOKEN` is not enough: in the Jobs API GitLab's job token may call only
 `GET /job`, so it cannot list a pipeline's jobs. The reporter job needs a project
 access token (Reporter role, `read_api` scope) as `GITLAB_TOKEN`.
