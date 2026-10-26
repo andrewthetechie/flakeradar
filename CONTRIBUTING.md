@@ -15,7 +15,7 @@ docker run -d --name flakeradar-pg -p 5432:5432 \
 # Backend (Python 3.12)
 cd backend
 python3.12 -m venv .venv
-.venv/bin/pip install -r requirements.txt
+.venv/bin/pip install -r requirements-dev.txt
 FLAKERADAR_ALLOW_INSECURE=1 .venv/bin/python -m uvicorn app.main:app --port 8000
 
 # Frontend
