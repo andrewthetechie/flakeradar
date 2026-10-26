@@ -64,6 +64,7 @@ async def link_test_issue(
     _check_link("Test", tc.github_issue_number, number, repo=repo, url=url, replace=replace)
     previous = tc.github_issue_number
     tc.github_issue_number = number
+    tc.github_issue_filed = False  # a human linked this one; FlakeRadar must not close it
     if previous != number:
         tc.github_issue_checked_at = None  # a new link is checked first
     await db.commit()
@@ -78,6 +79,7 @@ async def unlink_test_issue(db: AsyncSession, test_id: int, *, threshold: float)
     tc, project, repo = row
     previous = tc.github_issue_number
     tc.github_issue_number = None
+    tc.github_issue_filed = None
     if previous is not None:
         tc.github_issue_checked_at = None
     await db.commit()
@@ -98,6 +100,7 @@ async def link_job_issue(
     _check_link("Job", job.github_issue_number, number, repo=repo.name, url=url, replace=replace)
     previous = job.github_issue_number
     job.github_issue_number = number
+    job.github_issue_filed = False  # a human linked this one; FlakeRadar must not close it
     if previous != number:
         job.github_issue_checked_at = None  # a new link is checked first
     await db.commit()
@@ -112,6 +115,7 @@ async def unlink_job_issue(db: AsyncSession, job_id: int, *, threshold: float) -
     job, pipeline, repo = row
     previous = job.github_issue_number
     job.github_issue_number = None
+    job.github_issue_filed = None
     if previous is not None:
         job.github_issue_checked_at = None
     await db.commit()

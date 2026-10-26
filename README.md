@@ -354,6 +354,34 @@ project when it gets the first upload for it.
 In the dashboard, select a repo. Then you can select one of its projects. In
 the "all repos" view, each row shows `repo · project`.
 
+FlakeRadar only ever creates a repo or project, on its first upload. It removes
+one only through the admin API, so a typo in `repo=` or `project=`, demo data
+or an archived repo does not stay in the pickers forever:
+
+```bash
+curl -X DELETE -H "X-API-Key: $FLAKERADAR_API_TOKEN" \
+  https://flakeradar.example.com/api/repos/acme/app/projects/backend-tests
+curl -X DELETE -H "X-API-Key: $FLAKERADAR_API_TOKEN" \
+  https://flakeradar.example.com/api/repos/demo/shop
+```
+
+Both delete every row in their scope in one transaction — the tests, runs,
+executions and score history, and for a repo also its pipelines, jobs, job
+executions and reports — including reports that are still `pending` or
+`failed`. The response reports what was removed. Every issue the deleted rows
+point at is returned as `github_issue_numbers` (empty when the GitHub
+integration was never used), and FlakeRadar treats the two kinds of link
+differently. The issues it filed itself would otherwise stay open, pointing at
+permalinks that now 404, so when the GitHub integration is configured the
+delete follows the commit with a best-effort close of each of them: an
+explanatory comment, then close. An issue a human linked instead (see "Issues
+filed elsewhere") is never touched by FlakeRadar — no comment, no close — and
+is only listed so you can close it by hand. A GitHub failure is logged, never
+reported, and does not change the response; without a token there are no GitHub
+calls and even the auto-filed issues must be closed by hand. There is
+deliberately no UI button for this and no MCP tool: deleting data is an admin
+task, and the MCP server must not delete data.
+
 ## Test locations and failure details
 
 When a JUnit report includes the file and line of a test, FlakeRadar stores
@@ -577,7 +605,9 @@ Another tool or a person can file the issue instead: a triage bot, an
 agent, or you by hand. Link the issue to the test or job. FlakeRadar then
 treats it as an issue that it filed itself. The UI and API show the link,
 FlakeRadar files no duplicate, and the maintenance sync clears the link when
-the issue is closed.
+the issue is closed. The one place it still tells the two apart: an admin
+delete auto-closes only issues FlakeRadar filed, and never comments on or
+closes one you linked (see "Repos and projects").
 
 ```bash
 curl -X PUT "https://flakeradar.example.com/api/tests/$TEST_ID/issue" \
@@ -697,6 +727,8 @@ and the MCP server need the token.
 | `POST /api/reports/{id}/retry` | `X-API-Key` | Put a failed report back in the queue. |
 | `DELETE /api/reports/{id}` | `X-API-Key` | Dismiss a failed report by deleting it; returns `204`. `409` for a report that has not failed, `404` when it does not exist. |
 | `GET /api/repos` | none | Repos with their projects. |
+| `DELETE /api/repos/{owner}/{name}` | `X-API-Key` | Admin: delete a Repo and, by cascade, all its projects, tests, runs, executions, score history, pipelines, jobs, job executions and reports (any status, pending included). Names are normalized (`ACME/App` deletes `acme/app`); an unknown repo gives `404`. Returns `{repo, deleted: {tests, executions, jobs, reports}, github_issue_numbers}`. `github_issue_numbers` lists every issue stored by the deleted tests and jobs; FlakeRadar comments on and closes only the ones it filed itself best-effort after it commits (failures are logged, not reported), while issues a human linked are never touched and are returned for you to close by hand. Without a token nothing is closed, so even filed issues stay open for you to close by hand. |
+| `DELETE /api/repos/{owner}/{name}/projects/{project}` | `X-API-Key` | Admin: delete one project of a Repo and, by cascade, its tests, runs, executions, score history and reports (any status). The repo, its other projects and its pipelines and jobs survive, so `jobs` is always `0` and `github_issue_numbers` lists only the deleted tests' issues, never a job's. An unknown project gives `404`. Returns `{repo, project, deleted: {tests, executions, jobs, reports}, github_issue_numbers}`; with the GitHub integration configured the tests' filed issues are commented on and closed best-effort after the commit, a human-linked issue is never touched and only returned for you to close by hand, and without a token everything stays open for you to close. |
 | `GET /api/tests?repo=&project=&include_stable=&sort=&page=&page_size=&file=&category=&q=&quarantined=&has_issue=&new_within_days=` | none | The paginated leaderboard. `sort` is `score`, `last_seen` or `proven`. `category` filters by likely cause. `q` (max 200 chars) filters by literal substring over name, classname or file, and includes stable tests. `quarantined=true` lists every quarantined test including stable ones; `has_issue` filters by linked GitHub issue. `new_within_days` (1 to 90) lists only new flaky tests, i.e. tests that became flaky in the last N days, and implies flaky-only. |
 | `GET /api/tests/{id}/history?limit=` | none | One test: location and permalink, last failing commit, executions with failure details, the jobs that its runs came from, `score_history` (90 days), `clean_streak` and `trend`. |
 | `GET /api/jobs?repo=&include_stable=&sort=&page=&page_size=&q=&pipeline=&has_issue=&new_within_days=` | none | The jobs leaderboard for a repo, worst first. `q` (max 200 chars) filters by literal substring over job or pipeline name, and includes stable jobs. `pipeline` filters by exact Pipeline name; `has_issue` filters by linked GitHub issue. `new_within_days` (1 to 90) lists only new flaky jobs, i.e. jobs that became flaky in the last N days, and implies flaky-only. |

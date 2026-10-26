@@ -31,6 +31,7 @@ async def test_link_test_issue(client, db):
     assert body["github_issue_url"] == "https://github.com/acme/app/issues/123"
     await db.refresh(tc)
     assert tc.github_issue_number == 123
+    assert tc.github_issue_filed is False  # a human linked it; never FlakeRadar-filed
 
     history = await client.get(f"/api/tests/{tc.id}/history")
     assert history.json()["test"]["github_issue_number"] == 123
@@ -123,7 +124,7 @@ async def test_invalid_body_is_422(client, db):
 
 
 async def test_unlink_test_issue(client, db):
-    tc = await _test(db, github_issue_number=5)
+    tc = await _test(db, github_issue_number=5, github_issue_filed=False)
     resp = await client.delete(f"/api/tests/{tc.id}/issue", headers=AUTH)
     assert resp.status_code == 200
     body = resp.json()
@@ -131,6 +132,7 @@ async def test_unlink_test_issue(client, db):
     assert body["github_issue_url"] is None
     await db.refresh(tc)
     assert tc.github_issue_number is None
+    assert tc.github_issue_filed is None  # no provenance without a number
 
     resp = await client.delete(f"/api/tests/{tc.id}/issue", headers=AUTH)
     assert resp.status_code == 200
@@ -167,6 +169,7 @@ async def test_link_job_issue(client, db):
     assert body["github_issue_url"] == "https://github.com/acme/app/issues/42"
     await db.refresh(job)
     assert job.github_issue_number == 42
+    assert job.github_issue_filed is False  # a human linked it; never FlakeRadar-filed
 
     history = await client.get(f"/api/jobs/{job.id}/history")
     assert history.json()["job"]["github_issue_number"] == 42
@@ -229,12 +232,14 @@ async def test_unknown_job_and_missing_token(client, db):
 
 
 async def test_unlink_job_issue(client, db):
-    job = await _job(db, github_issue_number=8)
+    job = await _job(db, github_issue_number=8, github_issue_filed=False)
     resp = await client.delete(f"/api/jobs/{job.id}/issue", headers=AUTH)
     assert resp.status_code == 200
     body = resp.json()
     assert body["github_issue_number"] is None
     assert body["github_issue_url"] is None
+    await db.refresh(job)
+    assert job.github_issue_filed is None  # no provenance without a number
 
     resp = await client.delete(f"/api/jobs/{job.id}/issue", headers=AUTH)
     assert resp.status_code == 200

@@ -104,6 +104,7 @@ backend/   FastAPI + async SQLAlchemy 2 + asyncpg + PostgreSQL
     routers/tests.py    Repos, Test leaderboard, summary, Test detail, quarantine
     routers/jobs.py     Job leaderboard, summary, Job detail
     routers/ci_runs.py  failing Tests and failed Jobs of one CI run attempt
+    routers/repos.py    admin delete of a Repo or Project (cascade, X-API-Key)
     queries.py          read services that REST and MCP share
     parsing.py          JUnit parsing: identity, Location, Failure details, retries
     processing.py       one Report -> one Run (or Job executions), batched upserts, rescoring
@@ -137,8 +138,9 @@ samples/   CI snippets and a demo-data simulator
 - Issue links from other filers ([ADR 0008](docs/adr/0008-issue-links-from-other-filers.md)).
 - The read APIs and the quarantine toggle are unauthenticated by design,
   because the dashboard is expected to be on a private network. The CI
-  endpoints, the Issue link endpoints (`PUT`/`DELETE …/issue`) and the MCP
-  server need the token.
+  endpoints, the Issue link endpoints (`PUT`/`DELETE …/issue`), the admin
+  Repo/Project delete (`DELETE /api/repos/…`) and the MCP server need the
+  token.
 - The UI marks each Execution status with a shape (filled circle, filled
   square, filled diamond, hollow circle) as well as a color. Green and red are
   hard to tell apart with deuteranopia, so color never carries meaning alone.

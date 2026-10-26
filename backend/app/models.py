@@ -126,6 +126,9 @@ class TestCase(Base):
 
     # GitHub issue automation bookkeeping.
     github_issue_number: Mapped[int | None] = mapped_column(Integer, default=None)
+    # True = the issue was filed by FlakeRadar, False = a human linked one;
+    # only a filed issue is auto-closed when a Repo or Project is deleted.
+    github_issue_filed: Mapped[bool | None] = mapped_column(Boolean, default=None)
     github_issue_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
 
 
@@ -257,6 +260,9 @@ class Job(Base):
     last_status: Mapped[str] = mapped_column(String(16), default="passed", server_default="passed")
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     github_issue_number: Mapped[int | None] = mapped_column(Integer, default=None)
+    # True = the issue was filed by FlakeRadar, False = a human linked one;
+    # only a filed issue is auto-closed when a Repo or Project is deleted.
+    github_issue_filed: Mapped[bool | None] = mapped_column(Boolean, default=None)
     github_issue_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 

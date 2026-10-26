@@ -14,7 +14,7 @@ from .db import SessionLocal, engine
 from .mcp_server import build_mcp
 from .migrate import run_migrations
 from .retention import run_prune
-from .routers import ci_runs, jobs, reports, tests
+from .routers import ci_runs, jobs, reports, repos, tests
 from .worker import GitHubWorker, ReportWorker
 
 logging.basicConfig(level=logging.INFO)
@@ -79,6 +79,7 @@ app.include_router(reports.router)
 app.include_router(tests.router)
 app.include_router(jobs.router)
 app.include_router(ci_runs.router)
+app.include_router(repos.router)  # admin delete for Repos/Projects
 app.mount("/mcp", mcp_app)  # endpoint: /mcp/ (POST /mcp redirects there)
 
 

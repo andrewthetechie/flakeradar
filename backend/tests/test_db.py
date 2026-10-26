@@ -4,9 +4,10 @@ import importlib.util
 from pathlib import Path
 
 import pytest
+from alembic import command
 from app import db as db_module
 from app.config import Settings
-from app.migrate import run_migrations
+from app.migrate import _alembic_config, run_migrations
 from app.models import Job, JobExecution, Report, TestCase, TestExecution
 from sqlalchemy import inspect, select, text
 from sqlalchemy.exc import IntegrityError
@@ -65,7 +66,7 @@ async def test_migrations_are_idempotent(engine):
     await run_migrations(engine)  # second run is a no-op, must not raise
     async with engine.connect() as conn:
         version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar()
-    assert version == "0014"
+    assert version == "0015"
 
 
 def test_make_engine_sets_command_timeout(monkeypatch):
@@ -224,6 +225,39 @@ async def test_upgrade_marks_nextest_flaky_marker_passed(db):
     assert by_id[marker_after_zero.id] == ("passed", "", "", None)
     assert by_id[marker_after_pass.id] == ("failed", marker, "", None)
     assert by_id[partial_marker.id] == ("failed", marker + " and more", "", None)
+
+
+async def test_upgrade_leaves_stored_issue_numbers_unmarked(db):
+    """0015 backfills nothing: a number stored before the marker existed keeps
+    NULL, which the admin delete reads as linked and never auto-closes.
+
+    The human-link endpoints (issue #11) predate the migration, so a row
+    upgrading from 0014 can hold either kind of link and the two are
+    indistinguishable after the fact.
+    """
+    proj = await make_project(db)
+    linked = await make_test_case(db, proj, name="t", github_issue_number=123)
+    pipe = await make_pipeline(db)
+    job = await make_job(db, pipe, name="e2e", github_issue_number=456)
+    test_id, job_id = linked.id, job.id
+    await db.commit()
+
+    # Replay the real 0015 over the pre-existing rows: back to a 0014 database
+    # (the flag columns gone), then upgrade to head.
+    def replay(conn) -> None:
+        cfg = _alembic_config()
+        cfg.attributes["connection"] = conn  # see migrations/env.py
+        command.downgrade(cfg, "0014")
+        command.upgrade(cfg, "head")
+
+    async with db.bind.connect() as conn:
+        await conn.run_sync(replay)
+
+    # Column select, so nothing stale comes back from the identity map.
+    test_flags = dict((await db.execute(select(TestCase.id, TestCase.github_issue_filed))).all())
+    job_flags = dict((await db.execute(select(Job.id, Job.github_issue_filed))).all())
+    assert test_flags[test_id] is None  # pre-existing number -> linked, never auto-closed
+    assert job_flags[job_id] is None
 
 
 def test_database_url_rewritten_to_asyncpg():
