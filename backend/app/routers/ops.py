@@ -26,12 +26,15 @@ TIER_ORDER: tuple[schemas.Tier, ...] = ("flaky", "suspect", "stable")
 
 # One roundtrip for the queue facts. A one-argument session advisory lock (the
 # form ReportWorker holds) appears in pg_locks as classid = 0, objid = key, which
-# is distinct from the transaction-scoped migration lock on another key.
+# is distinct from the transaction-scoped migration lock on another key. The probe
+# is scoped to the current database because pg_locks is a cluster-wide view: the
+# same key in another database of the cluster belongs to that environment's leader.
 _QUEUE_SQL = text(
     f"""
     SELECT
       EXISTS(SELECT 1 FROM pg_locks
-             WHERE locktype = 'advisory' AND classid = 0 AND objid = :lock_key) AS leader,
+             WHERE locktype = 'advisory' AND classid = 0 AND objid = :lock_key
+               AND database = (SELECT oid FROM pg_database WHERE datname = current_database())) AS leader,
       (SELECT count(*) FROM reports WHERE status = '{REPORT_PENDING}') AS pending,
       (SELECT coalesce(extract(epoch FROM (now() - min(created_at))), 0)
          FROM reports WHERE status = '{REPORT_PENDING}') AS oldest

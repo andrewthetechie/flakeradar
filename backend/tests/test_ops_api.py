@@ -5,10 +5,12 @@ other read APIs. The client fixture runs no lifespan, so no worker exists and
 processor_leader is false unless this test holds the lock itself.
 """
 
-from app.db import WORKER_LOCK_KEY, get_db
+import pytest
+from app.db import WORKER_LOCK_KEY, get_db, make_engine
 from app.main import app
 from app.models import REPORT_FAILED, REPORT_PROCESSED
 from sqlalchemy import event, text
+from sqlalchemy.engine import make_url
 from sqlalchemy.exc import OperationalError
 
 from tests.factories import make_job, make_pipeline, make_project, make_report, make_test_case
@@ -88,6 +90,31 @@ async def test_ready_reports_leader_lock(client, engine):
     resp = await client.get("/api/health/ready")
     assert resp.status_code == 200
     assert resp.json()["processor_leader"] is False
+
+
+async def test_ready_ignores_leader_lock_held_in_another_database(client, database_url):
+    """A lock in a sibling database of the same cluster is not this instance's leader.
+
+    pg_locks is cluster-wide, so an unscoped probe reports a leader this
+    environment does not have.
+    """
+    app_url, other = make_url(database_url), make_url(database_url).set(database="postgres")
+    if other.database == app_url.database:
+        pytest.skip("app database is the maintenance database")
+    foreign = make_engine(other.render_as_string(hide_password=False))
+    try:
+        async with foreign.connect() as conn:
+            got = (await conn.execute(text("SELECT pg_try_advisory_lock(:k)"), {"k": WORKER_LOCK_KEY})).scalar()
+            assert got is True
+            try:
+                resp = await client.get("/api/health/ready")
+                assert resp.status_code == 200
+                assert resp.json()["processor_leader"] is False
+                assert _samples((await client.get("/metrics")).text)["flakeradar_processor_leader"] == "0"
+            finally:
+                await conn.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": WORKER_LOCK_KEY})
+    finally:
+        await foreign.dispose()
 
 
 async def test_ready_503_when_database_fails(client):
