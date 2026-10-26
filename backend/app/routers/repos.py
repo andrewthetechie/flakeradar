@@ -2,6 +2,7 @@
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import schemas
@@ -72,14 +73,27 @@ async def _count_repo_deletions(db: AsyncSession, repo_id: int) -> schemas.Delet
     )
 
 
+# Postgres SQLSTATEs an admin retry can resolve: deadlock_detected, serialization_failure.
+_DEADLOCK_SQLSTATES = frozenset({"40P01", "40001"})
+
+
+def _is_deadlock(exc: DBAPIError) -> bool:
+    """True when Postgres aborted us for a lock cycle the caller may retry."""
+    return getattr(exc.orig, "sqlstate", None) in _DEADLOCK_SQLSTATES
+
+
 # Deleting the Repo/Project row lets the ON DELETE CASCADE foreign keys remove the
-# children in the same transaction. Lock order with the processor: claim_next_report
-# (app/processing.py) locks the pending Report it is processing FOR UPDATE SKIP LOCKED
-# for the whole transaction, so this DELETE blocks until that transaction commits or
-# rolls back, while the processor itself never waits on us — it skips a locked row.
-# Net effect: a delete may wait for one in-flight Report, and a pending Report counted
-# here can still be processed first and is then deleted as already processed. Pending
-# and failed Reports are deleted exactly like processed ones.
+# children in the same transaction. The lock order with the processor is a two-way wait:
+# claim_next_report (app/processing.py) locks the pending Report it is processing FOR UPDATE
+# SKIP LOCKED for the whole transaction, so this DELETE blocks until that transaction commits
+# or rolls back; and in the other direction, the processor's later writes — the TestRun and
+# TestCase inserts (app/processing.py) — take FOR KEY SHARE on the parent Repo/Project row
+# through their foreign keys, which conflicts with this endpoint's FOR UPDATE. That cycle is
+# a real deadlock, and Postgres may abort either transaction with it (SQLSTATE 40P01); this
+# endpoint answers being chosen with a rollback and a retryable 503. Net effect: a delete may
+# wait for one in-flight Report, and a pending Report counted here can still be processed
+# first and is then deleted as already processed. Pending and failed Reports are deleted
+# exactly like processed ones.
 
 
 @router.delete(
@@ -99,8 +113,14 @@ async def delete_repo(owner: str, name: str, db: AsyncSession = Depends(get_db))
         raise HTTPException(status_code=404, detail="Repo not found")
 
     deleted = await _count_repo_deletions(db, repo.id)
-    await db.delete(repo)
-    await db.commit()
+    try:
+        await db.delete(repo)
+        await db.commit()
+    except DBAPIError as exc:
+        await db.rollback()
+        if _is_deadlock(exc):
+            raise HTTPException(status_code=503, detail="Delete raced with the report processor; retry.") from exc
+        raise
     return schemas.RepoDeleteOut(repo=repo.name, deleted=deleted)
 
 
@@ -130,6 +150,12 @@ async def delete_project(owner: str, name: str, project: str, db: AsyncSession =
         raise HTTPException(status_code=404, detail="Project not found")
 
     deleted = await _count_project_deletions(db, proj.id)
-    await db.delete(proj)
-    await db.commit()
+    try:
+        await db.delete(proj)
+        await db.commit()
+    except DBAPIError as exc:
+        await db.rollback()
+        if _is_deadlock(exc):
+            raise HTTPException(status_code=503, detail="Delete raced with the report processor; retry.") from exc
+        raise
     return schemas.ProjectDeleteOut(repo=repo.name, project=proj.name, deleted=deleted)

@@ -11,7 +11,9 @@ from app.models import (
     TestExecution,
     TestRun,
 )
+import pytest
 from sqlalchemy import func, select
+from sqlalchemy.exc import DBAPIError, OperationalError
 
 from tests.conftest import AUTH, make_junit
 from tests.factories import (
@@ -159,3 +161,67 @@ async def test_delete_normalizes_the_names(client, db):
     assert resp.status_code == 200
     assert resp.json()["repo"] == "acme/app"
     assert await _count(db, Repo) == 0
+
+
+class _FakeDeadlock(Exception):
+    """Stands in for the asyncpg driver exception, which carries a SQLSTATE."""
+
+    def __init__(self, sqlstate: str) -> None:
+        super().__init__("deadlock detected")
+        self.sqlstate = sqlstate
+
+
+def _patch_session_method(monkeypatch, method: str, sqlstate: str | None) -> None:
+    """Make every AsyncSession.<method> raise a DBAPIError wrapping this driver SQLSTATE.
+
+    `method` is "delete" or "commit", i.e. the two statements of the endpoint's
+    transaction that can lose a deadlock race with the report processor. A None
+    sqlstate mimics a driver error without one, so a non-deadlock failure.
+    """
+
+    def orig() -> Exception:
+        return _FakeDeadlock(sqlstate) if sqlstate else Exception("no state")
+
+    if method == "delete":
+
+        async def boom(self, obj):  # AsyncSession.delete(self, obj)
+            raise OperationalError("DELETE FROM repos ...", {}, orig())
+
+    else:
+
+        async def boom(self):  # AsyncSession.commit(self)
+            raise OperationalError("DELETE FROM repos ...", {}, orig())
+
+    monkeypatch.setattr(f"sqlalchemy.ext.asyncio.AsyncSession.{method}", boom)
+
+
+@pytest.mark.parametrize("sqlstate", ["40P01", "40001"])
+@pytest.mark.parametrize("path", ["/api/repos/acme/app", "/api/repos/acme/app/projects/backend"])
+@pytest.mark.parametrize("method", ["delete", "commit"])
+async def test_delete_deadlocking_with_the_processor_gets_a_retryable_503(
+    client, db, monkeypatch, method, path, sqlstate
+):
+    """A deadlock abort from the delete/processor race is a 503, not an unhandled 500."""
+    await _seed_project(db, tests=1)
+    # The seed is committed before the patch, so only the endpoint's own statement fails.
+    await db.commit()
+    _patch_session_method(monkeypatch, method, sqlstate)
+
+    resp = await client.delete(path, headers=AUTH)
+
+    assert resp.status_code == 503
+    assert resp.json()["detail"] == "Delete raced with the report processor; retry."
+    # The aborted transaction left the whole Repo/Project behind for a retry.
+    assert await _count(db, Repo) == 1
+    assert await _count(db, Project) == 1
+
+
+@pytest.mark.parametrize("path", ["/api/repos/acme/app", "/api/repos/acme/app/projects/backend"])
+async def test_other_database_errors_still_propagate(client, db, monkeypatch, path):
+    """Only the retryable SQLSTATEs are turned into a 503; anything else is a 500."""
+    await _seed_project(db, tests=1)
+    await db.commit()
+    _patch_session_method(monkeypatch, "commit", None)
+
+    with pytest.raises(DBAPIError):
+        await client.delete(path, headers=AUTH)

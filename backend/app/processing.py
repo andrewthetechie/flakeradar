@@ -72,8 +72,11 @@ class ProcessOutcome:
 async def claim_next_report(db: AsyncSession) -> Report | None:
     """Lock the oldest pending Report for this transaction (SKIP LOCKED).
 
-    An admin delete of the Report's Repo or Project (routers/repos.py) waits for
-    this transaction; this query never waits on such a delete, it skips the row.
+    Only this query skips a locked row: an admin delete of the Report's Repo or
+    Project (routers/repos.py) waits for this transaction, but the rest of it does
+    not skip — the TestRun/TestCase inserts take FOR KEY SHARE on the parent row
+    through their foreign keys, which conflicts with that delete's FOR UPDATE. The
+    pair can therefore deadlock, and the delete side handles it with a retryable 503.
     """
     return (
         await db.execute(
