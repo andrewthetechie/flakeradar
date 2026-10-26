@@ -11,6 +11,6 @@ branch = true
 show_missing = true
 sort = -Cover
 precision = 2
-# Combined line + branch total. Measured at 89.41 when coverage was turned on;
-# ratchet up as coverage grows, never down.
-fail_under = 89
+# Combined line + branch total. Measured at 90.04 in CI when coverage was
+# turned on; ratchet up as coverage grows, never down.
+fail_under = 90
