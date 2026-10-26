@@ -27,6 +27,9 @@ Error handling: never raises.
   (a permission 403, bad credentials 401, a gone Repo 410) leaves the Issue
   link as it is, skips that Repo for the rest of the run, and stamps the rows
   of that Repo so they rotate; 404 still re-arms.
+- After an admin delete (`close_issues_for_deleted_repo`), any failure but a
+  rate limit costs only that one Issue: the other numbers of the deleted scope
+  are still commented on and closed.
 - A response body FlakeRadar cannot use (a 201 without an issue number, a
   sync 200 that is not a JSON object with a `state`) -> log a warning, go on;
   no issue number is stored and no link is cleared (the sync still stamps the
@@ -615,6 +618,76 @@ async def _clear_if_closed(
         logger.info("Issue gone %s#%s; re-arming %s %s", repo, obj.github_issue_number, entity, obj.id)
         obj.github_issue_number = None
     return True
+
+
+_CLOSE_COMMENT = (
+    "FlakeRadar deleted the tracked flaky test or CI job this issue was filed for via the admin delete API, "
+    "so the permalinks in this issue no longer resolve. Closing it automatically; if the test or job is "
+    "uploaded again, FlakeRadar files a fresh issue."
+)
+
+
+async def close_issues_for_deleted_repo(
+    repo: str, numbers: list[int], *, transport: httpx.AsyncBaseTransport | None = None
+) -> None:
+    """Best-effort close of the issues whose Test/Job rows an admin delete removed.
+
+    An admin delete takes the tracked row with it, so no later Report re-files or
+    syncs the issue and `sync_closed_issues` never sees it again: without this it
+    would stay open forever, pointing at permalinks that now 404. No-op when
+    GitHub is not configured or `numbers` is empty. For each number, post an
+    explanatory comment, then PATCH the issue closed.
+
+    Never raises. A rate limit logs a warning and stops the batch; any other
+    failure (a transport error, a 5xx, a client error) costs that one issue and
+    the rest of the list goes on — unlike filing, where one failure skips the
+    whole Repo for the batch. `transport` exists for tests (httpx.MockTransport).
+    """
+    if not configured() or not numbers:
+        return
+    try:
+        async with httpx.AsyncClient(
+            base_url=API_BASE, headers=_headers(get_settings().github_token), timeout=15, transport=transport
+        ) as client:
+            for number in numbers:
+                try:
+                    resp = await client.post(f"/repos/{repo}/issues/{number}/comments", json={"body": _CLOSE_COMMENT})
+                    if _rate_limited(resp):
+                        logger.warning(
+                            "GitHub rate limit (remaining=%s); stopping the post-delete close batch",
+                            resp.headers.get("x-ratelimit-remaining"),
+                        )
+                        return
+                    if resp.status_code in (404, 410):
+                        logger.info("Issue %s#%s already gone after an admin delete", repo, number)
+                        continue
+                    if resp.status_code != 201:
+                        logger.warning(
+                            "GitHub comment on %s#%s failed: %s %s", repo, number, resp.status_code, resp.text[:300]
+                        )
+                        continue
+                    resp = await client.patch(f"/repos/{repo}/issues/{number}", json={"state": "closed"})
+                    if _rate_limited(resp):
+                        logger.warning(
+                            "GitHub rate limit (remaining=%s) on %s#%s; stopping the batch",
+                            resp.headers.get("x-ratelimit-remaining"),
+                            repo,
+                            number,
+                        )
+                        return
+                    if resp.status_code in (404, 410):
+                        logger.info("Issue %s#%s already gone after an admin delete", repo, number)
+                    elif resp.status_code == 200:
+                        logger.info("Closed issue %s#%s after an admin delete", repo, number)
+                    else:
+                        logger.warning(
+                            "GitHub close of %s#%s failed: %s %s", repo, number, resp.status_code, resp.text[:300]
+                        )
+                except httpx.HTTPError as exc:
+                    # A transport failure on one number must not lose the others.
+                    logger.warning("GitHub post-delete close skipped for issue %s#%s: %s", repo, number, exc)
+    except httpx.HTTPError as exc:
+        logger.warning("GitHub unreachable, skipping post-delete issue close: %s", exc)
 
 
 async def on_report_processed(

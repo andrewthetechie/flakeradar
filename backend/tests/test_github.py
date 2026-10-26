@@ -1010,6 +1010,120 @@ async def test_same_number_link_keeps_the_check_stamp(db, gh_settings, session_f
     assert tc.github_issue_checked_at == before
 
 
+def _close_recorder():
+    """Records requests; a comment POST answers 201, a close PATCH 200."""
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(201 if request.method == "POST" else 200, json={"number": 77})
+
+    return calls, httpx.MockTransport(handler)
+
+
+async def test_admin_delete_close_comments_then_closes_each_issue(gh_settings):
+    calls, transport = _close_recorder()
+    await github_integration.close_issues_for_deleted_repo("acme/app", [123, 456], transport=transport)
+    assert [(r.method, r.url.path) for r in calls] == [
+        ("POST", "/repos/acme/app/issues/123/comments"),
+        ("PATCH", "/repos/acme/app/issues/123"),
+        ("POST", "/repos/acme/app/issues/456/comments"),
+        ("PATCH", "/repos/acme/app/issues/456"),
+    ]
+    comment = json.loads(calls[0].content)["body"]
+    assert "admin" in comment and "delet" in comment  # explains why the issue is closing
+    assert json.loads(calls[1].content) == {"state": "closed"}
+
+
+async def test_admin_delete_close_empty_number_list_is_noop(gh_settings):
+    calls, transport = _close_recorder()
+    await github_integration.close_issues_for_deleted_repo("acme/app", [], transport=transport)
+    assert calls == []
+
+    calls, transport = _close_recorder()
+    await github_integration.close_issues_for_deleted_repo("acme/app", [123], transport=transport)
+    assert len(calls) == 2  # the fixture configured the integration
+
+
+async def test_admin_delete_close_without_a_token_is_noop(db):
+    calls, transport = _close_recorder()
+    await github_integration.close_issues_for_deleted_repo("acme/app", [123], transport=transport)
+    assert calls == []
+
+
+async def test_admin_delete_close_network_error_skips_only_that_issue(gh_settings, caplog):
+    calls: list[httpx.Request] = []
+
+    def boom(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if "/123" in request.url.path:
+            raise httpx.ConnectError("offline")
+        return httpx.Response(201 if request.method == "POST" else 200, json={"number": 77})
+
+    with caplog.at_level(logging.WARNING, logger="flakeradar.github"):
+        await github_integration.close_issues_for_deleted_repo(
+            "acme/app", [123, 456], transport=httpx.MockTransport(boom)
+        )
+    assert [r.url.path for r in calls] == [
+        "/repos/acme/app/issues/123/comments",
+        "/repos/acme/app/issues/456/comments",
+        "/repos/acme/app/issues/456",
+    ]
+    # The failure is logged, since the delete's response cannot report it.
+    assert any("123" in r.getMessage() for r in caplog.records)
+
+
+async def test_admin_delete_close_server_error_skips_only_that_issue(gh_settings):
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if "/123" in request.url.path:
+            return httpx.Response(500, text="boom")
+        return httpx.Response(201 if request.method == "POST" else 200, json={"number": 77})
+
+    await github_integration.close_issues_for_deleted_repo(
+        "acme/app", [123, 456], transport=httpx.MockTransport(handler)
+    )
+    assert [r.url.path for r in calls] == [
+        "/repos/acme/app/issues/123/comments",
+        "/repos/acme/app/issues/456/comments",
+        "/repos/acme/app/issues/456",
+    ]
+
+
+async def test_admin_delete_close_gone_issue_skips_the_close(gh_settings):
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if "/123" in request.url.path:
+            return httpx.Response(404, json={"message": "Not Found"})
+        return httpx.Response(201 if request.method == "POST" else 200, json={"number": 77})
+
+    await github_integration.close_issues_for_deleted_repo(
+        "acme/app", [123, 456], transport=httpx.MockTransport(handler)
+    )
+    assert [r.url.path for r in calls] == [
+        "/repos/acme/app/issues/123/comments",
+        "/repos/acme/app/issues/456/comments",
+        "/repos/acme/app/issues/456",
+    ]
+
+
+async def test_admin_delete_close_rate_limit_stops_the_batch(gh_settings):
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(429, json={"message": "Too Many"})
+
+    await github_integration.close_issues_for_deleted_repo(
+        "acme/app", [123, 456], transport=httpx.MockTransport(handler)
+    )
+    assert len(calls) == 1
+
+
 async def test_job_link_change_and_unlink_reset_the_check_stamp(db, gh_settings, session_factory):
     gh_settings.github_sync_batch = 2
     job = await _flaky_job(db)

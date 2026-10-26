@@ -151,6 +151,90 @@ async def test_delete_repo_reports_the_issue_numbers_of_its_tests_and_jobs(clien
     assert body["deleted"] == {"tests": 3, "executions": 0, "jobs": 1, "reports": 0}
 
 
+def _patch_close(monkeypatch) -> list[tuple[str, list[int]]]:
+    """Replace the endpoint's best-effort closer with a recording stub (no HTTP)."""
+    calls: list[tuple[str, list[int]]] = []
+
+    async def fake_close(repo: str, numbers: list[int], **kw) -> None:
+        calls.append((repo, list(numbers)))
+
+    monkeypatch.setattr("app.routers.repos.close_issues_for_deleted_repo", fake_close)
+    return calls
+
+
+async def _seed_stranded_issues(db):
+    """One Test (issue 123) and one Job (issue 456) of `acme/app`."""
+    proj = await make_project(db, "acme/app", "backend")
+    await make_test_case(db, proj, name="t0", github_issue_number=123)
+    pipe = await make_pipeline(db, "acme/app")
+    await make_job(db, pipe, name="test", github_issue_number=456)
+    await db.commit()
+
+
+async def test_delete_repo_closes_the_issues_it_strands(client, db, monkeypatch):
+    """After the commit, the delete closes each stranded issue of the Repo it removed."""
+    calls = _patch_close(monkeypatch)
+    await _seed_stranded_issues(db)
+
+    resp = await client.delete("/api/repos/acme/app", headers=AUTH)
+
+    assert resp.status_code == 200
+    assert calls == [("acme/app", [123, 456])]
+    # The response is exactly what it was before the close existed.
+    assert resp.json() == {
+        "repo": "acme/app",
+        "deleted": {"tests": 1, "executions": 0, "jobs": 1, "reports": 0},
+        "github_issue_numbers": [123, 456],
+    }
+
+
+async def test_delete_project_closes_only_its_tests_issues(client, db, monkeypatch):
+    calls = _patch_close(monkeypatch)
+    await _seed_stranded_issues(db)
+
+    resp = await client.delete("/api/repos/acme/app/projects/backend", headers=AUTH)
+
+    assert resp.status_code == 200
+    assert calls == [("acme/app", [123])]
+    assert resp.json()["github_issue_numbers"] == [123]
+
+
+async def test_delete_closes_the_issues_only_after_the_commit(client, db, monkeypatch, session_factory):
+    """The close runs after the DELETE committed, so it can never roll the delete back.
+
+    The stub re-reads the Repo from a fresh session: seeing it gone is proof the
+    commit already landed when the close was called.
+    """
+    visible: list[int] = []
+
+    async def fake_close(repo: str, numbers: list[int], **kw) -> None:
+        async with session_factory() as check:
+            visible.append(await _count(check, Repo))
+
+    monkeypatch.setattr("app.routers.repos.close_issues_for_deleted_repo", fake_close)
+    await _seed_stranded_issues(db)
+
+    resp = await client.delete("/api/repos/acme/app", headers=AUTH)
+
+    assert resp.status_code == 200
+    assert visible == [0]
+
+
+@pytest.mark.parametrize("path", ["/api/repos/acme/app", "/api/repos/acme/app/projects/backend"])
+async def test_a_delete_that_did_not_happen_closes_nothing(client, db, monkeypatch, path):
+    """404, 422 and the deadlock 503 all return before any GitHub call."""
+    calls = _patch_close(monkeypatch)
+    await _seed_stranded_issues(db)
+
+    assert (await client.delete("/api/repos/acme/none", headers=AUTH)).status_code == 404
+    assert (await client.delete("/api/repos/acme/app/projects/none", headers=AUTH)).status_code == 404
+    assert (await client.delete("/api/repos/ac!me/app", headers=AUTH)).status_code == 422
+
+    _patch_session_method(monkeypatch, "commit", "40P01")
+    assert (await client.delete(path, headers=AUTH)).status_code == 503
+    assert calls == []
+
+
 async def test_delete_requires_the_api_token(client, db):
     await _seed_project(db, tests=1)
     await db.commit()

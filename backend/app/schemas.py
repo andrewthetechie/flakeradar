@@ -123,7 +123,8 @@ class RepoDeleteOut(BaseModel):
     repo: str
     deleted: DeletedCountsOut
     # Auto-filed GitHub issues of the Tests/Jobs the cascade removed; empty when
-    # the integration was never used. The delete does not close them (README).
+    # the integration was never used. Closed best-effort after the delete commits
+    # when the GitHub integration is configured (README).
     github_issue_numbers: list[int]
 
 

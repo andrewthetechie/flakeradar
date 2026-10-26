@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from .. import schemas
 from ..auth import require_token
 from ..db import get_db
+from ..github_integration import close_issues_for_deleted_repo
 from ..identity import normalize_project, normalize_repo
 from ..models import (
     Job,
@@ -159,6 +160,9 @@ async def delete_repo(owner: str, name: str, db: AsyncSession = Depends(get_db))
         if _is_deadlock(exc):
             raise HTTPException(status_code=503, detail="Delete raced with the report processor; retry.") from exc
         raise
+    # Best-effort close of the stranded issues, after the commit: a slow or
+    # failing GitHub API neither holds the DB transaction nor changes the response.
+    await close_issues_for_deleted_repo(repo.name, issues)
     return schemas.RepoDeleteOut(repo=repo.name, deleted=deleted, github_issue_numbers=issues)
 
 
@@ -197,6 +201,8 @@ async def delete_project(owner: str, name: str, project: str, db: AsyncSession =
         if _is_deadlock(exc):
             raise HTTPException(status_code=503, detail="Delete raced with the report processor; retry.") from exc
         raise
+    # Same as the Repo delete: only after the commit, and a GitHub failure never reaches the caller.
+    await close_issues_for_deleted_repo(repo.name, issues)
     return schemas.ProjectDeleteOut(
         repo=repo.name, project=proj.name, deleted=deleted, github_issue_numbers=issues
     )
