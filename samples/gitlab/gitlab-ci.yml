@@ -60,6 +60,8 @@ flakeradar:report:
 #     # failing lookup of query.invalid (curl still prints %{url_effective}), so
 #     # the job does not abort before the upload. Never put -G on the upload
 #     # curl itself: it would move the junit.xml body into the query string.
+#     # The prefix to strip is single-quoted, so the ? there is a literal
+#     # character and not a shell wildcard that could swallow a query character.
 #     - |
 #       QUERY=$(curl -s -G -o /dev/null -w '%{url_effective}' \
 #         --data-urlencode "repo=$CI_PROJECT_PATH" \
@@ -73,7 +75,7 @@ flakeradar:report:
 #         --data-urlencode "pipeline=$CI_CONFIG_PATH" \
 #         --data-urlencode "default_branch=$CI_DEFAULT_BRANCH" \
 #         "http://query.invalid/" 2>/dev/null || true)
-#       QUERY=${QUERY#http://query.invalid/?}
+#       QUERY=${QUERY#'http://query.invalid/?'}
 #       curl --fail-with-body -sS --retry 5 --retry-all-errors --retry-delay 2 -X POST \
 #         "$FLAKERADAR_URL/api/ingest?$QUERY" \
 #         -H "X-API-Key: $FLAKERADAR_TOKEN" -H "Content-Type: application/xml" --data-binary @junit.xml

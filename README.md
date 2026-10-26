@@ -292,12 +292,13 @@ FlakeRadar does not interpret provider-specific job results.
 
 #### GitLab
 
-`samples/gitlab/report_pipeline.py` is a ready-made reporter for it — a
-standard-library script that lists the jobs of `CI_PIPELINE_ID` and posts them as
-one Pipeline report — and `samples/gitlab/gitlab-ci.yml` shows the `.post` job
-that runs it plus the JUnit upload snippet. The status mapping is covered by
-`backend/tests/test_gitlab_reporter.py`, which validates the built payload against
-the real ingest schema.
+[`samples/gitlab/report_pipeline.py`](samples/gitlab/report_pipeline.py) is a
+ready-made reporter for it — a standard-library script that lists the jobs of
+`CI_PIPELINE_ID` and posts them as one Pipeline report — and
+[`samples/gitlab/gitlab-ci.yml`](samples/gitlab/gitlab-ci.yml) shows the `.post`
+job that runs it plus the JUnit upload snippet. The status mapping is covered by
+[`backend/tests/test_gitlab_reporter.py`](backend/tests/test_gitlab_reporter.py),
+which validates the built payload against the real ingest schema.
 
 A retried GitLab job is a **new job id in the same Pipeline**, not a new CI run
 attempt, so `ci_run_attempt` stays `1` and the reporter sends both tries. FlakeRadar
