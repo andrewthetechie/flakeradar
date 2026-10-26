@@ -674,7 +674,8 @@ reads a `.env` file.
 | `GITHUB_ISSUE_MIN_SCORE` / `GITHUB_ISSUE_MIN_PROVEN_FLAKES` / `GITHUB_ISSUE_MIN_FAILURES` | `0.30` / `0` / `0` | The filing gate. |
 | `GITHUB_SYNC_BATCH` | `2000` | How many linked Tests (and, separately, linked Jobs) the maintenance sync checks per run. The oldest checks run first. |
 | `WORKER_POLL_SECONDS` | `1.0` | How often the report processor checks an empty queue. |
-| `REPORT_RETENTION_DAYS` | `7` | FlakeRadar deletes processed raw reports after this time. It keeps failed reports. |
+| `REPORT_RETENTION_DAYS` | `7` | FlakeRadar deletes processed raw reports after this time. |
+| `FAILED_REPORT_RETENTION_DAYS` | `0` | Failed reports are kept until a human retries or dismisses one. Set this to delete failed reports older than this many days. |
 | `EXECUTION_RETENTION_DAYS` | `90` | FlakeRadar deletes older executions. |
 | `SCORE_HISTORY_RETENTION_DAYS` | `365` | FlakeRadar deletes older daily score history rows. |
 | `PRUNE_INTERVAL_SECONDS` | `3600` | How often retention runs. |

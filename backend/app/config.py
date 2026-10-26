@@ -66,6 +66,10 @@ class Settings(BaseSettings):
 
     # Retention (pruned hourly by the Report processor).
     report_retention_days: int = 7  # processed Reports; failed ones are kept
+    # Failed Reports are kept forever by default (0): the queue indicator keeps
+    # showing them until a human retries or dismisses one. Set this to a positive
+    # number of days to also prune failed Reports older than that.
+    failed_report_retention_days: int = 0
     execution_retention_days: int = 90  # Executions (and Runs left empty)
     score_history_retention_days: int = 365  # Score history rows (ADR 0007)
     prune_interval_seconds: float = 3600.0

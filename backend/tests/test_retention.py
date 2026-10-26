@@ -70,6 +70,106 @@ async def test_prune_deletes_only_expired_rows(db):
     assert (await db.execute(select(TestRun.commit_sha))).scalars().all() == ["new"]
 
 
+async def _seed_failed_report_ages(db):
+    """A stale processed Report plus failed Reports around a 7-day cutoff.
+
+    `orphaned` never got a processed_at, so its age comes from created_at.
+    """
+    now = utcnow()
+    proj = await make_project(db)
+    stale = await make_report(db, proj, b"<x/>", status=REPORT_PROCESSED)
+    stale.processed_at = now - timedelta(days=8)
+    old_failed = await make_report(db, proj, b"<x/>", status=REPORT_FAILED)
+    old_failed.processed_at = now - timedelta(days=8)
+    recent_failed = await make_report(db, proj, b"<x/>", status=REPORT_FAILED)
+    recent_failed.processed_at = now - timedelta(days=1)
+    orphaned = await make_report(db, proj, b"<x/>", status=REPORT_FAILED)
+    orphaned.created_at = now - timedelta(days=8)
+    await db.commit()
+    return now, stale, old_failed, recent_failed, orphaned
+
+
+async def test_prune_keeps_failed_reports_when_the_setting_is_not_set(db):
+    now, _stale, old_failed, recent_failed, orphaned = await _seed_failed_report_ages(db)
+
+    result = await prune(db, now=now, report_days=7, execution_days=90)
+    await db.commit()
+
+    assert (result.reports, result.failed_reports) == (1, 0)  # the processed Report only
+    remaining = set((await db.execute(select(Report.id))).scalars())
+    assert remaining == {old_failed.id, recent_failed.id, orphaned.id}
+
+
+async def test_prune_deletes_expired_failed_reports_when_the_setting_is_set(db):
+    now, _stale, _old_failed, recent_failed, _orphaned = await _seed_failed_report_ages(db)
+
+    result = await prune(db, now=now, report_days=7, execution_days=90, failed_report_days=7)
+    await db.commit()
+
+    # The two failed Reports older than the cutoff go, the recent one stays.
+    assert (result.reports, result.failed_reports) == (1, 2)
+    remaining = set((await db.execute(select(Report.id))).scalars())
+    assert remaining == {recent_failed.id}
+
+
+async def test_run_prune_applies_the_failed_report_setting(db, session_factory, monkeypatch, caplog):
+    _now, _stale, _old_failed, recent_failed, _orphaned = await _seed_failed_report_ages(db)
+    monkeypatch.setattr(
+        retention,
+        "get_settings",
+        lambda: Settings(report_retention_days=7, failed_report_retention_days=7),
+    )
+
+    with caplog.at_level(logging.INFO, logger="flakeradar.retention"):
+        result = await retention.run_prune(session_factory)
+
+    assert (result.reports, result.failed_reports) == (1, 2)
+    assert any("2 failed reports" in r.getMessage() for r in caplog.records)
+    async with session_factory() as check:
+        remaining = set((await check.execute(select(Report.id))).scalars())
+    assert remaining == {recent_failed.id}
+
+
+async def test_run_prune_keeps_failed_reports_at_the_default_setting(db, session_factory, monkeypatch):
+    _now, _stale, old_failed, recent_failed, orphaned = await _seed_failed_report_ages(db)
+    monkeypatch.setattr(retention, "get_settings", lambda: Settings(report_retention_days=7))
+
+    result = await retention.run_prune(session_factory)
+
+    assert Settings().failed_report_retention_days == 0  # the shipped default: keep forever
+    assert (result.reports, result.failed_reports) == (1, 0)
+    async with session_factory() as check:
+        remaining = set((await check.execute(select(Report.id))).scalars())
+    assert remaining == {old_failed.id, recent_failed.id, orphaned.id}
+
+
+async def test_run_prune_batches_failed_report_deletes(db, session_factory, monkeypatch):
+    now = utcnow()
+    proj = await make_project(db)
+    for _ in range(5):
+        failed = await make_report(db, proj, b"<x/>", status=REPORT_FAILED)
+        failed.processed_at = now - timedelta(days=8)
+    await db.commit()
+
+    monkeypatch.setattr(
+        retention, "get_settings", lambda: Settings(prune_batch=2, failed_report_retention_days=7)
+    )
+    rounds: list[int] = []
+    real_prune = retention.prune
+
+    async def counting_prune(session, **kwargs):
+        rounds.append(1)
+        return await real_prune(session, **kwargs)
+
+    monkeypatch.setattr(retention, "prune", counting_prune)
+
+    result = await retention.run_prune(session_factory)
+
+    assert result.failed_reports == 5
+    assert len(rounds) == 3  # 2 + 2 + 1 rows, so the batch check sees the failed deletes
+    assert await _count(db, Report.id) == 0
+
+
 async def test_prune_clears_expired_quarantines_only(db, caplog):
     now = utcnow()
     proj = await make_project(db)
