@@ -11,3 +11,4 @@ fastmcp>=4.0,<5
 pytest>=8.3
 pytest-asyncio>=1.0
 testcontainers[postgres]>=4.10
+coverage>=7.6,<8

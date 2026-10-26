@@ -38,6 +38,26 @@ Set `FLAKERADAR_TEST_DATABASE_URL=postgresql+asyncpg://…` to run the backend
 tests against an existing (throwaway!) database instead — its tables are
 truncated between tests.
 
+### Backend coverage
+
+CI measures line and branch coverage (`backend/.coveragerc`). Run the same
+check locally:
+
+```bash
+cd backend
+.venv/bin/coverage run -m pytest -q
+.venv/bin/coverage report        # per-file table; fails below fail_under
+.venv/bin/coverage html          # browsable report in htmlcov/
+```
+
+CI fails a backend job in two cases:
+
+- The total is below `fail_under` in `backend/.coveragerc`. Raise the floor as
+  coverage grows. Never lower it.
+- On a PR, the total is lower than the total of the newest push to `main`.
+  Each push to `main` uploads its `coverage.json` as the `backend-coverage`
+  artifact for this comparison.
+
 ## Database migrations
 
 Schema changes go through Alembic. After editing `backend/app/models.py`, with
