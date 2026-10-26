@@ -38,9 +38,10 @@ flakeradar:report:
 # `ci_job_id=$CI_JOB_ID` is what links this Test run to the Job execution that
 # produced it, so a failed Job can be explained by its failing Tests.
 # ci_run_attempt is always 1 on GitLab: a retry is a new job id, not a new attempt.
-# No URL-encoding step is needed: every interpolated CI_* value is URL-safe as-is
-# (a hex SHA, numeric ids, and GitLab restricts branch and project-path names to
-# a-zA-Z0-9_./-).
+# Only CI_PROJECT_PATH, the hex CI_COMMIT_SHA and the numeric ids are URL-safe
+# as-is; CI_COMMIT_REF_NAME and CI_DEFAULT_BRANCH are git refs, which allow
+# characters beyond a-zA-Z0-9_./- (+, &, #, %, non-ASCII), so every value is
+# percent-encoded below, like samples/github-actions-snippet.yml.
 #
 # test:
 #   stage: test
@@ -48,6 +49,24 @@ flakeradar:report:
 #     - pytest --junitxml=junit.xml
 #   # after_script runs even when the job failed — those are the runs FlakeRadar needs.
 #   after_script:
-#     - curl --fail-with-body -sS --retry 5 --retry-all-errors --retry-delay 2 -X POST
-#         "$FLAKERADAR_URL/api/ingest?repo=$CI_PROJECT_PATH&project=backend&commit_sha=$CI_COMMIT_SHA&branch=$CI_COMMIT_REF_NAME&ci_run_id=$CI_PIPELINE_ID&ci_run_attempt=1&ci_job_id=$CI_JOB_ID&pipeline=.gitlab-ci.yml&default_branch=$CI_DEFAULT_BRANCH"
+#     # Percent-encode every query value: curl's -G moves each --data-urlencode
+#     # value, encoded, into this throwaway URL. `|| true` guards its always-
+#     # failing lookup of query.invalid (curl still prints %{url_effective}), so
+#     # the job does not abort before the upload. Never put -G on the upload
+#     # curl itself: it would move the junit.xml body into the query string.
+#     - |
+#       QUERY=$(curl -s -G -o /dev/null -w '%{url_effective}' \
+#         --data-urlencode "repo=$CI_PROJECT_PATH" \
+#         --data-urlencode "project=backend" \
+#         --data-urlencode "commit_sha=$CI_COMMIT_SHA" \
+#         --data-urlencode "branch=$CI_COMMIT_REF_NAME" \
+#         --data-urlencode "ci_run_id=$CI_PIPELINE_ID" \
+#         --data-urlencode "ci_run_attempt=1" \
+#         --data-urlencode "ci_job_id=$CI_JOB_ID" \
+#         --data-urlencode "pipeline=.gitlab-ci.yml" \
+#         --data-urlencode "default_branch=$CI_DEFAULT_BRANCH" \
+#         "http://query.invalid/" 2>/dev/null || true)
+#       QUERY=${QUERY#http://query.invalid/?}
+#       curl --fail-with-body -sS --retry 5 --retry-all-errors --retry-delay 2 -X POST \
+#         "$FLAKERADAR_URL/api/ingest?$QUERY" \
 #         -H "X-API-Key: $FLAKERADAR_TOKEN" -H "Content-Type: application/xml" --data-binary @junit.xml
