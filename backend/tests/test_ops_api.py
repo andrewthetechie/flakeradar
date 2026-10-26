@@ -5,10 +5,15 @@ other read APIs. The client fixture runs no lifespan, so no worker exists and
 processor_leader is false unless this test holds the lock itself.
 """
 
+import math
+from collections import Counter
+
 import pytest
+from app.config import get_settings
 from app.db import WORKER_LOCK_KEY, get_db, make_engine
 from app.main import app
 from app.models import REPORT_FAILED, REPORT_PROCESSED
+from app.queries import tier_for
 from sqlalchemy import event, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import OperationalError
@@ -166,6 +171,33 @@ async def test_metrics_names_and_labels(client, db):
     # Every family declares its type exactly once.
     for metric in ("flakeradar_reports", OLDEST, "flakeradar_tests", "flakeradar_jobs", LAST_PROCESSED):
         assert resp.text.count(f"# TYPE {metric} gauge") == 1
+
+
+async def test_metrics_tiers_match_tier_for(client, db):
+    """The /metrics tier CASE must classify exactly like queries.tier_for.
+
+    Scores straddle the Flake threshold (just below it, exactly at it) so a
+    future edit to either encoding's boundaries, operators or tier names fails
+    here instead of silently disagreeing with every dashboard and API tier.
+    """
+    threshold = get_settings().flake_threshold
+    scores = [0.0, math.nextafter(threshold, 0.0), threshold, 1.0]
+    expected = Counter(tier_for(score, threshold) for score in scores)
+    proj = await make_project(db)
+    for i, score in enumerate(scores):
+        await make_test_case(db, proj, name=f"t{i}", flakiness_score=score)
+    pipe = await make_pipeline(db)
+    for i, score in enumerate(scores):
+        await make_job(db, pipe, name=f"j{i}", flakiness_score=score)
+    await db.commit()
+
+    resp = await client.get("/metrics")
+    assert resp.status_code == 200
+    samples = _samples(resp.text)
+    for tier in ("flaky", "suspect", "stable"):
+        count = str(expected.get(tier, 0))
+        assert samples[f'flakeradar_tests{{tier="{tier}"}}'] == count
+        assert samples[f'flakeradar_jobs{{tier="{tier}"}}'] == count
 
 
 async def test_metrics_zero_series_and_absent_timestamp(client, db):
