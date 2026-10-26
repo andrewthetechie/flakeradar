@@ -688,6 +688,54 @@ async def test_job_files_issue_with_expected_title_and_label(db, gh_settings):
     assert job.github_issue_number == 77
 
 
+async def test_job_issue_body_lists_top_runner_groups(db, gh_settings):
+    job = await _flaky_job(db)
+    for _ in range(2):
+        await make_job_execution(db, job, status="failed", runner_labels=["self-hosted", "gpu"])
+    await make_job_execution(db, job, status="failed", runner_labels=["ubuntu-latest"])
+    await make_job_execution(db, job, status="passed", runner_labels=["windows-latest"])  # no unexplained
+    await db.commit()
+    calls, transport = _recorder()
+    await github_integration.file_job_issues_for(db, [job.id], transport=transport)
+    (req,) = calls
+    body = json.loads(req.content)["body"]
+    assert "**Failures by runner:**" in body
+    gpu_line = "- `gpu, self-hosted`: 2 unexplained of 2 executions"  # labels are the sorted set
+    ubuntu_line = "- `ubuntu-latest`: 1 unexplained of 1 executions"
+    assert gpu_line in body
+    assert ubuntu_line in body
+    assert body.index(gpu_line) < body.index(ubuntu_line)  # worst group first
+    assert "windows-latest" not in body  # zero-unexplained groups are not listed
+
+
+async def test_job_issue_body_caps_runner_groups_at_three(db, gh_settings):
+    job = await _flaky_job(db, name="many-runners", pipeline=".github/workflows/many.yml")
+    for label, failures in (("a-lab", 3), ("b-lab", 2), ("c-lab", 1), ("d-lab", 1)):
+        for _ in range(failures):
+            await make_job_execution(db, job, status="failed", runner_labels=[label])
+    # d-lab's rate (0.5) is the worst-ranked of the four: one extra passing execution pushes it out of the top 3.
+    await make_job_execution(db, job, status="passed", runner_labels=["d-lab"])
+    await db.commit()
+    calls, transport = _recorder()
+    await github_integration.file_job_issues_for(db, [job.id], transport=transport)
+    (req,) = calls
+    body = json.loads(req.content)["body"]
+    assert "- `a-lab`: 3 unexplained of 3 executions" in body
+    assert "- `b-lab`: 2 unexplained of 2 executions" in body
+    assert "- `c-lab`: 1 unexplained of 1 executions" in body
+    assert "d-lab" not in body
+
+
+async def test_job_issue_body_omits_runner_section_without_unexplained(db, gh_settings):
+    job = await _flaky_job(db, name="explained-only", pipeline=".github/workflows/explained.yml")
+    await _job_exec(db, job, "ex-1", explained=True)
+    calls, transport = _recorder()
+    await github_integration.file_job_issues_for(db, [job.id], transport=transport)
+    (req,) = calls
+    body = json.loads(req.content)["body"]
+    assert "Failures by runner" not in body
+
+
 async def test_job_does_not_refile(db, gh_settings):
     job = await _flaky_job(db)
     await _job_exec(db, job, "1")
