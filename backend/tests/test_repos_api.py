@@ -1,5 +1,6 @@
 """Admin delete of a Repo or a single Project, with cascade and deletion counts (issue #39)."""
 
+import pytest
 from app.models import (
     Job,
     JobExecution,
@@ -11,7 +12,6 @@ from app.models import (
     TestExecution,
     TestRun,
 )
-import pytest
 from sqlalchemy import func, select
 from sqlalchemy.exc import DBAPIError, OperationalError
 
