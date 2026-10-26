@@ -5,10 +5,17 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   backend:
     name: Backend (lint + tests)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Read main's coverage artifact for the PR comparison.
+      actions: read
     defaults:
       run:
         working-directory: backend
@@ -36,7 +43,69 @@ jobs:
       # Tests spin up a real Postgres 17 via testcontainers; ubuntu-latest
       # has Docker available, which testcontainers requires.
       - name: Test (pytest + testcontainers Postgres)
-        run: pytest
+        run: coverage run -m pytest
+
+      # Line + branch coverage (backend/.coveragerc). `report` fails the job
+      # when the total is below `fail_under`.
+      - name: Coverage report
+        run: |
+          coverage json -q -o coverage.json
+          coverage report
+
+      # Each push to main stores its coverage; PRs compare against it.
+      - name: Upload coverage baseline (main only)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-coverage
+          path: backend/coverage.json
+          retention-days: 90
+
+      # Fail the PR when its total is below the newest main baseline. The suite
+      # is deterministic (same total on every run), so the comparison is exact
+      # at the report's two-decimal precision. Without a baseline (none uploaded
+      # yet, or it expired) only the `fail_under` floor applies.
+      - name: Coverage must not decrease (PRs only)
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          run_id=$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=backend-coverage&per_page=100" \
+            --jq "[.artifacts[] | select(.expired | not) | select(.workflow_run.head_branch == \"$BASE_REF\")]
+                  | sort_by(.created_at) | last | .workflow_run.id // empty")
+          if [ -z "$run_id" ]; then
+            echo "::notice::No backend-coverage baseline for $BASE_REF; only the fail_under floor applies."
+            echo "Coverage: no baseline for \`$BASE_REF\` yet; only the \`fail_under\` floor applies." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          gh run download "$run_id" --repo "$GITHUB_REPOSITORY" -n backend-coverage -D "$RUNNER_TEMP/base-coverage"
+          python -I - "$RUNNER_TEMP/base-coverage/coverage.json" coverage.json "$BASE_REF" "$run_id" <<'EOF'
+          import json
+          import os
+          import sys
+
+          base_path, head_path, base_ref, run_id = sys.argv[1:]
+
+          def total(path):
+              with open(path) as f:
+                  return round(json.load(f)["totals"]["percent_covered"], 2)
+
+          base, head = total(base_path), total(head_path)
+          table = (
+              "| | Line + branch coverage |\n"
+              "|---|---|\n"
+              f"| `{base_ref}` (run {run_id}) | {base:.2f}% |\n"
+              f"| this PR | {head:.2f}% |\n"
+              f"| change | {head - base:+.2f} |\n"
+          )
+          print(table)
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+              f.write(table)
+          if head < base:
+              print(f"::error::Backend coverage fell from {base:.2f}% to {head:.2f}%. Add tests for the new or changed code.")
+              sys.exit(1)
+          EOF
 
   frontend:
     name: Frontend (typecheck + tests)

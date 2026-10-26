@@ -3,6 +3,10 @@ __pycache__/
 *.pyc
 backend/.venv/
 .pytest_cache/
+backend/.coverage
+backend/.coverage.*
+backend/coverage.json
+backend/htmlcov/
 
 # Data
 backend/data/

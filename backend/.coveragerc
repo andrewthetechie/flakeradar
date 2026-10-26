@@ -1,0 +1,16 @@
+# Coverage for the backend test suite: `coverage run -m pytest`, then
+# `coverage report`. CI also compares each PR against main (see ci.yml).
+[run]
+source = app
+# Measure branches, not just lines: line coverage counts an `if` as covered when
+# only one arm ran, which hides untested guard and rejection paths. The report
+# total (and so `fail_under`) combines lines and branches.
+branch = true
+
+[report]
+show_missing = true
+sort = -Cover
+precision = 2
+# Combined line + branch total. Measured at 89.41 when coverage was turned on;
+# ratchet up as coverage grows, never down.
+fail_under = 89
