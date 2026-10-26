@@ -163,11 +163,11 @@ def _patch_close(monkeypatch) -> list[tuple[str, list[int]]]:
 
 
 async def _seed_stranded_issues(db):
-    """One Test (issue 123) and one Job (issue 456) of `acme/app`."""
+    """One Test (issue 123) and one Job (issue 456) of `acme/app`, both FlakeRadar-filed."""
     proj = await make_project(db, "acme/app", "backend")
-    await make_test_case(db, proj, name="t0", github_issue_number=123)
+    await make_test_case(db, proj, name="t0", github_issue_number=123, github_issue_filed=True)
     pipe = await make_pipeline(db, "acme/app")
-    await make_job(db, pipe, name="test", github_issue_number=456)
+    await make_job(db, pipe, name="test", github_issue_number=456, github_issue_filed=True)
     await db.commit()
 
 
@@ -197,6 +197,25 @@ async def test_delete_project_closes_only_its_tests_issues(client, db, monkeypat
     assert resp.status_code == 200
     assert calls == [("acme/app", [123])]
     assert resp.json()["github_issue_numbers"] == [123]
+
+
+async def test_delete_closes_only_filed_issues_and_reports_linked_ones(client, db, monkeypatch):
+    """A human-linked issue is returned for manual cleanup but never commented on or closed.
+
+    The closer is the only path that POSTs the comment and PATCHes the close, so
+    recording what it receives proves the linked issue is left alone.
+    """
+    calls = _patch_close(monkeypatch)
+    proj = await make_project(db, "acme/app", "backend")
+    await make_test_case(db, proj, name="filed", github_issue_number=123, github_issue_filed=True)
+    await make_test_case(db, proj, name="linked", github_issue_number=124, github_issue_filed=False)
+    await db.commit()
+
+    resp = await client.delete("/api/repos/acme/app/projects/backend", headers=AUTH)
+
+    assert resp.status_code == 200
+    assert resp.json()["github_issue_numbers"] == [123, 124]
+    assert calls == [("acme/app", [123])]
 
 
 async def test_delete_closes_the_issues_only_after_the_commit(client, db, monkeypatch, session_factory):

@@ -122,9 +122,11 @@ class DeletedCountsOut(BaseModel):
 class RepoDeleteOut(BaseModel):
     repo: str
     deleted: DeletedCountsOut
-    # Auto-filed GitHub issues of the Tests/Jobs the cascade removed; empty when
-    # the integration was never used. Closed best-effort after the delete commits
-    # when the GitHub integration is configured (README).
+    # Every GitHub issue number stored by the Tests/Jobs the cascade removed;
+    # empty when the integration was never used. Only the ones FlakeRadar filed
+    # are commented on and closed best-effort after the delete commits; issues a
+    # human linked are never touched and are returned here for manual cleanup
+    # (README).
     github_issue_numbers: list[int]
 
 
@@ -132,8 +134,10 @@ class ProjectDeleteOut(BaseModel):
     repo: str
     project: str
     deleted: DeletedCountsOut
-    # Auto-filed GitHub issues of the deleted Tests; a Project never removes a
-    # Job, so this never carries a Job's issue number.
+    # Every GitHub issue number stored by the deleted Tests; a Project never
+    # removes a Job, so this never carries a Job's issue number. As on a Repo
+    # delete, only FlakeRadar-filed issues are closed automatically; linked ones
+    # are returned for you to close by hand.
     github_issue_numbers: list[int]
 
 

@@ -324,6 +324,7 @@ async def file_issues_for(
                         )
                     else:
                         tc.github_issue_number = number
+                        tc.github_issue_filed = True  # this is ours, so the admin delete may close it
                         tc.github_issue_checked_at = None  # a new link is checked first
                         await db.commit()
                         logger.info("Filed issue %s#%s for test %s", repo, tc.github_issue_number, tc.id)
@@ -473,6 +474,7 @@ async def file_job_issues_for(
                         )
                     else:
                         job.github_issue_number = number
+                        job.github_issue_filed = True  # this is ours, so the admin delete may close it
                         job.github_issue_checked_at = None  # a new link is checked first
                         await db.commit()
                         logger.info("Filed issue %s#%s for job %s", repo, job.github_issue_number, job.id)
@@ -613,10 +615,12 @@ async def _clear_if_closed(
         elif state == "closed":
             logger.info("Issue closed %s#%s; re-arming %s %s", repo, obj.github_issue_number, entity, obj.id)
             obj.github_issue_number = None
+            obj.github_issue_filed = None
     elif resp.status_code == 404:
         # Issue deleted or token can no longer see it — do not hold dedup forever.
         logger.info("Issue gone %s#%s; re-arming %s %s", repo, obj.github_issue_number, entity, obj.id)
         obj.github_issue_number = None
+        obj.github_issue_filed = None
     return True
 
 

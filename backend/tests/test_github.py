@@ -102,6 +102,7 @@ async def test_files_issue_in_the_tests_own_repo(db, gh_settings):
     assert "pytest" not in body["body"]
     await db.refresh(tc)
     assert tc.github_issue_number == 77
+    assert tc.github_issue_filed is True  # ours, so an admin delete may close it
 
 
 def test_run_hint_matches_the_test_framework_by_file_extension():
@@ -328,7 +329,7 @@ async def test_score_gate_from_issue_min_score(db, gh_settings):
 
 
 async def test_sync_rearms_closed_issue_only(db, gh_settings, session_factory):
-    closed = await _flaky_test(db, name="closed", github_issue_number=11)
+    closed = await _flaky_test(db, name="closed", github_issue_number=11, github_issue_filed=True)
     still_open = await _flaky_test(db, name="open", repo="acme/keep", github_issue_number=22)
     state = {"/acme/app/issues/11": "closed", "/acme/keep/issues/22": "open"}
     calls: list[httpx.Request] = []
@@ -344,6 +345,7 @@ async def test_sync_rearms_closed_issue_only(db, gh_settings, session_factory):
     await db.refresh(closed)
     await db.refresh(still_open)
     assert closed.github_issue_number is None
+    assert closed.github_issue_filed is None  # the flag resets with the number
     assert still_open.github_issue_number == 22
 
 
@@ -686,6 +688,7 @@ async def test_job_files_issue_with_expected_title_and_label(db, gh_settings):
     assert "Unexplained failures" in body["body"] and "Explained by tests" in body["body"]
     await db.refresh(job)
     assert job.github_issue_number == 77
+    assert job.github_issue_filed is True  # ours, so an admin delete may close it
 
 
 async def test_job_issue_body_lists_top_runner_groups(db, gh_settings):

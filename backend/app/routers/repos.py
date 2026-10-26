@@ -89,15 +89,22 @@ async def _issue_numbers(db: AsyncSession, *stmts) -> list[int]:
     return sorted(numbers)
 
 
-async def _project_issue_numbers(db: AsyncSession, project_id: int) -> list[int]:
+async def _project_issue_numbers(db: AsyncSession, project_id: int) -> tuple[list[int], list[int]]:
+    """Every stored issue number of the Project, and the FlakeRadar-filed subset.
+
+    A human-linked issue (flag False, or NULL from before the marker existed) is
+    reported but never auto-closed: FlakeRadar does not own it.
+    """
     # Jobs hang off Pipelines, which belong to the Repo, so a Project delete strands no Job issue.
     tests = select(TestCase.github_issue_number).where(
         TestCase.project_id == project_id, TestCase.github_issue_number.is_not(None)
     )
-    return await _issue_numbers(db, tests)
+    filed = tests.where(TestCase.github_issue_filed.is_(True))
+    return await _issue_numbers(db, tests), await _issue_numbers(db, filed)
 
 
-async def _repo_issue_numbers(db: AsyncSession, repo_id: int) -> list[int]:
+async def _repo_issue_numbers(db: AsyncSession, repo_id: int) -> tuple[list[int], list[int]]:
+    """Every stored issue number of the Repo, and the FlakeRadar-filed subset."""
     tests = (
         select(TestCase.github_issue_number)
         .join(Project, TestCase.project_id == Project.id)
@@ -108,7 +115,11 @@ async def _repo_issue_numbers(db: AsyncSession, repo_id: int) -> list[int]:
         .join(Pipeline, Job.pipeline_id == Pipeline.id)
         .where(Pipeline.repo_id == repo_id, Job.github_issue_number.is_not(None))
     )
-    return await _issue_numbers(db, tests, jobs)
+    issues = await _issue_numbers(db, tests, jobs)
+    filed = await _issue_numbers(
+        db, tests.where(TestCase.github_issue_filed.is_(True)), jobs.where(Job.github_issue_filed.is_(True))
+    )
+    return issues, filed
 
 
 # Postgres SQLSTATEs an admin retry can resolve: deadlock_detected, serialization_failure.
@@ -151,7 +162,7 @@ async def delete_repo(owner: str, name: str, db: AsyncSession = Depends(get_db))
         raise HTTPException(status_code=404, detail="Repo not found")
 
     deleted = await _count_repo_deletions(db, repo.id)
-    issues = await _repo_issue_numbers(db, repo.id)
+    issues, filed = await _repo_issue_numbers(db, repo.id)
     try:
         await db.delete(repo)
         await db.commit()
@@ -161,8 +172,10 @@ async def delete_repo(owner: str, name: str, db: AsyncSession = Depends(get_db))
             raise HTTPException(status_code=503, detail="Delete raced with the report processor; retry.") from exc
         raise
     # Best-effort close of the stranded issues, after the commit: a slow or
-    # failing GitHub API neither holds the DB transaction nor changes the response.
-    await close_issues_for_deleted_repo(repo.name, issues)
+    # failing GitHub API neither holds the DB transaction nor changes the
+    # response. Only issues FlakeRadar filed: a human-linked one is reported for
+    # manual cleanup and must never be commented on or closed by us.
+    await close_issues_for_deleted_repo(repo.name, filed)
     return schemas.RepoDeleteOut(repo=repo.name, deleted=deleted, github_issue_numbers=issues)
 
 
@@ -192,7 +205,7 @@ async def delete_project(owner: str, name: str, project: str, db: AsyncSession =
         raise HTTPException(status_code=404, detail="Project not found")
 
     deleted = await _count_project_deletions(db, proj.id)
-    issues = await _project_issue_numbers(db, proj.id)
+    issues, filed = await _project_issue_numbers(db, proj.id)
     try:
         await db.delete(proj)
         await db.commit()
@@ -201,8 +214,9 @@ async def delete_project(owner: str, name: str, project: str, db: AsyncSession =
         if _is_deadlock(exc):
             raise HTTPException(status_code=503, detail="Delete raced with the report processor; retry.") from exc
         raise
-    # Same as the Repo delete: only after the commit, and a GitHub failure never reaches the caller.
-    await close_issues_for_deleted_repo(repo.name, issues)
+    # Same as the Repo delete: only after the commit, a GitHub failure never
+    # reaches the caller, and only FlakeRadar-filed issues are touched at all.
+    await close_issues_for_deleted_repo(repo.name, filed)
     return schemas.ProjectDeleteOut(
         repo=repo.name, project=proj.name, deleted=deleted, github_issue_numbers=issues
     )

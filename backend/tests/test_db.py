@@ -65,7 +65,7 @@ async def test_migrations_are_idempotent(engine):
     await run_migrations(engine)  # second run is a no-op, must not raise
     async with engine.connect() as conn:
         version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar()
-    assert version == "0014"
+    assert version == "0015"
 
 
 def test_make_engine_sets_command_timeout(monkeypatch):
@@ -224,6 +224,31 @@ async def test_upgrade_marks_nextest_flaky_marker_passed(db):
     assert by_id[marker_after_zero.id] == ("passed", "", "", None)
     assert by_id[marker_after_pass.id] == ("failed", marker, "", None)
     assert by_id[partial_marker.id] == ("failed", marker + " and more", "", None)
+
+
+async def test_upgrade_marks_stored_issue_numbers_as_filed(db):
+    """0015 backfills every row that already has an issue number: only the filer wrote those."""
+    proj = await make_project(db)
+    filed = await make_test_case(db, proj, name="t", github_issue_number=123)
+    numberless = await make_test_case(db, proj, name="v")
+    pipe = await make_pipeline(db)
+    job = await make_job(db, pipe, name="e2e", github_issue_number=456)
+    job_without_issue = await make_job(db, pipe, name="lint")
+    await db.commit()
+
+    upgrade = _migration("0015_issue_link_provenance")
+    await db.execute(text(upgrade.BACKFILL_TESTS_SQL))
+    await db.execute(text(upgrade.BACKFILL_JOBS_SQL))
+    await db.commit()
+
+    await db.refresh(filed)
+    await db.refresh(numberless)
+    await db.refresh(job)
+    await db.refresh(job_without_issue)
+    assert filed.github_issue_filed is True
+    assert numberless.github_issue_filed is None  # no number, so no provenance
+    assert job.github_issue_filed is True
+    assert job_without_issue.github_issue_filed is None
 
 
 def test_database_url_rewritten_to_asyncpg():
