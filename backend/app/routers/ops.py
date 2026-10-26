@@ -56,7 +56,8 @@ _OLDEST_PENDING_HELP = (
 )
 _LAST_PROCESSED_HELP = (
     "# HELP flakeradar_last_report_processed_timestamp_seconds Unix time of the most recently processed"
-    " Report; absent until the first Report is processed."
+    " Report still retained; absent until the first Report is processed, and it can move backwards or"
+    " disappear again once retention deletes processed Reports (REPORT_RETENTION_DAYS)."
 )
 
 

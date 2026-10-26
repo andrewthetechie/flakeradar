@@ -679,13 +679,16 @@ every worker returns the same values:
   or `stable`).
 - `flakeradar_jobs{tier}`: the number of Jobs by tier.
 - `flakeradar_last_report_processed_timestamp_seconds`: the Unix time of the
-  last processed Report. It is absent until the first Report is processed.
+  last processed Report still retained. It is absent until the first Report is
+  processed, and it can move backwards and disappear again once retention
+  deletes processed Reports (`REPORT_RETENTION_DAYS`, default 7 days).
 
 `flakeradar_processor_leader 0` during a redeploy is normal: the lock moves
-between processes, so it is not alert-worthy by itself. The only configuration
-that affects `/metrics` output is `FLAKERADAR_FLAKE_THRESHOLD`, which decides
-the tier classification of the `flakeradar_tests{tier}` and
-`flakeradar_jobs{tier}` gauges.
+between processes, so it is not alert-worthy by itself. Two settings affect
+`/metrics` output: `FLAKERADAR_FLAKE_THRESHOLD`, which decides the tier
+classification of the `flakeradar_tests{tier}` and `flakeradar_jobs{tier}`
+gauges, and `FLAKERADAR_REPORT_RETENTION_DAYS`, which prunes the processed
+Reports the last-processed timestamp is read from.
 
 ```yaml
 scrape_configs:
