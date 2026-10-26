@@ -110,6 +110,10 @@ jobs:
   frontend:
     name: Frontend (typecheck + tests)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Read main's coverage artifact for the PR comparison.
+      actions: read
     defaults:
       run:
         working-directory: frontend
@@ -136,5 +140,60 @@ jobs:
       - name: Format check (Prettier)
         run: npm run format:check
 
-      - name: Test (vitest + jsdom)
+      # CI is set on GitHub runners, so this also measures coverage (v8) and
+      # fails below the thresholds in frontend/vite.config.ts.
+      - name: Test (vitest + jsdom + coverage)
         run: npm test
+
+      # Each push to main stores its coverage; PRs compare against it.
+      - name: Upload coverage baseline (main only)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-coverage
+          path: frontend/test-results/coverage/coverage-summary.json
+          retention-days: 90
+
+      # Fail the PR when any of statements, branches, functions or lines is
+      # below the newest main baseline. The suite gives the same figures on
+      # every run, so the comparison is exact (two decimals). Without a
+      # baseline (none uploaded yet, or it expired) only the thresholds apply.
+      - name: Coverage must not decrease (PRs only)
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          run_id=$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=frontend-coverage&per_page=100" \
+            --jq "[.artifacts[] | select(.expired | not) | select(.workflow_run.head_branch == \"$BASE_REF\")]
+                  | sort_by(.created_at) | last | .workflow_run.id // empty")
+          if [ -z "$run_id" ]; then
+            echo "::notice::No frontend-coverage baseline for $BASE_REF; only the thresholds apply."
+            echo "Frontend coverage: no baseline for \`$BASE_REF\` yet; only the thresholds apply." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          gh run download "$run_id" --repo "$GITHUB_REPOSITORY" -n frontend-coverage -D "$RUNNER_TEMP/base-coverage"
+          node --input-type=commonjs - "$RUNNER_TEMP/base-coverage/coverage-summary.json" test-results/coverage/coverage-summary.json "$BASE_REF" "$run_id" <<'EOF'
+          const fs = require("node:fs");
+          const [basePath, headPath, baseRef, runId] = process.argv.slice(2);
+          const total = (p) => JSON.parse(fs.readFileSync(p, "utf8")).total;
+          const base = total(basePath);
+          const head = total(headPath);
+          const metrics = ["statements", "branches", "functions", "lines"];
+          const pct = (t, m) => Math.round(t[m].pct * 100) / 100;
+          let table = `| Frontend coverage | \`${baseRef}\` (run ${runId}) | this PR | change |\n|---|---|---|---|\n`;
+          const fell = [];
+          for (const m of metrics) {
+            const b = pct(base, m);
+            const h = pct(head, m);
+            const d = h - b;
+            table += `| ${m} | ${b.toFixed(2)}% | ${h.toFixed(2)}% | ${d >= 0 ? "+" : ""}${d.toFixed(2)} |\n`;
+            if (h < b) fell.push(`${m} ${b.toFixed(2)}% -> ${h.toFixed(2)}%`);
+          }
+          console.log(table);
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, table);
+          if (fell.length) {
+            console.log(`::error::Frontend coverage fell: ${fell.join(", ")}. Add tests for the new or changed code.`);
+            process.exit(1);
+          }
+          EOF
