@@ -14,14 +14,28 @@ job results and JUnit reports arrive in either order.
 """
 
 from collections import defaultdict
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 
-from sqlalchemy import ColumnElement, Exists, and_, exists, func, or_, select, tuple_
+from sqlalchemy import (
+    ARRAY,
+    ColumnElement,
+    Exists,
+    Integer,
+    Select,
+    and_,
+    bindparam,
+    exists,
+    func,
+    or_,
+    select,
+    true,
+    tuple_,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from .batching import chunks
-from .models import JOB_FAILED, Job, JobExecution, Pipeline, Project, TestExecution, TestRun
+from .models import JOB_FAILED, Job, JobExecution, Pipeline, Project, Repo, TestExecution, TestRun
 from .scoring import FAILING
 
 # Most explaining sibling Jobs listed per (ci_run_id, ci_run_attempt) pair.
@@ -209,29 +223,59 @@ async def summary_explaining_siblings(
     return by_pair
 
 
+def _window_ids(job_ids: Sequence[int], window: int, key: str, *, on_default: bool) -> Select:
+    """(job_id, id) of the newest `window` executions per Job, via LATERAL ... LIMIT."""
+    src = func.unnest(bindparam(key, list(job_ids), type_=ARRAY(Integer()))).table_valued("job_id").render_derived()
+    lat = select(JobExecution.id).where(JobExecution.job_id == src.c.job_id)
+    if on_default:
+        lat = (
+            lat.join(Job, Job.id == JobExecution.job_id)
+            .join(Pipeline, Pipeline.id == Job.pipeline_id)
+            .join(Repo, Repo.id == Pipeline.repo_id)
+            .where(or_(Repo.default_branch.is_(None), JobExecution.branch == Repo.default_branch))
+        )
+    lat = lat.order_by(JobExecution.id.desc()).limit(window).lateral()
+    return select(src.c.job_id, lat.c.id).join_from(src, lat, true())
+
+
+def job_execution_window_ids(job_ids: Sequence[int], window: int, *, include_default_branch: bool = False) -> Select:
+    """The newest `window` Job-execution ids per Job: unnest + LATERAL ... LIMIT.
+
+    Each lateral stops after `window` rows per Job on ix_job_exec_job_id, so the
+    cost tracks the window, not the Job's retained history (measured before and
+    after: docs/perf/21-job-rescore-explain.md). With
+    `include_default_branch`, also the newest `window` per Job on its Repo's
+    Default branch (a NULL Default branch matches every branch), UNION-deduped:
+    the newest `window` rows overall plus the newest `window` on the Default
+    branch. Unlike the old (rn_all | rn_def) filter it no longer admits the
+    newest `window` off-Default rows beyond the overall window; nothing consumed
+    them (scoring reads flips on the Default branch only, Proven flakes from the
+    overall window, and with an unknown Default branch the old on_default
+    matched every row anyway). Rows are (job_id, id); `job_ids` must be
+    non-empty and within one chunk.
+    """
+    windowed = _window_ids(job_ids, window, key="je_window_overall", on_default=False)
+    if not include_default_branch:
+        return windowed
+    return windowed.union(_window_ids(job_ids, window, key="je_window_default", on_default=True))
+
+
 async def unexplained_failure_counts(db: AsyncSession, job_ids: list[int], window: int) -> dict[int, int]:
     """Unexplained failures per Job over its newest `window` Job executions (any branch).
 
     Jobs with none are left out of the result.
     """
-    rn = func.row_number().over(partition_by=JobExecution.job_id, order_by=JobExecution.id.desc()).label("rn")
     counts: dict[int, int] = defaultdict(int)
     for chunk in chunks(job_ids):
-        ranked = (
-            select(
-                JobExecution.job_id,
-                JobExecution.status,
-                job_execution_explained().label("explained"),
-                rn,
-            )
+        windowed = job_execution_window_ids(chunk, window).subquery()
+        rows = await db.execute(
+            select(JobExecution.job_id)
             .join(Job, Job.id == JobExecution.job_id)
             .join(Pipeline, Pipeline.id == Job.pipeline_id)
-            .where(JobExecution.job_id.in_(chunk))
-            .subquery()
-        )
-        rows = await db.execute(
-            select(ranked.c.job_id).where(
-                ranked.c.rn <= window, ranked.c.status == JOB_FAILED, ranked.c.explained.is_(False)
+            .where(
+                JobExecution.id.in_(select(windowed.c.id)),
+                JobExecution.status == JOB_FAILED,
+                job_execution_explained().is_(False),
             )
         )
         for job_id in rows.scalars():

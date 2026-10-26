@@ -18,7 +18,7 @@ from sqlalchemy.exc import InterfaceError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from . import scoring
-from .attribution import job_execution_explained
+from .attribution import job_execution_explained, job_execution_window_ids
 from .batching import chunks
 from .classify import classify_failure, dominant_category
 from .config import get_settings
@@ -252,45 +252,24 @@ async def _job_history(
     Returns {job_id: (default_branch, [(commit_sha, branch, status), ...])}.
     """
     settings = get_settings()
-    on_default = or_(Repo.default_branch.is_(None), JobExecution.branch == Repo.default_branch)
-    rn_all = func.row_number().over(partition_by=JobExecution.job_id, order_by=JobExecution.id.desc()).label("rn_all")
-    rn_def = (
-        func.row_number()
-        .over(partition_by=(JobExecution.job_id, on_default), order_by=JobExecution.id.desc())
-        .label("rn_def")
-    )
     history: dict[int, list[tuple[str, str, str]]] = defaultdict(list)
     branches: dict[int, str | None] = {}
     for chunk in chunks(job_ids):
-        ranked = (
+        windowed = job_execution_window_ids(chunk, settings.score_window, include_default_branch=True).subquery()
+        rows = await db.execute(
             select(
-                JobExecution.id,
                 JobExecution.job_id,
                 JobExecution.commit_sha,
                 JobExecution.branch,
                 JobExecution.status,
                 job_execution_explained().label("explained"),
                 Repo.default_branch,
-                rn_all,
-                rn_def,
             )
             .join(Job, Job.id == JobExecution.job_id)
             .join(Pipeline, Pipeline.id == Job.pipeline_id)
             .join(Repo, Repo.id == Pipeline.repo_id)
-            .where(JobExecution.job_id.in_(chunk))
-            .subquery()
-        )
-        rows = await db.execute(
-            select(
-                ranked.c.job_id,
-                ranked.c.commit_sha,
-                ranked.c.branch,
-                ranked.c.status,
-                ranked.c.explained,
-                ranked.c.default_branch,
-            )
-            .where((ranked.c.rn_all <= settings.score_window) | (ranked.c.rn_def <= settings.score_window))
-            .order_by(ranked.c.job_id, ranked.c.id.desc())
+            .where(JobExecution.id.in_(select(windowed.c.id)))
+            .order_by(JobExecution.job_id, JobExecution.id.desc())
         )
         for job_id, sha, branch, status, is_explained, def_branch in rows.all():
             if is_explained and status == JOB_FAILED:
