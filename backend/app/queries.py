@@ -746,9 +746,7 @@ async def _runner_stats(db: AsyncSession, job_id: int) -> list[schemas.RunnerSta
             name_counts[runner_name][1] += unexplained
             name_labels[runner_name].update(labels)
 
-    stats = [
-        (labels, None, counts[0], counts[1]) for labels, counts in label_counts.items()
-    ] + [
+    stats = [(labels, None, counts[0], counts[1]) for labels, counts in label_counts.items()] + [
         (tuple(sorted(name_labels[name])), name, counts[0], counts[1])
         for name, counts in name_counts.items()
         if counts[0] >= 2

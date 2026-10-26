@@ -70,7 +70,11 @@ async def test_job_history_runner_stats(client, db):
     # Two label sets: the gpu one holds every unexplained failure; ubuntu is clean.
     for i in range(2):
         await make_job_execution(
-            db, job, status="failed", ci_job_id=f"GPU{i}", runner_name=f"gpu-node-{i}",
+            db,
+            job,
+            status="failed",
+            ci_job_id=f"GPU{i}",
+            runner_name=f"gpu-node-{i}",
             runner_labels=["self-hosted", "gpu"],
         )
     await make_job_execution(
