@@ -7,8 +7,12 @@ marker it would comment on and close issues it never filed.
 
 The nullable boolean separates them wherever a number exists: true = filed by
 FlakeRadar, false = linked by a human, and NULL counts as linked. A row written
-before this revision can only carry a number the filer stored, so existing rows
-are backfilled as filed.
+before this revision can carry either kind — the human-link endpoints (issue
+#11) predate it — and after the fact nothing tells the two apart, so no row is
+backfilled: an existing number keeps NULL, which reads as linked. The cost is
+that an issue FlakeRadar filed before this revision is not auto-closed by an
+admin delete either; it is only listed in the response for manual close, the
+same fallback the README documents for an unconfigured GitHub token.
 
 Revision ID: 0015
 Revises: 0014
@@ -23,17 +27,10 @@ down_revision = "0014"
 branch_labels = None
 depends_on = None
 
-# Only rows with a stored number get a provenance; a Test/Job without one keeps
-# a NULL flag, exactly as the code writes it.
-BACKFILL_TESTS_SQL = "UPDATE test_cases SET github_issue_filed = true WHERE github_issue_number IS NOT NULL"
-BACKFILL_JOBS_SQL = "UPDATE jobs SET github_issue_filed = true WHERE github_issue_number IS NOT NULL"
-
 
 def upgrade() -> None:
     op.add_column("test_cases", sa.Column("github_issue_filed", sa.Boolean(), nullable=True))
     op.add_column("jobs", sa.Column("github_issue_filed", sa.Boolean(), nullable=True))
-    op.execute(BACKFILL_TESTS_SQL)
-    op.execute(BACKFILL_JOBS_SQL)
 
 
 def downgrade() -> None:
