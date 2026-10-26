@@ -151,9 +151,7 @@ async def test_run_prune_batches_failed_report_deletes(db, session_factory, monk
         failed.processed_at = now - timedelta(days=8)
     await db.commit()
 
-    monkeypatch.setattr(
-        retention, "get_settings", lambda: Settings(prune_batch=2, failed_report_retention_days=7)
-    )
+    monkeypatch.setattr(retention, "get_settings", lambda: Settings(prune_batch=2, failed_report_retention_days=7))
     rounds: list[int] = []
     real_prune = retention.prune
 
