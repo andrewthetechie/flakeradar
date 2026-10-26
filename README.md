@@ -682,8 +682,10 @@ every worker returns the same values:
   last processed Report. It is absent until the first Report is processed.
 
 `flakeradar_processor_leader 0` during a redeploy is normal: the lock moves
-between processes, so it is not alert-worthy by itself. No `FLAKERADAR_`
-configuration applies to either endpoint.
+between processes, so it is not alert-worthy by itself. The only configuration
+that affects `/metrics` output is `FLAKERADAR_FLAKE_THRESHOLD`, which decides
+the tier classification of the `flakeradar_tests{tier}` and
+`flakeradar_jobs{tier}` gauges.
 
 ```yaml
 scrape_configs:
@@ -708,7 +710,7 @@ reads a `.env` file.
 |---|---|---|
 | `API_TOKEN` | `changeme` (the app does not start with it unless `FLAKERADAR_ALLOW_INSECURE=1`) | The token for CI uploads (`X-API-Key`) and MCP (`Authorization: Bearer`). |
 | `DATABASE_URL` | `postgresql+asyncpg://flakeradar:flakeradar@localhost:5432/flakeradar` | PostgreSQL only. `postgresql://` URLs also work. |
-| `FLAKE_THRESHOLD` | `0.30` | The score at which a test is flaky. |
+| `FLAKE_THRESHOLD` | `0.30` | The score at which a test or job is flaky; also the tier split in the `/metrics` gauges. |
 | `SCORE_WINDOW` / `SCORE_DECAY` | `50` / `0.85` | The number of executions to score, and the weight for recent executions. |
 | `GITHUB_TOKEN` | empty (disabled) | The token for GitHub issue automation. It also checks linked issues, so it needs read access to the issues of those repos. |
 | `GITHUB_ISSUE_LABEL` | `flakeradar` | The label on each issue that FlakeRadar opens. |
