@@ -86,10 +86,12 @@ async def test_ready_reports_leader_lock(client, engine):
     async with engine.connect() as conn:
         got = (await conn.execute(text("SELECT pg_try_advisory_lock(:k)"), {"k": WORKER_LOCK_KEY})).scalar()
         assert got is True
-        resp = await client.get("/api/health/ready")
-        assert resp.status_code == 200
-        assert resp.json()["processor_leader"] is True
-        await conn.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": WORKER_LOCK_KEY})
+        try:
+            resp = await client.get("/api/health/ready")
+            assert resp.status_code == 200
+            assert resp.json()["processor_leader"] is True
+        finally:
+            await conn.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": WORKER_LOCK_KEY})
     # A missing leader is reported, never a 503: during a redeploy the lock is
     # briefly held by nobody.
     resp = await client.get("/api/health/ready")
