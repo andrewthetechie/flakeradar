@@ -9,7 +9,7 @@ FROM python:3.12-slim
 # Mirror the repo layout: main.py resolves ../../frontend/dist from app/.
 WORKDIR /srv/backend
 COPY backend/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --require-hashes -r requirements.txt
 COPY backend/alembic.ini ./
 COPY backend/migrations ./migrations
 COPY backend/app ./app
