@@ -288,10 +288,28 @@ Any CI can send the same JSON to `POST /api/ingest/pipeline`:
 ```
 
 Your reporter must convert each job status to `passed`, `failed` or `skipped`.
-FlakeRadar does not interpret provider-specific job results. For GitLab, you
-can map `CI_JOB_ID`, `CI_JOB_NAME`, `CI_PIPELINE_ID`, `CI_DEFAULT_BRANCH` and
-`CI_COMMIT_SHA` to the fields above. This project has no GitLab example, and
-this mapping is not tested.
+FlakeRadar does not interpret provider-specific job results.
+
+#### GitLab
+
+`samples/gitlab/report_pipeline.py` is a ready-made reporter for it — a
+standard-library script that lists the jobs of `CI_PIPELINE_ID` and posts them as
+one Pipeline report — and `samples/gitlab/gitlab-ci.yml` shows the `.post` job
+that runs it plus the JUnit upload snippet. The status mapping is covered by
+`backend/tests/test_gitlab_reporter.py`, which validates the built payload against
+the real ingest schema.
+
+A retried GitLab job is a **new job id in the same Pipeline**, not a new CI run
+attempt, so `ci_run_attempt` stays `1` and the reporter sends both tries. FlakeRadar
+records a fail and a pass of that Job on one commit SHA — a **proven flake**.
+
+`CI_JOB_TOKEN` is not enough: in the Jobs API GitLab's job token may call only
+`GET /job`, so it cannot list a pipeline's jobs. The reporter job needs a project
+access token (Reporter role, `read_api` scope) as `GITLAB_TOKEN`.
+
+Issue links stay GitHub-only (ADR 0008,
+`docs/adr/0008-issue-links-from-other-filers.md`): a GitLab Job gets a flakiness
+score and job executions, but no issue link and no filing.
 
 ## Failures of one CI run
 

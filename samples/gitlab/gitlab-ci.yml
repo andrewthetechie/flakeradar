@@ -1,0 +1,53 @@
+# FlakeRadar integration for GitLab CI — two independent parts.
+#
+# 1. The reporter job below: lists this pipeline's jobs through the GitLab API and
+#    posts them as one Pipeline report, so every Job gets a flakiness score.
+# 2. The JUnit upload snippet, in the job that runs your tests: sends the Test
+#    results, so a failed Job is explained by the Tests that failed in it.
+#
+# Issue links stay GitHub-only (docs/adr/0008-issue-links-from-other-filers.md):
+# a GitLab Job is scored, but never gets an issue link or filing.
+
+# ---------------------------------------------------------------------------
+# 1. Pipeline report
+# ---------------------------------------------------------------------------
+# Copy samples/gitlab/report_pipeline.py into your repo (e.g. ci/flakeradar/) and
+# add this job to .gitlab-ci.yml. `.post` is a predefined stage, so no `stages:`
+# edit is needed; `when: always` reports failed pipelines too — they are the evidence.
+flakeradar:report:
+  stage: .post
+  when: always
+  image: python:3.12-alpine  # the reporter uses only the Python standard library
+  # Set these CI/CD variables (Settings > CI/CD > Variables, masked + protected):
+  #   FLAKERADAR_URL   the base URL of your FlakeRadar, e.g. https://flakeradar.example.com
+  #   FLAKERADAR_TOKEN your FlakeRadar API token (FLAKERADAR_API_TOKEN), sent as X-API-Key
+  #   GITLAB_TOKEN     project access token, Reporter role, read_api scope.
+  # CI_JOB_TOKEN cannot be used here: in the Jobs API GitLab's job token may call
+  # only GET /job, so it cannot list a pipeline's jobs — a read_api token is required.
+  #
+  # A retried GitLab job is a NEW job id in the SAME pipeline, so the reporter sends
+  # both tries: a fail and a pass of one Job on one commit SHA — a proven flake —
+  # while ci_run_attempt stays 1. The reporter never reports itself.
+  script:
+    - python ci/flakeradar/report_pipeline.py
+
+# ---------------------------------------------------------------------------
+# 2. Test report (JUnit XML) — add to the job that produces junit.xml
+# ---------------------------------------------------------------------------
+# One upload per project: set `project` (and `root`, its directory) for each suite.
+# `ci_job_id=$CI_JOB_ID` is what links this Test run to the Job execution that
+# produced it, so a failed Job can be explained by its failing Tests.
+# ci_run_attempt is always 1 on GitLab: a retry is a new job id, not a new attempt.
+# No URL-encoding step is needed: every interpolated CI_* value is URL-safe as-is
+# (a hex SHA, numeric ids, and GitLab restricts branch and project-path names to
+# a-zA-Z0-9_./-).
+#
+# test:
+#   stage: test
+#   script:
+#     - pytest --junitxml=junit.xml
+#   # after_script runs even when the job failed — those are the runs FlakeRadar needs.
+#   after_script:
+#     - curl --fail-with-body -sS --retry 5 --retry-all-errors --retry-delay 2 -X POST
+#         "$FLAKERADAR_URL/api/ingest?repo=$CI_PROJECT_PATH&project=backend&commit_sha=$CI_COMMIT_SHA&branch=$CI_COMMIT_REF_NAME&ci_run_id=$CI_PIPELINE_ID&ci_run_attempt=1&ci_job_id=$CI_JOB_ID&pipeline=.gitlab-ci.yml&default_branch=$CI_DEFAULT_BRANCH"
+#         -H "X-API-Key: $FLAKERADAR_TOKEN" -H "Content-Type: application/xml" --data-binary @junit.xml
