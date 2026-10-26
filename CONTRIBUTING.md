@@ -61,6 +61,25 @@ CI fails a backend job in two cases:
 A local total can be slightly higher than CI's: when `frontend/dist` exists,
 `app/main.py` mounts it, and those lines count as covered.
 
+### Frontend coverage
+
+Coverage (v8) is measured in CI only, where `CI` is set; local `npm test`
+stays fast. To see per-file coverage locally:
+
+```bash
+cd frontend
+npx vitest run --coverage.enabled --coverage.reporter=text
+```
+
+CI fails the frontend job in two cases:
+
+- Statements, branches, functions or lines is below its threshold in
+  `frontend/vite.config.ts`. The thresholds are the measured baseline,
+  rounded down. Raise them as coverage grows. Never lower them.
+- On a PR, any of the four is lower than the newest push to `main`. Each push
+  to `main` uploads `coverage-summary.json` as the `frontend-coverage`
+  artifact for this comparison.
+
 ## Database migrations
 
 Schema changes go through Alembic. After editing `backend/app/models.py`, with
