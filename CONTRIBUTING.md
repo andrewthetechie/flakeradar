@@ -58,6 +58,9 @@ CI fails a backend job in two cases:
   Each push to `main` uploads its `coverage.json` as the `backend-coverage`
   artifact for this comparison.
 
+A local total can be slightly higher than CI's: when `frontend/dist` exists,
+`app/main.py` mounts it, and those lines count as covered.
+
 ## Database migrations
 
 Schema changes go through Alembic. After editing `backend/app/models.py`, with
