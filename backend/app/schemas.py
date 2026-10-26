@@ -110,6 +110,26 @@ class RepoOut(BaseModel):
     projects: list[ProjectOut]
 
 
+class DeletedCountsOut(BaseModel):
+    """How many rows the admin delete removed, counted before the cascade."""
+
+    tests: int
+    executions: int
+    jobs: int
+    reports: int
+
+
+class RepoDeleteOut(BaseModel):
+    repo: str
+    deleted: DeletedCountsOut
+
+
+class ProjectDeleteOut(BaseModel):
+    repo: str
+    project: str
+    deleted: DeletedCountsOut
+
+
 class TestOut(BaseModel):
     __test__ = False  # not a pytest class
 

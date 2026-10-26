@@ -70,7 +70,11 @@ class ProcessOutcome:
 
 
 async def claim_next_report(db: AsyncSession) -> Report | None:
-    """Lock the oldest pending Report for this transaction (SKIP LOCKED)."""
+    """Lock the oldest pending Report for this transaction (SKIP LOCKED).
+
+    An admin delete of the Report's Repo or Project (routers/repos.py) waits for
+    this transaction; this query never waits on such a delete, it skips the row.
+    """
     return (
         await db.execute(
             select(Report)
