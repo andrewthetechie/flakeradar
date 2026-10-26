@@ -713,8 +713,8 @@ RUNNER_STATS_LIMIT = 10  # groups returned by `get_job`, worst unexplained rate 
 async def _runner_stats(db: AsyncSession, job_id: int) -> list[schemas.RunnerStatOut]:
     """Job executions grouped by runner over the Job's newest score_window executions.
 
-    One group per sorted label set, plus one per runner_name that appears on 2 or
-    more executions (GitHub-hosted names are unique per run, so only repeated,
+    One group per sorted, deduplicated label set, plus one per runner_name that appears
+    on 2 or more executions (GitHub-hosted names are unique per run, so only repeated,
     typically self-hosted, names group). Unexplained means the same as everywhere
     else: failed and not `job_execution_explained()`.
     """
@@ -737,7 +737,8 @@ async def _runner_stats(db: AsyncSession, job_id: int) -> list[schemas.RunnerSta
     name_counts: dict[str, list[int]] = defaultdict(lambda: [0, 0])
     name_labels: dict[str, set[str]] = defaultdict(set)
     for runner_name, runner_labels, status, explained in rows:
-        labels = tuple(sorted(runner_labels or []))
+        # A repeated entry (schemas.py accepts duplicates) is the same label set.
+        labels = tuple(sorted(set(runner_labels or [])))
         unexplained = 1 if status == JOB_FAILED and not explained else 0
         label_counts[labels][0] += 1
         label_counts[labels][1] += unexplained

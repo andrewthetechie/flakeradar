@@ -115,6 +115,29 @@ async def test_job_history_runner_stats(client, db):
     ]
 
 
+async def test_job_history_runner_stats_dedupes_repeated_labels(client, db):
+    p = await make_pipeline(db, "acme/app", ".github/workflows/ci.yml")
+    job = await make_job(db, p, name="test")
+    # The same label set, but one array repeats an entry (schemas.py accepts duplicates).
+    await make_job_execution(
+        db, job, status="failed", ci_job_id="A", runner_name="node-a", runner_labels=["linux", "self-hosted"]
+    )
+    await make_job_execution(
+        db,
+        job,
+        status="failed",
+        ci_job_id="B",
+        runner_name="node-b",
+        runner_labels=["linux", "self-hosted", "linux"],
+    )
+    await db.commit()
+
+    body = (await client.get(f"/api/jobs/{job.id}/history")).json()
+    assert [r for r in body["runners"] if r["runner_name"] is None] == [
+        {"labels": ["linux", "self-hosted"], "runner_name": None, "executions": 2, "unexplained_failures": 2}
+    ]
+
+
 async def test_summary_job_history_lists_explaining_sibling_jobs(client, db):
     p = await make_pipeline(db, "acme/app", ".github/workflows/ci.yml")
     summary = await make_job(db, p, name="alls-green", summary=True)
