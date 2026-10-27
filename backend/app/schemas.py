@@ -95,6 +95,13 @@ class ReportSummaryOut(BaseModel):
     failed: int
 
 
+class ReadinessOut(BaseModel):
+    database: bool
+    processor_leader: bool
+    pending_reports: int
+    oldest_pending_age_seconds: float
+
+
 # --- Tests, Repos, summary (task 08) ------------------------------------
 
 Tier = Literal["flaky", "suspect", "stable"]

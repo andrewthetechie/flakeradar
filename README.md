@@ -38,6 +38,7 @@ test is nondeterministic.
 - [GitHub issue automation](#github-issue-automation)
 - [How scoring works](#how-scoring-works)
 - [Score history and trends](#score-history-and-trends)
+- [Monitoring](#monitoring)
 - [Configuration](#configuration)
 - [API](#api)
 - [Development](#development)
@@ -658,6 +659,51 @@ When retention deletes a test's or job's executions
 that remain; with none left it becomes 0 and the test or job leaves the
 default leaderboard.
 
+## Monitoring
+
+`GET /api/health` is a liveness check. `GET /api/health/ready` checks the
+database, and `GET /metrics` serves Prometheus text format with the state of
+the queue. Both are unauthenticated, like the other read APIs, so put the
+dashboard on a private network.
+
+`/metrics` carries six gauge families, all read from the database so that
+every worker returns the same values:
+
+- `flakeradar_reports{status}`: the number of Reports by status (`pending`,
+  `processed` or `failed`).
+- `flakeradar_oldest_pending_report_age_seconds`: the age in seconds of the
+  oldest pending Report, 0 when the queue is empty.
+- `flakeradar_processor_leader`: 1 when a process holds the report processor
+  advisory lock.
+- `flakeradar_tests{tier}`: the number of Tests by tier (`flaky`, `suspect`
+  or `stable`).
+- `flakeradar_jobs{tier}`: the number of Jobs by tier.
+- `flakeradar_last_report_processed_timestamp_seconds`: the Unix time of the
+  last processed Report still retained. It is absent until the first Report is
+  processed, and it can move backwards and disappear again once retention
+  deletes processed Reports (`REPORT_RETENTION_DAYS`, default 7 days).
+
+`flakeradar_processor_leader 0` during a redeploy is normal: the lock moves
+between processes, so it is not alert-worthy by itself. Two settings affect
+`/metrics` output: `FLAKERADAR_FLAKE_THRESHOLD`, which decides the tier
+classification of the `flakeradar_tests{tier}` and `flakeradar_jobs{tier}`
+gauges, and `FLAKERADAR_REPORT_RETENTION_DAYS`, which prunes the processed
+Reports the last-processed timestamp is read from.
+
+```yaml
+scrape_configs:
+  - job_name: flakeradar
+    static_configs:
+      - targets: ["localhost:8000"]
+```
+
+Alert when the queue stops draining:
+
+```yaml
+- alert: FlakeRadarQueueStuck
+  expr: flakeradar_oldest_pending_report_age_seconds > 600
+```
+
 ## Configuration
 
 FlakeRadar reads environment variables with the prefix `FLAKERADAR_`. It also
@@ -667,7 +713,7 @@ reads a `.env` file.
 |---|---|---|
 | `API_TOKEN` | `changeme` (the app does not start with it unless `FLAKERADAR_ALLOW_INSECURE=1`) | The token for CI uploads (`X-API-Key`) and MCP (`Authorization: Bearer`). |
 | `DATABASE_URL` | `postgresql+asyncpg://flakeradar:flakeradar@localhost:5432/flakeradar` | PostgreSQL only. `postgresql://` URLs also work. |
-| `FLAKE_THRESHOLD` | `0.30` | The score at which a test is flaky. |
+| `FLAKE_THRESHOLD` | `0.30` | The score at which a test or job is flaky; also the tier split in the `/metrics` gauges. |
 | `SCORE_WINDOW` / `SCORE_DECAY` | `50` / `0.85` | The number of executions to score, and the weight for recent executions. |
 | `GITHUB_TOKEN` | empty (disabled) | The token for GitHub issue automation. It also checks linked issues, so it needs read access to the issues of those repos. |
 | `GITHUB_ISSUE_LABEL` | `flakeradar` | The label on each issue that FlakeRadar opens. |
@@ -711,6 +757,8 @@ and the MCP server need the token.
 | `GET /api/quarantine?repo=&project=` | `X-API-Key` | Quarantined tests for one repo and project, for the test runner. Each item carries `reason` and `expires_at`. |
 | `/mcp/` | Bearer token | The MCP server. |
 | `GET /api/health` | none | Liveness check. |
+| `GET /api/health/ready` | none | Readiness. `200` with `{database, processor_leader, pending_reports, oldest_pending_age_seconds}` when `SELECT 1` succeeds; `503` with `{"database": false}` when the database cannot be reached. A missing Report-processor leader is reported in the body, not as `503`. |
+| `GET /metrics` | none | Prometheus gauges for the Report queue, processor leadership, Test/Job tiers and the last processed Report. See [Monitoring](#monitoring). |
 
 A `project` filter needs `repo`. The interactive OpenAPI docs are at `/docs`.
 Each test execution has `attempt` (0 is the first try in its run) and

@@ -104,6 +104,7 @@ backend/   FastAPI + async SQLAlchemy 2 + asyncpg + PostgreSQL
     routers/tests.py    Repos, Test leaderboard, summary, Test detail, quarantine
     routers/jobs.py     Job leaderboard, summary, Job detail
     routers/ci_runs.py  failing Tests and failed Jobs of one CI run attempt
+    routers/ops.py      readiness probe and /metrics scrape
     queries.py          read services that REST and MCP share
     parsing.py          JUnit parsing: identity, Location, Failure details, retries
     processing.py       one Report -> one Run (or Job executions), batched upserts, rescoring
