@@ -58,10 +58,8 @@ def _cap(text: str, limit: int) -> str:
 
 
 def _first_line(text: str) -> str:
-    for line in text.splitlines():
-        if line.strip():
-            return line.strip()
-    return ""
+    """text is already stripped, so its first line is never blank."""
+    return text.splitlines()[0].strip() if text else ""
 
 
 def _location(case, line_base: int) -> tuple[str | None, int | None]:
@@ -88,7 +86,7 @@ def _outcome(case) -> tuple[str, str, str]:
                 parts.append("--- stderr ---\n" + case.system_err.strip())
             details = "\n\n".join(parts)
             return status, _cap(message, MESSAGE_MAX), _cap(details, DETAILS_MAX)
-        if isinstance(result, Skipped):
+        if isinstance(result, Skipped):  # pragma: no branch - result is Failure, Error or Skipped
             return "skipped", _cap((result.message or "").strip(), MESSAGE_MAX), ""
     return "passed", "", ""
 
@@ -143,7 +141,7 @@ def parse_junit_xml(content: bytes, line_base: int = 1) -> list[ParsedCase]:
     suites = list(xml) if isinstance(xml, JUnitXml) else [xml]
     parsed: list[ParsedCase] = []
     for suite in suites:
-        if not isinstance(suite, TestSuite):
+        if not isinstance(suite, TestSuite):  # pragma: no cover - JUnitXml yields only TestSuite
             continue
         for case in suite:
             if case.name is None:
