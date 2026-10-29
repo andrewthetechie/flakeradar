@@ -340,6 +340,71 @@ describe("App", () => {
     expect(await screen.findByText(/CI run 4242/)).toBeInTheDocument();
   });
 
+  it("shows a failed Job drawer fetch's own message in the error banner", async () => {
+    let finishHistory: (r: Response) => void = () => {};
+    const jobPage = {
+      items: [
+        {
+          id: 3,
+          repo: "x/y",
+          provider: "github",
+          pipeline: ".github/workflows/ci.yml",
+          name: "e2e",
+          flakiness_score: 0.31,
+          tier: "flaky",
+          confirmed_flake_count: 0,
+          clean_streak: 0,
+          trend: null,
+          last_status: "failed",
+          last_seen_at: "2026-09-25T00:00:00Z",
+          github_issue_number: null,
+          github_issue_url: null,
+        },
+      ],
+      total: 1,
+      page: 1,
+      page_size: 50,
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        if (url.startsWith("/api/jobs/3/history")) {
+          return new Promise<Response>((resolve) => {
+            finishHistory = resolve;
+          });
+        }
+        if (url.startsWith("/api/jobs/summary"))
+          return json({
+            total_jobs: 1,
+            flaky_jobs: 1,
+            suspect_jobs: 0,
+            confirmed_flaky_jobs: 0,
+            total_job_executions: 1,
+            flake_threshold: 0.3,
+            new_flaky_7d: 0,
+          });
+        if (url.startsWith("/api/jobs")) return json(jobPage);
+        if (url.startsWith("/api/repos")) return json([]);
+        if (url.startsWith("/api/reports/summary")) return json({ pending: 0, failed: 0 });
+        return json({});
+      }),
+    );
+    window.history.replaceState(null, "", "/?view=jobs&repo=x%2Fy&job=3");
+    render(<App />);
+
+    // The history answer is held back until the leaderboard has painted, so
+    // the refresh's setError(null) cannot wipe the banner the drawer raises.
+    expect(await screen.findByText("e2e")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+
+    await act(async () => {
+      finishHistory(new Response("boom", { status: 500 }));
+    });
+    const banner = await screen.findByRole("alert");
+    expect(banner).toHaveTextContent(/\/api\/jobs\/3\/history\?limit=60 -> 500/);
+    expect(banner.textContent).not.toContain("Error: ");
+  });
+
   it("sends the stored pipeline and issue filters to /api/jobs", async () => {
     const urls: string[] = [];
     vi.stubGlobal(

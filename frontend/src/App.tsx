@@ -9,6 +9,7 @@ import {
   fetchRepos,
   fetchSummary,
   fetchTests,
+  latestWins,
   setQuarantine,
   type History,
   type JobHistory,
@@ -68,17 +69,20 @@ export default function App() {
   const pageNumber = view.page;
 
   // Only the newest refresh may write state: a slow response for the old
-  // scope must not overwrite the view the user has since switched to.
-  const latestRefresh = useRef(0);
+  // scope must not overwrite the view the user has since switched to. The
+  // comparison belongs to the api module's latestWins guard, held here for the
+  // lifetime of the component so it outlives each refresh.
+  const guardRef = useRef(latestWins());
 
   const refresh = useCallback(async () => {
-    const request = ++latestRefresh.current;
+    const guard = guardRef.current;
+    const request = guard.start();
     try {
       const queueQ = fetchReportSummary();
       if (kind === "ci-run") {
         // CiRunView fetches the CI run itself; the header needs repos + queue.
         const [r, queue] = await Promise.all([fetchRepos(), queueQ]);
-        if (request !== latestRefresh.current) return;
+        if (!guard.current(request)) return;
         setRepos(r);
         setQueue(queue);
         setError(null);
@@ -99,7 +103,7 @@ export default function App() {
           }),
           queueQ,
         ]);
-        if (request !== latestRefresh.current) return;
+        if (!guard.current(request)) return;
         setRepos(r);
         setJobSummary(s);
         setJobPage(jobs);
@@ -124,7 +128,7 @@ export default function App() {
           }),
           queueQ,
         ]);
-        if (request !== latestRefresh.current) return;
+        if (!guard.current(request)) return;
         setRepos(r);
         setSummary(s);
         setPage(t);
@@ -132,7 +136,7 @@ export default function App() {
         setError(null);
       }
     } catch (e) {
-      if (request !== latestRefresh.current) return;
+      if (!guard.current(request)) return;
       setError(e instanceof Error ? e.message : String(e));
     }
   }, [
@@ -172,33 +176,33 @@ export default function App() {
         setJobHistory(null);
         return;
       }
-      let cancelled = false;
+      // A guard of its own per effect run: cancelling it on cleanup must drop
+      // this drawer's in-flight answer without superseding the list's refresh.
+      const guard = latestWins();
+      const request = guard.start();
       fetchJobHistory(view.job)
         .then((h) => {
-          if (!cancelled) setJobHistory(h);
+          if (guard.current(request)) setJobHistory(h);
         })
         .catch((e) => {
-          if (!cancelled) setError(String(e));
+          if (guard.current(request)) setError(e instanceof Error ? e.message : String(e));
         });
-      return () => {
-        cancelled = true;
-      };
+      return () => guard.cancel();
     }
     if (view.test == null) {
       setHistory(null);
       return;
     }
-    let cancelled = false;
+    const guard = latestWins();
+    const request = guard.start();
     fetchHistory(view.test)
       .then((h) => {
-        if (!cancelled) setHistory(h);
+        if (guard.current(request)) setHistory(h);
       })
       .catch((e) => {
-        if (!cancelled) setError(String(e));
+        if (guard.current(request)) setError(e instanceof Error ? e.message : String(e));
       });
-    return () => {
-      cancelled = true;
-    };
+    return () => guard.cancel();
   }, [kind, view.job, view.test, pageNumber, refresh]); // re-fetch when a drawer's list refreshes
 
   const onToggleQuarantine = useCallback(
