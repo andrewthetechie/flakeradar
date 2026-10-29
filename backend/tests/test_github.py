@@ -935,6 +935,59 @@ async def test_job_issue_body_omits_runner_section_without_unexplained(db, gh_se
     assert "Failures by runner" not in body
 
 
+async def test_job_issue_body_without_job_history(db, gh_settings, monkeypatch):
+    """A Job that vanishes between candidacy and rendering still gets its issue.
+
+    `queries.get_job` returns None when the Job row is gone; the body drops the
+    history-derived sections and keeps the empty executions table.
+    """
+
+    async def fake_get_job(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr("app.github_integration.queries.get_job", fake_get_job)
+    job = await _flaky_job(db, name="vanished", pipeline=".github/workflows/vanished.yml")
+    calls, transport = _recorder()
+    await github_integration.file_job_issues_for(db, [job.id], transport=transport)
+
+    (req,) = calls
+    body = json.loads(req.content)["body"]
+    assert "**Job:** `vanished`" in body
+    assert "**Flakiness score:**" in body
+    assert "Unexplained failures" not in body and "Explained by tests" not in body
+    assert "### Last 10 executions" in body
+    table = body.split("### Last 10 executions", 1)[1]
+    assert "| Outcome | Commit | Branch | Attempt | Runner | Job |" in table
+    assert "|---|---|---|---|---|---|" in table
+    assert "| failed |" not in table and "| passed |" not in table
+    await db.refresh(job)
+    assert job.github_issue_number == 77
+
+
+async def test_job_403_skips_the_other_job_in_the_same_repo(db, gh_settings, caplog):
+    """A permission 403 skips the whole Repo, including its second Job."""
+    j1 = await _flaky_job(db, repo="acme/a", name="j1", pipeline=".github/workflows/j1.yml")
+    j2 = await _flaky_job(db, repo="acme/a", name="j2", pipeline=".github/workflows/j2.yml")
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        # No rate-limit headers and no "rate limit" in the message: a permission
+        # 403, which skips the repo instead of stopping the batch.
+        return httpx.Response(403, json={"message": "Resource not accessible by personal access token"})
+
+    with caplog.at_level(logging.WARNING, logger="flakeradar.github"):
+        await github_integration.file_job_issues_for(db, [j1.id, j2.id], transport=httpx.MockTransport(handler))
+    # j2 is never tried: its Repo was skipped by the first Job's 403.
+    assert [r.url.path for r in calls] == ["/repos/acme/a/issues"]
+    await db.refresh(j1)
+    await db.refresh(j2)
+    assert j1.github_issue_number is None
+    assert j2.github_issue_number is None
+    warnings = [r.getMessage() for r in caplog.records if "skipped for repo acme/a" in r.getMessage()]
+    assert len(warnings) == 1
+
+
 async def test_job_does_not_refile(db, gh_settings):
     job = await _flaky_job(db)
     await _job_exec(db, job, "1")
