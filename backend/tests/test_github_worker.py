@@ -1,6 +1,7 @@
 """GitHubWorker: filing and issue-state sync run off the processor's hot path."""
 
 import asyncio
+import logging
 
 import httpx
 import pytest
@@ -131,6 +132,72 @@ async def test_stop_cancels_the_task(session_factory, gh_settings):
     assert worker.is_running
     await worker.stop()
     assert not worker.is_running
+
+
+async def test_stop_without_start_returns(session_factory):
+    """Stopping a worker that never started is a no-op."""
+    worker = GitHubWorker(session_factory, sync_interval_seconds=3600.0)
+    await worker.stop()
+    assert not worker.is_running
+
+
+async def test_filing_failure_is_logged_and_filing_continues(session_factory, db, monkeypatch, caplog):
+    """A failing GitHub call is logged and the next outcome still gets filed."""
+    tc = await _flaky_test(db)
+    outcomes = [_outcome(tc), _outcome(tc)]
+    filed: list[ProcessOutcome] = []
+    attempts: list[ProcessOutcome] = []
+
+    async def fake_on_report_processed(session_factory, outcome, *, transport=None):
+        attempts.append(outcome)
+        if len(attempts) == 1:
+            raise RuntimeError("GitHub is down")  # only the first attempt fails
+        filed.append(outcome)
+
+    async def fake_sync(session_factory, *, transport=None):
+        return None  # no sync path touches GitHub
+
+    monkeypatch.setattr(github_integration, "on_report_processed", fake_on_report_processed)
+    monkeypatch.setattr(github_integration, "sync_closed_issues", fake_sync)
+    worker = GitHubWorker(session_factory, sync_interval_seconds=3600.0)
+    with caplog.at_level(logging.ERROR, logger="flakeradar.worker"):
+        await worker.start()
+        try:
+            await worker.enqueue(outcomes[0])
+            await worker.enqueue(outcomes[1])
+            await _wait_for(lambda: len(filed) == 1)
+            assert worker.is_running
+        finally:
+            await worker.stop()
+    assert len(attempts) == 2 and attempts[0] is outcomes[0] and attempts[1] is outcomes[1]
+    assert len(filed) == 1 and filed[0] is outcomes[1]  # the failure did not cost us the second Report
+    assert [r.getMessage() for r in caplog.records if "GitHub issue filing failed" in r.getMessage()] == [
+        f"GitHub issue filing failed for Report {outcomes[0].report_id}"
+    ]
+
+
+async def test_sync_failure_is_logged_and_retried(session_factory, monkeypatch, caplog):
+    """A failing sync is logged, and the worker keeps going and retries at the next interval."""
+    calls: list[int] = []
+
+    async def fake_sync(session_factory, *, transport=None):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("GitHub is down")  # only the first attempt fails
+
+    monkeypatch.setattr(github_integration, "sync_closed_issues", fake_sync)
+    # The fake sync returns at once, so the second call is driven by the interval, not a race.
+    worker = GitHubWorker(session_factory, sync_interval_seconds=0.5)
+    with caplog.at_level(logging.ERROR, logger="flakeradar.worker"):
+        await worker.start()
+        try:
+            await _wait_for(lambda: len(calls) >= 2, timeout=5.0)
+            assert worker.is_running
+        finally:
+            await worker.stop()
+    assert [r.getMessage() for r in caplog.records if "GitHub issue-state sync failed" in r.getMessage()] == [
+        "GitHub issue-state sync failed; will retry next interval"
+    ]
 
 
 async def test_outcome_files_through_the_worker_transport(session_factory, gh_settings, monkeypatch):
