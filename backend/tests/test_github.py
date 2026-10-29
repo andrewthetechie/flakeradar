@@ -349,6 +349,65 @@ async def test_404_and_410_skip_repo_for_rest_of_batch(db, gh_settings, caplog, 
     assert jb.github_issue_number == 99
 
 
+async def test_unusable_status_is_logged_and_the_batch_goes_on_for_tests_and_jobs(db, gh_settings, caplog):
+    """A status that is not 201, a rate limit or 403/404/410 costs one issue only.
+
+    A 500 says nothing about the Repo, so it must not skip it for the rest of
+    the batch: the second candidate in the same Repo is still posted.
+    """
+    a1 = await _flaky_test(db, repo="acme/a", project="p1", name="a1")
+    a2 = await _flaky_test(db, repo="acme/a", project="p2", name="a2")
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if len(calls) == 1:
+            return httpx.Response(500, text="server exploded")
+        return httpx.Response(201, json={"number": 77})
+
+    with caplog.at_level(logging.WARNING, logger="flakeradar.github"):
+        await github_integration.file_issues_for(db, [a1.id, a2.id], transport=httpx.MockTransport(handler))
+    # a2 is tried despite a1's 500: two POSTs to the very same Repo.
+    assert [r.url.path for r in calls] == ["/repos/acme/a/issues", "/repos/acme/a/issues"]
+    await db.refresh(a1)
+    await db.refresh(a2)
+    assert a1.github_issue_number is None
+    assert a2.github_issue_number == 77
+    messages = [r.getMessage() for r in caplog.records]
+    failures = [m for m in messages if "GitHub issue creation failed for test" in m and "500" in m]
+    assert len(failures) == 1
+    assert "acme/a" in failures[0] and "server exploded" in failures[0]
+    assert not [m for m in messages if "skipped for repo" in m]
+
+    caplog.clear()
+
+    j1 = await _flaky_job(db, repo="acme/a", name="j1", pipeline=".github/workflows/j1.yml")
+    j2 = await _flaky_job(db, repo="acme/a", name="j2", pipeline=".github/workflows/j2.yml")
+    job_calls: list[httpx.Request] = []
+
+    def job_handler(request: httpx.Request) -> httpx.Response:
+        job_calls.append(request)
+        if len(job_calls) == 1:
+            return httpx.Response(500, text="server exploded")
+        return httpx.Response(201, json={"number": 77})
+
+    with caplog.at_level(logging.WARNING, logger="flakeradar.github"):
+        await github_integration.file_job_issues_for(
+            db, [j1.id, j2.id], transport=httpx.MockTransport(job_handler)
+        )
+    # j2 is tried despite j1's 500: two POSTs to the very same Repo.
+    assert [r.url.path for r in job_calls] == ["/repos/acme/a/issues", "/repos/acme/a/issues"]
+    await db.refresh(j1)
+    await db.refresh(j2)
+    assert j1.github_issue_number is None
+    assert j2.github_issue_number == 77
+    messages = [r.getMessage() for r in caplog.records]
+    failures = [m for m in messages if "GitHub issue creation failed for job" in m and "500" in m]
+    assert len(failures) == 1
+    assert "acme/a" in failures[0] and "server exploded" in failures[0]
+    assert not [m for m in messages if "skipped for repo" in m]
+
+
 @pytest.mark.parametrize(
     "raw",
     ["<html>Bad Gateway</html>", "[1, 2]", "null", '{"number": "not-a-number"}', "{}"],
