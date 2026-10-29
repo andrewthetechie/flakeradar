@@ -190,6 +190,34 @@ async def test_get_test_by_id_and_by_name(mcp, db):
     assert nothing.is_error
 
 
+async def test_get_test_by_classname_when_name_is_ambiguous(mcp, db):
+    proj = await make_project(db, "acme/app", "backend")
+    a = await make_test_case(db, proj, name="dup", classname="a")
+    b = await make_test_case(db, proj, name="dup", classname="b")
+    await db.commit()
+    args = {"repo": "acme/app", "project": "backend", "name": "dup"}
+    async with Client(mcp) as c:
+        narrowed = (await c.call_tool("get_test", {**args, "classname": "b"})).data
+        ambiguous = await c.call_tool("get_test", args, raise_on_error=False)
+    assert narrowed["test"]["id"] == b.id
+    assert ambiguous.is_error
+    text = ambiguous.content[0].text
+    assert "2 tests are named 'dup'" in text
+    assert f"test_id [{a.id}, {b.id}]" in text
+
+
+async def test_get_test_without_failures_has_no_latest_failure(mcp, db):
+    proj = await make_project(db, "acme/app", "backend")
+    tc = await make_test_case(db, proj, name="steady")
+    run = await make_run(db, proj)
+    await make_execution(db, tc, run, status="passed")
+    await db.commit()
+    async with Client(mcp) as c:
+        data = (await c.call_tool("get_test", {"test_id": tc.id})).data
+    assert data["latest_failure"] is None
+    assert data["last_failing_sha"] is None
+
+
 async def test_http_mount_requires_bearer_token(client):
     resp = await client.post(
         "/mcp/",
