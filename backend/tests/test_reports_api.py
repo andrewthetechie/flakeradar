@@ -63,6 +63,9 @@ async def test_retry(client, db):
     conflict = await client.post(f"/api/reports/{pending.id}/retry", headers=AUTH)
     assert conflict.status_code == 409
     assert conflict.json()["detail"] == "Only failed reports can be retried"
+    missing = await client.post("/api/reports/999999/retry", headers=AUTH)
+    assert missing.status_code == 404
+    assert missing.json()["detail"] == "Report not found"
 
 
 async def test_retry_respects_cap(client, db, monkeypatch):
