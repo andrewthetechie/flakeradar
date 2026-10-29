@@ -133,9 +133,20 @@ export interface TestQuery extends Scope {
   q: string;
 }
 
+/** A failed HTTP response; `message` keeps the "<url> -> <status>" wording. */
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
 async function getJson<T>(url: string): Promise<T> {
   const resp = await fetch(url);
-  if (!resp.ok) throw new Error(`${url} -> ${resp.status}`);
+  if (!resp.ok) throw new ApiError(`${url} -> ${resp.status}`, resp.status);
   return resp.json() as Promise<T>;
 }
 
@@ -316,7 +327,7 @@ export async function setQuarantine(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  if (!resp.ok) throw new Error(`quarantine ${id} -> ${resp.status}`);
+  if (!resp.ok) throw new ApiError(`quarantine ${id} -> ${resp.status}`, resp.status);
   return resp.json() as Promise<TestCase>;
 }
 

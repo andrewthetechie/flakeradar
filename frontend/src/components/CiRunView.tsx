@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import {
+  ApiError,
   fetchCiRunFailures,
   type CiRunFailedJob,
   type CiRunFailures,
@@ -16,9 +17,9 @@ import { SummaryBadge } from "./SummaryBadge";
 /** While reports are still landing, ask again this often (issue #26). */
 const POLL_MS = 5000;
 
-/** `getJson` rejects with "<url> -> <status>", the only handle on the status. */
+/** True when FlakeRadar has no reports for the requested CI run. */
 function isNotFound(e: unknown): boolean {
-  return (e instanceof Error ? e.message : String(e)).trimEnd().endsWith("-> 404");
+  return e instanceof ApiError && e.status === 404;
 }
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
