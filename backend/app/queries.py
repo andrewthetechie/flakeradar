@@ -317,6 +317,35 @@ async def _list_leaderboard(
     )
 
 
+async def _tile_counts(
+    db: AsyncSession,
+    entity: LeaderboardEntity,
+    count_stmt: Callable[..., Select],
+    *,
+    threshold: float,
+) -> tuple[int, int, int, int, int]:
+    """The five dashboard tiles, stated once per entity (issue #62).
+
+    `count_stmt(*conditions)` is the caller's already-scoped `select(func.count(...))` builder, so
+    the Scope-vs-repo difference stays in the wrappers, as with the listing engine. Returned in
+    today's order: total, flaky, suspect, confirmed, and new-flaky over `NEW_FLAKY_DAYS` — the last
+    one through the same `_newest_history_before` lateral the listing engine uses (ADR 0007).
+    """
+    total = (await db.execute(count_stmt())).scalar_one()
+    flaky = (await db.execute(count_stmt(entity.score >= threshold))).scalar_one()
+    suspect = (await db.execute(count_stmt(entity.score > 0, entity.score < threshold))).scalar_one()
+    confirmed = (await db.execute(count_stmt(entity.proven > 0))).scalar_one()
+    oldest = _newest_history_before(entity.history_model, entity.history_fk, entity.history_parent, NEW_FLAKY_DAYS)
+    new_flaky = (
+        await db.execute(
+            count_stmt(entity.score >= threshold)
+            .outerjoin(oldest, true())
+            .where(_became_flaky_clause(oldest, threshold))
+        )
+    ).scalar_one()
+    return total, flaky, suspect, confirmed, new_flaky
+
+
 async def list_repos(db: AsyncSession) -> list[schemas.RepoOut]:
     rows = (
         await db.execute(
@@ -382,20 +411,7 @@ async def summary(db: AsyncSession, scope: Scope, *, threshold: float) -> schema
             scope,
         )
 
-    total = (await db.execute(tests_count())).scalar_one()
-    flaky = (await db.execute(tests_count(TestCase.flakiness_score >= threshold))).scalar_one()
-    suspect = (
-        await db.execute(tests_count(TestCase.flakiness_score > 0, TestCase.flakiness_score < threshold))
-    ).scalar_one()
-    confirmed = (await db.execute(tests_count(TestCase.confirmed_flake_count > 0))).scalar_one()
-    oldest = _newest_history_before(TestScoreHistory, TestScoreHistory.test_case_id, TestCase.id, NEW_FLAKY_DAYS)
-    new_flaky = (
-        await db.execute(
-            tests_count(TestCase.flakiness_score >= threshold)
-            .outerjoin(oldest, true())
-            .where(_became_flaky_clause(oldest, threshold))
-        )
-    ).scalar_one()
+    total, flaky, suspect, confirmed, new_flaky = await _tile_counts(db, TEST, tests_count, threshold=threshold)
     runs = (
         await db.execute(
             _scoped(
@@ -792,18 +808,7 @@ async def job_summary(db: AsyncSession, repo: str | None, *, threshold: float) -
             stmt = stmt.where(Repo.name == repo)
         return stmt
 
-    total = (await db.execute(jobs_count())).scalar_one()
-    flaky = (await db.execute(jobs_count(Job.flakiness_score >= threshold))).scalar_one()
-    suspect = (await db.execute(jobs_count(Job.flakiness_score > 0, Job.flakiness_score < threshold))).scalar_one()
-    confirmed = (await db.execute(jobs_count(Job.confirmed_flake_count > 0))).scalar_one()
-    oldest = _newest_history_before(JobScoreHistory, JobScoreHistory.job_id, Job.id, NEW_FLAKY_DAYS)
-    new_flaky = (
-        await db.execute(
-            jobs_count(Job.flakiness_score >= threshold)
-            .outerjoin(oldest, true())
-            .where(_became_flaky_clause(oldest, threshold))
-        )
-    ).scalar_one()
+    total, flaky, suspect, confirmed, new_flaky = await _tile_counts(db, JOB, jobs_count, threshold=threshold)
 
     exec_stmt = (
         select(func.count(JobExecution.id))
