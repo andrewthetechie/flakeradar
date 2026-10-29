@@ -1,12 +1,16 @@
 """Startup wiring: the token check refuses the default, `get_db` yields a session,
-and `lifespan` boots the worker and shuts it down again."""
+`lifespan` boots the worker and shuts it down again, and `mount_frontend` serves
+the built frontend only when one exists."""
 
 import logging
 
+import httpx
 import pytest
 from app import main
 from app.config import DEFAULT_INSECURE_TOKEN, Settings, assert_secure_token
 from app.db import get_db, make_engine, make_session_factory
+from app.main import mount_frontend
+from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tests.test_github_worker import _lock_is_free, _wait_for
@@ -73,3 +77,22 @@ async def test_a_real_token_boots_without_the_default_warning(database_url, monk
         async with main.lifespan(main.app):
             pass
     assert "default 'changeme'" not in caplog.text
+
+
+async def test_a_built_frontend_is_served_at_the_root(tmp_path):
+    """A dist directory with an index.html is mounted at "/" — served on a fresh
+    app, never onto `main.app`, where a "/" mount would swallow later routes."""
+    (tmp_path / "index.html").write_text("<h1>hi</h1>", encoding="utf-8")
+    fresh = FastAPI()
+    mount_frontend(fresh, tmp_path)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=fresh), base_url="http://test") as c:
+        response = await c.get("/")
+    assert response.status_code == 200
+    assert "hi" in response.text
+
+
+def test_a_missing_frontend_dist_mounts_nothing(tmp_path):
+    fresh = FastAPI()
+    before = len(fresh.routes)
+    mount_frontend(fresh, tmp_path / "missing")
+    assert len(fresh.routes) == before
