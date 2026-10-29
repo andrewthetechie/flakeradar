@@ -702,6 +702,44 @@ def job_search_clause(text: str) -> ColumnElement[bool]:
     return (Job.name.ilike(pattern, escape="\\")) | (Pipeline.name.ilike(pattern, escape="\\"))
 
 
+@dataclass(frozen=True)
+class JobListFilters:
+    """The Jobs-only listing filters the engine must not know about; built by `list_jobs`."""
+
+    pipeline: str | None = None
+
+
+def _job_filters(stmt: Select, f: JobListFilters) -> Select:
+    if f.pipeline is not None:
+        stmt = stmt.where(Pipeline.name == f.pipeline)
+    return stmt
+
+
+JOB = LeaderboardEntity(
+    id=Job.id,
+    score=Job.flakiness_score,
+    last_seen=Job.last_seen_at,
+    proven=Job.confirmed_flake_count,
+    issue_number=Job.github_issue_number,
+    history_model=JobScoreHistory,
+    history_fk=JobScoreHistory.job_id,
+    history_parent=Job.id,
+    past_scores=past_job_scores,
+    search_clause=job_search_clause,
+    to_out=to_job_out,
+    page=schemas.JobPage,
+    id_of=lambda job: job.id,
+    score_of=lambda job: job.flakiness_score,
+    apply_filters=_job_filters,
+    # The counterpart of TEST's exemption above, and the reason it is a decision point at all:
+    # `Job` has no `quarantined` column (models.py), because ADR 0004 says "Jobs have no Quarantine.
+    # A runner can't skip a job, and `continue-on-error` is a change to the workflow, not a
+    # FlakeRadar decision." (docs/adr/0004-pushed-ci-jobs-and-attribution.md:27). So no listing
+    # ever has a reason to show a stable Job, and this is descriptor data, not a divergent `elif`.
+    keeps_stable_rows=lambda f: False,
+)
+
+
 async def list_jobs(
     db: AsyncSession,
     repo: str | None,
@@ -717,40 +755,28 @@ async def list_jobs(
     has_issue: bool | None = None,
     new_within_days: int | None = None,
 ) -> schemas.JobPage:
+    """The Jobs leaderboard: a thin wrapper over the shared engine (issue #62).
+
+    The Scope-vs-repo difference between the two leaderboards is resolved here, not in the
+    descriptor: `stmt` arrives already scoped by repo name. Signature and return schema unchanged.
+    """
     stmt = jobs_select()
     if repo is not None:
         stmt = stmt.where(Repo.name == repo)
-    if flaky_only or new_within_days is not None:
-        stmt = stmt.where(Job.flakiness_score >= threshold)
-    elif not include_stable and not q:
-        stmt = stmt.where(Job.flakiness_score > 0)
-    if q:
-        stmt = stmt.where(job_search_clause(q))
-    if pipeline is not None:
-        stmt = stmt.where(Pipeline.name == pipeline)
-    if has_issue is not None:
-        stmt = stmt.where(Job.github_issue_number.is_not(None) if has_issue else Job.github_issue_number.is_(None))
-    if new_within_days is not None:
-        oldest = _newest_history_before(JobScoreHistory, JobScoreHistory.job_id, Job.id, new_within_days)
-        stmt = stmt.outerjoin(oldest, true()).where(_became_flaky_clause(oldest, threshold))
-
-    total = (await db.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one()
-
-    order = {
-        "score": (Job.flakiness_score.desc(), Job.last_seen_at.desc(), Job.id),
-        "last_seen": (Job.last_seen_at.desc(), Job.id.desc()),
-        "proven": (Job.confirmed_flake_count.desc(), Job.flakiness_score.desc(), Job.id),
-    }[sort]
-    rows = (await db.execute(stmt.order_by(*order).offset((page - 1) * page_size).limit(page_size))).all()
-    past = await past_job_scores(db, [job.id for job, _, _ in rows])
-    return schemas.JobPage(
-        items=[
-            to_job_out(job, pipeline, repo, threshold, trend=trend_for(job.flakiness_score, past.get(job.id)))
-            for job, pipeline, repo in rows
-        ],
-        total=total,
+    return await _list_leaderboard(
+        db,
+        JOB,
+        stmt,
+        JobListFilters(pipeline=pipeline),
+        threshold=threshold,
+        include_stable=include_stable,
+        flaky_only=flaky_only,
+        sort=sort,
         page=page,
         page_size=page_size,
+        q=q,
+        has_issue=has_issue,
+        new_within_days=new_within_days,
     )
 
 
