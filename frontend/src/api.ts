@@ -150,6 +150,32 @@ async function getJson<T>(url: string): Promise<T> {
   return resp.json() as Promise<T>;
 }
 
+/**
+ * Newest-request-wins guard: whoever answers last is not necessarily whoever
+ * should write state, so every request carries a token and only the newest one
+ * may. Framework-free on purpose, so a component can hold one for its lifetime
+ * or a plain caller can create one per effect; timers stay with the caller.
+ */
+export interface LatestWins {
+  /** Begins a request, superseding every earlier one. */
+  start: () => number;
+  /** May the answer for this token still write state? */
+  current: (token: number) => boolean;
+  /** Supersede every outstanding answer (unmount, scope abandoned). */
+  cancel: () => void;
+}
+
+export function latestWins(): LatestWins {
+  let newest = 0;
+  return {
+    start: () => ++newest,
+    current: (token: number) => token === newest,
+    cancel: () => {
+      newest++;
+    },
+  };
+}
+
 export function scopeParams(scope: Scope): URLSearchParams {
   const params = new URLSearchParams();
   if (scope.repo) {

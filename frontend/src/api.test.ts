@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiError, fetchRepos, setQuarantine } from "./api";
+import { ApiError, fetchRepos, latestWins, setQuarantine } from "./api";
 
 interface Post {
   path: string;
@@ -81,5 +81,40 @@ describe("rejected ApiError", () => {
     expect(e).toBeInstanceOf(ApiError);
     expect((e as ApiError).status).toBe(500);
     expect((e as Error).message).toBe("quarantine 7 -> 500");
+  });
+});
+
+/**
+ * The newest-request-wins guard, tested without a component: the point of the
+ * helper is that "a late answer never writes state" is checkable here rather
+ * than through a full-App render.
+ */
+describe("latestWins", () => {
+  it("lets the newest request write", () => {
+    const guard = latestWins();
+    expect(guard.current(guard.start())).toBe(true);
+  });
+
+  it("discards an answer superseded by a newer request", () => {
+    const guard = latestWins();
+    const first = guard.start();
+    guard.start(); // a newer request begins
+    expect(guard.current(first)).toBe(false); // the late answer must not write
+  });
+
+  it("cancel() discards every outstanding answer", () => {
+    const guard = latestWins();
+    const older = guard.start();
+    const newer = guard.start();
+    guard.cancel();
+    expect(guard.current(older)).toBe(false);
+    expect(guard.current(newer)).toBe(false);
+  });
+
+  it("accepts a fresh request after cancel()", () => {
+    const guard = latestWins();
+    guard.start();
+    guard.cancel();
+    expect(guard.current(guard.start())).toBe(true);
   });
 });
