@@ -356,6 +356,24 @@ async def test_ci_run_failures_errors(mcp, db):
     assert bad_repo.is_error
 
 
+@pytest.mark.parametrize(
+    ("tool", "args", "message"),
+    [
+        ("search_tests", {"repo": "acme/app", "query": "   "}, "query must not be empty"),
+        ("get_test", {"test_id": 999999}, "No test with id 999999."),
+        ("search_jobs", {"repo": "acme/app", "query": ""}, "query must not be empty"),
+        ("get_job", {"repo": "acme/app"}, "Pass job_id, or repo + name"),
+        ("get_job", {"job_id": 999999}, "No job with id 999999."),
+        ("ci_run_failures", {"repo": "acme/app", "ci_run_id": "  "}, "ci_run_id must not be empty"),
+    ],
+)
+async def test_tool_argument_and_not_found_errors(mcp, tool, args, message):
+    async with Client(mcp) as c:
+        res = await c.call_tool(tool, args, raise_on_error=False)
+    assert res.is_error
+    assert message in res.content[0].text
+
+
 async def test_tool_annotations(mcp):
     async with Client(mcp) as c:
         tools = {t.name: t.annotations for t in await c.list_tools()}
