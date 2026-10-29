@@ -104,6 +104,55 @@ async def test_files_issue_in_the_tests_own_repo(db, gh_settings):
     assert tc.github_issue_number == 77
 
 
+async def test_issue_body_omits_the_line_anchor_when_no_line_is_reported(db, gh_settings):
+    tc = await _flaky_test(db, file="tests/test_x.py", line=None)
+    calls, transport = _recorder()
+    await github_integration.file_issues_for(db, [tc.id], transport=transport)
+
+    (req,) = calls
+    assert req.url.path == "/repos/acme/app/issues"
+    body = json.loads(req.content)["body"]
+    # The runner reported a file but no line: the permalink is still useful,
+    # it just carries no anchor.
+    assert "https://github.com/acme/app/blob/deadbeef/tests/test_x.py" in body
+    assert "#L" not in body
+    assert "`tests/test_x.py`" in body
+
+
+async def test_issue_body_without_a_failing_execution(db, gh_settings):
+    # A Test can still be a candidate with only passed Executions in the window
+    # (the gates here are 0): the body then carries no failing-commit evidence.
+    proj = await make_project(db, "acme/app", "backend")
+    tc = await make_test_case(
+        db,
+        proj,
+        name="t_passed",
+        flakiness_score=0.6,
+        confirmed_flake_count=1,
+        file="tests/test_x.py",
+        line=7,
+    )
+    run = await make_run(db, proj, commit_sha="deadbeef")
+    await make_execution(db, tc, run, status="passed")
+    await db.commit()
+
+    calls, transport = _recorder()
+    await github_integration.file_issues_for(db, [tc.id], transport=transport)
+
+    (req,) = calls
+    assert req.url.path == "/repos/acme/app/issues"
+    body = json.loads(req.content)["body"]
+    assert "Last failing commit" not in body
+    assert "Permalink" not in body
+    assert "### Sample failure" not in body
+    # The rest of the body is still there, so the absence above is about the
+    # missing failure and not about an empty render.
+    assert "### Last 10 executions" in body
+    assert "| passed | `deadbeef` | main |" in body
+    await db.refresh(tc)
+    assert tc.github_issue_number == 77
+
+
 def test_run_hint_matches_the_test_framework_by_file_extension():
     assert (
         github_integration._run_hint("tests/test_mod.py", "tests.test_mod", "t_flaky")
@@ -298,6 +347,65 @@ async def test_404_and_410_skip_repo_for_rest_of_batch(db, gh_settings, caplog, 
     assert ja1.github_issue_number is None
     assert ja2.github_issue_number is None
     assert jb.github_issue_number == 99
+
+
+async def test_unusable_status_is_logged_and_the_batch_goes_on_for_tests_and_jobs(db, gh_settings, caplog):
+    """A status that is not 201, a rate limit or 403/404/410 costs one issue only.
+
+    A 500 says nothing about the Repo, so it must not skip it for the rest of
+    the batch: the second candidate in the same Repo is still posted.
+    """
+    a1 = await _flaky_test(db, repo="acme/a", project="p1", name="a1")
+    a2 = await _flaky_test(db, repo="acme/a", project="p2", name="a2")
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if len(calls) == 1:
+            return httpx.Response(500, text="server exploded")
+        return httpx.Response(201, json={"number": 77})
+
+    with caplog.at_level(logging.WARNING, logger="flakeradar.github"):
+        await github_integration.file_issues_for(db, [a1.id, a2.id], transport=httpx.MockTransport(handler))
+    # a2 is tried despite a1's 500: two POSTs to the very same Repo.
+    assert [r.url.path for r in calls] == ["/repos/acme/a/issues", "/repos/acme/a/issues"]
+    await db.refresh(a1)
+    await db.refresh(a2)
+    assert a1.github_issue_number is None
+    assert a2.github_issue_number == 77
+    messages = [r.getMessage() for r in caplog.records]
+    failures = [m for m in messages if "GitHub issue creation failed for test" in m and "500" in m]
+    assert len(failures) == 1
+    assert "acme/a" in failures[0] and "server exploded" in failures[0]
+    assert not [m for m in messages if "skipped for repo" in m]
+
+    caplog.clear()
+
+    j1 = await _flaky_job(db, repo="acme/a", name="j1", pipeline=".github/workflows/j1.yml")
+    j2 = await _flaky_job(db, repo="acme/a", name="j2", pipeline=".github/workflows/j2.yml")
+    job_calls: list[httpx.Request] = []
+
+    def job_handler(request: httpx.Request) -> httpx.Response:
+        job_calls.append(request)
+        if len(job_calls) == 1:
+            return httpx.Response(500, text="server exploded")
+        return httpx.Response(201, json={"number": 77})
+
+    with caplog.at_level(logging.WARNING, logger="flakeradar.github"):
+        await github_integration.file_job_issues_for(
+            db, [j1.id, j2.id], transport=httpx.MockTransport(job_handler)
+        )
+    # j2 is tried despite j1's 500: two POSTs to the very same Repo.
+    assert [r.url.path for r in job_calls] == ["/repos/acme/a/issues", "/repos/acme/a/issues"]
+    await db.refresh(j1)
+    await db.refresh(j2)
+    assert j1.github_issue_number is None
+    assert j2.github_issue_number == 77
+    messages = [r.getMessage() for r in caplog.records]
+    failures = [m for m in messages if "GitHub issue creation failed for job" in m and "500" in m]
+    assert len(failures) == 1
+    assert "acme/a" in failures[0] and "server exploded" in failures[0]
+    assert not [m for m in messages if "skipped for repo" in m]
 
 
 @pytest.mark.parametrize(
@@ -699,6 +807,54 @@ async def test_sync_rotates_past_an_unreadable_link(db, gh_settings, session_fac
     assert third.github_issue_checked_at is not None
 
 
+@pytest.mark.parametrize("status", [404, 500])
+@pytest.mark.parametrize("entity", ["test", "job"])
+async def test_sync_gone_or_unexpected_status(db, gh_settings, session_factory, caplog, status, entity):
+    """A gone issue re-arms its link; any other answer keeps it but stamps the row.
+
+    Only a 404 says the issue is unreachable for dedup purposes. There is no
+    branch for the rest: an unusable answer leaves the link alone, yet the row
+    is still stamped, so it cannot take a batch slot on every later run.
+    """
+    expected = 11 if entity == "test" else 5
+    if entity == "test":
+        obj = await _flaky_test(db, name="linked", github_issue_number=expected)
+    else:
+        obj = await _flaky_job(db, name="linked", github_issue_number=expected)
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(status, json={"message": "Gone" if status == 404 else "Server error"})
+
+    # INFO because the re-arm of a gone issue is logged at that level.
+    with caplog.at_level(logging.INFO, logger="flakeradar.github"):
+        await github_integration.sync_closed_issues(session_factory, transport=httpx.MockTransport(handler))
+
+    # Exactly one GET, for the linked issue itself: a wrong path could answer 404
+    # for some other reason and still leave the row looking correctly re-armed.
+    assert [r.url.path for r in calls] == [f"/repos/acme/app/issues/{expected}"]
+    await db.refresh(obj)
+    if status == 404:
+        assert obj.github_issue_number is None  # re-armed, so the next Report can re-file
+    else:
+        assert obj.github_issue_number == expected  # an unusable answer clears nothing
+    assert obj.github_issue_checked_at is not None  # either way the row rotates like a checked one
+
+    gone = [r for r in caplog.records if r.name == "flakeradar.github" and "Issue gone" in r.getMessage()]
+    if status == 404:
+        assert len(gone) == 1
+        assert gone[0].levelno == logging.INFO
+        assert f"acme/app#{expected}" in gone[0].getMessage()
+        assert entity in gone[0].getMessage()  # the line says which kind of link re-armed
+    else:
+        assert gone == []
+        # An unexpected status is nobody's fault: no warning about this Repo, so
+        # nothing skipped it and nothing was reported as unusable.
+        warned = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+        assert [m for m in warned if "acme/app" in m] == []
+
+
 async def test_hook_ignores_failed_reports(session_factory, gh_settings, monkeypatch):
     called = []
 
@@ -825,6 +981,59 @@ async def test_job_issue_body_omits_runner_section_without_unexplained(db, gh_se
     (req,) = calls
     body = json.loads(req.content)["body"]
     assert "Failures by runner" not in body
+
+
+async def test_job_issue_body_without_job_history(db, gh_settings, monkeypatch):
+    """A Job that vanishes between candidacy and rendering still gets its issue.
+
+    `queries.get_job` returns None when the Job row is gone; the body drops the
+    history-derived sections and keeps the empty executions table.
+    """
+
+    async def fake_get_job(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr("app.github_integration.queries.get_job", fake_get_job)
+    job = await _flaky_job(db, name="vanished", pipeline=".github/workflows/vanished.yml")
+    calls, transport = _recorder()
+    await github_integration.file_job_issues_for(db, [job.id], transport=transport)
+
+    (req,) = calls
+    body = json.loads(req.content)["body"]
+    assert "**Job:** `vanished`" in body
+    assert "**Flakiness score:**" in body
+    assert "Unexplained failures" not in body and "Explained by tests" not in body
+    assert "### Last 10 executions" in body
+    table = body.split("### Last 10 executions", 1)[1]
+    assert "| Outcome | Commit | Branch | Attempt | Runner | Job |" in table
+    assert "|---|---|---|---|---|---|" in table
+    assert "| failed |" not in table and "| passed |" not in table
+    await db.refresh(job)
+    assert job.github_issue_number == 77
+
+
+async def test_job_403_skips_the_other_job_in_the_same_repo(db, gh_settings, caplog):
+    """A permission 403 skips the whole Repo, including its second Job."""
+    j1 = await _flaky_job(db, repo="acme/a", name="j1", pipeline=".github/workflows/j1.yml")
+    j2 = await _flaky_job(db, repo="acme/a", name="j2", pipeline=".github/workflows/j2.yml")
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        # No rate-limit headers and no "rate limit" in the message: a permission
+        # 403, which skips the repo instead of stopping the batch.
+        return httpx.Response(403, json={"message": "Resource not accessible by personal access token"})
+
+    with caplog.at_level(logging.WARNING, logger="flakeradar.github"):
+        await github_integration.file_job_issues_for(db, [j1.id, j2.id], transport=httpx.MockTransport(handler))
+    # j2 is never tried: its Repo was skipped by the first Job's 403.
+    assert [r.url.path for r in calls] == ["/repos/acme/a/issues"]
+    await db.refresh(j1)
+    await db.refresh(j2)
+    assert j1.github_issue_number is None
+    assert j2.github_issue_number is None
+    warnings = [r.getMessage() for r in caplog.records if "skipped for repo acme/a" in r.getMessage()]
+    assert len(warnings) == 1
 
 
 async def test_job_does_not_refile(db, gh_settings):
