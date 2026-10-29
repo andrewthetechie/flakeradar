@@ -807,6 +807,54 @@ async def test_sync_rotates_past_an_unreadable_link(db, gh_settings, session_fac
     assert third.github_issue_checked_at is not None
 
 
+@pytest.mark.parametrize("status", [404, 500])
+@pytest.mark.parametrize("entity", ["test", "job"])
+async def test_sync_gone_or_unexpected_status(db, gh_settings, session_factory, caplog, status, entity):
+    """A gone issue re-arms its link; any other answer keeps it but stamps the row.
+
+    Only a 404 says the issue is unreachable for dedup purposes. There is no
+    branch for the rest: an unusable answer leaves the link alone, yet the row
+    is still stamped, so it cannot take a batch slot on every later run.
+    """
+    expected = 11 if entity == "test" else 5
+    if entity == "test":
+        obj = await _flaky_test(db, name="linked", github_issue_number=expected)
+    else:
+        obj = await _flaky_job(db, name="linked", github_issue_number=expected)
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(status, json={"message": "Gone" if status == 404 else "Server error"})
+
+    # INFO because the re-arm of a gone issue is logged at that level.
+    with caplog.at_level(logging.INFO, logger="flakeradar.github"):
+        await github_integration.sync_closed_issues(session_factory, transport=httpx.MockTransport(handler))
+
+    # Exactly one GET, for the linked issue itself: a wrong path could answer 404
+    # for some other reason and still leave the row looking correctly re-armed.
+    assert [r.url.path for r in calls] == [f"/repos/acme/app/issues/{expected}"]
+    await db.refresh(obj)
+    if status == 404:
+        assert obj.github_issue_number is None  # re-armed, so the next Report can re-file
+    else:
+        assert obj.github_issue_number == expected  # an unusable answer clears nothing
+    assert obj.github_issue_checked_at is not None  # either way the row rotates like a checked one
+
+    gone = [r for r in caplog.records if r.name == "flakeradar.github" and "Issue gone" in r.getMessage()]
+    if status == 404:
+        assert len(gone) == 1
+        assert gone[0].levelno == logging.INFO
+        assert f"acme/app#{expected}" in gone[0].getMessage()
+        assert entity in gone[0].getMessage()  # the line says which kind of link re-armed
+    else:
+        assert gone == []
+        # An unexpected status is nobody's fault: no warning about this Repo, so
+        # nothing skipped it and nothing was reported as unusable.
+        warned = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+        assert [m for m in warned if "acme/app" in m] == []
+
+
 async def test_hook_ignores_failed_reports(session_factory, gh_settings, monkeypatch):
     called = []
 
