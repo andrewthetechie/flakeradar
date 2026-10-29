@@ -112,23 +112,25 @@ def to_test_out(tc: TestCase, project: str, repo: str, threshold: float, trend: 
 
 async def past_test_scores(db: AsyncSession, test_ids: list[int]) -> dict[int, float]:
     """Score of each Test's newest history row at least TREND_DAYS old."""
+    return await _past_scores(db, TestScoreHistory, TestScoreHistory.test_case_id, test_ids)
+
+
+async def _past_scores(db: AsyncSession, model, fk_col: ColumnElement[int], ids: list[int]) -> dict[int, float]:
+    """Score of each entity's newest history row at least TREND_DAYS old.
+
+    The one past-scores lookup, shared by the Test and Job halves: `model` is the
+    Score-history model and `fk_col` its column back to the parent row.
+    """
     cutoff = utcnow().date() - timedelta(days=TREND_DAYS)
     found: dict[int, float] = {}
-    for chunk in chunks(test_ids):
-        rn = (
-            func.row_number()
-            .over(
-                partition_by=TestScoreHistory.test_case_id,
-                order_by=TestScoreHistory.day.desc(),
-            )
-            .label("rn")
-        )
+    for chunk in chunks(ids):
+        rn = func.row_number().over(partition_by=fk_col, order_by=model.day.desc()).label("rn")
         ranked = (
-            select(TestScoreHistory.test_case_id, TestScoreHistory.flakiness_score, rn)
-            .where(TestScoreHistory.test_case_id.in_(chunk), TestScoreHistory.day <= cutoff)
+            select(fk_col.label("entity_id"), model.flakiness_score.label("score"), rn)
+            .where(fk_col.in_(chunk), model.day <= cutoff)
             .subquery()
         )
-        rows = await db.execute(select(ranked.c.test_case_id, ranked.c.flakiness_score).where(ranked.c.rn == 1))
+        rows = await db.execute(select(ranked.c.entity_id, ranked.c.score).where(ranked.c.rn == 1))
         found.update(dict(rows.all()))
     return found
 
@@ -567,25 +569,7 @@ def to_job_out(
 
 async def past_job_scores(db: AsyncSession, job_ids: list[int]) -> dict[int, float]:
     """Score of each Job's newest history row at least TREND_DAYS old."""
-    cutoff = utcnow().date() - timedelta(days=TREND_DAYS)
-    found: dict[int, float] = {}
-    for chunk in chunks(job_ids):
-        rn = (
-            func.row_number()
-            .over(
-                partition_by=JobScoreHistory.job_id,
-                order_by=JobScoreHistory.day.desc(),
-            )
-            .label("rn")
-        )
-        ranked = (
-            select(JobScoreHistory.job_id, JobScoreHistory.flakiness_score, rn)
-            .where(JobScoreHistory.job_id.in_(chunk), JobScoreHistory.day <= cutoff)
-            .subquery()
-        )
-        rows = await db.execute(select(ranked.c.job_id, ranked.c.flakiness_score).where(ranked.c.rn == 1))
-        found.update(dict(rows.all()))
-    return found
+    return await _past_scores(db, JobScoreHistory, JobScoreHistory.job_id, job_ids)
 
 
 def jobs_select() -> Select:
