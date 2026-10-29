@@ -104,6 +104,55 @@ async def test_files_issue_in_the_tests_own_repo(db, gh_settings):
     assert tc.github_issue_number == 77
 
 
+async def test_issue_body_omits_the_line_anchor_when_no_line_is_reported(db, gh_settings):
+    tc = await _flaky_test(db, file="tests/test_x.py", line=None)
+    calls, transport = _recorder()
+    await github_integration.file_issues_for(db, [tc.id], transport=transport)
+
+    (req,) = calls
+    assert req.url.path == "/repos/acme/app/issues"
+    body = json.loads(req.content)["body"]
+    # The runner reported a file but no line: the permalink is still useful,
+    # it just carries no anchor.
+    assert "https://github.com/acme/app/blob/deadbeef/tests/test_x.py" in body
+    assert "#L" not in body
+    assert "`tests/test_x.py`" in body
+
+
+async def test_issue_body_without_a_failing_execution(db, gh_settings):
+    # A Test can still be a candidate with only passed Executions in the window
+    # (the gates here are 0): the body then carries no failing-commit evidence.
+    proj = await make_project(db, "acme/app", "backend")
+    tc = await make_test_case(
+        db,
+        proj,
+        name="t_passed",
+        flakiness_score=0.6,
+        confirmed_flake_count=1,
+        file="tests/test_x.py",
+        line=7,
+    )
+    run = await make_run(db, proj, commit_sha="deadbeef")
+    await make_execution(db, tc, run, status="passed")
+    await db.commit()
+
+    calls, transport = _recorder()
+    await github_integration.file_issues_for(db, [tc.id], transport=transport)
+
+    (req,) = calls
+    assert req.url.path == "/repos/acme/app/issues"
+    body = json.loads(req.content)["body"]
+    assert "Last failing commit" not in body
+    assert "Permalink" not in body
+    assert "### Sample failure" not in body
+    # The rest of the body is still there, so the absence above is about the
+    # missing failure and not about an empty render.
+    assert "### Last 10 executions" in body
+    assert "| passed | `deadbeef` | main |" in body
+    await db.refresh(tc)
+    assert tc.github_issue_number == 77
+
+
 def test_run_hint_matches_the_test_framework_by_file_extension():
     assert (
         github_integration._run_hint("tests/test_mod.py", "tests.test_mod", "t_flaky")
