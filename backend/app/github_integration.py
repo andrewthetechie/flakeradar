@@ -281,37 +281,37 @@ async def _select_candidates(db: AsyncSession, test_case_ids: list[int]) -> list
     return candidates
 
 
-async def file_issues_for(
+async def _file_batch(
     db: AsyncSession,
-    test_case_ids: list[int],
+    candidates: list[tuple[Job | TestCase, str, str, str]],
     *,
+    entity: str,
     transport: httpx.AsyncBaseTransport | None = None,
 ) -> None:
-    """File issues for Tests that now meet the filing gate. Never raises.
+    """File one batch of rendered issues, whichever entity they describe.
+
+    Each candidate is `(obj, repo, title, body)`; `entity` is the noun ("test"
+    or "job") the log lines name. This is the module docstring's filing policy
+    in one place: the client lifecycle, a 201 that stores its number on the
+    entity and commits per issue, a 201 whose body has no number (log, go on),
+    a rate limit (stop this batch), any other 403/404/410 (skip that Repo for
+    the rest of the batch), any other status (log, go on), and a network error
+    (log, never raise).
 
     `transport` exists for tests (httpx.MockTransport); production passes None.
     """
-    if not configured() or not test_case_ids:
-        return
     s = get_settings()
-    candidates = await _select_candidates(db, test_case_ids)
-    if not candidates:
-        return
     try:
         async with httpx.AsyncClient(
             base_url=API_BASE, headers=_headers(s.github_token), timeout=15, transport=transport
         ) as client:
             skipped: set[str] = set()
-            for tc, repo, project, root in candidates:
+            for obj, repo, title, body in candidates:
                 if repo in skipped:
                     continue
                 resp = await client.post(
                     f"/repos/{repo}/issues",
-                    json={
-                        "title": f"[FlakeRadar] Flaky test: {tc.classname}::{tc.name}",
-                        "body": await _issue_body(db, tc, repo, project, root),
-                        "labels": [s.github_issue_label],
-                    },
+                    json={"title": title, "body": body, "labels": [s.github_issue_label]},
                 )
                 if resp.status_code == 201:
                     number = _issue_number(resp)
@@ -320,10 +320,10 @@ async def file_issues_for(
                             "GitHub issue creation in %s returned 201 with no issue number: %s", repo, resp.text[:300]
                         )
                     else:
-                        tc.github_issue_number = number
-                        tc.github_issue_checked_at = None  # a new link is checked first
+                        obj.github_issue_number = number
+                        obj.github_issue_checked_at = None  # a new link is checked first
                         await db.commit()
-                        logger.info("Filed issue %s#%s for test %s", repo, tc.github_issue_number, tc.id)
+                        logger.info("Filed issue %s#%s for %s %s", repo, obj.github_issue_number, entity, obj.id)
                 elif _rate_limited(resp):
                     logger.warning(
                         "GitHub rate limit (remaining=%s); stopping batch",
@@ -342,14 +342,42 @@ async def file_issues_for(
                     skipped.add(repo)
                 else:
                     logger.warning(
-                        "GitHub issue creation failed for test %s in %s: %s %s",
-                        tc.id,
+                        "GitHub issue creation failed for %s %s in %s: %s %s",
+                        entity,
+                        obj.id,
                         repo,
                         resp.status_code,
                         resp.text[:300],
                     )
     except httpx.HTTPError as exc:
-        logger.warning("GitHub unreachable, skipping issue filing: %s", exc)
+        logger.warning("GitHub unreachable, skipping %s issue filing: %s", entity, exc)
+
+
+async def file_issues_for(
+    db: AsyncSession,
+    test_case_ids: list[int],
+    *,
+    transport: httpx.AsyncBaseTransport | None = None,
+) -> None:
+    """File issues for Tests that now meet the filing gate. Never raises.
+
+    `transport` exists for tests (httpx.MockTransport); production passes None.
+    """
+    if not configured() or not test_case_ids:
+        return
+    candidates = await _select_candidates(db, test_case_ids)
+    if not candidates:
+        return
+    batch = [
+        (
+            tc,
+            repo,
+            f"[FlakeRadar] Flaky test: {tc.classname}::{tc.name}",
+            await _issue_body(db, tc, repo, project, root),
+        )
+        for tc, repo, project, root in candidates
+    ]
+    await _file_batch(db, batch, entity="test", transport=transport)
 
 
 async def _job_candidates(db: AsyncSession, job_ids: list[int]) -> list[tuple[Job, str, str]]:
@@ -442,63 +470,19 @@ async def file_job_issues_for(
     """
     if not configured() or not job_ids:
         return
-    s = get_settings()
     candidates = await _job_candidates(db, job_ids)
     if not candidates:
         return
-    try:
-        async with httpx.AsyncClient(
-            base_url=API_BASE, headers=_headers(s.github_token), timeout=15, transport=transport
-        ) as client:
-            skipped: set[str] = set()
-            for job, pipeline, repo in candidates:
-                if repo in skipped:
-                    continue
-                resp = await client.post(
-                    f"/repos/{repo}/issues",
-                    json={
-                        "title": f"[FlakeRadar] Flaky CI job: {pipeline} / {job.name}",
-                        "body": await _job_issue_body(db, job, pipeline, repo),
-                        "labels": [s.github_issue_label],
-                    },
-                )
-                if resp.status_code == 201:
-                    number = _issue_number(resp)
-                    if number is None:
-                        logger.warning(
-                            "GitHub issue creation in %s returned 201 with no issue number: %s", repo, resp.text[:300]
-                        )
-                    else:
-                        job.github_issue_number = number
-                        job.github_issue_checked_at = None  # a new link is checked first
-                        await db.commit()
-                        logger.info("Filed issue %s#%s for job %s", repo, job.github_issue_number, job.id)
-                elif _rate_limited(resp):
-                    logger.warning(
-                        "GitHub rate limit (remaining=%s); stopping batch",
-                        resp.headers.get("x-ratelimit-remaining"),
-                    )
-                    return
-                elif resp.status_code in (403, 404, 410):
-                    # Permission error, or issues disabled on this Repo: it costs
-                    # this Repo only, the rest of the batch goes on.
-                    logger.warning(
-                        "GitHub issue creation skipped for repo %s: %s %s",
-                        repo,
-                        resp.status_code,
-                        resp.text[:300],
-                    )
-                    skipped.add(repo)
-                else:
-                    logger.warning(
-                        "GitHub issue creation failed for job %s in %s: %s %s",
-                        job.id,
-                        repo,
-                        resp.status_code,
-                        resp.text[:300],
-                    )
-    except httpx.HTTPError as exc:
-        logger.warning("GitHub unreachable, skipping job issue filing: %s", exc)
+    batch = [
+        (
+            job,
+            repo,
+            f"[FlakeRadar] Flaky CI job: {pipeline} / {job.name}",
+            await _job_issue_body(db, job, pipeline, repo),
+        )
+        for job, pipeline, repo in candidates
+    ]
+    await _file_batch(db, batch, entity="job", transport=transport)
 
 
 async def sync_closed_issues(
