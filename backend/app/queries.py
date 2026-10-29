@@ -5,9 +5,10 @@ front doors (HTTP and MCP) expose exactly the same data.
 """
 
 from collections import defaultdict
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import Literal
+from typing import Any, Literal
 
 from sqlalchemy import ColumnElement, Select, func, or_, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -112,23 +113,25 @@ def to_test_out(tc: TestCase, project: str, repo: str, threshold: float, trend: 
 
 async def past_test_scores(db: AsyncSession, test_ids: list[int]) -> dict[int, float]:
     """Score of each Test's newest history row at least TREND_DAYS old."""
+    return await _past_scores(db, TestScoreHistory, TestScoreHistory.test_case_id, test_ids)
+
+
+async def _past_scores(db: AsyncSession, model, fk_col: ColumnElement[int], ids: list[int]) -> dict[int, float]:
+    """Score of each entity's newest history row at least TREND_DAYS old.
+
+    The one past-scores lookup, shared by the Test and Job halves: `model` is the
+    Score-history model and `fk_col` its column back to the parent row.
+    """
     cutoff = utcnow().date() - timedelta(days=TREND_DAYS)
     found: dict[int, float] = {}
-    for chunk in chunks(test_ids):
-        rn = (
-            func.row_number()
-            .over(
-                partition_by=TestScoreHistory.test_case_id,
-                order_by=TestScoreHistory.day.desc(),
-            )
-            .label("rn")
-        )
+    for chunk in chunks(ids):
+        rn = func.row_number().over(partition_by=fk_col, order_by=model.day.desc()).label("rn")
         ranked = (
-            select(TestScoreHistory.test_case_id, TestScoreHistory.flakiness_score, rn)
-            .where(TestScoreHistory.test_case_id.in_(chunk), TestScoreHistory.day <= cutoff)
+            select(fk_col.label("entity_id"), model.flakiness_score.label("score"), rn)
+            .where(fk_col.in_(chunk), model.day <= cutoff)
             .subquery()
         )
-        rows = await db.execute(select(ranked.c.test_case_id, ranked.c.flakiness_score).where(ranked.c.rn == 1))
+        rows = await db.execute(select(ranked.c.entity_id, ranked.c.score).where(ranked.c.rn == 1))
         found.update(dict(rows.all()))
     return found
 
@@ -182,6 +185,167 @@ def test_search_clause(text: str) -> ColumnElement[bool]:
     )
 
 
+@dataclass(frozen=True)
+class LeaderboardEntity:
+    """Everything the shared listing engine needs to know about one leaderboard entity (issue #62).
+
+    Pure data: the entity's own columns, its Score-history model and the two columns that join
+    it, and the per-entity callables. Nothing in here may encode a shared rule — the stable-hiding
+    default, the threshold rule and the issue filter all live in `_list_leaderboard` only, and an
+    intended per-entity difference is descriptor data (see `keeps_stable_rows` on TEST).
+    """
+
+    id: ColumnElement[int]
+    score: ColumnElement[float]
+    last_seen: ColumnElement[Any]
+    proven: ColumnElement[int]
+    issue_number: ColumnElement[int | None]
+    history_model: type
+    history_fk: ColumnElement[int]
+    history_parent: ColumnElement[int]
+    past_scores: Callable[[AsyncSession, list[int]], Awaitable[dict[int, float]]]
+    search_clause: Callable[[str], ColumnElement[bool]]
+    to_out: Callable[..., Any]
+    page: type
+    id_of: Callable[[Any], int]
+    score_of: Callable[[Any], float]
+    apply_filters: Callable[[Select, Any], Select]
+    keeps_stable_rows: Callable[[Any], bool]
+
+
+@dataclass(frozen=True)
+class TestListFilters:
+    """The Tests-only listing filters the engine must not know about; built by `list_tests`."""
+
+    file: str | None = None
+    category: FailureCategory | None = None
+    quarantined: bool | None = None
+
+
+def _test_filters(stmt: Select, f: TestListFilters) -> Select:
+    if f.file:
+        stmt = stmt.where(TestCase.file.ilike(f"%{escape_like(f.file)}%", escape="\\"))
+    if f.category:
+        stmt = stmt.where(TestCase.failure_category == f.category)
+    if f.quarantined is not None:
+        stmt = stmt.where(TestCase.quarantined.is_(f.quarantined))
+    return stmt
+
+
+TEST = LeaderboardEntity(
+    id=TestCase.id,
+    score=TestCase.flakiness_score,
+    last_seen=TestCase.last_seen_at,
+    proven=TestCase.confirmed_flake_count,
+    issue_number=TestCase.github_issue_number,
+    history_model=TestScoreHistory,
+    history_fk=TestScoreHistory.test_case_id,
+    history_parent=TestCase.id,
+    past_scores=past_test_scores,
+    search_clause=test_search_clause,
+    to_out=to_test_out,
+    page=schemas.TestPage,
+    id_of=lambda tc: tc.id,
+    score_of=lambda tc: tc.flakiness_score,
+    apply_filters=_test_filters,
+    # Tests keep score <= 0 rows visible when the caller asked for quarantined ones: Quarantine
+    # deliberately covers stable Tests, so the Tests list has to show them. Jobs have no Quarantine
+    # at all (ADR 0004: "Jobs have no Quarantine. A runner can't skip a job"), so this exemption is
+    # Tests-only and lives here, as descriptor data, and nowhere else.
+    keeps_stable_rows=lambda f: f.quarantined is True,
+)
+
+
+async def _list_leaderboard(
+    db: AsyncSession,
+    entity: LeaderboardEntity,
+    stmt: Select,
+    filters: Any,
+    *,
+    threshold: float,
+    include_stable: bool,
+    flaky_only: bool,
+    sort: SortKey,
+    page: int,
+    page_size: int,
+    q: str | None,
+    has_issue: bool | None,
+    new_within_days: int | None,
+) -> Any:
+    """The one Test/Job leaderboard listing skeleton (issue #62); `stmt` arrives already scoped.
+
+    `page` (the page schema), `to_out` (the row mapper), `past_scores`, `search_clause`,
+    `apply_filters` and `keeps_stable_rows` all come from `entity`; the shared policy below is
+    stated here and nowhere else, so a new filter or sort key extends a descriptor instead of
+    being re-implemented per entity.
+    """
+    # The single marked decision point: the threshold rule, and the stable-hiding default whose
+    # per-entity difference (Tests exempt a quarantined listing; ADR 0004 gives Jobs no Quarantine)
+    # is `entity.keeps_stable_rows`, i.e. descriptor data rather than a divergent branch.
+    if flaky_only or new_within_days is not None:
+        stmt = stmt.where(entity.score >= threshold)
+    elif not include_stable and not q and not entity.keeps_stable_rows(filters):
+        stmt = stmt.where(entity.score > 0)
+    stmt = entity.apply_filters(stmt, filters)
+    if q:
+        stmt = stmt.where(entity.search_clause(q))
+    if has_issue is not None:
+        stmt = stmt.where(entity.issue_number.is_not(None) if has_issue else entity.issue_number.is_(None))
+    if new_within_days is not None:
+        oldest = _newest_history_before(entity.history_model, entity.history_fk, entity.history_parent, new_within_days)
+        stmt = stmt.outerjoin(oldest, true()).where(_became_flaky_clause(oldest, threshold))
+
+    total = (await db.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one()
+
+    order = {
+        "score": (entity.score.desc(), entity.last_seen.desc(), entity.id),
+        "last_seen": (entity.last_seen.desc(), entity.id.desc()),
+        "proven": (entity.proven.desc(), entity.score.desc(), entity.id),
+    }[sort]
+    rows = (await db.execute(stmt.order_by(*order).offset((page - 1) * page_size).limit(page_size))).all()
+    # Rows are the descriptor's base-select shape, (entity, parent, repo); the mapper unpacks them.
+    ids = [entity.id_of(row[0]) for row in rows]
+    past = await entity.past_scores(db, ids)
+    return entity.page(
+        items=[
+            entity.to_out(*row, threshold, trend=trend_for(entity.score_of(row[0]), past.get(entity_id)))
+            for row, entity_id in zip(rows, ids, strict=True)
+        ],
+        total=total,
+        page=page,
+        page_size=page_size,
+    )
+
+
+async def _tile_counts(
+    db: AsyncSession,
+    entity: LeaderboardEntity,
+    count_stmt: Callable[..., Select],
+    *,
+    threshold: float,
+) -> tuple[int, int, int, int, int]:
+    """The five dashboard tiles, stated once per entity (issue #62).
+
+    `count_stmt(*conditions)` is the caller's already-scoped `select(func.count(...))` builder, so
+    the Scope-vs-repo difference stays in the wrappers, as with the listing engine. Returned in
+    today's order: total, flaky, suspect, confirmed, and new-flaky over `NEW_FLAKY_DAYS` — the last
+    one through the same `_newest_history_before` lateral the listing engine uses (ADR 0007).
+    """
+    total = (await db.execute(count_stmt())).scalar_one()
+    flaky = (await db.execute(count_stmt(entity.score >= threshold))).scalar_one()
+    suspect = (await db.execute(count_stmt(entity.score > 0, entity.score < threshold))).scalar_one()
+    confirmed = (await db.execute(count_stmt(entity.proven > 0))).scalar_one()
+    oldest = _newest_history_before(entity.history_model, entity.history_fk, entity.history_parent, NEW_FLAKY_DAYS)
+    new_flaky = (
+        await db.execute(
+            count_stmt(entity.score >= threshold)
+            .outerjoin(oldest, true())
+            .where(_became_flaky_clause(oldest, threshold))
+        )
+    ).scalar_one()
+    return total, flaky, suspect, confirmed, new_flaky
+
+
 async def list_repos(db: AsyncSession) -> list[schemas.RepoOut]:
     rows = (
         await db.execute(
@@ -214,44 +378,26 @@ async def list_tests(
     has_issue: bool | None = None,
     new_within_days: int | None = None,
 ) -> schemas.TestPage:
+    """The Tests leaderboard: a thin wrapper over the shared engine (issue #62).
+
+    The Scope-vs-repo difference between the two leaderboards is resolved here, not in the
+    descriptor: `stmt` arrives already scoped. Signature and return schema are unchanged.
+    """
     stmt = _scoped(tests_select(), scope)
-    if flaky_only or new_within_days is not None:
-        stmt = stmt.where(TestCase.flakiness_score >= threshold)
-    elif not include_stable and not q and quarantined is not True:
-        stmt = stmt.where(TestCase.flakiness_score > 0)
-    if file:
-        stmt = stmt.where(TestCase.file.ilike(f"%{escape_like(file)}%", escape="\\"))
-    if category:
-        stmt = stmt.where(TestCase.failure_category == category)
-    if q:
-        stmt = stmt.where(test_search_clause(q))
-    if quarantined is not None:
-        stmt = stmt.where(TestCase.quarantined.is_(quarantined))
-    if has_issue is not None:
-        stmt = stmt.where(
-            TestCase.github_issue_number.is_not(None) if has_issue else TestCase.github_issue_number.is_(None)
-        )
-    if new_within_days is not None:
-        oldest = _newest_history_before(TestScoreHistory, TestScoreHistory.test_case_id, TestCase.id, new_within_days)
-        stmt = stmt.outerjoin(oldest, true()).where(_became_flaky_clause(oldest, threshold))
-
-    total = (await db.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one()
-
-    order = {
-        "score": (TestCase.flakiness_score.desc(), TestCase.last_seen_at.desc(), TestCase.id),
-        "last_seen": (TestCase.last_seen_at.desc(), TestCase.id.desc()),
-        "proven": (TestCase.confirmed_flake_count.desc(), TestCase.flakiness_score.desc(), TestCase.id),
-    }[sort]
-    rows = (await db.execute(stmt.order_by(*order).offset((page - 1) * page_size).limit(page_size))).all()
-    past = await past_test_scores(db, [tc.id for tc, _, _ in rows])
-    return schemas.TestPage(
-        items=[
-            to_test_out(tc, project, repo, threshold, trend=trend_for(tc.flakiness_score, past.get(tc.id)))
-            for tc, project, repo in rows
-        ],
-        total=total,
+    return await _list_leaderboard(
+        db,
+        TEST,
+        stmt,
+        TestListFilters(file=file, category=category, quarantined=quarantined),
+        threshold=threshold,
+        include_stable=include_stable,
+        flaky_only=flaky_only,
+        sort=sort,
         page=page,
         page_size=page_size,
+        q=q,
+        has_issue=has_issue,
+        new_within_days=new_within_days,
     )
 
 
@@ -265,20 +411,7 @@ async def summary(db: AsyncSession, scope: Scope, *, threshold: float) -> schema
             scope,
         )
 
-    total = (await db.execute(tests_count())).scalar_one()
-    flaky = (await db.execute(tests_count(TestCase.flakiness_score >= threshold))).scalar_one()
-    suspect = (
-        await db.execute(tests_count(TestCase.flakiness_score > 0, TestCase.flakiness_score < threshold))
-    ).scalar_one()
-    confirmed = (await db.execute(tests_count(TestCase.confirmed_flake_count > 0))).scalar_one()
-    oldest = _newest_history_before(TestScoreHistory, TestScoreHistory.test_case_id, TestCase.id, NEW_FLAKY_DAYS)
-    new_flaky = (
-        await db.execute(
-            tests_count(TestCase.flakiness_score >= threshold)
-            .outerjoin(oldest, true())
-            .where(_became_flaky_clause(oldest, threshold))
-        )
-    ).scalar_one()
+    total, flaky, suspect, confirmed, new_flaky = await _tile_counts(db, TEST, tests_count, threshold=threshold)
     runs = (
         await db.execute(
             _scoped(
@@ -567,25 +700,7 @@ def to_job_out(
 
 async def past_job_scores(db: AsyncSession, job_ids: list[int]) -> dict[int, float]:
     """Score of each Job's newest history row at least TREND_DAYS old."""
-    cutoff = utcnow().date() - timedelta(days=TREND_DAYS)
-    found: dict[int, float] = {}
-    for chunk in chunks(job_ids):
-        rn = (
-            func.row_number()
-            .over(
-                partition_by=JobScoreHistory.job_id,
-                order_by=JobScoreHistory.day.desc(),
-            )
-            .label("rn")
-        )
-        ranked = (
-            select(JobScoreHistory.job_id, JobScoreHistory.flakiness_score, rn)
-            .where(JobScoreHistory.job_id.in_(chunk), JobScoreHistory.day <= cutoff)
-            .subquery()
-        )
-        rows = await db.execute(select(ranked.c.job_id, ranked.c.flakiness_score).where(ranked.c.rn == 1))
-        found.update(dict(rows.all()))
-    return found
+    return await _past_scores(db, JobScoreHistory, JobScoreHistory.job_id, job_ids)
 
 
 def jobs_select() -> Select:
@@ -603,6 +718,44 @@ def job_search_clause(text: str) -> ColumnElement[bool]:
     return (Job.name.ilike(pattern, escape="\\")) | (Pipeline.name.ilike(pattern, escape="\\"))
 
 
+@dataclass(frozen=True)
+class JobListFilters:
+    """The Jobs-only listing filters the engine must not know about; built by `list_jobs`."""
+
+    pipeline: str | None = None
+
+
+def _job_filters(stmt: Select, f: JobListFilters) -> Select:
+    if f.pipeline is not None:
+        stmt = stmt.where(Pipeline.name == f.pipeline)
+    return stmt
+
+
+JOB = LeaderboardEntity(
+    id=Job.id,
+    score=Job.flakiness_score,
+    last_seen=Job.last_seen_at,
+    proven=Job.confirmed_flake_count,
+    issue_number=Job.github_issue_number,
+    history_model=JobScoreHistory,
+    history_fk=JobScoreHistory.job_id,
+    history_parent=Job.id,
+    past_scores=past_job_scores,
+    search_clause=job_search_clause,
+    to_out=to_job_out,
+    page=schemas.JobPage,
+    id_of=lambda job: job.id,
+    score_of=lambda job: job.flakiness_score,
+    apply_filters=_job_filters,
+    # The counterpart of TEST's exemption above, and the reason it is a decision point at all:
+    # `Job` has no `quarantined` column (models.py), because ADR 0004 says "Jobs have no Quarantine.
+    # A runner can't skip a job, and `continue-on-error` is a change to the workflow, not a
+    # FlakeRadar decision." (docs/adr/0004-pushed-ci-jobs-and-attribution.md:27). So no listing
+    # ever has a reason to show a stable Job, and this is descriptor data, not a divergent `elif`.
+    keeps_stable_rows=lambda f: False,
+)
+
+
 async def list_jobs(
     db: AsyncSession,
     repo: str | None,
@@ -618,40 +771,28 @@ async def list_jobs(
     has_issue: bool | None = None,
     new_within_days: int | None = None,
 ) -> schemas.JobPage:
+    """The Jobs leaderboard: a thin wrapper over the shared engine (issue #62).
+
+    The Scope-vs-repo difference between the two leaderboards is resolved here, not in the
+    descriptor: `stmt` arrives already scoped by repo name. Signature and return schema unchanged.
+    """
     stmt = jobs_select()
     if repo is not None:
         stmt = stmt.where(Repo.name == repo)
-    if flaky_only or new_within_days is not None:
-        stmt = stmt.where(Job.flakiness_score >= threshold)
-    elif not include_stable and not q:
-        stmt = stmt.where(Job.flakiness_score > 0)
-    if q:
-        stmt = stmt.where(job_search_clause(q))
-    if pipeline is not None:
-        stmt = stmt.where(Pipeline.name == pipeline)
-    if has_issue is not None:
-        stmt = stmt.where(Job.github_issue_number.is_not(None) if has_issue else Job.github_issue_number.is_(None))
-    if new_within_days is not None:
-        oldest = _newest_history_before(JobScoreHistory, JobScoreHistory.job_id, Job.id, new_within_days)
-        stmt = stmt.outerjoin(oldest, true()).where(_became_flaky_clause(oldest, threshold))
-
-    total = (await db.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one()
-
-    order = {
-        "score": (Job.flakiness_score.desc(), Job.last_seen_at.desc(), Job.id),
-        "last_seen": (Job.last_seen_at.desc(), Job.id.desc()),
-        "proven": (Job.confirmed_flake_count.desc(), Job.flakiness_score.desc(), Job.id),
-    }[sort]
-    rows = (await db.execute(stmt.order_by(*order).offset((page - 1) * page_size).limit(page_size))).all()
-    past = await past_job_scores(db, [job.id for job, _, _ in rows])
-    return schemas.JobPage(
-        items=[
-            to_job_out(job, pipeline, repo, threshold, trend=trend_for(job.flakiness_score, past.get(job.id)))
-            for job, pipeline, repo in rows
-        ],
-        total=total,
+    return await _list_leaderboard(
+        db,
+        JOB,
+        stmt,
+        JobListFilters(pipeline=pipeline),
+        threshold=threshold,
+        include_stable=include_stable,
+        flaky_only=flaky_only,
+        sort=sort,
         page=page,
         page_size=page_size,
+        q=q,
+        has_issue=has_issue,
+        new_within_days=new_within_days,
     )
 
 
@@ -667,18 +808,7 @@ async def job_summary(db: AsyncSession, repo: str | None, *, threshold: float) -
             stmt = stmt.where(Repo.name == repo)
         return stmt
 
-    total = (await db.execute(jobs_count())).scalar_one()
-    flaky = (await db.execute(jobs_count(Job.flakiness_score >= threshold))).scalar_one()
-    suspect = (await db.execute(jobs_count(Job.flakiness_score > 0, Job.flakiness_score < threshold))).scalar_one()
-    confirmed = (await db.execute(jobs_count(Job.confirmed_flake_count > 0))).scalar_one()
-    oldest = _newest_history_before(JobScoreHistory, JobScoreHistory.job_id, Job.id, NEW_FLAKY_DAYS)
-    new_flaky = (
-        await db.execute(
-            jobs_count(Job.flakiness_score >= threshold)
-            .outerjoin(oldest, true())
-            .where(_became_flaky_clause(oldest, threshold))
-        )
-    ).scalar_one()
+    total, flaky, suspect, confirmed, new_flaky = await _tile_counts(db, JOB, jobs_count, threshold=threshold)
 
     exec_stmt = (
         select(func.count(JobExecution.id))
