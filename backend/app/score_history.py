@@ -31,44 +31,6 @@ def trend_for(current: float, past: float | None) -> Trend | None:
     return "steady"
 
 
-async def upsert_test_history(db: AsyncSession, rows: list[dict[str, Any]]) -> None:
-    """rows: {test_case_id, day, flakiness_score, confirmed_flake_count, executions, failures}.
-
-    (test_case_id, day) must be unique within `rows`.
-    """
-    for chunk in chunks(rows):
-        stmt = pg_insert(TestScoreHistory).values(list(chunk))
-        stmt = stmt.on_conflict_do_update(
-            index_elements=[TestScoreHistory.test_case_id, TestScoreHistory.day],
-            set_={
-                "flakiness_score": stmt.excluded.flakiness_score,
-                "confirmed_flake_count": stmt.excluded.confirmed_flake_count,
-                "executions": TestScoreHistory.executions + stmt.excluded.executions,
-                "failures": TestScoreHistory.failures + stmt.excluded.failures,
-            },
-        )
-        await db.execute(stmt)
-
-
-async def upsert_job_history(db: AsyncSession, rows: list[dict[str, Any]]) -> None:
-    """rows: {job_id, day, flakiness_score, confirmed_flake_count, executions, failures}.
-
-    (job_id, day) must be unique within `rows`.
-    """
-    for chunk in chunks(rows):
-        stmt = pg_insert(JobScoreHistory).values(list(chunk))
-        stmt = stmt.on_conflict_do_update(
-            index_elements=[JobScoreHistory.job_id, JobScoreHistory.day],
-            set_={
-                "flakiness_score": stmt.excluded.flakiness_score,
-                "confirmed_flake_count": stmt.excluded.confirmed_flake_count,
-                "executions": JobScoreHistory.executions + stmt.excluded.executions,
-                "failures": JobScoreHistory.failures + stmt.excluded.failures,
-            },
-        )
-        await db.execute(stmt)
-
-
 async def upsert_history(
     db: AsyncSession,
     model: type[TestScoreHistory] | type[JobScoreHistory],

@@ -32,6 +32,7 @@ from .models import (
     REPORT_PROCESSED,
     Job,
     JobExecution,
+    JobScoreHistory,
     Pipeline,
     Project,
     Repo,
@@ -39,11 +40,12 @@ from .models import (
     TestCase,
     TestExecution,
     TestRun,
+    TestScoreHistory,
     utcnow,
 )
 from .parsing import ParsedCase, fingerprint, parse_junit_xml
 from .schemas import PipelineReportIn
-from .score_history import upsert_job_history, upsert_test_history
+from .score_history import write_today_history
 
 logger = logging.getLogger("flakeradar.processing")
 
@@ -189,22 +191,7 @@ async def rescore(
     for chunk in chunks(updates):
         await db.execute(update(TestCase), chunk)
     if updates:
-        today = utcnow().date()
-        counts = day_counts or {}
-        await upsert_test_history(
-            db,
-            [
-                {
-                    "test_case_id": u["id"],
-                    "day": today,
-                    "flakiness_score": u["flakiness_score"],
-                    "confirmed_flake_count": u["confirmed_flake_count"],
-                    "executions": counts.get(u["id"], (0, 0))[0],
-                    "failures": counts.get(u["id"], (0, 0))[1],
-                }
-                for u in updates
-            ],
-        )
+        await write_today_history(db, TestScoreHistory, TestScoreHistory.test_case_id, updates, day_counts=day_counts)
 
 
 async def apply_default_branch(db: AsyncSession, repo_id: int, value: str | None) -> bool:
@@ -310,22 +297,7 @@ async def rescore_jobs(
     for chunk in chunks(updates):
         await db.execute(update(Job), chunk)
     if updates:
-        today = utcnow().date()
-        counts = day_counts or {}
-        await upsert_job_history(
-            db,
-            [
-                {
-                    "job_id": u["id"],
-                    "day": today,
-                    "flakiness_score": u["flakiness_score"],
-                    "confirmed_flake_count": u["confirmed_flake_count"],
-                    "executions": counts.get(u["id"], (0, 0))[0],
-                    "failures": counts.get(u["id"], (0, 0))[1],
-                }
-                for u in updates
-            ],
-        )
+        await write_today_history(db, JobScoreHistory, JobScoreHistory.job_id, updates, day_counts=day_counts)
 
 
 async def _rescore_jobs_for_ci_job_id(db: AsyncSession, repo_id: int, ci_job_id: str) -> list[int]:
