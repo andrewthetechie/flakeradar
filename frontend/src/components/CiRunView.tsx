@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import {
+  ApiError,
   fetchCiRunFailures,
+  latestWins,
   type CiRunFailedJob,
   type CiRunFailures,
   type CiRunTestFailure,
@@ -16,9 +18,9 @@ import { SummaryBadge } from "./SummaryBadge";
 /** While reports are still landing, ask again this often (issue #26). */
 const POLL_MS = 5000;
 
-/** `getJson` rejects with "<url> -> <status>", the only handle on the status. */
+/** True when FlakeRadar has no reports for the requested CI run. */
 function isNotFound(e: unknown): boolean {
-  return (e instanceof Error ? e.message : String(e)).trimEnd().endsWith("-> 404");
+  return e instanceof ApiError && e.status === 404;
 }
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
@@ -284,21 +286,24 @@ export function CiRunView({
   const [settled, setSettled] = useState(0);
 
   // Only the newest request may write state: an answer for an attempt the
-  // user has since picked again must not overwrite the view.
-  const latest = useRef(0);
+  // user has since picked again must not overwrite the view. The comparison
+  // belongs to the api module's latestWins guard, held here for the lifetime
+  // of the component so it outlives each poll.
+  const guardRef = useRef(latestWins());
 
   useEffect(() => {
-    const request = ++latest.current;
+    const guard = guardRef.current;
+    const request = guard.start();
     fetchCiRunFailures(repo, ciRun, attempt)
       .then((d) => {
-        if (request !== latest.current) return;
+        if (!guard.current(request)) return;
         setData(d);
         setMissing(false);
         setError(null);
         setSettled((n) => n + 1);
       })
       .catch((e) => {
-        if (request !== latest.current) return;
+        if (!guard.current(request)) return;
         const notFound = isNotFound(e);
         // A 404 means nothing is known about this CI run, so drop whatever is
         // on screen rather than showing a different attempt's rows.

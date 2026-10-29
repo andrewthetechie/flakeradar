@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { setQuarantine } from "./api";
+import { ApiError, fetchRepos, latestWins, setQuarantine } from "./api";
 
 interface Post {
   path: string;
@@ -14,6 +14,14 @@ function stubFetch(): Post[] {
     return { ok: true, status: 200, json: async () => ({}) } as Response;
   });
   return posts;
+}
+
+/** Stubs the network so every request answers with a failed response. */
+function stubFailure(status: number): void {
+  vi.stubGlobal(
+    "fetch",
+    async () => ({ ok: false, status, json: async () => ({}) }) as unknown as Response,
+  );
 }
 
 describe("setQuarantine", () => {
@@ -34,5 +42,79 @@ describe("setQuarantine", () => {
     const posts = stubFetch();
     await setQuarantine(7, false, { reason: null, expiresInDays: null });
     expect(posts[0]?.body).toEqual({ quarantined: false });
+  });
+});
+
+/**
+ * getJson is module-private, so its rejection is exercised through an exported
+ * fetcher. The wording is part of the contract: the error banners render it.
+ */
+describe("rejected ApiError", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  async function rejection(promise: Promise<unknown>): Promise<unknown> {
+    return promise.then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+  }
+
+  it("exposes the status of a 404 through a GET fetcher", async () => {
+    stubFailure(404);
+    const e = await rejection(fetchRepos());
+    expect(e).toBeInstanceOf(ApiError);
+    expect((e as ApiError).status).toBe(404);
+    expect((e as Error).message).toBe("/api/repos -> 404");
+  });
+
+  it("exposes the status of a 500 through a GET fetcher", async () => {
+    stubFailure(500);
+    const e = await rejection(fetchRepos());
+    expect(e).toBeInstanceOf(ApiError);
+    expect((e as ApiError).status).toBe(500);
+    expect((e as Error).message).toBe("/api/repos -> 500");
+  });
+
+  it("carries the status out of the POST too", async () => {
+    stubFailure(500);
+    const e = await rejection(setQuarantine(7, true));
+    expect(e).toBeInstanceOf(ApiError);
+    expect((e as ApiError).status).toBe(500);
+    expect((e as Error).message).toBe("quarantine 7 -> 500");
+  });
+});
+
+/**
+ * The newest-request-wins guard, tested without a component: the point of the
+ * helper is that "a late answer never writes state" is checkable here rather
+ * than through a full-App render.
+ */
+describe("latestWins", () => {
+  it("lets the newest request write", () => {
+    const guard = latestWins();
+    expect(guard.current(guard.start())).toBe(true);
+  });
+
+  it("discards an answer superseded by a newer request", () => {
+    const guard = latestWins();
+    const first = guard.start();
+    guard.start(); // a newer request begins
+    expect(guard.current(first)).toBe(false); // the late answer must not write
+  });
+
+  it("cancel() discards every outstanding answer", () => {
+    const guard = latestWins();
+    const older = guard.start();
+    const newer = guard.start();
+    guard.cancel();
+    expect(guard.current(older)).toBe(false);
+    expect(guard.current(newer)).toBe(false);
+  });
+
+  it("accepts a fresh request after cancel()", () => {
+    const guard = latestWins();
+    guard.start();
+    guard.cancel();
+    expect(guard.current(guard.start())).toBe(true);
   });
 });
