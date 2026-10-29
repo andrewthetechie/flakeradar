@@ -7,16 +7,15 @@ import httpx
 import pytest
 from app import github_integration
 from app.config import Settings
-from app.db import WORKER_LOCK_KEY
-from app.models import Report, TestCase
+from app.models import TestCase
 from app.processing import ProcessOutcome
 from app.worker import GitHubWorker
-from sqlalchemy import select, text
+from sqlalchemy import select
 
 from tests.conftest import make_junit
 from tests.factories import make_project, make_report
 from tests.test_github import _flaky_test
-from tests.test_worker import _worker
+from tests.test_worker import _is_processed, _lock_is_free, _worker
 
 
 @pytest.fixture()
@@ -234,12 +233,6 @@ async def test_outcome_files_through_the_worker_transport(session_factory, gh_se
     assert all(got is transport for _, got in seen)
 
 
-async def _is_processed(session_factory, report_id: int) -> bool:
-    async with session_factory() as session:
-        report = await session.get(Report, report_id)
-        return report.status == "processed"
-
-
 async def test_github_work_does_not_block_processing(engine, session_factory, db, gh_settings):
     """A 2 s issue POST must not delay the next pending Report."""
     started = asyncio.Event()
@@ -304,15 +297,6 @@ class _BlockingGitHubWorker(GitHubWorker):
         self.stopping.set()
         await self.unblock.wait()
         await super().stop()
-
-
-async def _lock_is_free(engine) -> bool:
-    """True when another session can take the worker lock right now."""
-    async with engine.connect() as conn:
-        got = (await conn.execute(text("SELECT pg_try_advisory_lock(:k)"), {"k": WORKER_LOCK_KEY})).scalar()
-        if got:
-            await conn.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": WORKER_LOCK_KEY})
-    return bool(got)
 
 
 async def test_the_github_task_ends_before_the_lock_is_released(engine, session_factory):

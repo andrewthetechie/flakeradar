@@ -16,6 +16,6 @@ concurrency = greenlet, thread
 show_missing = true
 sort = -Cover
 precision = 2
-# Combined line + branch total. Measured at 96.50 once greenlet tracing was on
-# (90.04 without it); ratchet up as coverage grows, never down.
-fail_under = 96
+# Combined line + branch total. Measured at 97.42 with the workers' error paths
+# covered (90.04 without greenlet tracing); ratchet up as coverage grows, never down.
+fail_under = 97
