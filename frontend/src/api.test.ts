@@ -11,19 +11,22 @@ import {
   setQuarantine,
 } from "./api";
 
-interface Post {
+interface Call {
   path: string;
-  body: Record<string, unknown>;
+  body?: Record<string, unknown>;
 }
 
-/** Stubs the network and records every POST the client makes. */
-function stubFetch(): Post[] {
-  const posts: Post[] = [];
+/** Stubs the network and records every request the client makes. */
+function stubFetch(): Call[] {
+  const calls: Call[] = [];
   vi.stubGlobal("fetch", async (input: string | URL, init?: RequestInit) => {
-    posts.push({ path: String(input), body: JSON.parse(String(init?.body)) as Post["body"] });
+    calls.push({
+      path: String(input),
+      body: init?.body == null ? undefined : (JSON.parse(String(init.body)) as Call["body"]),
+    });
     return { ok: true, status: 200, json: async () => ({}) } as Response;
   });
-  return posts;
+  return calls;
 }
 
 /** Stubs the network so every request answers with a failed response. */
@@ -34,23 +37,13 @@ function stubFailure(status: number): void {
   );
 }
 
-/** Stubs the network and records every URL the client requests. */
-function stubGetJson(): string[] {
-  const urls: string[] = [];
-  vi.stubGlobal("fetch", async (input: string | URL) => {
-    urls.push(String(input));
-    return { ok: true, status: 200, json: async () => ({}) } as Response;
-  });
-  return urls;
-}
-
 describe("setQuarantine", () => {
   afterEach(() => vi.unstubAllGlobals());
 
   it("posts the reason and the expiry when they are given", async () => {
-    const posts = stubFetch();
+    const calls = stubFetch();
     await setQuarantine(7, true, { reason: "flaky on Windows", expiresInDays: 14 });
-    expect(posts).toEqual([
+    expect(calls).toEqual([
       {
         path: "/api/tests/7/quarantine",
         body: { quarantined: true, reason: "flaky on Windows", expires_in_days: 14 },
@@ -59,9 +52,9 @@ describe("setQuarantine", () => {
   });
 
   it("omits the empty choices so an un-quarantine stays a plain toggle", async () => {
-    const posts = stubFetch();
+    const calls = stubFetch();
     await setQuarantine(7, false, { reason: null, expiresInDays: null });
-    expect(posts[0]?.body).toEqual({ quarantined: false });
+    expect(calls[0]?.body).toEqual({ quarantined: false });
   });
 });
 
@@ -167,7 +160,7 @@ describe("GET request builders", () => {
   afterEach(() => vi.unstubAllGlobals());
 
   it("fetchTests sends the scope, paging and every active filter", async () => {
-    const urls = stubGetJson();
+    const calls = stubFetch();
     await fetchTests({
       repo: "a/b",
       project: null,
@@ -181,19 +174,19 @@ describe("GET request builders", () => {
       newWithinDays: null,
       q: "",
     });
-    expect(urls).toEqual([
+    expect(calls.map((c) => c.path)).toEqual([
       "/api/tests?repo=a%2Fb&page=2&page_size=50&sort=proven&include_stable=true&category=timing",
     ]);
   });
 
   it("fetchHistory asks for the fixed history window of one test", async () => {
-    const urls = stubGetJson();
+    const calls = stubFetch();
     await fetchHistory(7);
-    expect(urls).toEqual(["/api/tests/7/history?limit=60"]);
+    expect(calls.map((c) => c.path)).toEqual(["/api/tests/7/history?limit=60"]);
   });
 
   it("fetchJobs sends the paging, sort and stable toggle", async () => {
-    const urls = stubGetJson();
+    const calls = stubFetch();
     await fetchJobs({
       repo: "a/b",
       page: 1,
@@ -205,14 +198,14 @@ describe("GET request builders", () => {
       newWithinDays: null,
       q: "",
     });
-    expect(urls).toEqual([
+    expect(calls.map((c) => c.path)).toEqual([
       "/api/jobs?repo=a%2Fb&page=1&page_size=50&sort=score&include_stable=true",
     ]);
   });
 
   it("fetchFailedReports asks for the failed reports window", async () => {
-    const urls = stubGetJson();
+    const calls = stubFetch();
     await fetchFailedReports();
-    expect(urls).toEqual(["/api/reports?status=failed&limit=20"]);
+    expect(calls.map((c) => c.path)).toEqual(["/api/reports?status=failed&limit=20"]);
   });
 });
