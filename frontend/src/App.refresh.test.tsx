@@ -257,51 +257,18 @@ describe("App refresh", () => {
   });
 
   it("ignores a stale Jobs response for a repo the user already left", async () => {
-    // The Job fixture of src/App.test.tsx, with a name we can look for.
-    const jobs = (name: string) => ({
-      items: [
-        {
-          id: 3,
-          repo: "x/y",
-          provider: "github",
-          pipeline: ".github/workflows/ci.yml",
-          name,
-          flakiness_score: 0.31,
-          tier: "flaky",
-          confirmed_flake_count: 0,
-          clean_streak: 0,
-          trend: null,
-          last_status: "failed",
-          last_seen_at: "2026-09-25T00:00:00Z",
-          github_issue_number: null,
-          github_issue_url: null,
-        },
-      ],
-      total: 1,
-      page: 1,
-      page_size: 50,
-    });
-    const jobSummary = {
-      total_jobs: 1,
-      flaky_jobs: 1,
-      suspect_jobs: 0,
-      confirmed_flaky_jobs: 0,
-      total_job_executions: 10,
-      flake_threshold: 0.3,
-      new_flaky_7d: 0,
-    };
     let finishOld: (r: Response) => void = () => {};
     vi.stubGlobal(
       "fetch",
       vi.fn((url: string) => {
         // /api/jobs/summary must be matched before the /api/jobs list.
-        if (url.startsWith("/api/jobs/summary")) return json(jobSummary);
+        if (url.startsWith("/api/jobs/summary")) return json(jobSummaryFixture);
         if (url.startsWith("/api/jobs") && url.includes("repo=a%2Fone")) {
           return new Promise<Response>((resolve) => {
             finishOld = resolve;
           });
         }
-        if (url.startsWith("/api/jobs")) return json(jobs("newjob"));
+        if (url.startsWith("/api/jobs")) return json(jobPageFixture(3, "newjob"));
         if (url.startsWith("/api/repos")) return json([]);
         if (url.startsWith("/api/reports/summary")) return json({ pending: 0, failed: 0 });
         return json(summary);
@@ -317,7 +284,7 @@ describe("App refresh", () => {
     expect(await screen.findByText("newjob")).toBeInTheDocument();
 
     await act(async () => {
-      finishOld(new Response(JSON.stringify(jobs("oldjob"))));
+      finishOld(new Response(JSON.stringify(jobPageFixture(3, "oldjob"))));
     });
     expect(screen.queryByText("oldjob")).not.toBeInTheDocument();
     expect(screen.getByText("newjob")).toBeInTheDocument();
@@ -489,7 +456,7 @@ describe("App refresh", () => {
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
-  it("keeps the new Test drawer's history when the old drawer's answers", async () => {
+  it("keeps the new Test drawer's history when the old drawer's history answers after the switch", async () => {
     let finishOld: (r: Response) => void = () => {};
     vi.stubGlobal(
       "fetch",
@@ -525,7 +492,7 @@ describe("App refresh", () => {
     expect(screen.queryByText("stale-test")).not.toBeInTheDocument();
   });
 
-  it("keeps the new Job drawer's history when the old drawer's answers", async () => {
+  it("keeps the new Job drawer's history when the old drawer's history answers after the switch", async () => {
     let finishOld: (r: Response) => void = () => {};
     vi.stubGlobal(
       "fetch",
