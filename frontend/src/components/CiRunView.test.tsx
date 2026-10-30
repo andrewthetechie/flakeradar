@@ -255,4 +255,112 @@ describe("CiRunView", () => {
     await waitFor(() => expect(urls.at(-1)).toContain("ci_run_attempt=3"));
     expect(screen.getByLabelText("Attempt")).toHaveValue(3);
   });
+
+  it("names the CI run when the very first request fails", async () => {
+    vi.useFakeTimers();
+    stubFetch(() => new Response("boom", { status: 500 }));
+    render(<Harness />);
+    await flush();
+
+    // Regexes only: the exact message belongs to the api module.
+    const note = screen.getByText(/Could not read CI run 99/);
+    expect(note).toHaveTextContent("500");
+  });
+
+  it("keeps the rows and flags the error when a refresh fails", async () => {
+    vi.useFakeTimers();
+    let calls = 0;
+    stubFetch(() => {
+      calls++;
+      return calls === 1
+        ? json(body({ reports: { pending: 1, processed: 1, failed: 0 } }))
+        : new Response("boom", { status: 500 });
+    });
+    render(<Harness />);
+    await flush();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000);
+    });
+
+    // A server error says nothing about the attempt, so its rows stay on screen.
+    expect(screen.getByRole("button", { name: "test_login" })).toBeInTheDocument();
+    expect(screen.getByText(/Last refresh failed: .*500/)).toBeInTheDocument();
+  });
+
+  it("shows a rejected non-Error as text", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => Promise.reject("offline")),
+    );
+    render(<Harness />);
+    await flush();
+
+    expect(screen.getByText(/Could not read CI run 99: offline/)).toBeInTheDocument();
+  });
+
+  it("drops a stale answer for a replaced attempt", async () => {
+    vi.useFakeTimers();
+    let resolveStale: (r: Response) => void = () => {};
+    const stale = new Promise<Response>((resolve) => {
+      resolveStale = resolve;
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) =>
+        url.includes("ci_run_attempt=3")
+          ? stale
+          : Promise.resolve(
+              json(body({ ci_run_attempt: 4, failures: [failure({ name: "newest" })] })),
+            ),
+      ),
+    );
+    render(<Harness start={3} />);
+    await flush();
+    fireEvent.change(screen.getByLabelText("Attempt"), { target: { value: "4" } });
+    await flush();
+
+    expect(screen.getByRole("button", { name: "newest" })).toBeInTheDocument();
+
+    await act(async () => {
+      resolveStale(json(body({ ci_run_attempt: 3, failures: [failure({ name: "stale" })] })));
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    expect(screen.queryByRole("button", { name: "stale" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "newest" })).toBeInTheDocument();
+  });
+
+  it("drops a stale failure for a replaced attempt", async () => {
+    vi.useFakeTimers();
+    let resolveStale: (r: Response) => void = () => {};
+    const stale = new Promise<Response>((resolve) => {
+      resolveStale = resolve;
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) =>
+        url.includes("ci_run_attempt=3")
+          ? stale
+          : Promise.resolve(
+              json(body({ ci_run_attempt: 4, failures: [failure({ name: "newest" })] })),
+            ),
+      ),
+    );
+    render(<Harness start={3} />);
+    await flush();
+    fireEvent.change(screen.getByLabelText("Attempt"), { target: { value: "4" } });
+    await flush();
+
+    expect(screen.getByRole("button", { name: "newest" })).toBeInTheDocument();
+
+    await act(async () => {
+      resolveStale(new Response("boom", { status: 500 }));
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    expect(screen.queryByText(/Last refresh failed/)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "newest" })).toBeInTheDocument();
+  });
 });
