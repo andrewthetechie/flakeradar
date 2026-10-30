@@ -117,3 +117,46 @@ describe("LeaderboardControls pipeline filter", () => {
     expect(pipelineSelect()).not.toBeInTheDocument();
   });
 });
+
+describe("LeaderboardControls sort and filter handlers", () => {
+  it("the sort select reports the chosen key", () => {
+    const onSort = vi.fn();
+    render(<LeaderboardControls {...base} onSort={onSort} />);
+    fireEvent.change(screen.getByRole("combobox", { name: /sort by/i }), {
+      target: { value: "last_seen" },
+    });
+    expect(onSort).toHaveBeenCalledWith("last_seen");
+  });
+
+  it("the cause select reports the category, and Any reports null", () => {
+    const onCause = vi.fn();
+    render(<LeaderboardControls {...base} cause={null} causeCounts={null} onCause={onCause} />);
+    const cause = screen.getByRole("combobox", { name: /likely cause/i });
+    fireEvent.change(cause, { target: { value: "timing" } });
+    expect(onCause).toHaveBeenLastCalledWith("timing");
+    fireEvent.change(cause, { target: { value: "" } });
+    expect(onCause).toHaveBeenLastCalledWith(null);
+  });
+
+  it("the pipeline select lists only All when the summary has no pipelines", () => {
+    render(<LeaderboardControls {...base} onPipeline={() => {}} />);
+    const select = screen.getByRole("combobox", { name: /pipeline/i });
+    expect(
+      within(select)
+        .getAllByRole("option")
+        .map((o) => o.textContent),
+    ).toEqual(["All"]);
+  });
+
+  it("the stable checkbox reports the new value", () => {
+    const onShowStable = vi.fn();
+    render(<LeaderboardControls {...base} onShowStable={onShowStable} />);
+    fireEvent.click(screen.getByRole("checkbox", { name: /show stable/i }));
+    expect(onShowStable).toHaveBeenCalledWith(true);
+  });
+
+  it("the quarantined box is unchecked when the view omits it", () => {
+    render(<LeaderboardControls {...base} onQuarantined={() => {}} />);
+    expect(screen.getByRole("checkbox", { name: /quarantined only/i })).not.toBeChecked();
+  });
+});
