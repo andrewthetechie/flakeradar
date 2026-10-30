@@ -83,4 +83,48 @@ describe("QueueIndicator", () => {
     expect(dismiss).toHaveTextContent('-H "X-API-Key: $FLAKERADAR_API_TOKEN"');
     expect(dismiss).toHaveTextContent("/api/reports/<id>");
   });
+
+  it.each([
+    ["2026-09-27T23:30:00Z", "1 hour ago"],
+    ["2026-09-27T23:00:00Z", "1 hour ago"],
+    ["2026-09-27T19:00:00Z", "5 hours ago"],
+    ["2026-09-26T18:00:00Z", "1 day ago"],
+  ])("ages a report created at %s", async (createdAt, expected) => {
+    // Same frozen clock as the test above, 30 minutes to 30 hours of age.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-28T00:00:00Z"));
+    const loadFailed = vi.fn().mockResolvedValue([{ ...failedReport, created_at: createdAt }]);
+    render(<QueueIndicator summary={{ pending: 0, failed: 1 }} loadFailed={loadFailed} />);
+    fireEvent.click(screen.getByRole("button"));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(screen.getByText(expected)).toBeInTheDocument();
+  });
+
+  it("closes the panel on a second click without loading again", async () => {
+    const loadFailed = vi.fn().mockResolvedValue([failedReport]);
+    render(<QueueIndicator summary={{ pending: 0, failed: 1 }} loadFailed={loadFailed} />);
+    const button = screen.getByRole("button");
+    await userEvent.click(button);
+    expect(await screen.findByRole("region", { name: "Failed reports" })).toBeInTheDocument();
+    await userEvent.click(button);
+    expect(screen.queryByRole("region", { name: "Failed reports" })).toBeNull();
+    expect(button).toHaveAttribute("aria-expanded", "false");
+    expect(loadFailed).toHaveBeenCalledOnce();
+  });
+
+  it("says so when loading failed reports fails", async () => {
+    const loadFailed = vi.fn().mockRejectedValue(new Error("boom"));
+    render(<QueueIndicator summary={{ pending: 0, failed: 1 }} loadFailed={loadFailed} />);
+    await userEvent.click(screen.getByRole("button"));
+    expect(await screen.findByText("Could not load failed reports (boom).")).toBeInTheDocument();
+  });
+
+  it("says so when loading failed reports fails with a non-Error value", async () => {
+    const loadFailed = vi.fn().mockRejectedValue("nope");
+    render(<QueueIndicator summary={{ pending: 0, failed: 1 }} loadFailed={loadFailed} />);
+    await userEvent.click(screen.getByRole("button"));
+    expect(await screen.findByText("Could not load failed reports (nope).")).toBeInTheDocument();
+  });
 });
