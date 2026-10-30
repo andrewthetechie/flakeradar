@@ -23,4 +23,15 @@ describe("IssueLink", () => {
     expect(link).toHaveAttribute("target", "_blank");
     expect(link).toHaveAttribute("rel", "noreferrer");
   });
+
+  it("renders an anchor without href when no url is known", () => {
+    render(
+      <IssueLink number={3} url={null}>
+        #3
+      </IssueLink>,
+    );
+    const anchor = screen.getByText("#3");
+    expect(anchor.tagName).toBe("A");
+    expect(anchor).not.toHaveAttribute("href");
+  });
 });
