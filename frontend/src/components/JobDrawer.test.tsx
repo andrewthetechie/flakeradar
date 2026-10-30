@@ -212,6 +212,48 @@ describe("JobDrawer", () => {
     expect(link).toHaveAttribute("href", "https://github.com/acme/app/actions/runs/2/jobs/J2");
   });
 
+  it("does not close on another key", () => {
+    const { onClose } = renderDrawer();
+    fireEvent.keyDown(window, { key: "Enter" });
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("links the filed issue", () => {
+    renderDrawer({
+      job: {
+        ...history.job,
+        github_issue_number: 8,
+        github_issue_url: "https://github.com/acme/app/issues/8",
+      },
+    });
+    expect(screen.getByRole("link", { name: "issue #8" })).toHaveAttribute(
+      "href",
+      "https://github.com/acme/app/issues/8",
+    );
+  });
+
+  it("pluralizes unexplained failures", () => {
+    renderDrawer({ unexplained_failures: 2 });
+    expect(
+      screen.getByText(
+        "2 unexplained failures · 1 explained by tests (last 2 executions) · clean streak 4",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("labels a runner group with no name and no labels", () => {
+    renderDrawer({
+      runners: [{ labels: [], runner_name: null, executions: 1, unexplained_failures: 1 }],
+    });
+    const table = within(screen.getByRole("table", { name: "Failures by runner" }));
+    expect(table.getByText("(no labels)")).toBeInTheDocument();
+    expect(table.getAllByRole("cell").map((cell) => cell.textContent)).toEqual([
+      "(no labels)",
+      "1",
+      "1",
+    ]);
+  });
+
   it("closes on Escape and the close button", async () => {
     const { onClose } = renderDrawer();
     fireEvent.keyDown(window, { key: "Escape" });
