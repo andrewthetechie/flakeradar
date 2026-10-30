@@ -1,7 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { JobStatTiles } from "./JobStatTiles";
-import { StatTiles } from "./StatTiles";
+import { StatStrip, StatTiles } from "./StatTiles";
 
 describe("StatTiles", () => {
   it("shows one tile per Test statistic", () => {
@@ -48,5 +48,18 @@ describe("StatTiles", () => {
     expect(screen.getByText("Tracked jobs")).toBeInTheDocument();
     expect(screen.getByText("New in 7 days")).toBeInTheDocument();
     expect(screen.getByText("Job executions recorded")).toBeInTheDocument();
+  });
+
+  it("falls back to six columns for an unusual tile count", () => {
+    const { container } = render(
+      <StatStrip
+        tiles={[
+          { label: "A", value: 1 },
+          { label: "B", value: 2 },
+          { label: "C", value: 3 },
+        ]}
+      />,
+    );
+    expect(container.firstElementChild?.className).toContain("lg:grid-cols-6");
   });
 });
