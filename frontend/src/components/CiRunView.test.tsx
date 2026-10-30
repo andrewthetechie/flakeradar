@@ -256,6 +256,29 @@ describe("CiRunView", () => {
     expect(screen.getByLabelText("Attempt")).toHaveValue(3);
   });
 
+  it("asks for the latest attempt again when the input is cleared", async () => {
+    const urls = stubFetch(() => json(body()));
+    render(<Harness start={3} />);
+    expect(await screen.findByRole("button", { name: "test_login" })).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Attempt"), { target: { value: "" } });
+    await waitFor(() => expect(urls.at(-1)).not.toContain("ci_run_attempt"));
+    // Nothing picked means the attempt the endpoint just answered.
+    expect(screen.getByLabelText("Attempt")).toHaveValue(2);
+  });
+
+  it("renders a row whose flakiness score is zero", async () => {
+    stubFetch(() => json(body({ failures: [failure({ flakiness_score: 0, tier: "stable" })] })));
+    render(<Harness />);
+    expect(await screen.findByText("0.00")).toBeInTheDocument();
+  });
+
+  it("falls back to the suite when a failure has no classname", async () => {
+    stubFetch(() => json(body({ failures: [failure({ classname: "", suite: "unit-suite" })] })));
+    render(<Harness />);
+    expect(await screen.findByText("unit-suite")).toBeInTheDocument();
+  });
+
   it("names the CI run when the very first request fails", async () => {
     vi.useFakeTimers();
     stubFetch(() => new Response("boom", { status: 500 }));
