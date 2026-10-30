@@ -18,4 +18,16 @@ describe("Pagination", () => {
     rerender(<Pagination page={2} pageSize={50} total={60} onPage={() => {}} />);
     expect(screen.getByRole("button", { name: "Next ›" })).toBeDisabled();
   });
+
+  it("shows an empty page count when there is nothing to page through", () => {
+    render(<Pagination page={1} pageSize={50} total={0} onPage={() => {}} />);
+    expect(screen.getByText("Page 1 of 1 · 0–0 of 0")).toBeInTheDocument();
+  });
+
+  it("moves back a page", async () => {
+    const onPage = vi.fn();
+    render(<Pagination page={2} pageSize={50} total={60} onPage={onPage} />);
+    await userEvent.click(screen.getByRole("button", { name: "‹ Prev" }));
+    expect(onPage).toHaveBeenCalledWith(1);
+  });
 });
