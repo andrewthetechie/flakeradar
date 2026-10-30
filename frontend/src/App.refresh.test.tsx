@@ -2,7 +2,7 @@
 // error banner and the "only the newest refresh may write state" guards.
 // The helpers below are copies of the ones in src/App.test.tsx — tests never
 // import from each other.
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { TestCase, TestPage } from "./api";
 import App from "./App";
@@ -37,6 +37,74 @@ function page(name: string): TestPage {
 }
 
 const json = (body: unknown) => Promise.resolve(new Response(JSON.stringify(body)));
+
+/** A Tests list row with an explicit id and name, so assertions stay independent. */
+function row(id: number, name: string): TestCase {
+  return { ...page(name).items[0], id, name };
+}
+
+/** A Test drawer's history of Test `id`. The empty arrays render as empty sections. */
+function testHistory(id: number, name: string) {
+  return {
+    test: row(id, name),
+    location: null,
+    last_failing_sha: null,
+    last_failing_branch: null,
+    executions: [],
+    jobs: [],
+    score_history: [],
+  };
+}
+
+/** A Jobs leaderboard row with an explicit id and name. */
+function jobRow(id: number, name: string) {
+  return {
+    id,
+    repo: "x/y",
+    provider: "github",
+    pipeline: ".github/workflows/ci.yml",
+    name,
+    flakiness_score: 0.31,
+    tier: "flaky",
+    confirmed_flake_count: 0,
+    clean_streak: 0,
+    trend: null,
+    last_status: "failed",
+    last_seen_at: "2026-09-25T00:00:00Z",
+    summary: false,
+    github_issue_number: null,
+    github_issue_url: null,
+  };
+}
+
+const jobPageFixture = (id: number, name: string) => ({
+  items: [jobRow(id, name)],
+  total: 1,
+  page: 1,
+  page_size: 50,
+});
+
+const jobSummaryFixture = {
+  total_jobs: 1,
+  flaky_jobs: 1,
+  suspect_jobs: 0,
+  confirmed_flaky_jobs: 0,
+  total_job_executions: 10,
+  flake_threshold: 0.3,
+  new_flaky_7d: 0,
+};
+
+/** A Job drawer's history of Job `id`. */
+function jobHistoryFixture(id: number, name: string) {
+  return {
+    job: jobRow(id, name),
+    unexplained_failures: 0,
+    explained_failures: 0,
+    executions: [],
+    runners: [],
+    score_history: [],
+  };
+}
 
 // The default /api/summary body, as the other App tests serve it.
 const summary = {
@@ -286,5 +354,258 @@ describe("App refresh", () => {
       finishOld(new Response("boom", { status: 500 }));
     });
     expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("shows a failed Test drawer history fetch's own message in the banner", async () => {
+    let finishHistory: (r: Response) => void = () => {};
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        // /api/tests/5/history must be matched before the /api/tests list.
+        if (url.startsWith("/api/tests/5/history")) {
+          return new Promise<Response>((resolve) => {
+            finishHistory = resolve;
+          });
+        }
+        if (url.startsWith("/api/tests"))
+          return json({ ...page("login"), items: [row(5, "login")] });
+        if (url.startsWith("/api/repos")) return json([]);
+        if (url.startsWith("/api/reports/summary")) return json({ pending: 0, failed: 0 });
+        return json(summary);
+      }),
+    );
+    window.history.replaceState(null, "", "/?test=5");
+    render(<App />);
+
+    // The history answer is held back until the list has painted, so the
+    // refresh's setError(null) cannot wipe the banner the drawer raises.
+    expect(await screen.findByText("login")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+
+    await act(async () => {
+      finishHistory(new Response("boom", { status: 500 }));
+    });
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      /\/api\/tests\/5\/history\?limit=60 -> 500/,
+    );
+  });
+
+  it("shows a failed Job drawer history fetch's own message in the banner", async () => {
+    let finishHistory: (r: Response) => void = () => {};
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        if (url.startsWith("/api/jobs/3/history")) {
+          return new Promise<Response>((resolve) => {
+            finishHistory = resolve;
+          });
+        }
+        if (url.startsWith("/api/jobs/summary")) return json(jobSummaryFixture);
+        if (url.startsWith("/api/jobs")) return json(jobPageFixture(3, "e2e"));
+        if (url.startsWith("/api/repos")) return json([]);
+        if (url.startsWith("/api/reports/summary")) return json({ pending: 0, failed: 0 });
+        return json(summary);
+      }),
+    );
+    window.history.replaceState(null, "", "/?view=jobs&job=3");
+    render(<App />);
+
+    expect(await screen.findByText("e2e")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+
+    await act(async () => {
+      finishHistory(new Response("boom", { status: 500 }));
+    });
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      /\/api\/jobs\/3\/history\?limit=60 -> 500/,
+    );
+  });
+
+  it("raises no banner for a Test drawer history that fails after the drawer closed", async () => {
+    let finishHistory: (r: Response) => void = () => {};
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        if (url.startsWith("/api/tests/5/history")) {
+          return new Promise<Response>((resolve) => {
+            finishHistory = resolve;
+          });
+        }
+        if (url.startsWith("/api/tests"))
+          return json({ ...page("login"), items: [row(5, "login")] });
+        if (url.startsWith("/api/repos")) return json([]);
+        if (url.startsWith("/api/reports/summary")) return json({ pending: 0, failed: 0 });
+        return json(summary);
+      }),
+    );
+    window.history.replaceState(null, "", "/?test=5");
+    render(<App />);
+    expect(await screen.findByRole("dialog", { name: "Test detail" })).toBeInTheDocument();
+
+    // Escape closes the drawer, which cancels the request in flight. The
+    // answer arrives afterwards: a drawer cannot reopen itself.
+    act(() => {
+      fireEvent.keyDown(window, { key: "Escape" });
+    });
+    expect(screen.queryByRole("dialog", { name: "Test detail" })).not.toBeInTheDocument();
+
+    await act(async () => {
+      finishHistory(new Response("boom", { status: 500 }));
+    });
+    expect(screen.queryByRole("dialog", { name: "Test detail" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("raises no banner for a Job drawer history that fails after the drawer closed", async () => {
+    let finishHistory: (r: Response) => void = () => {};
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        if (url.startsWith("/api/jobs/3/history")) {
+          return new Promise<Response>((resolve) => {
+            finishHistory = resolve;
+          });
+        }
+        if (url.startsWith("/api/jobs/summary")) return json(jobSummaryFixture);
+        if (url.startsWith("/api/jobs")) return json(jobPageFixture(3, "e2e"));
+        if (url.startsWith("/api/repos")) return json([]);
+        if (url.startsWith("/api/reports/summary")) return json({ pending: 0, failed: 0 });
+        return json(summary);
+      }),
+    );
+    window.history.replaceState(null, "", "/?view=jobs&job=3");
+    render(<App />);
+    expect(await screen.findByRole("dialog", { name: "Job detail" })).toBeInTheDocument();
+
+    act(() => {
+      fireEvent.keyDown(window, { key: "Escape" });
+    });
+    expect(screen.queryByRole("dialog", { name: "Job detail" })).not.toBeInTheDocument();
+
+    await act(async () => {
+      finishHistory(new Response("boom", { status: 500 }));
+    });
+    expect(screen.queryByRole("dialog", { name: "Job detail" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("keeps the new Test drawer's history when the old drawer's answers", async () => {
+    let finishOld: (r: Response) => void = () => {};
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        if (url.startsWith("/api/tests/5/history")) {
+          return new Promise<Response>((resolve) => {
+            finishOld = resolve;
+          });
+        }
+        if (url.startsWith("/api/tests/6/history")) return json(testHistory(6, "target-test"));
+        if (url.startsWith("/api/tests"))
+          return json({ ...page("login"), items: [row(5, "login")] });
+        if (url.startsWith("/api/repos")) return json([]);
+        if (url.startsWith("/api/reports/summary")) return json({ pending: 0, failed: 0 });
+        return json(summary);
+      }),
+    );
+    window.history.replaceState(null, "", "/?test=5");
+    render(<App />);
+    expect(await screen.findByRole("dialog", { name: "Test detail" })).toBeInTheDocument();
+
+    act(() => {
+      window.history.pushState(null, "", "/?test=6");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+    expect(await screen.findByRole("heading", { name: "target-test" })).toBeInTheDocument();
+
+    // Test 5's answer lands after Test 6's: only the newest request may write.
+    await act(async () => {
+      finishOld(new Response(JSON.stringify(testHistory(5, "stale-test"))));
+    });
+    expect(screen.getByRole("heading", { name: "target-test" })).toBeInTheDocument();
+    expect(screen.queryByText("stale-test")).not.toBeInTheDocument();
+  });
+
+  it("keeps the new Job drawer's history when the old drawer's answers", async () => {
+    let finishOld: (r: Response) => void = () => {};
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        if (url.startsWith("/api/jobs/3/history")) {
+          return new Promise<Response>((resolve) => {
+            finishOld = resolve;
+          });
+        }
+        if (url.startsWith("/api/jobs/7/history")) return json(jobHistoryFixture(7, "targetjob"));
+        if (url.startsWith("/api/jobs/summary")) return json(jobSummaryFixture);
+        if (url.startsWith("/api/jobs")) return json(jobPageFixture(3, "e2e"));
+        if (url.startsWith("/api/repos")) return json([]);
+        if (url.startsWith("/api/reports/summary")) return json({ pending: 0, failed: 0 });
+        return json(summary);
+      }),
+    );
+    window.history.replaceState(null, "", "/?view=jobs&job=3");
+    render(<App />);
+    expect(await screen.findByRole("dialog", { name: "Job detail" })).toBeInTheDocument();
+
+    act(() => {
+      window.history.pushState(null, "", "/?view=jobs&job=7");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+    expect(await screen.findByRole("heading", { name: "targetjob" })).toBeInTheDocument();
+
+    await act(async () => {
+      finishOld(new Response(JSON.stringify(jobHistoryFixture(3, "oldjob"))));
+    });
+    expect(screen.getByRole("heading", { name: "targetjob" })).toBeInTheDocument();
+    expect(screen.queryByText("oldjob")).not.toBeInTheDocument();
+  });
+
+  /** The Tests list with one row whose id is 5, and a quarantine POST that fails. */
+  function stubFailingQuarantinePost(quarantined: boolean) {
+    const test = {
+      ...row(5, "login"),
+      quarantined,
+      quarantined_at: quarantined ? "2026-09-25T00:00:00Z" : null,
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        // /quarantine must be matched before the /api/tests list.
+        if (url.includes("/quarantine")) {
+          return Promise.resolve(new Response("nope", { status: 500 }));
+        }
+        if (url.startsWith("/api/tests")) return json({ ...page("login"), items: [test] });
+        if (url.startsWith("/api/repos")) return json([]);
+        if (url.startsWith("/api/reports/summary")) return json({ pending: 0, failed: 0 });
+        return json(summary);
+      }),
+    );
+  }
+
+  it("shows the banner when an un-quarantine fails", async () => {
+    stubFailingQuarantinePost(true);
+    render(<App />);
+    expect(await screen.findByText("login")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Un-quarantine" }));
+    await act(async () => {});
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/quarantine 5 -> 500/);
+  });
+
+  it("closes the quarantine dialog and shows the banner when the POST fails", async () => {
+    stubFailingQuarantinePost(false);
+    render(<App />);
+    expect(await screen.findByText("login")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Quarantine" }));
+    const dialog = await screen.findByRole("dialog", { name: /Quarantine login/ });
+    // The reason is optional, so confirming right away is a valid choice.
+    fireEvent.click(within(dialog).getByRole("button", { name: "Confirm" }));
+    await act(async () => {});
+
+    // The dialog closes before the POST, and the failure still reaches the banner.
+    expect(screen.queryByRole("dialog", { name: /Quarantine login/ })).not.toBeInTheDocument();
+    expect(await screen.findByRole("alert")).toHaveTextContent(/quarantine 5 -> 500/);
   });
 });
