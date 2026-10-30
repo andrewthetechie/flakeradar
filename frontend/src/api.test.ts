@@ -1,5 +1,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiError, fetchRepos, latestWins, setQuarantine } from "./api";
+import {
+  ApiError,
+  fetchFailedReports,
+  fetchHistory,
+  fetchJobs,
+  fetchRepos,
+  fetchTests,
+  latestWins,
+  scopeParams,
+  setQuarantine,
+} from "./api";
 
 interface Post {
   path: string;
@@ -22,6 +32,16 @@ function stubFailure(status: number): void {
     "fetch",
     async () => ({ ok: false, status, json: async () => ({}) }) as unknown as Response,
   );
+}
+
+/** Stubs the network and records every URL the client requests. */
+function stubGetJson(): string[] {
+  const urls: string[] = [];
+  vi.stubGlobal("fetch", async (input: string | URL) => {
+    urls.push(String(input));
+    return { ok: true, status: 200, json: async () => ({}) } as Response;
+  });
+  return urls;
 }
 
 describe("setQuarantine", () => {
@@ -116,5 +136,83 @@ describe("latestWins", () => {
     guard.start();
     guard.cancel();
     expect(guard.current(guard.start())).toBe(true);
+  });
+});
+
+/**
+ * The scope a Test list is built from: a project only means something with its
+ * repo, so a project without one has to disappear from the query.
+ */
+describe("scopeParams", () => {
+  it("keeps the repo encoded and appends the project", () => {
+    expect(scopeParams({ repo: "a/b", project: "backend" }).toString()).toBe(
+      "repo=a%2Fb&project=backend",
+    );
+  });
+
+  it("leaves the project out when there is none", () => {
+    expect(scopeParams({ repo: "a/b", project: null }).toString()).toBe("repo=a%2Fb");
+  });
+
+  it("drops a project that has no repo", () => {
+    expect(scopeParams({ repo: null, project: "backend" }).toString()).toBe("");
+  });
+});
+
+/**
+ * Every GET builder is a parameter mapping, so the exact URL — key names, values
+ * and the order the code sets them in — is the contract under test.
+ */
+describe("GET request builders", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("fetchTests sends the scope, paging and every active filter", async () => {
+    const urls = stubGetJson();
+    await fetchTests({
+      repo: "a/b",
+      project: null,
+      page: 2,
+      pageSize: 50,
+      sort: "proven",
+      showStable: true,
+      category: "timing",
+      quarantined: false,
+      issue: null,
+      newWithinDays: null,
+      q: "",
+    });
+    expect(urls).toEqual([
+      "/api/tests?repo=a%2Fb&page=2&page_size=50&sort=proven&include_stable=true&category=timing",
+    ]);
+  });
+
+  it("fetchHistory asks for the fixed history window of one test", async () => {
+    const urls = stubGetJson();
+    await fetchHistory(7);
+    expect(urls).toEqual(["/api/tests/7/history?limit=60"]);
+  });
+
+  it("fetchJobs sends the paging, sort and stable toggle", async () => {
+    const urls = stubGetJson();
+    await fetchJobs({
+      repo: "a/b",
+      page: 1,
+      pageSize: 50,
+      sort: "score",
+      showStable: true,
+      pipeline: null,
+      issue: null,
+      newWithinDays: null,
+      q: "",
+    });
+    expect(urls).toEqual([
+      "/api/jobs?repo=a%2Fb&page=1&page_size=50&sort=score&include_stable=true",
+    ]);
+  });
+
+  it("fetchFailedReports asks for the failed reports window", async () => {
+    const urls = stubGetJson();
+    await fetchFailedReports();
+    expect(urls).toEqual(["/api/reports?status=failed&limit=20"]);
   });
 });

@@ -1,5 +1,12 @@
-import { describe, expect, it } from "vitest";
-import { DEFAULT_VIEW, applyPatch, parseViewState, serializeViewState } from "./urlState";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { act, renderHook } from "@testing-library/react";
+import {
+  DEFAULT_VIEW,
+  applyPatch,
+  parseViewState,
+  serializeViewState,
+  useViewState,
+} from "./urlState";
 
 describe("view state in the URL", () => {
   it("round-trips a full view", () => {
@@ -85,6 +92,10 @@ describe("view state in the URL", () => {
       "?repo=a%2Fb",
     );
     expect(parseViewState("?view=ci-run")).toMatchObject({ view: "ci-run", ci_run: null });
+  });
+
+  it("serializes the ci-run view with no run selected as just the view", () => {
+    expect(serializeViewState({ ...DEFAULT_VIEW, view: "ci-run" })).toBe("?view=ci-run");
   });
 
   it("round-trips a search term, omitted when empty", () => {
@@ -210,6 +221,16 @@ describe("applyPatch", () => {
     expect(back).toMatchObject({ view: "tests", page: 1, test: null, job: null });
   });
 
+  it("keeps a page that arrives with the view switch, but still clears the drawer", () => {
+    const fromTest = applyPatch({ ...base, page: 3 }, { view: "jobs", page: 2 });
+    expect(fromTest).toMatchObject({ view: "jobs", page: 2, test: null, job: null });
+    const fromJob = applyPatch(
+      { ...DEFAULT_VIEW, view: "jobs", page: 3, job: 9 },
+      { view: "tests", page: 2 },
+    );
+    expect(fromJob).toMatchObject({ view: "tests", page: 2, test: null, job: null });
+  });
+
   it("test and job are mutually exclusive", () => {
     const withJob = applyPatch({ ...base, test: 7 }, { job: 5 });
     expect(withJob.job).toBe(5);
@@ -217,5 +238,31 @@ describe("applyPatch", () => {
     const withTest = applyPatch({ ...DEFAULT_VIEW, job: 5 }, { test: 9 });
     expect(withTest.test).toBe(9);
     expect(withTest.job).toBeNull();
+  });
+});
+
+/**
+ * The hook is the only thing that writes the address bar, so the interesting
+ * behaviour is what it refuses to write: a patch that does not change the
+ * serialized view must not push a history entry.
+ */
+describe("useViewState", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    window.history.replaceState(null, "", "/");
+  });
+
+  it("pushes only when the URL actually changes", () => {
+    window.history.replaceState(null, "", "/");
+    const push = vi.spyOn(window.history, "pushState");
+    const { result } = renderHook(() => useViewState());
+
+    // An empty patch serializes back to the current (empty) search.
+    act(() => result.current[1]({}));
+    expect(push).not.toHaveBeenCalled();
+
+    act(() => result.current[1]({ sort: "proven" }));
+    expect(push).toHaveBeenCalledTimes(1);
+    expect(push).toHaveBeenCalledWith(null, "", "?sort=proven");
   });
 });
