@@ -2,6 +2,7 @@
 
 import pytest
 from app import issue_links
+from app.models import utcnow
 
 from tests.conftest import AUTH
 from tests.factories import make_job, make_pipeline, make_project, make_test_case
@@ -194,6 +195,17 @@ async def test_job_conflict_and_replace(client, db):
     resp = await client.put(f"/api/jobs/{job.id}/issue?replace=true", json={"number": 5}, headers=AUTH)
     assert resp.status_code == 200
     assert resp.json()["github_issue_number"] == 5
+
+
+async def test_job_same_number_again_is_a_no_op(client, db):
+    checked = utcnow()
+    job = await _job(db, github_issue_number=5, github_issue_checked_at=checked)
+    resp = await client.put(f"/api/jobs/{job.id}/issue", json={"number": 5}, headers=AUTH)
+    assert resp.status_code == 200
+    assert resp.json()["github_issue_number"] == 5
+    await db.refresh(job)
+    assert job.github_issue_number == 5
+    assert job.github_issue_checked_at == checked  # a same-number link keeps the check stamp
 
 
 async def test_job_url_must_be_the_issue_in_the_jobs_repo(client, db):

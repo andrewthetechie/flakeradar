@@ -32,6 +32,19 @@ async def test_list_jobs_filters_stable_and_sorts_worst_first(client, db):
     assert all_jobs["total"] == 3
 
 
+async def test_list_jobs_without_repo_returns_every_repo(client, db):
+    # Every other /api/jobs test filters by ?repo=; without it the listing spans Repos.
+    pa = await make_pipeline(db, "acme/a", ".github/workflows/ci.yml")
+    pb = await make_pipeline(db, "acme/b", ".github/workflows/ci.yml")
+    await make_job(db, pa, name="ja", flakiness_score=0.6)
+    await make_job(db, pb, name="jb", flakiness_score=0.6)
+    await db.commit()
+
+    body = (await client.get("/api/jobs")).json()
+    assert body["total"] == 2
+    assert sorted(j["name"] for j in body["items"]) == ["ja", "jb"]
+
+
 async def test_job_history_outcomes_and_explained_by(client, db):
     proj = await make_project(db, "acme/app", "backend")
     p = await make_pipeline(db, "acme/app", ".github/workflows/ci.yml")
@@ -62,6 +75,29 @@ async def test_job_history_outcomes_and_explained_by(client, db):
     body2 = (await client.get(f"/api/jobs/{job2.id}/history")).json()
     assert body2["executions"][0]["outcome"] == "failed"
     assert body2["unexplained_failures"] == 1 and body2["explained_failures"] == 0
+
+
+async def test_job_history_explained_by_is_capped_at_20_tests(client, db):
+    proj = await make_project(db, "acme/app", "backend")
+    p = await make_pipeline(db, "acme/app", ".github/workflows/ci.yml")
+    job = await make_job(db, p, name="test")
+    await make_job_execution(db, job, status="failed", ci_job_id="J-F", branch="main")
+    run = await make_run(db, proj, commit_sha="s", ci_job_id="J-F")
+    # 21 failed Tests uploaded by the same Job attempt; only 20 are listed.
+    for i in range(21):
+        tc = await make_test_case(db, proj, name=f"t{i:02d}")
+        await make_execution(db, tc, run, status="failed")
+    await db.commit()
+
+    body = (await client.get(f"/api/jobs/{job.id}/history")).json()
+    failed = next(e for e in body["executions"] if e["ci_job_id"] == "J-F")
+    assert failed["outcome"] == "explained"
+    names = [x["name"] for x in failed["explained_by"]]
+    assert len(names) == 20
+    # Rows are newest Test execution first, so the first created Test is the left out one.
+    assert "t20" in names
+    assert "t00" not in names
+    assert body["explained_failures"] == 1 and body["unexplained_failures"] == 0
 
 
 async def test_job_history_runner_stats(client, db):
@@ -169,6 +205,46 @@ async def test_summary_job_history_lists_explaining_sibling_jobs(client, db):
     assert body["explained_failures"] == 1
     assert by_run["run-2"]["outcome"] == "failed"  # no sibling failure in run-2
     assert by_run["run-2"]["explained_by_jobs"] == []
+
+
+async def test_summary_job_with_no_failed_sibling_explains_nothing(client, db):
+    p = await make_pipeline(db, "acme/app", ".github/workflows/ci.yml")
+    summary = await make_job(db, p, name="alls-green", summary=True)
+    # One passed and one failed execution, and no other Job ran in that CI run attempt.
+    await make_job_execution(db, summary, status="passed", ci_job_id="J-OK", ci_run_id="run-1")
+    await make_job_execution(db, summary, status="failed", ci_job_id="J-BAD", ci_run_id="run-1")
+    await db.commit()
+
+    body = (await client.get(f"/api/jobs/{summary.id}/history")).json()
+    by_ci = {e["ci_job_id"]: e for e in body["executions"]}
+    assert by_ci["J-OK"]["outcome"] == "passed"
+    assert by_ci["J-BAD"]["outcome"] == "failed"
+    assert by_ci["J-BAD"]["explained_by"] == []
+    assert by_ci["J-BAD"]["explained_by_jobs"] == []
+    assert body["explained_failures"] == 0
+    assert body["unexplained_failures"] == 1
+
+
+async def test_summary_job_explained_by_jobs_is_capped_at_20_siblings(client, db):
+    p = await make_pipeline(db, "acme/app", ".github/workflows/ci.yml")
+    summary = await make_job(db, p, name="alls-green", summary=True)
+    await make_job_execution(db, summary, status="failed", ci_job_id="J-S", ci_run_id="run-1")
+    # 21 failed non-summary siblings in the same CI run attempt; only 20 are listed.
+    for i in range(21):
+        leg = await make_job(db, p, name=f"leg-{i:02d}")
+        await make_job_execution(db, leg, status="failed", ci_run_id="run-1")
+    await db.commit()
+
+    body = (await client.get(f"/api/jobs/{summary.id}/history")).json()
+    failed = next(e for e in body["executions"] if e["ci_job_id"] == "J-S")
+    assert failed["outcome"] == "explained"
+    assert failed["explained_by"] == []
+    names = [s["name"] for s in failed["explained_by_jobs"]]
+    assert len(names) == 20
+    # Siblings are listed oldest Job execution first, so the last created is left out.
+    assert "leg-00" in names
+    assert "leg-20" not in names
+    assert body["explained_failures"] == 1 and body["unexplained_failures"] == 0
 
 
 async def test_github_issue_url_null_for_non_github(client, db):
