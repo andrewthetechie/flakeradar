@@ -190,6 +190,34 @@ async def test_get_test_by_id_and_by_name(mcp, db):
     assert nothing.is_error
 
 
+async def test_get_test_by_classname_when_name_is_ambiguous(mcp, db):
+    proj = await make_project(db, "acme/app", "backend")
+    a = await make_test_case(db, proj, name="dup", classname="a")
+    b = await make_test_case(db, proj, name="dup", classname="b")
+    await db.commit()
+    args = {"repo": "acme/app", "project": "backend", "name": "dup"}
+    async with Client(mcp) as c:
+        narrowed = (await c.call_tool("get_test", {**args, "classname": "b"})).data
+        ambiguous = await c.call_tool("get_test", args, raise_on_error=False)
+    assert narrowed["test"]["id"] == b.id
+    assert ambiguous.is_error
+    text = ambiguous.content[0].text
+    assert "2 tests are named 'dup'" in text
+    assert f"test_id [{a.id}, {b.id}]" in text
+
+
+async def test_get_test_without_failures_has_no_latest_failure(mcp, db):
+    proj = await make_project(db, "acme/app", "backend")
+    tc = await make_test_case(db, proj, name="steady")
+    run = await make_run(db, proj)
+    await make_execution(db, tc, run, status="passed")
+    await db.commit()
+    async with Client(mcp) as c:
+        data = (await c.call_tool("get_test", {"test_id": tc.id})).data
+    assert data["latest_failure"] is None
+    assert data["last_failing_sha"] is None
+
+
 async def test_http_mount_requires_bearer_token(client):
     resp = await client.post(
         "/mcp/",
@@ -354,6 +382,24 @@ async def test_ci_run_failures_errors(mcp, db):
     assert unknown_attempt.is_error and "CI run attempt not found" in unknown_attempt.content[0].text
     assert unknown_repo.is_error and "Repo not found" in unknown_repo.content[0].text
     assert bad_repo.is_error
+
+
+@pytest.mark.parametrize(
+    ("tool", "args", "message"),
+    [
+        ("search_tests", {"repo": "acme/app", "query": "   "}, "query must not be empty"),
+        ("get_test", {"test_id": 999999}, "No test with id 999999."),
+        ("search_jobs", {"repo": "acme/app", "query": ""}, "query must not be empty"),
+        ("get_job", {"repo": "acme/app"}, "Pass job_id, or repo + name"),
+        ("get_job", {"job_id": 999999}, "No job with id 999999."),
+        ("ci_run_failures", {"repo": "acme/app", "ci_run_id": "  "}, "ci_run_id must not be empty"),
+    ],
+)
+async def test_tool_argument_and_not_found_errors(mcp, tool, args, message):
+    async with Client(mcp) as c:
+        res = await c.call_tool(tool, args, raise_on_error=False)
+    assert res.is_error
+    assert message in res.content[0].text
 
 
 async def test_tool_annotations(mcp):
