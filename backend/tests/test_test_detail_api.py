@@ -160,6 +160,16 @@ async def test_quarantine_toggle_and_scoped_list(client, db):
     assert (await client.post("/api/tests/9999/quarantine", json={"quarantined": True})).status_code == 404
 
 
+async def test_quarantine_list_rejects_bad_names(client):
+    bad_repo = await client.get("/api/quarantine?repo=not-a-repo", headers=AUTH)
+    assert bad_repo.status_code == 422
+    assert "repo must look like 'owner/name'" in bad_repo.json()["detail"]
+
+    bad_project = await client.get("/api/quarantine?repo=acme/app&project=Bad%20Name!", headers=AUTH)
+    assert bad_project.status_code == 422
+    assert bad_project.json()["detail"].startswith("project must be 1-100 chars")
+
+
 async def test_score_history_embedded_oldest_first(client, db):
     tc = await _seed(db)
     today = utcnow().date()

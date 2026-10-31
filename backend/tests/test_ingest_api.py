@@ -160,6 +160,16 @@ async def test_ingest_rejects_empty_and_garbage(client, db):
     assert (await db.execute(select(Report))).first() is None
 
 
+async def test_ingest_rejects_oversized_report(client, db, monkeypatch):
+    from app.routers import reports as reports_router
+
+    monkeypatch.setattr(reports_router, "MAX_REPORT_BYTES", 10)  # not a real 20 MB upload
+    resp = await client.post(_url(), content=make_junit([("t", "passed")]), headers=AUTH)
+    assert resp.status_code == 413
+    assert resp.json()["detail"] == "Report exceeds 20 MB limit"
+    assert (await db.execute(select(Report))).first() is None
+
+
 async def test_ingest_retried_upload_is_a_duplicate(client, db, session_factory):
     """curl --retry after a lost response must not create a second Run."""
     url = _url(ci_run_id="55", ci_job_id="7", ci_run_attempt="1")
