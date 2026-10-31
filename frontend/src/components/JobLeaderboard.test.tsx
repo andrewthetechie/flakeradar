@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { Job } from "../api";
 import { JobLeaderboard } from "./JobLeaderboard";
@@ -96,5 +96,84 @@ describe("JobLeaderboard", () => {
     );
     expect(screen.getByText("No jobs match.")).toBeInTheDocument();
     expect(screen.queryByText(/Tick “Show stable jobs”/)).toBeNull();
+  });
+
+  it("tells you to copy the reporter workflow when there is no data at all", () => {
+    render(
+      <JobLeaderboard jobs={[]} repo="acme/app" showStable selectedId={null} onSelect={vi.fn()} />,
+    );
+    // The sentence is split around the <code> workflow path, so match a fragment.
+    expect(screen.getByText(/No job data yet/)).toBeInTheDocument();
+  });
+
+  it("marks the selected row", () => {
+    const { unmount } = render(
+      <JobLeaderboard
+        jobs={[job()]}
+        repo="acme/app"
+        showStable={false}
+        selectedId={job().id}
+        onSelect={vi.fn()}
+      />,
+    );
+    // The selected-row class is the only signal that a row is selected.
+    expect(screen.getByText("test (ubuntu, 3.12)").closest("tr")).toHaveClass("bg-surface-2");
+    unmount();
+    render(
+      <JobLeaderboard
+        jobs={[job()]}
+        repo="acme/app"
+        showStable={false}
+        selectedId={null}
+        onSelect={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("test (ubuntu, 3.12)").closest("tr")).not.toHaveClass("bg-surface-2");
+  });
+
+  it("badges a summary job", () => {
+    render(
+      <JobLeaderboard
+        jobs={[job({ summary: true })]}
+        repo="acme/app"
+        showStable={false}
+        selectedId={null}
+        onSelect={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("summary")).toBeInTheDocument();
+  });
+
+  it("renders a job that has never flipped", () => {
+    render(
+      <JobLeaderboard
+        jobs={[job({ flakiness_score: 0 })]}
+        repo="acme/app"
+        showStable={false}
+        selectedId={null}
+        onSelect={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("0.00")).toBeInTheDocument();
+  });
+
+  it("keeps the issue link from selecting the job", () => {
+    const onSelect = vi.fn();
+    render(
+      <JobLeaderboard
+        jobs={[
+          job({
+            github_issue_number: 4,
+            github_issue_url: "https://github.com/acme/app/issues/4",
+          }),
+        ]}
+        repo="acme/app"
+        showStable={false}
+        selectedId={null}
+        onSelect={onSelect}
+      />,
+    );
+    fireEvent.click(screen.getByRole("link", { name: "#4" }));
+    expect(onSelect).not.toHaveBeenCalled();
   });
 });

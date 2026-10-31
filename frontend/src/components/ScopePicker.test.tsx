@@ -44,4 +44,36 @@ describe("ScopePicker", () => {
     await userEvent.selectOptions(project, "e2e");
     expect(onChange).toHaveBeenCalledWith({ repo: "andrewthetechie/writers-app", project: "e2e" });
   });
+
+  it("clears the repo and the project together", async () => {
+    const onChange = vi.fn();
+    render(
+      <ScopePicker
+        repos={repos}
+        scope={{ repo: "andrewthetechie/writers-app", project: "backend" }}
+        onChange={onChange}
+      />,
+    );
+    await userEvent.selectOptions(
+      screen.getByLabelText("Repo"),
+      screen.getByRole("option", { name: "All repos" }),
+    );
+    expect(onChange).toHaveBeenCalledWith({ repo: null, project: null });
+  });
+
+  it("clears the project but keeps the repo", async () => {
+    const onChange = vi.fn();
+    render(
+      <ScopePicker
+        repos={repos}
+        scope={{ repo: "andrewthetechie/writers-app", project: "backend" }}
+        onChange={onChange}
+      />,
+    );
+    await userEvent.selectOptions(
+      screen.getByLabelText("Project"),
+      screen.getByRole("option", { name: "All projects" }),
+    );
+    expect(onChange).toHaveBeenCalledWith({ repo: "andrewthetechie/writers-app", project: null });
+  });
 });
