@@ -153,6 +153,52 @@ describe("TestDrawer", () => {
     expect(onClose).toHaveBeenCalledTimes(2);
   });
 
+  it("does not close on another key", () => {
+    const { onClose } = renderDrawer();
+    fireEvent.keyDown(window, { key: "Enter" });
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the suite when the runner reports no classname", () => {
+    renderDrawer({ test: { ...history.test, classname: "" } });
+    expect(screen.getByText("unit")).toBeInTheDocument();
+  });
+
+  it("links the filed issue next to the breadcrumb", () => {
+    renderDrawer({
+      test: {
+        ...history.test,
+        github_issue_number: 5,
+        github_issue_url: "https://github.com/andrewthetechie/writers-app/issues/5",
+      },
+    });
+    expect(screen.getByRole("link", { name: "issue #5" })).toHaveAttribute(
+      "href",
+      "https://github.com/andrewthetechie/writers-app/issues/5",
+    );
+  });
+
+  it("shows a location the runner gave no URL for as text", () => {
+    renderDrawer({ location: { path: "frontend/src/app.test.ts", line: 12, url: null } });
+    expect(screen.getByText("frontend/src/app.test.ts:12")).toBeInTheDocument();
+    expect(screen.queryByRole("link")).toBeNull();
+  });
+
+  it("omits the line number when the runner reports none", () => {
+    renderDrawer({ location: { path: "x.ts", line: null, url: null } });
+    const loc = screen.getByText("x.ts");
+    expect(loc).toBeInTheDocument();
+    expect(loc.tagName).toBe("SPAN");
+    expect(loc.textContent).not.toContain(":");
+  });
+
+  it("omits the line number on a linked location", () => {
+    renderDrawer({ location: { path: "x.ts", line: null, url: "https://example.com/x.ts" } });
+    const link = screen.getByRole("link", { name: "x.ts" });
+    expect(link).toHaveAttribute("href", "https://example.com/x.ts");
+    expect(link.textContent).not.toContain(":");
+  });
+
   it("toggles quarantine for the shown test", async () => {
     const { onQ } = renderDrawer();
     await userEvent.click(screen.getByRole("button", { name: "Quarantine" }));
