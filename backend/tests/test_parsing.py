@@ -217,3 +217,35 @@ def test_invalid_utf8_bytes_are_replaced_not_rejected():
 def test_invalid_or_empty_reports_raise(body):
     with pytest.raises(ParseError):
         parse_junit_xml(body)
+
+
+def test_nameless_testcase_is_dropped():
+    # Lines 149-150: `if case.name is None: continue`.
+    cases = parse_junit_xml(
+        b'<testsuite name="s"><testcase classname="c"/><testcase classname="c" name="n"/></testsuite>'
+    )
+    assert [(c.name, c.status) for c in cases] == [("n", "passed")]
+
+
+def test_retry_time_that_is_not_a_number_is_zero():
+    # Lines 134-135: `except (TypeError, ValueError): duration = 0.0`.
+    cases = parse_junit_xml(
+        b'<testsuite name="s"><testcase classname="c" name="r">'
+        b'<flakyFailure message="m" time="abc"/></testcase></testsuite>'
+    )
+    assert [(c.status, c.duration) for c in cases] == [("failed", 0.0), ("passed", 0.0)]
+
+
+def test_failure_without_message_or_body_is_empty_strings():
+    # _first_line("") with no message attribute: the `else ""` arm.
+    c = _one('<testsuite name="s"><testcase classname="c" name="n"><failure/></testcase></testsuite>')
+    assert (c.status, c.message, c.details) == ("failed", "", "")
+
+
+def test_properties_child_of_testsuites_is_not_yielded():
+    # Pins why the isinstance guard is dead: JUnitXml.__iter__ yields only
+    # TestSuite children, so <properties> never reaches it.
+    cases = parse_junit_xml(
+        b'<testsuites><properties/><testsuite name="s"><testcase classname="c" name="n"/></testsuite></testsuites>'
+    )
+    assert [(c.name, c.status) for c in cases] == [("n", "passed")]
