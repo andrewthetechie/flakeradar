@@ -1,21 +1,21 @@
 """GitHubWorker: filing and issue-state sync run off the processor's hot path."""
 
 import asyncio
+import logging
 
 import httpx
 import pytest
 from app import github_integration
 from app.config import Settings
-from app.db import WORKER_LOCK_KEY
-from app.models import Report, TestCase
+from app.models import TestCase
 from app.processing import ProcessOutcome
 from app.worker import GitHubWorker
-from sqlalchemy import select, text
+from sqlalchemy import select
 
 from tests.conftest import make_junit
 from tests.factories import make_project, make_report
 from tests.test_github import _flaky_test
-from tests.test_worker import _worker
+from tests.test_worker import _is_processed, _lock_is_free, _worker
 
 
 @pytest.fixture()
@@ -133,6 +133,72 @@ async def test_stop_cancels_the_task(session_factory, gh_settings):
     assert not worker.is_running
 
 
+async def test_stop_without_start_returns(session_factory):
+    """Stopping a worker that never started is a no-op."""
+    worker = GitHubWorker(session_factory, sync_interval_seconds=3600.0)
+    await worker.stop()
+    assert not worker.is_running
+
+
+async def test_filing_failure_is_logged_and_filing_continues(session_factory, db, monkeypatch, caplog):
+    """A failing GitHub call is logged and the next outcome still gets filed."""
+    tc = await _flaky_test(db)
+    outcomes = [_outcome(tc), _outcome(tc)]
+    filed: list[ProcessOutcome] = []
+    attempts: list[ProcessOutcome] = []
+
+    async def fake_on_report_processed(session_factory, outcome, *, transport=None):
+        attempts.append(outcome)
+        if len(attempts) == 1:
+            raise RuntimeError("GitHub is down")  # only the first attempt fails
+        filed.append(outcome)
+
+    async def fake_sync(session_factory, *, transport=None):
+        return None  # no sync path touches GitHub
+
+    monkeypatch.setattr(github_integration, "on_report_processed", fake_on_report_processed)
+    monkeypatch.setattr(github_integration, "sync_closed_issues", fake_sync)
+    worker = GitHubWorker(session_factory, sync_interval_seconds=3600.0)
+    with caplog.at_level(logging.ERROR, logger="flakeradar.worker"):
+        await worker.start()
+        try:
+            await worker.enqueue(outcomes[0])
+            await worker.enqueue(outcomes[1])
+            await _wait_for(lambda: len(filed) == 1)
+            assert worker.is_running
+        finally:
+            await worker.stop()
+    assert len(attempts) == 2 and attempts[0] is outcomes[0] and attempts[1] is outcomes[1]
+    assert len(filed) == 1 and filed[0] is outcomes[1]  # the failure did not cost us the second Report
+    assert [r.getMessage() for r in caplog.records if "GitHub issue filing failed" in r.getMessage()] == [
+        f"GitHub issue filing failed for Report {outcomes[0].report_id}"
+    ]
+
+
+async def test_sync_failure_is_logged_and_retried(session_factory, monkeypatch, caplog):
+    """A failing sync is logged, and the worker keeps going and retries at the next interval."""
+    calls: list[int] = []
+
+    async def fake_sync(session_factory, *, transport=None):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("GitHub is down")  # only the first attempt fails
+
+    monkeypatch.setattr(github_integration, "sync_closed_issues", fake_sync)
+    # The fake sync returns at once, so the second call is driven by the interval, not a race.
+    worker = GitHubWorker(session_factory, sync_interval_seconds=0.5)
+    with caplog.at_level(logging.ERROR, logger="flakeradar.worker"):
+        await worker.start()
+        try:
+            await _wait_for(lambda: len(calls) >= 2, timeout=5.0)
+            assert worker.is_running
+        finally:
+            await worker.stop()
+    assert [r.getMessage() for r in caplog.records if "GitHub issue-state sync failed" in r.getMessage()] == [
+        "GitHub issue-state sync failed; will retry next interval"
+    ]
+
+
 async def test_outcome_files_through_the_worker_transport(session_factory, gh_settings, monkeypatch):
     """The worker's transport reaches on_report_processed, which forwards it to filing."""
     seen: list[tuple[str, object]] = []
@@ -165,12 +231,6 @@ async def test_outcome_files_through_the_worker_transport(session_factory, gh_se
         await worker.stop()
     assert [kind for kind, _ in seen] == ["test", "job"]
     assert all(got is transport for _, got in seen)
-
-
-async def _is_processed(session_factory, report_id: int) -> bool:
-    async with session_factory() as session:
-        report = await session.get(Report, report_id)
-        return report.status == "processed"
 
 
 async def test_github_work_does_not_block_processing(engine, session_factory, db, gh_settings):
@@ -237,15 +297,6 @@ class _BlockingGitHubWorker(GitHubWorker):
         self.stopping.set()
         await self.unblock.wait()
         await super().stop()
-
-
-async def _lock_is_free(engine) -> bool:
-    """True when another session can take the worker lock right now."""
-    async with engine.connect() as conn:
-        got = (await conn.execute(text("SELECT pg_try_advisory_lock(:k)"), {"k": WORKER_LOCK_KEY})).scalar()
-        if got:
-            await conn.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": WORKER_LOCK_KEY})
-    return bool(got)
 
 
 async def test_the_github_task_ends_before_the_lock_is_released(engine, session_factory):
