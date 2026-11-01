@@ -228,10 +228,7 @@ async def retry_report(report_id: int, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=409, detail="Only failed reports can be retried")
     if report.retry_count >= get_settings().max_report_retries:
         raise HTTPException(status_code=409, detail="Max retries reached for this report")
-    report.retry_count += 1
-    report.status = REPORT_PENDING
-    report.error = None
-    report.processed_at = None
+    report_intake.requeue_report(report, error=None)
     await db.commit()
     return _report_out(report, repo, project)
 

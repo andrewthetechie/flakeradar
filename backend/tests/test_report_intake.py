@@ -6,6 +6,7 @@ the stored row exactly the way ingest would queue it.
 """
 
 import hashlib
+from datetime import datetime, timezone
 
 import pytest
 from app.models import Report
@@ -13,8 +14,12 @@ from app.report_intake import (
     body_digest,
     build_junit_report,
     build_pipeline_report,
+    complete_report,
+    fail_report,
     find_junit_duplicate,
     pipeline_body,
+    stored_junit_body,
+    stored_pipeline_payload,
 )
 from app.schemas import PipelineReportIn
 from sqlalchemy import select
@@ -230,3 +235,49 @@ async def test_make_report_seeds_a_pipeline_row_without_a_project(db):
     assert stored.kind == "pipeline"
     assert (stored.project_id, stored.repo_id, stored.body_sha256) == (None, proj.repo_id, None)
     assert (stored.ci_run_attempt, stored.status) == (2, "pending")
+
+
+@pytest.mark.parametrize(("line_base", "expected"), [(None, 1), (0, 0), (1, 1)])
+async def test_stored_junit_body_reads_a_null_line_base_as_one(db, line_base, expected):
+    """A stored NULL predates the `line_base` parameter (models.Report)."""
+    proj = await make_project(db)
+    row = build_junit_report(project=proj, body=_BODY, commit_sha="sha1", line_base=line_base)
+
+    assert stored_junit_body(row) == (_BODY, expected)
+
+
+async def test_stored_pipeline_payload_is_the_inverse_of_pipeline_body(db):
+    proj = await make_project(db)
+    payload = PipelineReportIn(**_PIPELINE_JSON)
+    row = build_pipeline_report(repo_id=proj.repo_id, body=pipeline_body(payload), commit_sha="sha1")
+
+    assert stored_pipeline_payload(row) == payload
+
+
+async def test_complete_report_is_the_processed_transition(db):
+    proj = await make_project(db)
+    row = build_junit_report(project=proj, body=_BODY, **_IDENTITY)
+    now = datetime.now(timezone.utc)
+
+    complete_report(row, now=now, run_id=7, counts={"passed": 1})
+
+    assert row.status == "processed"
+    assert row.counts == {"passed": 1}
+    assert (row.run_id, row.error, row.processed_at) == (7, None, now)
+    # Field-only: no retry budget spent, and the caller owns the transaction.
+    assert row.retry_count is None
+    assert object_session(row) is None
+
+
+async def test_fail_report_is_the_permanent_failure_transition(db):
+    proj = await make_project(db)
+    row = build_junit_report(project=proj, body=_BODY, **_IDENTITY)
+    now = datetime.now(timezone.utc)
+
+    fail_report(row, now=now, error="ValidationError: bad body")
+
+    assert row.status == "failed"
+    assert (row.error, row.processed_at) == ("ValidationError: bad body", now)
+    # Field-only: a permanent failure spends no retry budget and leaves the rest alone.
+    assert (row.retry_count, row.counts, row.run_id) == (None, None, None)
+    assert object_session(row) is None

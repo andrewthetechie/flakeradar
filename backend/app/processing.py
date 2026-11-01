@@ -17,7 +17,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import InterfaceError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from . import scoring
+from . import report_intake, scoring
 from .attribution import job_execution_explained, job_execution_window_ids
 from .batching import chunks
 from .classify import classify_failure, dominant_category
@@ -44,7 +44,6 @@ from .models import (
     utcnow,
 )
 from .parsing import ParsedCase, fingerprint, parse_junit_xml
-from .schemas import PipelineReportIn
 from .score_history import write_today_history
 
 logger = logging.getLogger("flakeradar.processing")
@@ -321,7 +320,7 @@ async def _rescore_jobs_for_ci_job_id(db: AsyncSession, repo_id: int, ci_job_id:
 
 async def process_pipeline_report(db: AsyncSession, report: Report) -> ProcessOutcome:
     """Persist one Pipeline report as Job executions. Caller owns the transaction."""
-    pipeline_report = PipelineReportIn.model_validate_json(report.body)
+    pipeline_report = report_intake.stored_pipeline_payload(report)
     now = utcnow()
 
     branch_changed = await apply_default_branch(db, report.repo_id, pipeline_report.default_branch)
@@ -426,16 +425,13 @@ async def process_pipeline_report(db: AsyncSession, report: Report) -> ProcessOu
     if branch_changed:
         await rescore_repo(db, report.repo_id)
 
-    report.status = REPORT_PROCESSED
-    report.counts = {**new_counts, "duplicate": len(pipeline_report.jobs) - sum(new_counts.values())}
-    report.run_id = None
-    report.error = None
-    report.processed_at = now
+    counts_out = {**new_counts, "duplicate": len(pipeline_report.jobs) - sum(new_counts.values())}
+    report_intake.complete_report(report, now=now, run_id=None, counts=counts_out)
     return ProcessOutcome(
         report_id=report.id,
         status=REPORT_PROCESSED,
         run_id=None,
-        counts=report.counts,
+        counts=counts_out,
         touched_test_ids=[],
         error=None,
         touched_job_ids=touched,
@@ -446,9 +442,8 @@ async def process_report(db: AsyncSession, report: Report) -> ProcessOutcome:
     """Persist one Report. Caller owns the transaction (no commit here)."""
     if report.kind == REPORT_KIND_PIPELINE:
         return await process_pipeline_report(db, report)
-    # NULL means the Report predates the `line_base` parameter: read it as 1.
-    line_base = 1 if report.line_base is None else report.line_base
-    classified = await asyncio.to_thread(_parse_and_classify, report.body, line_base)
+    body, line_base = report_intake.stored_junit_body(report)
+    classified = await asyncio.to_thread(_parse_and_classify, body, line_base)
     parsed = [pc for pc, _ in classified]
     now = utcnow()
 
@@ -530,11 +525,7 @@ async def process_report(db: AsyncSession, report: Report) -> ProcessOutcome:
     if report.ci_job_id is not None:
         touched_jobs = await _rescore_jobs_for_ci_job_id(db, report.repo_id, report.ci_job_id)
 
-    report.status = REPORT_PROCESSED
-    report.counts = counts
-    report.run_id = run.id
-    report.error = None
-    report.processed_at = now
+    report_intake.complete_report(report, now=now, run_id=run.id, counts=counts)
     return ProcessOutcome(
         report_id=report.id,
         status=REPORT_PROCESSED,
@@ -587,7 +578,7 @@ async def process_next(
             # the number of retries already used, so a report gets one initial
             # attempt plus up to `retry_limit` retries before giving up.
             if _is_retryable(exc) and (report.retry_count or 0) < retry_limit:
-                report.retry_count = (report.retry_count or 0) + 1
+                report_intake.requeue_report(report, error=error)
                 logger.warning(
                     "Report %s transient failure (retry %d/%d): %s",
                     report.id,
@@ -597,9 +588,6 @@ async def process_next(
                 )
                 # Rolled back by the SAVEPOINT; keep it pending so the next poll
                 # retries it (bounded by the cap).
-                report.status = REPORT_PENDING
-                report.error = error
-                report.processed_at = None
                 return ProcessOutcome(
                     report_id=report.id,
                     status=REPORT_PENDING,
@@ -609,9 +597,7 @@ async def process_next(
                     error=error,
                 )
             logger.exception("Report %s failed to process", report.id)
-            report.status = REPORT_FAILED
-            report.error = error
-            report.processed_at = utcnow()
+            report_intake.fail_report(report, now=utcnow(), error=error)
             return ProcessOutcome(
                 report_id=report.id, status=REPORT_FAILED, run_id=None, counts=None, touched_test_ids=[], error=error
             )
