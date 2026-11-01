@@ -65,8 +65,8 @@ function positiveInt(raw: string | null): number | null {
 }
 
 /** One URL-backed leaderboard list filter, declared once. `parseViewState` and
- *  `serializeViewState` derive from this table (and `applyPatch`'s page-reset rule
- *  will), so adding the next filter is one entry here plus its control. */
+ *  `serializeViewState` derive from this table (and `applyPatch`'s page-reset
+ *  rule), so adding the next filter is one entry here plus its control. */
 export interface ListFilterDescriptor<F extends keyof ViewState = keyof ViewState> {
   /** Query-string parameter name ("stable" backs showStable, "new" backs newDays). */
   param: string;
@@ -77,7 +77,7 @@ export interface ListFilterDescriptor<F extends keyof ViewState = keyof ViewStat
   /** Append the param to the query string exactly when today's code would. */
   serialize(params: URLSearchParams, value: ViewState[F]): void;
   /** Changing this filter relists the leaderboard and resets the page.
-   *  Declared now; `applyPatch` consumes it in the next change. */
+   *  `applyPatch` resets the page when a filter with this flag changes. */
   relists: boolean;
 }
 
