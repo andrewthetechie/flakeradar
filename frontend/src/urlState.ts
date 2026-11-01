@@ -262,20 +262,12 @@ export function applyPatch(prev: ViewState, patch: Partial<ViewState>): ViewStat
   if (patch.test != null) next.job = null;
   if (patch.job != null) next.test = null;
 
-  const relisted = (
-    [
-      "repo",
-      "project",
-      "sort",
-      "showStable",
-      "cause",
-      "quarantined",
-      "issue",
-      "pipeline",
-      "newDays",
-      "q",
-    ] as const
-  ).some((k) => k in patch && patch[k] !== prev[k]);
+  // A changed list filter relists the leaderboard, so the page resets to 1 —
+  // unless the patch brings its own page. Derived from LIST_FILTERS: a filter
+  // added to the table relists without any further edit here.
+  const relisted = LIST_FILTERS.some(
+    (d) => d.relists && d.field in patch && patch[d.field] !== prev[d.field],
+  );
   if (relisted && !("page" in patch)) next.page = 1;
   return next;
 }
