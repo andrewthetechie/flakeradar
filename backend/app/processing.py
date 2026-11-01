@@ -578,7 +578,7 @@ async def process_next(
             # the number of retries already used, so a report gets one initial
             # attempt plus up to `retry_limit` retries before giving up.
             if _is_retryable(exc) and (report.retry_count or 0) < retry_limit:
-                report.retry_count = (report.retry_count or 0) + 1
+                report_intake.requeue_report(report, error=error)
                 logger.warning(
                     "Report %s transient failure (retry %d/%d): %s",
                     report.id,
@@ -588,9 +588,6 @@ async def process_next(
                 )
                 # Rolled back by the SAVEPOINT; keep it pending so the next poll
                 # retries it (bounded by the cap).
-                report.status = REPORT_PENDING
-                report.error = error
-                report.processed_at = None
                 return ProcessOutcome(
                     report_id=report.id,
                     status=REPORT_PENDING,

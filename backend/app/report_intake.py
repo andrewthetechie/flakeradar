@@ -4,9 +4,8 @@ Free functions over `models`/`schemas`, in the shape of `score_history.py`: this
 module owns how a pending Report row looks per kind (body and its digest), and
 the JUnit duplicate identity. It also owns reading a stored body back per kind
 — including the rule that a NULL `line_base` reads as 1 — and the queue
-transitions a processor applies to a row: complete and fail (requeue arrives
-with the follow-up task). It never adds, flushes or commits — the caller
-owns the transaction.
+transitions a processor applies to a row: complete, fail and requeue. It never
+adds, flushes or commits — the caller owns the transaction.
 """
 
 import hashlib
@@ -164,3 +163,16 @@ def fail_report(report: Report, *, now: datetime, error: str) -> None:
     report.status = REPORT_FAILED
     report.error = error
     report.processed_at = now
+
+
+def requeue_report(report: Report, *, error: str | None) -> None:
+    """The requeue transition: spend one retry from the shared budget and put the
+    Report back in the queue — retry_count + 1, status pending, processed_at None.
+    `error` is the whole difference between the two retry kinds: None clears it (a
+    manual retry starts clean), a message keeps it (a transient failure stays
+    visible). Both kinds cap against max_report_retries; the caller decides whether
+    a retry is still allowed. Field-only; the caller owns the transaction."""
+    report.retry_count = (report.retry_count or 0) + 1
+    report.status = REPORT_PENDING
+    report.error = error
+    report.processed_at = None
