@@ -87,28 +87,55 @@ const listFilter = <F extends keyof ViewState>(
   d: ListFilterDescriptor<F>,
 ): ListFilterDescriptor<F> => d;
 
+/** The parse/serialize idioms several entries share, each written once and
+ *  closed over its param name by the entries that spread it. Spreading keeps
+ *  the per-field typecheck: an idiom whose value shape does not match the
+ *  entry's field fails to compile, exactly as a hand-written body would. */
+
+/** `?param=name`: an optional string — null when the param is absent or empty,
+ *  serialized only when set. */
+const optionalString = (param: string) => ({
+  parse: (raw: string | null): string | null => raw || null,
+  serialize: (p: URLSearchParams, v: string | null): void => {
+    if (v) p.set(param, v);
+  },
+});
+
+/** `?param=1`: a boolean flag — true only when the param is exactly "1",
+ *  serialized only when true. */
+const flag = (param: string) => ({
+  parse: (raw: string | null): boolean => raw === "1",
+  serialize: (p: URLSearchParams, v: boolean): void => {
+    if (v) p.set(param, "1");
+  },
+});
+
+/** `raw` itself when it is one of `values`, else null. */
+const oneOf = <V extends string>(values: readonly V[], raw: string | null): V | null =>
+  raw != null && values.includes(raw as V) ? (raw as V) : null;
+
+/** `?param=one-of-values`: an enum filter — null unless the param is one of the
+ *  allowed values, serialized only when set. (`sort` shares only the `oneOf`
+ *  check: it defaults to "score" rather than null, so it keeps its own rules.) */
+const enumFilter = <V extends string>(param: string, values: readonly V[]) => ({
+  parse: (raw: string | null): V | null => oneOf(values, raw),
+  serialize: (p: URLSearchParams, v: V | null): void => {
+    if (v) p.set(param, v);
+  },
+});
+
 /** Emission order (pinned by tests): repo, project, q | sort, stable, cause,
  *  quarantined, issue, pipeline, new. The hand-written params (view, ci_run,
- *  attempt, test, job, page) are emitted between q and sort. */
+ *  attempt, test, job, page) are emitted between q and sort: serializeViewState
+ *  splits the table at the sort descriptor. */
 export const LIST_FILTERS: ListFilterDescriptor[] = [
-  listFilter({
-    param: "repo",
-    field: "repo",
-    relists: true,
-    parse: (raw) => raw || null,
-    serialize: (p, v) => {
-      if (v) p.set("repo", v);
-    },
-  }),
+  listFilter({ param: "repo", field: "repo", relists: true, ...optionalString("repo") }),
   listFilter({
     // Serialize emits this only under a repo; see serializeViewState.
     param: "project",
     field: "project",
     relists: true,
-    parse: (raw) => raw || null,
-    serialize: (p, v) => {
-      if (v) p.set("project", v);
-    },
+    ...optionalString("project"),
   }),
   listFilter({
     param: "q",
@@ -123,60 +150,36 @@ export const LIST_FILTERS: ListFilterDescriptor[] = [
     param: "sort",
     field: "sort",
     relists: true,
-    parse: (raw) => (raw != null && SORTS.includes(raw as SortKey) ? (raw as SortKey) : "score"),
+    parse: (raw) => oneOf(SORTS, raw) ?? "score",
     serialize: (p, v) => {
       if (v !== "score") p.set("sort", v);
     },
   }),
-  listFilter({
-    param: "stable",
-    field: "showStable",
-    relists: true,
-    parse: (raw) => raw === "1",
-    serialize: (p, v) => {
-      if (v) p.set("stable", "1");
-    },
-  }),
+  listFilter({ param: "stable", field: "showStable", relists: true, ...flag("stable") }),
   listFilter({
     param: "cause",
     field: "cause",
     relists: true,
-    parse: (raw) =>
-      raw != null && FAILURE_CATEGORIES.includes(raw as FailureCategory)
-        ? (raw as FailureCategory)
-        : null,
-    serialize: (p, v) => {
-      if (v) p.set("cause", v);
-    },
+    ...enumFilter("cause", FAILURE_CATEGORIES),
   }),
   // Unscoped by view, like cause: these params survive a view switch.
   listFilter({
     param: "quarantined",
     field: "quarantined",
     relists: true,
-    parse: (raw) => raw === "1",
-    serialize: (p, v) => {
-      if (v) p.set("quarantined", "1");
-    },
+    ...flag("quarantined"),
   }),
   listFilter({
     param: "issue",
     field: "issue",
     relists: true,
-    parse: (raw) =>
-      raw != null && ISSUE_FILTERS.includes(raw as IssueFilter) ? (raw as IssueFilter) : null,
-    serialize: (p, v) => {
-      if (v) p.set("issue", v);
-    },
+    ...enumFilter("issue", ISSUE_FILTERS),
   }),
   listFilter({
     param: "pipeline",
     field: "pipeline",
     relists: true,
-    parse: (raw) => raw || null,
-    serialize: (p, v) => {
-      if (v) p.set("pipeline", v);
-    },
+    ...optionalString("pipeline"),
   }),
   listFilter({
     param: "new",
@@ -213,8 +216,10 @@ export function parseViewState(search: string): ViewState {
 export function serializeViewState(s: ViewState): string {
   const p = new URLSearchParams();
   // Pinned emission order: repo, project, q, then the hand-written params, then
-  // sort..new. The 3 is the table position where the hand-written block sits.
-  const HAND_WRITTEN_AT = 3;
+  // sort..new. The split is anchored to the sort descriptor rather than a bare
+  // index, so inserting or reordering entries before sort cannot silently move
+  // the hand-written block.
+  const HAND_WRITTEN_AT = LIST_FILTERS.findIndex((d) => d.param === "sort");
   for (const d of LIST_FILTERS.slice(0, HAND_WRITTEN_AT)) {
     // Cross-field rule (kept explicit per the issue): a project serializes only
     // under its repo.
