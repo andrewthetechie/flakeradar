@@ -2,19 +2,25 @@
 
 Free functions over `models`/`schemas`, in the shape of `score_history.py`: this
 module owns how a pending Report row looks per kind (body and its digest), and
-the JUnit duplicate identity. It never adds, flushes or commits — the caller
+the JUnit duplicate identity. It also owns reading a stored body back per kind
+— including the rule that a NULL `line_base` reads as 1 — and the queue
+transitions a processor applies to a row: complete and fail (requeue arrives
+with the follow-up task). It never adds, flushes or commits — the caller
 owns the transaction.
 """
 
 import hashlib
+from datetime import datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .models import (
+    REPORT_FAILED,
     REPORT_KIND_JUNIT,
     REPORT_KIND_PIPELINE,
     REPORT_PENDING,
+    REPORT_PROCESSED,
     Project,
     Report,
 )
@@ -126,3 +132,35 @@ async def find_junit_duplicate(db: AsyncSession, candidate: Report) -> Report | 
             .limit(1)
         )
     ).scalar_one_or_none()
+
+
+def stored_junit_body(report: Report) -> tuple[bytes, int]:
+    """The stored body of a JUnit Report and its line_base. NULL predates the
+    `line_base` parameter and reads as 1 (models.Report) — the one home of
+    that rule."""
+    return report.body, 1 if report.line_base is None else report.line_base
+
+
+def stored_pipeline_payload(report: Report) -> PipelineReportIn:
+    """The stored body of a Pipeline Report read back as its payload: the
+    inverse of `pipeline_body`."""
+    return PipelineReportIn.model_validate_json(report.body)
+
+
+def complete_report(report: Report, *, now: datetime, run_id: int | None, counts: dict[str, int]) -> None:
+    """The complete transition: status processed, the counts, the run link,
+    no error, processed_at=now. Field-only; the caller owns the transaction."""
+    report.status = REPORT_PROCESSED
+    report.counts = counts
+    report.run_id = run_id
+    report.error = None
+    report.processed_at = now
+
+
+def fail_report(report: Report, *, now: datetime, error: str) -> None:
+    """The permanent-fail transition: status failed, the error, processed_at=now.
+    Never touches retry_count (a permanent failure spends no retry budget).
+    Field-only; the caller owns the transaction."""
+    report.status = REPORT_FAILED
+    report.error = error
+    report.processed_at = now
