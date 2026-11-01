@@ -1,14 +1,13 @@
 """Ingest (accept-then-process, ADR 0002) and the Report status endpoints."""
 
 import asyncio
-import hashlib
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.datastructures import UploadFile
 
-from .. import schemas
+from .. import report_intake, schemas
 from ..auth import require_token
 from ..config import get_settings
 from ..db import get_db
@@ -22,8 +21,6 @@ from ..identity import (
 )
 from ..models import (
     REPORT_FAILED,
-    REPORT_KIND_JUNIT,
-    REPORT_KIND_PIPELINE,
     REPORT_PENDING,
     REPORT_STATUSES,
     Project,
@@ -83,51 +80,25 @@ async def ingest_endpoint(
     db_default_branch = (default_branch or "").strip() or None
     db_ci_job_id = (ci_job_id or "").strip() or None
     db_pipeline = (pipeline or "").strip() or None
-    # A CI retry whose response was lost uploads the same bytes again. Real
-    # reports differ in timestamps and durations, so identical bytes under the
-    # same identity mean that retry: return the stored Report instead of queueing
-    # a second Run with the same Executions. Best effort — no unique constraint,
-    # so two parallel identical uploads can both insert.
-    digest = hashlib.sha256(content).hexdigest()
-    existing = (
-        await db.execute(
-            select(Report)
-            .where(
-                Report.kind == REPORT_KIND_JUNIT,
-                Report.project_id == proj.id,
-                Report.commit_sha == commit_sha,
-                Report.ci_run_id == ci_run_id,
-                Report.ci_run_attempt == ci_run_attempt,
-                Report.ci_job_id == db_ci_job_id,
-                # A retry repeats this Report's own line_base, so an upload with a
-                # different one is a corrected re-upload and must be queued. A
-                # stored NULL predates the parameter and is read as 1 (models.Report).
-                func.coalesce(Report.line_base, 1) == line_base,
-                Report.body_sha256 == digest,
-            )
-            .order_by(Report.id.desc())
-            .limit(1)
-        )
-    ).scalar_one_or_none()
-    if existing is not None:
-        return schemas.IngestAccepted(report_id=existing.id, status=existing.status, duplicate=True)
-    row = Report(
-        kind=REPORT_KIND_JUNIT,
-        project_id=proj.id,
-        repo_id=proj.repo_id,
+    # Identical bytes under the same identity mean a CI retry whose response
+    # was lost: return the stored Report instead of queueing a second Run. The
+    # identity itself lives with the rule that enforces it (see `report_intake`).
+    row = report_intake.build_junit_report(
+        project=proj,
+        body=content,
         commit_sha=commit_sha,
         branch=branch,
         ci_run_id=ci_run_id,
         root=root_value,
         line_base=line_base,
-        body=content,
-        body_sha256=digest,
-        status=REPORT_PENDING,
-        default_branch=db_default_branch,
         ci_job_id=db_ci_job_id,
         ci_run_attempt=ci_run_attempt,
         pipeline=db_pipeline,
+        default_branch=db_default_branch,
     )
+    existing = await report_intake.find_junit_duplicate(db, row)
+    if existing is not None:
+        return schemas.IngestAccepted(report_id=existing.id, status=existing.status, duplicate=True)
     db.add(row)
     await db.commit()
     return schemas.IngestAccepted(report_id=row.id, status=REPORT_PENDING)
@@ -189,18 +160,15 @@ async def ingest_pipeline(body: schemas.PipelineReportIn, db: AsyncSession = Dep
     `pending` pipeline Report that the processor turns into Job executions.
     """
     repo = await get_or_create_repo(db, body.repo)
-    row = Report(
-        kind=REPORT_KIND_PIPELINE,
+    row = report_intake.build_pipeline_report(
         repo_id=repo.id,
-        project_id=None,
+        body=report_intake.pipeline_body(body),
         commit_sha=body.commit_sha,
         branch=body.branch,
         ci_run_id=body.ci_run_id,
         ci_run_attempt=body.ci_run_attempt,
         pipeline=body.pipeline,
         default_branch=body.default_branch,
-        body=body.model_dump_json().encode(),
-        status=REPORT_PENDING,
     )
     db.add(row)
     await db.commit()
