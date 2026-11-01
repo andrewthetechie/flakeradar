@@ -7,6 +7,7 @@ Each helper flushes (so ids are assigned) but does not commit; call
 import itertools
 from datetime import date, datetime
 
+from app import report_intake
 from app.identity import get_or_create_repo
 from app.models import (
     JOB_STATUSES,
@@ -143,18 +144,15 @@ async def make_pipeline_report(
         }
     report_in = PipelineReportIn(**{"repo": repo, **report_json})
     repo_row = await get_or_create_repo(db, report_in.repo)
-    rep = Report(
-        kind="pipeline",
+    rep = report_intake.build_pipeline_report(
         repo_id=repo_row.id,
-        project_id=None,
+        body=report_intake.pipeline_body(report_in),
         commit_sha=report_in.commit_sha,
         branch=report_in.branch,
         ci_run_id=report_in.ci_run_id,
         ci_run_attempt=report_in.ci_run_attempt,
         pipeline=report_in.pipeline,
         default_branch=report_in.default_branch,
-        body=report_in.model_dump_json().encode(),
-        status=REPORT_PENDING,
     )
     db.add(rep)
     await db.flush()
@@ -177,22 +175,33 @@ async def make_report(
     default_branch: str | None = None,
     line_base: int | None = None,
 ) -> Report:
-    rep = Report(
-        project_id=None if kind == "pipeline" else project.id,
-        kind=kind,
-        repo_id=project.repo_id,
-        commit_sha=commit_sha,
-        branch=branch,
-        ci_run_id=ci_run_id,
-        root=root,
-        body=body,
-        status=status,
-        ci_job_id=ci_job_id,
-        ci_run_attempt=ci_run_attempt,
-        pipeline=pipeline,
-        default_branch=default_branch,
-        line_base=line_base,
-    )
+    if kind == "pipeline":
+        rep = report_intake.build_pipeline_report(
+            repo_id=project.repo_id,
+            body=body,
+            commit_sha=commit_sha,
+            branch=branch,
+            ci_run_id=ci_run_id,
+            ci_run_attempt=ci_run_attempt,
+            pipeline=pipeline,
+            default_branch=default_branch,
+            status=status,
+        )
+    else:
+        rep = report_intake.build_junit_report(
+            project=project,
+            body=body,
+            commit_sha=commit_sha,
+            branch=branch,
+            ci_run_id=ci_run_id,
+            root=root,
+            line_base=line_base,
+            ci_job_id=ci_job_id,
+            ci_run_attempt=ci_run_attempt,
+            pipeline=pipeline,
+            default_branch=default_branch,
+            status=status,
+        )
     db.add(rep)
     await db.flush()
     return rep
