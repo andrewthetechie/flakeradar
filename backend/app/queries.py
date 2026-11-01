@@ -20,7 +20,6 @@ from .attribution import (
     job_execution_window_ids,
     summary_explaining_siblings,
 )
-from .batching import chunks
 from .classify import CATEGORIES, FailureCategory
 from .config import get_settings
 from .models import (
@@ -41,7 +40,7 @@ from .models import (
     TestScoreHistory,
     utcnow,
 )
-from .score_history import HISTORY_DAYS, TREND_DAYS, Trend, trend_for
+from .score_history import Trend, job_window_rows, newest_history_before, past_scores, test_window_rows, trend_for
 from .scoring import FAILING
 
 SortKey = Literal["score", "last_seen", "proven"]  # shared by the Test and Job leaderboards
@@ -112,48 +111,15 @@ def to_test_out(tc: TestCase, project: str, repo: str, threshold: float, trend: 
 
 
 async def past_test_scores(db: AsyncSession, test_ids: list[int]) -> dict[int, float]:
-    """Score of each Test's newest history row at least TREND_DAYS old."""
-    return await _past_scores(db, TestScoreHistory, TestScoreHistory.test_case_id, test_ids)
+    """Score of each Test's newest history row at least TREND_DAYS old.
 
-
-async def _past_scores(db: AsyncSession, model, fk_col: ColumnElement[int], ids: list[int]) -> dict[int, float]:
-    """Score of each entity's newest history row at least TREND_DAYS old.
-
-    The one past-scores lookup, shared by the Test and Job halves: `model` is the
-    Score-history model and `fk_col` its column back to the parent row.
+    A thin wrapper over the shared read interface, kept importable here (issue #88).
     """
-    cutoff = utcnow().date() - timedelta(days=TREND_DAYS)
-    found: dict[int, float] = {}
-    for chunk in chunks(ids):
-        rn = func.row_number().over(partition_by=fk_col, order_by=model.day.desc()).label("rn")
-        ranked = (
-            select(fk_col.label("entity_id"), model.flakiness_score.label("score"), rn)
-            .where(fk_col.in_(chunk), model.day <= cutoff)
-            .subquery()
-        )
-        rows = await db.execute(select(ranked.c.entity_id, ranked.c.score).where(ranked.c.rn == 1))
-        found.update(dict(rows.all()))
-    return found
-
-
-def _newest_history_before(model, fk_col: ColumnElement[int], parent_col: ColumnElement[int], days: int):
-    """Lateral subquery: this row's newest Score history at least `days` old, or NULL (ADR 0007).
-
-    The same lookup `past_test_scores`/`past_job_scores` do in Python, as a per-row SQL
-    condition so a list query can filter with it before counting and paginating.
-    """
-    cutoff = utcnow().date() - timedelta(days=days)
-    return (
-        select(model.flakiness_score.label("score"))
-        .where(fk_col == parent_col, model.day <= cutoff)
-        .order_by(model.day.desc())
-        .limit(1)
-        .lateral()
-    )
+    return await past_scores(db, TestScoreHistory, TestScoreHistory.test_case_id, test_ids)
 
 
 def _became_flaky_clause(past, threshold: float) -> ColumnElement[bool]:
-    """True when the joined `_newest_history_before` row is missing or below the threshold."""
+    """True when the joined `newest_history_before` row is missing or below the threshold."""
     return or_(past.c.score.is_(None), past.c.score < threshold)
 
 
@@ -292,7 +258,7 @@ async def _list_leaderboard(
     if has_issue is not None:
         stmt = stmt.where(entity.issue_number.is_not(None) if has_issue else entity.issue_number.is_(None))
     if new_within_days is not None:
-        oldest = _newest_history_before(entity.history_model, entity.history_fk, entity.history_parent, new_within_days)
+        oldest = newest_history_before(entity.history_model, entity.history_fk, entity.history_parent, new_within_days)
         stmt = stmt.outerjoin(oldest, true()).where(_became_flaky_clause(oldest, threshold))
 
     total = (await db.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one()
@@ -329,13 +295,13 @@ async def _tile_counts(
     `count_stmt(*conditions)` is the caller's already-scoped `select(func.count(...))` builder, so
     the Scope-vs-repo difference stays in the wrappers, as with the listing engine. Returned in
     today's order: total, flaky, suspect, confirmed, and new-flaky over `NEW_FLAKY_DAYS` — the last
-    one through the same `_newest_history_before` lateral the listing engine uses (ADR 0007).
+    one through the same `newest_history_before` lateral the listing engine uses (ADR 0007).
     """
     total = (await db.execute(count_stmt())).scalar_one()
     flaky = (await db.execute(count_stmt(entity.score >= threshold))).scalar_one()
     suspect = (await db.execute(count_stmt(entity.score > 0, entity.score < threshold))).scalar_one()
     confirmed = (await db.execute(count_stmt(entity.proven > 0))).scalar_one()
-    oldest = _newest_history_before(entity.history_model, entity.history_fk, entity.history_parent, NEW_FLAKY_DAYS)
+    oldest = newest_history_before(entity.history_model, entity.history_fk, entity.history_parent, NEW_FLAKY_DAYS)
     new_flaky = (
         await db.execute(
             count_stmt(entity.score >= threshold)
@@ -524,20 +490,7 @@ async def get_test(
             url=permalink(repo, last_sha, root, tc.file, tc.line) if last_sha else None,
         )
     past = await past_test_scores(db, [tc.id])
-    history_rows = (
-        (
-            await db.execute(
-                select(TestScoreHistory)
-                .where(
-                    TestScoreHistory.test_case_id == test_id,
-                    TestScoreHistory.day > utcnow().date() - timedelta(days=HISTORY_DAYS),
-                )
-                .order_by(TestScoreHistory.day)
-            )
-        )
-        .scalars()
-        .all()
-    )
+    history_rows = await test_window_rows(db, test_id)
     return schemas.HistoryOut(
         test=to_test_out(tc, project, repo, threshold, trend=trend_for(tc.flakiness_score, past.get(tc.id))),
         location=location,
@@ -699,8 +652,11 @@ def to_job_out(
 
 
 async def past_job_scores(db: AsyncSession, job_ids: list[int]) -> dict[int, float]:
-    """Score of each Job's newest history row at least TREND_DAYS old."""
-    return await _past_scores(db, JobScoreHistory, JobScoreHistory.job_id, job_ids)
+    """Score of each Job's newest history row at least TREND_DAYS old.
+
+    A thin wrapper over the shared read interface, kept importable here (issue #88).
+    """
+    return await past_scores(db, JobScoreHistory, JobScoreHistory.job_id, job_ids)
 
 
 def jobs_select() -> Select:
@@ -990,20 +946,7 @@ async def get_job(
                 ]
 
     past = await past_job_scores(db, [job.id])
-    history_rows = (
-        (
-            await db.execute(
-                select(JobScoreHistory)
-                .where(
-                    JobScoreHistory.job_id == job_id,
-                    JobScoreHistory.day > utcnow().date() - timedelta(days=HISTORY_DAYS),
-                )
-                .order_by(JobScoreHistory.day)
-            )
-        )
-        .scalars()
-        .all()
-    )
+    history_rows = await job_window_rows(db, job_id)
     return schemas.JobHistoryOut(
         job=to_job_out(job, pipeline, repo, threshold, trend=trend_for(job.flakiness_score, past.get(job.id))),
         unexplained_failures=unexplained,
