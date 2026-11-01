@@ -1,16 +1,19 @@
-"""Score history (ADR 0007): the daily snapshot write, and the trend read from it.
+"""Score history (ADR 0007): the daily snapshot write, and the reads from it.
 
-The trend cases are pure; the write cases run against Postgres through the shared
-helpers, which is where the rescore paths land the day's row.
+The trend cases are pure; the write and read cases run against Postgres through the
+shared helpers, which is where the rescore paths land the day's row. The read cases pin
+the two evaluation strategies of one semantic — the Python past-score lookup and the
+SQL lateral condition — to the same answers for both entities.
 """
 
 from datetime import timedelta
 
-from app.models import JobScoreHistory, TestScoreHistory, utcnow
-from app.score_history import trend_for, upsert_history, write_today_history
-from sqlalchemy import select
+from app import score_history  # read through the module, so pytest cannot collect test_window_rows as a test
+from app.models import Job, JobScoreHistory, TestCase, TestScoreHistory, utcnow
+from app.score_history import HISTORY_DAYS, TREND_DAYS, trend_for, upsert_history, write_today_history
+from sqlalchemy import select, true
 
-from tests.factories import make_job, make_pipeline, make_project, make_test_case
+from tests.factories import make_job, make_job_score, make_pipeline, make_project, make_test_case, make_test_score
 
 
 async def _rows(db, model: type[TestScoreHistory] | type[JobScoreHistory]):
@@ -18,6 +21,13 @@ async def _rows(db, model: type[TestScoreHistory] | type[JobScoreHistory]):
     identity map keeps whatever an earlier read in the same test already loaded."""
     result = await db.execute(select(model).execution_options(populate_existing=True))
     return list(result.scalars().all())
+
+
+async def _lateral_scores(db, model, owner_col, parent_col):
+    """Each owner's newest Score history at least TREND_DAYS old, as the listing queries read it."""
+    oldest = score_history.newest_history_before(model, owner_col, parent_col, TREND_DAYS)
+    rows = await db.execute(select(parent_col, oldest.c.score).outerjoin(oldest, true()))
+    return dict(rows.all())
 
 
 def test_trend_for_no_history_is_null():
@@ -201,3 +211,78 @@ async def test_upsert_history_keys_the_conflict_on_owner_and_day(db):
     assert past_row.flakiness_score == 0.9  # a different day is untouched
     assert past_row.confirmed_flake_count == 5
     assert (past_row.executions, past_row.failures) == (4, 3)
+
+
+async def test_score_history_reads_agree_for_a_test(db):
+    proj = await make_project(db)
+    seasoned = await make_test_case(db, proj, name="seasoned")
+    fresh = await make_test_case(db, proj, name="fresh")
+    today = utcnow().date()
+    cutoff = today - timedelta(days=TREND_DAYS)
+
+    await make_test_score(db, seasoned, cutoff, 0.2)  # exactly on the cutoff: old, and the newest old row
+    await make_test_score(db, seasoned, cutoff + timedelta(days=1), 0.9)  # one day too recent to count
+    await make_test_score(db, seasoned, cutoff - timedelta(days=3), 0.1)  # older
+    await make_test_score(db, seasoned, cutoff - timedelta(days=10), 0.05)  # oldest of the old rows
+    await make_test_score(db, seasoned, today - timedelta(days=HISTORY_DAYS), 0.4)  # outside the detail window
+    await make_test_score(db, seasoned, today - timedelta(days=HISTORY_DAYS - 1), 0.3)  # first row inside it
+    await make_test_score(db, fresh, today, 0.6)  # no row at or before the cutoff
+
+    ids = [seasoned.id, fresh.id]
+    past = await score_history.past_test_scores(db, ids)
+    assert past == {seasoned.id: 0.2}  # the newest old row wins; the newer row does not count
+    assert trend_for(0.6, past.get(fresh.id)) is None  # no old row, so no key and no trend
+
+    lateral = await _lateral_scores(db, TestScoreHistory, TestScoreHistory.test_case_id, TestCase.id)
+    assert lateral == {seasoned.id: 0.2, fresh.id: None}  # same semantic, as a per-row condition
+    assert {owner: past.get(owner) for owner in lateral} == lateral  # the two strategies agree
+
+    rows = await score_history.test_window_rows(db, seasoned.id)
+    assert [(row.day, row.flakiness_score) for row in rows] == [
+        (today - timedelta(days=HISTORY_DAYS - 1), 0.3),
+        (cutoff - timedelta(days=10), 0.05),
+        (cutoff - timedelta(days=3), 0.1),
+        (cutoff, 0.2),
+        (cutoff + timedelta(days=1), 0.9),
+    ]  # the row exactly on the window edge is out; oldest first
+    assert [row.day for row in await score_history.test_window_rows(db, fresh.id)] == [today]
+    # The per-entity surface is the generic one, with the model and owner column fixed.
+    assert await score_history.window_rows(db, TestScoreHistory, TestScoreHistory.test_case_id, seasoned.id) == rows
+    assert await score_history.past_scores(db, TestScoreHistory, TestScoreHistory.test_case_id, ids) == past
+
+
+async def test_score_history_reads_agree_for_a_job(db):
+    pipe = await make_pipeline(db)
+    seasoned = await make_job(db, pipe, name="seasoned")
+    fresh = await make_job(db, pipe, name="fresh")
+    today = utcnow().date()
+    cutoff = today - timedelta(days=TREND_DAYS)
+
+    await make_job_score(db, seasoned, cutoff, 0.2)
+    await make_job_score(db, seasoned, cutoff + timedelta(days=1), 0.9)
+    await make_job_score(db, seasoned, cutoff - timedelta(days=3), 0.1)
+    await make_job_score(db, seasoned, cutoff - timedelta(days=10), 0.05)
+    await make_job_score(db, seasoned, today - timedelta(days=HISTORY_DAYS), 0.4)
+    await make_job_score(db, seasoned, today - timedelta(days=HISTORY_DAYS - 1), 0.3)
+    await make_job_score(db, fresh, today, 0.6)
+
+    ids = [seasoned.id, fresh.id]
+    past = await score_history.past_job_scores(db, ids)
+    assert past == {seasoned.id: 0.2}
+    assert trend_for(0.6, past.get(fresh.id)) is None
+
+    lateral = await _lateral_scores(db, JobScoreHistory, JobScoreHistory.job_id, Job.id)
+    assert lateral == {seasoned.id: 0.2, fresh.id: None}
+    assert {owner: past.get(owner) for owner in lateral} == lateral
+
+    rows = await score_history.job_window_rows(db, seasoned.id)
+    assert [(row.day, row.flakiness_score) for row in rows] == [
+        (today - timedelta(days=HISTORY_DAYS - 1), 0.3),
+        (cutoff - timedelta(days=10), 0.05),
+        (cutoff - timedelta(days=3), 0.1),
+        (cutoff, 0.2),
+        (cutoff + timedelta(days=1), 0.9),
+    ]
+    assert [row.day for row in await score_history.job_window_rows(db, fresh.id)] == [today]
+    assert await score_history.window_rows(db, JobScoreHistory, JobScoreHistory.job_id, seasoned.id) == rows
+    assert await score_history.past_scores(db, JobScoreHistory, JobScoreHistory.job_id, ids) == past
