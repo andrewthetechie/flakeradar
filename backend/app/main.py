@@ -83,7 +83,10 @@ app.include_router(ops.router)  # /api/health/ready and /metrics
 app.mount("/mcp", mcp_app)  # endpoint: /mcp/ (POST /mcp redirects there)
 
 
-# Serve the built frontend (frontend/dist) if present — single-container self-host.
-_dist = Path(__file__).resolve().parents[2] / "frontend" / "dist"
-if _dist.is_dir():
-    app.mount("/", StaticFiles(directory=_dist, html=True), name="frontend")
+def mount_frontend(app: FastAPI, dist: Path) -> None:
+    """Serve the built frontend (frontend/dist) if present — single-container self-host."""
+    if dist.is_dir():
+        app.mount("/", StaticFiles(directory=dist, html=True), name="frontend")
+
+
+mount_frontend(app, Path(__file__).resolve().parents[2] / "frontend" / "dist")
