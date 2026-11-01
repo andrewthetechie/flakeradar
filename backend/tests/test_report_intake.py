@@ -21,7 +21,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import object_session
 
 from tests.conftest import make_junit
-from tests.factories import make_project
+from tests.factories import make_project, make_report
 
 _PIPELINE_JSON = {
     "repo": "acme/app",
@@ -200,3 +200,33 @@ async def test_find_junit_duplicate_returns_the_newest_stored_report(db):
     assert newer.id > older.id
 
     assert await find_junit_duplicate(db, build_junit_report(project=proj, body=_BODY, **_IDENTITY)) is newer
+
+
+async def test_make_report_seeds_an_ingest_shaped_junit_row(db):
+    """The factory builds through `build_junit_report`, so a seeded row carries the
+    body digest and the duplicate check matches it: duplicate detection without the
+    endpoint, and without a second row (`make_report` only flushes)."""
+    proj = await make_project(db)
+    stored = await make_report(db, proj, _BODY, **_IDENTITY)
+
+    assert stored.kind == "junit"
+    assert stored.body_sha256 == body_digest(_BODY)
+    assert object_session(stored) is not None
+    assert await _report_ids(db) == [stored.id]
+
+    assert await find_junit_duplicate(db, build_junit_report(project=proj, body=_BODY, **_IDENTITY)) is stored
+    # A different body, or a corrected line_base, is not the same upload.
+    other_body = build_junit_report(project=proj, body=make_junit([("t1", "passed")]), **_IDENTITY)
+    assert await find_junit_duplicate(db, other_body) is None
+    other_base = build_junit_report(project=proj, body=_BODY, **{**_IDENTITY, "line_base": 0})
+    assert await find_junit_duplicate(db, other_base) is None
+
+
+async def test_make_report_seeds_a_pipeline_row_without_a_project(db):
+    """The other kind keeps its own convention: no Project, no digest."""
+    proj = await make_project(db)
+    stored = await make_report(db, proj, b"{}", kind="pipeline", commit_sha="p", ci_run_attempt=2)
+
+    assert stored.kind == "pipeline"
+    assert (stored.project_id, stored.repo_id, stored.body_sha256) == (None, proj.repo_id, None)
+    assert (stored.ci_run_attempt, stored.status) == (2, "pending")
