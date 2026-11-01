@@ -2,10 +2,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, renderHook } from "@testing-library/react";
 import {
   DEFAULT_VIEW,
+  LIST_FILTERS,
   applyPatch,
   parseViewState,
   serializeViewState,
   useViewState,
+  type ListFilterDescriptor,
+  type ViewState,
 } from "./urlState";
 
 describe("view state in the URL", () => {
@@ -238,6 +241,70 @@ describe("applyPatch", () => {
     const withTest = applyPatch({ ...DEFAULT_VIEW, job: 5 }, { test: 9 });
     expect(withTest.test).toBe(9);
     expect(withTest.job).toBeNull();
+  });
+});
+
+/**
+ * The descriptor table is the single source of truth: every declared list filter
+ * must survive a URL round-trip and reset the page, with no per-filter list to
+ * forget a key in.
+ */
+describe("LIST_FILTERS", () => {
+  // Non-default sample values keyed by param (`stable` backs showStable, `new`
+  // backs newDays).
+  const SAMPLES: Record<string, unknown> = {
+    repo: "a/b",
+    project: "backend",
+    q: "login",
+    sort: "last_seen",
+    stable: true,
+    cause: "timing",
+    quarantined: true,
+    issue: "linked",
+    pipeline: ".github/workflows/nightly.yml",
+    new: 7,
+  };
+  // A repo so the project round-trip survives the project-without-repo rule, and
+  // so the `repo` sample ("a/b") genuinely differs from the base.
+  const base = { ...DEFAULT_VIEW, repo: "z/z" };
+
+  it.each(LIST_FILTERS)("round-trips $param and resets the page", (d) => {
+    const sample = SAMPLES[d.param];
+    const view = { ...base, [d.field]: sample } as ViewState;
+    expect(parseViewState(serializeViewState(view))[d.field]).toEqual(sample);
+    if (d.relists) {
+      // page starts at 4, so only the derived rule can bring it back to 1.
+      const patched = applyPatch({ ...base, page: 4 }, { [d.field]: sample } as Partial<ViewState>);
+      expect(patched.page).toBe(1);
+    }
+  });
+
+  it("a descriptor added to the table drives parse, serialize and the page reset", () => {
+    // If any of the three derived functions still enumerated params by hand,
+    // this scratch entry would be ignored and this test would fail.
+    const scratch = {
+      param: "flag",
+      field: "flag", // deliberately not a ViewState field: the table drives the shape
+      parse: (raw: string | null) => raw === "1",
+      serialize: (p: URLSearchParams, v: boolean) => {
+        if (v) p.set("flag", "1");
+      },
+      relists: true,
+    } as unknown as ListFilterDescriptor; // the one place a ViewState-shaped lie is allowed
+    LIST_FILTERS.push(scratch);
+    try {
+      expect((parseViewState("?flag=1") as ViewState & { flag: boolean }).flag).toBe(true);
+      expect(serializeViewState({ ...DEFAULT_VIEW, flag: true } as unknown as ViewState)).toBe(
+        "?flag=1",
+      );
+      // page starts at 4, so only the derived rule can bring it back to 1
+      expect(
+        applyPatch({ ...DEFAULT_VIEW, page: 4 }, { flag: true } as unknown as Partial<ViewState>)
+          .page,
+      ).toBe(1);
+    } finally {
+      LIST_FILTERS.pop();
+    }
   });
 });
 
