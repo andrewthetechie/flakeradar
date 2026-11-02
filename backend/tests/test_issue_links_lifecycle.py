@@ -168,6 +168,30 @@ async def test_unlink_after_a_rearm_clears_the_kept_stamp(db, gh_settings, sessi
     assert calls == []  # and the row is out of the rotation for good
 
 
+async def test_unlink_after_a_rearm_clears_the_kept_stamp_on_a_job(db, gh_settings, session_factory):
+    """The same sequence on the other target: one `_unlink` engine, so the rule is the Job's too.
+
+    A Job reaches unlink in exactly the state the rule is about — the closed-issue sync cleared the
+    number and kept its stamp — so the Job pins the unconditional write on its own row.
+    """
+    job = await _job(db)
+    await issue_links.link_issue(db, "Job", job.id, 302, threshold=0.3)
+    calls, transport = _recorder(state="closed")
+    await github_integration.sync_closed_issues(session_factory, transport=transport)
+    assert [r.url.path for r in calls] == ["/repos/acme/app/issues/302"]
+    await db.refresh(job)
+    assert job.github_issue_number is None
+    assert job.github_issue_checked_at is not None  # the re-arm: the number only
+
+    out = await issue_links.unlink_issue(db, "Job", job.id, threshold=0.3)
+    await db.refresh(job)
+    assert job.github_issue_number is None
+    assert job.github_issue_checked_at is None  # unlink: both halves, on a Job too
+    assert out.github_issue_number is None
+    assert out.github_issue_url is None
+    assert await issue_links.linked_for_check(db, issue_links.JOB, 10) == []
+
+
 async def test_job_provider_gate(db):
     """Only a Job of a GitHub Pipeline can hold a link (ADR 0008), and the gate is the provider."""
     job = await _job(db, provider="gitlab")
