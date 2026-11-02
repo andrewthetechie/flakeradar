@@ -77,17 +77,17 @@ async def link_issue(
 ):
     """Link a GitHub issue filed elsewhere; FlakeRadar then files none for this Job."""
     try:
-        return await issue_links.link_job_issue(
-            db, job_id, body.number, url=body.url, replace=replace, threshold=get_settings().flake_threshold
+        return await issue_links.link_issue(
+            db, "Job", job_id, body.number, url=body.url, replace=replace, threshold=get_settings().flake_threshold
         )
     except issue_links.IssueLinkError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+        raise issue_links.http_error(exc) from exc
 
 
 @router.delete("/api/jobs/{job_id}/issue", response_model=schemas.JobOut, dependencies=[Depends(require_token)])
 async def unlink_issue(job_id: int, db: AsyncSession = Depends(get_db)):
     """Remove the Job's Issue link."""
     try:
-        return await issue_links.unlink_job_issue(db, job_id, threshold=get_settings().flake_threshold)
+        return await issue_links.unlink_issue(db, "Job", job_id, threshold=get_settings().flake_threshold)
     except issue_links.IssueLinkError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+        raise issue_links.http_error(exc) from exc

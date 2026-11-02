@@ -14,6 +14,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from fastapi import HTTPException
 from sqlalchemy import Select, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -214,6 +215,46 @@ async def link_job_issue(
 
 async def unlink_job_issue(db: AsyncSession, job_id: int, *, threshold: float) -> schemas.JobOut:
     return await _unlink(JOB, db, job_id, threshold=threshold)
+
+
+_TARGETS: dict[LinkTarget, IssueLinkTarget] = {TEST.kind: TEST, JOB.kind: JOB}
+
+
+async def link_issue(
+    db: AsyncSession,
+    target: LinkTarget,
+    entity_id: int,
+    number: int,
+    *,
+    url: str | None = None,
+    replace: bool = False,
+    threshold: float,
+) -> schemas.TestOut | schemas.JobOut:
+    """Link an Issue to the entity `entity_id` of `target`: the front doors' entry point.
+
+    A caller that knows only a target noun and an id — a REST route body, an MCP tool —
+    calls this instead of picking between the per-target functions above, so no front door
+    repeats the Test-vs-Job dispatch. The per-target functions stay for callers that are
+    already per-target and want the precise return type.
+    """
+    return await _link(_TARGETS[target], db, entity_id, number, url=url, replace=replace, threshold=threshold)
+
+
+async def unlink_issue(
+    db: AsyncSession, target: LinkTarget, entity_id: int, *, threshold: float
+) -> schemas.TestOut | schemas.JobOut:
+    """Unlink the Issue of the entity `entity_id` of `target`. See `link_issue`."""
+    return await _unlink(_TARGETS[target], db, entity_id, threshold=threshold)
+
+
+def http_error(exc: IssueLinkError) -> HTTPException:
+    """The one mapping from a refused Issue-link operation to an HTTP response.
+
+    Routers keep the exception handling local to their own body — `except
+    issue_links.IssueLinkError as exc: raise issue_links.http_error(exc) from exc` — so the
+    status code travels with the error class instead of being re-stated per route.
+    """
+    return HTTPException(status_code=exc.status_code, detail=str(exc))
 
 
 async def linked_for_check(db: AsyncSession, target: IssueLinkTarget, batch: int) -> list[tuple[Any, str]]:
