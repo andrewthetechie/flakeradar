@@ -6,14 +6,11 @@ import {
   type CiRunFailedJob,
   type CiRunFailures,
   type CiRunTestFailure,
-  type Tier,
 } from "../api";
 import { breakable } from "../breakable";
-import { formatScore } from "../format";
-import { IssueLink } from "./IssueLink";
-import { scoreColor, TIER_CLASS } from "./scoreStyle";
 import { StatusMark } from "./StatusMark";
 import { SummaryBadge } from "./SummaryBadge";
+import { FlakinessCell, IssuePill, ProvenCell, QuarantinedPill } from "./resultCells";
 
 /** While reports are still landing, ask again this often (issue #26). */
 const POLL_MS = 5000;
@@ -24,27 +21,6 @@ function isNotFound(e: unknown): boolean {
 }
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
-
-/** Score bar + tier, the leaderboard's Flakiness cell. */
-function ScoreCell({ score, tier }: { score: number; tier: Tier }) {
-  return (
-    <div>
-      <div className="flex min-w-18 items-center gap-2 sm:min-w-32">
-        <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-line">
-          <div
-            className="h-full rounded-full"
-            style={{
-              width: `${Math.max(score * 100, score > 0 ? 4 : 0)}%`,
-              background: scoreColor(score),
-            }}
-          />
-        </div>
-        <span className="w-9 text-right tabular-nums text-text-2">{formatScore(score)}</span>
-      </div>
-      <span className={`mt-1 inline-block text-xs ${TIER_CLASS[tier]}`}>{tier}</span>
-    </div>
-  );
-}
 
 /** The failing Tests of one CI run attempt. */
 function FailuresTable({
@@ -85,14 +61,7 @@ function FailuresTable({
               <tr key={f.test_id} className="border-b border-line last:border-b-0">
                 <td className="px-4 py-2.5 align-top">
                   <div className="font-semibold [overflow-wrap:anywhere]">
-                    {f.quarantined && (
-                      <span
-                        className="mr-1.5 rounded border border-muted px-1 text-[11px] font-normal text-muted"
-                        title="Quarantined — runner may skip"
-                      >
-                        ⏻ quarantined
-                      </span>
-                    )}
+                    {f.quarantined && <QuarantinedPill />}
                     <button
                       type="button"
                       className="cursor-pointer text-left text-link hover:underline"
@@ -127,29 +96,20 @@ function FailuresTable({
                   )}
                 </td>
                 <td className="px-4 py-2.5 align-top">
-                  <ScoreCell score={f.flakiness_score} tier={f.tier} />
+                  <div>
+                    <FlakinessCell score={f.flakiness_score} tier={f.tier} />
+                  </div>
                 </td>
-                <td className="col-proof px-4 py-2.5 align-top text-xs whitespace-nowrap">
-                  {f.confirmed_flake_count > 0 ? (
-                    <span className="text-signal" title="Failed and passed on the same commit">
-                      ⚠ {f.confirmed_flake_count}× proven
-                    </span>
-                  ) : (
-                    <span className="text-muted">—</span>
-                  )}
-                </td>
+                <ProvenCell count={f.confirmed_flake_count} />
                 <td className="px-4 py-2.5 align-top text-xs tabular-nums text-text-2">
                   {f.clean_streak}
                 </td>
                 <td className="col-actions px-4 py-2.5 text-right align-top">
-                  <IssueLink
+                  <IssuePill
                     number={f.github_issue_number}
                     url={f.github_issue_url}
-                    className="rounded-full border border-line px-2 text-xs text-link hover:underline"
-                    title="GitHub issue filed by FlakeRadar"
-                  >
-                    #{f.github_issue_number}
-                  </IssueLink>
+                    className="text-xs"
+                  />
                 </td>
               </tr>
             );
@@ -213,7 +173,9 @@ function FailedJobsTable({
                 </span>
               </td>
               <td className="px-4 py-2.5 align-top">
-                <ScoreCell score={j.flakiness_score} tier={j.tier} />
+                <div>
+                  <FlakinessCell score={j.flakiness_score} tier={j.tier} />
+                </div>
               </td>
               <td className="col-actions px-4 py-2.5 text-right align-top">
                 <a

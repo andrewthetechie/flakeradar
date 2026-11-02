@@ -1,6 +1,10 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import type { ReactElement } from "react";
+import ciRunView from "./CiRunView.tsx?raw";
+import jobLeaderboard from "./JobLeaderboard.tsx?raw";
+import leaderboard from "./Leaderboard.tsx?raw";
+import resultCells from "./resultCells.tsx?raw";
 import {
   FlakinessCell,
   IssuePill,
@@ -115,5 +119,32 @@ describe("StatusIssueCell", () => {
       "title",
       "GitHub issue filed by FlakeRadar",
     );
+  });
+});
+
+// Issue #112 criteria 1 and 2: the cells above are the only copy. The validation
+// pipeline cannot run the issue's `rg` commands, so this reads the host sources and
+// fails if anyone hand-copies a cell again.
+describe("no hand copies remain", () => {
+  const hosts = { leaderboard, jobLeaderboard, ciRunView };
+  const shared = [
+    "> 0 ? 4 : 0",
+    "Failed and passed on the same commit",
+    "GitHub issue filed by FlakeRadar",
+    "⏻ quarantined",
+  ];
+
+  it("keeps every shared string in the cell module", () => {
+    for (const s of shared) {
+      expect(resultCells).toContain(s);
+    }
+  });
+
+  it("leaves no copy in any host component", () => {
+    for (const [name, source] of Object.entries(hosts)) {
+      for (const s of shared) {
+        expect(source, `${name} still contains ${s}`).not.toContain(s);
+      }
+    }
   });
 });
