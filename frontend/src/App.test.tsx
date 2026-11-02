@@ -201,6 +201,25 @@ describe("App", () => {
     );
   });
 
+  it("shows the URL hint when the ci-run view is opened with no run selected", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        if (url.startsWith("/api/repos")) return json([]);
+        if (url.startsWith("/api/reports/summary")) return json({ pending: 0, failed: 0 });
+        return json({});
+      }),
+    );
+    window.history.replaceState(null, "", "/?view=ci-run");
+    render(<App />);
+
+    expect(await screen.findByText(/No CI run selected/)).toBeInTheDocument();
+    // The hint names the exact query the developer must add.
+    expect(screen.getByText(/\?view=ci-run&repo=owner\/name&ci_run=12345678/)).toBeInTheDocument();
+    // No leaderboard and no run fetch: the view is inert until a run is given.
+    expect(screen.queryByText("Flakiness leaderboard")).not.toBeInTheDocument();
+  });
+
   it("opens the CI run view from the header input", async () => {
     const ciRun = {
       repo: "x/y",

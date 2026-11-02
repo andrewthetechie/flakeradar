@@ -1,10 +1,6 @@
 import type { Scope, TestCase } from "../api";
 import { breakable } from "../breakable";
-import { formatScore } from "../format";
-import { IssueLink } from "./IssueLink";
-import { scoreColor, TIER_CLASS } from "./scoreStyle";
-import { StatusMark } from "./StatusMark";
-import { TrendMark } from "./TrendMark";
+import { FlakinessCell, ProvenCell, QuarantinedPill, StatusIssueCell } from "./resultCells";
 
 /** Where a row lives, shown only when the view spans more than that. */
 export function scopeLabel(t: TestCase, scope: Scope): string | null {
@@ -74,14 +70,7 @@ export function Leaderboard({
               <td className="px-4 py-2.5 align-top">
                 {label && <div className="text-xs text-link [overflow-wrap:anywhere]">{label}</div>}
                 <div className="font-semibold [overflow-wrap:anywhere]">
-                  {t.quarantined && (
-                    <span
-                      className="mr-1.5 rounded border border-muted px-1 text-[11px] font-normal text-muted"
-                      title="Quarantined — runner may skip"
-                    >
-                      ⏻ quarantined
-                    </span>
-                  )}
+                  {t.quarantined && <QuarantinedPill />}
                   {breakable(t.name)}
                 </div>
                 <div className="text-xs text-muted [overflow-wrap:anywhere]">
@@ -89,54 +78,19 @@ export function Leaderboard({
                 </div>
               </td>
               <td className="px-4 py-2.5 align-top">
-                <div className="flex min-w-18 items-center gap-2 sm:min-w-32">
-                  <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-line">
-                    <div
-                      className="h-full rounded-full"
-                      style={{
-                        width: `${Math.max(t.flakiness_score * 100, t.flakiness_score > 0 ? 4 : 0)}%`,
-                        background: scoreColor(t.flakiness_score),
-                      }}
-                    />
-                  </div>
-                  <span className="w-9 text-right tabular-nums text-text-2">
-                    {formatScore(t.flakiness_score)}
-                  </span>
-                  <TrendMark trend={t.trend} />
-                </div>
-                <span className={`mt-1 inline-block text-xs ${TIER_CLASS[t.tier]}`}>{t.tier}</span>
-                {t.failure_category && (
-                  <span
-                    className="mt-1 ml-2 inline-block rounded border border-line px-1 text-[11px] text-text-2"
-                    title="Likely cause, from failure messages"
-                  >
-                    likely: {t.failure_category}
-                  </span>
-                )}
+                <FlakinessCell
+                  score={t.flakiness_score}
+                  tier={t.tier}
+                  trend={t.trend}
+                  category={t.failure_category}
+                />
               </td>
-              <td className="col-proof px-4 py-2.5 align-top text-xs whitespace-nowrap">
-                {t.confirmed_flake_count > 0 ? (
-                  <span className="text-signal" title="Failed and passed on the same commit">
-                    ⚠ {t.confirmed_flake_count}× proven
-                  </span>
-                ) : (
-                  <span className="text-muted">—</span>
-                )}
-              </td>
-              <td className="col-status px-4 py-2.5 align-top">
-                <span className="inline-flex items-center gap-1.5 text-xs whitespace-nowrap text-text-2">
-                  <StatusMark status={t.last_status} /> {t.last_status}
-                  <IssueLink
-                    number={t.github_issue_number}
-                    url={t.github_issue_url}
-                    onClick={(e) => e.stopPropagation()}
-                    className="rounded-full border border-line px-2 text-link hover:underline"
-                    title="GitHub issue filed by FlakeRadar"
-                  >
-                    #{t.github_issue_number}
-                  </IssueLink>
-                </span>
-              </td>
+              <ProvenCell count={t.confirmed_flake_count} />
+              <StatusIssueCell
+                status={t.last_status}
+                issueNumber={t.github_issue_number}
+                issueUrl={t.github_issue_url}
+              />
               <td className="col-actions px-4 py-2.5 text-right align-top">
                 <button
                   type="button"
