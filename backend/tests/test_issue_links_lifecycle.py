@@ -4,7 +4,9 @@ One concept — the `(github_issue_number, github_issue_checked_at)` pair a Test
 — has two different "clear" semantics, and they are easy to confuse, so they are pinned side by
 side here (see also `test_unlink_clears_both_fields_but_rearm_keeps_its_stamp`):
 
-* `unlink_issue` clears BOTH halves: the entity has no link at all, so there is nothing to check.
+* `unlink_issue` clears BOTH halves, unconditionally: the entity has no link at all, so there is
+  nothing to check. This includes a stamp a previous re-arm left behind
+  (`test_unlink_after_a_rearm_clears_the_kept_stamp`).
 * The sync's re-arm (`github_integration._clear_if_closed`) clears only the NUMBER and keeps the
   `utcnow()` stamp it wrote one line earlier, because the issue really was read this run. That is
   safe: `linked_for_check` and both partial indexes consider only rows that carry a number.
@@ -135,6 +137,35 @@ async def test_unlink_clears_both_fields_but_rearm_keeps_its_stamp(db, gh_settin
     assert rearmed.github_issue_checked_at is not None  # the re-arm: number only, stamp kept
     await db.refresh(unlinked)
     assert unlinked.github_issue_checked_at is None
+
+
+async def test_unlink_after_a_rearm_clears_the_kept_stamp(db, gh_settings, session_factory):
+    """The two semantics stay distinct in sequence: a re-armed row still loses BOTH halves on unlink.
+
+    The re-arm legitimately leaves a stamp behind (`linked_for_check` only considers rows that carry a
+    number), so unlink must not key its write on the number: clearing both fields is unconditional.
+    """
+    tc = await _test(db)
+    await issue_links.link_issue(db, "Test", tc.id, 300, threshold=0.3)
+    _, transport = _recorder(state="closed")
+    await github_integration.sync_closed_issues(session_factory, transport=transport)
+    await db.refresh(tc)
+    assert tc.github_issue_number is None
+    assert tc.github_issue_checked_at is not None  # the re-arm: the number only
+
+    out = await issue_links.unlink_issue(db, "Test", tc.id, threshold=0.3)
+    await db.refresh(tc)
+    assert tc.github_issue_number is None
+    assert tc.github_issue_checked_at is None  # unlink: both halves, including the stamp the re-arm left
+    assert out.github_issue_number is None
+    assert out.github_issue_url is None
+    # The pair is fully reset: an unlinked row keeps no "last checked" behind, so the next link
+    # really does start from never-checked.
+    assert await issue_links.linked_for_check(db, issue_links.TEST, 10) == []
+
+    calls, transport = _recorder(state="closed")
+    await github_integration.sync_closed_issues(session_factory, transport=transport)
+    assert calls == []  # and the row is out of the rotation for good
 
 
 async def test_job_provider_gate(db):

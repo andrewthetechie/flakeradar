@@ -153,6 +153,19 @@ def store_filed_link(obj: Job | TestCase, number: int) -> None:
     obj.github_issue_checked_at = None  # a new link is checked first
 
 
+def clear_link(obj: Job | TestCase) -> None:
+    """Remove a link: the other write of the pair, the counterpart of `store_filed_link`.
+
+    Unlink clears BOTH halves, unconditionally: with no number there is nothing for
+    `linked_for_check` to look up, so a stamp left on an unlinked row only misleads. Keying this
+    write on the previous number would be wrong — the sync's re-arm (`_clear_if_closed`) clears
+    the number while deliberately keeping its `utcnow()` stamp, so a row can reach unlink with
+    a number that is already None and a stamp that is not.
+    """
+    obj.github_issue_number = None
+    obj.github_issue_checked_at = None
+
+
 async def _link(
     target: IssueLinkTarget,
     db: AsyncSession,
@@ -181,16 +194,14 @@ async def _link(
 
 
 async def _unlink(target: IssueLinkTarget, db: AsyncSession, target_id: int, *, threshold: float) -> Any:
-    """The one unlink engine: unlinking clears both halves of the pair."""
+    """The one unlink engine: locked row, `clear_link`, commit, log, out."""
     row = (await db.execute(target.locked_select(target_id))).first()
     if row is None:
         raise IssueLinkTargetNotFound(f"{target.kind} not found")
     obj = target.entity_of(row)
     repo = target.repo_name_of(row)
     previous = obj.github_issue_number
-    obj.github_issue_number = None
-    if previous is not None:
-        obj.github_issue_checked_at = None
+    clear_link(obj)  # both halves, whatever they held: see `clear_link`
     await db.commit()
     if previous is not None:
         logger.info("Unlinked issue %s#%s from %s %s", repo, previous, target.kind.lower(), obj.id)
@@ -243,7 +254,12 @@ async def link_issue(
 async def unlink_issue(
     db: AsyncSession, target: LinkTarget, entity_id: int, *, threshold: float
 ) -> schemas.TestOut | schemas.JobOut:
-    """Unlink the Issue of the entity `entity_id` of `target`. See `link_issue`."""
+    """Unlink the Issue of the entity `entity_id` of `target`. See `link_issue`.
+
+    Unlinking clears both halves of the pair (see `clear_link`), which is what makes it distinct
+    from the sync's re-arm: that one stamps `utcnow()` and clears only the number, because the
+    issue it just read really was checked.
+    """
     return await _unlink(_TARGETS[target], db, entity_id, threshold=threshold)
 
 
