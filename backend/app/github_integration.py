@@ -42,7 +42,7 @@ import httpx
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from . import queries
+from . import issue_links, queries
 from .attribution import unexplained_failure_counts
 from .batching import chunks
 from .config import Settings, get_settings
@@ -320,8 +320,7 @@ async def _file_batch(
                             "GitHub issue creation in %s returned 201 with no issue number: %s", repo, resp.text[:300]
                         )
                     else:
-                        obj.github_issue_number = number
-                        obj.github_issue_checked_at = None  # a new link is checked first
+                        issue_links.store_filed_link(obj, number)
                         await db.commit()
                         logger.info("Filed issue %s#%s for %s %s", repo, obj.github_issue_number, entity, obj.id)
                 elif _rate_limited(resp):
@@ -505,26 +504,8 @@ async def sync_closed_issues(
         return
     async with session_factory() as db:
         batch = get_settings().github_sync_batch
-        test_rows = (
-            await db.execute(
-                select(TestCase, Repo.name)
-                .join(Project, TestCase.project_id == Project.id)
-                .join(Repo, Project.repo_id == Repo.id)
-                .where(TestCase.github_issue_number.is_not(None))
-                .order_by(TestCase.github_issue_checked_at.asc().nulls_first(), TestCase.id)
-                .limit(batch)
-            )
-        ).all()
-        job_rows = (
-            await db.execute(
-                select(Job, Repo.name)
-                .join(Pipeline, Job.pipeline_id == Pipeline.id)
-                .join(Repo, Pipeline.repo_id == Repo.id)
-                .where(Job.github_issue_number.is_not(None))
-                .order_by(Job.github_issue_checked_at.asc().nulls_first(), Job.id)
-                .limit(batch)
-            )
-        ).all()
+        test_rows = await issue_links.linked_for_check(db, issue_links.TEST, batch)
+        job_rows = await issue_links.linked_for_check(db, issue_links.JOB, batch)
         if not test_rows and not job_rows:
             return
         rows = [(tc, repo, "test") for tc, repo in test_rows] + [(job, repo, "job") for job, repo in job_rows]

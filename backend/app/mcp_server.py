@@ -390,14 +390,13 @@ def build_mcp(session_factory: async_sessionmaker[AsyncSession], *, api_token: s
         issue is already linked, unless replace=True. Returns the test or job."""
         _require_one_target(test_id, job_id)
         threshold = get_settings().flake_threshold
+        target: issue_links.LinkTarget = "Test" if test_id is not None else "Job"
+        entity_id = test_id if test_id is not None else job_id
         async with session_factory() as db:
             try:
-                if test_id is not None:
-                    result = await issue_links.link_test_issue(
-                        db, test_id, number, replace=replace, threshold=threshold
-                    )
-                else:
-                    result = await issue_links.link_job_issue(db, job_id, number, replace=replace, threshold=threshold)
+                result = await issue_links.link_issue(
+                    db, target, entity_id, number, replace=replace, threshold=threshold
+                )
             except issue_links.IssueLinkError as exc:
                 raise ToolError(str(exc)) from exc
         return result.model_dump(mode="json")
@@ -408,12 +407,11 @@ def build_mcp(session_factory: async_sessionmaker[AsyncSession], *, api_token: s
         or job_id), for example a link to the wrong issue. Returns the test or job."""
         _require_one_target(test_id, job_id)
         threshold = get_settings().flake_threshold
+        target: issue_links.LinkTarget = "Test" if test_id is not None else "Job"
+        entity_id = test_id if test_id is not None else job_id
         async with session_factory() as db:
             try:
-                if test_id is not None:
-                    result = await issue_links.unlink_test_issue(db, test_id, threshold=threshold)
-                else:
-                    result = await issue_links.unlink_job_issue(db, job_id, threshold=threshold)
+                result = await issue_links.unlink_issue(db, target, entity_id, threshold=threshold)
             except issue_links.IssueLinkError as exc:
                 raise ToolError(str(exc)) from exc
         return result.model_dump(mode="json")
