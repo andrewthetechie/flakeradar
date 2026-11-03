@@ -271,9 +271,10 @@ jobs:
 
       - name: Check the job summary content
         run: |
-          grep -q "1 of 2 failures are known flaky tests" summary.md
-          grep -q "| test_known_flaky |" summary.md
-          grep -q "| flaky (0.9) | 3 | no |" summary.md
-          grep -q "| test_new_failure |" summary.md
-          grep -q "| stable (0) | 0 | no |" summary.md
+          # dashboard-url links each Test, so the names appear inside Markdown links.
+          grep -Fq "1 of 2 failures are known flaky tests" summary.md
+          grep -Fq "[test_known_flaky](https://flakeradar.example.com?repo=andrewthetechie%2Fflakeradar&test=" summary.md
+          grep -Fq "| flaky (0.9) | 3 | no |" summary.md
+          grep -Fq "[test_new_failure](https://flakeradar.example.com?repo=andrewthetechie%2Fflakeradar&test=" summary.md
+          grep -Fq "| stable (0) | 0 | no |" summary.md
           echo "::notice::Summary action output verified: one known-flaky and one new failure rendered."
