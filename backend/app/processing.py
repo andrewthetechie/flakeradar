@@ -192,6 +192,7 @@ async def rescore(
                 "confirmed_flake_count": confirmed,
                 "failure_category": dominant_category(categories.get(tc_id, [])[: settings.score_window]),
                 "clean_streak": scoring.branch_scoped_streak(execs, default_branch.get(tc_id)),
+                "fail_streak": scoring.branch_scoped_fail_streak(execs, default_branch.get(tc_id)),
             }
         )
     for chunk in chunks(updates):

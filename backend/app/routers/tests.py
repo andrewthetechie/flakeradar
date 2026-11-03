@@ -45,6 +45,7 @@ async def list_tests(
     quarantined: bool | None = Query(default=None),
     has_issue: bool | None = Query(default=None),
     new_within_days: int | None = Query(default=None, ge=1, le=90),
+    broken: bool = Query(default=False),
     db: AsyncSession = Depends(get_db),
 ):
     return await queries.list_tests(
@@ -61,6 +62,7 @@ async def list_tests(
         quarantined=quarantined,
         has_issue=has_issue,
         new_within_days=new_within_days,
+        broken=broken,
     )
 
 

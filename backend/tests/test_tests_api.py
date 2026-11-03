@@ -106,6 +106,46 @@ async def test_file_filter_is_literal_substring(client, db):
     assert (await client.get("/api/tests?file=%25")).json()["total"] == 0  # "%" is literal
 
 
+async def test_broken_filter_lists_broken_stable_tests(client, db):
+    proj = await make_project(db, "andrewthetechie/writers-app", "backend")
+    await make_test_case(db, proj, name="test_broken", flakiness_score=0.0, fail_streak=5)
+    await make_test_case(db, proj, name="test_passing", flakiness_score=0.0, fail_streak=0)
+    await db.commit()
+
+    # Both are stable (score 0), so the default leaderboard hides them.
+    default = (await client.get("/api/tests?repo=andrewthetechie/writers-app")).json()
+    assert default["total"] == 0
+
+    broken = (await client.get("/api/tests?repo=andrewthetechie/writers-app&broken=true")).json()
+    assert [t["name"] for t in broken["items"]] == ["test_broken"]
+    item = broken["items"][0]
+    assert item["broken"] is True
+    assert item["fail_streak"] == 5
+
+
+def test_is_broken_respects_disabled_threshold():
+    # broken_streak == 0 disables broken detection even at a high fail streak.
+    from app import queries
+
+    assert queries.is_broken(5, 5) is True
+    assert queries.is_broken(4, 5) is False
+    assert queries.is_broken(0, 5) is False
+    assert queries.is_broken(99, 0) is False
+
+
+async def test_broken_filter_lists_nothing_when_detection_disabled(client, db, monkeypatch):
+    from app.config import Settings
+
+    monkeypatch.setattr("app.queries.get_settings", lambda: Settings(broken_streak=0))
+    proj = await make_project(db, "andrewthetechie/writers-app", "backend")
+    await make_test_case(db, proj, name="test_broken", flakiness_score=0.0, fail_streak=5)
+    await db.commit()
+
+    # Detection disabled: is_broken is False for every row, so broken=true finds none.
+    broken = (await client.get("/api/tests?repo=andrewthetechie/writers-app&broken=true")).json()
+    assert broken == {"items": [], "total": 0, "page": 1, "page_size": 50}
+
+
 async def test_summary_scoped(client, db):
     await _seed(db)
     everything = (await client.get("/api/summary")).json()

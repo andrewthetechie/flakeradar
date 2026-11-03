@@ -170,12 +170,34 @@ describe("GET request builders", () => {
       showStable: true,
       category: "timing",
       quarantined: false,
+      broken: false,
       issue: null,
       newWithinDays: null,
       q: "",
     });
     expect(calls.map((c) => c.path)).toEqual([
       "/api/tests?repo=a%2Fb&page=2&page_size=50&sort=proven&include_stable=true&category=timing",
+    ]);
+  });
+
+  it("fetchTests sends the broken filter as broken=true", async () => {
+    const calls = stubFetch();
+    await fetchTests({
+      repo: "a/b",
+      project: null,
+      page: 1,
+      pageSize: 50,
+      sort: "score",
+      showStable: false,
+      category: null,
+      quarantined: false,
+      broken: true,
+      issue: null,
+      newWithinDays: null,
+      q: "",
+    });
+    expect(calls.map((c) => c.path)).toEqual([
+      "/api/tests?repo=a%2Fb&page=1&page_size=50&sort=score&broken=true",
     ]);
   });
 

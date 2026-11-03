@@ -421,3 +421,28 @@ async def test_clean_streak_counts_passes_since_last_failure(db, session_factory
         await process_next(session_factory)
     (tc,) = await _tests(db)
     assert tc.clean_streak == 2
+
+
+async def test_fail_streak_marks_broken_after_five_default_branch_failures(db, session_factory, monkeypatch):
+    monkeypatch.setattr("app.processing.get_settings", lambda: Settings(score_window=50, broken_streak=5))
+    proj = await make_project(db, "acme/app", "backend")
+    for i in range(5):
+        await _queue(
+            db,
+            make_junit([("t", "failed")]),
+            project=proj,
+            branch="main",
+            commit_sha=f"m{i}",
+            default_branch="main" if i == 0 else None,
+        )
+    for _ in range(5):
+        await process_next(session_factory)
+    (tc,) = await _tests(db)
+    assert tc.flakiness_score == 0.0  # broken, not flaky
+    assert tc.fail_streak == 5
+    # One pass resets the fail streak.
+    await _queue(db, make_junit([("t", "passed")]), project=proj, branch="main", commit_sha="m5")
+    await process_next(session_factory)
+    db.expire_all()  # the db-session identity map still holds the stale TestCase
+    (tc,) = await _tests(db)
+    assert tc.fail_streak == 0

@@ -691,6 +691,17 @@ default branch. Proven flakes count on all branches, because a pass and a
 fail on the same commit show nondeterminism on the same code. Until a report
 gives the default branch, all branches count.
 
+## Broken tests
+
+A test that fails on the default branch `FLAKERADAR_BROKEN_STREAK` runs in a
+row (default 5) is **broken**, not flaky. It scores 0 like a stable test, but
+it is a test that has been red on `main` and has not fixed itself — not a new
+failure a branch pulled in. FlakeRadar marks it with a `broken` flag rather
+than changing its score or tier, and the UI shows a badge on its leaderboard
+row and in its drawer and lists it under the `?broken=1` filter. Skip `broken`
+rows are ignored when counting the streak, and a pass resets it to 0. Set
+`FLAKERADAR_BROKEN_STREAK=0` to turn broken detection off.
+
 ## Score history and trends
 
 FlakeRadar keeps a daily score history. Each test and each job gets one row

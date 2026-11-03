@@ -21,6 +21,8 @@ const history: History = {
     confirmed_flake_count: 1,
     failure_category: "assertion",
     clean_streak: 3,
+    fail_streak: 0,
+    broken: false,
     trend: "steady",
     last_status: "passed",
     last_seen_at: "2026-09-25T00:00:00Z",
@@ -151,6 +153,18 @@ describe("TestDetail", () => {
     renderDetail({ test: { ...history.test, failure_category: null } });
     const tile = within(screen.getByText("Likely cause").parentElement!);
     expect(tile.getByText("—")).toBeInTheDocument();
+  });
+
+  it("shows the broken-on-default-branch tile when the test is broken", () => {
+    renderDetail({ test: { ...history.test, broken: true, fail_streak: 5 } });
+    const tile = within(screen.getByText("Broken on default branch").parentElement!);
+    expect(tile.getByText("Yes")).toBeInTheDocument();
+  });
+
+  it("shows the broken-on-default-branch tile as No when the test is not broken", () => {
+    renderDetail({ test: { ...history.test, broken: false } });
+    const tile = within(screen.getByText("Broken on default branch").parentElement!);
+    expect(tile.getByText("No")).toBeInTheDocument();
   });
 
   it("separates two Seen in Jobs entries and opens the clicked Job", async () => {

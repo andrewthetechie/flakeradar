@@ -21,6 +21,18 @@ export function QuarantinedPill() {
   );
 }
 
+/** Shown next to a test name when it is failing on the Default branch (issue #29). */
+export function BrokenPill() {
+  return (
+    <span
+      className="mr-1.5 rounded border border-critical px-1 text-[11px] font-normal text-critical"
+      title="Broken — failing on the default branch"
+    >
+      ✕ broken on default branch
+    </span>
+  );
+}
+
 /** Score bar, formatted score, trend mark, tier label and optional likely-cause badge. */
 export function FlakinessCell({
   score,

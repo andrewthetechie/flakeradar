@@ -25,6 +25,7 @@ export function LeaderboardControls({
   cause,
   causeCounts,
   quarantined,
+  broken,
   issue,
   newDays,
   pipelines,
@@ -35,6 +36,7 @@ export function LeaderboardControls({
   onShowStable,
   onCause,
   onQuarantined,
+  onBroken,
   onIssue,
   onNewDays,
   onPipeline,
@@ -46,6 +48,7 @@ export function LeaderboardControls({
   cause?: FailureCategory | null;
   causeCounts?: Record<FailureCategory, number> | null;
   quarantined?: boolean;
+  broken?: boolean;
   issue?: IssueFilter | null;
   /** Both views: days window of the "new flaky" filter, or null when it is off. */
   newDays?: number | null;
@@ -58,6 +61,7 @@ export function LeaderboardControls({
   onShowStable: (show: boolean) => void;
   onCause?: (cause: FailureCategory | null) => void;
   onQuarantined?: (quarantined: boolean) => void;
+  onBroken?: (broken: boolean) => void;
   onIssue?: (issue: IssueFilter | null) => void;
   /** Both views: turn the "new flaky" filter on with the day window, or off with null. */
   onNewDays?: (newDays: number | null) => void;
@@ -171,6 +175,17 @@ export function LeaderboardControls({
             onChange={(e) => onQuarantined(e.target.checked)}
           />
           Quarantined only
+        </label>
+      )}
+      {onBroken && (
+        <label className="flex cursor-pointer items-center gap-2">
+          <input
+            type="checkbox"
+            className="size-3.5 accent-(--signal)"
+            checked={broken ?? false}
+            onChange={(e) => onBroken(e.target.checked)}
+          />
+          Broken on default branch
         </label>
       )}
       {onNewDays && (

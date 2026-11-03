@@ -52,6 +52,7 @@ export default function App() {
     showStable,
     cause,
     quarantined,
+    broken,
     issue,
     newDays,
     pipeline,
@@ -80,6 +81,7 @@ export default function App() {
           showStable,
           cause,
           quarantined,
+          broken,
           issue,
           newDays,
           pipeline,
@@ -115,6 +117,7 @@ export default function App() {
     showStable,
     cause,
     quarantined,
+    broken,
     issue,
     newDays,
     pipeline,
@@ -296,6 +299,7 @@ export default function App() {
               cause={cause}
               causeCounts={summary?.category_counts ?? null}
               quarantined={quarantined}
+              broken={broken}
               issue={issue}
               newDays={newDays}
               pipelines={jobSummary?.pipelines ?? []}
@@ -306,6 +310,7 @@ export default function App() {
               onShowStable={(v) => setView({ showStable: v })}
               onCause={kind === "tests" ? (c) => setView({ cause: c }) : undefined}
               onQuarantined={kind === "tests" ? (v) => setView({ quarantined: v }) : undefined}
+              onBroken={kind === "tests" ? (v) => setView({ broken: v }) : undefined}
               onPipeline={kind === "jobs" ? (p) => setView({ pipeline: p }) : undefined}
               onIssue={(i) => setView({ issue: i })}
               onNewDays={(d) => setView({ newDays: d })}

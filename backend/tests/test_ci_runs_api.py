@@ -206,6 +206,8 @@ async def test_failure_entry_fields(client, db):
             "flakiness_score": 0.5,
             "confirmed_flake_count": 2,
             "clean_streak": 3,
+            "fail_streak": 0,
+            "broken": False,
             "quarantined": True,
             "github_issue_number": 9,
             "github_issue_url": "https://github.com/acme/app/issues/9",
@@ -213,6 +215,19 @@ async def test_failure_entry_fields(client, db):
     ]
     assert body["total_failures"] == 1
     assert body["truncated"] is False
+
+
+async def test_failure_entry_marks_broken(client, db):
+    proj = await make_project(db, "acme/app", "backend")
+    t1 = await make_test_case(db, proj, name="t1", fail_streak=5)
+    run = await make_run(db, proj, ci_run_id="100", ci_run_attempt=1)
+    await make_execution(db, t1, run, status="failed")
+    await db.commit()
+
+    body = (await client.get(_url("100"))).json()
+    failure = body["failures"][0]
+    assert failure["fail_streak"] == 5
+    assert failure["broken"] is True
 
 
 async def test_retries_in_one_run(client, db):

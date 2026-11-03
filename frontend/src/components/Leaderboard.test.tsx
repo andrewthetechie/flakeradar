@@ -18,6 +18,8 @@ const test: TestCase = {
   confirmed_flake_count: 2,
   failure_category: "timing",
   clean_streak: 0,
+  fail_streak: 0,
+  broken: false,
   trend: "worsening",
   last_status: "failed",
   last_seen_at: "2026-09-25T00:00:00Z",
@@ -69,6 +71,20 @@ describe("Leaderboard", () => {
     );
     expect(screen.queryByText(/likely:/)).toBeNull();
     expect(screen.queryByLabelText(/Worsening|Improving|Steady/)).toBeNull();
+  });
+
+  it("flags a broken test with the broken-on-default-branch pillow", () => {
+    render(
+      <Leaderboard
+        tests={[{ ...test, broken: true, fail_streak: 5 }]}
+        scope={{ repo: null, project: null }}
+        showStable={false}
+        selectedId={null}
+        onSelect={() => {}}
+        onToggleQuarantine={() => {}}
+      />,
+    );
+    expect(screen.getByText(/broken on default branch/)).toBeInTheDocument();
   });
 
   it("explains the empty state when stable tests are hidden", () => {

@@ -114,6 +114,9 @@ class TestCase(Base):
     clean_streak: Mapped[int] = mapped_column(
         Integer, default=0, server_default="0"
     )  # non-skipped default-branch pass runs since last failure
+    fail_streak: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0"
+    )  # consecutive non-skipped default-branch failing runs, newest first
     last_status: Mapped[str] = mapped_column(String(16), default="passed", server_default="passed")
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 

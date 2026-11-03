@@ -1,6 +1,6 @@
 import type { Scope, TestCase } from "../api";
 import { breakable } from "../breakable";
-import { FlakinessCell, ProvenCell, QuarantinedPill, StatusIssueCell } from "./resultCells";
+import { FlakinessCell, ProvenCell, BrokenPill, QuarantinedPill, StatusIssueCell } from "./resultCells";
 
 /** Where a row lives, shown only when the view spans more than that. */
 export function scopeLabel(t: TestCase, scope: Scope): string | null {
@@ -70,6 +70,7 @@ export function Leaderboard({
               <td className="px-4 py-2.5 align-top">
                 {label && <div className="text-xs text-link [overflow-wrap:anywhere]">{label}</div>}
                 <div className="font-semibold [overflow-wrap:anywhere]">
+                  {t.broken && <BrokenPill />}
                   {t.quarantined && <QuarantinedPill />}
                   {breakable(t.name)}
                 </div>

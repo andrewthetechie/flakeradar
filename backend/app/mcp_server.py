@@ -40,6 +40,9 @@ last failure) and trend (worsening/improving/steady versus 14 days ago, or
 null when there is not enough history). get_test returns score_history: the
 daily score for up to the last 30 days. A fix that held shows a growing
 clean_streak and a falling score.
+A Test's failure in a CI run may already have been failing on the Default
+branch: when its fail_streak meets the broken threshold, ci_run_failures marks
+it broken, so it is not a new failure the branch caused.
 To find what became flaky recently rather than what has always been flaky,
 call top_flaky_tests or top_flaky_jobs with new_within_days=N: it keeps what
 is flaky now but was below the threshold N days ago, or has no history that

@@ -165,6 +165,8 @@ class TestOut(BaseModel):
     confirmed_flake_count: int
     failure_category: str | None
     clean_streak: int
+    fail_streak: int
+    broken: bool
     trend: Literal["worsening", "improving", "steady"] | None = None
     last_status: str
     last_seen_at: datetime
@@ -394,6 +396,8 @@ class CiRunTestFailureOut(BaseModel):
     flakiness_score: float
     confirmed_flake_count: int
     clean_streak: int
+    fail_streak: int
+    broken: bool
     quarantined: bool
     github_issue_number: int | None
     github_issue_url: str | None

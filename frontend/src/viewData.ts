@@ -70,6 +70,7 @@ export type ViewFilters = Pick<
   | "showStable"
   | "cause"
   | "quarantined"
+  | "broken"
   | "issue"
   | "newDays"
   | "pipeline"
@@ -101,6 +102,7 @@ export async function loadTestsBundle(
       showStable: f.showStable,
       category: f.cause,
       quarantined: f.quarantined,
+      broken: f.broken,
       issue: f.issue,
       newWithinDays: f.newDays,
       q: f.q,

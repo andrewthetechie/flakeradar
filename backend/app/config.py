@@ -24,6 +24,11 @@ class Settings(BaseSettings):
     score_window: int = 50
     score_decay: float = 0.85
 
+    # A Test whose consecutive failing non-skipped default-branch Executions
+    # reach this count is broken (CONTEXT.md), not flaky: it has been failing
+    # on the Default branch. 0 disables broken detection.
+    broken_streak: int = 5
+
     # GitHub integration. Leave the token empty to disable (graceful no-op).
     # Issues are filed in each Test's own Repo, so the token needs
     # Issues: write on every Repo you ingest.

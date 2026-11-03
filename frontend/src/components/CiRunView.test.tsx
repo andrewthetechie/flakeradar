@@ -21,6 +21,8 @@ function failure(over: Partial<CiRunTestFailure> = {}): CiRunTestFailure {
     flakiness_score: 0.6,
     confirmed_flake_count: 2,
     clean_streak: 0,
+    fail_streak: 0,
+    broken: false,
     quarantined: false,
     github_issue_number: 12,
     github_issue_url: "https://github.com/a/b/issues/12",

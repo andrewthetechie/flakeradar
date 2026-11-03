@@ -37,6 +37,9 @@ export interface TestCase {
   confirmed_flake_count: number;
   failure_category: FailureCategory | null;
   clean_streak: number;
+  fail_streak: number;
+  /** Test failing on the Default branch broken_streak runs in a row (CONTEXT.md). */
+  broken: boolean;
   trend: Trend | null;
   last_status: string;
   last_seen_at: string;
@@ -127,6 +130,8 @@ export interface TestQuery extends Scope {
   showStable: boolean;
   category: FailureCategory | null;
   quarantined: boolean;
+  /** List only Tests broken on the Default branch, or false for any. */
+  broken: boolean;
   issue: IssueFilter | null;
   /** List only Tests that became flaky in the last N days, or null for any. */
   newWithinDays: number | null;
@@ -203,6 +208,7 @@ export function fetchTests(q: TestQuery): Promise<TestPage> {
   if (q.showStable) params.set("include_stable", "true");
   if (q.category) params.set("category", q.category);
   if (q.quarantined) params.set("quarantined", "true");
+  if (q.broken) params.set("broken", "true");
   if (q.issue) params.set("has_issue", String(q.issue === "linked"));
   if (q.newWithinDays != null) params.set("new_within_days", String(q.newWithinDays));
   if (q.q) params.set("q", q.q);
@@ -412,6 +418,9 @@ export interface CiRunTestFailure {
   flakiness_score: number;
   confirmed_flake_count: number;
   clean_streak: number;
+  /** Consecutive failing Default-branch Executions, newest first. */
+  fail_streak: number;
+  broken: boolean;
   quarantined: boolean;
   github_issue_number: number | null;
   github_issue_url: string | null;

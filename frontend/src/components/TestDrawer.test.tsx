@@ -21,6 +21,8 @@ const history: History = {
     confirmed_flake_count: 1,
     failure_category: "assertion",
     clean_streak: 3,
+    fail_streak: 0,
+    broken: false,
     trend: "steady",
     last_status: "passed",
     last_seen_at: "2026-09-25T00:00:00Z",

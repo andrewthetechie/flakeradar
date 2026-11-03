@@ -141,3 +141,30 @@ def test_branch_scoped_streak_filters_by_default_branch():
     history = [("a", "feat", "failed"), ("b", "main", "passed"), ("c", "main", "passed")]
     assert scoring.branch_scoped_streak(history, "main") == 2
     assert scoring.branch_scoped_streak(history, None) == 0
+
+
+def test_fail_streak_counts_consecutive_failures_newest_first():
+    # skipped is ignored; error counts as failing. [0] is the newest execution.
+    assert scoring.fail_streak(["failed", "failed", "skipped", "error"]) == 3
+    assert scoring.fail_streak(["failed"]) == 1
+    assert scoring.fail_streak(["passed", "failed"]) == 0  # newest is a pass
+    assert scoring.fail_streak(["passed"]) == 0
+    assert scoring.fail_streak([]) == 0
+
+
+def test_fail_streak_resets_on_a_pass():
+    assert scoring.fail_streak(["passed", "failed", "failed"]) == 0
+    assert scoring.fail_streak(["passed", "error"]) == 0
+
+
+def test_branch_scoped_fail_streak_filters_by_default_branch():
+    history = [("a", "feat", "passed"), ("b", "main", "failed"), ("c", "main", "failed")]
+    assert scoring.branch_scoped_fail_streak(history, "main") == 2
+    # Newest row is a feat pass: on an unknown branch it stops the count.
+    assert scoring.branch_scoped_fail_streak(history, None) == 0
+
+
+def test_branch_scoped_fail_streak_unknown_branch_counts_every_row():
+    history = [("a", "main", "failed"), ("b", "main", "failed"), ("c", "dev", "failed")]
+    assert scoring.branch_scoped_fail_streak(history, None) == 3
+    assert scoring.branch_scoped_fail_streak(history, "main") == 2

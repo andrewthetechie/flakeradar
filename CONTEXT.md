@@ -112,6 +112,17 @@ A Test whose Flakiness score is above 0 but below the Flake threshold.
 **Stable test**:
 A Test whose Flakiness score is 0.
 
+**Broken test**:
+A Test that fails on the Repo's Default branch `broken_streak`
+consecutive runs in a row. It scores 0 like a Stable test, but it is broken,
+not flaky: it has not fixed itself. `broken` is a separate flag, set when a
+Test's **Fail streak** reaches the threshold on the Default branch.
+
+**Fail streak**:
+The number of consecutive non-skipped failing Executions of a Test on the
+Default branch, newest first — the reverse of its **Clean streak**. A pass (or
+an unknown Default branch counting every branch) resets it to 0.
+
 **Quarantine**:
 A reversible human decision that marks a Test as one the test runner may skip. The person who quarantines can record a reason and set an expiry; when the expiry passes, maintenance (the prune step) clears the quarantine — still a human decision, because a person set the expiry. FlakeRadar never quarantines a Test on its own, and agents cannot quarantine through the MCP server.
 

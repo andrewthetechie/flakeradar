@@ -113,3 +113,20 @@ def clean_streak(statuses_newest_first: list[str]) -> int:
 def branch_scoped_streak(history: list[tuple[str, str, str]], default_branch: str | None) -> int:
     """Clean streak over Default-branch rows only (every row when the branch is unknown)."""
     return clean_streak([s for _, b, s in history if default_branch is None or b == default_branch])
+
+
+def fail_streak(statuses_newest_first: list[str]) -> int:
+    """Consecutive non-skipped failures, newest first (the reverse of clean_streak)."""
+    n = 0
+    for s in statuses_newest_first:
+        if s == "skipped":
+            continue
+        if not _is_fail(s):
+            break
+        n += 1
+    return n
+
+
+def branch_scoped_fail_streak(history: list[tuple[str, str, str]], default_branch: str | None) -> int:
+    """Fail streak over Default-branch rows only (every row when the branch is unknown)."""
+    return fail_streak([s for _, b, s in history if default_branch is None or b == default_branch])

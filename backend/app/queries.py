@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any, Literal
 
-from sqlalchemy import ColumnElement, Select, func, or_, select, true
+from sqlalchemy import ColumnElement, Select, false, func, or_, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from . import schemas
@@ -82,6 +82,12 @@ def job_issue_url(repo: str, pipeline: Pipeline, job: Job) -> str | None:
     return issue_url(repo, job.github_issue_number) if pipeline.provider == "github" else None
 
 
+def is_broken(fail_streak: int, broken_streak: int) -> bool:
+    """A Test is broken when it has failed on the Default branch `broken_streak`
+    times in a row (broken_streak == 0 disables broken detection)."""
+    return broken_streak > 0 and fail_streak >= broken_streak
+
+
 def to_test_out(tc: TestCase, project: str, repo: str, threshold: float, trend: Trend | None = None) -> schemas.TestOut:
     return schemas.TestOut(
         id=tc.id,
@@ -98,6 +104,8 @@ def to_test_out(tc: TestCase, project: str, repo: str, threshold: float, trend: 
         confirmed_flake_count=tc.confirmed_flake_count,
         failure_category=tc.failure_category,
         clean_streak=tc.clean_streak,
+        fail_streak=tc.fail_streak,
+        broken=is_broken(tc.fail_streak, get_settings().broken_streak),
         trend=trend,
         last_status=tc.last_status,
         last_seen_at=tc.last_seen_at,
@@ -186,6 +194,7 @@ class TestListFilters:
     file: str | None = None
     category: FailureCategory | None = None
     quarantined: bool | None = None
+    broken: bool = False
 
 
 def _test_filters(stmt: Select, f: TestListFilters) -> Select:
@@ -195,6 +204,13 @@ def _test_filters(stmt: Select, f: TestListFilters) -> Select:
         stmt = stmt.where(TestCase.failure_category == f.category)
     if f.quarantined is not None:
         stmt = stmt.where(TestCase.quarantined.is_(f.quarantined))
+    if f.broken:
+        broken_streak = get_settings().broken_streak
+        if broken_streak > 0:
+            stmt = stmt.where(TestCase.fail_streak >= broken_streak)
+        else:
+            # Detection disabled (0): is_broken is always False, so no Test is broken.
+            stmt = stmt.where(false())
     return stmt
 
 
@@ -217,8 +233,9 @@ TEST = LeaderboardEntity(
     # Tests keep score <= 0 rows visible when the caller asked for quarantined ones: Quarantine
     # deliberately covers stable Tests, so the Tests list has to show them. Jobs have no Quarantine
     # at all (ADR 0004: "Jobs have no Quarantine. A runner can't skip a job"), so this exemption is
-    # Tests-only and lives here, as descriptor data, and nowhere else.
-    keeps_stable_rows=lambda f: f.quarantined is True,
+    # Tests-only and lives here, as descriptor data, and nowhere else. The broken listing is the
+    # same case: a broken Test scores 0 (stable tier), so listing broken ones must keep stable rows.
+    keeps_stable_rows=lambda f: f.quarantined is True or f.broken is True,
 )
 
 
@@ -343,6 +360,7 @@ async def list_tests(
     quarantined: bool | None = None,
     has_issue: bool | None = None,
     new_within_days: int | None = None,
+    broken: bool = False,
 ) -> schemas.TestPage:
     """The Tests leaderboard: a thin wrapper over the shared engine (issue #62).
 
@@ -354,7 +372,7 @@ async def list_tests(
         db,
         TEST,
         stmt,
-        TestListFilters(file=file, category=category, quarantined=quarantined),
+        TestListFilters(file=file, category=category, quarantined=quarantined, broken=broken),
         threshold=threshold,
         include_stable=include_stable,
         flaky_only=flaky_only,
@@ -1184,6 +1202,8 @@ async def _ci_run_test_failures(
                 flakiness_score=tc.flakiness_score,
                 confirmed_flake_count=tc.confirmed_flake_count,
                 clean_streak=tc.clean_streak,
+                fail_streak=tc.fail_streak,
+                broken=is_broken(tc.fail_streak, get_settings().broken_streak),
                 quarantined=tc.quarantined,
                 github_issue_number=tc.github_issue_number,
                 github_issue_url=issue_url(repo.name, tc.github_issue_number),

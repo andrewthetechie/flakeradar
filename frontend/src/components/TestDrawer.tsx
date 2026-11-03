@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import type { History, TestCase } from "../api";
 import { breakable } from "../breakable";
 import { IssueLink } from "./IssueLink";
+import { BrokenPill } from "./resultCells";
 import { TestDetail } from "./TestDetail";
 
 /** Whole days from now until an ISO timestamp, rounding a partial day up. */
@@ -60,6 +61,7 @@ export function TestDrawer({
         {loaded && (
           <>
             <h2 className="text-lg font-semibold leading-snug [overflow-wrap:anywhere]">
+              {history.test.broken && <BrokenPill />}
               {breakable(history.test.name)}
             </h2>
             <div className="mb-3 text-xs text-muted [overflow-wrap:anywhere]">

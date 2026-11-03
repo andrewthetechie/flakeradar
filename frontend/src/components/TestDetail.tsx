@@ -127,6 +127,14 @@ export function TestDetail({
           <div className="text-lg font-semibold tabular-nums">{history.test.clean_streak}</div>
         </div>
         <div>
+          <div className="text-xs text-muted">Broken on default branch</div>
+          <div
+            className={`text-lg font-semibold tabular-nums ${history.test.broken ? "text-critical" : ""}`}
+          >
+            {history.test.broken ? "Yes" : "No"}
+          </div>
+        </div>
+        <div>
           <div className="text-xs text-muted">Likely cause</div>
           <div className="text-lg font-semibold">{history.test.failure_category ?? "—"}</div>
         </div>

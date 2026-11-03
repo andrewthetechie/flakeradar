@@ -21,6 +21,8 @@ export interface ViewState {
   cause: FailureCategory | null;
   /** Tests view: list only quarantined Tests (including stable ones). */
   quarantined: boolean;
+  /** Tests view: list only Tests broken on the Default branch (stable ones). */
+  broken: boolean;
   /** Tests view: filter by Issue link, or null for any. */
   issue: IssueFilter | null;
   /** Jobs view: exact Pipeline name to list, or null for every pipeline. */
@@ -46,6 +48,7 @@ export const DEFAULT_VIEW: ViewState = {
   showStable: false,
   cause: null,
   quarantined: false,
+  broken: false,
   issue: null,
   pipeline: null,
   newDays: null,
@@ -125,8 +128,8 @@ const enumFilter = <V extends string>(param: string, values: readonly V[]) => ({
 });
 
 /** Emission order (pinned by tests): repo, project, q | sort, stable, cause,
- *  quarantined, issue, pipeline, new. The hand-written params (view, ci_run,
- *  attempt, test, job, page) are emitted between q and sort: serializeViewState
+ *  quarantined, broken, issue, pipeline, new. The hand-written params (view,
+ *  ci_run, attempt, test, job, page) are emitted between q and sort: serializeViewState
  *  splits the table at the sort descriptor. */
 export const LIST_FILTERS: ListFilterDescriptor[] = [
   listFilter({ param: "repo", field: "repo", relists: true, ...optionalString("repo") }),
@@ -169,6 +172,7 @@ export const LIST_FILTERS: ListFilterDescriptor[] = [
     relists: true,
     ...flag("quarantined"),
   }),
+  listFilter({ param: "broken", field: "broken", relists: true, ...flag("broken") }),
   listFilter({
     param: "issue",
     field: "issue",
