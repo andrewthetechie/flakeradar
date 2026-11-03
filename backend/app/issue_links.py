@@ -148,9 +148,14 @@ def store_filed_link(obj: Job | TestCase, number: int) -> None:
     Deliberately *not* the sync's re-arm, which stamps `utcnow()` and clears only the
     number (`github_integration._clear_if_closed`) because the issue it just read really
     was checked.
+
+    The link is marked as FlakeRadar's own (`github_issue_filed = True`), the one
+    provenance the admin delete reads before it comments on and closes an issue: a
+    number stored here was created by FlakeRadar, so closing it is ours to do.
     """
     obj.github_issue_number = number
     obj.github_issue_checked_at = None  # a new link is checked first
+    obj.github_issue_filed = True
 
 
 def clear_link(obj: Job | TestCase) -> None:
@@ -164,6 +169,7 @@ def clear_link(obj: Job | TestCase) -> None:
     """
     obj.github_issue_number = None
     obj.github_issue_checked_at = None
+    obj.github_issue_filed = None
 
 
 async def _link(
@@ -188,6 +194,9 @@ async def _link(
     previous = obj.github_issue_number
     if previous != number:
         store_filed_link(obj, number)  # the same number keeps its check stamp: it was just checked
+    # A front door (REST or MCP) linked this one, so FlakeRadar must not close it:
+    # the admin delete auto-closes only the issues FlakeRadar filed itself.
+    obj.github_issue_filed = False
     await db.commit()
     logger.info("Linked issue %s#%s to %s %s (was %s)", repo, number, target.kind.lower(), obj.id, previous)
     return target.to_out(row, threshold)
