@@ -133,6 +133,9 @@ class TestCase(Base):
     # only a filed issue is auto-closed when a Repo or Project is deleted.
     github_issue_filed: Mapped[bool | None] = mapped_column(Boolean, default=None)
     github_issue_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    # True = the linked issue was closed as not planned; the link is kept and
+    # the filer stays quiet. Cleared on reopen or manual unlink.
+    github_issue_closed: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
 
 
 class TestRun(Base):
@@ -268,6 +271,9 @@ class Job(Base):
     # only a filed issue is auto-closed when a Repo or Project is deleted.
     github_issue_filed: Mapped[bool | None] = mapped_column(Boolean, default=None)
     github_issue_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    # True = the linked issue was closed as not planned; the link is kept and
+    # the filer stays quiet. Cleared on reopen or manual unlink.
+    github_issue_closed: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
