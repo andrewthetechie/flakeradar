@@ -9,7 +9,6 @@ from starlette.datastructures import UploadFile
 
 from .. import report_intake, schemas
 from ..auth import require_token
-from ..config import get_settings
 from ..db import get_db
 from ..identity import (
     DEFAULT_PROJECT,
@@ -226,9 +225,7 @@ async def retry_report(report_id: int, db: AsyncSession = Depends(get_db)):
     report, repo, project = row
     if report.status != REPORT_FAILED:
         raise HTTPException(status_code=409, detail="Only failed reports can be retried")
-    if report.retry_count >= get_settings().max_report_retries:
-        raise HTTPException(status_code=409, detail="Max retries reached for this report")
-    report_intake.requeue_report(report, error=None)
+    report_intake.retry_failed_report(report)
     await db.commit()
     return _report_out(report, repo, project)
 

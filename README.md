@@ -804,7 +804,7 @@ and the MCP server need the token.
 | `GET /api/reports/{id}` | none | The status of one report (`pending`, `processed` or `failed`), its counts, and its error. |
 | `GET /api/reports?status=&limit=` | none | Recent reports, newest first. |
 | `GET /api/reports/summary` | none | `{pending, failed}` |
-| `POST /api/reports/{id}/retry` | `X-API-Key` | Put a failed report back in the queue. |
+| `POST /api/reports/{id}/retry` | `X-API-Key` | Put a failed report back in the queue with a fresh automatic-retry budget (`retry_count` resets to `0`), whatever it has retried before. `409` for a report that has not failed, `404` when it does not exist. |
 | `DELETE /api/reports/{id}` | `X-API-Key` | Dismiss a failed report by deleting it; returns `204`. `409` for a report that has not failed, `404` when it does not exist. |
 | `GET /api/repos` | none | Repos with their projects. |
 | `DELETE /api/repos/{owner}/{name}` | `X-API-Key` | Admin: delete a Repo and, by cascade, all its projects, tests, runs, executions, score history, pipelines, jobs, job executions and reports (any status, pending included). Names are normalized (`ACME/App` deletes `acme/app`); an unknown repo gives `404`. Returns `{repo, deleted: {tests, executions, jobs, reports}, github_issue_numbers}`. `github_issue_numbers` lists every issue stored by the deleted tests and jobs; FlakeRadar comments on and closes only the ones it filed itself best-effort after it commits (failures are logged, not reported), while issues a human linked are never touched and are returned for you to close by hand. Without a token nothing is closed, so even filed issues stay open for you to close by hand. |
