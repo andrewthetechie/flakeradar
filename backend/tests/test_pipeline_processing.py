@@ -75,6 +75,27 @@ async def test_one_pipeline_creates_pipeline_jobs_executions(db, session_factory
     assert sorted(outcome.touched_job_ids) == job_ids
 
 
+async def test_retried_job_in_one_report_newest_try_wins(db, session_factory):
+    # GitLab reports both tries of a retried job in one Pipeline report, oldest first.
+    payload = _payload(
+        [_job("102", "test", "failed"), _job("110", "test", "passed")],
+        provider="gitlab",
+        pipeline=".gitlab-ci.yml",
+    )
+    await _queue_pipeline(db, payload)
+    outcome = await process_next(session_factory)
+    assert outcome.counts == {"passed": 1, "failed": 1, "skipped": 0, "duplicate": 0}
+
+    (job,) = (await db.execute(select(Job))).scalars()
+    assert job.last_status == "passed"
+    execs = (
+        (await db.execute(select(JobExecution).where(JobExecution.job_id == job.id).order_by(JobExecution.id.desc())))
+        .scalars()
+        .all()
+    )
+    assert [e.ci_job_id for e in execs] == ["110", "102"]
+
+
 async def test_rerun_same_sha_is_proven_flake(db, session_factory):
     jobs1 = [_job("100", "test", "failed")]
     jobs2 = [_job("101", "test", "passed")]  # new ci_job_id, same SHA
