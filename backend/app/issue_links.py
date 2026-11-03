@@ -4,7 +4,9 @@ This module owns the (github_issue_number, github_issue_checked_at) pair for bot
 targets: REST and MCP link and unlink it, FlakeRadar's own filer (github_integration)
 stores a number it just filed through `store_filed_link`, and `sync_closed_issues`
 takes its rotation list from `linked_for_check`. A linked entity is treated exactly
-like a filed one: the filer skips it, and the sync clears it when the issue closes.
+like a filed one: the filer skips it, and the sync clears the link when the issue
+closes as completed or is gone, and instead flags it (`github_issue_closed`) when
+the issue closes as not planned.
 The issue must be in the entity's own Repo, because the sync looks it up there
 (ADR 0008).
 """

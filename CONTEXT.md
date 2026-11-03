@@ -129,5 +129,5 @@ A reversible human decision that marks a Test as one the test runner may skip. T
 ### Tracking work
 
 **Issue link**:
-The GitHub issue that tracks a flaky Test or Job, stored as its issue number. The issue is in the Test's or Job's own Repo. FlakeRadar's filer sets it when it files an issue, and any other filer (a bot, an agent or a person) can set or clear it through the API or the MCP server. While a Test or Job has an Issue link, FlakeRadar files no issue for it. The link is cleared when GitHub reports the issue closed or gone.
+The GitHub issue that tracks a flaky Test or Job, stored as its issue number. The issue is in the Test's or Job's own Repo. FlakeRadar's filer sets it when it files an issue, and any other filer (a bot, an agent or a person) can set or clear it through the API or the MCP server. While a Test or Job has an Issue link, FlakeRadar files no issue for it. The link is cleared when GitHub reports the issue closed as completed or gone. When GitHub reports the issue closed as not planned, the link is kept and the row is flagged `github_issue_closed`, so the filer stays quiet about an issue the team declined; reopening the issue clears the flag, and unlinking clears the link and the flag.
 _Avoid_: Ticket, bug (for the issue)

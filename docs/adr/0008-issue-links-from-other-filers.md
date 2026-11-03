@@ -21,3 +21,7 @@ An Issue link stores only the issue number, and the issue must be in the Test's 
 - Without a GitHub token, the sync never runs, so a link stays until someone deletes it. The filer does not run either, so no duplicate is filed.
 - The filer reads candidates, files on GitHub, then stores the number. A link written between those steps can be overwritten, and a duplicate filed. The window is the length of one GitHub call, so we accept it.
 - An agent with the token can now change data through MCP, but only the Issue link. It cannot change scores, quarantine or Reports.
+
+## Amendment (2026-11-03, issue #32)
+
+A close is not always a re-arm. When the sync finds the issue closed as `not_planned` — the team saying "known, accepted, will not fix" — it keeps the Issue link and sets `github_issue_closed` on the Test or Job, so a known flake the team declined is never re-filed. Closing as completed, or a `404`, still clears the link as above. `github_issue_closed` is returned wherever the link is (API, MCP and the UI), and it is cleared when the issue is reopened or when a person unlinks, which is how a link is re-armed.
