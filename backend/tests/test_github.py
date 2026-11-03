@@ -704,9 +704,7 @@ async def test_link_writes_reset_the_closed_flag(db):
     assert tc.github_issue_filed is None
     assert tc.github_issue_closed is False
 
-    relinked = await _flaky_test(
-        db, project="p2", name="relinked", github_issue_number=11, github_issue_closed=True
-    )
+    relinked = await _flaky_test(db, project="p2", name="relinked", github_issue_number=11, github_issue_closed=True)
     issue_links.store_filed_link(relinked, 44)
     assert relinked.github_issue_number == 44
     assert relinked.github_issue_closed is False  # a fresh link points at an open issue
