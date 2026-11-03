@@ -59,6 +59,27 @@ describe("Leaderboard", () => {
     expect(screen.getByText(/2× proven/)).toBeInTheDocument();
   });
 
+  it("labels the issue pill when the linked issue was closed as not planned", () => {
+    render(
+      <Leaderboard
+        tests={[
+          {
+            ...test,
+            github_issue_number: 7,
+            github_issue_url: "https://github.com/acme/app/issues/7",
+            github_issue_closed: true,
+          },
+        ]}
+        scope={{ repo: null, project: null }}
+        showStable={false}
+        selectedId={null}
+        onSelect={() => {}}
+        onToggleQuarantine={() => {}}
+      />,
+    );
+    expect(screen.getByRole("link", { name: "#7 (closed as not planned)" })).toBeInTheDocument();
+  });
+
   it("shows no trend mark and no likely-cause badge when there is none", () => {
     render(
       <Leaderboard

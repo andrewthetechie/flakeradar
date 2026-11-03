@@ -161,6 +161,14 @@ describe("CiRunView", () => {
     expect(await screen.findByText(/1 report failed to process/)).toBeInTheDocument();
   });
 
+  it("labels the failure issue pill when the issue was closed as not planned", async () => {
+    stubFetch(() => json(body({ failures: [failure({ github_issue_closed: true })] })));
+    render(<Harness />);
+    expect(
+      await screen.findByRole("link", { name: "#12 (closed as not planned)" }),
+    ).toHaveAttribute("href", "https://github.com/a/b/issues/12");
+  });
+
   it("lists the failing tests and the failed jobs of a complete run", async () => {
     const onOpenTest = vi.fn();
     const onOpenJob = vi.fn();

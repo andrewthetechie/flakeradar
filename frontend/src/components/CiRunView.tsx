@@ -108,6 +108,7 @@ function FailuresTable({
                   <IssuePill
                     number={f.github_issue_number}
                     url={f.github_issue_url}
+                    closed={f.github_issue_closed}
                     className="text-xs"
                   />
                 </td>
