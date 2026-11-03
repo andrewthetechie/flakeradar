@@ -654,6 +654,33 @@ async def test_sync_clears_the_flag_when_a_linked_issue_reopens(db, gh_settings,
     assert reopened.github_issue_filed is True
 
 
+async def test_sync_leaves_alone_an_issue_state_it_does_not_know(db, gh_settings, session_factory):
+    """A state that is neither `open` nor `closed` says nothing: link, flag and stamp hold.
+
+    GitHub reports `open` and `closed` today, and the sync only ever acts on those two
+    names, so a state it cannot recognize is treated exactly like the unusable body it
+    already refuses to guess about: the flagged link survives untouched, and the row is
+    still stamped so it cannot take a batch slot on every later run.
+    """
+    odd = await _flaky_test(
+        db,
+        name="odd",
+        github_issue_number=11,
+        github_issue_filed=True,
+        github_issue_closed=True,
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"state": "archived", "state_reason": "not_planned"})
+
+    await github_integration.sync_closed_issues(session_factory, transport=httpx.MockTransport(handler))
+    await db.refresh(odd)
+    assert odd.github_issue_number == 11
+    assert odd.github_issue_filed is True
+    assert odd.github_issue_closed is True  # only a reported reopen clears it
+    assert odd.github_issue_checked_at is not None
+
+
 async def test_sync_clears_a_link_closed_as_completed(db, gh_settings, session_factory):
     """Closed as completed re-arms exactly like a close with no reported reason."""
     done = await _flaky_test(
