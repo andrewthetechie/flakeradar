@@ -195,7 +195,8 @@ class SummaryOut(BaseModel):
     confirmed_flaky_tests: int
     new_flaky_7d: int
     total_runs: int
-    total_executions: int
+    executions_30d: int
+    failures_30d: int
     flake_threshold: float
     category_counts: dict[str, int]
 
@@ -349,7 +350,8 @@ class JobSummaryOut(BaseModel):
     suspect_jobs: int
     confirmed_flaky_jobs: int
     new_flaky_7d: int
-    total_job_executions: int
+    job_executions_30d: int
+    job_failures_30d: int
     flake_threshold: float
     pipelines: list[str]
 

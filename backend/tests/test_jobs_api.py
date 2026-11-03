@@ -270,7 +270,23 @@ async def test_job_summary_counts(client, db):
     assert body["suspect_jobs"] == 1
     assert body["confirmed_flaky_jobs"] == 1
     assert body["new_flaky_7d"] == 1  # the flaky Job has no history at all, so it is new
-    assert body["total_job_executions"] == 1
+    assert body["job_executions_30d"] == 0  # the seeded Execution writes no Score history (issue #24)
+    assert body["job_failures_30d"] == 0
+
+
+async def test_job_summary_30d_sums(client, db):
+    """job_executions_30d/job_failures_30d sum the Job Score history of the last 30 days, in scope."""
+    app = await make_pipeline(db, "acme/app", "ci.yml")
+    job = await make_job(db, app, name="flaky", flakiness_score=0.6)
+    today = utcnow().date()
+    await make_job_score(db, job, today, 0.6, executions=7, failures=3)
+    await make_job_score(db, job, today - timedelta(days=5), 0.6, executions=4, failures=2)
+    await make_job_score(db, job, today - timedelta(days=40), 0.6, executions=100, failures=90)
+    await db.commit()
+
+    body = (await client.get("/api/jobs/summary?repo=acme/app")).json()
+    assert body["job_executions_30d"] == 11  # the 40-day-old row is out of the window
+    assert body["job_failures_30d"] == 5
 
 
 async def test_job_summary_new_flaky_7d(client, db):

@@ -45,6 +45,7 @@ from .scoring import FAILING
 
 SortKey = Literal["score", "last_seen", "proven"]  # shared by the Test and Job leaderboards
 NEW_FLAKY_DAYS = 7  # the "became flaky recently" window in the dashboard tiles
+SUMMARY_WINDOW_DAYS = 30  # the Score history window the dashboard tiles sum over (issue #24)
 
 
 @dataclass(frozen=True)
@@ -306,27 +307,39 @@ async def _tile_counts(
     count_stmt: Callable[..., Select],
     *,
     threshold: float,
-) -> tuple[int, int, int, int, int]:
-    """The five dashboard tiles, stated once per entity (issue #62).
+    extra: tuple[ColumnElement[Any], ...] = (),
+) -> tuple[int, int, int, int, int, tuple[Any, ...]]:
+    """The five dashboard tiles in two statements, stated once per entity (issues #62, #24).
 
-    `count_stmt(*conditions)` is the caller's already-scoped `select(func.count(...))` builder, so
-    the Scope-vs-repo difference stays in the wrappers, as with the listing engine. Returned in
-    today's order: total, flaky, suspect, confirmed, and new-flaky over `NEW_FLAKY_DAYS` — the last
-    one through the same `newest_history_before` lateral the listing engine uses (ADR 0007).
+    `count_stmt(*aggregates)` is the caller's already-scoped `select(*aggregates)` builder over the
+    entity and its parents, so the Scope-vs-repo difference stays in the wrappers, as with the
+    listing engine. The four plain counts ride in one `count(*) FILTER (WHERE ...)` statement and
+    the caller's `extra` scalar aggregates ride along with them. New-flaky over `NEW_FLAKY_DAYS`
+    needs the same `newest_history_before` lateral the listing engine uses (ADR 0007), so it stays
+    a second statement. Returned in today's order: total, flaky, suspect, confirmed, new-flaky,
+    then `extra` in the caller's order.
     """
-    total = (await db.execute(count_stmt())).scalar_one()
-    flaky = (await db.execute(count_stmt(entity.score >= threshold))).scalar_one()
-    suspect = (await db.execute(count_stmt(entity.score > 0, entity.score < threshold))).scalar_one()
-    confirmed = (await db.execute(count_stmt(entity.proven > 0))).scalar_one()
+    row = (
+        await db.execute(
+            count_stmt(
+                func.count(),
+                func.count().filter(entity.score >= threshold),
+                func.count().filter(entity.score > 0, entity.score < threshold),
+                func.count().filter(entity.proven > 0),
+                *extra,
+            )
+        )
+    ).one()
+    total, flaky, suspect, confirmed, *extras = row
     oldest = newest_history_before(entity.history_model, entity.history_fk, entity.history_parent, NEW_FLAKY_DAYS)
     new_flaky = (
         await db.execute(
-            count_stmt(entity.score >= threshold)
+            count_stmt(func.count().filter(entity.score >= threshold))
             .outerjoin(oldest, true())
             .where(_became_flaky_clause(oldest, threshold))
         )
     ).scalar_one()
-    return total, flaky, suspect, confirmed, new_flaky
+    return total, flaky, suspect, confirmed, new_flaky, tuple(extras)
 
 
 async def list_repos(db: AsyncSession) -> list[schemas.RepoOut]:
@@ -386,37 +399,39 @@ async def list_tests(
 
 
 async def summary(db: AsyncSession, scope: Scope, *, threshold: float) -> schemas.SummaryOut:
-    def tests_count(*conditions) -> Select:
+    def tests_count(*aggregates) -> Select:
         return _scoped(
-            select(func.count(TestCase.id))
-            .join(Project, TestCase.project_id == Project.id)
-            .join(Repo, Project.repo_id == Repo.id)
-            .where(*conditions),
+            select(*aggregates).join(Project, TestCase.project_id == Project.id).join(Repo, Project.repo_id == Repo.id),
             scope,
         )
 
-    total, flaky, suspect, confirmed, new_flaky = await _tile_counts(db, TEST, tests_count, threshold=threshold)
-    runs = (
+    # Runs are counted in the tile statement itself: one statement, so the dashboard's 30 s
+    # refresh does not pay a round trip for a table the tiles already scope the same way.
+    runs = _scoped(
+        select(func.count(TestRun.id))
+        .join(Project, TestRun.project_id == Project.id)
+        .join(Repo, Project.repo_id == Repo.id),
+        scope,
+    ).scalar_subquery()
+    total, flaky, suspect, confirmed, new_flaky, (total_runs,) = await _tile_counts(
+        db, TEST, tests_count, threshold=threshold, extra=(runs,)
+    )
+    cutoff = utcnow().date() - timedelta(days=SUMMARY_WINDOW_DAYS)
+    executions_30d, failures_30d = (
         await db.execute(
             _scoped(
-                select(func.count(TestRun.id))
-                .join(Project, TestRun.project_id == Project.id)
-                .join(Repo, Project.repo_id == Repo.id),
-                scope,
-            )
-        )
-    ).scalar_one()
-    executions = (
-        await db.execute(
-            _scoped(
-                select(func.count(TestExecution.id))
-                .join(TestCase, TestExecution.test_case_id == TestCase.id)
+                select(
+                    func.coalesce(func.sum(TestScoreHistory.executions), 0),
+                    func.coalesce(func.sum(TestScoreHistory.failures), 0),
+                )
+                .join(TestCase, TestScoreHistory.test_case_id == TestCase.id)
                 .join(Project, TestCase.project_id == Project.id)
-                .join(Repo, Project.repo_id == Repo.id),
+                .join(Repo, Project.repo_id == Repo.id)
+                .where(TestScoreHistory.day > cutoff),
                 scope,
             )
         )
-    ).scalar_one()
+    ).one()
     rows = await db.execute(
         _scoped(
             select(TestCase.failure_category, func.count(TestCase.id))
@@ -434,8 +449,9 @@ async def summary(db: AsyncSession, scope: Scope, *, threshold: float) -> schema
         suspect_tests=suspect,
         confirmed_flaky_tests=confirmed,
         new_flaky_7d=new_flaky,
-        total_runs=runs,
-        total_executions=executions,
+        total_runs=total_runs,
+        executions_30d=executions_30d,
+        failures_30d=failures_30d,
         flake_threshold=threshold,
         category_counts=category_counts,
     )
@@ -771,28 +787,30 @@ async def list_jobs(
 
 
 async def job_summary(db: AsyncSession, repo: str | None, *, threshold: float) -> schemas.JobSummaryOut:
-    def jobs_count(*conditions) -> Select:
+    def jobs_count(*aggregates) -> Select:
         stmt = (
-            select(func.count(Job.id))
-            .join(Pipeline, Job.pipeline_id == Pipeline.id)
-            .join(Repo, Pipeline.repo_id == Repo.id)
-            .where(*conditions)
+            select(*aggregates).join(Pipeline, Job.pipeline_id == Pipeline.id).join(Repo, Pipeline.repo_id == Repo.id)
         )
         if repo is not None:
             stmt = stmt.where(Repo.name == repo)
         return stmt
 
-    total, flaky, suspect, confirmed, new_flaky = await _tile_counts(db, JOB, jobs_count, threshold=threshold)
+    total, flaky, suspect, confirmed, new_flaky, _ = await _tile_counts(db, JOB, jobs_count, threshold=threshold)
 
-    exec_stmt = (
-        select(func.count(JobExecution.id))
-        .join(Job, JobExecution.job_id == Job.id)
+    cutoff = utcnow().date() - timedelta(days=SUMMARY_WINDOW_DAYS)
+    sums_stmt = (
+        select(
+            func.coalesce(func.sum(JobScoreHistory.executions), 0),
+            func.coalesce(func.sum(JobScoreHistory.failures), 0),
+        )
+        .join(Job, JobScoreHistory.job_id == Job.id)
         .join(Pipeline, Job.pipeline_id == Pipeline.id)
         .join(Repo, Pipeline.repo_id == Repo.id)
+        .where(JobScoreHistory.day > cutoff)
     )
     if repo is not None:
-        exec_stmt = exec_stmt.where(Repo.name == repo)
-    total_exec = (await db.execute(exec_stmt)).scalar_one()
+        sums_stmt = sums_stmt.where(Repo.name == repo)
+    executions_30d, failures_30d = (await db.execute(sums_stmt)).one()
 
     pipe_stmt = select(Pipeline.name).join(Repo, Pipeline.repo_id == Repo.id)
     if repo is not None:
@@ -805,7 +823,8 @@ async def job_summary(db: AsyncSession, repo: str | None, *, threshold: float) -
         suspect_jobs=suspect,
         confirmed_flaky_jobs=confirmed,
         new_flaky_7d=new_flaky,
-        total_job_executions=total_exec,
+        job_executions_30d=executions_30d,
+        job_failures_30d=failures_30d,
         flake_threshold=threshold,
         pipelines=pipelines,
     )
