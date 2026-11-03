@@ -11,6 +11,7 @@ const LG_COLS: Record<number, string> = {
   5: "lg:grid-cols-5",
   6: "lg:grid-cols-6",
   7: "lg:grid-cols-7",
+  8: "lg:grid-cols-8",
 };
 
 /** One strip of statistics split by hairlines (gap-px over the line color), not separate cards. */
@@ -59,7 +60,8 @@ export function StatTiles({ summary }: { summary: Summary }) {
           alert: summary.new_flaky_7d > 0,
         },
         { label: "CI runs ingested", value: summary.total_runs },
-        { label: "Executions recorded", value: summary.total_executions },
+        { label: "Executions (30 days)", value: summary.executions_30d },
+        { label: "Failures (30 days)", value: summary.failures_30d },
       ]}
     />
   );

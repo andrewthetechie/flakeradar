@@ -22,7 +22,8 @@ export function JobStatTiles({ summary }: { summary: JobSummary }) {
           value: summary.new_flaky_7d,
           alert: summary.new_flaky_7d > 0,
         },
-        { label: "Job executions recorded", value: summary.total_job_executions },
+        { label: "Job executions (30 days)", value: summary.job_executions_30d },
+        { label: "Job failures (30 days)", value: summary.job_failures_30d },
       ]}
     />
   );

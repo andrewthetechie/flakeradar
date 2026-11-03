@@ -112,7 +112,9 @@ export interface Summary {
   /** Tests that became flaky in the last 7 days. */
   new_flaky_7d: number;
   total_runs: number;
-  total_executions: number;
+  /** Executions and failures summed from score history over the last 30 days. */
+  executions_30d: number;
+  failures_30d: number;
   flake_threshold: number;
   category_counts: Record<FailureCategory, number>;
 }
@@ -251,7 +253,9 @@ export interface JobSummary {
   confirmed_flaky_jobs: number;
   /** Jobs that became flaky in the last 7 days. */
   new_flaky_7d: number;
-  total_job_executions: number;
+  /** Executions and failures summed from job score history over the last 30 days. */
+  job_executions_30d: number;
+  job_failures_30d: number;
   flake_threshold: number;
   /** Distinct Pipeline names of the scope, sorted; feeds the Jobs filter. */
   pipelines: string[];
