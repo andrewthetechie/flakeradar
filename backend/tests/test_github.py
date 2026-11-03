@@ -451,9 +451,7 @@ async def test_unusable_status_is_logged_and_the_batch_goes_on_for_tests_and_job
         return httpx.Response(201, json={"number": 77})
 
     with caplog.at_level(logging.WARNING, logger="flakeradar.github"):
-        await github_integration.file_job_issues_for(
-            db, [j1.id, j2.id], transport=httpx.MockTransport(job_handler)
-        )
+        await github_integration.file_job_issues_for(db, [j1.id, j2.id], transport=httpx.MockTransport(job_handler))
     # j2 is tried despite j1's 500: two POSTs to the very same Repo.
     assert [r.url.path for r in job_calls] == ["/repos/acme/a/issues", "/repos/acme/a/issues"]
     await db.refresh(j1)
