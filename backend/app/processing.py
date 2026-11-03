@@ -62,12 +62,15 @@ def _parse_and_classify(body: bytes, line_base: int = 1) -> list[tuple[ParsedCas
 @dataclass(frozen=True)
 class ProcessOutcome:
     report_id: int
-    status: str  # REPORT_PROCESSED | REPORT_FAILED
+    status: str  # REPORT_PROCESSED | REPORT_FAILED | REPORT_PENDING
     run_id: int | None
     counts: dict[str, int] | None
     touched_test_ids: list[int]
     error: str | None
     touched_job_ids: list[int] = field(default_factory=list)
+    # Retries already spent on this Report: the worker backs off before the next
+    # claim, so it needs the value the requeue just bumped.
+    retry_count: int = 0
 
 
 async def claim_next_report(db: AsyncSession) -> Report | None:
@@ -603,6 +606,7 @@ async def process_next(
                     counts=None,
                     touched_test_ids=[],
                     error=error,
+                    retry_count=report.retry_count,
                 )
             logger.exception("Report %s failed to process", report.id)
             report_intake.fail_report(report, now=utcnow(), error=error)

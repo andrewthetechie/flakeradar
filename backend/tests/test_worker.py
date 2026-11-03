@@ -6,6 +6,7 @@ import logging
 import pytest
 from app.db import WORKER_LOCK_KEY
 from app.models import Report
+from app.processing import ProcessOutcome
 from app.worker import GitHubWorker, ReportWorker
 from sqlalchemy import select, text
 from sqlalchemy.exc import DBAPIError
@@ -22,7 +23,9 @@ async def _wait_for(predicate, timeout: float = 10.0) -> None:
 
 
 def _worker(engine, session_factory, **kw) -> ReportWorker:
-    return ReportWorker(engine, session_factory, poll_seconds=0.05, standby_seconds=0.1, **kw)
+    kw.setdefault("poll_seconds", 0.05)
+    kw.setdefault("standby_seconds", 0.1)
+    return ReportWorker(engine, session_factory, **kw)
 
 
 async def _is_processed(session_factory, report_id: int) -> bool:
@@ -251,3 +254,50 @@ async def test_loop_error_drops_leadership_and_retries(engine, session_factory, 
     assert [r.getMessage() for r in caplog.records if "Report worker error" in r.getMessage()] == [
         "Report worker error; dropping leadership and retrying"
     ]
+
+
+async def test_transient_retries_back_off_before_the_next_claim(engine, session_factory, monkeypatch):
+    """A pending outcome makes the worker wait poll_seconds * 2 ** retry_count, capped at 30 s."""
+    # Each fake outcome is a transient failure that re-queued the Report; the
+    # 99 exceeds the retry cap to show the wait is bounded.
+    retry_counts = [1, 2, 3, 99]
+    claims: list[int] = []
+
+    async def retrying_process_next(session_factory_):
+        claims.append(len(claims))
+        if not retry_counts:
+            return None
+        return ProcessOutcome(
+            report_id=1,
+            status="pending",
+            run_id=None,
+            counts=None,
+            touched_test_ids=[],
+            error="OperationalError: db blip",
+            retry_count=retry_counts.pop(0),
+        )
+
+    real_sleep = asyncio.sleep
+    delays: list[float] = []
+
+    async def fake_sleep(delay, *args):
+        delays.append(delay)
+        await real_sleep(min(delay, 0.01))
+
+    monkeypatch.setattr("app.worker.process_next", retrying_process_next)
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+    # standby_seconds is far above the cap so only backoff and poll sleeps appear
+    worker = _worker(engine, session_factory, standby_seconds=3600.0)
+
+    async def claimed_enough() -> bool:
+        return len(claims) >= 5
+
+    await worker.start()
+    try:
+        await _wait_for(claimed_enough)
+    finally:
+        await worker.stop()
+
+    # poll sleeps (exactly 0.05) and the standby sleep are filtered out
+    assert [d for d in delays if 0.05 < d <= 30] == [0.1, 0.2, 0.4, 30]
