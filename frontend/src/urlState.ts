@@ -64,43 +64,168 @@ function positiveInt(raw: string | null): number | null {
   return n >= 1 ? n : null;
 }
 
+/** One URL-backed leaderboard list filter, declared once. `parseViewState` and
+ *  `serializeViewState` derive from this table (and `applyPatch`'s page-reset
+ *  rule), so adding the next filter is one entry here plus its control. */
+export interface ListFilterDescriptor<F extends keyof ViewState = keyof ViewState> {
+  /** Query-string parameter name ("stable" backs showStable, "new" backs newDays). */
+  param: string;
+  /** The ViewState field the param backs; a typo here fails `npm run typecheck`. */
+  field: F;
+  /** Read the raw param (or null) into the field's value, defaulting exactly as today. */
+  parse(raw: string | null): ViewState[F];
+  /** Append the param to the query string exactly when today's code would. */
+  serialize(params: URLSearchParams, value: ViewState[F]): void;
+  /** Changing this filter relists the leaderboard and resets the page.
+   *  `applyPatch` resets the page when a filter with this flag changes. */
+  relists: boolean;
+}
+
+/** Identity helper so each entry's parse/serialize is checked against its own
+ *  field's value type rather than the union over every ViewState field. */
+const listFilter = <F extends keyof ViewState>(
+  d: ListFilterDescriptor<F>,
+): ListFilterDescriptor<F> => d;
+
+/** The parse/serialize idioms several entries share, each written once and
+ *  closed over its param name by the entries that spread it. Spreading keeps
+ *  the per-field typecheck: an idiom whose value shape does not match the
+ *  entry's field fails to compile, exactly as a hand-written body would. */
+
+/** `?param=name`: an optional string — null when the param is absent or empty,
+ *  serialized only when set. */
+const optionalString = (param: string) => ({
+  parse: (raw: string | null): string | null => raw || null,
+  serialize: (p: URLSearchParams, v: string | null): void => {
+    if (v) p.set(param, v);
+  },
+});
+
+/** `?param=1`: a boolean flag — true only when the param is exactly "1",
+ *  serialized only when true. */
+const flag = (param: string) => ({
+  parse: (raw: string | null): boolean => raw === "1",
+  serialize: (p: URLSearchParams, v: boolean): void => {
+    if (v) p.set(param, "1");
+  },
+});
+
+/** `raw` itself when it is one of `values`, else null. */
+const oneOf = <V extends string>(values: readonly V[], raw: string | null): V | null =>
+  raw != null && values.includes(raw as V) ? (raw as V) : null;
+
+/** `?param=one-of-values`: an enum filter — null unless the param is one of the
+ *  allowed values, serialized only when set. (`sort` shares only the `oneOf`
+ *  check: it defaults to "score" rather than null, so it keeps its own rules.) */
+const enumFilter = <V extends string>(param: string, values: readonly V[]) => ({
+  parse: (raw: string | null): V | null => oneOf(values, raw),
+  serialize: (p: URLSearchParams, v: V | null): void => {
+    if (v) p.set(param, v);
+  },
+});
+
+/** Emission order (pinned by tests): repo, project, q | sort, stable, cause,
+ *  quarantined, issue, pipeline, new. The hand-written params (view, ci_run,
+ *  attempt, test, job, page) are emitted between q and sort: serializeViewState
+ *  splits the table at the sort descriptor. */
+export const LIST_FILTERS: ListFilterDescriptor[] = [
+  listFilter({ param: "repo", field: "repo", relists: true, ...optionalString("repo") }),
+  listFilter({
+    // Serialize emits this only under a repo; see serializeViewState.
+    param: "project",
+    field: "project",
+    relists: true,
+    ...optionalString("project"),
+  }),
+  listFilter({
+    param: "q",
+    field: "q",
+    relists: true,
+    parse: (raw) => raw ?? "",
+    serialize: (p, v) => {
+      if (v) p.set("q", v);
+    },
+  }),
+  listFilter({
+    param: "sort",
+    field: "sort",
+    relists: true,
+    parse: (raw) => oneOf(SORTS, raw) ?? "score",
+    serialize: (p, v) => {
+      if (v !== "score") p.set("sort", v);
+    },
+  }),
+  listFilter({ param: "stable", field: "showStable", relists: true, ...flag("stable") }),
+  listFilter({
+    param: "cause",
+    field: "cause",
+    relists: true,
+    ...enumFilter("cause", FAILURE_CATEGORIES),
+  }),
+  // Unscoped by view, like cause: these params survive a view switch.
+  listFilter({
+    param: "quarantined",
+    field: "quarantined",
+    relists: true,
+    ...flag("quarantined"),
+  }),
+  listFilter({
+    param: "issue",
+    field: "issue",
+    relists: true,
+    ...enumFilter("issue", ISSUE_FILTERS),
+  }),
+  listFilter({
+    param: "pipeline",
+    field: "pipeline",
+    relists: true,
+    ...optionalString("pipeline"),
+  }),
+  listFilter({
+    param: "new",
+    field: "newDays",
+    relists: true,
+    parse: (raw) => positiveInt(raw),
+    serialize: (p, v) => {
+      if (v != null) p.set("new", String(v));
+    },
+  }),
+];
+
 export function parseViewState(search: string): ViewState {
   const p = new URLSearchParams(search);
-  const repo = p.get("repo") || null;
-  const sort = p.get("sort");
-  const cause = p.get("cause");
-  const issue = p.get("issue");
-  return {
-    repo,
-    project: repo ? p.get("project") || null : null,
-    test: positiveInt(p.get("test")),
-    job: positiveInt(p.get("job")),
-    page: positiveInt(p.get("page")) ?? 1,
-    sort: SORTS.includes(sort as SortKey) ? (sort as SortKey) : "score",
-    showStable: p.get("stable") === "1",
-    cause:
-      cause && FAILURE_CATEGORIES.includes(cause as FailureCategory)
-        ? (cause as FailureCategory)
-        : null,
-    quarantined: p.get("quarantined") === "1",
-    issue: ISSUE_FILTERS.includes(issue as IssueFilter) ? (issue as IssueFilter) : null,
-    pipeline: p.get("pipeline") || null,
-    newDays: positiveInt(p.get("new")),
-    view: p.get("view") === "jobs" ? "jobs" : p.get("view") === "ci-run" ? "ci-run" : "tests",
-    ci_run: p.get("ci_run") || null,
-    attempt: positiveInt(p.get("attempt")),
-    q: p.get("q") ?? "",
-  };
+  const out: ViewState = { ...DEFAULT_VIEW };
+  // One cast for the whole table: TypeScript cannot narrow a union-keyed index
+  // write (`out[d.field]`) to the matching value type, so the write goes through
+  // the widened record view of ViewState. `field` is still checked against
+  // keyof ViewState, so a typo fails the typecheck.
+  const widen: Record<keyof ViewState, unknown> = out;
+  for (const d of LIST_FILTERS) widen[d.field] = d.parse(p.get(d.param));
+  out.test = positiveInt(p.get("test"));
+  out.job = positiveInt(p.get("job"));
+  out.page = positiveInt(p.get("page")) ?? 1;
+  out.view = p.get("view") === "jobs" ? "jobs" : p.get("view") === "ci-run" ? "ci-run" : "tests";
+  out.ci_run = p.get("ci_run") || null;
+  out.attempt = positiveInt(p.get("attempt"));
+  // Cross-field rule (kept explicit per the issue): a project without a repo is dropped.
+  if (!out.repo) out.project = null;
+  return out;
 }
 
 /** "?repo=…" (defaults omitted), or "" for the default view. */
 export function serializeViewState(s: ViewState): string {
   const p = new URLSearchParams();
-  if (s.repo) {
-    p.set("repo", s.repo);
-    if (s.project) p.set("project", s.project);
+  // Pinned emission order: repo, project, q, then the hand-written params, then
+  // sort..new. The split is anchored to the sort descriptor rather than a bare
+  // index, so inserting or reordering entries before sort cannot silently move
+  // the hand-written block.
+  const HAND_WRITTEN_AT = LIST_FILTERS.findIndex((d) => d.param === "sort");
+  for (const d of LIST_FILTERS.slice(0, HAND_WRITTEN_AT)) {
+    // Cross-field rule (kept explicit per the issue): a project serializes only
+    // under its repo.
+    if (d.field === "project" && !s.repo) continue;
+    d.serialize(p, s[d.field]);
   }
-  if (s.q) p.set("q", s.q);
   if (s.view === "jobs") {
     p.set("view", "jobs");
   } else if (s.view === "ci-run") {
@@ -112,14 +237,7 @@ export function serializeViewState(s: ViewState): string {
   if (s.test != null) p.set("test", String(s.test));
   if (s.job != null) p.set("job", String(s.job));
   if (s.page !== 1) p.set("page", String(s.page));
-  if (s.sort !== "score") p.set("sort", s.sort);
-  if (s.showStable) p.set("stable", "1");
-  if (s.cause) p.set("cause", s.cause);
-  // Unscoped by view, like cause: the params survive a view switch.
-  if (s.quarantined) p.set("quarantined", "1");
-  if (s.issue) p.set("issue", s.issue);
-  if (s.pipeline) p.set("pipeline", s.pipeline);
-  if (s.newDays != null) p.set("new", String(s.newDays));
+  for (const d of LIST_FILTERS.slice(HAND_WRITTEN_AT)) d.serialize(p, s[d.field]);
   const q = p.toString();
   return q ? `?${q}` : "";
 }
@@ -149,20 +267,12 @@ export function applyPatch(prev: ViewState, patch: Partial<ViewState>): ViewStat
   if (patch.test != null) next.job = null;
   if (patch.job != null) next.test = null;
 
-  const relisted = (
-    [
-      "repo",
-      "project",
-      "sort",
-      "showStable",
-      "cause",
-      "quarantined",
-      "issue",
-      "pipeline",
-      "newDays",
-      "q",
-    ] as const
-  ).some((k) => k in patch && patch[k] !== prev[k]);
+  // A changed list filter relists the leaderboard, so the page resets to 1 —
+  // unless the patch brings its own page. Derived from LIST_FILTERS: a filter
+  // added to the table relists without any further edit here.
+  const relisted = LIST_FILTERS.some(
+    (d) => d.relists && d.field in patch && patch[d.field] !== prev[d.field],
+  );
   if (relisted && !("page" in patch)) next.page = 1;
   return next;
 }

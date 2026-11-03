@@ -739,4 +739,41 @@ describe("App", () => {
     expect(lists()).toBeGreaterThan(1);
     expect(screen.queryByRole("dialog", { name: /Quarantine login/ })).not.toBeInTheDocument();
   });
+
+  it("surfaces the error when un-quarantining fails", async () => {
+    const row: TestCase = {
+      ...page("login").items[0],
+      quarantined: true,
+      quarantined_at: "2026-09-25T00:00:00Z",
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        // Reject with a non-Error so the `String(e)` arm of the error handler runs.
+        if (url.includes("/quarantine")) return Promise.reject("backend down");
+        if (url.startsWith("/api/tests"))
+          return json({ items: [row], total: 1, page: 1, page_size: 50 });
+        if (url.startsWith("/api/repos")) return json([]);
+        if (url.startsWith("/api/reports/summary")) return json({ pending: 0, failed: 0 });
+        return json({
+          total_tests: 1,
+          flaky_tests: 1,
+          suspect_tests: 0,
+          confirmed_flaky_tests: 0,
+          total_runs: 1,
+          total_executions: 1,
+          flake_threshold: 0.3,
+          new_flaky_7d: 0,
+          category_counts: { network: 0, environment: 0, timing: 0, assertion: 0, other: 0 },
+        });
+      }),
+    );
+    render(<App />);
+    expect(await screen.findByText("login")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Un-quarantine" }));
+    await act(async () => {});
+
+    expect(screen.getByRole("alert")).toHaveTextContent("backend down");
+  });
 });
