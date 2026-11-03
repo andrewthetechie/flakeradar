@@ -244,8 +244,9 @@ export function serializeViewState(s: ViewState): string {
 
 /** Merge a change into the view. Changing what is listed resets to page 1;
  *  changing the repo also clears the project (names overlap across repos).
- *  Switching the view resets the page and closes any drawer; `test` and `job`
- *  are mutually exclusive (setting one clears the other). */
+ *  Switching the view resets the page and closes any drawer the patch does not
+ *  set itself; `test` and `job` are mutually exclusive (setting one clears the
+ *  other). */
 export function applyPatch(prev: ViewState, patch: Partial<ViewState>): ViewState {
   const next = { ...prev, ...patch };
   if ("repo" in patch && patch.repo !== prev.repo && !("project" in patch)) {
@@ -259,8 +260,10 @@ export function applyPatch(prev: ViewState, patch: Partial<ViewState>): ViewStat
 
   if ("view" in patch && patch.view !== prev.view) {
     if (!("page" in patch)) next.page = 1;
-    next.test = null;
-    next.job = null;
+    // Only clear a drawer the patch did not set: a view switch may carry the
+    // drawer id it should open (e.g. openJobFromTest sets view+job together).
+    if (!("test" in patch)) next.test = null;
+    if (!("job" in patch)) next.job = null;
     return next;
   }
 

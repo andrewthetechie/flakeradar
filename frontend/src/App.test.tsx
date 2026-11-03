@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { TestCase, TestPage } from "./api";
+import type { History, JobHistory, TestCase, TestPage } from "./api";
 import App from "./App";
 
 function page(name: string): TestPage {
@@ -34,6 +34,220 @@ function page(name: string): TestPage {
 }
 
 const json = (body: unknown) => Promise.resolve(new Response(JSON.stringify(body)));
+
+const testsSummary = {
+  total_tests: 1,
+  flaky_tests: 1,
+  suspect_tests: 0,
+  confirmed_flaky_tests: 0,
+  total_runs: 1,
+  total_executions: 1,
+  flake_threshold: 0.3,
+  new_flaky_7d: 0,
+  category_counts: { network: 0, environment: 0, timing: 0, assertion: 0, other: 0 },
+};
+
+/** Stub fetch by URL prefix, checked in order (put /history before its list), and record every URL. */
+function stubOrdered(
+  routes: Array<[prefix: string, reply: () => Response | Promise<Response>]>,
+): string[] {
+  const urls: string[] = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((url: string) => {
+      urls.push(url);
+      for (const [prefix, reply] of routes) if (url.startsWith(prefix)) return reply();
+      return json({});
+    }),
+  );
+  return urls;
+}
+
+/** A Test drawer's history for the requested test id (name "renders"), from TestDrawer.test.tsx. */
+function testHistory(id: number, overrides: Partial<History> = {}): History {
+  return {
+    test: {
+      id,
+      repo: "andrewthetechie/writers-app",
+      project: "frontend",
+      fingerprint: "f",
+      suite: "unit",
+      classname: "src/app.test.ts",
+      name: "renders",
+      file: "src/app.test.ts",
+      line: 12,
+      flakiness_score: 0.6,
+      tier: "flaky",
+      confirmed_flake_count: 1,
+      failure_category: "assertion",
+      clean_streak: 3,
+      trend: "steady",
+      last_status: "passed",
+      last_seen_at: "2026-09-25T00:00:00Z",
+      quarantined: false,
+      quarantined_at: null,
+      quarantine_reason: null,
+      quarantine_expires_at: null,
+      github_issue_number: null,
+      github_issue_url: null,
+    },
+    location: {
+      path: "frontend/src/app.test.ts",
+      line: 12,
+      url: "https://github.com/andrewthetechie/writers-app/blob/aaa111/frontend/src/app.test.ts#L12",
+    },
+    last_failing_sha: "aaa111",
+    last_failing_branch: "main",
+    jobs: [],
+    executions: [],
+    score_history: [],
+    ...overrides,
+  };
+}
+
+const jobPageFixture = {
+  items: [
+    {
+      id: 3,
+      repo: "x/y",
+      provider: "github",
+      pipeline: ".github/workflows/ci.yml",
+      name: "e2e",
+      flakiness_score: 0.31,
+      tier: "flaky",
+      confirmed_flake_count: 0,
+      clean_streak: 0,
+      trend: null,
+      last_status: "failed",
+      last_seen_at: "2026-09-25T00:00:00Z",
+      github_issue_number: null,
+      github_issue_url: null,
+    },
+  ],
+  total: 1,
+  page: 1,
+  page_size: 50,
+};
+
+const jobSummaryFixture = {
+  total_jobs: 1,
+  flaky_jobs: 1,
+  suspect_jobs: 0,
+  confirmed_flaky_jobs: 0,
+  total_job_executions: 1,
+  flake_threshold: 0.3,
+  new_flaky_7d: 0,
+  pipelines: [],
+};
+
+/** A Job drawer's history, from JobDrawer.test.tsx (its Job is id 3, explaining Test id 9). */
+function jobHistory(overrides: Partial<JobHistory> = {}): JobHistory {
+  return {
+    job: {
+      id: 3,
+      repo: "acme/app",
+      provider: "github",
+      pipeline: ".github/workflows/ci.yml",
+      name: "e2e (ubuntu-latest)",
+      flakiness_score: 0.31,
+      tier: "flaky",
+      confirmed_flake_count: 0,
+      clean_streak: 4,
+      trend: null,
+      last_status: "failed",
+      last_seen_at: "2026-09-25T00:00:00Z",
+      summary: false,
+      github_issue_number: null,
+      github_issue_url: null,
+    },
+    unexplained_failures: 1,
+    explained_failures: 1,
+    executions: [
+      {
+        id: 2,
+        status: "failed",
+        outcome: "explained",
+        commit_sha: "bbb222",
+        branch: "feat",
+        ci_run_id: "2",
+        ci_run_attempt: 1,
+        ci_job_id: "J2",
+        url: "https://github.com/acme/app/actions/runs/2/jobs/J2",
+        runner_name: "runner-1",
+        runner_labels: ["ubuntu-latest", "self-hosted"],
+        started_at: "2026-09-25T00:00:00Z",
+        completed_at: "2026-09-25T00:01:00Z",
+        created_at: "2026-09-25T00:01:00Z",
+        explained_by: [
+          {
+            test_id: 9,
+            project: "backend",
+            classname: "tests",
+            name: "test_login",
+            status: "failed",
+          },
+        ],
+        explained_by_jobs: [],
+      },
+    ],
+    score_history: [],
+    runners: [],
+    ...overrides,
+  };
+}
+
+/** A complete CI run answer, from CiRunView.test.tsx (failure test_id 1, failed job 5). */
+function ciRunBody(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    repo: "a/b",
+    ci_run_id: "99",
+    ci_run_attempt: 2,
+    flake_threshold: 0.3,
+    reports: { pending: 0, processed: 2, failed: 0 },
+    total_failures: 1,
+    truncated: false,
+    failures: [
+      {
+        test_id: 1,
+        project: "backend",
+        suite: "",
+        classname: "tests.test_login",
+        name: "test_login",
+        run_id: 11,
+        ci_job_id: "9.1",
+        status: "failed",
+        failed_attempts: 1,
+        failure_category: "network",
+        message: "Connection refused",
+        tier: "flaky",
+        flakiness_score: 0.6,
+        confirmed_flake_count: 2,
+        clean_streak: 0,
+        quarantined: false,
+        github_issue_number: null,
+        github_issue_url: null,
+      },
+    ],
+    failed_jobs: [
+      {
+        job_id: 5,
+        pipeline: ".github/workflows/ci.yml",
+        name: "test (ubuntu)",
+        ci_job_id: "9.1",
+        url: "https://github.com/a/b/actions/runs/99/job/5",
+        outcome: "unexplained",
+        summary: false,
+        tier: "suspect",
+        flakiness_score: 0.4,
+        confirmed_flake_count: 1,
+        clean_streak: 0,
+        github_issue_number: null,
+        github_issue_url: null,
+      },
+    ],
+    ...overrides,
+  };
+}
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -775,5 +989,330 @@ describe("App", () => {
     await act(async () => {});
 
     expect(screen.getByRole("alert")).toHaveTextContent("backend down");
+  });
+
+  // ---- Navigation wiring (issue #80): drawers, views, sort, filters, paging ----
+
+  it("opens a Test drawer from a leaderboard row and loads its history", async () => {
+    const urls = stubOrdered([
+      ["/api/tests/5/history", () => json(testHistory(5))],
+      ["/api/tests", () => json(page("login"))],
+      ["/api/repos", () => json([])],
+      ["/api/reports/summary", () => json({ pending: 0, failed: 0 })],
+      ["/api/summary", () => json(testsSummary)],
+    ]);
+    render(<App />);
+    await userEvent.click(await screen.findByText("login"));
+    await act(async () => {});
+
+    expect(window.location.search).toBe("?test=5");
+    expect(urls).toContain("/api/tests/5/history?limit=60");
+    const dialog = await screen.findByRole("dialog", { name: "Test detail" });
+    // The drawer's history fetch populates the name, so poll for it.
+    expect(await within(dialog).findByText("renders")).toBeInTheDocument();
+  });
+
+  it("closes the Test drawer on Escape, clearing its id from the URL", async () => {
+    stubOrdered([
+      ["/api/tests/5/history", () => json(testHistory(5))],
+      ["/api/tests", () => json(page("login"))],
+      ["/api/repos", () => json([])],
+      ["/api/reports/summary", () => json({ pending: 0, failed: 0 })],
+      ["/api/summary", () => json(testsSummary)],
+    ]);
+    render(<App />);
+    await userEvent.click(await screen.findByText("login"));
+    await act(async () => {});
+    expect(screen.getByRole("dialog", { name: "Test detail" })).toBeInTheDocument();
+
+    fireEvent.keyDown(window, { key: "Escape" });
+    await act(async () => {});
+    expect(window.location.search).toBe("");
+    expect(screen.queryByRole("dialog", { name: "Test detail" })).not.toBeInTheDocument();
+  });
+
+  it("opens a Job drawer from a Jobs leaderboard row and loads its history", async () => {
+    const urls = stubOrdered([
+      ["/api/jobs/3/history", () => json(jobHistory())],
+      ["/api/jobs/summary", () => json(jobSummaryFixture)],
+      ["/api/jobs", () => json(jobPageFixture)],
+      ["/api/repos", () => json([])],
+      ["/api/reports/summary", () => json({ pending: 0, failed: 0 })],
+    ]);
+    window.history.replaceState(null, "", "/?view=jobs");
+    render(<App />);
+    await userEvent.click(await screen.findByText("e2e"));
+    await act(async () => {});
+
+    expect(window.location.search).toBe("?view=jobs&job=3");
+    expect(urls).toContain("/api/jobs/3/history?limit=60");
+    expect(await screen.findByRole("dialog", { name: "Job detail" })).toBeInTheDocument();
+  });
+
+  it("closes the Job drawer on Escape, clearing its id from the URL", async () => {
+    stubOrdered([
+      ["/api/jobs/3/history", () => json(jobHistory())],
+      ["/api/jobs/summary", () => json(jobSummaryFixture)],
+      ["/api/jobs", () => json(jobPageFixture)],
+      ["/api/repos", () => json([])],
+      ["/api/reports/summary", () => json({ pending: 0, failed: 0 })],
+    ]);
+    window.history.replaceState(null, "", "/?view=jobs&job=3");
+    render(<App />);
+    expect(await screen.findByRole("dialog", { name: "Job detail" })).toBeInTheDocument();
+
+    fireEvent.keyDown(window, { key: "Escape" });
+    await act(async () => {});
+    expect(window.location.search).toBe("?view=jobs");
+    expect(screen.queryByRole("dialog", { name: "Job detail" })).not.toBeInTheDocument();
+  });
+
+  it("opens a Job drawer from a Test drawer's Seen in Jobs button", async () => {
+    const urls = stubOrdered([
+      [
+        "/api/tests/5/history",
+        () =>
+          json(
+            testHistory(5, {
+              jobs: [{ job_id: 3, pipeline: ".github/workflows/ci.yml", name: "e2e" }],
+            }),
+          ),
+      ],
+      ["/api/jobs/3/history", () => json(jobHistory())],
+      ["/api/jobs/summary", () => json(jobSummaryFixture)],
+      ["/api/jobs", () => json(jobPageFixture)],
+      ["/api/tests", () => json(page("login"))],
+      ["/api/repos", () => json([])],
+      ["/api/reports/summary", () => json({ pending: 0, failed: 0 })],
+      ["/api/summary", () => json(testsSummary)],
+    ]);
+    render(<App />);
+    await userEvent.click(await screen.findByText("login"));
+    await act(async () => {});
+    await userEvent.click(
+      await screen.findByRole("button", { name: ".github/workflows/ci.yml · e2e" }),
+    );
+    await act(async () => {});
+
+    expect(window.location.search).toBe("?view=jobs&job=3");
+    expect(urls).toContain("/api/jobs/3/history?limit=60");
+    expect(await screen.findByRole("dialog", { name: "Job detail" })).toBeInTheDocument();
+  });
+
+  it("opens a Test drawer from a Job drawer's explaining-test button", async () => {
+    const urls = stubOrdered([
+      ["/api/jobs/3/history", () => json(jobHistory())],
+      ["/api/tests/9/history", () => json(testHistory(9))],
+      ["/api/jobs/summary", () => json(jobSummaryFixture)],
+      ["/api/jobs", () => json(jobPageFixture)],
+      ["/api/tests", () => json(page("login"))],
+      ["/api/repos", () => json([])],
+      ["/api/reports/summary", () => json({ pending: 0, failed: 0 })],
+      ["/api/summary", () => json(testsSummary)],
+    ]);
+    window.history.replaceState(null, "", "/?view=jobs&job=3");
+    render(<App />);
+    expect(await screen.findByRole("dialog", { name: "Job detail" })).toBeInTheDocument();
+    await userEvent.click(
+      await screen.findByRole("button", { name: "backend · test_login (failed)" }),
+    );
+    await act(async () => {});
+
+    expect(window.location.search).toBe("?test=9");
+    expect(urls).toContain("/api/tests/9/history?limit=60");
+    expect(await screen.findByRole("dialog", { name: "Test detail" })).toBeInTheDocument();
+  });
+
+  it("opens a sibling Job from a summary Job drawer's badge", async () => {
+    const urls = stubOrdered([
+      [
+        "/api/jobs/3/history",
+        () =>
+          json(
+            jobHistory({
+              job: { ...jobHistory().job, summary: true, name: "alls-green" },
+              executions: [
+                {
+                  ...jobHistory().executions[0],
+                  explained_by: [],
+                  explained_by_jobs: [
+                    {
+                      job_id: 4,
+                      pipeline: ".github/workflows/ci.yml",
+                      name: "test (ubuntu)",
+                      url: "https://github.com/acme/app/actions/runs/1/jobs/2",
+                    },
+                  ],
+                },
+              ],
+            }),
+          ),
+      ],
+      ["/api/jobs/4/history", () => json(jobHistory())],
+      ["/api/jobs/summary", () => json(jobSummaryFixture)],
+      ["/api/jobs", () => json(jobPageFixture)],
+      ["/api/repos", () => json([])],
+      ["/api/reports/summary", () => json({ pending: 0, failed: 0 })],
+    ]);
+    window.history.replaceState(null, "", "/?view=jobs&job=3");
+    render(<App />);
+    expect(await screen.findByRole("dialog", { name: "Job detail" })).toBeInTheDocument();
+    await userEvent.click(
+      await screen.findByRole("button", { name: ".github/workflows/ci.yml · test (ubuntu)" }),
+    );
+    await act(async () => {});
+
+    expect(window.location.search).toBe("?view=jobs&job=4");
+    expect(urls).toContain("/api/jobs/4/history?limit=60");
+  });
+
+  it("writes the selected repo to the URL and the next request", async () => {
+    const urls = stubOrdered([
+      ["/api/tests", () => json(page("login"))],
+      ["/api/repos", () => json([{ name: "a/b", projects: [{ name: "backend", root: "" }] }])],
+      ["/api/reports/summary", () => json({ pending: 0, failed: 0 })],
+      ["/api/summary", () => json(testsSummary)],
+    ]);
+    render(<App />);
+    await act(async () => {});
+
+    await userEvent.selectOptions(screen.getByLabelText("Repo"), "a/b");
+    await act(async () => {});
+    expect(window.location.search).toBe("?repo=a%2Fb");
+    const last = urls.filter((u) => u.startsWith("/api/tests")).at(-1) ?? "";
+    expect(new URL(last, "http://localhost").searchParams.get("repo")).toBe("a/b");
+  });
+
+  it("wires sort, show-stable and cause to the URL and the request", async () => {
+    const urls = stubOrdered([
+      ["/api/tests", () => json(page("login"))],
+      ["/api/repos", () => json([])],
+      ["/api/reports/summary", () => json({ pending: 0, failed: 0 })],
+      ["/api/summary", () => json(testsSummary)],
+    ]);
+    render(<App />);
+    await act(async () => {});
+    const last = (prefix: string) => urls.filter((u) => u.startsWith(prefix)).at(-1) ?? "";
+    const param = (url: string, name: string) =>
+      new URL(url, "http://localhost").searchParams.get(name);
+
+    await userEvent.selectOptions(screen.getByLabelText("Sort by"), "proven");
+    await act(async () => {});
+    expect(param(last("/api/tests"), "sort")).toBe("proven");
+    expect(window.location.search).toBe("?sort=proven");
+
+    await userEvent.click(screen.getByRole("checkbox", { name: "Show stable tests" }));
+    await act(async () => {});
+    expect(param(last("/api/tests"), "include_stable")).toBe("true");
+    expect(window.location.search).toBe("?sort=proven&stable=1");
+
+    await userEvent.selectOptions(screen.getByLabelText("Likely cause"), "timing");
+    await act(async () => {});
+    expect(param(last("/api/tests"), "category")).toBe("timing");
+    expect(window.location.search).toBe("?sort=proven&stable=1&cause=timing");
+  });
+
+  it("paginates, writing the page to the URL and the request", async () => {
+    const urls = stubOrdered([
+      [
+        "/api/tests",
+        () => json({ items: [page("login").items[0]], total: 120, page: 1, page_size: 50 }),
+      ],
+      ["/api/repos", () => json([])],
+      ["/api/reports/summary", () => json({ pending: 0, failed: 0 })],
+      ["/api/summary", () => json(testsSummary)],
+    ]);
+    render(<App />);
+    await act(async () => {});
+
+    await userEvent.click(screen.getByRole("button", { name: /Next/ }));
+    await act(async () => {});
+    expect(window.location.search).toBe("?page=2");
+    const last = urls.filter((u) => u.startsWith("/api/tests")).at(-1) ?? "";
+    expect(new URL(last, "http://localhost").searchParams.get("page")).toBe("2");
+  });
+
+  it("writes the picked CI run attempt to the URL", async () => {
+    stubOrdered([
+      ["/api/ci-runs/", () => json(ciRunBody())],
+      ["/api/repos", () => json([])],
+      ["/api/reports/summary", () => json({ pending: 0, failed: 0 })],
+    ]);
+    window.history.replaceState(null, "", "/?view=ci-run&repo=a%2Fb&ci_run=99");
+    render(<App />);
+    expect(await screen.findByRole("button", { name: "test_login" })).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Attempt"), { target: { value: "3" } });
+    await act(async () => {});
+    expect(window.location.search).toBe("?repo=a%2Fb&view=ci-run&ci_run=99&attempt=3");
+  });
+
+  it("opens the Test drawer from a CI run failure row", async () => {
+    const urls = stubOrdered([
+      ["/api/ci-runs/", () => json(ciRunBody())],
+      ["/api/tests/1/history", () => json(testHistory(1))],
+      ["/api/tests", () => json(page("login"))],
+      ["/api/repos", () => json([])],
+      ["/api/reports/summary", () => json({ pending: 0, failed: 0 })],
+      ["/api/summary", () => json(testsSummary)],
+    ]);
+    window.history.replaceState(null, "", "/?view=ci-run&repo=a%2Fb&ci_run=99");
+    render(<App />);
+    await userEvent.click(await screen.findByRole("button", { name: "test_login" }));
+    await act(async () => {});
+
+    expect(window.location.search).toBe("?repo=a%2Fb&test=1");
+    expect(urls).toContain("/api/tests/1/history?limit=60");
+    expect(await screen.findByRole("dialog", { name: "Test detail" })).toBeInTheDocument();
+  });
+
+  it("opens the Job drawer from a CI run failed-job row", async () => {
+    const urls = stubOrdered([
+      ["/api/ci-runs/", () => json(ciRunBody())],
+      ["/api/jobs/5/history", () => json(jobHistory())],
+      ["/api/jobs/summary", () => json(jobSummaryFixture)],
+      ["/api/jobs", () => json(jobPageFixture)],
+      ["/api/repos", () => json([])],
+      ["/api/reports/summary", () => json({ pending: 0, failed: 0 })],
+    ]);
+    window.history.replaceState(null, "", "/?view=ci-run&repo=a%2Fb&ci_run=99");
+    render(<App />);
+    await userEvent.click(await screen.findByRole("button", { name: /test \(ubuntu\)/ }));
+    await act(async () => {});
+
+    expect(window.location.search).toBe("?repo=a%2Fb&view=jobs&job=5");
+    expect(urls).toContain("/api/jobs/5/history?limit=60");
+    expect(await screen.findByRole("dialog", { name: "Job detail" })).toBeInTheDocument();
+  });
+
+  it("does not post anything when the Quarantine dialog is cancelled", async () => {
+    const { posts } = stubTests(false);
+    render(<App />);
+    expect(await screen.findByText("login")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Quarantine" }));
+    const dialog = await screen.findByRole("dialog", { name: /Quarantine login/ });
+    await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await act(async () => {});
+
+    expect(posts()).toHaveLength(0);
+    expect(screen.queryByRole("dialog", { name: /Quarantine login/ })).not.toBeInTheDocument();
+  });
+
+  it("submitting an empty CI run form changes nothing in the URL", async () => {
+    stubOrdered([
+      ["/api/repos", () => json([{ name: "a/b", projects: [{ name: "backend", root: "" }] }])],
+      ["/api/tests", () => json(page("login"))],
+      ["/api/reports/summary", () => json({ pending: 0, failed: 0 })],
+      ["/api/summary", () => json(testsSummary)],
+    ]);
+    window.history.replaceState(null, "", "/?repo=a%2Fb");
+    render(<App />);
+
+    const input = await screen.findByLabelText("Open CI run");
+    fireEvent.change(input, { target: { value: "   " } });
+    fireEvent.submit(input.closest("form")!);
+    await act(async () => {});
+    expect(window.location.search).toBe("?repo=a%2Fb");
   });
 });

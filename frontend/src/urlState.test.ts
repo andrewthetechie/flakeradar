@@ -234,6 +234,29 @@ describe("applyPatch", () => {
     expect(fromJob).toMatchObject({ view: "tests", page: 2, test: null, job: null });
   });
 
+  // A view switch may carry the drawer it should open: the same patch sets the
+  // new view and the id, so the switch must not clear what it just set.
+  // (openJobFromTest sets view+jobs.job; openTestFromJob sets view+test.)
+  it("a view switch that carries a job keeps it and clears test", () => {
+    const fromTest = applyPatch({ ...base, test: 5 }, { view: "jobs", job: 3 });
+    expect(fromTest).toMatchObject({ view: "jobs", job: 3, test: null, page: 1 });
+  });
+
+  it("a view switch that carries a test keeps it and clears job", () => {
+    const fromJob = applyPatch(
+      { ...DEFAULT_VIEW, view: "jobs", job: 3 },
+      { view: "tests", test: 9 },
+    );
+    expect(fromJob).toMatchObject({ view: "tests", test: 9, job: null });
+  });
+
+  it("a view switch without test or job still clears both", () => {
+    const switched = applyPatch({ ...DEFAULT_VIEW, view: "jobs", job: 9 }, { view: "tests" });
+    expect(switched).toMatchObject({ view: "tests", test: null, job: null });
+    const up = applyPatch({ ...base, test: 5 }, { view: "jobs" });
+    expect(up).toMatchObject({ view: "jobs", test: null, job: null });
+  });
+
   it("test and job are mutually exclusive", () => {
     const withJob = applyPatch({ ...base, test: 7 }, { job: 5 });
     expect(withJob.job).toBe(5);
