@@ -1,6 +1,12 @@
 import type { Scope, TestCase } from "../api";
 import { breakable } from "../breakable";
-import { FlakinessCell, ProvenCell, BrokenPill, QuarantinedPill, StatusIssueCell } from "./resultCells";
+import {
+  FlakinessCell,
+  ProvenCell,
+  BrokenPill,
+  QuarantinedPill,
+  StatusIssueCell,
+} from "./resultCells";
 
 /** Where a row lives, shown only when the view spans more than that. */
 export function scopeLabel(t: TestCase, scope: Scope): string | null {
