@@ -47,9 +47,7 @@ async def test_get_db_yields_a_live_session(session_factory, monkeypatch):
     await gen.aclose()
 
 
-async def test_the_lifespan_warns_about_the_default_token_and_holds_the_worker_lock(
-    database_url, monkeypatch, caplog
-):
+async def test_the_lifespan_warns_about_the_default_token_and_holds_the_worker_lock(database_url, monkeypatch, caplog):
     """Boot with the shipped default token: the warning is logged, the Report
     processor takes its advisory lock, and both are gone again after exit."""
     # A new engine, never the session `engine` fixture: the lifespan disposes it on exit.
