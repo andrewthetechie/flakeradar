@@ -366,6 +366,53 @@ execution rows of the Test and Job drawers links to it too.
   deleted after `REPORT_RETENTION_DAYS`. After that, `reports` shows 0 but
   the failures stay until `EXECUTION_RETENTION_DAYS`.
 
+### The summary action (GitHub Actions)
+
+Add `andrewthetechie/flakeradar/actions/summary@<ref>` as a step after the
+reporter. It reads the same failures endpoint and writes, to the GitHub job
+summary, which of this job's failures FlakeRadar already knows as flaky. It is
+read-only and never fails the job.
+
+```yaml
+- name: Write the FlakeRadar CI run summary
+  if: always()
+  uses: andrewthetechie/flakeradar/actions/summary@<ref>
+  with:
+    url: ${{ secrets.FLAKERADAR_URL }}     # required
+    token: ${{ secrets.FLAKERADAR_TOKEN }} # required; any token the instance accepts
+    # Make sure only this job's failures are shown, not the whole run's.
+    ci_job_id: ${{ job.check_run_id }}
+    # repo, ci_run_id and ci_run_attempt default to the run's own values;
+    # pass them explicitly to override.
+    dashboard-url: ${{ secrets.FLAKERADAR_URL }} # optional: link each Test
+```
+
+| Input | Required | Meaning |
+|---|---|---|
+| `url` | yes | Your FlakeRadar base URL, for example `https://flakeradar.example.com`. |
+| `token` | yes | Your FlakeRadar API token (`FLAKERADAR_API_TOKEN`), sent as `X-API-Key`. The failures endpoint is read-only, so any token the instance accepts works. |
+| `repo` | no (the run's `GITHUB_REPOSITORY`) | The `owner/name` of the repository. |
+| `ci_run_id` | no (the run's `GITHUB_RUN_ID`) | The CI run id. |
+| `ci_run_attempt` | no (the run's `GITHUB_RUN_ATTEMPT`, else 1) | The CI run attempt. |
+| `ci_job_id` | no (all jobs' failures) | Only the failures this job produced. Pass `${{ job.check_run_id }}`. Each job of the run writes its own summary. |
+| `summary-timeout` | no (`60`) | Seconds to wait for this attempt's reports to finish processing (`reports.pending == 0`). |
+| `dashboard-url` | no | When set, each failing Test links to `?repo=...&test=<id>`. |
+| `summary-file` | no | Also append the same Markdown to this file path (used by the self-test to inspect the output). |
+
+The action polls `GET /api/ci-runs/{id}/failures?repo=...&ci_run_attempt=...`
+until `reports.pending` reaches 0, then keeps only the failures whose
+`ci_job_id` is this job's and writes a Markdown table: Test, status (showing
+`passed on retry` when it applies), tier and score, proven flakes,
+quarantined, and the GitHub issue link. Above the table it writes one line:
+`3 of 5 failures are known flaky tests`, where a failure is **known flaky**
+when the test passed on retry in this run, or is a flaky or broken test, or has
+proven flakes (it passed and failed on the same commit SHA). The headline
+count and the "Proven flakes" column therefore never disagree.
+
+If FlakeRadar cannot be reached, or the reports do not finish processing
+within `summary-timeout`, the action writes a single line that says so and
+still ends successfully.
+
 ## Repos and projects
 
 A **repo** is a repository (`owner/name`). A **project** is a test suite in a

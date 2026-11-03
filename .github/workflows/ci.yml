@@ -197,3 +197,84 @@ jobs:
             process.exit(1);
           }
           EOF
+
+  # Exercises the standalone summary action (issue #36) end to end: a real
+  # backend plus a fixture CI run (one known-flaky Test, one new failure), then
+  # asserts on the Markdown the action writes. The reporter (#35) is not in the
+  # tree yet, so this job seeds the /api/ci-runs/{id}/failures data directly
+  # through the models and runs the action against it.
+  summary-action:
+    name: Summary action (fixture)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: flakeradar
+          POSTGRES_PASSWORD: flakeradar
+          POSTGRES_DB: flakeradar
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U flakeradar"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      FLAKERADAR_DATABASE_URL: postgresql+asyncpg://flakeradar:flakeradar@localhost:5432/flakeradar
+      FLAKERADAR_ALLOW_INSECURE: "1"
+      FLAKERADAR_API_TOKEN: flakeradar-test-token
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install backend dependencies
+        run: pip install -r backend/requirements-dev.txt
+
+      - name: Start the backend (migrations run on startup)
+        run: |
+          cd backend
+          python -m alembic upgrade head
+          nohup python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 >/tmp/uvicorn.log 2>&1 &
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:8000/api/health >/dev/null 2>&1 && break
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:8000/api/health
+
+      - name: Seed the fixture (one known-flaky Test, one new failure)
+        run: python actions/summary/test/seed_fixture.py
+        env:
+          CI_RUN_ID: "12345"
+          CI_RUN_ATTEMPT: "1"
+          CI_JOB_ID: "999"
+
+      - name: Run the summary action against the fixture
+        uses: ./actions/summary
+        with:
+          url: http://127.0.0.1:8000
+          token: flakeradar-test-token
+          repo: andrewthetechie/flakeradar
+          ci_run_id: "12345"
+          ci_run_attempt: "1"
+          ci_job_id: "999"
+          summary-timeout: "30"
+          dashboard-url: https://flakeradar.example.com
+          # The action appends the same Markdown it writes to $GITHUB_STEP_SUMMARY
+          # here too, so the next step can assert on a stable path.
+          summary-file: ${{ github.workspace }}/summary.md
+
+      - name: Check the job summary content
+        run: |
+          # dashboard-url links each Test, so the names appear inside Markdown links.
+          grep -Fq "1 of 2 failures are known flaky tests" summary.md
+          grep -Fq "[test_known_flaky](https://flakeradar.example.com?repo=andrewthetechie%2Fflakeradar&test=" summary.md
+          grep -Fq "| flaky (0.9) | 3 | no |" summary.md
+          grep -Fq "[test_new_failure](https://flakeradar.example.com?repo=andrewthetechie%2Fflakeradar&test=" summary.md
+          grep -Fq "| stable (0) | 0 | no |" summary.md
+          echo "::notice::Summary action output verified: one known-flaky and one new failure rendered."
