@@ -255,3 +255,30 @@ async def test_ops_queries_never_touch_test_executions(client, db, engine):
     assert "test_executions" not in sql
     assert "test_runs" not in sql
     assert "job_executions" not in sql
+
+
+async def test_summary_queries_never_touch_executions(client, engine):
+    """The dashboard summaries read Score history, never the Execution tables (issue #24).
+
+    No seed data: the statements run whether or not any row matches, so the hook sees
+    exactly the SQL the endpoints issue on a 30 s refresh.
+    """
+    statements: list[str] = []
+
+    def _capture(_conn, _cursor, statement, _params, _context, _executemany):
+        statements.append(statement)
+
+    event.listen(engine.sync_engine, "before_cursor_execute", _capture)
+    try:
+        assert (await client.get("/api/summary")).status_code == 200
+        assert (await client.get("/api/jobs/summary")).status_code == 200
+    finally:
+        event.remove(engine.sync_engine, "before_cursor_execute", _capture)
+    assert statements
+    sql = " ".join(statements).lower()
+    # Sanity check: the capture really saw the summary queries themselves.
+    assert "test_score_history" in sql
+    assert "job_score_history" in sql
+    assert "test_runs" in sql
+    assert "test_executions" not in sql
+    assert "job_executions" not in sql

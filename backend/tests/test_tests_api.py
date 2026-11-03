@@ -156,12 +156,34 @@ async def test_summary_scoped(client, db):
         "confirmed_flaky_tests": 1,
         "new_flaky_7d": 2,  # neither flaky Test has any history, so both are new
         "total_runs": 1,
-        "total_executions": 1,
+        "executions_30d": 0,  # the seeded Execution writes no Score history (issue #24)
+        "failures_30d": 0,
         "flake_threshold": 0.3,
         "category_counts": {"network": 0, "environment": 0, "timing": 0, "assertion": 0, "other": 0},
     }
     one = (await client.get("/api/summary?repo=andrewthetechie/fantasy")).json()
     assert (one["total_tests"], one["flaky_tests"], one["total_runs"]) == (1, 1, 0)
+
+
+async def test_summary_30d_sums(client, db):
+    """executions_30d/failures_30d sum the Score history of the last 30 days, in scope."""
+    backend = await make_project(db, "acme/app", "backend")
+    elsewhere = await make_project(db, "acme/other", "backend")
+    test = await make_test_case(db, backend, name="test_flaky", flakiness_score=0.6)
+    other = await make_test_case(db, elsewhere, name="test_elsewhere", flakiness_score=0.6)
+    today = utcnow().date()
+    await make_test_score(db, test, today, 0.6, executions=10, failures=2)
+    await make_test_score(db, test, today - timedelta(days=3), 0.6, executions=5, failures=1)
+    await make_test_score(db, test, today - timedelta(days=31), 0.6, executions=100, failures=50)
+    await make_test_score(db, other, today, 0.6, executions=7, failures=7)
+    await db.commit()
+
+    everything = (await client.get("/api/summary")).json()
+    assert (everything["executions_30d"], everything["failures_30d"]) == (22, 10)  # both Repos, no older row
+    app = (await client.get("/api/summary?repo=acme/app")).json()
+    assert (app["executions_30d"], app["failures_30d"]) == (15, 3)  # the 31-day-old row is out of the window
+    scoped = (await client.get("/api/summary?repo=acme/other")).json()
+    assert (scoped["executions_30d"], scoped["failures_30d"]) == (7, 7)
 
 
 async def test_summary_new_flaky_7d(client, db):
