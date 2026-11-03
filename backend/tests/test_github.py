@@ -269,6 +269,21 @@ async def test_does_not_refile_or_file_below_threshold(db, gh_settings):
     assert calls == []
 
 
+async def test_closed_as_not_planned_link_files_no_new_issue(db, gh_settings):
+    """Issue #32: a kept not-planned link (see `test_sync_keeps_a_link_closed_as_not_planned`) is still
+    a link, so the filing gate skips the row: no POST, and the link and flag survive the filer run."""
+    wont_fix = await _flaky_test(
+        db, name="wont_fix", github_issue_number=11, github_issue_filed=True, github_issue_closed=True
+    )
+    calls, transport = _recorder()
+    await github_integration.file_issues_for(db, [wont_fix.id], transport=transport)
+    assert calls == []  # the gate's `github_issue_number.is_(None)` is the dedupe
+    await db.refresh(wont_fix)
+    assert wont_fix.github_issue_number == 11
+    assert wont_fix.github_issue_filed is True
+    assert wont_fix.github_issue_closed is True
+
+
 async def test_rate_limit_stops_batch_for_tests_and_jobs(db, gh_settings):
     """A rate limit is a batch stop: one request per entry point, Tests and Jobs."""
     a = await _flaky_test(db, repo="acme/a")
@@ -602,6 +617,124 @@ async def test_sync_rearms_closed_issue_only(db, gh_settings, session_factory):
     assert closed.github_issue_number is None
     assert closed.github_issue_filed is None  # the flag resets with the number
     assert still_open.github_issue_number == 22
+
+
+async def test_sync_keeps_a_link_closed_as_not_planned(db, gh_settings, session_factory):
+    """Closed as not planned: keep the link and flag it, so the filer stays quiet (issue #32)."""
+    wont_fix = await _flaky_test(db, name="wont_fix", github_issue_number=11, github_issue_filed=True)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"state": "closed", "state_reason": "not_planned"})
+
+    await github_integration.sync_closed_issues(session_factory, transport=httpx.MockTransport(handler))
+    await db.refresh(wont_fix)
+    assert wont_fix.github_issue_number == 11  # the link stays, so no new issue is ever filed
+    assert wont_fix.github_issue_filed is True
+    assert wont_fix.github_issue_closed is True
+    assert wont_fix.github_issue_checked_at is not None  # and the link stays in the sync rotation
+
+
+async def test_sync_clears_the_flag_when_a_linked_issue_reopens(db, gh_settings, session_factory):
+    """A flagged issue that reopens loses the flag and keeps its link."""
+    reopened = await _flaky_test(
+        db,
+        name="reopened",
+        github_issue_number=11,
+        github_issue_filed=True,
+        github_issue_closed=True,
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"state": "open", "state_reason": "reopened"})
+
+    await github_integration.sync_closed_issues(session_factory, transport=httpx.MockTransport(handler))
+    await db.refresh(reopened)
+    assert reopened.github_issue_closed is False
+    assert reopened.github_issue_number == 11  # the link itself is untouched
+    assert reopened.github_issue_filed is True
+
+
+async def test_sync_leaves_alone_an_issue_state_it_does_not_know(db, gh_settings, session_factory):
+    """A state that is neither `open` nor `closed` says nothing: link, flag and stamp hold.
+
+    GitHub reports `open` and `closed` today, and the sync only ever acts on those two
+    names, so a state it cannot recognize is treated exactly like the unusable body it
+    already refuses to guess about: the flagged link survives untouched, and the row is
+    still stamped so it cannot take a batch slot on every later run.
+    """
+    odd = await _flaky_test(
+        db,
+        name="odd",
+        github_issue_number=11,
+        github_issue_filed=True,
+        github_issue_closed=True,
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"state": "archived", "state_reason": "not_planned"})
+
+    await github_integration.sync_closed_issues(session_factory, transport=httpx.MockTransport(handler))
+    await db.refresh(odd)
+    assert odd.github_issue_number == 11
+    assert odd.github_issue_filed is True
+    assert odd.github_issue_closed is True  # only a reported reopen clears it
+    assert odd.github_issue_checked_at is not None
+
+
+async def test_sync_clears_a_link_closed_as_completed(db, gh_settings, session_factory):
+    """Closed as completed re-arms exactly like a close with no reported reason."""
+    done = await _flaky_test(
+        db,
+        name="done",
+        github_issue_number=11,
+        github_issue_filed=True,
+        github_issue_closed=True,
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"state": "closed", "state_reason": "completed"})
+
+    await github_integration.sync_closed_issues(session_factory, transport=httpx.MockTransport(handler))
+    await db.refresh(done)
+    assert done.github_issue_number is None
+    assert done.github_issue_filed is None
+    assert done.github_issue_closed is False
+
+
+async def test_sync_clears_the_flag_of_a_gone_issue(db, gh_settings, session_factory):
+    """A 404 clears the flag with the link: a row with no number never keeps a stale flag."""
+    gone = await _flaky_test(
+        db,
+        name="gone",
+        github_issue_number=11,
+        github_issue_filed=True,
+        github_issue_closed=True,
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404)
+
+    await github_integration.sync_closed_issues(session_factory, transport=httpx.MockTransport(handler))
+    await db.refresh(gone)
+    assert gone.github_issue_number is None
+    assert gone.github_issue_filed is None
+    assert gone.github_issue_closed is False
+
+
+async def test_link_writes_reset_the_closed_flag(db):
+    """`clear_link` and `store_filed_link` both reset the flag: unlink re-arms, a link starts clean."""
+    tc = await _flaky_test(
+        db, name="flagged", github_issue_number=11, github_issue_filed=True, github_issue_closed=True
+    )
+    issue_links.clear_link(tc)
+    assert tc.github_issue_number is None
+    assert tc.github_issue_filed is None
+    assert tc.github_issue_closed is False
+
+    relinked = await _flaky_test(db, project="p2", name="relinked", github_issue_number=11, github_issue_closed=True)
+    issue_links.store_filed_link(relinked, 44)
+    assert relinked.github_issue_number == 44
+    assert relinked.github_issue_closed is False  # a fresh link points at an open issue
 
 
 async def test_sync_rearms_an_issue_gone_as_404(db, gh_settings, session_factory):

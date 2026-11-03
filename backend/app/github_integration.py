@@ -13,7 +13,9 @@ Filing gate (all configured minimums must be met; 0 disables a signal):
 Deduplication works because a filed issue's number is stored on the Test/Job;
 an issue is only ever re-filed after GitHub reports it closed
 (``sync_closed_issues`` clears the stored number, and the next Report that
-touches the entity re-files it if it still meets the gate).
+touches the entity re-files it if it still meets the gate) — unless it was
+closed as ``not_planned``, which keeps the number and flags the row, so nothing
+is filed again until a person unlinks it.
 
 Error handling: never raises.
 - No token configured            -> silent no-op (self-host without GitHub).
@@ -119,6 +121,18 @@ def _issue_state(resp: httpx.Response) -> str | None:
     body = _json_object(resp)
     state = body.get("state") if body is not None else None
     return state if isinstance(state, str) else None
+
+
+def _issue_state_reason(resp: httpx.Response) -> str | None:
+    """Why a fetched issue changed state, or None when the 200 body does not report one.
+
+    GitHub fills this in only for closed issues (`completed`, `not_planned`) and
+    reopened ones (`reopened`); an issue closed before the field existed, or a body
+    this cannot read, simply has no reason and is treated as a plain close.
+    """
+    body = _json_object(resp)
+    reason = body.get("state_reason") if body is not None else None
+    return reason if isinstance(reason, str) else None
 
 
 def _rate_limited(resp: httpx.Response) -> bool:
@@ -519,7 +533,10 @@ async def sync_closed_issues(
     A filed issue's number is stored on the entity and blocks re-filing. When
     GitHub reports that issue closed (or gone), clear the stored number so the
     next Report that touches the entity can re-file a fresh issue if it still
-    meets the filing gate. Leader-only maintenance; checks each open issue with
+    meets the filing gate — except a close as `not_planned`, which is the team
+    accepting the flake: the link stays and `github_issue_closed` records it, so
+    nothing is filed again until someone unlinks the issue or GitHub reopens it.
+    Leader-only maintenance; checks each open issue with
     its own sequential GET (capped at the `FLAKERADAR_GITHUB_SYNC_BATCH` most
     stale rows per run for each of Tests and Jobs, oldest check first
     (`github_issue_checked_at` NULLS FIRST) — the GitHub REST API has no bulk
@@ -556,6 +573,15 @@ async def _clear_if_closed(
     client: httpx.AsyncClient, obj: Job | TestCase, repo: str, entity: str, skipped: set[str]
 ) -> bool:
     """Check one issue; clear its number on the ORM object when closed/gone.
+
+    A close carries a `state_reason`, and it decides what "closed" means: `not_planned`
+    is the team saying "known, accepted, will not fix", so the link is KEPT and
+    `github_issue_closed` is set — the filer skips rows that carry a number, so no fresh
+    issue is filed for a Test the team already declined. Any other reason (or none at
+    all, e.g. a close predating the field) re-arms as before: number and filed flag go,
+    and the closed flag goes with them. `open` clears the flag, which is what keeps
+    these links in the rotation: a declined issue that is reopened re-arms filing. A 404
+    (deleted, or invisible to the token) clears link and flag exactly like a close.
 
     Returns False on a rate limit, when the batch must stop; a definitive
     Repo-wide client error (a permission 403, bad credentials 401, a gone
@@ -600,14 +626,39 @@ async def _clear_if_closed(
                 resp.text[:300],
             )
         elif state == "closed":
-            logger.info("Issue closed %s#%s; re-arming %s %s", repo, obj.github_issue_number, entity, obj.id)
-            obj.github_issue_number = None
-            obj.github_issue_filed = None
+            reason = _issue_state_reason(resp)
+            if reason == "not_planned":
+                # Known, accepted, will not fix: keep the link so the filer (which skips
+                # any row that carries a number) never files this again, and say so.
+                logger.info(
+                    "Issue closed as not planned %s#%s; keeping the link for %s %s",
+                    repo,
+                    obj.github_issue_number,
+                    entity,
+                    obj.id,
+                )
+                obj.github_issue_closed = True
+            else:
+                logger.info(
+                    "Issue closed %s %s#%s; re-arming %s %s",
+                    reason or "without a reason",
+                    repo,
+                    obj.github_issue_number,
+                    entity,
+                    obj.id,
+                )
+                obj.github_issue_number = None
+                obj.github_issue_filed = None
+                obj.github_issue_closed = False
+        elif state == "open":
+            # Possibly reopened after a close as not planned: filing is live again.
+            obj.github_issue_closed = False
     elif resp.status_code == 404:
         # Issue deleted or token can no longer see it — do not hold dedup forever.
         logger.info("Issue gone %s#%s; re-arming %s %s", repo, obj.github_issue_number, entity, obj.id)
         obj.github_issue_number = None
         obj.github_issue_filed = None
+        obj.github_issue_closed = False
     return True
 
 

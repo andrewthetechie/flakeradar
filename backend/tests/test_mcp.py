@@ -431,6 +431,7 @@ async def test_link_and_unlink_a_test_issue(mcp, db):
     assert linked["github_issue_number"] == 31
     assert linked["github_issue_url"] == "https://github.com/andrewthetechie/writers-app/issues/31"
     assert got["test"]["github_issue_number"] == 31
+    assert got["test"]["github_issue_closed"] is False  # MCP carries the flag via TestOut.model_dump
     assert unlinked["github_issue_number"] is None
 
 
@@ -444,6 +445,7 @@ async def test_link_and_unlink_a_job_issue(mcp, db):
     assert linked["id"] == job.id
     assert linked["github_issue_number"] == 9
     assert linked["github_issue_url"] == "https://github.com/acme/app/issues/9"
+    assert linked["github_issue_closed"] is False  # and via JobOut.model_dump
     assert unlinked["github_issue_number"] is None
 
 

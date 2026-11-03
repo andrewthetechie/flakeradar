@@ -97,6 +97,7 @@ export function Leaderboard({
                 status={t.last_status}
                 issueNumber={t.github_issue_number}
                 issueUrl={t.github_issue_url}
+                issueClosed={t.github_issue_closed}
               />
               <td className="col-actions px-4 py-2.5 text-right align-top">
                 <button

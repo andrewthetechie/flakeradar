@@ -116,6 +116,7 @@ def to_test_out(tc: TestCase, project: str, repo: str, threshold: float, trend: 
         quarantine_expires_at=tc.quarantine_expires_at,
         github_issue_number=tc.github_issue_number,
         github_issue_url=issue_url(repo, tc.github_issue_number),
+        github_issue_closed=tc.github_issue_closed,
     )
 
 
@@ -682,6 +683,7 @@ def to_job_out(
         summary=job.summary,
         github_issue_number=job.github_issue_number,
         github_issue_url=job_issue_url(repo.name, pipeline, job),
+        github_issue_closed=job.github_issue_closed,
     )
 
 
@@ -1226,6 +1228,7 @@ async def _ci_run_test_failures(
                 quarantined=tc.quarantined,
                 github_issue_number=tc.github_issue_number,
                 github_issue_url=issue_url(repo.name, tc.github_issue_number),
+                github_issue_closed=tc.github_issue_closed,
             )
         )
     return items, total
@@ -1265,6 +1268,7 @@ async def _ci_run_failed_jobs(
             clean_streak=job.clean_streak,
             github_issue_number=job.github_issue_number,
             github_issue_url=job_issue_url(repo.name, pipeline, job),
+            github_issue_closed=job.github_issue_closed,
         )
         for e, job, pipeline in rows
     ]

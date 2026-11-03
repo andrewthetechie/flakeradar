@@ -97,6 +97,11 @@ describe("IssuePill", () => {
     );
   });
 
+  it("labels an issue closed as not planned", () => {
+    render(<IssuePill number={42} url="https://github.com/acme/app/issues/42" closed />);
+    expect(screen.getByRole("link", { name: "#42 (closed as not planned)" })).toBeInTheDocument();
+  });
+
   it("renders nothing when no issue is filed", () => {
     const { container } = render(<IssuePill number={null} url={null} />);
     expect(container).toBeEmptyDOMElement();
@@ -119,6 +124,20 @@ describe("StatusIssueCell", () => {
       "title",
       "GitHub issue filed by FlakeRadar",
     );
+  });
+
+  it("labels a linked issue that was closed as not planned", () => {
+    render(
+      inRow(
+        <StatusIssueCell
+          status="failed"
+          issueNumber={7}
+          issueUrl="https://github.com/acme/app/issues/7"
+          issueClosed
+        />,
+      ),
+    );
+    expect(screen.getByRole("link", { name: "#7 (closed as not planned)" })).toBeInTheDocument();
   });
 });
 

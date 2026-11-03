@@ -30,12 +30,14 @@ async def test_link_test_issue(client, db):
     assert body["id"] == tc.id
     assert body["github_issue_number"] == 123
     assert body["github_issue_url"] == "https://github.com/acme/app/issues/123"
+    assert body["github_issue_closed"] is False  # a fresh link points at an open issue
     await db.refresh(tc)
     assert tc.github_issue_number == 123
     assert tc.github_issue_filed is False  # a human linked it; never FlakeRadar-filed
 
     history = await client.get(f"/api/tests/{tc.id}/history")
     assert history.json()["test"]["github_issue_number"] == 123
+    assert history.json()["test"]["github_issue_closed"] is False
 
 
 async def test_issue_link_needs_the_token(client, db):

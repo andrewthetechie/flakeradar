@@ -26,6 +26,7 @@ function failure(over: Partial<CiRunTestFailure> = {}): CiRunTestFailure {
     quarantined: false,
     github_issue_number: 12,
     github_issue_url: "https://github.com/a/b/issues/12",
+    github_issue_closed: false,
     ...over,
   };
 }
@@ -45,6 +46,7 @@ function failedJob(over: Partial<CiRunFailedJob> = {}): CiRunFailedJob {
     clean_streak: 0,
     github_issue_number: null,
     github_issue_url: null,
+    github_issue_closed: false,
     ...over,
   };
 }
@@ -157,6 +159,14 @@ describe("CiRunView", () => {
     stubFetch(() => json(body({ reports: { pending: 0, processed: 1, failed: 1 } })));
     render(<Harness />);
     expect(await screen.findByText(/1 report failed to process/)).toBeInTheDocument();
+  });
+
+  it("labels the failure issue pill when the issue was closed as not planned", async () => {
+    stubFetch(() => json(body({ failures: [failure({ github_issue_closed: true })] })));
+    render(<Harness />);
+    expect(
+      await screen.findByRole("link", { name: "#12 (closed as not planned)" }),
+    ).toHaveAttribute("href", "https://github.com/a/b/issues/12");
   });
 
   it("lists the failing tests and the failed jobs of a complete run", async () => {

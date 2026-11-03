@@ -73,6 +73,7 @@ export function TestDrawer({
                   <IssueLink
                     number={history.test.github_issue_number}
                     url={history.test.github_issue_url}
+                    closed={history.test.github_issue_closed}
                     className="text-link underline-offset-2 hover:underline"
                   >
                     issue #{history.test.github_issue_number}

@@ -92,11 +92,14 @@ export function ProvenCell({ count }: { count: number }) {
 export function IssuePill({
   number,
   url,
+  closed,
   className,
   onClick,
 }: {
   number: number | null;
   url: string | null;
+  /** The linked issue was closed as not planned (CONTEXT.md). */
+  closed?: boolean;
   className?: string;
   onClick?: (e: MouseEvent) => void;
 }) {
@@ -104,6 +107,7 @@ export function IssuePill({
     <IssueLink
       number={number}
       url={url}
+      closed={closed}
       onClick={onClick}
       className={`rounded-full border border-line px-2 ${className ? `${className} ` : ""}text-link hover:underline`}
       title="GitHub issue filed by FlakeRadar"
@@ -118,16 +122,24 @@ export function StatusIssueCell({
   status,
   issueNumber,
   issueUrl,
+  issueClosed,
 }: {
   status: string;
   issueNumber: number | null;
   issueUrl: string | null;
+  /** The linked issue was closed as not planned (CONTEXT.md). */
+  issueClosed?: boolean;
 }) {
   return (
     <td className="col-status px-4 py-2.5 align-top">
       <span className="inline-flex items-center gap-1.5 text-xs whitespace-nowrap text-text-2">
         <StatusMark status={status} /> {status}
-        <IssuePill number={issueNumber} url={issueUrl} onClick={(e) => e.stopPropagation()} />
+        <IssuePill
+          number={issueNumber}
+          url={issueUrl}
+          closed={issueClosed}
+          onClick={(e) => e.stopPropagation()}
+        />
       </span>
     </td>
   );

@@ -211,6 +211,7 @@ async def test_failure_entry_fields(client, db):
             "quarantined": True,
             "github_issue_number": 9,
             "github_issue_url": "https://github.com/acme/app/issues/9",
+            "github_issue_closed": False,
         }
     ]
     assert body["total_failures"] == 1
@@ -411,6 +412,7 @@ async def test_failed_job_fields(client, db):
             "clean_streak": 2,
             "github_issue_number": 4,
             "github_issue_url": "https://github.com/acme/app/issues/4",
+            "github_issue_closed": False,
         }
     ]
 

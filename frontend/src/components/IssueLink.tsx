@@ -4,6 +4,7 @@ import type { ReactNode, MouseEvent } from "react";
 export function IssueLink({
   number,
   url,
+  closed,
   className,
   title,
   onClick,
@@ -11,6 +12,8 @@ export function IssueLink({
 }: {
   number: number | null;
   url: string | null;
+  /** The linked issue was closed as not planned (CONTEXT.md). */
+  closed?: boolean;
   className?: string;
   title?: string;
   onClick?: (e: MouseEvent) => void;
@@ -27,6 +30,7 @@ export function IssueLink({
       title={title}
     >
       {children}
+      {closed ? " (closed as not planned)" : null}
     </a>
   );
 }

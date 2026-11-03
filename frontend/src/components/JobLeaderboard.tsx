@@ -80,6 +80,7 @@ export function JobLeaderboard({
                 status={j.last_status}
                 issueNumber={j.github_issue_number}
                 issueUrl={j.github_issue_url}
+                issueClosed={j.github_issue_closed}
               />
               <td className="px-4 py-2.5 align-top text-xs whitespace-nowrap text-text-2">
                 {new Date(j.last_seen_at).toLocaleDateString(undefined, {

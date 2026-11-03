@@ -20,6 +20,7 @@ function job(overrides: Partial<Job> = {}): Job {
     summary: false,
     github_issue_number: null,
     github_issue_url: null,
+    github_issue_closed: false,
     ...overrides,
   };
 }
@@ -175,5 +176,24 @@ describe("JobLeaderboard", () => {
     );
     fireEvent.click(screen.getByRole("link", { name: "#4" }));
     expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it("labels the issue pill when the linked issue was closed as not planned", () => {
+    render(
+      <JobLeaderboard
+        jobs={[
+          job({
+            github_issue_number: 4,
+            github_issue_url: "https://github.com/acme/app/issues/4",
+            github_issue_closed: true,
+          }),
+        ]}
+        repo="acme/app"
+        showStable={false}
+        selectedId={null}
+        onSelect={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole("link", { name: "#4 (closed as not planned)" })).toBeInTheDocument();
   });
 });

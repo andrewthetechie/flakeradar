@@ -24,6 +24,16 @@ describe("IssueLink", () => {
     expect(link).toHaveAttribute("rel", "noreferrer");
   });
 
+  it("says so when the issue was closed as not planned", () => {
+    render(
+      <IssueLink number={123} url="https://github.com/acme/app/issues/123" closed>
+        #123
+      </IssueLink>,
+    );
+    const link = screen.getByRole("link", { name: "#123 (closed as not planned)" });
+    expect(link).toHaveAttribute("href", "https://github.com/acme/app/issues/123");
+  });
+
   it("renders an anchor without href when no url is known", () => {
     render(
       <IssueLink number={3} url={null}>

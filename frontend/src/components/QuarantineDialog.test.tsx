@@ -30,6 +30,7 @@ const test: TestCase = {
   quarantine_expires_at: null,
   github_issue_number: null,
   github_issue_url: null,
+  github_issue_closed: false,
 };
 
 function renderDialog(onClose = vi.fn(), onConfirm = vi.fn()) {

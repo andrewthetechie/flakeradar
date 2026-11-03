@@ -4,7 +4,9 @@ This module owns the (github_issue_number, github_issue_checked_at) pair for bot
 targets: REST and MCP link and unlink it, FlakeRadar's own filer (github_integration)
 stores a number it just filed through `store_filed_link`, and `sync_closed_issues`
 takes its rotation list from `linked_for_check`. A linked entity is treated exactly
-like a filed one: the filer skips it, and the sync clears it when the issue closes.
+like a filed one: the filer skips it, and the sync clears the link when the issue
+closes as completed or is gone, and instead flags it (`github_issue_closed`) when
+the issue closes as not planned.
 The issue must be in the entity's own Repo, because the sync looks it up there
 (ADR 0008).
 """
@@ -151,11 +153,14 @@ def store_filed_link(obj: Job | TestCase, number: int) -> None:
 
     The link is marked as FlakeRadar's own (`github_issue_filed = True`), the one
     provenance the admin delete reads before it comments on and closes an issue: a
-    number stored here was created by FlakeRadar, so closing it is ours to do.
+    number stored here was created by FlakeRadar, so closing it is ours to do. The
+    closed-as-not-planned flag is reset too: a fresh link points at an open Issue, and a
+    flag left over from the number it replaces would keep the filer quiet forever.
     """
     obj.github_issue_number = number
     obj.github_issue_checked_at = None  # a new link is checked first
     obj.github_issue_filed = True
+    obj.github_issue_closed = False
 
 
 def clear_link(obj: Job | TestCase) -> None:
@@ -166,10 +171,15 @@ def clear_link(obj: Job | TestCase) -> None:
     write on the previous number would be wrong — the sync's re-arm (`_clear_if_closed`) clears
     the number while deliberately keeping its `utcnow()` stamp, so a row can reach unlink with
     a number that is already None and a stamp that is not.
+
+    The not-planned flag goes with the link: unlinking a Test the team had declined is how a
+    person re-arms filing, so a kept flag would be the one thing left standing between the row
+    and a fresh Issue.
     """
     obj.github_issue_number = None
     obj.github_issue_checked_at = None
     obj.github_issue_filed = None
+    obj.github_issue_closed = False
 
 
 async def _link(

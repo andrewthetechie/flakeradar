@@ -658,16 +658,25 @@ For a job, the failure count includes only unexplained failures.
 
 ### Duplicate issues
 
-FlakeRadar stores the number of the issue on the test or job. While the issue
-is open, FlakeRadar opens no new issue for that test or job. At each
+FlakeRadar stores the number of the issue on the test or job. While the test
+or job has that link, FlakeRadar opens no new issue for it. At each
 maintenance interval, FlakeRadar asks GitHub for the state of each stored
-issue. When an issue is closed or deleted, FlakeRadar clears the stored
-number. A later report that makes the test flaky again then opens a new
-issue.
+issue. When an issue is closed as completed or deleted, FlakeRadar clears
+the stored number. A later report that makes the test flaky again then opens
+a new issue. An issue closed as *not planned* is the exception: the team has
+said the flake is known and accepted, so FlakeRadar keeps the link, sets
+`github_issue_closed` on the test or job, and files nothing new. Reopening
+the issue clears the flag.
+
+To file a fresh issue for a link that a not-planned close is holding, unlink
+the issue: `DELETE /api/tests/{id}/issue`, `DELETE /api/jobs/{id}/issue`, or
+the MCP tool `unlink_issue`. This clears the link and the flag, which re-arms
+filing.
 
 The UI shows a link to the issue on the leaderboard row and in the detail
-panel. The API and MCP server also return it, as `github_issue_number` and
-`github_issue_url`, from `/api/tests`, `/api/tests/{id}/history`, and the
+panel, and marks a link held by a not-planned close. The API and MCP server
+also return it, as `github_issue_number`, `github_issue_url` and
+`github_issue_closed`, from `/api/tests`, `/api/tests/{id}/history`, and the
 `get_test` and `top_flaky_tests` tools.
 
 ### Issues filed elsewhere
