@@ -26,6 +26,7 @@ function failure(over: Partial<CiRunTestFailure> = {}): CiRunTestFailure {
     quarantined: false,
     github_issue_number: 12,
     github_issue_url: "https://github.com/a/b/issues/12",
+    github_issue_closed: false,
     ...over,
   };
 }
@@ -45,6 +46,7 @@ function failedJob(over: Partial<CiRunFailedJob> = {}): CiRunFailedJob {
     clean_streak: 0,
     github_issue_number: null,
     github_issue_url: null,
+    github_issue_closed: false,
     ...over,
   };
 }

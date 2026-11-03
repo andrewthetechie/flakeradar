@@ -49,6 +49,7 @@ export interface TestCase {
   quarantine_expires_at: string | null;
   github_issue_number: number | null;
   github_issue_url: string | null;
+  github_issue_closed: boolean;
 }
 
 export interface TestPage {
@@ -237,6 +238,7 @@ export interface Job {
   summary: boolean; // a summary Job (CONTEXT.md) that runs no tests; its explained failures are never scored
   github_issue_number: number | null;
   github_issue_url: string | null;
+  github_issue_closed: boolean;
 }
 
 export interface JobPage {
@@ -428,6 +430,7 @@ export interface CiRunTestFailure {
   quarantined: boolean;
   github_issue_number: number | null;
   github_issue_url: string | null;
+  github_issue_closed: boolean;
 }
 
 export interface CiRunFailedJob {
@@ -445,6 +448,7 @@ export interface CiRunFailedJob {
   clean_streak: number;
   github_issue_number: number | null;
   github_issue_url: string | null; // only when the Pipeline's provider is github
+  github_issue_closed: boolean;
 }
 
 export interface CiRunFailures {

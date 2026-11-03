@@ -20,6 +20,7 @@ function job(overrides: Partial<Job> = {}): Job {
     summary: false,
     github_issue_number: null,
     github_issue_url: null,
+    github_issue_closed: false,
     ...overrides,
   };
 }

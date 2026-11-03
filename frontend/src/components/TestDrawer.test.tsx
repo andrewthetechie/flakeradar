@@ -32,6 +32,7 @@ const history: History = {
     quarantine_expires_at: null,
     github_issue_number: null,
     github_issue_url: null,
+    github_issue_closed: false,
   },
   location: {
     path: "frontend/src/app.test.ts",
@@ -184,6 +185,20 @@ describe("TestDrawer", () => {
       "href",
       "https://github.com/andrewthetechie/writers-app/issues/5",
     );
+  });
+
+  it("labels the linked issue closed as not planned", () => {
+    renderDrawer({
+      test: {
+        ...history.test,
+        github_issue_number: 5,
+        github_issue_url: "https://github.com/andrewthetechie/writers-app/issues/5",
+        github_issue_closed: true,
+      },
+    });
+    expect(
+      screen.getByRole("link", { name: "issue #5 (closed as not planned)" }),
+    ).toBeInTheDocument();
   });
 
   it("shows a location the runner gave no URL for as text", () => {

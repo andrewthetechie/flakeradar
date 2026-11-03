@@ -34,6 +34,7 @@ function page(name: string): TestPage {
     quarantine_expires_at: null,
     github_issue_number: null,
     github_issue_url: null,
+    github_issue_closed: false,
   };
   return { items: [test], total: 1, page: 1, page_size: 50 };
 }
@@ -78,6 +79,7 @@ function jobRow(id: number, name: string) {
     summary: false,
     github_issue_number: null,
     github_issue_url: null,
+    github_issue_closed: false,
   };
 }
 

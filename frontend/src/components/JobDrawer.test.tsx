@@ -21,6 +21,7 @@ const history: JobHistory = {
     summary: false,
     github_issue_number: null,
     github_issue_url: null,
+    github_issue_closed: false,
   },
   unexplained_failures: 1,
   explained_failures: 1,
@@ -230,6 +231,20 @@ describe("JobDrawer", () => {
       "href",
       "https://github.com/acme/app/issues/8",
     );
+  });
+
+  it("labels the linked issue closed as not planned", () => {
+    renderDrawer({
+      job: {
+        ...history.job,
+        github_issue_number: 8,
+        github_issue_url: "https://github.com/acme/app/issues/8",
+        github_issue_closed: true,
+      },
+    });
+    expect(
+      screen.getByRole("link", { name: "issue #8 (closed as not planned)" }),
+    ).toBeInTheDocument();
   });
 
   it("pluralizes unexplained failures", () => {

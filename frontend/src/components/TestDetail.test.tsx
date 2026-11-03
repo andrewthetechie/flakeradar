@@ -32,6 +32,7 @@ const history: History = {
     quarantine_expires_at: null,
     github_issue_number: null,
     github_issue_url: null,
+    github_issue_closed: false,
   },
   location: null,
   last_failing_sha: "aaa1110000",

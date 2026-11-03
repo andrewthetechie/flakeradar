@@ -89,6 +89,7 @@ export function JobDrawer({
                   <IssueLink
                     number={job.github_issue_number}
                     url={job.github_issue_url}
+                    closed={job.github_issue_closed}
                     className="text-link underline-offset-2 hover:underline"
                   >
                     issue #{job.github_issue_number}
