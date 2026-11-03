@@ -498,6 +498,23 @@ async def test_sync_rearms_closed_issue_only(db, gh_settings, session_factory):
     assert still_open.github_issue_number == 22
 
 
+async def test_sync_rearms_an_issue_gone_as_404(db, gh_settings, session_factory):
+    """A 404 (issue deleted, or the token lost it) re-arms like a closed one.
+
+    Both the number and the filed flag reset, so a subsequent re-file of the
+    test is treated as ours again, not as a stale human link.
+    """
+    gone = await _flaky_test(db, name="gone", github_issue_number=11, github_issue_filed=True)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404)
+
+    await github_integration.sync_closed_issues(session_factory, transport=httpx.MockTransport(handler))
+    await db.refresh(gone)
+    assert gone.github_issue_number is None
+    assert gone.github_issue_filed is None
+
+
 async def test_sync_rotates_past_the_cap(db, gh_settings, session_factory):
     """With a cap of 2 and 3 linked Tests, the third Test is checked on the second run."""
     gh_settings.github_sync_batch = 2
@@ -1235,6 +1252,74 @@ async def test_admin_delete_close_rate_limit_stops_the_batch(gh_settings):
         "acme/app", [123, 456], transport=httpx.MockTransport(handler)
     )
     assert len(calls) == 1
+
+
+async def test_admin_delete_close_patch_rate_limit_stops_the_batch(gh_settings, caplog):
+    """A rate limit on the close PATCH (not the comment) also stops the batch.
+
+    The first issue is commented on, then the close PATCH is throttled; the
+    remaining numbers are never touched because the batch stops there.
+    """
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if request.method == "POST":
+            return httpx.Response(201, json={"number": 77})
+        return httpx.Response(429, headers={"x-ratelimit-remaining": "0"})
+
+    with caplog.at_level(logging.WARNING, logger="flakeradar.github"):
+        await github_integration.close_issues_for_deleted_repo(
+            "acme/app", [123, 456], transport=httpx.MockTransport(handler)
+        )
+    assert [r.url.path for r in calls] == [
+        "/repos/acme/app/issues/123/comments",
+        "/repos/acme/app/issues/123",
+    ]
+
+
+async def test_admin_delete_close_patch_gone_issue_is_logged(gh_settings, caplog):
+    """An issue deleted between the comment and the close PATCH is skipped, not fatal."""
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if request.method == "POST":
+            return httpx.Response(201, json={"number": 77})
+        return httpx.Response(404)
+
+    with caplog.at_level(logging.INFO, logger="flakeradar.github"):
+        await github_integration.close_issues_for_deleted_repo(
+            "acme/app", [123, 456], transport=httpx.MockTransport(handler)
+        )
+    assert [r.url.path for r in calls] == [
+        "/repos/acme/app/issues/123/comments",
+        "/repos/acme/app/issues/123",
+        "/repos/acme/app/issues/456/comments",
+        "/repos/acme/app/issues/456",
+    ]
+
+
+async def test_admin_delete_close_close_patch_failure_is_a_warning(gh_settings, caplog):
+    """A 5xx on the close PATCH costs that one issue; the rest of the batch goes on."""
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if request.method == "POST":
+            return httpx.Response(201, json={"number": 77})
+        return httpx.Response(500, text="boom")
+
+    with caplog.at_level(logging.WARNING, logger="flakeradar.github"):
+        await github_integration.close_issues_for_deleted_repo(
+            "acme/app", [123, 456], transport=httpx.MockTransport(handler)
+        )
+    assert [r.url.path for r in calls] == [
+        "/repos/acme/app/issues/123/comments",
+        "/repos/acme/app/issues/123",
+        "/repos/acme/app/issues/456/comments",
+        "/repos/acme/app/issues/456",
+    ]
 
 
 async def test_job_link_change_and_unlink_reset_the_check_stamp(db, gh_settings, session_factory):

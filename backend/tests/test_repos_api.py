@@ -277,6 +277,12 @@ async def test_delete_reports_unknown_names_as_404(client, db):
     assert resp.json()["detail"] == "Project not found"
     assert await _count(db, Repo) == 1
 
+    # An unknown Repo on the Project-delete route is that route's own 404 too.
+    resp = await client.delete("/api/repos/acme/none/projects/backend", headers=AUTH)
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "Repo not found"
+    assert await _count(db, Repo) == 1
+
 
 async def test_delete_rejects_malformed_names(client, db):
     await _seed_project(db, tests=1)
