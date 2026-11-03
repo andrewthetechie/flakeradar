@@ -269,6 +269,21 @@ async def test_does_not_refile_or_file_below_threshold(db, gh_settings):
     assert calls == []
 
 
+async def test_closed_as_not_planned_link_files_no_new_issue(db, gh_settings):
+    """Issue #32: a kept not-planned link (see `test_sync_keeps_a_link_closed_as_not_planned`) is still
+    a link, so the filing gate skips the row: no POST, and the link and flag survive the filer run."""
+    wont_fix = await _flaky_test(
+        db, name="wont_fix", github_issue_number=11, github_issue_filed=True, github_issue_closed=True
+    )
+    calls, transport = _recorder()
+    await github_integration.file_issues_for(db, [wont_fix.id], transport=transport)
+    assert calls == []  # the gate's `github_issue_number.is_(None)` is the dedupe
+    await db.refresh(wont_fix)
+    assert wont_fix.github_issue_number == 11
+    assert wont_fix.github_issue_filed is True
+    assert wont_fix.github_issue_closed is True
+
+
 async def test_rate_limit_stops_batch_for_tests_and_jobs(db, gh_settings):
     """A rate limit is a batch stop: one request per entry point, Tests and Jobs."""
     a = await _flaky_test(db, repo="acme/a")

@@ -192,6 +192,42 @@ async def test_unlink_after_a_rearm_clears_the_kept_stamp_on_a_job(db, gh_settin
     assert await issue_links.linked_for_check(db, issue_links.JOB, 10) == []
 
 
+async def test_unlink_rearms_a_closed_as_not_planned_link(db, gh_settings, session_factory):
+    """Issue #32's last step: unlinking a flagged not-planned link clears number, filed flag AND
+    the closed flag on a Test and a Job alike — that is how a person re-arms filing.
+
+    The rows are seeded in exactly the state the sync leaves them (`_clear_if_closed` keeps the
+    link and sets the flag on closed-as-not-planned); both entities go through the one `_unlink`
+    engine that `DELETE /api/tests|jobs/{id}/issue` and MCP `unlink_issue` all call.
+    """
+    tc = await _test(db, github_issue_number=11, github_issue_filed=True, github_issue_closed=True)
+    job = await _job(db, github_issue_number=22, github_issue_filed=True, github_issue_closed=True)
+
+    out = await issue_links.unlink_issue(db, "Test", tc.id, threshold=0.3)
+    await db.refresh(tc)
+    assert tc.github_issue_number is None
+    assert tc.github_issue_filed is None
+    assert tc.github_issue_closed is False  # the flag is no longer just a link's attribute: it goes too
+    assert out.github_issue_number is None
+
+    await issue_links.unlink_issue(db, "Job", job.id, threshold=0.3)
+    await db.refresh(job)
+    assert job.github_issue_number is None
+    assert job.github_issue_filed is None
+    assert job.github_issue_closed is False
+
+    # Re-armed both ways round: the filer files the Test again, and the sync has nothing left to check.
+    calls, transport = _recorder(state="open")
+    await github_integration.file_issues_for(db, [tc.id], transport=transport)
+    assert [r.url.path for r in calls] == ["/repos/acme/app/issues"]
+    await db.refresh(tc)
+    assert tc.github_issue_number == 77
+    assert tc.github_issue_closed is False  # store_filed_link starts the fresh link unflagged
+    calls.clear()
+    await github_integration.sync_closed_issues(session_factory, transport=transport)
+    assert [r.url.path for r in calls] == ["/repos/acme/app/issues/77"]  # only the new link remains
+
+
 async def test_job_provider_gate(db):
     """Only a Job of a GitHub Pipeline can hold a link (ADR 0008), and the gate is the provider."""
     job = await _job(db, provider="gitlab")
