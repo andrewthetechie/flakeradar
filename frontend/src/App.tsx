@@ -1,14 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   fetchFailedReports,
-  fetchHistory,
-  fetchJobHistory,
-  fetchJobSummary,
-  fetchJobs,
-  fetchReportSummary,
-  fetchRepos,
-  fetchSummary,
-  fetchTests,
   latestWins,
   setQuarantine,
   type History,
@@ -36,9 +28,9 @@ import { TestDrawer } from "./components/TestDrawer";
 import { ThemeToggle } from "./components/ThemeToggle";
 import { ViewToggle } from "./components/ViewToggle";
 import { useViewState } from "./urlState";
+import { loadJobHistory, loadTestHistory, loadViewBundle } from "./viewData";
 
 const REFRESH_MS = 30_000;
-const PAGE_SIZE = 50;
 
 export default function App() {
   const [view, setView] = useViewState();
@@ -78,63 +70,38 @@ export default function App() {
     const guard = guardRef.current;
     const request = guard.start();
     try {
-      const queueQ = fetchReportSummary();
-      if (kind === "ci-run") {
-        // CiRunView fetches the CI run itself; the header needs repos + queue.
-        const [r, queue] = await Promise.all([fetchRepos(), queueQ]);
-        if (!guard.current(request)) return;
-        setRepos(r);
-        setQueue(queue);
-        setError(null);
-      } else if (kind === "jobs") {
-        const [r, s, jobs, queue] = await Promise.all([
-          fetchRepos(),
-          fetchJobSummary(repo),
-          fetchJobs({
-            repo,
-            page: pageNumber,
-            pageSize: PAGE_SIZE,
-            sort,
-            showStable,
-            pipeline,
-            issue,
-            newWithinDays: newDays,
-            q,
-          }),
-          queueQ,
-        ]);
-        if (!guard.current(request)) return;
-        setRepos(r);
-        setJobSummary(s);
-        setJobPage(jobs);
-        setQueue(queue);
-        setError(null);
-      } else {
-        const scope = { repo, project };
-        const [r, s, t, queue] = await Promise.all([
-          fetchRepos(),
-          fetchSummary(scope),
-          fetchTests({
-            ...scope,
-            page: pageNumber,
-            pageSize: PAGE_SIZE,
-            sort,
-            showStable,
-            category: cause,
-            quarantined,
-            issue,
-            newWithinDays: newDays,
-            q,
-          }),
-          queueQ,
-        ]);
-        if (!guard.current(request)) return;
-        setRepos(r);
-        setSummary(s);
-        setPage(t);
-        setQueue(queue);
-        setError(null);
+      const bundle = await loadViewBundle(
+        {
+          view: kind,
+          repo,
+          project,
+          page: pageNumber,
+          sort,
+          showStable,
+          cause,
+          quarantined,
+          issue,
+          newDays,
+          pipeline,
+          q,
+        },
+        guard,
+        request,
+      );
+      // The loader answers nothing once a newer request superseded this one.
+      if (bundle == null) return;
+      // Every view's header data. The CI run view fetches its own run inside
+      // CiRunView, so it applies nothing beyond this.
+      setRepos(bundle.repos);
+      setQueue(bundle.queue);
+      if (bundle.kind === "tests") {
+        setSummary(bundle.summary);
+        setPage(bundle.page);
+      } else if (bundle.kind === "jobs") {
+        setJobSummary(bundle.jobSummary);
+        setJobPage(bundle.jobPage);
       }
+      setError(null);
     } catch (e) {
       if (!guard.current(request)) return;
       setError(e instanceof Error ? e.message : String(e));
@@ -180,9 +147,10 @@ export default function App() {
       // this drawer's in-flight answer without superseding the list's refresh.
       const guard = latestWins();
       const request = guard.start();
-      fetchJobHistory(view.job)
+      loadJobHistory(view.job, guard, request)
         .then((h) => {
-          if (guard.current(request)) setJobHistory(h);
+          // The loader answers null once this request is superseded or cancelled.
+          if (h != null) setJobHistory(h);
         })
         .catch((e) => {
           if (guard.current(request)) setError(e instanceof Error ? e.message : String(e));
@@ -195,9 +163,10 @@ export default function App() {
     }
     const guard = latestWins();
     const request = guard.start();
-    fetchHistory(view.test)
+    loadTestHistory(view.test, guard, request)
       .then((h) => {
-        if (guard.current(request)) setHistory(h);
+        // The loader answers null once this request is superseded or cancelled.
+        if (h != null) setHistory(h);
       })
       .catch((e) => {
         if (guard.current(request)) setError(e instanceof Error ? e.message : String(e));
