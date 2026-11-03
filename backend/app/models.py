@@ -215,8 +215,9 @@ class Report(Base):
     body_sha256: Mapped[str | None] = mapped_column(String(64), default=None)
     status: Mapped[str] = mapped_column(String(16), default=REPORT_PENDING, server_default=REPORT_PENDING)
     error: Mapped[str | None] = mapped_column(Text, default=None)
-    # Number of times this Report has been re-processed after a failed attempt
-    # (transient auto-retries and manual retries). Capped by max_report_retries.
+    # Number of automatic retries spent after transient processing failures, capped
+    # by max_report_retries. A manual retry through the API resets it to 0, giving the
+    # Report a fresh budget.
     retry_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     counts: Mapped[dict[str, Any] | None] = mapped_column(JSONB, default=None)
     run_id: Mapped[int | None] = mapped_column(ForeignKey("test_runs.id", ondelete="SET NULL"), default=None)

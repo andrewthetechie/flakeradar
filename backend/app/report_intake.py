@@ -166,13 +166,21 @@ def fail_report(report: Report, *, now: datetime, error: str) -> None:
 
 
 def requeue_report(report: Report, *, error: str | None) -> None:
-    """The requeue transition: spend one retry from the shared budget and put the
-    Report back in the queue — retry_count + 1, status pending, processed_at None.
-    `error` is the whole difference between the two retry kinds: None clears it (a
-    manual retry starts clean), a message keeps it (a transient failure stays
-    visible). Both kinds cap against max_report_retries; the caller decides whether
-    a retry is still allowed. Field-only; the caller owns the transaction."""
+    """The requeue transition: spend one automatic retry and put the Report back in
+    the queue — retry_count + 1, status pending, processed_at None. Only the
+    transient path uses it, and `processing` caps that path against
+    max_report_retries. Field-only; the caller owns the transaction."""
     report.retry_count = (report.retry_count or 0) + 1
     report.status = REPORT_PENDING
     report.error = error
+    report.processed_at = None
+
+
+def retry_failed_report(report: Report) -> None:
+    """The manual-retry transition: a human puts a failed Report back in the queue
+    with a fresh automatic-retry budget — retry_count 0, status pending, error None,
+    processed_at None. Field-only; the caller owns the transaction."""
+    report.retry_count = 0
+    report.status = REPORT_PENDING
+    report.error = None
     report.processed_at = None

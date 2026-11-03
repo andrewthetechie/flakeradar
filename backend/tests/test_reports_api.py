@@ -68,16 +68,19 @@ async def test_retry(client, db):
     assert missing.json()["detail"] == "Report not found"
 
 
-async def test_retry_respects_cap(client, db, monkeypatch):
-    from app.routers import reports as reports_router
-
-    monkeypatch.setattr(reports_router, "get_settings", lambda: Settings(max_report_retries=2))
+async def test_retry_resets_the_budget_at_the_cap(client, db):
+    """A manual retry is a human decision: a failed Report retries with 200 even
+    when the automatic retries already spent the whole `max_report_retries` budget,
+    and its `retry_count` goes back to 0."""
     _, failed, _, _ = await _seed(db)
-    failed.retry_count = 2  # at the cap
+    failed.retry_count = Settings().max_report_retries  # budget fully spent
     await db.commit()
     resp = await client.post(f"/api/reports/{failed.id}/retry", headers=AUTH)
-    assert resp.status_code == 409
-    assert resp.json()["detail"] == "Max retries reached for this report"
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "pending"
+    assert resp.json()["retry_count"] == 0
+    await db.refresh(failed)
+    assert (failed.status, failed.retry_count) == ("pending", 0)
 
 
 async def test_delete(client, db):
