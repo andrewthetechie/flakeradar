@@ -148,6 +148,12 @@ describe("TestDrawer", () => {
     expect(screen.queryByRole("link")).toBeNull();
   });
 
+  it("falls back to the suite when the runner gave no classname", () => {
+    renderDrawer({ test: { ...history.test, classname: "" } });
+    // classname || suite -> the suite name is shown instead of a blank.
+    expect(screen.getByText("unit")).toBeInTheDocument();
+  });
+
   it("closes on Escape and on the close button", async () => {
     const { onClose } = renderDrawer();
     fireEvent.keyDown(window, { key: "Escape" });

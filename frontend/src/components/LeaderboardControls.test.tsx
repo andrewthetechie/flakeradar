@@ -159,4 +159,11 @@ describe("LeaderboardControls sort and filter handlers", () => {
     render(<LeaderboardControls {...base} onQuarantined={() => {}} />);
     expect(screen.getByRole("checkbox", { name: /quarantined only/i })).not.toBeChecked();
   });
+
+  it("the broken checkbox defaults to unchecked when the value is unknown", () => {
+    render(<LeaderboardControls {...base} onBroken={() => {}} />);
+    // onBroken wires the control, but `broken` is undefined, so the `broken ?? false`
+    // fallback renders the box unchecked.
+    expect(screen.getByRole("checkbox", { name: /broken on default branch/i })).not.toBeChecked();
+  });
 });
