@@ -15,7 +15,7 @@ docker run -d --name flakeradar-pg -p 5432:5432 \
 # Backend (Python 3.12)
 cd backend
 python3.12 -m venv .venv
-.venv/bin/pip install -r requirements.txt
+.venv/bin/pip install -r requirements-dev.txt
 FLAKERADAR_ALLOW_INSECURE=1 .venv/bin/python -m uvicorn app.main:app --port 8000
 
 # Frontend
@@ -23,6 +23,26 @@ cd frontend
 npm install
 npm run dev
 ```
+
+## Updating Python dependencies
+
+`backend/requirements.in` and `backend/requirements-dev.in` hold the version
+ranges; `requirements.txt` and `requirements-dev.txt` are generated and checked
+in, fully pinned with `--hash=` values, so every install reproduces exactly the
+same dependencies (the Docker image installs the runtime lock with
+`pip install --no-cache-dir --require-hashes -r requirements.txt`). Edit the
+`.in` files, then regenerate **both** `.txt` files from the repo root
+(`requirements-dev.in` includes `requirements.in`, so the two must stay in step):
+
+```bash
+# Compile for 3.12: the image runs python:3.12-slim.
+uv pip compile --generate-hashes --python-version 3.12 backend/requirements.in -o backend/requirements.txt
+uv pip compile --generate-hashes --python-version 3.12 backend/requirements-dev.in -o backend/requirements-dev.txt
+```
+
+Recreate your venv afterwards so it matches the lock (`pip install -r
+backend/requirements-dev.txt`; pip checks the hashes on its own because every
+entry carries them).
 
 ## Test gate
 
