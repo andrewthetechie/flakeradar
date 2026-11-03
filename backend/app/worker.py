@@ -38,9 +38,14 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, AsyncSession, a
 
 from . import github_integration
 from .db import WORKER_LOCK_KEY
+from .models import REPORT_PENDING
 from .processing import ProcessOutcome, process_next
 
 logger = logging.getLogger("flakeradar.worker")
+
+# Ceiling for the wait after a transiently failed Report, in seconds: the
+# exponential backoff from ``poll_seconds`` stops growing here.
+MAX_RETRY_BACKOFF_SECONDS = 30
 
 OnProcessed = Callable[[ProcessOutcome], Awaitable[None]]
 Prune = Callable[[], Awaitable[object]]
@@ -244,6 +249,12 @@ class ReportWorker:
                         await self._on_processed(outcome)
                     except Exception:
                         logger.exception("on_processed hook failed for Report %s", outcome.report_id)
+                if outcome.status == REPORT_PENDING:
+                    # A transient (DB-level) failure re-queued this Report: it is
+                    # still the oldest pending one, so claiming again right away
+                    # would spend the whole retry budget in milliseconds. Wait
+                    # out the backoff before the next claim.
+                    await asyncio.sleep(min(self._poll_seconds * 2**outcome.retry_count, MAX_RETRY_BACKOFF_SECONDS))
             except asyncio.CancelledError:
                 raise
             except Exception:

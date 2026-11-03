@@ -1,11 +1,10 @@
-"""One shared retry budget, spent through one requeue transition (ADR 0002, issue #91).
+"""Who spends the retry budget, and who refills it (issue #13).
 
-Both retry kinds — the manual endpoint (`POST /api/reports/{id}/retry`) and the
-processor's transient-failure path — apply `report_intake.requeue_report`. That is what
-this file pins: the same `retry_count + 1`, `status = pending`, `processed_at = None`
-reset on both sides, `error` being the whole difference between them (a manual retry
-clears it, a transient one keeps it), and a single `max_report_retries` budget that both
-kinds spend out of the same column and cap at the same number.
+Only the processor's transient-failure path spends it: it applies
+`report_intake.requeue_report` (`retry_count + 1`) and caps at `max_report_retries`.
+The manual endpoint applies `report_intake.retry_failed_report` instead, which resets
+`retry_count` to 0 — a human decision is never blocked by the automatic retries that
+came before it, and the spent budget becomes a fresh one.
 """
 
 import logging
@@ -14,7 +13,6 @@ from app import report_intake
 from app.config import Settings
 from app.models import REPORT_FAILED, REPORT_PENDING, utcnow
 from app.processing import process_next
-from app.routers import reports as reports_router
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import object_session
 
@@ -22,26 +20,21 @@ from tests.conftest import AUTH, make_junit
 from tests.factories import make_project, make_report
 
 _BODY = make_junit([("t", "failed")])
-_MAX = 2  # one max_report_retries, patched into both retry kinds' settings
+_MAX = 2  # one max_report_retries, patched into the processor's settings
 
 
 async def _fail_transiently(monkeypatch, max_retries: int) -> None:
     """Make processing fail with a transient DB error, under `max_retries`.
 
-    The two kinds read the budget from two places: the processor calls
-    `app.processing.get_settings`, the endpoint the `get_settings` imported into the
-    router module. Patching only one would silently leave the other at the default 3.
+    The manual endpoint no longer reads the budget, so only the processor's
+    `app.processing.get_settings` needs patching.
     """
 
     async def boom(db, report):
         raise OperationalError("stmt", {}, Exception("connection reset"))
 
-    def settings() -> Settings:
-        return Settings(max_report_retries=max_retries)
-
     monkeypatch.setattr("app.processing.process_report", boom)
-    monkeypatch.setattr("app.processing.get_settings", settings)
-    monkeypatch.setattr(reports_router, "get_settings", settings)
+    monkeypatch.setattr("app.processing.get_settings", lambda: Settings(max_report_retries=max_retries))
 
 
 async def _seed_a_failed_junit_report(db, commit_sha: str = "sha1"):
@@ -55,19 +48,23 @@ async def _seed_a_failed_junit_report(db, commit_sha: str = "sha1"):
     return proj, rep
 
 
-async def test_manual_retry_applies_the_requeue_transition(client, db):
+async def test_manual_retry_applies_the_manual_retry_transition(client, db):
     _, rep = await _seed_a_failed_junit_report(db)
+    rep.retry_count = _MAX  # the automatic budget is already spent
+    await db.commit()
 
     assert (await client.post(f"/api/reports/{rep.id}/retry")).status_code == 401
     resp = await client.post(f"/api/reports/{rep.id}/retry", headers=AUTH)
     assert resp.status_code == 200
     assert resp.json()["status"] == REPORT_PENDING and resp.json()["error"] is None
+    assert resp.json()["retry_count"] == 0
 
     await db.refresh(rep)
     assert rep.status == REPORT_PENDING
-    # A manual retry starts clean: the error is cleared, and the row is un-processed.
+    # A manual retry starts clean: the error is cleared, the row is un-processed, and
+    # the automatic-retry budget is brand new.
     assert (rep.error, rep.processed_at) == (None, None)
-    assert rep.retry_count == 1
+    assert rep.retry_count == 0
 
 
 async def test_transient_retry_applies_the_requeue_transition(db, session_factory, monkeypatch, caplog):
@@ -94,13 +91,14 @@ async def test_transient_retry_applies_the_requeue_transition(db, session_factor
     assert rep.error == outcome.error
 
 
-async def test_both_retry_kinds_reset_the_same_fields(client, db, session_factory, monkeypatch):
+async def test_both_retry_kinds_reset_the_queue_fields(client, db, session_factory, monkeypatch):
     proj = await make_project(db, "acme/app", "backend")
     manual = await make_report(db, proj, _BODY, commit_sha="manual", status=REPORT_FAILED)
     transient = await make_report(db, proj, _BODY, commit_sha="transient")
     for rep in (manual, transient):
         rep.error = "ParseError: boom"
         rep.processed_at = utcnow()
+    manual.retry_count = _MAX  # a spent budget, which the manual retry must reset
     await db.commit()
     await _fail_transiently(monkeypatch, _MAX)
 
@@ -113,49 +111,17 @@ async def test_both_retry_kinds_reset_the_same_fields(client, db, session_factor
 
     await db.refresh(manual)
     await db.refresh(transient)
-    assert (manual.status, manual.processed_at, manual.retry_count) == (
-        transient.status,
-        transient.processed_at,
-        transient.retry_count,
-    )
-    assert manual.status == REPORT_PENDING and manual.retry_count == 1
-    # `error` is the only field the two kinds differ on.
+    # Back in the queue, both rows look the same.
+    assert manual.status == transient.status == REPORT_PENDING
+    assert manual.processed_at is None and transient.processed_at is None
+    # `error` and `retry_count` are the fields the two kinds differ on: a transient
+    # retry spends one automatic retry, a manual one resets the budget to 0.
     assert manual.error is None
     assert transient.error == outcome.error and transient.error is not None
+    assert manual.retry_count == 0 and transient.retry_count == 1
 
 
-async def test_one_budget_is_spent_by_both_kinds(client, db, session_factory, monkeypatch):
-    proj = await make_project(db, "acme/app", "backend")
-    rep = await make_report(db, proj, _BODY, commit_sha="shared")
-    await db.commit()
-    await _fail_transiently(monkeypatch, _MAX)
-
-    # One transient retry spends one unit of the budget...
-    outcome = await process_next(session_factory)
-    assert outcome is not None and outcome.status == REPORT_PENDING
-    await db.refresh(rep)
-    assert (rep.status, rep.retry_count) == (REPORT_PENDING, 1)
-
-    # ...and the endpoint reads the same column: with max_report_retries=2 it allows
-    # exactly the remaining retry.
-    rep.status = REPORT_FAILED
-    await db.commit()
-    resp = await client.post(f"/api/reports/{rep.id}/retry", headers=AUTH)
-    assert resp.status_code == 200
-    await db.refresh(rep)
-    assert (rep.status, rep.retry_count) == (REPORT_PENDING, 2)
-
-    # Nothing left to spend: the partly-transient budget is what the endpoint 409s on.
-    rep.status = REPORT_FAILED
-    await db.commit()
-    capped = await client.post(f"/api/reports/{rep.id}/retry", headers=AUTH)
-    assert capped.status_code == 409
-    assert capped.json()["detail"] == "Max retries reached for this report"
-    await db.refresh(rep)
-    assert (rep.status, rep.retry_count) == (REPORT_FAILED, 2)
-
-
-async def test_both_kinds_cap_at_the_same_max_report_retries(client, db, session_factory, monkeypatch):
+async def test_transient_retries_cap_at_max_report_retries(client, db, session_factory, monkeypatch):
     proj = await make_project(db, "acme/app", "backend")
     rep = await make_report(db, proj, _BODY, commit_sha="cap")
     await db.commit()
@@ -174,12 +140,32 @@ async def test_both_kinds_cap_at_the_same_max_report_retries(client, db, session
     assert (rep.status, rep.retry_count) == (REPORT_FAILED, _MAX)
     assert await process_next(session_factory) is None  # never pending again
 
-    # The manual endpoint 409s at exactly that N.
+    # A manual retry is not capped: at exactly that N it returns 200 and resets.
     resp = await client.post(f"/api/reports/{rep.id}/retry", headers=AUTH)
-    assert resp.status_code == 409
-    assert resp.json()["detail"] == "Max retries reached for this report"
+    assert resp.status_code == 200
     await db.refresh(rep)
-    assert (rep.status, rep.retry_count) == (REPORT_FAILED, _MAX)
+    assert (rep.status, rep.retry_count) == (REPORT_PENDING, 0)
+
+
+async def test_manual_retry_gives_a_fresh_budget(client, db, session_factory, monkeypatch):
+    """After the reset the budget is really usable: the next transient failure retries."""
+    proj = await make_project(db, "acme/app", "backend")
+    rep = await make_report(db, proj, _BODY, commit_sha="refill", status=REPORT_FAILED)
+    rep.retry_count = _MAX
+    rep.error = "OperationalError: connection reset"
+    rep.processed_at = utcnow()
+    await db.commit()
+    await _fail_transiently(monkeypatch, _MAX)
+
+    resp = await client.post(f"/api/reports/{rep.id}/retry", headers=AUTH)
+    assert resp.status_code == 200
+    await db.refresh(rep)
+    assert (rep.status, rep.retry_count, rep.error) == (REPORT_PENDING, 0, None)
+
+    outcome = await process_next(session_factory)
+    assert outcome is not None and outcome.status == REPORT_PENDING
+    await db.refresh(rep)
+    assert (rep.status, rep.retry_count) == (REPORT_PENDING, 1)
 
 
 async def test_requeue_report_is_the_requeue_transition(db):
@@ -206,3 +192,25 @@ async def test_requeue_report_is_the_requeue_transition(db):
     spent.retry_count = 2
     report_intake.requeue_report(spent, error="OperationalError: db blip")
     assert (spent.retry_count, spent.status, spent.error) == (3, REPORT_PENDING, "OperationalError: db blip")
+
+
+async def test_retry_failed_report_is_the_manual_retry_transition(db):
+    proj = await make_project(db, "acme/app", "backend")
+    row = report_intake.build_junit_report(project=proj, body=_BODY, commit_sha="sha1")
+    row.status = REPORT_FAILED
+    row.retry_count = 5
+    row.error = "OperationalError: connection reset"
+    row.processed_at = utcnow()
+    row.counts = {"passed": 1}
+    row.run_id = 7
+
+    report_intake.retry_failed_report(row)
+
+    assert row.status == REPORT_PENDING
+    assert (row.error, row.processed_at) == (None, None)
+    # Whatever the automatic retries spent, a manual retry starts from a fresh budget.
+    assert row.retry_count == 0
+    # Field-only: the complete-transition fields stay as they were, and the caller owns
+    # the transaction.
+    assert (row.counts, row.run_id) == ({"passed": 1}, 7)
+    assert object_session(row) is None
