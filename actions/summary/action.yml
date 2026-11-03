@@ -1,0 +1,59 @@
+name: "FlakeRadar: CI run summary"
+description: >-
+  Write which of this CI job's failed tests FlakeRadar already knows as flaky to
+  the GitHub job summary. A standalone read-only companion to any FlakeRadar
+  reporter (the JUnit snippet or the report action): it polls the
+  /api/ci-runs/{id}/failures endpoint until this attempt's reports are processed,
+  keeps only the failures of this job, and writes a Markdown table. It never
+  fails the job.
+inputs:
+  url:
+    description: "Base URL of your FlakeRadar, e.g. https://flakeradar.example.com. Sent to /api/ci-runs."
+    required: true
+  token:
+    description: "Your FlakeRadar API token (FLAKERADAR_API_TOKEN), sent as X-API-Key. The failures endpoint is read-only, so this may be any token the instance accepts."
+    required: true
+  repo:
+    description: "owner/name of the repository. Defaults to the run's repository (GITHUB_REPOSITORY)."
+    required: false
+    default: ""
+  ci_run_id:
+    description: "The CI run id. Defaults to the run id (GITHUB_RUN_ID)."
+    required: false
+    default: ""
+  ci_run_attempt:
+    description: "The CI run attempt. Defaults to the run attempt (GITHUB_RUN_ATTEMPT, else 1)."
+    required: false
+    default: ""
+  ci_job_id:
+    description: "Only failures produced by this job. Composite action metadata cannot read job.check_run_id by default, so pass it explicitly: ci_job_id: ${{ job.check_run_id }}. Empty shows every job's failures (the other jobs of the run are expected to write their own summaries)."
+    required: false
+    default: ""
+  summary-timeout:
+    description: "Seconds to wait for this attempt's reports to finish processing (reports.pending == 0) before writing a timeout line and giving up. Defaults to 60."
+    required: false
+    default: "60"
+  dashboard-url:
+    description: "Optional base URL of the FlakeRadar dashboard. When set, each failing Test links to ?repo=...&test=<id>."
+    required: false
+    default: ""
+  summary-file:
+    description: "Optional absolute path of a file to also append the summary Markdown to (in addition to the step summary). The main use is a self-test that inspects the output. Defaults to empty (write only to $GITHUB_STEP_SUMMARY)."
+    required: false
+    default: ""
+runs:
+  using: composite
+  steps:
+    - name: Write the FlakeRadar CI run summary
+      shell: bash
+      env:
+        FR_URL: ${{ inputs.url }}
+        FR_TOKEN: ${{ inputs.token }}
+        FR_REPO: ${{ inputs.repo }}
+        FR_RUN_ID: ${{ inputs.ci_run_id }}
+        FR_ATTEMPT: ${{ inputs.ci_run_attempt }}
+        FR_JOB_ID: ${{ inputs.ci_job_id }}
+        FR_TIMEOUT: ${{ inputs.summary-timeout }}
+        FR_DASHBOARD_URL: ${{ inputs.dashboard-url }}
+        FR_SUMMARY_FILE: ${{ inputs.summary-file }}
+      run: bash "${{ github.action_path }}/summary.sh"
