@@ -177,6 +177,7 @@ class TestOut(BaseModel):
     quarantine_expires_at: datetime | None
     github_issue_number: int | None
     github_issue_url: str | None
+    github_issue_closed: bool  # the linked issue was closed as "not planned"
 
 
 class TestPage(BaseModel):
@@ -271,6 +272,7 @@ class JobOut(BaseModel):
     summary: bool  # a summary Job (CONTEXT.md); its explained failures are never scored
     github_issue_number: int | None
     github_issue_url: str | None  # only when provider == "github"
+    github_issue_closed: bool  # the linked issue was closed as "not planned"
 
 
 class JobPage(BaseModel):
@@ -404,6 +406,7 @@ class CiRunTestFailureOut(BaseModel):
     quarantined: bool
     github_issue_number: int | None
     github_issue_url: str | None
+    github_issue_closed: bool  # the linked issue was closed as "not planned"
 
 
 class CiRunFailedJobOut(BaseModel):
@@ -420,6 +423,7 @@ class CiRunFailedJobOut(BaseModel):
     clean_streak: int
     github_issue_number: int | None
     github_issue_url: str | None  # only when the Pipeline's provider is github
+    github_issue_closed: bool  # the linked issue was closed as "not planned"
 
 
 class CiRunFailuresOut(BaseModel):
