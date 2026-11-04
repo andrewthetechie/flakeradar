@@ -231,7 +231,11 @@ const DEFERRED: &[Deferred] = &[
         ]),
         task: 10,
         reason: "the 422 shapes of the read APIs (task 09), of the quarantine and issue routes \
-                 (task 09 and task 10), and of ingest (task 06)",
+                 (task 09 and task 10), and of ingest (task 06). Step 17 is not a 422: Python's \
+                 lax bool takes {\"quarantined\": \"yes\"} as true, so the quarantine route \
+                 looked up a missing Test and answered 404 {\"detail\": \"Test not found\"} \
+                 (golden 17). Whichever task lands that route must take Pydantic's bool spellings \
+                 and reproduce the 404, never a 422",
     },
 ];
 

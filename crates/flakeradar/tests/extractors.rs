@@ -94,6 +94,16 @@ struct TestPath {
 }
 
 /// A body DTO with an integer, a boolean and a bounded string.
+///
+/// The fields are named for their types, not for a route: this suite pins what
+/// [`ApiJson`] does with a body, and which spellings a route's own DTO accepts
+/// is the route's decision. `validation.json` step 17 shows the difference —
+/// Pydantic's `bool` takes the string `"yes"` as true, so Python's
+/// `POST /api/tests/1/quarantine` accepted that body, found no Test 1 and
+/// answered 404 `{"detail": "Test not found"}` (golden 17), not the 422 a
+/// strict `bool` gives. Task 10 must reproduce that 404, so the quarantine route
+/// needs a bool that takes Pydantic's spellings; see the deferral in
+/// `tests/parity.rs`.
 #[derive(Debug, Deserialize)]
 struct UpdateBody {
     number: i64,
@@ -102,7 +112,7 @@ struct UpdateBody {
         dead_code,
         reason = "the extractor must parse it; these tests read other fields"
     )]
-    quarantined: bool,
+    enabled: bool,
     #[serde(default)]
     reason: Option<String>,
 }
@@ -319,10 +329,13 @@ async fn a_body_field_of_the_wrong_type_names_the_field() {
         axum::http::Method::POST,
         "/update",
         &[("content-type", "application/json")],
-        r#"{"number": 1, "quarantined": "yes"}"#,
+        r#"{"number": 1, "enabled": "yes"}"#,
     )
     .await;
-    assert_single_issue(&reply, "bool_parsing", &json!(["body", "quarantined"]));
+    // A field this DTO types `bool` rejects the string, and the rejection is
+    // Pydantic's `bool_parsing` shape. A route whose DTO takes Pydantic's lax
+    // spellings — as the quarantine body does — never reaches this arm.
+    assert_single_issue(&reply, "bool_parsing", &json!(["body", "enabled"]));
 }
 
 #[tokio::test]
