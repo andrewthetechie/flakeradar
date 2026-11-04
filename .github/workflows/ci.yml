@@ -181,6 +181,20 @@ jobs:
           path: target/nextest/ci/junit.xml
           if-no-files-found: error
 
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Test the pytest manifest checker
+        run: node --test scripts/check-test-manifest.test.mjs
+
+      - name: Check the pytest manifest
+        # It reads the highest task marked Done in STATUS.md: every pending row
+        # of a landed task, every `na` row without a reason and every `ported`
+        # row naming a test nextest does not know fails this step.
+        run: node scripts/check-test-manifest.mjs
+
       - name: Cache cargo-audit binary
         id: cache-audit
         uses: actions/cache@v4
