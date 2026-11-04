@@ -136,6 +136,9 @@ class TestCase(Base):
     # True = the linked issue was closed as not planned; the link is kept and
     # the filer stays quiet. Cleared on reopen or manual unlink.
     github_issue_closed: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    # When FlakeRadar commented that the fix appears to hold; NULL = never noted.
+    # Cleared when the Clean streak resets or the link changes.
+    github_issue_fixed_noted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
 
 
 class TestRun(Base):
@@ -274,6 +277,9 @@ class Job(Base):
     # True = the linked issue was closed as not planned; the link is kept and
     # the filer stays quiet. Cleared on reopen or manual unlink.
     github_issue_closed: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    # When FlakeRadar commented that the fix appears to hold; NULL = never noted.
+    # Cleared when the Clean streak resets or the link changes.
+    github_issue_fixed_noted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

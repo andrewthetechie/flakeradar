@@ -50,6 +50,17 @@ class Settings(BaseSettings):
     # linked Jobs) per run, oldest check first.
     github_sync_batch: int = 2000
 
+    # When a linked Test or Job has passed on the Default branch this many
+    # consecutive runs — its Clean streak (CONTEXT.md) — FlakeRadar comments
+    # once on the linked issue that the fix appears to hold. 0 disables.
+    github_fixed_streak: int = 0
+    # Also close the noted issue with state_reason completed; the next
+    # maintenance sync then clears the link as usual.
+    github_close_fixed: bool = False
+    # Public base URL of the dashboard, e.g. https://flake.example.com; set it
+    # and the fixed-note comment carries a deep link to the Test or Job.
+    public_url: str = ""
+
     # Tier classification threshold for the UI/API ("flaky" vs "suspect").
     # Independent of the GitHub filing gate above.
     flake_threshold: float = 0.30

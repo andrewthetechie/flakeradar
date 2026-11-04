@@ -126,7 +126,9 @@ async def rescore(
     Proven flakes (same-SHA flips) still count on every branch. A Repo whose
     Default branch is unknown (NULL) scores exactly as before. `day_counts`
     maps a test id to (executions, failures) added today, so each rescore also
-    writes that day's Score history row.
+    writes that day's Score history row. A rescore whose Clean streak comes out
+    at 0 also clears `github_issue_fixed_noted_at`, so a Test that failed again
+    can be noted again on GitHub when the next fix holds (issue #33).
     """
     settings = get_settings()
     on_default = or_(Repo.default_branch.is_(None), TestRun.branch == Repo.default_branch)
@@ -188,16 +190,21 @@ async def rescore(
             settings.score_decay,
             settings.score_window,
         )
-        updates.append(
-            {
-                "id": tc_id,
-                "flakiness_score": score,
-                "confirmed_flake_count": confirmed,
-                "failure_category": dominant_category(categories.get(tc_id, [])[: settings.score_window]),
-                "clean_streak": scoring.branch_scoped_streak(execs, default_branch.get(tc_id)),
-                "fail_streak": scoring.branch_scoped_fail_streak(execs, default_branch.get(tc_id)),
-            }
-        )
+        streak = scoring.branch_scoped_streak(execs, default_branch.get(tc_id))
+        changes: dict[str, Any] = {
+            "id": tc_id,
+            "flakiness_score": score,
+            "confirmed_flake_count": confirmed,
+            "failure_category": dominant_category(categories.get(tc_id, [])[: settings.score_window]),
+            "clean_streak": streak,
+            "fail_streak": scoring.branch_scoped_fail_streak(execs, default_branch.get(tc_id)),
+        }
+        if streak == 0:
+            # Issue #33: the Test failed again, so the "the fix appears to hold" note is stale
+            # and the next clean streak must be able to post it again. Any other streak leaves
+            # the key out of the bulk update, which is what preserves an existing stamp.
+            changes["github_issue_fixed_noted_at"] = None
+        updates.append(changes)
     for chunk in chunks(updates):
         await db.execute(update(TestCase), chunk)
     if updates:
@@ -296,14 +303,16 @@ async def rescore_jobs(
             settings.score_decay,
             settings.score_window,
         )
-        updates.append(
-            {
-                "id": job_id,
-                "flakiness_score": score,
-                "confirmed_flake_count": confirmed,
-                "clean_streak": scoring.branch_scoped_streak(execs, def_branch),
-            }
-        )
+        streak = scoring.branch_scoped_streak(execs, def_branch)
+        changes: dict[str, Any] = {
+            "id": job_id,
+            "flakiness_score": score,
+            "confirmed_flake_count": confirmed,
+            "clean_streak": streak,
+        }
+        if streak == 0:  # the same reset as in `rescore`, for Jobs too (issue #33)
+            changes["github_issue_fixed_noted_at"] = None
+        updates.append(changes)
     for chunk in chunks(updates):
         await db.execute(update(Job), chunk)
     if updates:

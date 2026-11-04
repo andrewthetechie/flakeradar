@@ -9,7 +9,7 @@ from app import github_integration, issue_links
 from app.config import Settings
 from app.models import Job, Project, Repo, TestCase
 from app.processing import ProcessOutcome
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 
 from tests.factories import (
     make_execution,
@@ -1068,6 +1068,7 @@ async def test_hook_ignores_failed_reports(session_factory, gh_settings, monkeyp
 
     async def fake_file(db, ids, **kw):
         called.append(ids)
+        return set()  # the real filer reports the ids it linked
 
     monkeypatch.setattr(github_integration, "file_issues_for", fake_file)
     failed = ProcessOutcome(report_id=1, status="failed", run_id=None, counts=None, touched_test_ids=[], error="x")
@@ -1688,3 +1689,518 @@ async def test_job_link_change_and_unlink_reset_the_check_stamp(db, gh_settings,
     await db.refresh(job)
     assert job.github_issue_number is None
     assert job.github_issue_checked_at is None
+
+
+# --- "the fix appears to hold" note (issue #33) -------------------------
+
+
+@pytest.fixture()
+def fixed_settings(gh_settings):
+    """The filing settings plus an enabled Clean-streak note threshold."""
+    gh_settings.github_fixed_streak = 5
+    return gh_settings
+
+
+def _note_recorder(*, post_status=201, patch_status=200, headers=None):
+    """Like `_recorder`, but a close PATCH answers 200 the way GitHub does."""
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if request.method == "PATCH":
+            return httpx.Response(patch_status, json={}, headers=headers or {})
+        return httpx.Response(post_status, json={"number": 99}, headers=headers or {})
+
+    return calls, httpx.MockTransport(handler)
+
+
+def _note_entry(entity: str):
+    """The note entry point of one entity, so every scenario can run both sides."""
+    return (
+        github_integration.note_fixed_issues_for if entity == "test" else github_integration.note_fixed_job_issues_for
+    )
+
+
+async def _note_row(db, entity: str, name: str, *, repo="acme/app", **fields):
+    """A linked Test/Job row at the note threshold, one Project/Pipeline each."""
+    if entity == "test":
+        return await _flaky_test(db, repo=repo, project=name, name=name, **fields)
+    return await _flaky_job(db, repo=repo, pipeline=f".github/workflows/{name}.yml", name=name, **fields)
+
+
+@pytest.mark.parametrize("entity", ["test", "job"])
+async def test_fixed_note_comments_once_on_the_linked_issue(db, fixed_settings, entity):
+    """The streak is reached with an issue linked: exactly one comment, and the stamp lands."""
+    note = _note_entry(entity)
+    obj = await _note_row(db, entity, "linked", github_issue_number=77, github_issue_filed=True, clean_streak=5)
+    calls, transport = _note_recorder()
+    await note(db, [obj.id], transport=transport)
+    (req,) = calls
+    assert req.method == "POST"
+    assert req.url.path == "/repos/acme/app/issues/77/comments"
+    body = json.loads(req.content)["body"]
+    assert "FlakeRadar: 5 passing runs" in body
+    assert "(score now 0.60)" in body
+    assert "The fix appears to hold." in body
+    await db.refresh(obj)
+    assert obj.github_issue_fixed_noted_at is not None
+    assert obj.github_issue_number == 77  # noting leaves the link itself alone
+
+
+@pytest.mark.parametrize("entity", ["test", "job"])
+async def test_fixed_note_names_the_default_branch(db, fixed_settings, entity):
+    """The Clean streak is counted on the Default branch, so the comment names it."""
+    obj = await _note_row(db, entity, "linked", github_issue_number=77, clean_streak=5)
+    repo = (await db.execute(select(Repo).where(Repo.name == "acme/app"))).scalar_one()
+    repo.default_branch = "main"
+    await db.commit()
+    calls, transport = _note_recorder()
+    await _note_entry(entity)(db, [obj.id], transport=transport)
+    body = json.loads(calls[0].content)["body"]
+    assert "FlakeRadar: 5 passing runs on `main` since the last failure (score now 0.60)." in body
+
+
+@pytest.mark.parametrize("entity", ["test", "job"])
+async def test_fixed_note_omits_the_branch_when_no_default_branch_is_known(db, fixed_settings, entity):
+    """An unknown Default branch scores every branch, so the comment claims none."""
+    obj = await _note_row(db, entity, "linked", github_issue_number=77, clean_streak=5)
+    calls, transport = _note_recorder()
+    await _note_entry(entity)(db, [obj.id], transport=transport)
+    body = json.loads(calls[0].content)["body"]
+    assert body.startswith("FlakeRadar: 5 passing runs since the last failure (score now 0.60).")
+    assert "\n" not in body  # and no deep link without PUBLIC_URL
+
+
+@pytest.mark.parametrize("entity", ["test", "job"])
+async def test_fixed_note_posts_once_and_a_cleared_stamp_posts_again(db, fixed_settings, entity):
+    """One comment per fix: the next Report is silent, and a cleared stamp notes again.
+
+    t3 wires the rescore reset that clears the stamp for real; the test clears
+    it by hand, which is the same condition the select filters on.
+    """
+    note = _note_entry(entity)
+    obj = await _note_row(db, entity, "linked", github_issue_number=77, clean_streak=5)
+    calls, transport = _note_recorder()
+    await note(db, [obj.id], transport=transport)
+    await note(db, [obj.id], transport=transport)  # the next Report: the stamped row is filtered out
+    assert len(calls) == 1
+
+    obj.github_issue_fixed_noted_at = None  # a failure reset the Clean streak
+    await db.commit()
+    await note(db, [obj.id], transport=transport)
+    assert len(calls) == 2
+    await db.refresh(obj)
+    assert obj.github_issue_fixed_noted_at is not None
+
+
+@pytest.mark.parametrize("entity", ["test", "job"])
+async def test_fixed_note_ignores_rows_that_are_not_noteable(db, fixed_settings, entity):
+    """Below the streak, unlinked, declined as not planned, or streak disabled: silence."""
+    note = _note_entry(entity)
+    short = await _note_row(db, entity, "short", github_issue_number=71, clean_streak=4)
+    unlinked = await _note_row(db, entity, "unlinked", clean_streak=9)
+    declined = await _note_row(db, entity, "declined", github_issue_number=72, github_issue_closed=True, clean_streak=9)
+    await db.commit()
+    calls, transport = _note_recorder()
+    await note(db, [short.id, unlinked.id, declined.id], transport=transport)
+    assert calls == []  # a not-planned link is already closed: nothing to note or close
+    await db.refresh(declined)
+    assert declined.github_issue_fixed_noted_at is None
+
+    fixed_settings.github_fixed_streak = 0  # the feature ships disabled
+    at_streak = await _note_row(db, entity, "streak-off", github_issue_number=73, clean_streak=9)
+    calls, transport = _note_recorder()
+    await note(db, [at_streak.id], transport=transport)
+    assert calls == []
+
+
+async def test_fixed_note_skips_a_job_of_another_provider(db, fixed_settings):
+    """Only a github Pipeline has an issue to note (same rule as filing)."""
+    job = await _flaky_job(db, provider="gitlab", github_issue_number=77, clean_streak=5)
+    calls, transport = _note_recorder()
+    await github_integration.note_fixed_job_issues_for(db, [job.id], transport=transport)
+    assert calls == []
+
+
+@pytest.mark.parametrize("entity", ["test", "job"])
+async def test_fixed_note_closes_only_with_close_fixed(db, gh_settings, entity):
+    """CLOSE_FIXED off: a comment alone. On: that comment, then the close PATCH."""
+    gh_settings.github_fixed_streak = 5
+    note = _note_entry(entity)
+    obj = await _note_row(db, entity, "linked", github_issue_number=77, clean_streak=5)
+    calls, transport = _note_recorder()
+    await note(db, [obj.id], transport=transport)
+    assert [(r.method, r.url.path) for r in calls] == [("POST", "/repos/acme/app/issues/77/comments")]
+
+    gh_settings.github_close_fixed = True
+    obj.github_issue_fixed_noted_at = None
+    await db.commit()
+    calls, transport = _note_recorder()
+    await note(db, [obj.id], transport=transport)
+    assert [(r.method, r.url.path) for r in calls] == [
+        ("POST", "/repos/acme/app/issues/77/comments"),
+        ("PATCH", "/repos/acme/app/issues/77"),
+    ]
+    assert json.loads(calls[1].content) == {"state": "closed", "state_reason": "completed"}
+
+
+@pytest.mark.parametrize("entity", ["test", "job"])
+async def test_fixed_note_keeps_the_stamp_when_the_close_fails(db, fixed_settings, entity, caplog):
+    """A failed close must not buy a second comment: the stamp landed with the POST."""
+    fixed_settings.github_close_fixed = True
+    note = _note_entry(entity)
+    obj = await _note_row(db, entity, "linked", github_issue_number=77, clean_streak=5)
+    calls, transport = _note_recorder(patch_status=500)
+    with caplog.at_level(logging.WARNING, logger="flakeradar.github"):
+        await note(db, [obj.id], transport=transport)
+    assert [(r.method, r.url.path) for r in calls] == [
+        ("POST", "/repos/acme/app/issues/77/comments"),
+        ("PATCH", "/repos/acme/app/issues/77"),
+    ]
+    await db.refresh(obj)
+    assert obj.github_issue_fixed_noted_at is not None
+    assert any("close of acme/app#77 failed" in r.getMessage() for r in caplog.records)
+
+    calls.clear()
+    await note(db, [obj.id], transport=transport)
+    assert calls == []  # no re-post after a failed close: one comment per fix
+
+
+@pytest.mark.parametrize("entity", ["test", "job"])
+async def test_fixed_note_rate_limit_stops_batch_for_tests_and_jobs(db, fixed_settings, entity):
+    """A 429, and a rate-limit 403, stop the note batch after the first request."""
+    note = _note_entry(entity)
+    a = await _note_row(db, entity, "a", repo="acme/a", github_issue_number=71, clean_streak=5)
+    b = await _note_row(db, entity, "b", repo="acme/b", github_issue_number=72, clean_streak=5)
+    for status, headers in ((429, {}), (403, {"x-ratelimit-remaining": "0"})):
+        calls, transport = _note_recorder(post_status=status, headers=headers)
+        await note(db, [a.id, b.id], transport=transport)
+        assert [r.url.path for r in calls] == ["/repos/acme/a/issues/71/comments"]
+        await db.refresh(b)
+        assert b.github_issue_fixed_noted_at is None  # the second Repo is never touched
+
+
+@pytest.mark.parametrize("entity", ["test", "job"])
+async def test_fixed_note_permission_403_skips_only_that_repo(db, fixed_settings, entity):
+    """A 403 that is not a rate limit costs one Repo; the other still gets its comment."""
+    note = _note_entry(entity)
+    a1 = await _note_row(db, entity, "a1", repo="acme/a", github_issue_number=71, clean_streak=5)
+    a2 = await _note_row(db, entity, "a2", repo="acme/a", github_issue_number=73, clean_streak=5)
+    other = await _note_row(db, entity, "b", repo="acme/b", github_issue_number=72, clean_streak=5)
+
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if request.url.path.startswith("/repos/acme/a/"):
+            return httpx.Response(403, json={"message": "Resource not accessible by personal access token"})
+        return httpx.Response(201, json={"number": 99})
+
+    await note(db, [a1.id, other.id, a2.id], transport=httpx.MockTransport(handler))
+    assert [r.url.path for r in calls] == [
+        "/repos/acme/a/issues/71/comments",
+        "/repos/acme/b/issues/72/comments",
+    ]  # a2 is never retried: the whole Repo is skipped for the rest of the batch
+    await db.refresh(other)
+    assert other.github_issue_fixed_noted_at is not None
+
+
+@pytest.mark.parametrize("entity", ["test", "job"])
+async def test_fixed_note_comment_links_the_dashboard_only_with_public_url(db, fixed_settings, entity):
+    """PUBLIC_URL off: no link. Set: the comment ends with the entity's own deep link."""
+    note = _note_entry(entity)
+    obj = await _note_row(db, entity, "linked", github_issue_number=77, clean_streak=5)
+    calls, transport = _note_recorder()
+    await note(db, [obj.id], transport=transport)
+    assert "?" not in json.loads(calls[0].content)["body"]
+
+    fixed_settings.public_url = "https://flake.example.com/"  # a trailing slash is tolerated
+    obj.github_issue_fixed_noted_at = None
+    await db.commit()
+    calls, transport = _note_recorder()
+    await note(db, [obj.id], transport=transport)
+    (req,) = calls
+    body = json.loads(req.content)["body"]
+    assert "The fix appears to hold." in body
+    if entity == "job":
+        assert body.endswith(f"https://flake.example.com/?view=jobs&job={obj.id}")
+    else:
+        assert body.endswith(f"https://flake.example.com/?test={obj.id}")
+
+
+@pytest.mark.parametrize("entity", ["test", "job"])
+async def test_fixed_note_comment_body_is_exactly_the_expected_sentence(db, fixed_settings, entity):
+    """The Done-when wording, verbatim, for both entities."""
+    note = _note_entry(entity)
+    obj = await _note_row(db, entity, "linked", github_issue_number=77, clean_streak=7)
+    repo = (await db.execute(select(Repo).where(Repo.name == "acme/app"))).scalar_one()
+    repo.default_branch = "main"
+    await db.commit()
+    calls, transport = _note_recorder()
+    await note(db, [obj.id], transport=transport)
+    (req,) = calls
+    assert json.loads(req.content) == {
+        "body": (
+            "FlakeRadar: 7 passing runs on `main` since the last failure (score now 0.60). The fix appears to hold."
+        )
+    }
+
+
+@pytest.mark.parametrize("entity", ["test", "job"])
+async def test_fixed_note_unusable_comment_status_goes_on(db, fixed_settings, entity, caplog):
+    """A 500 on the comment is nobody's Repo-wide fault: log it, note no row, go on."""
+    note = _note_entry(entity)
+    bad = await _note_row(db, entity, "bad", repo="acme/a", github_issue_number=71, clean_streak=5)
+    other = await _note_row(db, entity, "ok", repo="acme/b", github_issue_number=72, clean_streak=5)
+    calls, transport = _note_recorder(post_status=500)
+    with caplog.at_level(logging.WARNING, logger="flakeradar.github"):
+        await note(db, [bad.id, other.id], transport=transport)
+    assert [r.url.path for r in calls] == [
+        "/repos/acme/a/issues/71/comments",
+        "/repos/acme/b/issues/72/comments",
+    ]
+    for obj in (bad, other):
+        await db.refresh(obj)
+        assert obj.github_issue_fixed_noted_at is None  # nothing landed, so nothing is stamped
+    assert any("fixed-note comment failed" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.parametrize("entity", ["test", "job"])
+async def test_fixed_note_close_rate_limit_stops_batch(db, fixed_settings, entity):
+    """A rate limit on the close PATCH stops the batch like any other request would."""
+    fixed_settings.github_close_fixed = True
+    note = _note_entry(entity)
+    a = await _note_row(db, entity, "a", repo="acme/a", github_issue_number=71, clean_streak=5)
+    b = await _note_row(db, entity, "b", repo="acme/b", github_issue_number=72, clean_streak=5)
+    calls, transport = _note_recorder(patch_status=429, headers={"x-ratelimit-remaining": "0"})
+    await note(db, [a.id, b.id], transport=transport)
+    assert [(r.method, r.url.path) for r in calls] == [
+        ("POST", "/repos/acme/a/issues/71/comments"),
+        ("PATCH", "/repos/acme/a/issues/71"),
+    ]
+    await db.refresh(a)
+    await db.refresh(b)
+    assert a.github_issue_fixed_noted_at is not None  # the comment landed before the throttle
+    assert b.github_issue_fixed_noted_at is None
+
+
+@pytest.mark.parametrize("entity", ["test", "job"])
+async def test_fixed_note_close_permission_403_skips_repo(db, fixed_settings, entity, caplog):
+    """A permission 403 on the close costs that Repo's remaining rows, not the note."""
+    fixed_settings.github_close_fixed = True
+    note = _note_entry(entity)
+    a = await _note_row(db, entity, "a", repo="acme/a", github_issue_number=71, clean_streak=5)
+    b = await _note_row(db, entity, "b", repo="acme/b", github_issue_number=72, clean_streak=5)
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if request.method == "PATCH" and request.url.path.startswith("/repos/acme/a/"):
+            return httpx.Response(403, json={"message": "Resource not accessible by personal access token"})
+        return httpx.Response(201 if request.method == "POST" else 200, json={})
+
+    with caplog.at_level(logging.WARNING, logger="flakeradar.github"):
+        await note(db, [a.id, b.id], transport=httpx.MockTransport(handler))
+    assert [(r.method, r.url.path) for r in calls] == [
+        ("POST", "/repos/acme/a/issues/71/comments"),
+        ("PATCH", "/repos/acme/a/issues/71"),
+        ("POST", "/repos/acme/b/issues/72/comments"),
+        ("PATCH", "/repos/acme/b/issues/72"),
+    ]
+    for obj in (a, b):
+        await db.refresh(obj)
+        assert obj.github_issue_fixed_noted_at is not None
+    assert any("issue close skipped for repo acme/a" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.parametrize("entity", ["test", "job"])
+async def test_fixed_note_admin_delete_race_costs_only_that_note(db, fixed_settings, entity, session_factory, caplog):
+    """The row vanishing between the comment POST and the stamp costs this note only."""
+    doomed = await _note_row(db, entity, "doomed", github_issue_number=77, clean_streak=5)
+    other = await _note_row(db, entity, "kept", repo="acme/b", github_issue_number=78, clean_streak=5)
+    model = TestCase if entity == "test" else Job
+    calls: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if request.url.path == "/repos/acme/app/issues/77/comments":
+            async with session_factory() as other_session:  # an admin delete wins the race
+                await other_session.execute(delete(model).where(model.id == doomed.id))
+                await other_session.commit()
+        return httpx.Response(201, json={"number": 99})
+
+    with caplog.at_level(logging.WARNING, logger="flakeradar.github"):
+        await _note_entry(entity)(db, [doomed.id, other.id], transport=httpx.MockTransport(handler))
+    assert [r.url.path for r in calls] == [
+        "/repos/acme/app/issues/77/comments",
+        "/repos/acme/b/issues/78/comments",
+    ]  # the StaleDataError costs one note, not the batch
+    await db.refresh(other)
+    assert other.github_issue_fixed_noted_at is not None
+    assert any("deleted (admin delete) while noting" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.parametrize("entity", ["test", "job"])
+async def test_fixed_note_stamp_loses_to_a_clean_streak_reset_during_the_post(
+    db, fixed_settings, entity, session_factory, caplog
+):
+    """A comment that lands after the streak reset must not stamp the row (issue #33).
+
+    The note is selected at the threshold, the POST is slow, and the processor handles a
+    failure whose rescore resets `clean_streak` to 0 and clears the stamp: stamping here
+    would undo that reset, and every later clean run is filtered out as already noted.
+    """
+    note = _note_entry(entity)
+    obj = await _note_row(db, entity, "linked", github_issue_number=77, clean_streak=5)
+    model = TestCase if entity == "test" else Job
+    calls: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if request.method == "POST":
+            async with session_factory() as other_session:  # `rescore` resets the streak
+                await other_session.execute(
+                    update(model).where(model.id == obj.id).values(clean_streak=0, github_issue_fixed_noted_at=None)
+                )
+                await other_session.commit()
+        return httpx.Response(201 if request.method == "POST" else 200, json={})
+
+    fixed_settings.github_close_fixed = True  # a fix that did not hold must not be closed
+    with caplog.at_level(logging.WARNING, logger="flakeradar.github"):
+        await note(db, [obj.id], transport=httpx.MockTransport(handler))
+    assert [(r.method, r.url.path) for r in calls] == [("POST", "/repos/acme/app/issues/77/comments")]
+    await db.refresh(obj)
+    assert obj.clean_streak == 0
+    assert obj.github_issue_fixed_noted_at is None  # the reset stands: the row is noteable again
+    assert any("stopped being noteable" in r.getMessage() for r in caplog.records)
+
+    # the re-armed note really does come: the streak is back at the threshold
+    async with session_factory() as other_session:
+        await other_session.execute(update(model).where(model.id == obj.id).values(clean_streak=5))
+        await other_session.commit()
+    calls, transport = _note_recorder()
+    await note(db, [obj.id], transport=transport)
+    assert [(r.method, r.url.path) for r in calls] == [
+        ("POST", "/repos/acme/app/issues/77/comments"),
+        ("PATCH", "/repos/acme/app/issues/77"),
+    ]
+    await db.refresh(obj)
+    assert obj.github_issue_fixed_noted_at is not None
+
+
+@pytest.mark.parametrize("entity", ["test", "job"])
+async def test_fixed_note_network_error_is_logged_and_never_raises(db, fixed_settings, entity, caplog):
+    """An unreachable GitHub costs the note batch, with no exception out of it."""
+    note = _note_entry(entity)
+    obj = await _note_row(db, entity, "linked", github_issue_number=77, clean_streak=5)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("GitHub is down", request=request)
+
+    with caplog.at_level(logging.WARNING, logger="flakeradar.github"):
+        await note(db, [obj.id], transport=httpx.MockTransport(handler))
+    await db.refresh(obj)
+    assert obj.github_issue_fixed_noted_at is None
+    assert any("unreachable, skipping" in r.getMessage() for r in caplog.records)
+
+
+# --- filing and noting in one Report (issue #33) --------------------------
+
+
+def _file_entry(entity: str):
+    """The filing entry point of one entity, so every scenario can run both sides."""
+    return github_integration.file_issues_for if entity == "test" else github_integration.file_job_issues_for
+
+
+def _hook_outcome(entity: str, objs) -> ProcessOutcome:
+    """A processed Report whose only touched ids are these Tests/Jobs."""
+    ids = [o.id for o in objs]
+    return ProcessOutcome(
+        report_id=1,
+        status="processed",
+        run_id=1,
+        counts={},
+        touched_test_ids=ids if entity == "test" else [],
+        touched_job_ids=ids if entity == "job" else [],
+        error=None,
+    )
+
+
+@pytest.mark.parametrize("entity", ["test", "job"])
+async def test_filing_gate_skips_rows_at_the_fixed_note_streak(db, fixed_settings, entity):
+    """A row whose fix holds answers with a note, not an Issue: the gate refuses it."""
+    at_streak = await _note_row(db, entity, "at-streak", clean_streak=5)  # score 0.6 clears the filing gate
+    below = await _note_row(db, entity, "below", clean_streak=4)
+    calls, transport = _recorder(number=101)
+    filed = await _file_entry(entity)(db, [at_streak.id, below.id], transport=transport)
+    assert filed == {below.id}
+    assert [(r.method, r.url.path) for r in calls] == [("POST", "/repos/acme/app/issues")]
+    await db.refresh(at_streak)
+    assert at_streak.github_issue_number is None  # no Issue to comment "the fix appears to hold" on
+    await db.refresh(below)
+    assert below.github_issue_number == 101
+
+
+@pytest.mark.parametrize("entity", ["test", "job"])
+async def test_processed_report_never_notes_an_issue_it_filed(db, fixed_settings, entity, session_factory):
+    """One Report files and notes, and never the same link: no note on the Issue it just filed.
+
+    With `github_close_fixed` on, the collision was a loop: file, note, close, re-arm,
+    file again, one turn per Report with no new failure anywhere. A Test that only the
+    filing gate fits and a sibling already linked at the threshold show that both steps
+    ran in this same pass, and the second Report shows the silence is the steady state,
+    not one lucky pass.
+    """
+    fixed_settings.github_close_fixed = True
+    live = await _note_row(db, entity, "live", clean_streak=0)  # files, and must not be noted
+    fresh = await _note_row(db, entity, "fresh", clean_streak=5)  # meets the filing gate and the note one
+    linked = await _note_row(db, entity, "linked", github_issue_number=88, clean_streak=5)  # the note step's work
+    calls, transport = _note_recorder()
+    outcome = _hook_outcome(entity, [live, fresh, linked])
+
+    await github_integration.on_report_processed(session_factory, outcome, transport=transport)
+    assert [(r.method, r.url.path) for r in calls] == [
+        ("POST", "/repos/acme/app/issues"),
+        ("POST", "/repos/acme/app/issues/88/comments"),
+        ("PATCH", "/repos/acme/app/issues/88"),
+    ]  # the Issue filed in this pass gets no comment and no close: only the old link is touched
+    await db.refresh(fresh)
+    assert fresh.github_issue_number is None
+    await db.refresh(live)
+    assert live.github_issue_number == 99
+    assert live.github_issue_fixed_noted_at is None
+
+    await github_integration.on_report_processed(session_factory, outcome, transport=transport)
+    assert len(calls) == 3  # the next Report adds neither an Issue nor a comment
+
+
+@pytest.mark.parametrize("entity", ["test", "job"])
+async def test_note_step_skips_the_link_this_same_pass_filed(db, fixed_settings, entity, session_factory):
+    """A fresh link stays off-limits to the note step even if it becomes noteable mid-pass.
+
+    A concurrent Report can lift the streak between the two selects, so the filing gate
+    alone cannot catch this: the row was below the threshold when it was filed, and
+    reaches it only while the Issue is in flight. Commenting there, and closing it with
+    `github_close_fixed`, is the self-contradictory note on a brand-new Issue.
+    """
+    obj = await _note_row(db, entity, "fresh", clean_streak=4)
+    fixed_settings.github_close_fixed = True
+    model = TestCase if entity == "test" else Job
+    calls: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if request.url.path == "/repos/acme/app/issues":
+            async with session_factory() as other_session:  # another Report's rescore
+                await other_session.execute(update(model).where(model.id == obj.id).values(clean_streak=5))
+                await other_session.commit()
+        return httpx.Response(201 if request.method == "POST" else 200, json={"number": 123})
+
+    await github_integration.on_report_processed(
+        session_factory, _hook_outcome(entity, [obj]), transport=httpx.MockTransport(handler)
+    )
+    assert [(r.method, r.url.path) for r in calls] == [("POST", "/repos/acme/app/issues")]
+    await db.refresh(obj)
+    assert obj.github_issue_number == 123  # the filing itself stands
+    assert obj.github_issue_fixed_noted_at is None
+    assert obj.clean_streak == 5  # and it is noteable from the next Report on
