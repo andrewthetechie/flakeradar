@@ -363,11 +363,21 @@ async fn upsert_history_accumulates_through_on_conflict() {
     )
     .value(
         test_score_history::Column::Executions,
-        Expr::col(test_score_history::Column::Executions).add(Expr::cust("EXCLUDED.executions")),
+        // The column is qualified because an unqualified one in `DO UPDATE` is
+        // ambiguous between the stored row and `EXCLUDED`.
+        Expr::col((
+            test_score_history::Entity,
+            test_score_history::Column::Executions,
+        ))
+        .add(Expr::cust("EXCLUDED.executions")),
     )
     .value(
         test_score_history::Column::Failures,
-        Expr::col(test_score_history::Column::Failures).add(Expr::cust("EXCLUDED.failures")),
+        Expr::col((
+            test_score_history::Entity,
+            test_score_history::Column::Failures,
+        ))
+        .add(Expr::cust("EXCLUDED.failures")),
     )
     .to_owned();
 

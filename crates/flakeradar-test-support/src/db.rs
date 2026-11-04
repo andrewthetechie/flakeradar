@@ -122,23 +122,21 @@ impl TestDb {
 
 impl Drop for TestDb {
     fn drop(&mut self) {
-        let connection = Arc::clone(&self.connection);
         let maintenance_url = self.maintenance_url.clone();
         let name = self.name.clone();
-        // The pool and the drop both need a runtime, and the test's own runtime
-        // is shutting down by the time this value drops, so the cleanup gets its
-        // own thread and runtime. Joining keeps the drop deterministic, which a
-        // detached task racing process exit would not be.
+        // Dropping the database needs a connection, and the test's own runtime is
+        // parked while this runs, so the cleanup gets its own thread and runtime.
+        // The test's pool is not closed here: a pool only finishes closing when
+        // the runtime that drives it polls again, and this value drops while that
+        // runtime is waiting for this drop. `DROP DATABASE ... WITH (FORCE)`
+        // terminates the pool's connection from the server side instead.
         let cleanup = std::thread::spawn(move || {
             let Ok(runtime) = Builder::new_current_thread().enable_all().build() else {
                 return;
             };
             runtime.block_on(async move {
-                let pool = DatabaseConnection::clone(&connection);
-                let _ = pool.close().await;
                 if let Ok(maintenance) = connect(&maintenance_url, 1).await {
                     let _ = drop_database(&maintenance, &name).await;
-                    let _ = maintenance.close().await;
                 }
             });
         });

@@ -10,52 +10,52 @@
     reason = "a test fails loudly when a statement or a query it just wrote fails"
 )]
 
+use flakeradar_db::split_statements;
 use flakeradar_test_support::TestDb;
-use sea_orm::{ConnectionTrait, DatabaseBackend, Statement};
+use sea_orm::{ConnectionTrait, DatabaseBackend, DatabaseConnection, Statement, TransactionTrait};
 
 /// The Python server's schema, as dumped by `pg_dump`.
 const GOLDEN_SCHEMA: &str = include_str!("../../../tests/parity/schema.sql");
-
-/// The statements of an `pg_dump` script, without its comments.
-fn statements(script: &str) -> Vec<&str> {
-    script
-        .split(';')
-        .map(str::trim)
-        .filter(|statement| !statement.is_empty())
-        .filter(|statement| {
-            !statement
-                .lines()
-                .all(|line| line.trim().is_empty() || line.trim_start().starts_with("--"))
-        })
-        .collect()
-}
 
 /// One line per column, constraint and index in the `public` schema.
 ///
 /// `seaql_migrations` is the migration bookkeeping table, which only the
 /// migrated database has, so it is left out.
-async fn schema_snapshot(db: &impl ConnectionTrait) -> Vec<String> {
+///
+/// The snapshot runs in one transaction with `search_path` pinned to `public`.
+/// `pg_get_constraintdef` and `pg_get_indexdef` leave the schema off a name only
+/// when the schema is in the search path, and a `pg_dump` script sets the search
+/// path it was dumped with, which would otherwise make the two sides differ in
+/// punctuation rather than in schema.
+async fn schema_snapshot(db: &DatabaseConnection) -> Vec<String> {
+    let transaction = db.begin().await.expect("a transaction");
+    transaction
+        .execute_unprepared("SET LOCAL search_path = public")
+        .await
+        .expect("the search path is pinned");
     let mut lines = Vec::new();
     let queries = [
-        "SELECT table_name || '|' || column_name || '|' || data_type || '|' || udt_name \
-         || '|' || is_nullable || '|' || coalesce(column_default, '') \
-         || '|' || coalesce(character_maximum_length::text, '') AS line \
+        "SELECT table_name::text || '|' || column_name::text || '|' || data_type::text \
+         || '|' || udt_name::text || '|' || is_nullable::text || '|' \
+         || coalesce(column_default::text, '') || '|' \
+         || coalesce(character_maximum_length::text, '') AS line \
          FROM information_schema.columns \
          WHERE table_schema = 'public' AND table_name <> 'seaql_migrations' \
          ORDER BY table_name, ordinal_position",
-        "SELECT c.conname || '|' || c.contype || '|' || pg_get_constraintdef(c.oid) AS line \
+        "SELECT c.conname::text || '|' || c.contype::text || '|' \
+         || pg_get_constraintdef(c.oid) AS line \
          FROM pg_constraint c \
          JOIN pg_class t ON t.oid = c.conrelid \
          JOIN pg_namespace n ON n.oid = t.relnamespace \
          WHERE n.nspname = 'public' AND t.relname <> 'seaql_migrations' \
          ORDER BY c.conname",
-        "SELECT indexname || '|' || tablename || '|' || indexdef AS line \
+        "SELECT indexname::text || '|' || tablename::text || '|' || indexdef AS line \
          FROM pg_indexes \
          WHERE schemaname = 'public' AND tablename <> 'seaql_migrations' \
          ORDER BY indexname",
     ];
     for query in queries {
-        let rows = db
+        let rows = transaction
             .query_all_raw(Statement::from_string(
                 DatabaseBackend::Postgres,
                 query.to_owned(),
@@ -66,6 +66,7 @@ async fn schema_snapshot(db: &impl ConnectionTrait) -> Vec<String> {
             lines.push(row.try_get::<String>("", "line").expect("a line"));
         }
     }
+    transaction.rollback().await.expect("the transaction ends");
     lines
 }
 
@@ -73,7 +74,7 @@ async fn schema_snapshot(db: &impl ConnectionTrait) -> Vec<String> {
 async fn the_migrated_schema_matches_the_python_schema() {
     let migrated = TestDb::new().await.expect("a migrated test database");
     let golden = TestDb::empty().await.expect("an empty test database");
-    for statement in statements(GOLDEN_SCHEMA) {
+    for statement in split_statements(GOLDEN_SCHEMA) {
         golden
             .connection()
             .execute_unprepared(statement)
@@ -90,7 +91,7 @@ async fn the_migrated_schema_matches_the_python_schema() {
 async fn the_comparison_sees_a_difference() {
     let plain = TestDb::empty().await.expect("an empty test database");
     let golden = TestDb::empty().await.expect("an empty test database");
-    for statement in statements(GOLDEN_SCHEMA) {
+    for statement in split_statements(GOLDEN_SCHEMA) {
         golden
             .connection()
             .execute_unprepared(statement)

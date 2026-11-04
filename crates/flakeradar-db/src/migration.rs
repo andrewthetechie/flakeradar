@@ -199,13 +199,19 @@ fn skip_line_comment(chars: &mut std::str::CharIndices<'_>) {
     }
 }
 
-/// Appends `script[start..end]` unless it is blank.
+/// Appends `script[start..end]` unless it holds no SQL.
 fn push_statement<'a>(script: &'a str, start: usize, end: usize, out: &mut Vec<&'a str>) {
     if let Some(statement) = script.get(start..end)
-        && !statement.trim().is_empty()
+        && !is_only_comments(statement)
     {
         out.push(statement);
     }
+}
+
+/// Whether `sql` is whitespace and `--` comments with no statement in it.
+fn is_only_comments(sql: &str) -> bool {
+    sql.lines()
+        .all(|line| line.trim().is_empty() || line.trim_start().starts_with("--"))
 }
 
 #[cfg(test)]

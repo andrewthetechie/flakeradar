@@ -43,6 +43,19 @@ async fn app_tables(db: &impl ConnectionTrait) -> Vec<String> {
         .collect()
 }
 
+/// Whether the migration bookkeeping table exists.
+async fn migration_table_exists(db: &impl ConnectionTrait) -> bool {
+    let statement = Statement::from_string(
+        DatabaseBackend::Postgres,
+        "SELECT to_regclass('public.seaql_migrations') IS NOT NULL AS present".to_owned(),
+    );
+    db.query_one_raw(statement)
+        .await
+        .expect("information_schema is readable")
+        .and_then(|row| row.try_get::<bool>("", "present").ok())
+        .unwrap_or(false)
+}
+
 /// The detail of a legacy-database refusal, or a panic naming the other error.
 fn the_refusal_message(error: DbError) -> String {
     let DbError::LegacyDatabase { detail } = error else {
@@ -105,7 +118,15 @@ async fn an_alembic_database_is_refused_and_left_alone() {
         the_refusal_message(error).contains("alembic_version"),
         "the detail names the table"
     );
-    assert_eq!(app_tables(db.connection()).await, Vec::<String>::new());
+    assert_eq!(
+        app_tables(db.connection()).await,
+        Vec::<String>::new(),
+        "the baseline tables were not created"
+    );
+    assert!(
+        !migration_table_exists(db.connection()).await,
+        "nothing was recorded as migrated"
+    );
 }
 
 #[tokio::test]
@@ -123,7 +144,15 @@ async fn app_tables_without_a_migration_table_are_refused() {
         the_refusal_message(error).contains("repos"),
         "the detail names the table"
     );
-    assert_eq!(app_tables(db.connection()).await, Vec::<String>::new());
+    assert_eq!(
+        app_tables(db.connection()).await,
+        ["repos"],
+        "the refused database keeps only the table the test created"
+    );
+    assert!(
+        !migration_table_exists(db.connection()).await,
+        "nothing was recorded as migrated"
+    );
 }
 
 #[tokio::test]
