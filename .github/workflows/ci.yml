@@ -173,6 +173,11 @@ jobs:
         # from task 03 on, so an empty run is a failure, not a pass.
         run: cargo nextest run --all-features --profile ci
 
+      - name: Run doctests (cargo test --doc)
+        # nextest does not run doctests, so without this step a stale example in
+        # a doc comment can pass CI forever.
+        run: cargo test --doc --all-features
+
       - name: Cache sea-orm-cli binary
         id: cache-sea-orm-cli
         uses: actions/cache@v4

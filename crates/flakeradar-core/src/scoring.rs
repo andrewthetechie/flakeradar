@@ -50,7 +50,7 @@ fn count_as_f64(count: usize) -> f64 {
 /// use flakeradar_core::{ExecutionStatus, flip_score};
 ///
 /// let alternating = [ExecutionStatus::Passed, ExecutionStatus::Failed];
-/// assert_eq!(flip_score(&alternating, 0.85, 50), 2.0 / 6.0);
+/// assert_eq!(flip_score(&alternating, 0.85, 50), 1.0 / 6.0);
 /// ```
 #[must_use]
 pub fn flip_score(statuses: &[ExecutionStatus], decay: f64, window: usize) -> f64 {
