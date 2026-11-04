@@ -60,6 +60,19 @@ async fn raw_rows(
     .expect("the raw statement runs")
 }
 
+/// `values` as a PostgreSQL `integer[]`, which a chunk of ids binds as.
+fn int_array(values: Vec<i32>) -> sea_orm::Value {
+    sea_orm::Value::Array(
+        sea_orm::sea_query::ArrayType::Int,
+        Some(Box::new(
+            values
+                .into_iter()
+                .map(|id| sea_orm::Value::Int(Some(id)))
+                .collect(),
+        )),
+    )
+}
+
 /// Whether the connection took the advisory lock `key`.
 async fn try_lock(db: &impl ConnectionTrait, key: i64) -> bool {
     let row = db
@@ -152,13 +165,13 @@ async fn the_newest_window_ids_per_test_need_a_lateral_join() {
     let rows = raw_rows(
         db.connection(),
         "SELECT w.test_case_id, ids.id \
-         FROM (SELECT DISTINCT test_case_id FROM test_executions) AS w \
+         FROM unnest($1::int[]) AS w(test_case_id) \
          CROSS JOIN LATERAL ( \
              SELECT te.id FROM test_executions te \
              WHERE te.test_case_id = w.test_case_id \
-             ORDER BY te.id DESC LIMIT $1 \
+             ORDER BY te.id DESC LIMIT $2 \
          ) AS ids",
-        vec![3_i32.into()],
+        vec![int_array(vec![test_case.id]), 3_i32.into()],
     )
     .await;
 
@@ -198,13 +211,13 @@ async fn the_newest_window_ids_per_job_need_a_lateral_join() {
     let rows = raw_rows(
         db.connection(),
         "SELECT w.job_id, ids.id \
-         FROM (SELECT DISTINCT job_id FROM job_executions) AS w \
+         FROM unnest($1::int[]) AS w(job_id) \
          CROSS JOIN LATERAL ( \
              SELECT je.id FROM job_executions je \
              WHERE je.job_id = w.job_id \
-             ORDER BY je.id DESC LIMIT $1 \
+             ORDER BY je.id DESC LIMIT $2 \
          ) AS ids",
-        vec![2_i32.into()],
+        vec![int_array(vec![job.id]), 2_i32.into()],
     )
     .await;
 
