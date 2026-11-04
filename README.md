@@ -709,8 +709,8 @@ completed when it posts the comment. The next maintenance sync then clears the
 link as usual, and a later flake can open a new issue (see "Duplicate issues"
 above).
 
-With `GITHUB_PUBLIC_URL` set, the comment also carries a link to that test or
-job in the dashboard. Leave it empty to post the plain sentence.
+With `PUBLIC_URL` set, the comment also carries a link to that test or job in
+the dashboard. Leave it empty to post the plain sentence.
 
 ### Issues filed elsewhere
 
