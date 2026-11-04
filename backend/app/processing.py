@@ -12,13 +12,13 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any
 
-from sqlalchemy import func, insert, or_, select, update
+from sqlalchemy import insert, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import InterfaceError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from . import report_intake, scoring
-from .attribution import job_execution_explained, job_execution_window_ids
+from .attribution import job_execution_explained, job_execution_window_ids, test_execution_window_ids
 from .batching import chunks
 from .classify import classify_failure, dominant_category
 from .config import get_settings
@@ -129,52 +129,38 @@ async def rescore(
     writes that day's Score history row. A rescore whose Clean streak comes out
     at 0 also clears `github_issue_fixed_noted_at`, so a Test that failed again
     can be noted again on GitHub when the next fix holds (issue #33).
+
+    The Executions read per Test are the newest `window` overall plus the newest
+    `window` on the Repo's Default branch (attribution.test_execution_window_ids),
+    not every retained Execution. Accepted worst case: whether a Run is on the
+    Default branch lives in `test_runs`/`repos`, so no index can seek Default rows
+    directly — the Default-branch fetch walks the Test's Executions newest first
+    and joins each one until it has `window` Default rows or runs out. A Test with
+    fewer than `window` Default-branch Executions in retention (for example a Repo
+    whose Default branch rarely runs CI) therefore still reads all of its
+    Executions in that arm (measured before and after, both shapes:
+    docs/perf/20-test-rescore-explain.md).
     """
     settings = get_settings()
-    on_default = or_(Repo.default_branch.is_(None), TestRun.branch == Repo.default_branch)
-    rn_all = (
-        func.row_number()
-        .over(partition_by=TestExecution.test_case_id, order_by=TestExecution.id.desc())
-        .label("rn_all")
-    )
-    rn_def = (
-        func.row_number()
-        .over(partition_by=(TestExecution.test_case_id, on_default), order_by=TestExecution.id.desc())
-        .label("rn_def")
-    )
     history: dict[int, list[tuple[str, str, str]]] = defaultdict(list)  # id -> [(sha, branch, status)]
     categories: dict[int, list[str | None]] = defaultdict(list)  # id -> [category, ...] newest first
     default_branch: dict[int, str | None] = {}  # id -> branch (constant per Test/Repo)
     for chunk in chunks(test_case_ids):
-        ranked = (
+        windowed = test_execution_window_ids(chunk, settings.score_window, include_default_branch=True).subquery()
+        rows = await db.execute(
             select(
-                TestExecution.id,
                 TestExecution.test_case_id,
-                TestExecution.status,
-                TestExecution.failure_category,
                 TestRun.commit_sha,
                 TestRun.branch,
+                TestExecution.status,
+                TestExecution.failure_category,
                 Repo.default_branch,
-                rn_all,
-                rn_def,
             )
             .join(TestRun, TestRun.id == TestExecution.test_run_id)
             .join(Project, Project.id == TestRun.project_id)
             .join(Repo, Repo.id == Project.repo_id)
-            .where(TestExecution.test_case_id.in_(chunk))
-            .subquery()
-        )
-        rows = await db.execute(
-            select(
-                ranked.c.test_case_id,
-                ranked.c.commit_sha,
-                ranked.c.branch,
-                ranked.c.status,
-                ranked.c.failure_category,
-                ranked.c.default_branch,
-            )
-            .where((ranked.c.rn_all <= settings.score_window) | (ranked.c.rn_def <= settings.score_window))
-            .order_by(ranked.c.test_case_id, ranked.c.id.desc())
+            .where(TestExecution.id.in_(select(windowed.c.id)))
+            .order_by(TestExecution.test_case_id, TestExecution.id.desc())
         )
         for tc_id, sha, branch, status, category, def_branch in rows.all():
             history[tc_id].append((sha, branch, status))
