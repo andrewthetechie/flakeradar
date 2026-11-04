@@ -1,0 +1,56 @@
+name: "FlakeRadar: report JUnit results"
+description: >-
+  Upload one or more JUnit XML files to FlakeRadar, each matched file as its own
+  Report, with the run's own metadata (repo, commit SHA, branch, CI run id, CI run
+  attempt, ci_job_id, pipeline, default branch) computed from the runner
+  environment. Writes the accepted Report ids as the report_ids output. Reporting
+  does not fail the build unless fail-on-error is true.
+inputs:
+  url:
+    description: "Base URL of your FlakeRadar, e.g. https://flakeradar.example.com. Sent to /api/ingest."
+    required: true
+  token:
+    description: "Your FlakeRadar API token (FLAKERADAR_API_TOKEN), sent as X-API-Key on every upload."
+    required: true
+  project:
+    description: "The Project (named test suite) these results belong to; use one step per Project. Defaults to `default`."
+    required: false
+    default: "default"
+  root:
+    description: "Project root the reported file paths are relative to, e.g. backend. Empty (the default) reports the paths as the runner wrote them."
+    required: false
+    default: ""
+  files:
+    description: "Glob of the JUnit XML files to upload, relative to the workspace; each match is uploaded as its own Report. Several patterns, separated by newlines. Defaults to `junit.xml`."
+    required: false
+    default: "junit.xml"
+  line_base:
+    description: "Line-number base of the report, 0 or 1 (pytest's xunit1 family numbers lines from 0). Empty (the default) uses the server default of 1."
+    required: false
+    default: ""
+  fail-on-error:
+    description: "true fails the step when a file is not accepted after the upload retries. Defaults to false: reporting must not fail the build."
+    required: false
+    default: "false"
+outputs:
+  report_ids:
+    description: "Comma-separated ids of the Reports that were accepted, in upload order; empty when nothing was uploaded. Read them back with GET /api/reports/{report_id}."
+    value: ${{ steps.report.outputs.report_ids }}
+runs:
+  using: composite
+  steps:
+    - name: Report test results to FlakeRadar
+      shell: bash
+      id: report
+      env:
+        FR_URL: ${{ inputs.url }}
+        FR_TOKEN: ${{ inputs.token }}
+        FR_PROJECT: ${{ inputs.project }}
+        FR_ROOT: ${{ inputs.root }}
+        FR_FILES: ${{ inputs.files }}
+        FR_LINE_BASE: ${{ inputs.line_base }}
+        FR_FAIL_ON_ERROR: ${{ inputs.fail-on-error }}
+        # Never user inputs: this Job's own attribution, from the runner.
+        FR_JOB_ID: ${{ job.check_run_id }}
+        FR_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      run: bash "${{ github.action_path }}/report.sh"
