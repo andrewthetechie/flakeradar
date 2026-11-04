@@ -218,6 +218,29 @@ async fn ready_reports_a_missing_database_rather_than_failing() {
 }
 
 #[tokio::test]
+async fn ready_answers_a_plain_text_500_when_the_queue_query_fails() {
+    // `SELECT 1` answers, so the probe goes on to the queue query, which reads
+    // `reports`; a database without that table fails exactly there, which is
+    // what the frozen server's unhandled `SQLAlchemyError` became.
+    let db = TestDb::new().await.expect("a test database is available");
+    db.connection()
+        .execute_raw(Statement::from_string(
+            DbBackend::Postgres,
+            "DROP TABLE reports",
+        ))
+        .await
+        .expect("the reports table is dropped");
+
+    let reply = get(&app_for(&db), "/api/health/ready").await;
+    assert_eq!(reply.status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(
+        reply.header("content-type").as_deref(),
+        Some("text/plain; charset=utf-8")
+    );
+    assert_eq!(reply.text(), "Internal Server Error");
+}
+
+#[tokio::test]
 async fn metrics_names_every_series_with_its_labels() {
     let db = TestDb::new().await.expect("a test database is available");
     let project = seed_pending_reports(db.connection(), 1).await;
