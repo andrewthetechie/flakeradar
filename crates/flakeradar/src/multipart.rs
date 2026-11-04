@@ -142,9 +142,13 @@ fn trim_ascii(slice: &[u8]) -> &[u8] {
 
 /// Where `needle` first appears in `haystack`.
 fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    if needle.is_empty() || needle.len() > haystack.len() {
+    // `windows(0)` panics; a delimiter is never empty, and this keeps a caller
+    // that broke that rule from taking the process down.
+    if needle.is_empty() {
         return None;
     }
+    // `windows` is empty for a needle longer than the haystack, so a body shorter
+    // than its own boundary needs no second guard.
     haystack
         .windows(needle.len())
         .position(|window| window == needle)
