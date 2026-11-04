@@ -136,6 +136,7 @@ backend/   FastAPI + async SQLAlchemy 2 + asyncpg + PostgreSQL
     retention.py        pruning
     scoring.py          flip score and same-SHA proof (pure functions)
     github_integration.py  per-Repo issue filing
+    notify.py           render a Notification from a Tier change
     issue_links.py      set or clear a Test's or Job's Issue link (REST and MCP share it)
     mcp_server.py       MCP tools (fastmcp): reads, plus link_issue and unlink_issue
   migrations/     Alembic (async), applied on startup
@@ -157,6 +158,7 @@ samples/   CI snippets and a demo-data simulator
 - Rule-based Failure categories ([ADR 0006](docs/adr/0006-rule-based-failure-categories.md)).
 - Daily Score history ([ADR 0007](docs/adr/0007-daily-score-history.md)).
 - Issue links from other filers ([ADR 0008](docs/adr/0008-issue-links-from-other-filers.md)).
+- Webhook Notifications ([ADR 0009](docs/adr/0009-webhook-notifications.md)).
 - The read APIs and the quarantine toggle are unauthenticated by design,
   because the dashboard is expected to be on a private network. The CI
   endpoints, the Issue link endpoints (`PUT`/`DELETE …/issue`), the admin

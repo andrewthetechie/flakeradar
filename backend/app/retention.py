@@ -187,10 +187,13 @@ async def prune(
     # Rescore the Tests and Jobs whose Executions were deleted, in this same
     # transaction: a Test with no Executions left scores 0 and leaves the default
     # leaderboard; one with Executions left is scored on what remains.
-    if stale_test_ids:
-        await rescore(db, stale_test_ids)
+    # Losing old Executions is not news, so the Tier changes this causes are dropped
+    # and only their count is reported (ADR 0009).
+    dropped = await rescore(db, stale_test_ids) if stale_test_ids else []
     if stale_job_ids:
-        await rescore_jobs(db, stale_job_ids)
+        dropped += await rescore_jobs(db, stale_job_ids)
+    if dropped:
+        logger.info("Prune dropped %d Notification(s)", len(dropped))
     # A quarantine is a human decision with an optional expiry: once that expiry passes the
     # leader clears it so the Test runs again. Not batched, and not part of the continuation
     # check in run_prune, because these are few and one round clears all of them.

@@ -126,6 +126,27 @@ an unknown Default branch counting every branch) resets it to 0.
 **Quarantine**:
 A reversible human decision that marks a Test as one the test runner may skip. The person who quarantines can record a reason and set an expiry; when the expiry passes, maintenance (the prune step) clears the quarantine — still a human decision, because a person set the expiry. FlakeRadar never quarantines a Test on its own, and agents cannot quarantine through the MCP server.
 
+### How changes are announced
+
+**Tier change**:
+A Test or Job crossing the Flake threshold, in either direction, as a rescore
+detected it. A move between Stable and Suspect is not one, although the tier
+differs, because it crosses nothing.
+
+**Notification**:
+A message about a Tier change, sent to every configured Webhook URL: a Test or
+Job that became flaky, or one that left the flaky tier. A Test that is now
+broken has not recovered and sends none; its later fix sends one only if the
+score crosses the threshold again. A Report that changes the Default branch
+sends none, and neither does a retention prune. A Notification is best effort:
+FlakeRadar keeps no record of it, so one that is not delivered is lost.
+_Avoid_: Alert, webhook (that is the transport, not the message)
+
+**Webhook URL**:
+An endpoint that receives Notifications, set in `FLAKERADAR_WEBHOOK_URLS`. It is
+a credential, because a Slack hook URL contains its own token, so logs name only
+its host.
+
 ### Tracking work
 
 **Issue link**:

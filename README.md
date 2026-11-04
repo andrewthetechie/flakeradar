@@ -36,6 +36,7 @@ test is nondeterministic.
 - [Quarantine](#quarantine)
 - [MCP server for agents](#mcp-server-for-agents)
 - [GitHub issue automation](#github-issue-automation)
+- [Notifications](#notifications)
 - [How scoring works](#how-scoring-works)
 - [Score history and trends](#score-history-and-trends)
 - [Monitoring](#monitoring)
@@ -746,6 +747,88 @@ delete it. With it, the token must be able to read the issues of each repo
 where you link issues: when GitHub answers `404`, FlakeRadar treats the
 issue as deleted and clears the link.
 
+## Notifications
+
+FlakeRadar can post a message when a test or a job becomes flaky, and when it
+recovers. That is for teams who work in Slack and do not want an issue for
+every flaky test.
+
+Set `FLAKERADAR_WEBHOOK_URLS` to a comma-separated list of URLs, and choose a
+format:
+
+```bash
+FLAKERADAR_WEBHOOK_URLS=https://hooks.slack.com/services/T000/B000/xxxx
+FLAKERADAR_WEBHOOK_FORMAT=slack
+FLAKERADAR_PUBLIC_URL=https://flakeradar.example.com
+```
+
+A message is sent only when a test or job **crosses the Flake threshold**:
+
+| Event | When |
+|---|---|
+| `test.flaky` | A test's score reached the threshold. |
+| `test.recovered` | A test's score fell below the threshold again. |
+| `job.flaky` | A job's score reached the threshold. |
+| `job.recovered` | A job's score fell below the threshold again. |
+
+Nothing is sent in these cases:
+
+- The score moves but the test or job stays on the same side of the threshold.
+- A report changes the default branch. That rescores the whole repo, so the
+  report sends no events at all, even for the tests and jobs it touched. The
+  log records how many were dropped.
+- Retention deletes old executions and a score falls as a result. The log
+  records how many were dropped.
+- A test that is now [broken](#broken-tests) leaves the flaky tier, because a
+  broken test has not recovered. There is no closing event for this, so
+  `test.flaky` can be the last event you see for that test. When the test is
+  later fixed, you get an event only if the score crosses the threshold again:
+  the first pass can send a new `test.flaky`, and a later pass `test.recovered`.
+
+`json` (the default) posts a list of event objects, one per test or job the
+report changed. One report is one request:
+
+```json
+[
+  {
+    "event": "test.flaky",
+    "repo": "acme/app",
+    "project": "backend",
+    "test": {
+      "id": 42,
+      "classname": "tests.test_auth",
+      "name": "test_login",
+      "flakiness_score": 0.42,
+      "tier": "flaky",
+      "confirmed_flake_count": 2,
+      "failure_category": "timing"
+    },
+    "url": "https://flakeradar.example.com/?repo=acme%2Fapp&project=backend&test=42"
+  }
+]
+```
+
+A job event carries `"project": null` and a `job` object with `id`,
+`pipeline`, `name`, `flakiness_score`, `tier` and `confirmed_flake_count`, and
+its `url` opens the jobs view. `url` is left out when `FLAKERADAR_PUBLIC_URL`
+is empty.
+
+`slack` posts `{"text": ...}` with one line per event:
+
+```
+FlakeRadar: acme/app / backend — test "test_login" became flaky (score 0.42) https://flakeradar.example.com/?repo=acme%2Fapp&project=backend&test=42
+```
+
+Delivery is best effort. Each URL gets three attempts of five seconds each,
+with a short wait between them, and a rate limit's `retry-after` is honoured up
+to ten seconds. A timeout, a `5xx`, a `408` and a `429` are retried; any other
+`4xx` is a configuration error and is not. FlakeRadar keeps no queue on disk,
+so a message that cannot be delivered — or one that is still queued when the
+process stops — is lost. The queue holds 1000 reports' worth of messages and
+drops the oldest when it is full, so a long endpoint outage also loses messages.
+The dashboard still shows the current tier, and the next report that changes it
+sends a new message.
+
 ## How scoring works
 
 For each test, FlakeRadar uses the last 50 executions. You can change this
@@ -874,7 +957,9 @@ reads a `.env` file.
 | `GITHUB_SYNC_BATCH` | `2000` | How many linked Tests (and, separately, linked Jobs) the maintenance sync checks per run. The oldest checks run first. |
 | `GITHUB_FIXED_STREAK` | `0` (disabled) | The Clean streak at which FlakeRadar comments once on the linked issue that the fix appears to hold. |
 | `GITHUB_CLOSE_FIXED` | `false` | Also close the issue as completed when FlakeRadar posts that comment. |
-| `PUBLIC_URL` | empty | The dashboard URL. When set, the fixed-note comment carries a link to the test or job. |
+| `WEBHOOK_URLS` | empty (disabled) | Comma-separated URLs to post [notifications](#notifications) to. |
+| `WEBHOOK_FORMAT` | `json` | `json` posts a list of event objects; `slack` posts `{"text": ...}` with one line per event. |
+| `PUBLIC_URL` | empty | Base URL of this instance. When set, fixed-note comments and notifications carry links to the Test, Job or dashboard. |
 | `WORKER_POLL_SECONDS` | `1.0` | How often the report processor checks an empty queue. |
 | `REPORT_RETENTION_DAYS` | `7` | FlakeRadar deletes processed raw reports after this time. |
 | `FAILED_REPORT_RETENTION_DAYS` | `0` | Failed reports are kept until a human retries or dismisses one. Set this to delete failed reports older than this many days. |

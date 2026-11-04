@@ -5,7 +5,7 @@ from app.processing import process_next
 from sqlalchemy import func, select
 
 from tests.conftest import make_junit
-from tests.factories import make_pipeline_report, make_project, make_report
+from tests.factories import _notify_settings, make_pipeline_report, make_project, make_report
 
 
 def _job(ci_job_id: str, name: str, status: str = "passed", **kw) -> dict:
@@ -245,3 +245,78 @@ async def test_summary_flag_defaults_false_and_flips(db, session_factory):
     await process_next(session_factory)
     summary_job = (await db.execute(select(Job).where(Job.name == "alls-green"))).scalar_one()
     assert summary_job.summary is False
+
+
+# --- Notifications: Job tier crossings (ADR 0009) -------------------------
+
+
+async def test_job_tier_crossing_reports_job_flaky(db, session_factory, monkeypatch):
+    monkeypatch.setattr("app.processing.get_settings", lambda: _notify_settings())
+    await _queue_pipeline(db, _payload([_job("1", "test (ubuntu, 3.12)", "failed")], sha="a", ci_run_id="1"))
+    assert (await process_next(session_factory)).tier_changes == []  # always failed: broken, not flaky
+    await _queue_pipeline(db, _payload([_job("2", "test (ubuntu, 3.12)", "passed")], sha="b", ci_run_id="2"))
+    (change,) = (await process_next(session_factory)).tier_changes
+    (job,) = (await db.execute(select(Job))).scalars()
+    assert (change.kind, change.event) == ("job", "job.flaky")
+    assert change.id == job.id
+    assert (change.repo, change.project) == ("acme/app", None)  # a Job belongs to a Repo, not a Project
+    assert (change.pipeline, change.name) == (".github/workflows/ci.yml", "test (ubuntu, 3.12)")
+    assert change.flakiness_score == job.flakiness_score
+    assert (change.tier, change.confirmed_flake_count) == ("flaky", job.confirmed_flake_count)
+    assert (change.classname, change.failure_category) == (None, None)
+
+
+async def test_job_recovery_reports_job_recovered(db, session_factory, monkeypatch):
+    monkeypatch.setattr("app.processing.get_settings", lambda: _notify_settings())
+    await _queue_pipeline(db, _payload([_job("1", "lint", "failed")], sha="a", ci_run_id="1"))
+    await process_next(session_factory)
+    await _queue_pipeline(db, _payload([_job("2", "lint", "passed")], sha="b", ci_run_id="2"))
+    assert (await process_next(session_factory)).tier_changes[0].event == "job.flaky"
+    await _queue_pipeline(db, _payload([_job("3", "lint", "passed")], sha="c", ci_run_id="3"))
+    (change,) = (await process_next(session_factory)).tier_changes
+    assert change.event == "job.recovered"
+    assert change.flakiness_score == 0.0
+
+
+async def test_a_default_branch_change_silences_a_linked_junit_reports_job_tier_changes(
+    db, session_factory, monkeypatch, caplog
+):
+    """A linked JUnit Report rescores its Jobs too, and they stay silent as well."""
+    monkeypatch.setattr("app.processing.get_settings", lambda: _notify_settings())
+    # Fail then pass on both branches, so the Job is flaky under either Default branch.
+    for branch, failed, passed in (("dev", "1", "2"), ("main", "3", "4")):
+        for ci_job_id, status in ((failed, "failed"), (passed, "passed")):
+            await _queue_pipeline(
+                db, _payload([_job(ci_job_id, "lint", status)], sha=ci_job_id, ci_run_id=ci_job_id, branch=branch)
+            )
+            await process_next(session_factory)
+    proj = await make_project(db, "acme/app", "backend")
+    await make_report(
+        db, proj, make_junit([("t", "failed")]), branch="dev", commit_sha="z", default_branch="dev", ci_job_id="1"
+    )
+    await db.commit()
+    with caplog.at_level("INFO", logger="flakeradar.processing"):
+        outcome = await process_next(session_factory)
+    (job,) = (await db.execute(select(Job).execution_options(populate_existing=True))).scalars()
+    assert outcome.touched_job_ids == [job.id]
+    assert job.flakiness_score == 0.0  # the failure is explained now, so the Job left the flaky tier...
+    assert outcome.tier_changes == []  # ...but the Default branch change keeps it silent
+    assert "dropped 1 Notification(s)" in caplog.text
+
+
+async def test_a_default_branch_change_drops_the_pipeline_reports_own_tier_changes(
+    db, session_factory, monkeypatch, caplog
+):
+    monkeypatch.setattr("app.processing.get_settings", lambda: _notify_settings())
+    feat = {"branch": "feat", "default_branch": "feat"}
+    await _queue_pipeline(db, _payload([_job("1", "lint", "failed")], sha="a", ci_run_id="1", **feat))
+    await process_next(session_factory)
+    await _queue_pipeline(db, _payload([_job("2", "lint", "passed")], sha="b", ci_run_id="2", **feat))
+    assert (await process_next(session_factory)).tier_changes[0].event == "job.flaky"
+    await _queue_pipeline(db, _payload([_job("3", "lint", "passed")], sha="c", ci_run_id="3"))
+    with caplog.at_level("INFO", logger="flakeradar.processing"):
+        outcome = await process_next(session_factory)
+    (job,) = (await db.execute(select(Job).execution_options(populate_existing=True))).scalars()
+    assert job.flakiness_score == 0.0  # the new Default branch has no flips, so the Job left the flaky tier...
+    assert outcome.tier_changes == []  # ...but the Default branch change keeps it silent
+    assert "dropped 1 Notification(s)" in caplog.text

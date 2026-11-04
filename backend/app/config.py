@@ -2,12 +2,15 @@
 
 import os
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 DEFAULT_INSECURE_TOKEN = "changeme"
 DEFAULT_DATABASE_URL = "postgresql+asyncpg://flakeradar:flakeradar@localhost:5432/flakeradar"
+
+WebhookFormat = Literal["json", "slack"]
 
 
 class Settings(BaseSettings):
@@ -57,13 +60,21 @@ class Settings(BaseSettings):
     # Also close the noted issue with state_reason completed; the next
     # maintenance sync then clears the link as usual.
     github_close_fixed: bool = False
-    # Public base URL of the dashboard, e.g. https://flake.example.com; set it
-    # and the fixed-note comment carries a deep link to the Test or Job.
+    # Public base URL of this instance, e.g. https://flake.example.com; set it
+    # and the fixed-note comment and Notifications carry deep links to the Test,
+    # Job or dashboard.
     public_url: str = ""
 
     # Tier classification threshold for the UI/API ("flaky" vs "suspect").
-    # Independent of the GitHub filing gate above.
+    # Independent of the GitHub filing gate above. It is also the boundary a
+    # Test or Job crosses to produce a Notification (see notify.py).
     flake_threshold: float = 0.30
+
+    # Webhook Notifications (ADR 0009). A comma-separated list of URLs; empty
+    # disables them. One format applies to every endpoint: "json" posts a list
+    # of event objects, "slack" posts {"text": ...} with one line per event.
+    webhook_urls: str = ""
+    webhook_format: WebhookFormat = "json"
 
     cors_origins: str = "http://localhost:5173"
 

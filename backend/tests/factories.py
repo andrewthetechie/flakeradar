@@ -8,6 +8,7 @@ import itertools
 from datetime import date, datetime
 
 from app import report_intake
+from app.config import Settings
 from app.identity import get_or_create_repo
 from app.models import (
     JOB_STATUSES,
@@ -277,3 +278,10 @@ async def make_job_score(db: AsyncSession, job: Job, day: date, flakiness_score:
     db.add(row)
     await db.flush()
     return row
+
+
+def _notify_settings(**kw) -> Settings:
+    """Decay 0 makes the score depend on one transition, so crossings are exact."""
+    base = {"flake_threshold": 0.05, "score_decay": 0.0, "score_window": 50, "broken_streak": 5}
+    base.update(kw)
+    return Settings(**base)

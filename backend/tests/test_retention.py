@@ -319,6 +319,23 @@ async def test_prune_rescores_test_with_no_executions_left(db, client):
     assert [t["tier"] for t in page["items"]] == ["stable"]
 
 
+async def test_prune_logs_a_count_of_the_notifications_it_drops(db, caplog):
+    """Pruning can move a Test or Job out of the flaky tier, silently except for this count."""
+    now = utcnow()
+    old = now - timedelta(days=100)
+    proj = await make_project(db)
+    tc = await make_test_case(db, proj, flakiness_score=0.5)
+    run = await make_run(db, proj, commit_sha="old", created_at=old)
+    await make_execution(db, tc, run, created_at=old)
+    job = await make_job(db, await make_pipeline(db), flakiness_score=0.5)
+    await make_job_execution(db, job, ci_job_id="old", created_at=old)
+    await db.commit()
+
+    with caplog.at_level(logging.INFO, logger="flakeradar.retention"):
+        await prune(db, now=now, report_days=7, execution_days=90)
+    assert "dropped 2 Notification(s)" in caplog.text
+
+
 async def test_prune_rescores_test_from_remaining_executions(db):
     now = utcnow()
     old, recent = now - timedelta(days=100), now - timedelta(days=1)
