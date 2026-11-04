@@ -6,7 +6,7 @@ Set `Done` and the last commit SHA when a task lands. If you are blocked, write 
 
 | Task | Title | State | Commit | Notes |
 |---|---|---|---|---|
-| 01 | Workspace, lints, nextest, CI skeleton, code standards | Pending | | |
+| 01 | Workspace, lints, nextest, CI skeleton, code standards | Done | f95dbcf | `cargo nextest` needs `--no-tests=pass` until task 03 adds the first tests. For the same reason the coverage job keeps its `has-coverage` guard (cargo-llvm-cov cannot export a report when no test has run) and prints a notice instead. Task 03 removes both. Rust coverage of added code: n/a, the crates hold doc comments only and `main` is `coverage(off)` (logged). |
 | 02 | Golden recorder and pytest manifest | Pending | | |
 | 03 | Baseline schema, entities, test databases, SeaORM spike | Pending | | |
 | 04 | Core logic | Pending | | |
