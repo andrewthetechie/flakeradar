@@ -64,12 +64,12 @@ import logging
 from dataclasses import dataclass
 
 import httpx
-from sqlalchemy import func, select, update
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm.exc import StaleDataError
 
 from . import issue_links, queries
-from .attribution import unexplained_failure_counts
+from .attribution import test_execution_window_ids, unexplained_failure_counts
 from .batching import chunks
 from .config import Settings, get_settings
 from .models import (
@@ -284,15 +284,12 @@ async def _issue_body(db: AsyncSession, tc: TestCase, repo: str, project: str, r
 
 async def _window_failures(db: AsyncSession, test_case_ids: list[int], window: int) -> dict[int, int]:
     """Count failed/error executions per Test over its most recent `window` runs."""
-    rn = func.row_number().over(partition_by=TestExecution.test_case_id, order_by=TestExecution.id.desc()).label("rn")
     counts: dict[int, int] = {}
     for chunk in chunks(test_case_ids):
-        ranked = (
-            select(TestExecution.test_case_id, TestExecution.status, rn)
-            .where(TestExecution.test_case_id.in_(chunk))
-            .subquery()
+        windowed = test_execution_window_ids(chunk, window).subquery()
+        rows = await db.execute(
+            select(TestExecution.test_case_id, TestExecution.status).where(TestExecution.id.in_(select(windowed.c.id)))
         )
-        rows = await db.execute(select(ranked.c.test_case_id, ranked.c.status).where(ranked.c.rn <= window))
         for tid, status in rows.all():
             if status in FAILING:
                 counts[tid] = counts.get(tid, 0) + 1

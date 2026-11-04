@@ -589,6 +589,25 @@ async def test_min_failures_gate(db, gh_settings):
     assert len(calls) == 1
 
 
+async def test_window_failures_counts_only_the_newest_window(db):
+    """More than `window` Executions: failures older than the window do not count."""
+    proj = await make_project(db, "acme/win", "p")
+    tc_old = await make_test_case(db, proj, name="old_failures")
+    tc_new = await make_test_case(db, proj, name="new_failures")
+    run = await make_run(db, proj)
+    # Inserted oldest-first, so ids ascend in this order per Test.
+    old = ["failed", "failed", "passed", "passed", "passed"]  # window (3): no failures
+    new = ["failed", "passed", "failed", "passed", "failed"]  # window: 2, one older outside
+    for status_old, status_new in zip(old, new):
+        await make_execution(db, tc_old, run, status=status_old)
+        await make_execution(db, tc_new, run, status=status_new)
+    await db.commit()
+
+    counts = await github_integration._window_failures(db, [tc_old.id, tc_new.id], window=3)
+    assert counts == {tc_new.id: 2}
+    assert counts.get(tc_old.id, 0) == 0
+
+
 async def test_score_gate_from_issue_min_score(db, gh_settings):
     gh_settings.github_issue_min_score = 0.9
     tc = await _flaky_test(db, name="t", flakiness_score=0.6)
