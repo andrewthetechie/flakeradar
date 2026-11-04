@@ -1,0 +1,5 @@
+[toolchain]
+# Pinned so a new stable release cannot change the gate under CI or a
+# contributor's machine. Bump deliberately, then re-run the full verification.
+channel = "1.99.0"
+components = ["clippy", "rustfmt"]

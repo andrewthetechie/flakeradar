@@ -1,0 +1,10 @@
+[package]
+name = "flakeradar-test-support"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Test databases and factories for FlakeRadar (dev-dependency only)"
+publish = false
+
+[lints]
+workspace = true

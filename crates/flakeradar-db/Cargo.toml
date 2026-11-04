@@ -1,0 +1,10 @@
+[package]
+name = "flakeradar-db"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "FlakeRadar database layer: baseline migration, entities, queries, processing"
+publish = false
+
+[lints]
+workspace = true

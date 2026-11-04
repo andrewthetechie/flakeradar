@@ -1,0 +1,13 @@
+# Clippy configuration for FlakeRadar. Lint levels live in `Cargo.toml`
+# (`[workspace.lints]`); this file only tunes lint behaviour.
+
+# `#[test]` functions and `#[cfg(test)]` modules index fixtures they just built;
+# a panic there is a test failure, which is the point. Integration tests under
+# `tests/` carry the same exemption in their panic-lint headers.
+allow-indexing-slicing-in-tests = true
+
+# Words `doc_markdown` should read as prose rather than as identifiers needing
+# backticks. This project's own name and the names of the systems it talks to
+# recur in doc comments, and backticking them everywhere makes the docs harder to
+# read. ".." keeps clippy's default list (GitHub, OAuth, ...).
+doc-valid-idents = ["FlakeRadar", "SeaORM", "PostgreSQL", "JUnit", ".."]
