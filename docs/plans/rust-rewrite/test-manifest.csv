@@ -1,14 +1,14 @@
 pytest_id,task,status,rust_test,reason
-tests/test_app_startup.py::test_a_built_frontend_is_served_at_the_root,5,pending,,
-tests/test_app_startup.py::test_a_missing_frontend_dist_mounts_nothing,5,pending,,
-tests/test_app_startup.py::test_a_real_token_boots_without_the_default_warning,5,pending,,
-tests/test_app_startup.py::test_a_real_token_needs_no_opt_in,5,pending,,
-tests/test_app_startup.py::test_get_db_yields_a_live_session,5,pending,,
-tests/test_app_startup.py::test_the_default_token_is_allowed_when_explicitly_opted_in,5,pending,,
-tests/test_app_startup.py::test_the_default_token_is_refused_when_opted_out,5,pending,,
-tests/test_app_startup.py::test_the_default_token_is_refused_when_the_flag_is_unset,5,pending,,
-tests/test_app_startup.py::test_the_lifespan_builds_a_webhook_worker_only_when_urls_are_set,5,pending,,
-tests/test_app_startup.py::test_the_lifespan_warns_about_the_default_token_and_holds_the_worker_lock,5,pending,,
+tests/test_app_startup.py::test_a_built_frontend_is_served_at_the_root,12,pending,,mount_frontend: the embedded frontend arrives in task 12
+tests/test_app_startup.py::test_a_missing_frontend_dist_mounts_nothing,12,pending,,mount_frontend: the embedded frontend arrives in task 12
+tests/test_app_startup.py::test_a_real_token_boots_without_the_default_warning,5,ported,flakeradar::server::a_fresh_database_is_migrated_and_the_shell_answers,the server starts and serves with a real token; the default-token warning is check_api_token's
+tests/test_app_startup.py::test_a_real_token_needs_no_opt_in,5,ported,flakeradar::settings::tests::a_real_token_needs_no_opt_in,
+tests/test_app_startup.py::test_get_db_yields_a_live_session,5,ported,flakeradar::ops::ready_reports_the_pending_queue,a handler borrows a live pooled connection; the probe runs two queries per request
+tests/test_app_startup.py::test_the_default_token_is_allowed_when_explicitly_opted_in,5,ported,flakeradar::settings::tests::the_default_token_is_allowed_when_explicitly_opted_in,
+tests/test_app_startup.py::test_the_default_token_is_refused_when_opted_out,5,ported,flakeradar::settings::tests::the_default_token_is_refused_when_opted_out,
+tests/test_app_startup.py::test_the_default_token_is_refused_when_the_flag_is_unset,5,ported,flakeradar::settings::tests::the_default_token_is_refused_when_opted_out,"the same test loops over 0, empty, true and unset"
+tests/test_app_startup.py::test_the_lifespan_builds_a_webhook_worker_only_when_urls_are_set,8,pending,,the lifespan's workers arrive in task 08; the webhook client in task 10
+tests/test_app_startup.py::test_the_lifespan_warns_about_the_default_token_and_holds_the_worker_lock,8,pending,,the Report worker and its advisory lock arrive in task 08
 tests/test_attribution.py::test_attribution_params_round_trip_to_test_run,7,pending,,
 tests/test_attribution.py::test_cross_repo_run_does_not_explain,7,pending,,
 tests/test_attribution.py::test_explained_ci_job_ids_agrees_with_scoring,7,pending,,
@@ -66,7 +66,7 @@ tests/test_classify.py::test_dominant_category_none_when_all_null,4,ported,flake
 tests/test_classify.py::test_dominant_category_skips_null,4,ported,flakeradar-core::classify::tests::dominant_category_skips_null,
 tests/test_classify.py::test_dominant_category_tie_newest_wins,4,ported,flakeradar-core::classify::tests::dominant_category_tie_newest_wins,
 tests/test_db.py::test_database_url_rewritten_to_asyncpg,3,ported,flakeradar-db::connect::tests::accepts_every_documented_postgres_url,Python rewrites the driver scheme; Rust accepts every PostgreSQL spelling instead (see differences.md)
-tests/test_db.py::test_health,5,pending,,
+tests/test_db.py::test_health,5,ported,flakeradar::app::health_answers_ok,
 tests/test_db.py::test_job_execution_unique_per_ci_job_id,3,ported,flakeradar-db::constraints::a_job_execution_is_unique_per_ci_job_id,
 tests/test_db.py::test_job_unique_per_pipeline,3,ported,flakeradar-db::constraints::a_job_name_is_unique_within_its_pipeline,
 tests/test_db.py::test_junit_report_requires_project,3,ported,flakeradar-db::constraints::a_junit_report_requires_a_project,
@@ -305,16 +305,16 @@ tests/test_mcp.py::test_top_flaky_jobs,11,pending,,
 tests/test_mcp.py::test_top_flaky_new_within_days,11,pending,,
 tests/test_mcp.py::test_top_flaky_tests,11,pending,,
 tests/test_mcp.py::test_top_flaky_tests_category,11,pending,,
-tests/test_ops_api.py::test_metrics_503_when_database_fails,5,pending,,
-tests/test_ops_api.py::test_metrics_names_and_labels,5,pending,,
-tests/test_ops_api.py::test_metrics_tiers_match_tier_for,5,pending,,
-tests/test_ops_api.py::test_metrics_zero_series_and_absent_timestamp,5,pending,,
-tests/test_ops_api.py::test_ops_queries_never_touch_test_executions,5,pending,,
-tests/test_ops_api.py::test_ready_503_when_database_fails,5,pending,,
-tests/test_ops_api.py::test_ready_healthy,5,pending,,
-tests/test_ops_api.py::test_ready_ignores_leader_lock_held_in_another_database,5,pending,,
-tests/test_ops_api.py::test_ready_reports_leader_lock,5,pending,,
-tests/test_ops_api.py::test_summary_queries_never_touch_executions,5,pending,,
+tests/test_ops_api.py::test_metrics_503_when_database_fails,5,ported,flakeradar::ops::metrics_reports_a_missing_database_with_an_empty_body,
+tests/test_ops_api.py::test_metrics_names_and_labels,5,ported,flakeradar::ops::metrics_names_every_series_with_its_labels,
+tests/test_ops_api.py::test_metrics_tiers_match_tier_for,5,ported,flakeradar::ops::metrics_tiers_classify_like_tier_for,
+tests/test_ops_api.py::test_metrics_zero_series_and_absent_timestamp,5,ported,flakeradar::ops::metrics_reports_zeroes_and_no_processed_timestamp_on_an_empty_instance,
+tests/test_ops_api.py::test_ops_queries_never_touch_test_executions,5,ported,flakeradar::routes::ops::tests::the_ops_queries_stay_off_the_execution_tables,
+tests/test_ops_api.py::test_ready_503_when_database_fails,5,ported,flakeradar::ops::ready_reports_a_missing_database_rather_than_failing,
+tests/test_ops_api.py::test_ready_healthy,5,ported,flakeradar::ops::ready_reports_the_pending_queue,
+tests/test_ops_api.py::test_ready_ignores_leader_lock_held_in_another_database,5,ported,flakeradar::ops::ready_ignores_a_leader_lock_held_in_another_database,
+tests/test_ops_api.py::test_ready_reports_leader_lock,5,ported,flakeradar::ops::ready_reports_the_processor_leader_lock,
+tests/test_ops_api.py::test_summary_queries_never_touch_executions,9,pending,,GET /api/summary arrives with the read APIs in task 09
 tests/test_parsing.py::test_bad_line_is_ignored,4,ported,flakeradar-core::parsing::bad_line_is_ignored,
 tests/test_parsing.py::test_caps_are_applied,4,ported,flakeradar-core::parsing::caps_are_applied,
 tests/test_parsing.py::test_declared_encoding_is_honored,4,ported,flakeradar-core::parsing::declared_encoding_is_honored,

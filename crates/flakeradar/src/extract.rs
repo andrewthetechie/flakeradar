@@ -409,3 +409,138 @@ fn body_error(rejection: &axum::extract::rejection::BytesRejection) -> ApiError 
         ),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! The error-shape mapping, on messages the parsers really produce.
+
+    use flakeradar_core::LocSegment;
+    use serde_json::Value;
+
+    use super::{
+        INTEGER_TYPES, is_integer_failure, is_json_content_type, json_error_position, kind_for,
+        kind_for_type_name, missing_field, path_issue,
+    };
+
+    #[test]
+    fn only_a_json_media_type_is_parsed_as_json() {
+        assert!(is_json_content_type(Some("application/json")));
+        assert!(is_json_content_type(Some(
+            "Application/JSON; charset=utf-8"
+        )));
+        assert!(is_json_content_type(Some("application/vnd.api+json")));
+        assert!(!is_json_content_type(Some("text/plain")));
+        assert!(!is_json_content_type(Some("application/xml")));
+        assert!(!is_json_content_type(Some("json")));
+        assert!(!is_json_content_type(None));
+    }
+
+    #[test]
+    fn a_serde_message_maps_to_pydantics_kind() {
+        assert_eq!(
+            kind_for("invalid type: string, expected a boolean"),
+            "bool_parsing"
+        );
+        assert_eq!(
+            kind_for("provided string was not `true` or `false`"),
+            "bool_parsing"
+        );
+        assert_eq!(
+            kind_for("unknown variant `bogus`, expected one of `score`"),
+            "literal_error"
+        );
+        assert_eq!(kind_for("invalid float literal"), "float_parsing");
+        assert_eq!(
+            kind_for("invalid type: string, expected f64"),
+            "float_parsing"
+        );
+        assert_eq!(
+            kind_for("invalid type: string, expected f32"),
+            "float_parsing"
+        );
+        assert_eq!(
+            kind_for("invalid type: string, expected i64"),
+            "int_parsing"
+        );
+        assert_eq!(
+            kind_for("invalid type: string, expected usize"),
+            "int_parsing"
+        );
+        assert_eq!(kind_for("invalid digit found in string"), "int_parsing");
+        assert_eq!(
+            kind_for("number too large to fit in target type"),
+            "int_parsing"
+        );
+        assert_eq!(kind_for("missing field `number`"), "missing");
+        assert_eq!(kind_for("something else entirely"), "value_error");
+    }
+
+    #[test]
+    fn a_type_name_maps_to_pydantics_kind() {
+        assert_eq!(kind_for_type_name("bool"), "bool_parsing");
+        for name in ["f32", "f64"] {
+            assert_eq!(kind_for_type_name(name), "float_parsing");
+        }
+        assert_eq!(kind_for_type_name("i64"), "int_parsing");
+        assert_eq!(kind_for_type_name("u128"), "int_parsing");
+        assert_eq!(kind_for_type_name("char"), "value_error");
+    }
+
+    #[test]
+    fn every_integer_width_serde_prints_is_an_integer_failure() {
+        for name in INTEGER_TYPES {
+            assert!(is_integer_failure(name), "{name}");
+        }
+        assert!(is_integer_failure("number too small to fit in target type"));
+        assert!(!is_integer_failure("invalid float literal"));
+    }
+
+    #[test]
+    fn a_missing_field_names_the_field() {
+        assert_eq!(
+            missing_field("missing field `number` at line 1 column 2"),
+            Some("number".to_owned())
+        );
+        assert_eq!(missing_field("missing field"), None);
+        assert_eq!(missing_field("missing field `number"), None);
+    }
+
+    #[test]
+    fn a_path_issue_names_the_type_it_could_not_read() {
+        let loc = vec![
+            LocSegment::Field("path".to_owned()),
+            LocSegment::Field("id".to_owned()),
+        ];
+        let issue = path_issue(loc[1..].to_vec(), "abc", "i64");
+        assert_eq!(issue.r#type, "int_parsing");
+        assert_eq!(issue.loc, loc);
+        let issue = path_issue(loc[1..].to_vec(), "abc", "f64");
+        assert_eq!(issue.r#type, "float_parsing");
+        let issue = path_issue(loc[1..].to_vec(), "abc", "bool");
+        assert_eq!(issue.r#type, "bool_parsing");
+        let issue = path_issue(loc[1..].to_vec(), "abc", "char");
+        assert_eq!(issue.r#type, "value_error");
+        assert_eq!(issue.msg, "Input should be a valid char, got 'abc'");
+        assert_eq!(issue.input, Some(Value::from("abc")));
+    }
+
+    #[test]
+    fn an_error_position_counts_characters_from_the_start() {
+        // Python reports an index into the decoded text: a newline counts one and
+        // a multi-byte character counts one, whatever its UTF-8 length.
+        let cases: [(&str, usize); 4] = [
+            ("{\"number\": }", 11),
+            ("{\n  \"number\": }", 14),
+            ("{\"númber\": }", 11),
+            ("{\n  \"númber\": }", 14),
+        ];
+        for (body, expected) in cases {
+            let error = serde_json::from_str::<Value>(body).expect_err("the fixture is malformed");
+            assert_eq!(
+                json_error_position(body.as_bytes(), &error),
+                expected,
+                "{body:?}"
+            );
+        }
+    }
+}

@@ -83,3 +83,53 @@ impl IntoResponse for ApiError {
             .into_response()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! The two bodies a failed request can carry.
+
+    use axum::body::to_bytes;
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse as _;
+    use serde_json::{Value, json};
+
+    use super::ApiError;
+
+    /// The status and the body of a rendered error.
+    async fn rendered(error: ApiError) -> (StatusCode, Value) {
+        let response = error.into_response();
+        let status = response.status();
+        let bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("the body reads to the end");
+        let body = serde_json::from_slice(&bytes).expect("the body is JSON");
+        (status, body)
+    }
+
+    #[tokio::test]
+    async fn a_hand_written_error_carries_its_status_and_its_message() {
+        let error = ApiError::new(StatusCode::NOT_FOUND, "Report not found");
+        assert_eq!(error.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            serde_json::to_value(error.detail()).expect("the detail serializes"),
+            json!("Report not found")
+        );
+        let (status, body) = rendered(error).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body, json!({"detail": "Report not found"}));
+    }
+
+    #[tokio::test]
+    async fn a_validation_error_is_a_422_with_a_list_of_issues() {
+        let issue = flakeradar_core::ValidationIssue::int_parsing(
+            vec![flakeradar_core::LocSegment::Field("limit".to_owned())],
+            json!("abc"),
+        );
+        let error = ApiError::unprocessable(vec![issue]);
+        assert_eq!(error.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let (status, body) = rendered(error).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(body["detail"][0]["type"], json!("int_parsing"));
+        assert_eq!(body["detail"][0]["loc"], json!(["limit"]));
+    }
+}

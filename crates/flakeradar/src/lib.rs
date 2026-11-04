@@ -9,6 +9,10 @@
 
 // Rust guideline compliant 2026-07-21
 
+// cargo-llvm-cov sets `coverage_nightly` on nightly, where the `coverage`
+// attribute is still experimental. `telemetry::init_tracing` is the only item
+// that carries one; see `docs/plans/rust-rewrite/coverage-gaps.md`.
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 #![cfg_attr(
     test,
     expect(

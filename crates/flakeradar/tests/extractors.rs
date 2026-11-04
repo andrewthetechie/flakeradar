@@ -147,6 +147,14 @@ fn extractor_app() -> Router {
             "/nested/{fields}",
             get(|ApiPath(_): ApiPath<NestedPath>| async { "reached" }),
         )
+        .route(
+            "/plain/{id}",
+            get(|ApiPath(id): ApiPath<i64>| async move { id.to_string() }),
+        )
+        .route(
+            "/pair/{left}/{right}",
+            get(|ApiPath(pair): ApiPath<(i64, i64)>| async move { format!("{pair:?}") }),
+        )
         .layer(DefaultBodyLimit::max(flakeradar::JSON_BODY_LIMIT))
 }
 
@@ -264,6 +272,36 @@ async fn a_path_parameter_the_router_cannot_fill_is_a_server_error() {
         "{}",
         reply.text()
     );
+}
+
+#[tokio::test]
+async fn a_single_path_parameter_of_the_wrong_type_names_the_path_only() {
+    // A route whose whole path is one value has no key to name, as FastAPI's
+    // `loc: ["path"]` had none.
+    let reply = call(axum::http::Method::GET, "/plain/abc", &[], "").await;
+    assert_single_issue(&reply, "int_parsing", &json!(["path"]));
+
+    let reply = call(axum::http::Method::GET, "/plain/9", &[], "").await;
+    assert_eq!(reply.status, StatusCode::OK);
+    assert_eq!(reply.text(), "9");
+}
+
+#[tokio::test]
+async fn a_tuple_path_parameter_of_the_wrong_type_names_its_position() {
+    let reply = call(axum::http::Method::GET, "/pair/1/two", &[], "").await;
+    assert_single_issue(&reply, "int_parsing", &json!(["path", 1]));
+
+    let reply = call(axum::http::Method::GET, "/pair/1/2", &[], "").await;
+    assert_eq!(reply.status, StatusCode::OK);
+    assert_eq!(reply.text(), "(1, 2)");
+}
+
+#[tokio::test]
+async fn a_path_parameter_that_is_not_utf8_is_a_unicode_issue() {
+    // Percent-decoding runs before the handler, so a raw byte that is not UTF-8
+    // reaches the extractor as a rejection rather than as a value.
+    let reply = call(axum::http::Method::GET, "/test/%FF", &[], "").await;
+    assert_single_issue(&reply, "string_unicode", &json!(["path", "test_id"]));
 }
 
 #[tokio::test]

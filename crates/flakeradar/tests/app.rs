@@ -80,6 +80,55 @@ async fn a_method_a_path_does_not_answer_is_a_405() {
 }
 
 #[tokio::test]
+async fn a_route_that_needs_the_token_refuses_a_missing_or_wrong_one() {
+    // No route requires the token until task 06, so the middleware's own contract
+    // is pinned here: a missing or wrong `X-API-Key` is 401 with the frozen
+    // server's message, and the configured one is let through.
+    let db = TestDb::new().await.expect("a test database is available");
+    let state = AppState::new(
+        db.connection().clone(),
+        std::sync::Arc::new(settings(&[("FLAKERADAR_API_TOKEN", "right-token")])),
+    );
+    let app = axum::Router::new()
+        .route("/guarded", axum::routing::get(|| async { "opened" }))
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            flakeradar::middleware::require_token,
+        ))
+        .with_state(state);
+
+    let reply = get(&app, "/guarded").await;
+    assert_eq!(reply.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        reply.json(),
+        json!({"detail": "Invalid or missing X-API-Key"})
+    );
+    assert_eq!(
+        reply.header("content-type").as_deref(),
+        Some("application/json")
+    );
+
+    for presented in ["wrong-token", "right-tokeN", "right-token "] {
+        let request = axum::http::Request::builder()
+            .uri("/guarded")
+            .header("x-api-key", presented)
+            .body(axum::body::Body::empty())
+            .expect("the fixture request builds");
+        let reply = send(&app, request).await;
+        assert_eq!(reply.status, StatusCode::UNAUTHORIZED, "{presented:?}");
+    }
+
+    let request = axum::http::Request::builder()
+        .uri("/guarded")
+        .header("x-api-key", "right-token")
+        .body(axum::body::Body::empty())
+        .expect("the fixture request builds");
+    let reply = send(&app, request).await;
+    assert_eq!(reply.status, StatusCode::OK);
+    assert_eq!(reply.text(), "opened");
+}
+
+#[tokio::test]
 async fn the_openapi_document_lists_every_route() {
     let db = TestDb::new().await.expect("a test database is available");
     let reply = get(&app(&db, &[]), "/openapi.json").await;
