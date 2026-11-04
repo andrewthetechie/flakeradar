@@ -113,6 +113,26 @@ pub(crate) async fn request(app: &Router, method: Method, uri: &str) -> Reply {
     send(app, request).await
 }
 
+/// Sends one request with no body and `headers`.
+pub(crate) async fn request_with_headers(
+    app: &Router,
+    method: Method,
+    uri: &str,
+    headers: &[(&str, &str)],
+) -> Reply {
+    let mut builder = Request::builder().method(method).uri(uri);
+    for (name, value) in headers {
+        builder = builder.header(*name, *value);
+    }
+    send(
+        app,
+        builder
+            .body(Body::empty())
+            .expect("the fixture request builds"),
+    )
+    .await
+}
+
 /// Sends one `GET`.
 pub(crate) async fn get(app: &Router, uri: &str) -> Reply {
     request(app, Method::GET, uri).await

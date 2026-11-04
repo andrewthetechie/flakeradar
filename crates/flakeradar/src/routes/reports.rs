@@ -304,6 +304,16 @@ fn check_min(value: &str, min: usize, field: &str, issues: &mut Vec<ValidationIs
     }
 }
 
+/// The path parameters of a Report route.
+///
+/// The field is named, so a path that is not an integer reports `loc`
+/// `["path", "report_id"]` as FastAPI's named path parameter did.
+#[derive(Debug, Clone, Copy, Deserialize)]
+pub struct ReportPath {
+    /// The Report's id.
+    pub report_id: i64,
+}
+
 /// The query parameters of `GET /api/reports`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ListQuery {
@@ -443,22 +453,25 @@ pub async fn ingest(
         default_branch: blank_to_none(query.default_branch),
     };
     if let Some(existing) = find_junit_duplicate(state.pool(), &candidate).await? {
-        return Ok(Json(IngestAccepted {
+        return Ok(accepted(IngestAccepted {
             report_id: i64::from(existing.id),
             status: existing.status,
             duplicate: true,
-        })
-        .into_response());
+        }));
     }
     let inserted = reports::Entity::insert(candidate.into_active_model(now))
         .exec_with_returning(state.pool())
         .await?;
-    Ok(Json(IngestAccepted {
+    Ok(accepted(IngestAccepted {
         report_id: i64::from(inserted.id),
         status: REPORT_PENDING.to_owned(),
         duplicate: false,
-    })
-    .into_response())
+    }))
+}
+
+/// The 202 every accepted upload answers with, and its body.
+fn accepted(body: IngestAccepted) -> Response {
+    (StatusCode::ACCEPTED, Json(body)).into_response()
 }
 
 /// The uploaded bytes: the `report` file of a multipart body, else the raw body.
@@ -585,12 +598,11 @@ pub async fn ingest_pipeline(
     let inserted = reports::Entity::insert(report.into_active_model(now))
         .exec_with_returning(state.pool())
         .await?;
-    Ok(Json(IngestAccepted {
+    Ok(accepted(IngestAccepted {
         report_id: i64::from(inserted.id),
         status: REPORT_PENDING.to_owned(),
         duplicate: false,
-    })
-    .into_response())
+    }))
 }
 
 /// How many Reports are pending and how many failed.
@@ -692,9 +704,9 @@ pub async fn list_reports(
 )]
 pub async fn get_report(
     State(state): State<AppState>,
-    ApiPath(report_id): ApiPath<i64>,
+    ApiPath(path): ApiPath<ReportPath>,
 ) -> ReportResult<Json<ReportOut>> {
-    let stored = stored_report(state.pool(), report_id).await?;
+    let stored = stored_report(state.pool(), path.report_id).await?;
     match stored {
         Some(stored) => Ok(Json(stored.into_out())),
         None => Err(not_found()),
@@ -723,9 +735,9 @@ pub async fn get_report(
 )]
 pub async fn retry_report(
     State(state): State<AppState>,
-    ApiPath(report_id): ApiPath<i64>,
+    ApiPath(path): ApiPath<ReportPath>,
 ) -> ReportResult<Json<ReportOut>> {
-    let Some(mut stored) = stored_report(state.pool(), report_id).await? else {
+    let Some(mut stored) = stored_report(state.pool(), path.report_id).await? else {
         return Err(not_found());
     };
     if stored.report.status != REPORT_FAILED {
@@ -766,9 +778,9 @@ pub async fn retry_report(
 )]
 pub async fn delete_report(
     State(state): State<AppState>,
-    ApiPath(report_id): ApiPath<i64>,
+    ApiPath(path): ApiPath<ReportPath>,
 ) -> ReportResult<StatusCode> {
-    let Some(stored) = stored_report(state.pool(), report_id).await? else {
+    let Some(stored) = stored_report(state.pool(), path.report_id).await? else {
         return Err(not_found());
     };
     if stored.report.status != REPORT_FAILED {

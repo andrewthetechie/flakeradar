@@ -800,13 +800,17 @@ impl JobScoreBuilder {
 /// Builder for a Report, pending unless a test says otherwise.
 #[derive(Debug)]
 pub struct ReportBuilder {
-    project_id: i32,
+    project_id: Option<i32>,
     repo_id: i32,
     body: Vec<u8>,
     commit_sha: String,
     branch: String,
     ci_run_id: String,
+    ci_run_attempt: Option<i32>,
     status: String,
+    error: Option<String>,
+    retry_count: i32,
+    processed_at: Option<DateTime<FixedOffset>>,
     kind: String,
 }
 
@@ -814,13 +818,17 @@ pub struct ReportBuilder {
 #[must_use]
 pub fn make_report(project: &projects::Model, repo_id: i32) -> ReportBuilder {
     ReportBuilder {
-        project_id: project.id,
+        project_id: Some(project.id),
         repo_id,
         body: b"<testsuite/>".to_vec(),
         commit_sha: "sha1".to_owned(),
         branch: "main".to_owned(),
         ci_run_id: String::new(),
+        ci_run_attempt: None,
         status: "pending".to_owned(),
+        error: None,
+        retry_count: 0,
+        processed_at: None,
         kind: "junit".to_owned(),
     }
 }
@@ -861,6 +869,42 @@ impl ReportBuilder {
         self
     }
 
+    /// Sets the Report's kind: `junit` or `pipeline`, with no Project.
+    #[must_use]
+    pub fn kind(mut self, kind: &str) -> Self {
+        kind.clone_into(&mut self.kind);
+        self.project_id = None;
+        self
+    }
+
+    /// Sets why processing failed.
+    #[must_use]
+    pub fn error(mut self, error: &str) -> Self {
+        self.error = Some(error.to_owned());
+        self
+    }
+
+    /// Sets how many automatic retries the Report has spent.
+    #[must_use]
+    pub fn retry_count(mut self, retry_count: i32) -> Self {
+        self.retry_count = retry_count;
+        self
+    }
+
+    /// Sets which attempt of the CI run the Report came from.
+    #[must_use]
+    pub fn ci_run_attempt(mut self, ci_run_attempt: i32) -> Self {
+        self.ci_run_attempt = Some(ci_run_attempt);
+        self
+    }
+
+    /// Sets when processing finished.
+    #[must_use]
+    pub fn processed_at(mut self, processed_at: DateTime<FixedOffset>) -> Self {
+        self.processed_at = Some(processed_at);
+        self
+    }
+
     /// Inserts the Report.
     ///
     /// # Errors
@@ -871,7 +915,7 @@ impl ReportBuilder {
             db,
             reports::ActiveModel {
                 id: ActiveValue::default(),
-                project_id: Set(Some(self.project_id)),
+                project_id: Set(self.project_id),
                 repo_id: Set(self.repo_id),
                 body: Set(self.body),
                 body_sha256: Set(None),
@@ -879,18 +923,18 @@ impl ReportBuilder {
                 branch: Set(self.branch),
                 ci_run_id: Set(self.ci_run_id),
                 ci_job_id: Set(None),
-                ci_run_attempt: Set(None),
+                ci_run_attempt: Set(self.ci_run_attempt),
                 pipeline: Set(None),
                 default_branch: Set(None),
                 line_base: Set(None),
                 root: Set(None),
                 status: Set(self.status),
-                error: Set(None),
+                error: Set(self.error),
                 counts: Set(None),
                 run_id: Set(None),
                 created_at: Set(now()),
-                processed_at: Set(None),
-                retry_count: Set(0),
+                processed_at: Set(self.processed_at.map(|at| at.fixed_offset())),
+                retry_count: Set(self.retry_count),
                 kind: Set(self.kind),
             },
         )
