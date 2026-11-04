@@ -9,6 +9,8 @@
 // Rust guideline compliant 2026-07-21
 
 use std::fs::File;
+use std::io::{Read as _, Write as _};
+use std::net::{Ipv4Addr, TcpStream};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
@@ -120,7 +122,7 @@ fn ensure_container() -> Result<u16, TestError> {
         }
     }
     let port = host_port()?;
-    wait_until_ready()?;
+    wait_until_ready(port)?;
     Ok(port)
 }
 
@@ -148,15 +150,16 @@ fn host_port() -> Result<u16, TestError> {
     Ok(port)
 }
 
-/// Probes the container until it accepts connections.
-fn wait_until_ready() -> Result<(), TestError> {
+/// Probes the published port until a PostgreSQL server answers on it.
+///
+/// `pg_isready` inside the container answers over the unix socket, which the
+/// temporary server the image starts while it runs `initdb` answers too, so it
+/// can report ready before the container serves the port every test connects to.
+/// This sends the first bytes of a real connection instead.
+fn wait_until_ready(port: u16) -> Result<(), TestError> {
     let deadline = Instant::now() + STARTUP_TIMEOUT;
     while Instant::now() < deadline {
-        let ready = Command::new("docker")
-            .args(["exec", CONTAINER, "pg_isready", "--username", USER])
-            .output()
-            .is_ok_and(|output| output.status.success());
-        if ready {
+        if answers_a_connection(port) {
             return Ok(());
         }
         std::thread::sleep(READY_POLL_INTERVAL);
@@ -164,6 +167,28 @@ fn wait_until_ready() -> Result<(), TestError> {
     Err(TestError::Docker(format!(
         "{CONTAINER} did not accept connections within {STARTUP_TIMEOUT:?}"
     )))
+}
+
+/// Whether a PostgreSQL server answers an `SSLRequest` on `port`.
+///
+/// The message is the one every client sends first: a four-byte length and the
+/// code `80877103`. A server that is accepting connections answers `S` or `N`;
+/// anything else, including a closed socket, means it is not.
+fn answers_a_connection(port: u16) -> bool {
+    /// A PostgreSQL `SSLRequest`: length 8, then the code 80877103.
+    const SSL_REQUEST: [u8; 8] = [0, 0, 0, 8, 0x04, 0xd2, 0x16, 0x2f];
+
+    let Ok(mut stream) = TcpStream::connect((Ipv4Addr::LOCALHOST, port)) else {
+        return false;
+    };
+    if stream.set_read_timeout(Some(READY_POLL_INTERVAL)).is_err() {
+        return false;
+    }
+    if stream.write_all(&SSL_REQUEST).is_err() {
+        return false;
+    }
+    let mut answer = [0_u8; 1];
+    stream.read_exact(&mut answer).is_ok() && (answer[0] == b'S' || answer[0] == b'N')
 }
 
 /// Runs `docker` with `args`, returning its trimmed standard output.
