@@ -17,6 +17,7 @@ mod connect;
 mod error;
 mod identity;
 mod migration;
+mod report_intake;
 
 /// The `SeaORM` entities, generated from the baseline schema by `sea-orm-cli`.
 ///
@@ -41,6 +42,13 @@ pub use error::DbError;
 pub use identity::{get_or_create_project, get_or_create_repo};
 #[doc(inline)]
 pub use migration::{BASELINE_SQL, Migrator, run_migrations, split_statements};
+#[doc(inline)]
+pub use report_intake::{
+    NewJunitReport, NewPipelineReport, REPORT_FAILED, REPORT_KIND_JUNIT, REPORT_KIND_PIPELINE,
+    REPORT_PENDING, REPORT_PROCESSED, REPORT_STATUSES, complete_report, fail_report,
+    find_junit_duplicate, requeue_report, retry_failed_report, stored_attempt, stored_junit_body,
+    stored_pipeline_payload,
+};
 
 /// Advisory-lock key that serializes the startup migration.
 ///

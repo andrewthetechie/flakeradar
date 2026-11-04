@@ -9,6 +9,7 @@
 // Rust guideline compliant 2026-07-21
 
 pub mod ops;
+pub mod reports;
 
 use axum::Router;
 use axum::routing::get;
@@ -17,10 +18,14 @@ use crate::app::AppState;
 use crate::docs;
 
 /// The app's routes, before the state is attached.
-pub fn router() -> Router<AppState> {
+///
+/// `state` is what a route group that needs the shared token attaches
+/// [`crate::middleware::require_token`] with; the read APIs take none.
+pub fn router(state: AppState) -> Router<AppState> {
     let router = Router::new()
         .route("/api/health", get(ops::health))
         .route("/api/health/ready", get(ops::ready))
-        .route("/metrics", get(ops::metrics));
+        .route("/metrics", get(ops::metrics))
+        .merge(reports::router(state));
     docs::router(router)
 }

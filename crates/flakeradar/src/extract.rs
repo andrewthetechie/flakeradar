@@ -134,7 +134,10 @@ fn parse_query<T: DeserializeOwned>(query: &str) -> ApiResult<T> {
 }
 
 /// Parses a request body into `T` by the rule FastAPI applied.
-fn parse_json<T: DeserializeOwned>(bytes: &[u8], content_type: Option<&str>) -> ApiResult<T> {
+pub(crate) fn parse_json<T: DeserializeOwned>(
+    bytes: &[u8],
+    content_type: Option<&str>,
+) -> ApiResult<T> {
     if bytes.is_empty() {
         return Err(ApiError::unprocessable(vec![ValidationIssue::missing(
             scope_loc("body"),
@@ -393,7 +396,7 @@ fn path_issue(tail: Vec<LocSegment>, value: &str, expected_type: &str) -> Valida
 }
 
 /// The 413 or 500 for a body that could not be read.
-fn body_error(rejection: &axum::extract::rejection::BytesRejection) -> ApiError {
+pub(crate) fn body_error(rejection: &axum::extract::rejection::BytesRejection) -> ApiError {
     use axum::extract::rejection::{BytesRejection, FailedToBufferBody};
 
     match rejection {

@@ -34,6 +34,12 @@ pub enum DbError {
         /// `seaql_migrations` table next to them.
         detail: String,
     },
+    /// A stored Pipeline Report body is not the payload it was built from.
+    #[error("the stored Pipeline Report body is not its payload: {detail}")]
+    StoredPayload {
+        /// What the parser rejected.
+        detail: String,
+    },
     /// The driver rejected a statement or could not reach the server.
     #[error(transparent)]
     Database(#[from] sea_orm::DbErr),

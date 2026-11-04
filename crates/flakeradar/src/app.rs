@@ -59,7 +59,7 @@ impl AppState {
 pub fn build_app(state: AppState) -> Router {
     let settings = Arc::clone(&state.settings);
     let router = Router::new()
-        .merge(routes::router())
+        .merge(routes::router(state.clone()))
         .fallback(not_found)
         .method_not_allowed_fallback(method_not_allowed);
     with_common_layers(router, &settings).with_state(state)

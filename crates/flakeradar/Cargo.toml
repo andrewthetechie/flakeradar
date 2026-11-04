@@ -12,6 +12,7 @@ workspace = true
 [dependencies]
 anyhow.workspace = true
 axum = { workspace = true, features = ["http1", "json", "macros", "query", "tokio", "tracing"] }
+chrono = { workspace = true, features = ["clock", "std"] }
 dotenvy.workspace = true
 flakeradar-core = { path = "../flakeradar-core" }
 flakeradar-db = { path = "../flakeradar-db" }

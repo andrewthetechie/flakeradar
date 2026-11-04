@@ -37,6 +37,7 @@ pub use dto::{
     MAX_ISSUE_NUMBER, PipelineReportIn, ProjectDeleteOut, ProjectOut, QuarantineIn, QuarantineItem,
     ReadinessOut, RepoDeleteOut, RepoOut, ReportCountsOut, ReportOut, ReportSummaryOut,
     RunnerStatOut, ScorePointOut, SummaryOut, TestJobLinkOut, TestOut, TestPage, ValidationIssue,
+    pipeline_body,
 };
 #[doc(inline)]
 pub use helpers::{

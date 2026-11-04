@@ -845,9 +845,11 @@ name = "flakeradar-db"
 version = "2.0.0"
 dependencies = [
  "chrono",
+ "flakeradar-core",
  "flakeradar-test-support",
  "sea-orm",
  "sea-orm-migration",
+ "serde_json",
  "thiserror",
  "tokio",
  "tracing",

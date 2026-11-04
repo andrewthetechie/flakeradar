@@ -27,6 +27,7 @@ pub mod docs;
 pub mod error;
 pub mod extract;
 pub mod middleware;
+pub mod multipart;
 pub mod routes;
 pub mod server;
 pub mod settings;
@@ -38,6 +39,8 @@ pub use app::{AppState, JSON_BODY_LIMIT, build_app, with_common_layers};
 pub use error::{ApiError, ApiResult, Detail};
 #[doc(inline)]
 pub use extract::{ApiJson, ApiPath, ApiQuery, Validate, body_loc, query_loc};
+#[doc(inline)]
+pub use multipart::file_field;
 #[doc(inline)]
 pub use server::Server;
 #[doc(inline)]

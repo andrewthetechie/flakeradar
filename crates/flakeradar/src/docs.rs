@@ -13,13 +13,17 @@ use axum::Router;
 use axum::http::header;
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
-use flakeradar_core::{LocSegment, ReadinessOut, ValidationIssue};
+use flakeradar_core::{
+    IngestAccepted, JobResultIn, JobStatus, LocSegment, PipelineReportIn, ReadinessOut, ReportOut,
+    ReportSummaryOut, ValidationIssue,
+};
 use utoipa::OpenApi;
 use utoipa::openapi::OpenApi as OpenApiDocument;
 use utoipa_redoc::Redoc;
 
 use crate::app::AppState;
 use crate::routes::ops::{self, HealthOut};
+use crate::routes::reports;
 
 /// Where the browser bundle is served from, under `/docs`.
 pub const REDOC_SCRIPT_PATH: &str = "/docs/redoc.standalone.js";
@@ -34,8 +38,30 @@ pub const REDOC_SCRIPT: &[u8] = include_bytes!("../assets/redoc.standalone.js");
 #[derive(Debug, OpenApi)]
 #[openapi(
     info(title = "FlakeRadar", version = env!("CARGO_PKG_VERSION")),
-    paths(ops::health, ops::ready, ops::metrics),
-    components(schemas(HealthOut, ReadinessOut, LocSegment, ValidationIssue))
+    paths(
+        ops::health,
+        ops::ready,
+        ops::metrics,
+        reports::ingest,
+        reports::ingest_pipeline,
+        reports::summary,
+        reports::list_reports,
+        reports::get_report,
+        reports::retry_report,
+        reports::delete_report
+    ),
+    components(schemas(
+        HealthOut,
+        ReadinessOut,
+        LocSegment,
+        ValidationIssue,
+        IngestAccepted,
+        ReportOut,
+        ReportSummaryOut,
+        PipelineReportIn,
+        JobResultIn,
+        JobStatus
+    ))
 )]
 pub struct ApiDoc;
 
@@ -120,6 +146,8 @@ mod tests {
         assert!(paths.contains(&"/api/health"), "{paths:?}");
         assert!(paths.contains(&"/api/health/ready"), "{paths:?}");
         assert!(paths.contains(&"/metrics"), "{paths:?}");
+        assert!(paths.contains(&"/api/ingest"), "{paths:?}");
+        assert!(paths.contains(&"/api/reports/summary"), "{paths:?}");
     }
 
     #[test]
