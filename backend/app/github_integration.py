@@ -36,6 +36,10 @@ Error handling: never raises.
   (a StaleDataError on the vanished row) costs only that filing: the
   just-created issue is commented on and closed best-effort, and the rest of
   the batch goes on.
+- The fixed-note step (`note_fixed_issues_for`, after filing) follows the same
+  policy for the comment POST and the optional close PATCH. It stamps
+  `github_issue_fixed_noted_at` the moment the comment lands, so a later close
+  failure never causes a second comment on the same fix.
 - A response body FlakeRadar cannot use (a 201 without an issue number, a
   sync 200 that is not a JSON object with a `state`) -> log a warning, go on;
   no issue number is stored and no link is cleared (the sync still stamps the
@@ -732,6 +736,226 @@ async def close_issues_for_deleted_repo(
         logger.warning("GitHub unreachable, skipping post-delete issue close: %s", exc)
 
 
+def _fixed_comment(obj: Job | TestCase, default_branch: str | None, *, entity: str) -> str:
+    """The one comment that says the fix appears to hold (issue #33).
+
+    `default_branch` is the Repo's Default branch, the branch the Clean streak
+    is counted on; when it is unknown (NULL) the streak spans every branch, so
+    naming one would be a lie and the clause is dropped. With `public_url` set
+    the comment carries a deep link to the entity's own dashboard view.
+    """
+    s = get_settings()
+    where = f" on `{default_branch}`" if default_branch else ""
+    body = (
+        f"FlakeRadar: {obj.clean_streak} passing runs{where} since the last failure "
+        f"(score now {obj.flakiness_score:.2f}). The fix appears to hold."
+    )
+    if s.public_url:
+        base = s.public_url.rstrip("/")
+        link = f"{base}/?view=jobs&job={obj.id}" if entity == "job" else f"{base}/?test={obj.id}"
+        body = f"{body}\n\n{link}"
+    return body
+
+
+async def _fixed_note_test_candidates(
+    db: AsyncSession, test_case_ids: list[int]
+) -> list[tuple[TestCase, str, str | None]]:
+    """Linked Tests at the note threshold whose fix has not been noted yet.
+
+    Returns [(test, repo, default_branch)]. A row already stamped with
+    `github_issue_fixed_noted_at` is never noted again, and a link flagged
+    `github_issue_closed` (closed as not planned) is skipped: that issue is
+    already closed, so there is nothing to note or close here.
+    """
+    s = get_settings()
+    candidates: list[tuple[TestCase, str, str | None]] = []
+    for chunk in chunks(test_case_ids):
+        candidates += (
+            await db.execute(
+                select(TestCase, Repo.name, Repo.default_branch)
+                .join(Project, TestCase.project_id == Project.id)
+                .join(Repo, Project.repo_id == Repo.id)
+                .where(
+                    TestCase.id.in_(chunk),
+                    TestCase.github_issue_number.is_not(None),
+                    TestCase.github_issue_fixed_noted_at.is_(None),
+                    TestCase.github_issue_closed.is_(False),
+                    TestCase.clean_streak >= s.github_fixed_streak,
+                )
+                .order_by(TestCase.id)
+            )
+        ).all()
+    return candidates
+
+
+async def _fixed_note_job_candidates(db: AsyncSession, job_ids: list[int]) -> list[tuple[Job, str, str | None]]:
+    """github-provider Jobs at the note threshold whose fix has not been noted yet.
+
+    Returns [(job, repo, default_branch)]; the same rules as the Test select, and
+    only a github Provider has an issue to note.
+    """
+    s = get_settings()
+    candidates: list[tuple[Job, str, str | None]] = []
+    for chunk in chunks(job_ids):
+        candidates += (
+            await db.execute(
+                select(Job, Repo.name, Repo.default_branch)
+                .join(Pipeline, Job.pipeline_id == Pipeline.id)
+                .join(Repo, Pipeline.repo_id == Repo.id)
+                .where(
+                    Job.id.in_(chunk),
+                    Pipeline.provider == "github",
+                    Job.github_issue_number.is_not(None),
+                    Job.github_issue_fixed_noted_at.is_(None),
+                    Job.github_issue_closed.is_(False),
+                    Job.clean_streak >= s.github_fixed_streak,
+                )
+                .order_by(Job.id)
+            )
+        ).all()
+    return candidates
+
+
+async def _note_batch(
+    db: AsyncSession,
+    rows: list[tuple[Job | TestCase, str, str]],
+    *,
+    entity: str,
+    transport: httpx.AsyncBaseTransport | None = None,
+) -> None:
+    """Note (and maybe close) one batch of fixed issues, whichever entity they describe.
+
+    Each row is `(obj, repo, body)` and `entity` is the noun the log lines name.
+    Same lifecycle and #14 error policy as `_file_batch`: one client, a rate limit
+    stops the batch, any other 403/404/410 skips that Repo, anything else logs and
+    goes on, a network error logs and ends, and nothing raises.
+
+    The stamp lands as soon as the comment POST succeeds — before the close, and
+    kept even if the close fails — because the rule is *one* comment per fix, and
+    re-posting after a failed close would break it.
+    """
+    s = get_settings()
+    try:
+        async with httpx.AsyncClient(
+            base_url=API_BASE, headers=_headers(s.github_token), timeout=15, transport=transport
+        ) as client:
+            skipped: set[str] = set()
+            for obj, repo, body in rows:
+                if repo in skipped:
+                    continue
+                number = obj.github_issue_number
+                resp = await client.post(f"/repos/{repo}/issues/{number}/comments", json={"body": body})
+                if resp.status_code == 201:
+                    obj_id = obj.id  # the object is expired after the savepoint rollback below
+                    nested = await db.begin_nested()
+                    obj.github_issue_fixed_noted_at = utcnow()
+                    try:
+                        await nested.commit()
+                    except StaleDataError:
+                        # An admin delete won the race: the comment is on an issue
+                        # whose row is gone, which costs this note only.
+                        await nested.rollback()
+                        logger.warning(
+                            "%s %s deleted (admin delete) while noting issue %s#%s",
+                            entity.capitalize(),
+                            obj_id,
+                            repo,
+                            number,
+                        )
+                        continue
+                    await db.commit()
+                    logger.info("Noted the fix appears to hold on issue %s#%s for %s %s", repo, number, entity, obj_id)
+                    if s.github_close_fixed:
+                        close = await client.patch(
+                            f"/repos/{repo}/issues/{number}",
+                            json={"state": "closed", "state_reason": "completed"},
+                        )
+                        if _rate_limited(close):
+                            logger.warning(
+                                "GitHub rate limit (remaining=%s) closing issue %s#%s; stopping the batch",
+                                close.headers.get("x-ratelimit-remaining"),
+                                repo,
+                                number,
+                            )
+                            return
+                        if close.status_code in (403, 404, 410):
+                            logger.warning(
+                                "GitHub issue close skipped for repo %s: %s %s",
+                                repo,
+                                close.status_code,
+                                close.text[:300],
+                            )
+                            skipped.add(repo)
+                        elif close.status_code == 200:
+                            logger.info("Closed issue %s#%s after noting the fix", repo, number)
+                        else:
+                            logger.warning(
+                                "GitHub close of %s#%s failed: %s %s", repo, number, close.status_code, close.text[:300]
+                            )
+                elif _rate_limited(resp):
+                    logger.warning(
+                        "GitHub rate limit (remaining=%s); stopping the note batch",
+                        resp.headers.get("x-ratelimit-remaining"),
+                    )
+                    return
+                elif resp.status_code in (403, 404, 410):
+                    logger.warning(
+                        "GitHub fixed-note skipped for repo %s: %s %s", repo, resp.status_code, resp.text[:300]
+                    )
+                    skipped.add(repo)
+                else:
+                    logger.warning(
+                        "GitHub fixed-note comment failed for %s %s in %s: %s %s",
+                        entity,
+                        obj.id,
+                        repo,
+                        resp.status_code,
+                        resp.text[:300],
+                    )
+    except httpx.HTTPError as exc:
+        logger.warning("GitHub unreachable, skipping %s fixed-note comments: %s", entity, exc)
+
+
+async def note_fixed_issues_for(
+    db: AsyncSession,
+    test_case_ids: list[int],
+    *,
+    transport: httpx.AsyncBaseTransport | None = None,
+) -> None:
+    """Comment once on the linked issue of each Test whose fix appears to hold. Never raises.
+
+    Disabled while `github_fixed_streak` is 0. `transport` exists for tests
+    (httpx.MockTransport); production passes None.
+    """
+    if not configured() or get_settings().github_fixed_streak <= 0 or not test_case_ids:
+        return
+    candidates = await _fixed_note_test_candidates(db, test_case_ids)
+    if not candidates:
+        return
+    batch = [(tc, repo, _fixed_comment(tc, branch, entity="test")) for tc, repo, branch in candidates]
+    await _note_batch(db, batch, entity="test", transport=transport)
+
+
+async def note_fixed_job_issues_for(
+    db: AsyncSession,
+    job_ids: list[int],
+    *,
+    transport: httpx.AsyncBaseTransport | None = None,
+) -> None:
+    """Comment once on the linked issue of each Job whose fix appears to hold. Never raises.
+
+    Disabled while `github_fixed_streak` is 0. `transport` exists for tests
+    (httpx.MockTransport); production passes None.
+    """
+    if not configured() or get_settings().github_fixed_streak <= 0 or not job_ids:
+        return
+    candidates = await _fixed_note_job_candidates(db, job_ids)
+    if not candidates:
+        return
+    batch = [(job, repo, _fixed_comment(job, branch, entity="job")) for job, repo, branch in candidates]
+    await _note_batch(db, batch, entity="job", transport=transport)
+
+
 async def on_report_processed(
     session_factory: async_sessionmaker[AsyncSession],
     outcome: ProcessOutcome,
@@ -739,6 +963,9 @@ async def on_report_processed(
     transport: httpx.AsyncBaseTransport | None = None,
 ) -> None:
     """ReportWorker hook: file issues for the Tests and Jobs a processed Report touched.
+
+    Also notes the Tests and Jobs whose Clean streak now proves the fix held:
+    filing first, so a newly-filed issue is never the one commented on.
 
     `transport` exists for tests (httpx.MockTransport) and for the GitHub task;
     production callers pass None.
@@ -748,3 +975,5 @@ async def on_report_processed(
     async with session_factory() as db:
         await file_issues_for(db, outcome.touched_test_ids, transport=transport)
         await file_job_issues_for(db, outcome.touched_job_ids, transport=transport)
+        await note_fixed_issues_for(db, outcome.touched_test_ids, transport=transport)
+        await note_fixed_job_issues_for(db, outcome.touched_job_ids, transport=transport)

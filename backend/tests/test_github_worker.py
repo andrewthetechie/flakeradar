@@ -87,6 +87,46 @@ async def test_enqueue_files_issues_in_the_background(session_factory, db, gh_se
         await worker.stop()
 
 
+async def test_fixed_note_runs_in_the_background_for_touched_ids(session_factory, db, gh_settings):
+    """The fix note is a GitHub-task step: the comment POST happens off the processor loop.
+
+    A linked Test at the note threshold is the only thing in the outcome, and the
+    only request the task issues is the comment: filing is silent (the row already
+    carries a number), so a request here can only come from the note step.
+    """
+    gh_settings.github_fixed_streak = 5
+    tc = await _flaky_test(db, github_issue_number=77, clean_streak=5)
+    calls: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        await asyncio.sleep(0.3)  # a slow GitHub API must not delay enqueue
+        if request.method == "GET":
+            return httpx.Response(200, json={"state": "open"})  # the task's startup sync
+        return httpx.Response(201, json={"number": 99})
+
+    def comments() -> list[httpx.Request]:
+        return [r for r in calls if r.method == "POST"]
+
+    worker = GitHubWorker(session_factory, sync_interval_seconds=3600.0, transport=httpx.MockTransport(handler))
+    await worker.start()
+    try:
+        await worker.enqueue(_outcome(tc))
+        assert comments() == []  # the processor path made no GitHub call
+        await _wait_for(lambda: len(comments()) == 1)
+        assert comments()[0].url.path == "/repos/acme/app/issues/77/comments"
+        await _wait_for(lambda: _noted(session_factory, tc.id))
+    finally:
+        await worker.stop()
+
+
+async def _noted(session_factory, test_case_id: int) -> bool:
+    """True once the task has stamped the note in its own session."""
+    async with session_factory() as session:
+        stmt = select(TestCase.github_issue_fixed_noted_at).where(TestCase.id == test_case_id)
+        return (await session.execute(stmt)).scalar() is not None
+
+
 async def test_sync_runs_on_start_and_on_interval(session_factory, db, gh_settings):
     await _flaky_test(db, github_issue_number=11)
     calls: list[httpx.Request] = []
