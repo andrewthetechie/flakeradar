@@ -480,32 +480,87 @@ fn first_line(text: &str) -> String {
 /// The case's own duration; a non-numeric `time` is an upload error.
 fn case_duration(case: Node<'_, '_>) -> Result<f64, ParseError> {
     let raw = case.attribute("time").unwrap_or_default();
-    // Python's `FloatAttr` reads a missing or empty attribute as absent.
+    // junitparser's `FloatAttr` reads a missing or empty attribute as absent.
     if raw.is_empty() {
         return Ok(0.0);
     }
-    python_float(raw).ok_or_else(|| ParseError::InvalidTime {
+    // junitparser removes every comma before Python's `float()` sees the value.
+    let without_commas = raw.replace(',', "");
+    python_float(&without_commas).ok_or_else(|| ParseError::InvalidTime {
         value: py_strip(raw).to_owned(),
     })
 }
 
+/// Matches one Unicode decimal digit, the characters Python's `float` rewrites.
+static DECIMAL_DIGIT: LazyLock<Regex> = LazyLock::new(decimal_digit);
+
+/// Compiles the decimal-digit pattern, refusing to run with a broken pattern.
+#[expect(
+    clippy::expect_used,
+    reason = "the pattern is a literal in this file, so one that does not compile is a \
+              programming error and must stop the process"
+)]
+fn decimal_digit() -> Regex {
+    Regex::new(r"\A\p{Nd}\z").expect("the decimal-digit pattern compiles")
+}
+
 /// Parses a float the way Python's `float(text)` does.
 ///
-/// Python removes no commas (the caller does), ignores surrounding whitespace,
-/// and allows an underscore between two digits; Rust's parser does none of
-/// those, so each rule is applied first.
+/// Python trims Unicode whitespace (but not the information separators
+/// `\x1c`–`\x1f`, which `str.strip` would remove), rewrites every Unicode
+/// decimal digit as ASCII, and allows one underscore between two digits. Rust's
+/// parser does none of those, so each rule is applied first. Commas are not
+/// special here: the retry path calls plain `float()` in Python, while the
+/// testcase path removes them before this function, as junitparser does.
 fn python_float(raw: &str) -> Option<f64> {
-    let cleaned: String = raw.chars().filter(|ch| *ch != ',').collect();
-    let trimmed = py_strip(&cleaned);
+    let trimmed = raw.trim();
     if trimmed.is_empty() {
         return None;
     }
-    let text = if trimmed.contains('_') {
-        strip_numeric_underscores(trimmed)?
-    } else {
-        trimmed.to_owned()
-    };
+    let ascii = ascii_decimal_digits(trimmed);
+    let text = strip_numeric_underscores(&ascii)?;
     text.parse::<f64>().ok()
+}
+
+/// Rewrites every Unicode decimal digit as its ASCII digit.
+fn ascii_decimal_digits(text: &str) -> String {
+    text.chars()
+        .map(
+            |ch| match decimal_value(ch).and_then(|value| char::from_digit(value, 10)) {
+                Some(digit) => digit,
+                None => ch,
+            },
+        )
+        .collect()
+}
+
+/// The ASCII value of one Unicode decimal digit.
+///
+/// The `Nd` code points are encoded in blocks of ten consecutive characters, one
+/// per digit, so the value is the distance from the block's zero.
+fn decimal_value(ch: char) -> Option<u32> {
+    if let Some(value) = ch.to_digit(10) {
+        return Some(value);
+    }
+    let mut encoded = [0_u8; 4];
+    if !DECIMAL_DIGIT.is_match(ch.encode_utf8(&mut encoded)) {
+        return None;
+    }
+    let mut start = u32::from(ch);
+    let mut value = 0;
+    while value < 9 {
+        let previous = start - 1;
+        let is_decimal = char::from_u32(previous).is_some_and(|previous| {
+            let mut encoded = [0_u8; 4];
+            DECIMAL_DIGIT.is_match(previous.encode_utf8(&mut encoded))
+        });
+        if !is_decimal {
+            break;
+        }
+        start = previous;
+        value += 1;
+    }
+    Some(value)
 }
 
 /// Removes the underscores Python's `float` allows between two digits.

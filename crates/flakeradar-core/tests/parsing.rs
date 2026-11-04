@@ -482,18 +482,55 @@ fn time_values_python_accepts_keep_their_meaning() {
 }
 
 #[test]
-fn a_time_with_thousands_commas_is_read_as_python_reads_it() {
-    // junitparser strips commas before calling float().
+fn a_testcase_time_with_thousands_commas_is_read_as_junitparser_reads_it() {
+    // junitparser's FloatAttr removes every comma before calling float(), so the
+    // testcase's own time keeps Python's behaviour.
     let case =
         one(r#"<testsuite name="s"><testcase classname="c" name="t" time="1,234.5"/></testsuite>"#);
     assert_eq!(case.duration, 1234.5);
 }
 
 #[test]
-fn a_time_with_an_underscore_between_digits_is_read_as_python_reads_it() {
-    let case =
-        one(r#"<testsuite name="s"><testcase classname="c" name="t" time="1_000.5"/></testsuite>"#);
-    assert_eq!(case.duration, 1000.5);
+fn a_retry_time_with_a_comma_is_not_a_number_so_it_is_zero() {
+    // `_retry_outcome` calls plain float(), which rejects "1,5", so Python's
+    // except branch stores 0.0. Only the testcase's own time is comma-stripped.
+    let cases = parse_junit_xml(
+        br#"<testsuite name="s"><testcase classname="c" name="t"><flakyFailure message="m" time="1,5"/></testcase></testsuite>"#,
+        1,
+    )
+    .unwrap();
+    assert_eq!(cases[0].duration, 0.0);
+}
+
+#[test]
+fn underscores_between_digits_are_read_as_python_reads_them() {
+    let cases = parse_junit_xml(
+        br#"<testsuite name="s"><testcase classname="c" name="a" time="1_000.5"/><testcase classname="c" name="b"><flakyFailure message="m" time="1_0"/></testcase></testsuite>"#,
+        1,
+    )
+    .unwrap();
+    assert_eq!(cases[0].duration, 1000.5);
+    assert_eq!(cases[1].duration, 10.0);
+}
+
+#[test]
+fn unicode_decimal_digits_are_read_as_python_reads_them() {
+    // Python's float() rewrites Arabic-Indic digits as ASCII before parsing.
+    let xml = "<testsuite name=\"s\"><testcase classname=\"c\" name=\"a\" time=\"١٢٣.٥٩\"/><testcase classname=\"c\" name=\"b\"><flakyFailure message=\"m\" time=\"١_٢\"/></testcase></testsuite>";
+    let cases = parse_junit_xml(xml.as_bytes(), 1).unwrap();
+    assert_eq!(cases[0].duration, 123.59);
+    assert_eq!(cases[1].duration, 12.0);
+}
+
+#[test]
+fn surrounding_whitespace_is_ignored_as_python_ignores_it() {
+    let cases = parse_junit_xml(
+        br#"<testsuite name="s"><testcase classname="c" name="a" time=" 1.5 "/><testcase classname="c" name="b"><flakyFailure message="m" time=" 2.5 "/></testcase></testsuite>"#,
+        1,
+    )
+    .unwrap();
+    assert_eq!(cases[0].duration, 1.5);
+    assert_eq!(cases[1].duration, 2.5);
 }
 
 #[test]
