@@ -10,6 +10,13 @@ Filing gate (all configured minimums must be met; 0 disables a signal):
   - ``github_issue_min_proven_flakes``     — same-commit fail+pass count
   - ``github_issue_min_failures``          — failures in the recent window
     (for Jobs: **unexplained** failures only — explained failures are Tests')
+  - ``github_fixed_streak`` (when it is set) — a Clean streak *below* the fixed-note
+    threshold. A Test or Job already at that streak has no live flake to file: the
+    note step would answer the new Issue with "the fix appears to hold", and with
+    ``github_close_fixed`` the close and re-arm would then file that Issue again on
+    the next Report — a file→note→close loop with no new failure. Same-SHA Proven
+    flakes floor the score (``scoring.SAME_SHA_FLOOR``) independently of the streak,
+    so the gate cannot see this on its own.
 Deduplication works because a filed issue's number is stored on the Test/Job;
 an issue is only ever re-filed after GitHub reports it closed
 (``sync_closed_issues`` clears the stored number, and the next Report that
@@ -90,15 +97,21 @@ def configured() -> bool:
 
 @dataclass(frozen=True)
 class _FilingGate:
-    """The three-signal issue-filing gate (see module docstring), as one unit."""
+    """The issue-filing gate (see module docstring), as one unit."""
 
     min_score: float
     min_proven_flakes: int
     min_failures: int
+    # `github_fixed_streak`: the Clean streak that makes a row noteable rather than
+    # fileable, or None when it is 0 and the fixed-note step is disabled. A row at
+    # or above it has no live flake — the note step would answer a fresh Issue with
+    # "the fix appears to hold" (see the module docstring's fourth gate signal).
+    fixed_streak: int | None
 
     @classmethod
     def from_settings(cls, s: Settings) -> "_FilingGate":
-        return cls(s.github_issue_min_score, s.github_issue_min_proven_flakes, s.github_issue_min_failures)
+        streak = s.github_fixed_streak if s.github_fixed_streak > 0 else None
+        return cls(s.github_issue_min_score, s.github_issue_min_proven_flakes, s.github_issue_min_failures, streak)
 
 
 def _headers(token: str) -> dict[str, str]:
@@ -292,20 +305,22 @@ async def _select_candidates(db: AsyncSession, test_case_ids: list[int]) -> list
     gate = _FilingGate.from_settings(s)
     candidates: list[tuple[TestCase, str, str, str]] = []
     for chunk in chunks(test_case_ids):
-        candidates += (
-            await db.execute(
-                select(TestCase, Repo.name, Project.name, Project.root)
-                .join(Project, TestCase.project_id == Project.id)
-                .join(Repo, Project.repo_id == Repo.id)
-                .where(
-                    TestCase.id.in_(chunk),
-                    TestCase.flakiness_score >= gate.min_score,
-                    TestCase.confirmed_flake_count >= gate.min_proven_flakes,
-                    TestCase.github_issue_number.is_(None),
-                )
-                .order_by(TestCase.id)
+        stmt = (
+            select(TestCase, Repo.name, Project.name, Project.root)
+            .join(Project, TestCase.project_id == Project.id)
+            .join(Repo, Project.repo_id == Repo.id)
+            .where(
+                TestCase.id.in_(chunk),
+                TestCase.flakiness_score >= gate.min_score,
+                TestCase.confirmed_flake_count >= gate.min_proven_flakes,
+                TestCase.github_issue_number.is_(None),
             )
-        ).all()
+        )
+        if gate.fixed_streak is not None:
+            # A row at the fixed-note streak is a fix that holds, not a live flake,
+            # and filing and noting are the two answers to different questions.
+            stmt = stmt.where(TestCase.clean_streak < gate.fixed_streak)
+        candidates += (await db.execute(stmt.order_by(TestCase.id))).all()
     if gate.min_failures > 0:
         failures = await _window_failures(db, [r[0].id for r in candidates], s.score_window)
         candidates = [r for r in candidates if failures.get(r[0].id, 0) >= gate.min_failures]
@@ -318,7 +333,7 @@ async def _file_batch(
     *,
     entity: str,
     transport: httpx.AsyncBaseTransport | None = None,
-) -> None:
+) -> set[int]:
     """File one batch of rendered issues, whichever entity they describe.
 
     Each candidate is `(obj, repo, title, body)`; `entity` is the noun ("test"
@@ -329,9 +344,13 @@ async def _file_batch(
     the rest of the batch), any other status (log, go on), and a network error
     (log, never raise).
 
+    Returns the ids it linked, so the caller can keep its own hands off a link
+    this pass created (see `on_report_processed`).
+
     `transport` exists for tests (httpx.MockTransport); production passes None.
     """
     s = get_settings()
+    linked: set[int] = set()
     try:
         async with httpx.AsyncClient(
             base_url=API_BASE, headers=_headers(s.github_token), timeout=15, transport=transport
@@ -372,13 +391,14 @@ async def _file_batch(
                             )
                             continue
                         await db.commit()
+                        linked.add(obj_id)
                         logger.info("Filed issue %s#%s for %s %s", repo, obj.github_issue_number, entity, obj.id)
                 elif _rate_limited(resp):
                     logger.warning(
                         "GitHub rate limit (remaining=%s); stopping batch",
                         resp.headers.get("x-ratelimit-remaining"),
                     )
-                    return
+                    return linked
                 elif resp.status_code in (403, 404, 410):
                     # Permission error, or issues disabled on this Repo: it costs
                     # this Repo only, the rest of the batch goes on.
@@ -400,6 +420,7 @@ async def _file_batch(
                     )
     except httpx.HTTPError as exc:
         logger.warning("GitHub unreachable, skipping %s issue filing: %s", entity, exc)
+    return linked
 
 
 async def file_issues_for(
@@ -407,16 +428,19 @@ async def file_issues_for(
     test_case_ids: list[int],
     *,
     transport: httpx.AsyncBaseTransport | None = None,
-) -> None:
+) -> set[int]:
     """File issues for Tests that now meet the filing gate. Never raises.
+
+    Returns the Test ids it linked; `on_report_processed` uses them to keep the
+    fixed-note step off a link this same Report created.
 
     `transport` exists for tests (httpx.MockTransport); production passes None.
     """
     if not configured() or not test_case_ids:
-        return
+        return set()
     candidates = await _select_candidates(db, test_case_ids)
     if not candidates:
-        return
+        return set()
     batch = [
         (
             tc,
@@ -426,7 +450,7 @@ async def file_issues_for(
         )
         for tc, repo, project, root in candidates
     ]
-    await _file_batch(db, batch, entity="test", transport=transport)
+    return await _file_batch(db, batch, entity="test", transport=transport)
 
 
 async def _job_candidates(db: AsyncSession, job_ids: list[int]) -> list[tuple[Job, str, str]]:
@@ -440,21 +464,22 @@ async def _job_candidates(db: AsyncSession, job_ids: list[int]) -> list[tuple[Jo
     gate = _FilingGate.from_settings(s)
     candidates: list[tuple[Job, str, str]] = []
     for chunk in chunks(job_ids):
-        candidates += (
-            await db.execute(
-                select(Job, Pipeline.name, Repo.name)
-                .join(Pipeline, Job.pipeline_id == Pipeline.id)
-                .join(Repo, Pipeline.repo_id == Repo.id)
-                .where(
-                    Job.id.in_(chunk),
-                    Pipeline.provider == "github",
-                    Job.flakiness_score >= gate.min_score,
-                    Job.confirmed_flake_count >= gate.min_proven_flakes,
-                    Job.github_issue_number.is_(None),
-                )
-                .order_by(Job.id)
+        stmt = (
+            select(Job, Pipeline.name, Repo.name)
+            .join(Pipeline, Job.pipeline_id == Pipeline.id)
+            .join(Repo, Pipeline.repo_id == Repo.id)
+            .where(
+                Job.id.in_(chunk),
+                Pipeline.provider == "github",
+                Job.flakiness_score >= gate.min_score,
+                Job.confirmed_flake_count >= gate.min_proven_flakes,
+                Job.github_issue_number.is_(None),
             )
-        ).all()
+        )
+        if gate.fixed_streak is not None:
+            # the same ceiling as the Test select: a fix that holds is not a live flake
+            stmt = stmt.where(Job.clean_streak < gate.fixed_streak)
+        candidates += (await db.execute(stmt.order_by(Job.id))).all()
     if gate.min_failures > 0:
         failures = await unexplained_failure_counts(db, [r[0].id for r in candidates], s.score_window)
         candidates = [r for r in candidates if failures.get(r[0].id, 0) >= gate.min_failures]
@@ -512,16 +537,18 @@ async def file_job_issues_for(
     job_ids: list[int],
     *,
     transport: httpx.AsyncBaseTransport | None = None,
-) -> None:
+) -> set[int]:
     """File issues for github-provider Jobs that now meet the filing gate. Never raises.
+
+    Returns the Job ids it linked, exactly as `file_issues_for` does for Tests.
 
     `transport` exists for tests (httpx.MockTransport); production passes None.
     """
     if not configured() or not job_ids:
-        return
+        return set()
     candidates = await _job_candidates(db, job_ids)
     if not candidates:
-        return
+        return set()
     batch = [
         (
             job,
@@ -531,7 +558,7 @@ async def file_job_issues_for(
         )
         for job, pipeline, repo in candidates
     ]
-    await _file_batch(db, batch, entity="job", transport=transport)
+    return await _file_batch(db, batch, entity="job", transport=transport)
 
 
 async def sync_closed_issues(
@@ -778,6 +805,11 @@ async def _fixed_note_test_candidates(
     `github_issue_fixed_noted_at` is never noted again, and a link flagged
     `github_issue_closed` (closed as not planned) is skipped: that issue is
     already closed, so there is nothing to note or close here.
+
+    The streak test is the exact complement of the filing gate's ceiling, so the
+    two steps of one Report pass select disjoint rows: an issue filed by this
+    pass is never the one commented on, and a fix only earns its note from a
+    later Report than the filing.
     """
     s = get_settings()
     candidates: list[tuple[TestCase, str, str | None]] = []
@@ -1011,8 +1043,14 @@ async def on_report_processed(
 ) -> None:
     """ReportWorker hook: file issues for the Tests and Jobs a processed Report touched.
 
-    Also notes the Tests and Jobs whose Clean streak now proves the fix held:
-    filing first, so a newly-filed issue is never the one commented on.
+    Also notes the Tests and Jobs whose Clean streak now proves the fix held. A
+    newly filed Issue is never the one commented on, twice over: the filing gate
+    refuses a row already at the fixed-note streak, so filing and noting select
+    disjoint rows in the first place, and the ids this pass linked are dropped
+    from the note step as well, in case a concurrent Report lifted a fresh link's
+    streak between the two selects. Without that, `github_close_fixed` would close
+    the Issue FlakeRadar just filed and the re-arm would file it again — a
+    file→note→close loop with no new failure (see the module docstring).
 
     `transport` exists for tests (httpx.MockTransport) and for the GitHub task;
     production callers pass None.
@@ -1020,7 +1058,9 @@ async def on_report_processed(
     if outcome.status != REPORT_PROCESSED or not configured():
         return
     async with session_factory() as db:
-        await file_issues_for(db, outcome.touched_test_ids, transport=transport)
-        await file_job_issues_for(db, outcome.touched_job_ids, transport=transport)
-        await note_fixed_issues_for(db, outcome.touched_test_ids, transport=transport)
-        await note_fixed_job_issues_for(db, outcome.touched_job_ids, transport=transport)
+        filed = await file_issues_for(db, outcome.touched_test_ids, transport=transport)
+        filed_jobs = await file_job_issues_for(db, outcome.touched_job_ids, transport=transport)
+        note_ids = [i for i in outcome.touched_test_ids if i not in filed]
+        note_job_ids = [i for i in outcome.touched_job_ids if i not in filed_jobs]
+        await note_fixed_issues_for(db, note_ids, transport=transport)
+        await note_fixed_job_issues_for(db, note_job_ids, transport=transport)

@@ -1068,6 +1068,7 @@ async def test_hook_ignores_failed_reports(session_factory, gh_settings, monkeyp
 
     async def fake_file(db, ids, **kw):
         called.append(ids)
+        return set()  # the real filer reports the ids it linked
 
     monkeypatch.setattr(github_integration, "file_issues_for", fake_file)
     failed = ProcessOutcome(report_id=1, status="failed", run_id=None, counts=None, touched_test_ids=[], error="x")

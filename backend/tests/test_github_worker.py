@@ -245,9 +245,11 @@ async def test_outcome_files_through_the_worker_transport(session_factory, gh_se
 
     async def fake_file(db, ids, *, transport=None):
         seen.append(("test", transport))
+        return set()  # the real filer reports the ids it linked
 
     async def fake_job_file(db, ids, *, transport=None):
         seen.append(("job", transport))
+        return set()
 
     monkeypatch.setattr(github_integration, "file_issues_for", fake_file)
     monkeypatch.setattr(github_integration, "file_job_issues_for", fake_job_file)
