@@ -23,10 +23,10 @@ pub use db::TestDb;
 pub use error::TestError;
 #[doc(inline)]
 pub use factories::{
-    JobBuilder, JobExecutionBuilder, JobScoreBuilder, PipelineBuilder, ProjectBuilder, RunBuilder,
-    TestCaseBuilder, TestExecutionBuilder, TestScoreBuilder, make_execution, make_job,
-    make_job_execution, make_job_score, make_pipeline, make_project, make_run, make_test_case,
-    make_test_score,
+    JobBuilder, JobExecutionBuilder, JobScoreBuilder, PipelineBuilder, ProjectBuilder,
+    ReportBuilder, RunBuilder, TestCaseBuilder, TestExecutionBuilder, TestScoreBuilder,
+    make_execution, make_job, make_job_execution, make_job_score, make_pipeline, make_project,
+    make_report, make_run, make_test_case, make_test_score,
 };
 #[doc(inline)]
 pub use junit::make_junit;

@@ -11,12 +11,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use chrono::{DateTime, FixedOffset, NaiveDate, Utc};
 use flakeradar_db::entities::{
-    job_executions, job_score_history, jobs, pipelines, projects, repos, test_cases,
+    job_executions, job_score_history, jobs, pipelines, projects, reports, repos, test_cases,
     test_executions, test_runs, test_score_history,
 };
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, ConnectionTrait, EntityTrait, IntoActiveModel, JsonValue,
-    QueryFilter, Set, entity::prelude::DateTimeWithTimeZone,
+    ActiveModelTrait, ActiveValue, ColumnTrait, ConnectionTrait, EntityTrait, IntoActiveModel,
+    JsonValue, QueryFilter, Set, entity::prelude::DateTimeWithTimeZone,
 };
 
 use crate::db::hex;
@@ -129,6 +129,7 @@ pub struct TestCaseBuilder {
     classname: String,
     suite: String,
     fingerprint: Option<String>,
+    flakiness_score: f64,
     github_issue_number: Option<i32>,
 }
 
@@ -141,6 +142,7 @@ pub fn make_test_case(project: &projects::Model) -> TestCaseBuilder {
         classname: "tests.test_mod".to_owned(),
         suite: "unit".to_owned(),
         fingerprint: None,
+        flakiness_score: 0.0,
         github_issue_number: None,
     }
 }
@@ -164,6 +166,13 @@ impl TestCaseBuilder {
     #[must_use]
     pub fn suite(mut self, suite: &str) -> Self {
         suite.clone_into(&mut self.suite);
+        self
+    }
+
+    /// Sets the Test's cached Flakiness score.
+    #[must_use]
+    pub fn flakiness_score(mut self, score: f64) -> Self {
+        self.flakiness_score = score;
         self
     }
 
@@ -198,7 +207,7 @@ impl TestCaseBuilder {
                 suite: Set(self.suite),
                 classname: Set(self.classname),
                 name: Set(self.name),
-                flakiness_score: Set(0.0),
+                flakiness_score: Set(self.flakiness_score),
                 confirmed_flake_count: Set(0),
                 failure_category: Set(None),
                 clean_streak: Set(0),
@@ -505,6 +514,7 @@ pub struct JobBuilder {
     pipeline_id: i32,
     name: String,
     summary: bool,
+    flakiness_score: f64,
     github_issue_number: Option<i32>,
 }
 
@@ -515,6 +525,7 @@ pub fn make_job(pipeline: &pipelines::Model) -> JobBuilder {
         pipeline_id: pipeline.id,
         name: "test".to_owned(),
         summary: false,
+        flakiness_score: 0.0,
         github_issue_number: None,
     }
 }
@@ -524,6 +535,13 @@ impl JobBuilder {
     #[must_use]
     pub fn name(mut self, name: &str) -> Self {
         name.clone_into(&mut self.name);
+        self
+    }
+
+    /// Sets the Job's cached Flakiness score.
+    #[must_use]
+    pub fn flakiness_score(mut self, score: f64) -> Self {
+        self.flakiness_score = score;
         self
     }
 
@@ -553,7 +571,7 @@ impl JobBuilder {
                 pipeline_id: Set(self.pipeline_id),
                 name: Set(self.name),
                 summary: Set(self.summary),
-                flakiness_score: Set(0.0),
+                flakiness_score: Set(self.flakiness_score),
                 confirmed_flake_count: Set(0),
                 clean_streak: Set(0),
                 last_status: Set("passed".to_owned()),
@@ -773,6 +791,107 @@ impl JobScoreBuilder {
                 confirmed_flake_count: Set(0),
                 executions: Set(0),
                 failures: Set(0),
+            },
+        )
+        .await
+    }
+}
+
+/// Builder for a Report, pending unless a test says otherwise.
+#[derive(Debug)]
+pub struct ReportBuilder {
+    project_id: i32,
+    repo_id: i32,
+    body: Vec<u8>,
+    commit_sha: String,
+    branch: String,
+    ci_run_id: String,
+    status: String,
+    kind: String,
+}
+
+/// Builds a pending JUnit Report of `acme/app`'s `default` Project at `sha1`.
+#[must_use]
+pub fn make_report(project: &projects::Model, repo_id: i32) -> ReportBuilder {
+    ReportBuilder {
+        project_id: project.id,
+        repo_id,
+        body: b"<testsuite/>".to_vec(),
+        commit_sha: "sha1".to_owned(),
+        branch: "main".to_owned(),
+        ci_run_id: String::new(),
+        status: "pending".to_owned(),
+        kind: "junit".to_owned(),
+    }
+}
+
+impl ReportBuilder {
+    /// Sets the uploaded body.
+    #[must_use]
+    pub fn body(mut self, body: &[u8]) -> Self {
+        body.clone_into(&mut self.body);
+        self
+    }
+
+    /// Sets the commit the Report is for.
+    #[must_use]
+    pub fn commit_sha(mut self, commit_sha: &str) -> Self {
+        commit_sha.clone_into(&mut self.commit_sha);
+        self
+    }
+
+    /// Sets the branch the Report is for.
+    #[must_use]
+    pub fn branch(mut self, branch: &str) -> Self {
+        branch.clone_into(&mut self.branch);
+        self
+    }
+
+    /// Sets the CI run the Report came from.
+    #[must_use]
+    pub fn ci_run_id(mut self, ci_run_id: &str) -> Self {
+        ci_run_id.clone_into(&mut self.ci_run_id);
+        self
+    }
+
+    /// Sets the Report's status: `pending`, `processed` or `failed`.
+    #[must_use]
+    pub fn status(mut self, status: &str) -> Self {
+        status.clone_into(&mut self.status);
+        self
+    }
+
+    /// Inserts the Report.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TestError::Database`] when the insert violates a constraint.
+    pub async fn build(self, db: &impl ConnectionTrait) -> Result<reports::Model, TestError> {
+        insert(
+            db,
+            reports::ActiveModel {
+                id: ActiveValue::default(),
+                project_id: Set(Some(self.project_id)),
+                repo_id: Set(self.repo_id),
+                body: Set(self.body),
+                body_sha256: Set(None),
+                commit_sha: Set(self.commit_sha),
+                branch: Set(self.branch),
+                ci_run_id: Set(self.ci_run_id),
+                ci_job_id: Set(None),
+                ci_run_attempt: Set(None),
+                pipeline: Set(None),
+                default_branch: Set(None),
+                line_base: Set(None),
+                root: Set(None),
+                status: Set(self.status),
+                error: Set(None),
+                counts: Set(None),
+                run_id: Set(None),
+                created_at: Set(now()),
+                processed_at: Set(None),
+                retry_count: Set(0),
+                kind: Set(self.kind),
             },
         )
         .await

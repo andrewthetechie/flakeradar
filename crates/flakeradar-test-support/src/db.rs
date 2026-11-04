@@ -119,6 +119,15 @@ impl TestDb {
     pub fn url(&self) -> &str {
         &self.url
     }
+
+    /// The URL of the server's maintenance database.
+    ///
+    /// For a test that needs a second database on the same server, such as one
+    /// proving a cluster-wide view is scoped to this instance's database.
+    #[must_use]
+    pub fn maintenance_url(&self) -> &str {
+        &self.maintenance_url
+    }
 }
 
 impl Drop for TestDb {

@@ -14,7 +14,7 @@ use std::fmt::Write as _;
 use chrono::{TimeZone as _, Utc};
 use flakeradar_test_support::{
     TestDb, make_execution, make_job, make_job_execution, make_job_score, make_pipeline,
-    make_project, make_run, make_test_case, make_test_score,
+    make_project, make_report, make_run, make_test_case, make_test_score,
 };
 use sea_orm::{DatabaseConnection, EntityTrait};
 use sha1::{Digest as _, Sha1};
@@ -401,4 +401,92 @@ async fn a_score_history_row_is_one_day_for_one_owner() {
     assert_eq!(job_score.confirmed_flake_count, 0);
     assert_eq!(job_score.executions, 0);
     assert_eq!(job_score.failures, 0);
+}
+
+#[tokio::test]
+async fn a_report_has_pythons_defaults_and_stores_what_it_is_given() {
+    let db = TestDb::new().await.expect("a migrated test database");
+    let project = make_project()
+        .build(db.connection())
+        .await
+        .expect("a Project");
+    let report = make_report(&project, project.repo_id)
+        .build(db.connection())
+        .await
+        .expect("a Report");
+    assert_eq!(report.status, "pending");
+    assert_eq!(report.kind, "junit");
+    assert_eq!(report.commit_sha, "sha1");
+    assert_eq!(report.branch, "main");
+    assert_eq!(report.ci_run_id, "");
+    assert_eq!(report.body, b"<testsuite/>".to_vec());
+    assert_eq!(report.project_id, Some(project.id));
+    assert_eq!(report.repo_id, project.repo_id);
+    assert_eq!(report.body_sha256, None);
+    assert_eq!(report.processed_at, None);
+    assert_eq!(report.retry_count, 0);
+
+    let report = make_report(&project, project.repo_id)
+        .body(b"<testsuite name=\"other\"/>")
+        .commit_sha("sha2")
+        .branch("feature/x")
+        .ci_run_id("42")
+        .status("failed")
+        .build(db.connection())
+        .await
+        .expect("a Report");
+    assert_eq!(report.status, "failed");
+    assert_eq!(report.commit_sha, "sha2");
+    assert_eq!(report.branch, "feature/x");
+    assert_eq!(report.ci_run_id, "42");
+    assert_eq!(report.body, b"<testsuite name=\"other\"/>".to_vec());
+}
+
+#[tokio::test]
+async fn a_test_and_a_job_store_the_flakiness_score_they_are_given() {
+    let db = TestDb::new().await.expect("a migrated test database");
+    let project = make_project()
+        .build(db.connection())
+        .await
+        .expect("a Project");
+    let test = make_test_case(&project)
+        .name("t_flaky")
+        .flakiness_score(0.5)
+        .build(db.connection())
+        .await
+        .expect("a Test");
+    assert_eq!(
+        stored_test_case(db.connection(), test.id)
+            .await
+            .flakiness_score,
+        0.5
+    );
+
+    let pipeline = make_pipeline()
+        .build(db.connection())
+        .await
+        .expect("a Pipeline");
+    let job = make_job(&pipeline)
+        .name("j_flaky")
+        .flakiness_score(0.4)
+        .build(db.connection())
+        .await
+        .expect("a Job");
+    let stored = flakeradar_db::entities::jobs::Entity::find_by_id(job.id)
+        .one(db.connection())
+        .await
+        .expect("the Job is readable")
+        .expect("the Job exists");
+    assert_eq!(stored.flakiness_score, 0.4);
+    // The default stays 0.0, so a stable Test or Job needs no setter.
+    let stable = make_test_case(&project)
+        .build(db.connection())
+        .await
+        .expect("a Test");
+    assert_eq!(
+        stored_test_case(db.connection(), stable.id)
+            .await
+            .flakiness_score,
+        0.0
+    );
 }
