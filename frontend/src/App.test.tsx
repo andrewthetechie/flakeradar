@@ -1358,4 +1358,25 @@ describe("App", () => {
     await act(async () => {});
     expect(window.location.search).toBe("?repo=a%2Fb");
   });
+
+  it("links the footer to the README CI integration section instead of a curl command", async () => {
+    stubOrdered([
+      ["/api/repos", () => json([{ name: "a/b", projects: [{ name: "backend", root: "" }] }])],
+      ["/api/tests", () => json(page("login"))],
+      ["/api/reports/summary", () => json({ pending: 0, failed: 0 })],
+      ["/api/summary", () => json(testsSummary)],
+    ]);
+    render(<App />);
+    expect(await screen.findByText("login")).toBeInTheDocument();
+
+    // The footer must not show a partial ingest command: a copy that omits
+    // ci_run_id, ci_job_id, pipeline and default_branch breaks job attribution.
+    const footer = screen.getByRole("contentinfo");
+    expect(footer.textContent).not.toMatch(/curl|api\/ingest/);
+    const link = within(footer).getByRole("link", { name: /README/ });
+    expect(link).toHaveAttribute(
+      "href",
+      "https://github.com/andrewthetechie/flakeradar/blob/main/README.md#ci-integration",
+    );
+  });
 });

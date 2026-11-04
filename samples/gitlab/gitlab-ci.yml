@@ -47,7 +47,7 @@ flakeradar:report:
 # Only CI_PROJECT_PATH, the hex CI_COMMIT_SHA and the numeric ids are URL-safe
 # as-is; CI_COMMIT_REF_NAME and CI_DEFAULT_BRANCH are git refs, which allow
 # characters beyond a-zA-Z0-9_./- (+, &, #, %, non-ASCII), so every value is
-# percent-encoded below, like samples/github-actions-snippet.yml.
+# percent-encoded below, like the raw curl step in the README ("Other CI systems").
 #
 # test:
 #   stage: test

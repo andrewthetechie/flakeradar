@@ -142,8 +142,56 @@ npm run dev            # http://localhost:5173
 
 ## CI integration
 
-Add one step after your tests. The same step, with comments, is in
-`samples/github-actions-snippet.yml`.
+Add one step after your tests. On GitHub Actions, use the report action: it
+uploads every JUnit XML file it matches as its own Report, and it derives the
+run metadata itself, so a copy in your repo cannot drift when ingest gains a
+parameter. Any other CI system posts the same request with `curl`; see
+[Other CI systems](#other-ci-systems) below.
+
+### The report action (GitHub Actions)
+
+```yaml
+- name: Report test results to FlakeRadar
+  if: always()   # always report: the failed runs are the evidence
+  uses: andrewthetechie/flakeradar/actions/report@<ref>
+  with:
+    url: ${{ secrets.FLAKERADAR_URL }}      # required
+    token: ${{ secrets.FLAKERADAR_TOKEN }}  # required
+    project: backend
+    root: backend
+    files: |            # globs, one per line; each match is its own Report
+      junit.xml
+      target/surefire-reports/TEST-*.xml
+    # line_base: 0      # uncomment for pytest's junit_family=xunit1 (0-based line numbers)
+```
+
+| Input | Required | Meaning |
+|---|---|---|
+| `url` | yes | Your FlakeRadar base URL, for example `https://flakeradar.example.com`. |
+| `token` | yes | Your FlakeRadar API token (`FLAKERADAR_API_TOKEN`), sent as `X-API-Key` on every upload. |
+| `project` | no (`default`) | The test suite in the repo, for example `frontend`, `backend` or `e2e`. Use one step per project. |
+| `root` | no | The directory of the project in the repo, for example `backend`. FlakeRadar uses it to make file paths and permalinks. |
+| `files` | no (`junit.xml`) | Glob of the JUnit XML files to upload, relative to the workspace; several patterns, separated by newlines. Each match is uploaded as its own Report, so one step covers Surefire's or Gradle's one file per class. When nothing matches, the step writes a warning and does not fail. |
+| `line_base` | no (`1`) | `0` when the runner writes 0-based line numbers (pytest's `junit_family=xunit1`). FlakeRadar stores 1-based lines so permalinks point at the test. |
+| `fail-on-error` | no (`false`) | `true` fails the step when a file is not accepted after the upload retries. Reporting must not fail the build. |
+
+The action computes `repo`, `commit_sha`, `branch`, `ci_run_id`,
+`ci_run_attempt`, `ci_job_id` (`job.check_run_id`), `pipeline` and
+`default_branch` from the runner environment, uploads each matched file with
+the same retry flags as the raw call below, and writes the accepted Report ids
+as its `report_ids` output, in upload order. It needs only bash, `curl` and
+`jq`, all of which are on GitHub-hosted runners. The same step, with comments,
+is in `samples/github-actions-snippet.yml`. Add
+`andrewthetechie/flakeradar/actions/summary@<ref>` after it to write which of
+this job's failures are known flaky; see
+[The summary action](#the-summary-action-github-actions).
+
+### Other CI systems
+
+For CI other than GitHub Actions, or when you want the raw call, `POST` the
+report yourself with the same values as query parameters. The step below is
+GitHub Actions syntax; on another system, read the equivalents of `repo`,
+`commit_sha`, `branch` and the rest from that system's own variables.
 
 ```yaml
 - name: Report to FlakeRadar
