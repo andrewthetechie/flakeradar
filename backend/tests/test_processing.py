@@ -565,3 +565,122 @@ async def test_fail_streak_marks_broken_after_five_default_branch_failures(db, s
     db.expire_all()  # the db-session identity map still holds the stale TestCase
     (tc,) = await _tests(db)
     assert tc.fail_streak == 0
+
+
+# --- Notifications: tier crossings (ADR 0009) -----------------------------
+
+
+def _notify_settings(**kw) -> Settings:
+    """Decay 0 makes the score depend on one transition, so crossings are exact."""
+    base = {"flake_threshold": 0.05, "score_decay": 0.0, "score_window": 50, "broken_streak": 5}
+    base.update(kw)
+    return Settings(**base)
+
+
+async def test_rescore_reports_an_upward_tier_crossing(db, session_factory, monkeypatch):
+    monkeypatch.setattr("app.processing.get_settings", lambda: _notify_settings())
+    proj = await make_project(db, "acme/app", "backend")
+    await _queue(db, make_junit([("t", "failed")]), project=proj, commit_sha="a")
+    first = await process_next(session_factory)
+    assert first.tier_changes == []  # a Test that only ever failed scores 0: broken, not flaky
+    await _queue(db, make_junit([("t", "passed")]), project=proj, commit_sha="b")
+    second = await process_next(session_factory)
+    (tc,) = await _tests(db)
+    (change,) = second.tier_changes
+    assert (change.kind, change.event) == ("test", "test.flaky")
+    assert change.id == tc.id
+    assert (change.repo, change.project) == ("acme/app", "backend")
+    assert (change.classname, change.name) == ("tests.test_mod", "t")
+    assert change.flakiness_score == tc.flakiness_score
+    assert change.tier == "flaky"
+    assert change.confirmed_flake_count == tc.confirmed_flake_count
+    assert change.pipeline is None
+
+
+async def test_rescore_reports_a_downward_tier_crossing(db, session_factory, monkeypatch):
+    monkeypatch.setattr("app.processing.get_settings", lambda: _notify_settings())
+    proj = await make_project(db, "acme/app", "backend")
+    await _queue(db, make_junit([("t", "failed")]), project=proj, commit_sha="a")
+    await process_next(session_factory)
+    await _queue(db, make_junit([("t", "passed")]), project=proj, commit_sha="b")
+    (flaky,) = (await process_next(session_factory)).tier_changes
+    assert flaky.event == "test.flaky"
+    await _queue(db, make_junit([("t", "failed")]), project=proj, commit_sha="c")
+    await process_next(session_factory)  # one failure still flips against the pass
+    await _queue(db, make_junit([("t", "failed")]), project=proj, commit_sha="d")
+    (change,) = (await process_next(session_factory)).tier_changes
+    assert change.event == "test.recovered"
+    assert change.tier != "flaky"
+    assert change.flakiness_score == 0.0
+
+
+async def test_staying_flaky_reports_no_second_event(db, session_factory, monkeypatch):
+    monkeypatch.setattr("app.processing.get_settings", lambda: _notify_settings())
+    proj = await make_project(db, "acme/app", "backend")
+    await _queue(db, make_junit([("t", "failed")]), project=proj, commit_sha="a")
+    await process_next(session_factory)
+    await _queue(db, make_junit([("t", "passed")]), project=proj, commit_sha="b")
+    assert (await process_next(session_factory)).tier_changes
+    await _queue(db, make_junit([("t", "failed")]), project=proj, commit_sha="a")
+    assert (await process_next(session_factory)).tier_changes == []
+
+
+async def test_a_broken_test_reports_no_recovery(db, session_factory, monkeypatch):
+    """Leaving the flaky tier because the Test is now broken is not a recovery."""
+    monkeypatch.setattr("app.processing.get_settings", lambda: _notify_settings(broken_streak=2))
+    proj = await make_project(db, "acme/app", "backend")
+    await _queue(db, make_junit([("t", "failed")]), project=proj, commit_sha="a")
+    await process_next(session_factory)
+    await _queue(db, make_junit([("t", "passed")]), project=proj, commit_sha="b")
+    assert (await process_next(session_factory)).tier_changes
+    await _queue(db, make_junit([("t", "failed")]), project=proj, commit_sha="c")
+    await process_next(session_factory)
+    await _queue(db, make_junit([("t", "failed")]), project=proj, commit_sha="d")
+    outcome = await process_next(session_factory)
+    db.expire_all()
+    (tc,) = await _tests(db)
+    assert (tc.flakiness_score, tc.fail_streak) == (0.0, 2)  # the tier did cross, downward
+    assert outcome.tier_changes == []
+
+
+async def test_a_new_test_above_the_threshold_is_reported_flaky(db, session_factory, monkeypatch):
+    monkeypatch.setattr("app.processing.get_settings", lambda: _notify_settings())
+    proj = await make_project(db, "acme/app", "backend")
+    # Same SHA, fail then pass: a Proven flake on the Test's very first Report.
+    await _queue(db, make_junit([("t", "failed"), ("t", "passed")]), project=proj, commit_sha="a")
+    (change,) = (await process_next(session_factory)).tier_changes
+    assert change.event == "test.flaky"
+    assert change.confirmed_flake_count == 1
+
+
+async def test_rescore_repo_reports_no_crossings(db, session_factory, monkeypatch, caplog):
+    """A Default branch change rescores the whole Repo; those events are dropped."""
+    monkeypatch.setattr("app.processing.get_settings", lambda: _notify_settings())
+    proj = await make_project(db, "acme/app", "backend")
+    await _queue(db, make_junit([("t2", "failed")]), project=proj, branch="feat", commit_sha="a")
+    await process_next(session_factory)
+    await _queue(db, make_junit([("t2", "passed")]), project=proj, branch="feat", commit_sha="b")
+    assert (await process_next(session_factory)).tier_changes  # t2 became flaky on 'feat'
+    # A Report that only touches t1 on the Default branch rescores all of t2's history.
+    await _queue(db, make_junit([("t1", "passed")]), project=proj, branch="main", commit_sha="c", default_branch="main")
+    with caplog.at_level("INFO", logger="flakeradar.processing"):
+        outcome = await process_next(session_factory)
+    db.expire_all()
+    tests = {t.name: t for t in await _tests(db)}
+    assert tests["t2"].flakiness_score == 0.0  # its flaky tier was left...
+    assert outcome.tier_changes == []  # ...but rescore_repo sends no event
+    assert "dropped 1 Notification(s)" in caplog.text  # the count is all it reports
+
+
+async def test_a_move_into_suspect_reports_nothing(db, session_factory, monkeypatch):
+    """Only the flaky boundary counts: stable -> suspect is not an event."""
+    monkeypatch.setattr("app.processing.get_settings", lambda: _notify_settings(flake_threshold=0.5))
+    proj = await make_project(db, "acme/app", "backend")
+    await _queue(db, make_junit([("t", "failed")]), project=proj, commit_sha="a")
+    await process_next(session_factory)
+    await _queue(db, make_junit([("t", "passed")]), project=proj, commit_sha="b")
+    outcome = await process_next(session_factory)
+    db.expire_all()
+    (tc,) = await _tests(db)
+    assert 0.0 < tc.flakiness_score < 0.5  # a Suspect test, not a Flaky one
+    assert outcome.tier_changes == []

@@ -13,9 +13,10 @@ from .config import DEFAULT_INSECURE_TOKEN, assert_secure_token, get_settings
 from .db import SessionLocal, engine
 from .mcp_server import build_mcp
 from .migrate import run_migrations
+from .notify import parse_urls
 from .retention import run_prune
 from .routers import ci_runs, jobs, ops, reports, repos, tests
-from .worker import GitHubWorker, ReportWorker
+from .worker import GitHubWorker, ReportWorker, WebhookWorker
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("flakeradar")
@@ -33,6 +34,8 @@ async def lifespan(app: FastAPI):
     await run_migrations(engine)
 
     github = GitHubWorker(SessionLocal, sync_interval_seconds=settings.prune_interval_seconds)
+    urls = parse_urls(settings.webhook_urls)
+    webhook = WebhookWorker(urls, fmt=settings.webhook_format, public_url=settings.public_url) if urls else None
     worker = ReportWorker(
         engine,
         SessionLocal,
@@ -41,6 +44,7 @@ async def lifespan(app: FastAPI):
         prune=lambda: run_prune(SessionLocal),
         prune_interval_seconds=settings.prune_interval_seconds,
         github=github,
+        webhook=webhook,
     )
     await worker.start()
     try:

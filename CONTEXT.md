@@ -126,6 +126,16 @@ an unknown Default branch counting every branch) resets it to 0.
 **Quarantine**:
 A reversible human decision that marks a Test as one the test runner may skip. The person who quarantines can record a reason and set an expiry; when the expiry passes, maintenance (the prune step) clears the quarantine — still a human decision, because a person set the expiry. FlakeRadar never quarantines a Test on its own, and agents cannot quarantine through the MCP server.
 
+### How changes are announced
+
+**Notification**:
+A message that a Test or Job crossed the Flake threshold, in one direction,
+sent to every configured Webhook URL: one that became flaky, or one that left
+the flaky tier. A Test that is now broken has not recovered and sends none,
+and a whole-Repo rescore sends none. A Notification is best effort: FlakeRadar
+keeps no record of it, so one that is not delivered is lost.
+_Avoid_: Alert, webhook (that is the transport, not the message)
+
 ### Tracking work
 
 **Issue link**:

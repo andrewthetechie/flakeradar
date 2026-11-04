@@ -94,3 +94,33 @@ def test_a_missing_frontend_dist_mounts_nothing(tmp_path):
     before = len(fresh.routes)
     mount_frontend(fresh, tmp_path / "missing")
     assert len(fresh.routes) == before
+
+
+async def test_the_lifespan_builds_a_webhook_worker_only_when_urls_are_set(database_url, monkeypatch):
+    """No URLs means no Notification task at all, not an idle one."""
+    from app.worker import WebhookWorker
+
+    built: list[list[str]] = []
+
+    class RecordingWebhook(WebhookWorker):
+        def __init__(self, urls, **kw):
+            built.append(list(urls))
+            super().__init__(urls, **kw)
+
+    eng = make_engine(database_url)
+    monkeypatch.setattr(main, "engine", eng)
+    monkeypatch.setattr(main, "SessionLocal", make_session_factory(eng))
+    monkeypatch.setattr(main, "WebhookWorker", RecordingWebhook)
+    monkeypatch.setattr(main, "get_settings", lambda: Settings(api_token="real-token"))
+    async with main.lifespan(main.app):
+        assert built == []
+    async with main.lifespan(main.app):
+        assert built == []
+
+    monkeypatch.setattr(
+        main,
+        "get_settings",
+        lambda: Settings(api_token="real-token", webhook_urls=" https://hooks.example.com/a , "),
+    )
+    async with main.lifespan(main.app):
+        assert built == [["https://hooks.example.com/a"]]

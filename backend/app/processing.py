@@ -21,7 +21,7 @@ from . import report_intake, scoring
 from .attribution import job_execution_explained, job_execution_window_ids, test_execution_window_ids
 from .batching import chunks
 from .classify import classify_failure, dominant_category
-from .config import get_settings
+from .config import Settings, get_settings
 from .models import (
     JOB_FAILED,
     JOB_SKIPPED,
@@ -43,7 +43,9 @@ from .models import (
     TestScoreHistory,
     utcnow,
 )
+from .notify import TierChange
 from .parsing import ParsedCase, fingerprint, parse_junit_xml
+from .queries import is_broken, tier_for
 from .score_history import write_today_history
 
 logger = logging.getLogger("flakeradar.processing")
@@ -68,6 +70,10 @@ class ProcessOutcome:
     touched_test_ids: list[int]
     error: str | None
     touched_job_ids: list[int] = field(default_factory=list)
+    # Tests and Jobs whose tier crossed the Flake threshold in this Report, in
+    # the direction it crossed. A caller that must stay silent (rescore_repo,
+    # retention) simply ignores what rescore returns (ADR 0009).
+    tier_changes: list[TierChange] = field(default_factory=list)
     # Retries already spent on this Report: the worker backs off before the next
     # claim, so it needs the value the requeue just bumped.
     retry_count: int = 0
@@ -117,9 +123,136 @@ async def _upsert_test_cases(db: AsyncSession, project_id: int, parsed: list[Par
     return ids
 
 
+async def _old_test_scores(db: AsyncSession, test_case_ids: list[int]) -> dict[int, float]:
+    """The scores a rescore is about to replace, read before the UPDATE."""
+    old: dict[int, float] = {}
+    for chunk in chunks(test_case_ids):
+        rows = await db.execute(select(TestCase.id, TestCase.flakiness_score).where(TestCase.id.in_(chunk)))
+        old.update(rows.all())
+    return old
+
+
+async def _old_job_scores(db: AsyncSession, job_ids: list[int]) -> dict[int, float]:
+    """The scores a Job rescore is about to replace, read before the UPDATE."""
+    old: dict[int, float] = {}
+    for chunk in chunks(job_ids):
+        rows = await db.execute(select(Job.id, Job.flakiness_score).where(Job.id.in_(chunk)))
+        old.update(rows.all())
+    return old
+
+
+def _crossed(updates: list[dict[str, Any]], old: dict[int, float], threshold: float) -> list[dict[str, Any]]:
+    """The updates that crossed the Flake threshold, in either direction.
+
+    Only the flaky boundary counts. A move from Stable to Suspect (or back)
+    changes the tier but crosses nothing, so it sends no Notification.
+    """
+    return [u for u in updates if (u["flakiness_score"] >= threshold) != (old.get(u["id"], 0.0) >= threshold)]
+
+
+async def _test_change_rows(db: AsyncSession, ids: list[int]) -> dict[int, tuple[str | None, str, str, str]]:
+    """(classname, name, project, repo) for the Tests a Notification names."""
+    rows: dict[int, tuple[str | None, str, str, str]] = {}
+    for chunk in chunks(ids):
+        result = await db.execute(
+            select(TestCase.id, TestCase.classname, TestCase.name, Project.name, Repo.name)
+            .join(Project, Project.id == TestCase.project_id)
+            .join(Repo, Repo.id == Project.repo_id)
+            .where(TestCase.id.in_(chunk))
+        )
+        rows.update({r[0]: (r[1], r[2], r[3], r[4]) for r in result.all()})
+    return rows
+
+
+async def _job_change_rows(db: AsyncSession, ids: list[int]) -> dict[int, tuple[str, str, str]]:
+    """(name, pipeline, repo) for the Jobs a Notification names."""
+    rows: dict[int, tuple[str, str, str]] = {}
+    for chunk in chunks(ids):
+        result = await db.execute(
+            select(Job.id, Job.name, Pipeline.name, Repo.name)
+            .join(Pipeline, Pipeline.id == Job.pipeline_id)
+            .join(Repo, Repo.id == Pipeline.repo_id)
+            .where(Job.id.in_(chunk))
+        )
+        rows.update({r[0]: (r[1], r[2], r[3]) for r in result.all()})
+    return rows
+
+
+async def _test_tier_changes(
+    db: AsyncSession, updates: list[dict[str, Any]], old: dict[int, float], settings: Settings
+) -> list[TierChange]:
+    """Notifications for the Tests whose tier this rescore moves (ADR 0009).
+
+    A Test that leaves the flaky tier because it is now broken has not
+    recovered (CONTEXT.md), so it sends no event.
+    """
+    threshold = settings.flake_threshold
+    crossed = [
+        u
+        for u in _crossed(updates, old, threshold)
+        if tier_for(u["flakiness_score"], threshold) == "flaky"
+        or not is_broken(u["fail_streak"], settings.broken_streak)
+    ]
+    if not crossed:
+        return []
+    rows = await _test_change_rows(db, [u["id"] for u in crossed])
+    by_id = {u["id"]: u for u in crossed}
+    changes: list[TierChange] = []
+    for tc_id, (classname, name, project, repo) in sorted(rows.items()):
+        # A Test deleted before this read has no row: it names nothing, so it
+        # sends nothing. Iterating the rows keeps that case branch-free.
+        u = by_id[tc_id]
+        tier = tier_for(u["flakiness_score"], threshold)
+        changes.append(
+            TierChange(
+                kind="test",
+                id=u["id"],
+                repo=repo,
+                project=project,
+                name=name,
+                classname=classname,
+                flakiness_score=u["flakiness_score"],
+                tier=tier,
+                confirmed_flake_count=u["confirmed_flake_count"],
+                failure_category=u["failure_category"],
+            )
+        )
+    return changes
+
+
+async def _job_tier_changes(
+    db: AsyncSession, updates: list[dict[str, Any]], old: dict[int, float], settings: Settings
+) -> list[TierChange]:
+    """Notifications for the Jobs whose tier this rescore moves (ADR 0009)."""
+    threshold = settings.flake_threshold
+    crossed = _crossed(updates, old, threshold)
+    if not crossed:
+        return []
+    rows = await _job_change_rows(db, [u["id"] for u in crossed])
+    by_id = {u["id"]: u for u in crossed}
+    changes: list[TierChange] = []
+    for job_id, (name, pipeline, repo) in sorted(rows.items()):
+        u = by_id[job_id]  # a Job deleted before this read sends nothing
+        tier = tier_for(u["flakiness_score"], threshold)
+        changes.append(
+            TierChange(
+                kind="job",
+                id=u["id"],
+                repo=repo,
+                project=None,  # a Job belongs to a Repo, not a Project
+                name=name,
+                pipeline=pipeline,
+                flakiness_score=u["flakiness_score"],
+                tier=tier,
+                confirmed_flake_count=u["confirmed_flake_count"],
+            )
+        )
+    return changes
+
+
 async def rescore(
     db: AsyncSession, test_case_ids: list[int], *, day_counts: dict[int, tuple[int, int]] | None = None
-) -> None:
+) -> list[TierChange]:
     """Recompute flakiness for the given Tests from their last `window` Executions.
 
     Flip scoring looks only at Executions on the Repo's Default branch, while
@@ -140,6 +273,10 @@ async def rescore(
     whose Default branch rarely runs CI) therefore still reads all of its
     Executions in that arm (measured before and after, both shapes:
     docs/perf/20-test-rescore-explain.md).
+
+    Returns the Tier changes this rescore caused, for the caller to notify
+    about. Nothing is emitted here: rescore_repo and the retention prune are
+    callers that must stay silent, and they do so by ignoring the return value.
     """
     settings = get_settings()
     history: dict[int, list[tuple[str, str, str]]] = defaultdict(list)  # id -> [(sha, branch, status)]
@@ -177,7 +314,7 @@ async def rescore(
             settings.score_window,
         )
         streak = scoring.branch_scoped_streak(execs, default_branch.get(tc_id))
-        changes: dict[str, Any] = {
+        values: dict[str, Any] = {
             "id": tc_id,
             "flakiness_score": score,
             "confirmed_flake_count": confirmed,
@@ -189,12 +326,14 @@ async def rescore(
             # Issue #33: the Test failed again, so the "the fix appears to hold" note is stale
             # and the next clean streak must be able to post it again. Any other streak leaves
             # the key out of the bulk update, which is what preserves an existing stamp.
-            changes["github_issue_fixed_noted_at"] = None
-        updates.append(changes)
+            values["github_issue_fixed_noted_at"] = None
+        updates.append(values)
+    changes = await _test_tier_changes(db, updates, await _old_test_scores(db, test_case_ids), settings)
     for chunk in chunks(updates):
         await db.execute(update(TestCase), chunk)
     if updates:
         await write_today_history(db, TestScoreHistory, TestScoreHistory.test_case_id, updates, day_counts=day_counts)
+    return changes
 
 
 async def apply_default_branch(db: AsyncSession, repo_id: int, value: str | None) -> bool:
@@ -212,7 +351,9 @@ async def apply_default_branch(db: AsyncSession, repo_id: int, value: str | None
 async def rescore_repo(db: AsyncSession, repo_id: int) -> tuple[list[int], list[int]]:
     """Rescore every Test and every Job in the Repo (chunked).
 
-    Returns (test_ids, job_ids), each sorted.
+    Returns (test_ids, job_ids), each sorted. The Tier changes this causes are
+    dropped on purpose: a Default branch change rescores the whole Repo at once,
+    so notifying about it would send hundreds of events for one Report (ADR 0009).
     """
     test_ids = list(
         (
@@ -229,8 +370,12 @@ async def rescore_repo(db: AsyncSession, repo_id: int) -> tuple[list[int], list[
         ).scalars()
     )
     test_ids, job_ids = sorted(test_ids), sorted(job_ids)
-    await rescore(db, test_ids)
-    await rescore_jobs(db, job_ids)
+    dropped = await rescore(db, test_ids)
+    dropped += await rescore_jobs(db, job_ids)
+    if dropped:
+        # One event per changed Test would flood the channel, so only the count
+        # is reported (ADR 0009).
+        logger.info("Rescore of Repo %s dropped %d Notification(s)", repo_id, len(dropped))
     return test_ids, job_ids
 
 
@@ -271,12 +416,13 @@ async def _job_history(
 
 async def rescore_jobs(
     db: AsyncSession, job_ids: list[int], *, day_counts: dict[int, tuple[int, int]] | None = None
-) -> None:
+) -> list[TierChange]:
     """Recompute flakiness for Jobs with the Default-branch rule (see rescore).
 
     `day_counts` maps a job id to (executions, failures) added today, so each
     rescore also writes that day's Score history row. Explained failures are
     already `JOB_SKIPPED` in `_job_history`, so they never break the streak.
+    Returns the Tier changes, as `rescore` does.
     """
     settings = get_settings()
     history = await _job_history(db, job_ids)
@@ -290,23 +436,30 @@ async def rescore_jobs(
             settings.score_window,
         )
         streak = scoring.branch_scoped_streak(execs, def_branch)
-        changes: dict[str, Any] = {
+        values: dict[str, Any] = {
             "id": job_id,
             "flakiness_score": score,
             "confirmed_flake_count": confirmed,
             "clean_streak": streak,
         }
         if streak == 0:  # the same reset as in `rescore`, for Jobs too (issue #33)
-            changes["github_issue_fixed_noted_at"] = None
-        updates.append(changes)
+            values["github_issue_fixed_noted_at"] = None
+        updates.append(values)
+    changes = await _job_tier_changes(db, updates, await _old_job_scores(db, job_ids), settings)
     for chunk in chunks(updates):
         await db.execute(update(Job), chunk)
     if updates:
         await write_today_history(db, JobScoreHistory, JobScoreHistory.job_id, updates, day_counts=day_counts)
+    return changes
 
 
-async def _rescore_jobs_for_ci_job_id(db: AsyncSession, repo_id: int, ci_job_id: str) -> list[int]:
-    """Rescore every Job that carries this ci_job_id in the Repo; return their ids."""
+async def _rescore_jobs_for_ci_job_id(
+    db: AsyncSession, repo_id: int, ci_job_id: str
+) -> tuple[list[int], list[TierChange]]:
+    """Rescore every Job that carries this ci_job_id in the Repo.
+
+    Returns (job_ids, tier_changes).
+    """
     job_ids = sorted(
         set(
             (
@@ -320,8 +473,8 @@ async def _rescore_jobs_for_ci_job_id(db: AsyncSession, repo_id: int, ci_job_id:
         )
     )
     if job_ids:
-        await rescore_jobs(db, job_ids)
-    return job_ids
+        return job_ids, await rescore_jobs(db, job_ids)
+    return job_ids, []
 
 
 async def process_pipeline_report(db: AsyncSession, report: Report) -> ProcessOutcome:
@@ -427,9 +580,9 @@ async def process_pipeline_report(db: AsyncSession, report: Report) -> ProcessOu
             )
 
     touched = sorted(jobs_with_new_exec | flag_changed)
-    await rescore_jobs(db, touched, day_counts=day_counts)
+    tier_changes = await rescore_jobs(db, touched, day_counts=day_counts)
     if branch_changed:
-        await rescore_repo(db, report.repo_id)
+        await rescore_repo(db, report.repo_id)  # whole-Repo rescore: no Notifications
 
     counts_out = {**new_counts, "duplicate": len(pipeline_report.jobs) - sum(new_counts.values())}
     report_intake.complete_report(report, now=now, run_id=None, counts=counts_out)
@@ -441,6 +594,7 @@ async def process_pipeline_report(db: AsyncSession, report: Report) -> ProcessOu
         touched_test_ids=[],
         error=None,
         touched_job_ids=touched,
+        tier_changes=tier_changes,
     )
 
 
@@ -521,15 +675,16 @@ async def process_report(db: AsyncSession, report: Report) -> ProcessOutcome:
     for ex in executions:
         n, f = day_counts.get(ex["test_case_id"], (0, 0))
         day_counts[ex["test_case_id"]] = (n + 1, f + (ex["status"] in scoring.FAILING))
-    await rescore(db, touched, day_counts=day_counts)
+    tier_changes = await rescore(db, touched, day_counts=day_counts)
     if branch_changed:
-        await rescore_repo(db, report.repo_id)
+        await rescore_repo(db, report.repo_id)  # whole-Repo rescore: no Notifications
 
     # A linked JUnit report explains (or un-explains) Job failures: rescore the
     # Jobs that carry this ci_job_id, so order of arrival does not matter.
     touched_jobs: list[int] = []
     if report.ci_job_id is not None:
-        touched_jobs = await _rescore_jobs_for_ci_job_id(db, report.repo_id, report.ci_job_id)
+        touched_jobs, job_changes = await _rescore_jobs_for_ci_job_id(db, report.repo_id, report.ci_job_id)
+        tier_changes += job_changes
 
     report_intake.complete_report(report, now=now, run_id=run.id, counts=counts)
     return ProcessOutcome(
@@ -540,6 +695,7 @@ async def process_report(db: AsyncSession, report: Report) -> ProcessOutcome:
         touched_test_ids=touched,
         error=None,
         touched_job_ids=touched_jobs,
+        tier_changes=tier_changes,
     )
 
 

@@ -3,16 +3,18 @@
 import asyncio
 import logging
 
+import httpx
 import pytest
 from app.db import WORKER_LOCK_KEY
 from app.models import Report
 from app.processing import ProcessOutcome
-from app.worker import GitHubWorker, ReportWorker
+from app.worker import GitHubWorker, ReportWorker, WebhookWorker
 from sqlalchemy import select, text
 from sqlalchemy.exc import DBAPIError
 
 from tests.conftest import make_junit
 from tests.factories import make_project, make_report
+from tests.test_processing import _notify_settings
 
 
 async def _wait_for(predicate, timeout: float = 10.0) -> None:
@@ -301,3 +303,56 @@ async def test_transient_retries_back_off_before_the_next_claim(engine, session_
 
     # poll sleeps (exactly 0.05) and the standby sleep are filtered out
     assert [d for d in delays if 0.05 < d <= 30] == [0.1, 0.2, 0.4, 30]
+
+
+async def test_a_tier_change_reaches_the_webhook_task(engine, session_factory, db, monkeypatch):
+    monkeypatch.setattr("app.processing.get_settings", lambda: _notify_settings())
+    proj = await make_project(db)
+    await make_report(db, proj, make_junit([("t", "failed")]), commit_sha="a")
+    await make_report(db, proj, make_junit([("t", "passed")]), commit_sha="b")
+    await db.commit()
+    bodies: list[bytes] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(request.content)
+        return httpx.Response(200)
+
+    webhook = WebhookWorker(["https://hooks.example.com/services/x"], transport=httpx.MockTransport(handler))
+    worker = _worker(engine, session_factory, webhook=webhook)
+    await worker.start()
+    try:
+
+        async def is_running() -> bool:
+            return webhook.is_running
+
+        async def delivered() -> bool:
+            return len(bodies) == 1
+
+        await _wait_for(is_running)
+        await _wait_for(delivered)
+        assert b"test.flaky" in bodies[0]
+    finally:
+        await worker.stop()
+    assert not webhook.is_running  # stopped with leadership...
+    assert await _lock_is_free(engine)  # ...before the lock was given up
+
+
+class _StopFailsWebhookWorker(WebhookWorker):
+    """A Notification task whose stop raises, like a shutdown that fails."""
+
+    async def stop(self) -> None:
+        await super().stop()  # cancel the real task so nothing leaks into the loop
+        raise RuntimeError("stop failed")
+
+
+async def test_release_survives_a_failing_webhook_stop(engine, session_factory, caplog):
+    webhook = _StopFailsWebhookWorker(["https://hooks.example.com/x"])
+    worker = _worker(engine, session_factory, webhook=webhook)
+    assert await worker._try_lead()
+
+    with caplog.at_level(logging.ERROR, logger="flakeradar.worker"):
+        await worker._release()
+
+    assert not worker.is_leader
+    assert await _lock_is_free(engine)
+    assert "Stopping the Notification task failed; releasing the lock anyway" in caplog.text

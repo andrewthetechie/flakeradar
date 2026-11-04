@@ -6,6 +6,7 @@ from sqlalchemy import func, select
 
 from tests.conftest import make_junit
 from tests.factories import make_pipeline_report, make_project, make_report
+from tests.test_processing import _notify_settings
 
 
 def _job(ci_job_id: str, name: str, status: str = "passed", **kw) -> dict:
@@ -245,3 +246,34 @@ async def test_summary_flag_defaults_false_and_flips(db, session_factory):
     await process_next(session_factory)
     summary_job = (await db.execute(select(Job).where(Job.name == "alls-green"))).scalar_one()
     assert summary_job.summary is False
+
+
+# --- Notifications: Job tier crossings (ADR 0009) -------------------------
+
+
+async def test_job_tier_crossing_reports_job_flaky(db, session_factory, monkeypatch):
+    monkeypatch.setattr("app.processing.get_settings", lambda: _notify_settings())
+    await _queue_pipeline(db, _payload([_job("1", "test (ubuntu, 3.12)", "failed")], sha="a", ci_run_id="1"))
+    assert (await process_next(session_factory)).tier_changes == []  # always failed: broken, not flaky
+    await _queue_pipeline(db, _payload([_job("2", "test (ubuntu, 3.12)", "passed")], sha="b", ci_run_id="2"))
+    (change,) = (await process_next(session_factory)).tier_changes
+    (job,) = (await db.execute(select(Job))).scalars()
+    assert (change.kind, change.event) == ("job", "job.flaky")
+    assert change.id == job.id
+    assert (change.repo, change.project) == ("acme/app", None)  # a Job belongs to a Repo, not a Project
+    assert (change.pipeline, change.name) == (".github/workflows/ci.yml", "test (ubuntu, 3.12)")
+    assert change.flakiness_score == job.flakiness_score
+    assert (change.tier, change.confirmed_flake_count) == ("flaky", job.confirmed_flake_count)
+    assert (change.classname, change.failure_category) == (None, None)
+
+
+async def test_job_recovery_reports_job_recovered(db, session_factory, monkeypatch):
+    monkeypatch.setattr("app.processing.get_settings", lambda: _notify_settings())
+    await _queue_pipeline(db, _payload([_job("1", "lint", "failed")], sha="a", ci_run_id="1"))
+    await process_next(session_factory)
+    await _queue_pipeline(db, _payload([_job("2", "lint", "passed")], sha="b", ci_run_id="2"))
+    assert (await process_next(session_factory)).tier_changes[0].event == "job.flaky"
+    await _queue_pipeline(db, _payload([_job("3", "lint", "passed")], sha="c", ci_run_id="3"))
+    (change,) = (await process_next(session_factory)).tier_changes
+    assert change.event == "job.recovered"
+    assert change.flakiness_score == 0.0
