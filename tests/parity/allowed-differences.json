@@ -2,7 +2,7 @@
   {
     "id": "unparsable-testcase-time",
     "differenceRow": "A `<testcase time>` attribute that is not a number",
-    "reason": "Python crashes with an unhandled junitparser ValueError (HTTP 500); Rust validates the attribute and answers 400, as the user approved on 2026-11-04. The allowance covers exactly these fields in these three goldens and nothing else.",
+    "reason": "Python crashes with an unhandled junitparser ValueError (HTTP 500); Rust validates the attribute and answers 400, as the user approved on 2026-11-04. The allowance covers exactly these fields in these three goldens and nothing else: the error text of the two JUnit goldens, and the status, body and content-type of ingest-junit/07.",
     "allows": [
       {
         "file": "golden/junit/invalid-time.line_base1.json",
@@ -17,6 +17,17 @@
         "field": "status",
         "pythonValue": 500,
         "rustValue": 400
+      },
+      {
+        "file": "golden/ingest-junit/07.json",
+        "field": "body",
+        "pythonValue": "Internal Server Error"
+      },
+      {
+        "file": "golden/ingest-junit/07.json",
+        "field": "content-type",
+        "pythonValue": "text/plain; charset=utf-8",
+        "rustValue": "application/json"
       }
     ]
   },
