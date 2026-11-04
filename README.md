@@ -679,6 +679,34 @@ also return it, as `github_issue_number`, `github_issue_url` and
 `github_issue_closed`, from `/api/tests`, `/api/tests/{id}/history`, and the
 `get_test` and `top_flaky_tests` tools.
 
+### When the fix holds
+
+```
+FLAKERADAR_GITHUB_FIXED_STREAK=0                # the clean streak that posts the note
+FLAKERADAR_GITHUB_CLOSE_FIXED=false             # also close the issue when the note posts
+FLAKERADAR_PUBLIC_URL=                          # dashboard URL used for the link in the note
+```
+
+`GITHUB_FIXED_STREAK` is `0` by default, which disables this feature. When it
+is set and a test or job with a linked issue has passed on the default branch
+for that many consecutive runs (its Clean streak), FlakeRadar comments once on
+the issue: "FlakeRadar: N passing runs on `<default branch>` since the last
+failure (score now X). The fix appears to hold." FlakeRadar posts the comment
+after it processes a report, like filing.
+
+The comment never repeats while the fix holds. If the test or job fails again,
+the Clean streak goes back to `0` and the comment is re-armed: a later streak
+produces a new one. Re-linking the test or job to another issue also re-arms
+it.
+
+With `GITHUB_CLOSE_FIXED` set to `true`, FlakeRadar also closes the issue as
+completed when it posts the comment. The next maintenance sync then clears the
+link as usual, and a later flake can open a new issue (see "Duplicate issues"
+above).
+
+With `GITHUB_PUBLIC_URL` set, the comment also carries a link to that test or
+job in the dashboard. Leave it empty to post the plain sentence.
+
 ### Issues filed elsewhere
 
 Another tool or a person can file the issue instead: a triage bot, an
@@ -839,6 +867,9 @@ reads a `.env` file.
 | `GITHUB_ISSUE_LABEL` | `flakeradar` | The label on each issue that FlakeRadar opens. |
 | `GITHUB_ISSUE_MIN_SCORE` / `GITHUB_ISSUE_MIN_PROVEN_FLAKES` / `GITHUB_ISSUE_MIN_FAILURES` | `0.30` / `0` / `0` | The filing gate. |
 | `GITHUB_SYNC_BATCH` | `2000` | How many linked Tests (and, separately, linked Jobs) the maintenance sync checks per run. The oldest checks run first. |
+| `GITHUB_FIXED_STREAK` | `0` (disabled) | The Clean streak at which FlakeRadar comments once on the linked issue that the fix appears to hold. |
+| `GITHUB_CLOSE_FIXED` | `false` | Also close the issue as completed when FlakeRadar posts that comment. |
+| `PUBLIC_URL` | empty | The dashboard URL. When set, the fixed-note comment carries a link to the test or job. |
 | `WORKER_POLL_SECONDS` | `1.0` | How often the report processor checks an empty queue. |
 | `REPORT_RETENTION_DAYS` | `7` | FlakeRadar deletes processed raw reports after this time. |
 | `FAILED_REPORT_RETENTION_DAYS` | `0` | Failed reports are kept until a human retries or dismisses one. Set this to delete failed reports older than this many days. |
