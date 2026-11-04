@@ -107,9 +107,21 @@ struct Raw<'a> {
 }
 
 impl Raw<'_> {
-    /// The trimmed value of `field`, or `None` when the variable is unset.
+    /// The value of `field` exactly as the environment held it, or `None` when
+    /// the variable is unset.
+    ///
+    /// Nothing is trimmed: the frozen server's `str` fields kept every space an
+    /// operator typed, so a token or a URL is read back byte for byte.
     fn raw(&self, field: &str) -> Option<&str> {
-        self.values.get(&variable(field)).map(|value| value.trim())
+        self.values.get(&variable(field)).map(String::as_str)
+    }
+
+    /// The value of `field` with surrounding whitespace removed.
+    ///
+    /// Only the fields Python parsed with `int()` or `float()` use this: those
+    /// two ignore leading and trailing whitespace, and so did the frozen server.
+    fn trimmed(&self, field: &str) -> Option<&str> {
+        self.raw(field).map(str::trim)
     }
 
     /// The value of `field`, or `default` when it is unset.
@@ -119,7 +131,7 @@ impl Raw<'_> {
 
     /// The value of `field` parsed as a signed integer.
     fn int(&self, field: &str, default: i64) -> Result<i64, SettingsError> {
-        match self.raw(field) {
+        match self.trimmed(field) {
             None => Ok(default),
             Some(text) => text.parse().map_err(|_error| SettingsError::InvalidValue {
                 variable: variable(field),
@@ -131,7 +143,7 @@ impl Raw<'_> {
 
     /// The value of `field` parsed as a number.
     fn float(&self, field: &str, default: f64) -> Result<f64, SettingsError> {
-        match self.raw(field) {
+        match self.trimmed(field) {
             None => Ok(default),
             Some(text) => text.parse().map_err(|_error| SettingsError::InvalidValue {
                 variable: variable(field),
@@ -145,6 +157,8 @@ impl Raw<'_> {
     ///
     /// Accepts `1`/`0`, `true`/`false`, `yes`/`no` and `on`/`off`, in any case,
     /// which is the set Pydantic accepted for the frozen server's `bool` fields.
+    /// Pydantic compared those spellings exactly, so `" yes "` is not one of
+    /// them and is refused here too.
     fn boolean(&self, field: &str, default: bool) -> Result<bool, SettingsError> {
         match self.raw(field) {
             None => Ok(default),
@@ -162,7 +176,7 @@ impl Raw<'_> {
 
     /// The value of `field` parsed as a TCP port.
     fn port(&self, field: &str, default: u16) -> Result<u16, SettingsError> {
-        match self.raw(field) {
+        match self.trimmed(field) {
             None => Ok(default),
             Some(text) => text.parse().map_err(|_error| SettingsError::InvalidValue {
                 variable: variable(field),
@@ -173,6 +187,9 @@ impl Raw<'_> {
     }
 
     /// The value of `field` parsed as a Webhook format.
+    ///
+    /// The two names are compared exactly, as Pydantic's `Literal` compared
+    /// them, so a padded `" slack "` is refused.
     fn webhook_format(&self, field: &str) -> Result<WebhookFormat, SettingsError> {
         match self.text(field, "json").as_str() {
             "json" => Ok(WebhookFormat::Json),
@@ -391,12 +408,15 @@ impl Settings {
         flakeradar_db::DbSettings::new(self.db_command_timeout_seconds)
     }
 
-    /// The CORS origins, split on commas the way the frozen server split them.
+    /// The CORS origins, split on commas exactly as the frozen server split them.
+    ///
+    /// A space after a comma stays part of the origin, so an operator who typed
+    /// one configured an origin no browser sends, as they did in Python. Blank
+    /// entries are dropped because no `Origin` header is empty.
     #[must_use]
     pub fn cors_origin_list(&self) -> Vec<String> {
         self.cors_origins
             .split(',')
-            .map(str::trim)
             .filter(|origin| !origin.is_empty())
             .map(str::to_owned)
             .collect()
@@ -585,7 +605,9 @@ mod tests {
             ("SOME_OTHER_VARIABLE", "ignored"),
         ]);
         let settings = Settings::from_map(&values).expect("the fixture is valid");
-        assert_eq!(settings.api_token.expose(), "token");
+        // A `str` field keeps the spaces the environment held, as Pydantic kept
+        // them: the token is a credential, so nothing rewrites it.
+        assert_eq!(settings.api_token.expose(), " token ");
         assert_eq!(settings.database_url, "postgres://u@h/d");
         assert_eq!(settings.score_window, 7);
         assert_eq!(settings.score_decay, 0.5);
@@ -608,9 +630,11 @@ mod tests {
             settings.webhook_format,
             flakeradar_core::WebhookFormat::Slack
         );
+        // The space after the comma is part of the second origin, as it was in
+        // Python: splitting is all the frozen server did.
         assert_eq!(
             settings.cors_origin_list(),
-            ["https://a.example.com", "https://b.example.com"]
+            ["https://a.example.com", " https://b.example.com"]
         );
         assert_eq!(settings.worker_poll_seconds, 0.05);
         assert_eq!(settings.db_command_timeout_seconds, 5.0);
@@ -628,7 +652,7 @@ mod tests {
 
     #[test]
     fn a_boolean_takes_every_spelling_it_documents() {
-        for text in ["1", "true", "TRUE", " yes ", "On"] {
+        for text in ["1", "true", "TRUE", "yes", "On"] {
             let settings = Settings::from_map(&map(&[("FLAKERADAR_GITHUB_CLOSE_FIXED", text)]))
                 .expect("the value is a boolean");
             assert!(settings.github_close_fixed, "{text}");
@@ -638,6 +662,37 @@ mod tests {
                 .expect("the value is a boolean");
             assert!(!settings.github_close_fixed, "{text}");
         }
+    }
+
+    #[test]
+    fn a_padded_boolean_is_refused_as_pydantic_refused_it() {
+        // Pydantic compared the spelling exactly, so `FLAKERADAR_GITHUB_CLOSE_FIXED=" true "`
+        // was an error rather than true, and the server would not start.
+        for text in [" yes ", "true ", " on"] {
+            let error = Settings::from_map(&map(&[("FLAKERADAR_GITHUB_CLOSE_FIXED", text)]))
+                .expect_err("a padded spelling is not a boolean");
+            assert!(error.to_string().contains("FLAKERADAR_GITHUB_CLOSE_FIXED"));
+        }
+    }
+
+    #[test]
+    fn a_number_ignores_surrounding_space_as_pythons_parsers_did() {
+        let settings = Settings::from_map(&map(&[
+            ("FLAKERADAR_SCORE_WINDOW", " 7 "),
+            ("FLAKERADAR_SCORE_DECAY", "0.5\t"),
+            ("FLAKERADAR_PORT", " 9000\n"),
+        ]))
+        .expect("Python's int() and float() ignore surrounding whitespace");
+        assert_eq!(settings.score_window, 7);
+        assert_eq!(settings.score_decay, 0.5);
+        assert_eq!(settings.port, 9000);
+    }
+
+    #[test]
+    fn a_webhook_format_must_be_one_of_the_two_names_exactly() {
+        let error = Settings::from_map(&map(&[("FLAKERADAR_WEBHOOK_FORMAT", " json ")]))
+            .expect_err("Pydantic's Literal compared the name exactly");
+        assert!(error.to_string().contains("FLAKERADAR_WEBHOOK_FORMAT"));
     }
 
     #[test]
@@ -713,15 +768,17 @@ mod tests {
     }
 
     #[test]
-    fn cors_origins_split_on_commas_and_drop_blanks() {
+    fn cors_origins_split_on_commas_without_trimming() {
         let settings = Settings::from_map(&map(&[(
             "FLAKERADAR_CORS_ORIGINS",
             "http://localhost:5173,, https://a.example.com ,",
         )]))
         .expect("the fixture is valid");
+        // Python split the value and kept every space, so an origin written with
+        // one never matched the header a browser sends.
         assert_eq!(
             settings.cors_origin_list(),
-            ["http://localhost:5173", "https://a.example.com"]
+            ["http://localhost:5173", " https://a.example.com "]
         );
         assert_eq!(
             Settings::default().cors_origin_list(),
