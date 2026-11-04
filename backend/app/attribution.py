@@ -260,6 +260,52 @@ def job_execution_window_ids(job_ids: Sequence[int], window: int, *, include_def
     return windowed.union(_window_ids(job_ids, window, key="je_window_default", on_default=True))
 
 
+def _test_window_ids(test_case_ids: Sequence[int], window: int, key: str, *, on_default: bool) -> Select:
+    """(test_case_id, id) of the newest `window` executions per Test, via LATERAL ... LIMIT."""
+    src = (
+        func.unnest(bindparam(key, list(test_case_ids), type_=ARRAY(Integer())))
+        .table_valued("test_case_id")
+        .render_derived()
+    )
+    lat = select(TestExecution.id).where(TestExecution.test_case_id == src.c.test_case_id)
+    if on_default:
+        lat = (
+            lat.join(TestRun, TestRun.id == TestExecution.test_run_id)
+            .join(Project, Project.id == TestRun.project_id)
+            .join(Repo, Repo.id == Project.repo_id)
+            .where(or_(Repo.default_branch.is_(None), TestRun.branch == Repo.default_branch))
+        )
+    lat = lat.order_by(TestExecution.id.desc()).limit(window).lateral()
+    return select(src.c.test_case_id, lat.c.id).join_from(src, lat, true())
+
+
+def test_execution_window_ids(
+    test_case_ids: Sequence[int], window: int, *, include_default_branch: bool = False
+) -> Select:
+    """The newest `window` Test-execution ids per Test: unnest + LATERAL ... LIMIT.
+
+    The overall lateral stops after `window` rows per Test on ix_exec_case_id, so
+    its cost tracks the window, not the Test's retained history (the Job-side
+    twin was measured before and after: docs/perf/21-job-rescore-explain.md).
+    With `include_default_branch`, also the newest `window` per Test on its
+    Repo's Default branch (a NULL Default branch matches every branch),
+    UNION-deduped. Whether a Run is on the Default branch lives in
+    test_runs/repos, so that lateral walks the Test's Executions newest first
+    and joins each until it has `window` Default rows or runs out. Unlike the
+    old (rn_all | rn_def) filter the union no longer admits the newest `window`
+    off-Default rows beyond the overall window; nothing consumes them (scoring
+    slices flips to the window internally, reads Proven flakes and the dominant
+    category from the overall window, and both streaks read Default rows only;
+    with an unknown Default branch the old on_default matched every row anyway).
+    Rows are (test_case_id, id); `test_case_ids` must be non-empty and within
+    one chunk.
+    """
+    windowed = _test_window_ids(test_case_ids, window, key="te_window_overall", on_default=False)
+    if not include_default_branch:
+        return windowed
+    return windowed.union(_test_window_ids(test_case_ids, window, key="te_window_default", on_default=True))
+
+
 async def unexplained_failure_counts(db: AsyncSession, job_ids: list[int], window: int) -> dict[int, int]:
     """Unexplained failures per Job over its newest `window` Job executions (any branch).
 

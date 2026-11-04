@@ -4,15 +4,24 @@ import asyncio
 from pathlib import Path
 
 import pytest
+from app import scoring
 from app.config import Settings
 from app.models import Job, Repo, Report, TestCase, TestExecution, TestRun, TestScoreHistory, utcnow
-from app.processing import claim_next_report, process_next
+from app.processing import claim_next_report, process_next, rescore
 from sqlalchemy import event as sa_event
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError, OperationalError
 
 from tests.conftest import make_junit
-from tests.factories import make_job, make_pipeline, make_project, make_report, make_test_case
+from tests.factories import (
+    make_execution,
+    make_job,
+    make_pipeline,
+    make_project,
+    make_report,
+    make_run,
+    make_test_case,
+)
 from tests.test_pipeline_processing import _job, _payload, _queue_pipeline
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -402,6 +411,44 @@ async def test_default_branch_window_rescope(db, session_factory, monkeypatch):
     (tc,) = await _tests(db)
     # The 3 newest main rows must still be flip-scored despite 10 newer feat rows.
     assert tc.flakiness_score > 0
+
+
+async def test_rescore_matches_branch_scoped_score_over_all_rows(db, monkeypatch):
+    monkeypatch.setattr("app.processing.get_settings", lambda: Settings(score_window=3))
+    proj = await make_project(db, "acme/app", "backend")
+    repo = (await db.execute(select(Repo))).scalar_one()
+    repo.default_branch = "main"
+    tc = await make_test_case(db, proj, name="t")
+    # 5 flickering main executions (oldest first), then 10 newer feat passes.
+    for i, status in enumerate(["failed", "passed", "failed", "passed", "failed"]):
+        run = await make_run(db, proj, commit_sha=f"m{i}", branch="main")
+        await make_execution(db, tc, run, status=status)
+    for i in range(10):
+        run = await make_run(db, proj, commit_sha=f"f{i}", branch="feat")
+        await make_execution(db, tc, run, status="passed")
+    await db.commit()
+
+    await rescore(db, [tc.id])
+    await db.commit()
+    await db.refresh(tc)
+
+    all_rows = (
+        await db.execute(
+            select(TestRun.commit_sha, TestRun.branch, TestExecution.status)
+            .join(TestExecution, TestExecution.test_run_id == TestRun.id)
+            .where(TestExecution.test_case_id == tc.id)
+            .order_by(TestExecution.id.desc())
+        )
+    ).all()
+    assert len(all_rows) == 15  # more than `window` off-Default rows
+
+    s = Settings(score_window=3)
+    expected_score, expected_confirmed = scoring.branch_scoped_score(all_rows, "main", s.score_decay, 3)
+    assert expected_score > 0.0  # the newest main flips still count
+    assert tc.flakiness_score == expected_score
+    assert tc.confirmed_flake_count == expected_confirmed
+    assert tc.clean_streak == scoring.branch_scoped_streak(all_rows, "main")
+    assert tc.fail_streak == scoring.branch_scoped_fail_streak(all_rows, "main")
 
 
 async def test_same_day_reports_share_one_history_row(db, session_factory):
