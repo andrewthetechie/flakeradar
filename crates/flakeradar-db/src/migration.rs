@@ -236,6 +236,15 @@ mod tests {
     }
 
     #[test]
+    fn keeps_a_doubled_quote_inside_a_literal_or_an_identifier() {
+        assert_eq!(
+            split_statements("INSERT INTO t VALUES ('it''s; fine'); -- x; y\nSELECT 1;").len(),
+            2
+        );
+        assert_eq!(split_statements("SELECT 1 AS \"a\"\"b;c\";").len(), 1);
+    }
+
+    #[test]
     fn ignores_semicolons_in_line_comments() {
         assert_eq!(
             split_statements("-- a; comment\nSELECT 1;\n-- trailing\n"),

@@ -213,7 +213,7 @@ fn run_docker(args: &[&str]) -> Result<String, TestError> {
 mod tests {
     //! URL rewriting needs no server, so it is checked here.
 
-    use super::with_database;
+    use super::{answers_a_connection, with_database};
     use crate::error::TestError;
 
     #[test]
@@ -229,6 +229,12 @@ mod tests {
                     .to_owned()
             )
         );
+    }
+
+    #[test]
+    fn a_port_nothing_listens_on_is_not_ready() {
+        // Port 1 needs a privileged bind, so no test process can be serving it.
+        assert!(!answers_a_connection(1));
     }
 
     #[test]

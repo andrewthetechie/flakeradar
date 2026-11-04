@@ -42,10 +42,15 @@ mod tests {
 
     #[test]
     fn writes_one_testcase_per_case() {
-        let report = make_junit(&[("test_a", "passed"), ("test_b", "failed")]);
+        let report = make_junit(&[
+            ("test_a", "passed"),
+            ("test_b", "failed"),
+            ("test_c", "error"),
+            ("test_d", "skipped"),
+        ]);
         let text = String::from_utf8_lossy(&report);
         assert!(
-            text.contains(r#"<testsuite name="unit" tests="2">"#),
+            text.contains(r#"<testsuite name="unit" tests="4">"#),
             "{text}"
         );
         assert!(
@@ -54,6 +59,11 @@ mod tests {
         );
         assert!(
             text.contains(r#"<failure message="assert 1 == 2">"#),
+            "{text}"
+        );
+        assert!(text.contains(r#"<error message="boom">"#), "{text}");
+        assert!(
+            text.contains(r#"<skipped message="not on windows"/>"#),
             "{text}"
         );
     }
