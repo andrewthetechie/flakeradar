@@ -617,27 +617,24 @@ pub async fn ingest_pipeline(
     responses((status = 200, body = ReportSummaryOut))
 )]
 pub async fn summary(State(state): State<AppState>) -> ReportResult<Json<ReportSummaryOut>> {
+    // One row, one column per status the queue reports: a database that holds
+    // no Report of a status counts zero rather than leaving it out.
     let statement = Statement::from_sql_and_values(
         DbBackend::Postgres,
-        "SELECT status, count(*) AS count FROM reports \
-          WHERE status IN ($1, $2) GROUP BY status",
+        "SELECT count(*) FILTER (WHERE status = $1) AS pending, \
+                count(*) FILTER (WHERE status = $2) AS failed \
+           FROM reports",
         [Value::from(REPORT_PENDING), Value::from(REPORT_FAILED)],
     );
-    let mut summary = ReportSummaryOut {
-        pending: 0,
-        failed: 0,
-    };
-    for row in state.pool().query_all_raw(statement).await? {
-        let status: String = row.try_get("", "status")?;
-        let count: i64 = row.try_get("", "count")?;
-        match status.as_str() {
-            REPORT_PENDING => summary.pending = count,
-            REPORT_FAILED => summary.failed = count,
-            // The query asks for exactly these two.
-            _ => {}
-        }
-    }
-    Ok(Json(summary))
+    let row = state
+        .pool()
+        .query_one_raw(statement)
+        .await?
+        .ok_or_else(|| DbErr::RecordNotFound("the summary query returned no row".to_owned()))?;
+    Ok(Json(ReportSummaryOut {
+        pending: row.try_get("", "pending")?,
+        failed: row.try_get("", "failed")?,
+    }))
 }
 
 /// The Report queue, newest first.

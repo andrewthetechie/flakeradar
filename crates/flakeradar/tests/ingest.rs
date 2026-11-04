@@ -877,6 +877,52 @@ async fn the_reports_routes_answer_an_empty_queue() {
 }
 
 #[tokio::test]
+async fn pipeline_ingest_cuts_off_an_oversized_body() {
+    // The route keeps the app's JSON body limit, so a body past it is refused
+    // while it is read rather than buffered.
+    let db = TestDb::new().await.expect("a test database is available");
+    let body = vec![b'a'; flakeradar::JSON_BODY_LIMIT + 1];
+    let reply = post(
+        &test_app(&db),
+        "/api/ingest/pipeline",
+        &[("x-api-key", TOKEN), ("content-type", "application/json")],
+        Body::from(body),
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(
+        reply.json()["detail"],
+        json!("Request body exceeds the size limit")
+    );
+    assert_eq!(stored_reports(&db).await.len(), 0);
+}
+
+#[tokio::test]
+async fn ingest_answers_a_body_that_fails_while_it_is_read() {
+    // A client that goes away mid-upload is not a size problem, so it must not be
+    // reported as one.
+    let db = TestDb::new().await.expect("a test database is available");
+    let stream = futures_util::stream::iter(vec![
+        Ok(axum::body::Bytes::from_static(b"<testsuite>")),
+        Err(std::io::Error::other("the client went away")),
+    ]);
+    let request = axum::http::Request::builder()
+        .method(Method::POST)
+        .uri(ingest_uri(&[]))
+        .header("x-api-key", TOKEN)
+        .body(Body::from_stream(stream))
+        .expect("the fixture request builds");
+    let reply = send(&test_app(&db), request).await;
+    assert_eq!(reply.status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(
+        reply.text().contains("Reading the report body failed"),
+        "{}",
+        reply.text()
+    );
+    assert_eq!(stored_reports(&db).await.len(), 0);
+}
+
+#[tokio::test]
 async fn a_reports_list_counts_only_the_rows_it_holds() {
     use flakeradar_test_support::make_project;
     let db = TestDb::new().await.expect("a test database is available");

@@ -92,14 +92,24 @@ fn disposition(value: &[u8]) -> (Option<String>, bool) {
     let mut filename = false;
     for parameter in value.split(|byte| *byte == b';').skip(1) {
         let parameter = trim_ascii(parameter);
-        let Some(equals) = parameter.iter().position(|byte| *byte == b'=') else {
+        // A parameter without a value is not one this reads, such as a bare flag
+        // a client added.
+        let mut key = Vec::new();
+        let mut raw = Vec::new();
+        let mut valued = false;
+        for byte in parameter {
+            if valued {
+                raw.push(*byte);
+            } else if *byte == b'=' {
+                valued = true;
+            } else {
+                key.push(*byte);
+            }
+        }
+        if !valued {
             continue;
-        };
-        let (key, raw) = (parameter.get(..equals), parameter.get(equals + 1..));
-        let (Some(key), Some(raw)) = (key, raw) else {
-            continue;
-        };
-        let raw = trim_ascii(raw);
+        }
+        let (key, raw) = (key.as_slice(), trim_ascii(&raw));
         let raw = raw
             .strip_prefix(b"\"")
             .and_then(|rest| rest.strip_suffix(b"\""))
@@ -245,6 +255,36 @@ mod tests {
         assert_eq!(
             file_field(&body, &content_type, REPORT_FIELD),
             Some(&payload[..])
+        );
+    }
+
+    #[test]
+    fn a_body_that_ends_before_any_part_is_empty() {
+        // The closing delimiter on its own: there was never a part to read.
+        assert_eq!(
+            file_field(
+                b"--b--\r\n",
+                "multipart/form-data; boundary=b",
+                REPORT_FIELD
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn a_parameter_that_names_nothing_is_skipped() {
+        let body = b"--b\r\nContent-Disposition: form-data; flag; size=9; name=\"report\"; \
+                     filename=\"r.xml\"\r\n\r\n<x/>\r\n--b--\r\n";
+        assert_eq!(
+            file_field(body, "multipart/form-data; boundary=b", REPORT_FIELD),
+            Some(&b"<x/>"[..])
+        );
+        // A filename with no name leaves the field unnamed.
+        let unnamed =
+            b"--b\r\nContent-Disposition: form-data; filename=\"r.xml\"\r\n\r\n<x/>\r\n--b--\r\n";
+        assert_eq!(
+            file_field(unnamed, "multipart/form-data; boundary=b", REPORT_FIELD),
+            None
         );
     }
 

@@ -33,6 +33,7 @@ utoipa-redoc.workspace = true
 [dev-dependencies]
 chrono = { workspace = true, features = ["clock", "std"] }
 flakeradar-test-support = { path = "../flakeradar-test-support" }
+futures-util = { version = "0.3", default-features = false }
 reqwest = { workspace = true, features = ["json"] }
 tokio = { workspace = true, features = ["test-util", "time"] }
 tower = { workspace = true, features = ["util"] }

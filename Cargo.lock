@@ -808,6 +808,7 @@ dependencies = [
  "flakeradar-db",
  "flakeradar-test-support",
  "form_urlencoded",
+ "futures-util",
  "reqwest",
  "sea-orm",
  "serde",
