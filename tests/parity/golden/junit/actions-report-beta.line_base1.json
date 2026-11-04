@@ -1,0 +1,32 @@
+{
+  "cases": [
+    {
+      "category": null,
+      "classname": "beta.test_login",
+      "details": "",
+      "duration": 0.277,
+      "file": null,
+      "fingerprint": "9fdaa16cab220544096c1bb3e80ef11abf33e719",
+      "line": null,
+      "message": "",
+      "name": "test_password_is_never_echoed",
+      "status": "passed",
+      "suite": "beta-suite"
+    },
+    {
+      "category": "assertion",
+      "classname": "beta.test_login",
+      "details": "Traceback (most recent call last):\n  File \"actions/report/test/fixture-beta.xml\", line 1, in test_locked_account_unlocks_after_cooldown\nAssertionError: assert not True",
+      "duration": 0.151,
+      "file": null,
+      "fingerprint": "83286df59ad689f81dc9a52fc097a32327461a66",
+      "line": null,
+      "message": "assert not True",
+      "name": "test_locked_account_unlocks_after_cooldown",
+      "status": "failed",
+      "suite": "beta-suite"
+    }
+  ],
+  "line_base": 1,
+  "source": "junit/actions-report-beta.xml"
+}

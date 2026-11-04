@@ -1,0 +1,15 @@
+{
+  "body": {
+    "detail": "status must be one of pending, processed, failed"
+  },
+  "content-type": "application/json",
+  "request": {
+    "method": "GET",
+    "path": "/api/reports",
+    "query": {
+      "status": "bogus"
+    }
+  },
+  "status": 422,
+  "step": 18
+}

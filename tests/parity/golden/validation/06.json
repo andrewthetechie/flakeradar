@@ -1,0 +1,28 @@
+{
+  "body": {
+    "detail": [
+      {
+        "ctx": {
+          "le": 200
+        },
+        "input": "201",
+        "loc": [
+          "query",
+          "limit"
+        ],
+        "msg": "Input should be less than or equal to 200",
+        "type": "less_than_equal"
+      }
+    ]
+  },
+  "content-type": "application/json",
+  "request": {
+    "method": "GET",
+    "path": "/api/reports",
+    "query": {
+      "limit": "201"
+    }
+  },
+  "status": 422,
+  "step": 6
+}

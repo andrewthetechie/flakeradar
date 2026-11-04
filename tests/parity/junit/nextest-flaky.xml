@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="nextest-run" tests="2" failures="1" errors="0" timestamp="2026-10-15T18:02:11.104+00:00" time="3.517">
+    <testsuite name="writers-app" tests="2" disabled="0" errors="0" failures="1">
+        <testcase name="embedding::reindexer::worker::tests::invalidate_priority_readiness_drops_from_each_driver" classname="writers-app" timestamp="2026-10-15T18:02:12.950+00:00" time="0.412">
+            <failure type="flaky failure" message="test passed on attempt 2/2 but is configured to fail when flaky"/>
+            <flakyFailure timestamp="2026-10-15T18:02:12.530+00:00" time="0.398" type="test failure" message="thread &apos;embedding::reindexer::worker::tests::invalidate_priority_readiness_drops_from_each_driver&apos; (7136) panicked at src-tauri/src/embedding/reindexer/worker.rs:2706:17">thread &apos;embedding::reindexer::worker::tests::invalidate_priority_readiness_drops_from_each_driver&apos; (7136) panicked at src-tauri/src/embedding/reindexer/worker.rs:2706:17:
+assertion failed: readiness.is_empty()
+                <system-out>
+running 1 test
+test embedding::reindexer::worker::tests::invalidate_priority_readiness_drops_from_each_driver ... FAILED
+</system-out>
+                <system-err>thread &apos;embedding::reindexer::worker::tests::invalidate_priority_readiness_drops_from_each_driver&apos; (7136) panicked at src-tauri/src/embedding/reindexer/worker.rs:2706:17:
+assertion failed: readiness.is_empty()
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+</system-err>
+            </flakyFailure>
+        </testcase>
+        <testcase name="embedding::chunker::tests::splits_on_headings" classname="writers-app" timestamp="2026-10-15T18:02:11.230+00:00" time="0.003">
+        </testcase>
+    </testsuite>
+</testsuites>

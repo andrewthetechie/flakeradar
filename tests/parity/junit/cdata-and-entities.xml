@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="encoding" tests="2">
+  <testcase classname="tests.test_encoding" name="test_cdata_and_entities" time="0.01">
+    <failure message="a &amp; b &lt;c&gt; &quot;quoted&quot; &#10; second line"><![CDATA[<system-out> is not markup here: 1 < 2 && 3 > 2]]></failure>
+    <system-out><![CDATA[stdout &amp; more]]></system-out>
+  </testcase>
+  <testcase classname="tests.test_encoding" name="test_property_child_is_inert" time="0.02">
+    <properties>
+      <property name="browser" value="chromium" />
+    </properties>
+  </testcase>
+</testsuite>

@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="https://maven.apache.org/surefire/maven-surefire-plugin/xsd/surefire-test-report-3.0.xsd" version="3.0" name="com.example.CartTest" time="0.512" tests="2" errors="0" skipped="0" failures="1">
+  <testcase name="addsTwoItems" classname="com.example.CartTest" time="0.032">
+    <failure message="expected: &lt;3&gt; but was: &lt;4&gt;" type="java.lang.AssertionError"><![CDATA[java.lang.AssertionError: expected: <3> but was: <4>
+	at com.example.CartTest.addsTwoItems(CartTest.java:24)
+]]></failure>
+    <rerunFailure message="first try: expected: &lt;3&gt; but was: &lt;5&gt;" type="java.lang.AssertionError" time="0.021">
+      <stackTrace>java.lang.AssertionError: first try: expected: &lt;3&gt; but was: &lt;5&gt;
+	at com.example.CartTest.addsTwoItems(CartTest.java:24)</stackTrace>
+      <system-out>rerun stdout line</system-out>
+      <system-err>rerun stderr line</system-err>
+    </rerunFailure>
+    <rerunError message="" type="java.lang.IllegalStateException" time="not-a-number">
+      <stackTrace>java.lang.IllegalStateException: cart is closed
+	at com.example.CartTest.addsTwoItems(CartTest.java:25)</stackTrace>
+    </rerunError>
+  </testcase>
+  <testcase name="removesAnItem" classname="com.example.CartTest" time="0.012"/>
+</testsuite>

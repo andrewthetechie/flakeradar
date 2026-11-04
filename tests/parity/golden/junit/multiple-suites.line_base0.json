@@ -1,0 +1,45 @@
+{
+  "cases": [
+    {
+      "category": null,
+      "classname": "tests.test_unit",
+      "details": "",
+      "duration": 0.01,
+      "file": null,
+      "fingerprint": "59259a1c1a9ce009d4fce5c3c1357065aebfba90",
+      "line": null,
+      "message": "",
+      "name": "test_one",
+      "status": "passed",
+      "suite": "unit"
+    },
+    {
+      "category": null,
+      "classname": "tests.test_unit",
+      "details": "",
+      "duration": 0.02,
+      "file": null,
+      "fingerprint": "ad92338b4a0546c2b80427349735d2fdaa6d8d9a",
+      "line": null,
+      "message": "",
+      "name": "test_two",
+      "status": "passed",
+      "suite": "unit"
+    },
+    {
+      "category": "assertion",
+      "classname": "tests.test_other",
+      "details": "AssertionError: nope",
+      "duration": 0.3,
+      "file": null,
+      "fingerprint": "d13b924ec8ae88d87f6bad82a71e014df72aae89",
+      "line": null,
+      "message": "AssertionError: nope",
+      "name": "test_three",
+      "status": "failed",
+      "suite": ""
+    }
+  ],
+  "line_base": 0,
+  "source": "junit/multiple-suites.xml"
+}

@@ -1,0 +1,32 @@
+{
+  "name": "validation",
+  "steps": [
+    {"http": {"method": "GET", "path": "/api/tests/abc/history", "query": {}}},
+    {"http": {"method": "GET", "path": "/api/tests/1/history", "query": {"limit": "501"}}},
+    {"http": {"method": "GET", "path": "/api/jobs/abc/history", "query": {}}},
+    {"http": {"method": "GET", "path": "/api/reports/abc", "query": {}}},
+    {"http": {"method": "GET", "path": "/api/reports", "query": {"limit": "0"}}},
+    {"http": {"method": "GET", "path": "/api/reports", "query": {"limit": "201"}}},
+    {"http": {"method": "GET", "path": "/api/ci-runs//failures", "query": {"repo": "o/r"}}},
+    {"http": {"method": "GET", "path": "/api/tests", "query": {"repo": "o/r", "include_stable": "maybe"}}},
+    {"http": {"method": "GET", "path": "/api/tests", "query": {"repo": "o/r", "quarantined": "yes"}}},
+    {"http": {"method": "GET", "path": "/api/tests", "query": {"repo": "o/r", "has_issue": "1"}}},
+    {"http": {"method": "GET", "path": "/api/tests", "query": {"repo": "o/r", "broken": "sure"}}},
+    {"http": {"method": "GET", "path": "/api/jobs", "query": {"repo": "o/r", "include_stable": "maybe"}}},
+    {"http": {"method": "GET", "path": "/api/jobs", "query": {"repo": "o/r", "new_within_days": "91"}}},
+    {"http": {"method": "GET", "path": "/api/jobs", "query": {"repo": "o/r", "page_size": "0"}}},
+    {"http": {"method": "GET", "path": "/api/summary", "query": {"repo": "not a repo"}}},
+    {"http": {"method": "GET", "path": "/api/summary", "query": {"project": "default"}}},
+    {"http": {"method": "POST", "path": "/api/tests/1/quarantine", "query": {}, "headers": {"X-API-Key": "$TOKEN", "Content-Type": "application/json"}, "body_json": {"quarantined": "yes"}}},
+    {"http": {"method": "POST", "path": "/api/tests/1/quarantine", "query": {}, "headers": {"X-API-Key": "$TOKEN", "Content-Type": "application/json"}, "body_json": {"quarantined": true, "expires_in_days": 366}}},
+    {"http": {"method": "POST", "path": "/api/tests/1/quarantine", "query": {}, "headers": {"X-API-Key": "$TOKEN", "Content-Type": "application/json"}, "body_json": {"quarantined": true, "reason": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}}},
+    {"http": {"method": "PUT", "path": "/api/tests/1/issue", "query": {}, "headers": {"X-API-Key": "$TOKEN", "Content-Type": "application/json"}, "body_json": {"number": "twelve"}}},
+    {"http": {"method": "PUT", "path": "/api/tests/1/issue", "headers": {"X-API-Key": "$TOKEN"}, "body_text": "not json"}},
+    {"http": {"method": "POST", "path": "/api/ingest/pipeline", "headers": {"X-API-Key": "$TOKEN"}, "body_text": "not json"}},
+    {"http": {"method": "POST", "path": "/api/ingest/pipeline", "headers": {"X-API-Key": "$TOKEN"}, "body_json": {"repo": "o/r", "provider": "github", "pipeline": "ci.yml", "commit_sha": "x", "branch": "main", "jobs": [{"ci_job_id": "1", "name": "a", "status": "bogus"}]}}},
+    {"http": {"method": "POST", "path": "/api/ingest", "query": {"repo": "o/r", "commit_sha": ""}, "headers": {"X-API-Key": "$TOKEN"}, "body_text": "<testsuite/>"}},
+    {"http": {"method": "POST", "path": "/api/ingest", "query": {"repo": "o/r", "commit_sha": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}, "headers": {"X-API-Key": "$TOKEN"}, "body_text": "<testsuite/>"}},
+    {"http": {"method": "POST", "path": "/api/ingest", "query": {"repo": "o/r", "commit_sha": "x", "project": "Bad Project"}, "headers": {"X-API-Key": "$TOKEN"}, "body_text": "<testsuite/>"}},
+    {"http": {"method": "POST", "path": "/api/ingest", "query": {"repo": "o/r", "commit_sha": "x", "root": "../etc"}, "headers": {"X-API-Key": "$TOKEN"}, "body_text": "<testsuite/>"}}
+  ]
+}

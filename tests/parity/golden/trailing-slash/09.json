@@ -1,0 +1,3716 @@
+{
+  "body": {
+    "components": {
+      "schemas": {
+        "CiRunFailedJobOut": {
+          "properties": {
+            "ci_job_id": {
+              "title": "Ci Job Id",
+              "type": "string"
+            },
+            "clean_streak": {
+              "title": "Clean Streak",
+              "type": "integer"
+            },
+            "confirmed_flake_count": {
+              "title": "Confirmed Flake Count",
+              "type": "integer"
+            },
+            "flakiness_score": {
+              "title": "Flakiness Score",
+              "type": "number"
+            },
+            "github_issue_closed": {
+              "title": "Github Issue Closed",
+              "type": "boolean"
+            },
+            "github_issue_number": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Github Issue Number"
+            },
+            "github_issue_url": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Github Issue Url"
+            },
+            "job_id": {
+              "title": "Job Id",
+              "type": "integer"
+            },
+            "name": {
+              "title": "Name",
+              "type": "string"
+            },
+            "outcome": {
+              "enum": [
+                "explained",
+                "unexplained"
+              ],
+              "title": "Outcome",
+              "type": "string"
+            },
+            "pipeline": {
+              "title": "Pipeline",
+              "type": "string"
+            },
+            "summary": {
+              "title": "Summary",
+              "type": "boolean"
+            },
+            "tier": {
+              "enum": [
+                "flaky",
+                "suspect",
+                "stable"
+              ],
+              "title": "Tier",
+              "type": "string"
+            },
+            "url": {
+              "title": "Url",
+              "type": "string"
+            }
+          },
+          "required": [
+            "job_id",
+            "pipeline",
+            "name",
+            "ci_job_id",
+            "url",
+            "outcome",
+            "summary",
+            "tier",
+            "flakiness_score",
+            "confirmed_flake_count",
+            "clean_streak",
+            "github_issue_number",
+            "github_issue_url",
+            "github_issue_closed"
+          ],
+          "title": "CiRunFailedJobOut",
+          "type": "object"
+        },
+        "CiRunFailuresOut": {
+          "properties": {
+            "ci_run_attempt": {
+              "title": "Ci Run Attempt",
+              "type": "integer"
+            },
+            "ci_run_id": {
+              "title": "Ci Run Id",
+              "type": "string"
+            },
+            "failed_jobs": {
+              "items": {
+                "$ref": "#/components/schemas/CiRunFailedJobOut"
+              },
+              "title": "Failed Jobs",
+              "type": "array"
+            },
+            "failures": {
+              "items": {
+                "$ref": "#/components/schemas/CiRunTestFailureOut"
+              },
+              "title": "Failures",
+              "type": "array"
+            },
+            "flake_threshold": {
+              "title": "Flake Threshold",
+              "type": "number"
+            },
+            "repo": {
+              "title": "Repo",
+              "type": "string"
+            },
+            "reports": {
+              "$ref": "#/components/schemas/ReportCountsOut"
+            },
+            "total_failures": {
+              "title": "Total Failures",
+              "type": "integer"
+            },
+            "truncated": {
+              "title": "Truncated",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "repo",
+            "ci_run_id",
+            "ci_run_attempt",
+            "flake_threshold",
+            "reports",
+            "total_failures",
+            "truncated",
+            "failures",
+            "failed_jobs"
+          ],
+          "title": "CiRunFailuresOut",
+          "type": "object"
+        },
+        "CiRunTestFailureOut": {
+          "properties": {
+            "broken": {
+              "title": "Broken",
+              "type": "boolean"
+            },
+            "ci_job_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Ci Job Id"
+            },
+            "classname": {
+              "title": "Classname",
+              "type": "string"
+            },
+            "clean_streak": {
+              "title": "Clean Streak",
+              "type": "integer"
+            },
+            "confirmed_flake_count": {
+              "title": "Confirmed Flake Count",
+              "type": "integer"
+            },
+            "fail_streak": {
+              "title": "Fail Streak",
+              "type": "integer"
+            },
+            "failed_attempts": {
+              "title": "Failed Attempts",
+              "type": "integer"
+            },
+            "failure_category": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Failure Category"
+            },
+            "flakiness_score": {
+              "title": "Flakiness Score",
+              "type": "number"
+            },
+            "github_issue_closed": {
+              "title": "Github Issue Closed",
+              "type": "boolean"
+            },
+            "github_issue_number": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Github Issue Number"
+            },
+            "github_issue_url": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Github Issue Url"
+            },
+            "message": {
+              "title": "Message",
+              "type": "string"
+            },
+            "name": {
+              "title": "Name",
+              "type": "string"
+            },
+            "project": {
+              "title": "Project",
+              "type": "string"
+            },
+            "quarantined": {
+              "title": "Quarantined",
+              "type": "boolean"
+            },
+            "run_id": {
+              "title": "Run Id",
+              "type": "integer"
+            },
+            "status": {
+              "title": "Status",
+              "type": "string"
+            },
+            "suite": {
+              "title": "Suite",
+              "type": "string"
+            },
+            "test_id": {
+              "title": "Test Id",
+              "type": "integer"
+            },
+            "tier": {
+              "enum": [
+                "flaky",
+                "suspect",
+                "stable"
+              ],
+              "title": "Tier",
+              "type": "string"
+            }
+          },
+          "required": [
+            "test_id",
+            "project",
+            "suite",
+            "classname",
+            "name",
+            "run_id",
+            "ci_job_id",
+            "status",
+            "failed_attempts",
+            "failure_category",
+            "message",
+            "tier",
+            "flakiness_score",
+            "confirmed_flake_count",
+            "clean_streak",
+            "fail_streak",
+            "broken",
+            "quarantined",
+            "github_issue_number",
+            "github_issue_url",
+            "github_issue_closed"
+          ],
+          "title": "CiRunTestFailureOut",
+          "type": "object"
+        },
+        "DeletedCountsOut": {
+          "description": "How many rows the admin delete removed, counted before the cascade.",
+          "properties": {
+            "executions": {
+              "title": "Executions",
+              "type": "integer"
+            },
+            "jobs": {
+              "title": "Jobs",
+              "type": "integer"
+            },
+            "reports": {
+              "title": "Reports",
+              "type": "integer"
+            },
+            "tests": {
+              "title": "Tests",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "tests",
+            "executions",
+            "jobs",
+            "reports"
+          ],
+          "title": "DeletedCountsOut",
+          "type": "object"
+        },
+        "ExecutionOut": {
+          "properties": {
+            "attempt": {
+              "title": "Attempt",
+              "type": "integer"
+            },
+            "branch": {
+              "title": "Branch",
+              "type": "string"
+            },
+            "ci_run_id": {
+              "title": "Ci Run Id",
+              "type": "string"
+            },
+            "commit_sha": {
+              "title": "Commit Sha",
+              "type": "string"
+            },
+            "created_at": {
+              "format": "date-time",
+              "title": "Created At",
+              "type": "string"
+            },
+            "details": {
+              "title": "Details",
+              "type": "string"
+            },
+            "duration": {
+              "title": "Duration",
+              "type": "number"
+            },
+            "failure_category": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Failure Category"
+            },
+            "id": {
+              "title": "Id",
+              "type": "integer"
+            },
+            "message": {
+              "title": "Message",
+              "type": "string"
+            },
+            "status": {
+              "title": "Status",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "status",
+            "duration",
+            "message",
+            "details",
+            "created_at",
+            "commit_sha",
+            "branch",
+            "ci_run_id",
+            "attempt",
+            "failure_category"
+          ],
+          "title": "ExecutionOut",
+          "type": "object"
+        },
+        "ExplainingJobOut": {
+          "properties": {
+            "job_id": {
+              "title": "Job Id",
+              "type": "integer"
+            },
+            "name": {
+              "title": "Name",
+              "type": "string"
+            },
+            "pipeline": {
+              "title": "Pipeline",
+              "type": "string"
+            },
+            "url": {
+              "title": "Url",
+              "type": "string"
+            }
+          },
+          "required": [
+            "job_id",
+            "pipeline",
+            "name",
+            "url"
+          ],
+          "title": "ExplainingJobOut",
+          "type": "object"
+        },
+        "ExplainingTestOut": {
+          "properties": {
+            "classname": {
+              "title": "Classname",
+              "type": "string"
+            },
+            "name": {
+              "title": "Name",
+              "type": "string"
+            },
+            "project": {
+              "title": "Project",
+              "type": "string"
+            },
+            "status": {
+              "title": "Status",
+              "type": "string"
+            },
+            "test_id": {
+              "title": "Test Id",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "test_id",
+            "project",
+            "classname",
+            "name",
+            "status"
+          ],
+          "title": "ExplainingTestOut",
+          "type": "object"
+        },
+        "HTTPValidationError": {
+          "properties": {
+            "detail": {
+              "items": {
+                "$ref": "#/components/schemas/ValidationError"
+              },
+              "title": "Detail",
+              "type": "array"
+            }
+          },
+          "title": "HTTPValidationError",
+          "type": "object"
+        },
+        "HistoryOut": {
+          "properties": {
+            "executions": {
+              "items": {
+                "$ref": "#/components/schemas/ExecutionOut"
+              },
+              "title": "Executions",
+              "type": "array"
+            },
+            "jobs": {
+              "items": {
+                "$ref": "#/components/schemas/TestJobLinkOut"
+              },
+              "title": "Jobs",
+              "type": "array"
+            },
+            "last_failing_branch": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Last Failing Branch"
+            },
+            "last_failing_sha": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Last Failing Sha"
+            },
+            "location": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/LocationOut"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "score_history": {
+              "items": {
+                "$ref": "#/components/schemas/ScorePointOut"
+              },
+              "title": "Score History",
+              "type": "array"
+            },
+            "test": {
+              "$ref": "#/components/schemas/TestOut"
+            }
+          },
+          "required": [
+            "test",
+            "location",
+            "last_failing_sha",
+            "last_failing_branch",
+            "executions",
+            "jobs",
+            "score_history"
+          ],
+          "title": "HistoryOut",
+          "type": "object"
+        },
+        "IngestAccepted": {
+          "properties": {
+            "duplicate": {
+              "default": false,
+              "title": "Duplicate",
+              "type": "boolean"
+            },
+            "report_id": {
+              "title": "Report Id",
+              "type": "integer"
+            },
+            "status": {
+              "title": "Status",
+              "type": "string"
+            }
+          },
+          "required": [
+            "report_id",
+            "status"
+          ],
+          "title": "IngestAccepted",
+          "type": "object"
+        },
+        "IssueLinkIn": {
+          "properties": {
+            "number": {
+              "maximum": 2147483647.0,
+              "minimum": 1.0,
+              "title": "Number",
+              "type": "integer"
+            },
+            "url": {
+              "anyOf": [
+                {
+                  "maxLength": 2048,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Url"
+            }
+          },
+          "required": [
+            "number"
+          ],
+          "title": "IssueLinkIn",
+          "type": "object"
+        },
+        "JobExecutionOut": {
+          "properties": {
+            "branch": {
+              "title": "Branch",
+              "type": "string"
+            },
+            "ci_job_id": {
+              "title": "Ci Job Id",
+              "type": "string"
+            },
+            "ci_run_attempt": {
+              "title": "Ci Run Attempt",
+              "type": "integer"
+            },
+            "ci_run_id": {
+              "title": "Ci Run Id",
+              "type": "string"
+            },
+            "commit_sha": {
+              "title": "Commit Sha",
+              "type": "string"
+            },
+            "completed_at": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Completed At"
+            },
+            "created_at": {
+              "format": "date-time",
+              "title": "Created At",
+              "type": "string"
+            },
+            "explained_by": {
+              "items": {
+                "$ref": "#/components/schemas/ExplainingTestOut"
+              },
+              "title": "Explained By",
+              "type": "array"
+            },
+            "explained_by_jobs": {
+              "items": {
+                "$ref": "#/components/schemas/ExplainingJobOut"
+              },
+              "title": "Explained By Jobs",
+              "type": "array"
+            },
+            "id": {
+              "title": "Id",
+              "type": "integer"
+            },
+            "outcome": {
+              "enum": [
+                "passed",
+                "failed",
+                "explained",
+                "skipped"
+              ],
+              "title": "Outcome",
+              "type": "string"
+            },
+            "runner_labels": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Runner Labels",
+              "type": "array"
+            },
+            "runner_name": {
+              "title": "Runner Name",
+              "type": "string"
+            },
+            "started_at": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Started At"
+            },
+            "status": {
+              "title": "Status",
+              "type": "string"
+            },
+            "url": {
+              "title": "Url",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "status",
+            "outcome",
+            "commit_sha",
+            "branch",
+            "ci_run_id",
+            "ci_run_attempt",
+            "ci_job_id",
+            "url",
+            "runner_name",
+            "runner_labels",
+            "started_at",
+            "completed_at",
+            "created_at",
+            "explained_by",
+            "explained_by_jobs"
+          ],
+          "title": "JobExecutionOut",
+          "type": "object"
+        },
+        "JobHistoryOut": {
+          "properties": {
+            "executions": {
+              "items": {
+                "$ref": "#/components/schemas/JobExecutionOut"
+              },
+              "title": "Executions",
+              "type": "array"
+            },
+            "explained_failures": {
+              "title": "Explained Failures",
+              "type": "integer"
+            },
+            "job": {
+              "$ref": "#/components/schemas/JobOut"
+            },
+            "runners": {
+              "items": {
+                "$ref": "#/components/schemas/RunnerStatOut"
+              },
+              "title": "Runners",
+              "type": "array"
+            },
+            "score_history": {
+              "items": {
+                "$ref": "#/components/schemas/ScorePointOut"
+              },
+              "title": "Score History",
+              "type": "array"
+            },
+            "unexplained_failures": {
+              "title": "Unexplained Failures",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "job",
+            "unexplained_failures",
+            "explained_failures",
+            "executions",
+            "runners",
+            "score_history"
+          ],
+          "title": "JobHistoryOut",
+          "type": "object"
+        },
+        "JobOut": {
+          "properties": {
+            "clean_streak": {
+              "title": "Clean Streak",
+              "type": "integer"
+            },
+            "confirmed_flake_count": {
+              "title": "Confirmed Flake Count",
+              "type": "integer"
+            },
+            "flakiness_score": {
+              "title": "Flakiness Score",
+              "type": "number"
+            },
+            "github_issue_closed": {
+              "title": "Github Issue Closed",
+              "type": "boolean"
+            },
+            "github_issue_number": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Github Issue Number"
+            },
+            "github_issue_url": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Github Issue Url"
+            },
+            "id": {
+              "title": "Id",
+              "type": "integer"
+            },
+            "last_seen_at": {
+              "format": "date-time",
+              "title": "Last Seen At",
+              "type": "string"
+            },
+            "last_status": {
+              "title": "Last Status",
+              "type": "string"
+            },
+            "name": {
+              "title": "Name",
+              "type": "string"
+            },
+            "pipeline": {
+              "title": "Pipeline",
+              "type": "string"
+            },
+            "provider": {
+              "title": "Provider",
+              "type": "string"
+            },
+            "repo": {
+              "title": "Repo",
+              "type": "string"
+            },
+            "summary": {
+              "title": "Summary",
+              "type": "boolean"
+            },
+            "tier": {
+              "enum": [
+                "flaky",
+                "suspect",
+                "stable"
+              ],
+              "title": "Tier",
+              "type": "string"
+            },
+            "trend": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "worsening",
+                    "improving",
+                    "steady"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Trend"
+            }
+          },
+          "required": [
+            "id",
+            "repo",
+            "provider",
+            "pipeline",
+            "name",
+            "flakiness_score",
+            "tier",
+            "confirmed_flake_count",
+            "clean_streak",
+            "last_status",
+            "last_seen_at",
+            "summary",
+            "github_issue_number",
+            "github_issue_url",
+            "github_issue_closed"
+          ],
+          "title": "JobOut",
+          "type": "object"
+        },
+        "JobPage": {
+          "properties": {
+            "items": {
+              "items": {
+                "$ref": "#/components/schemas/JobOut"
+              },
+              "title": "Items",
+              "type": "array"
+            },
+            "page": {
+              "title": "Page",
+              "type": "integer"
+            },
+            "page_size": {
+              "title": "Page Size",
+              "type": "integer"
+            },
+            "total": {
+              "title": "Total",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "items",
+            "total",
+            "page",
+            "page_size"
+          ],
+          "title": "JobPage",
+          "type": "object"
+        },
+        "JobResultIn": {
+          "properties": {
+            "ci_job_id": {
+              "maxLength": 255,
+              "minLength": 1,
+              "title": "Ci Job Id",
+              "type": "string"
+            },
+            "completed_at": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Completed At"
+            },
+            "name": {
+              "maxLength": 512,
+              "minLength": 1,
+              "title": "Name",
+              "type": "string"
+            },
+            "runner_labels": {
+              "items": {
+                "maxLength": 255,
+                "type": "string"
+              },
+              "maxItems": 50,
+              "title": "Runner Labels",
+              "type": "array"
+            },
+            "runner_name": {
+              "default": "",
+              "maxLength": 255,
+              "title": "Runner Name",
+              "type": "string"
+            },
+            "started_at": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Started At"
+            },
+            "status": {
+              "enum": [
+                "passed",
+                "failed",
+                "skipped"
+              ],
+              "title": "Status",
+              "type": "string"
+            },
+            "summary": {
+              "default": false,
+              "title": "Summary",
+              "type": "boolean"
+            },
+            "url": {
+              "default": "",
+              "maxLength": 2048,
+              "title": "Url",
+              "type": "string"
+            }
+          },
+          "required": [
+            "ci_job_id",
+            "name",
+            "status"
+          ],
+          "title": "JobResultIn",
+          "type": "object"
+        },
+        "JobSummaryOut": {
+          "properties": {
+            "confirmed_flaky_jobs": {
+              "title": "Confirmed Flaky Jobs",
+              "type": "integer"
+            },
+            "flake_threshold": {
+              "title": "Flake Threshold",
+              "type": "number"
+            },
+            "flaky_jobs": {
+              "title": "Flaky Jobs",
+              "type": "integer"
+            },
+            "job_executions_30d": {
+              "title": "Job Executions 30D",
+              "type": "integer"
+            },
+            "job_failures_30d": {
+              "title": "Job Failures 30D",
+              "type": "integer"
+            },
+            "new_flaky_7d": {
+              "title": "New Flaky 7D",
+              "type": "integer"
+            },
+            "pipelines": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Pipelines",
+              "type": "array"
+            },
+            "suspect_jobs": {
+              "title": "Suspect Jobs",
+              "type": "integer"
+            },
+            "total_jobs": {
+              "title": "Total Jobs",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "total_jobs",
+            "flaky_jobs",
+            "suspect_jobs",
+            "confirmed_flaky_jobs",
+            "new_flaky_7d",
+            "job_executions_30d",
+            "job_failures_30d",
+            "flake_threshold",
+            "pipelines"
+          ],
+          "title": "JobSummaryOut",
+          "type": "object"
+        },
+        "LocationOut": {
+          "properties": {
+            "line": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Line"
+            },
+            "path": {
+              "title": "Path",
+              "type": "string"
+            },
+            "url": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Url"
+            }
+          },
+          "required": [
+            "path",
+            "line",
+            "url"
+          ],
+          "title": "LocationOut",
+          "type": "object"
+        },
+        "PipelineReportIn": {
+          "description": "One attempt of one Pipeline run. Validation also normalizes, so the\nstored body is canonical and processing can trust it.",
+          "properties": {
+            "branch": {
+              "maxLength": 255,
+              "minLength": 1,
+              "title": "Branch",
+              "type": "string"
+            },
+            "ci_run_attempt": {
+              "default": 1,
+              "minimum": 1.0,
+              "title": "Ci Run Attempt",
+              "type": "integer"
+            },
+            "ci_run_id": {
+              "default": "",
+              "maxLength": 255,
+              "title": "Ci Run Id",
+              "type": "string"
+            },
+            "commit_sha": {
+              "maxLength": 64,
+              "minLength": 1,
+              "title": "Commit Sha",
+              "type": "string"
+            },
+            "default_branch": {
+              "anyOf": [
+                {
+                  "maxLength": 255,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Default Branch"
+            },
+            "jobs": {
+              "items": {
+                "$ref": "#/components/schemas/JobResultIn"
+              },
+              "maxItems": 1000,
+              "minItems": 1,
+              "title": "Jobs",
+              "type": "array"
+            },
+            "pipeline": {
+              "maxLength": 512,
+              "minLength": 1,
+              "title": "Pipeline",
+              "type": "string"
+            },
+            "provider": {
+              "maxLength": 32,
+              "title": "Provider",
+              "type": "string"
+            },
+            "repo": {
+              "maxLength": 255,
+              "title": "Repo",
+              "type": "string"
+            }
+          },
+          "required": [
+            "repo",
+            "provider",
+            "pipeline",
+            "commit_sha",
+            "branch",
+            "jobs"
+          ],
+          "title": "PipelineReportIn",
+          "type": "object"
+        },
+        "ProjectDeleteOut": {
+          "properties": {
+            "deleted": {
+              "$ref": "#/components/schemas/DeletedCountsOut"
+            },
+            "github_issue_numbers": {
+              "items": {
+                "type": "integer"
+              },
+              "title": "Github Issue Numbers",
+              "type": "array"
+            },
+            "project": {
+              "title": "Project",
+              "type": "string"
+            },
+            "repo": {
+              "title": "Repo",
+              "type": "string"
+            }
+          },
+          "required": [
+            "repo",
+            "project",
+            "deleted",
+            "github_issue_numbers"
+          ],
+          "title": "ProjectDeleteOut",
+          "type": "object"
+        },
+        "ProjectOut": {
+          "properties": {
+            "name": {
+              "title": "Name",
+              "type": "string"
+            },
+            "root": {
+              "title": "Root",
+              "type": "string"
+            }
+          },
+          "required": [
+            "name",
+            "root"
+          ],
+          "title": "ProjectOut",
+          "type": "object"
+        },
+        "QuarantineIn": {
+          "properties": {
+            "expires_in_days": {
+              "anyOf": [
+                {
+                  "maximum": 365.0,
+                  "minimum": 1.0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Expires In Days"
+            },
+            "quarantined": {
+              "title": "Quarantined",
+              "type": "boolean"
+            },
+            "reason": {
+              "anyOf": [
+                {
+                  "maxLength": 500,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Reason"
+            }
+          },
+          "required": [
+            "quarantined"
+          ],
+          "title": "QuarantineIn",
+          "type": "object"
+        },
+        "QuarantineItem": {
+          "properties": {
+            "classname": {
+              "title": "Classname",
+              "type": "string"
+            },
+            "expires_at": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Expires At"
+            },
+            "file": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "File"
+            },
+            "fingerprint": {
+              "title": "Fingerprint",
+              "type": "string"
+            },
+            "line": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Line"
+            },
+            "name": {
+              "title": "Name",
+              "type": "string"
+            },
+            "quarantined_at": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Quarantined At"
+            },
+            "reason": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Reason"
+            },
+            "suite": {
+              "title": "Suite",
+              "type": "string"
+            }
+          },
+          "required": [
+            "suite",
+            "classname",
+            "name",
+            "fingerprint",
+            "file",
+            "line",
+            "quarantined_at",
+            "reason",
+            "expires_at"
+          ],
+          "title": "QuarantineItem",
+          "type": "object"
+        },
+        "ReadinessOut": {
+          "properties": {
+            "database": {
+              "title": "Database",
+              "type": "boolean"
+            },
+            "oldest_pending_age_seconds": {
+              "title": "Oldest Pending Age Seconds",
+              "type": "number"
+            },
+            "pending_reports": {
+              "title": "Pending Reports",
+              "type": "integer"
+            },
+            "processor_leader": {
+              "title": "Processor Leader",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "database",
+            "processor_leader",
+            "pending_reports",
+            "oldest_pending_age_seconds"
+          ],
+          "title": "ReadinessOut",
+          "type": "object"
+        },
+        "RepoDeleteOut": {
+          "properties": {
+            "deleted": {
+              "$ref": "#/components/schemas/DeletedCountsOut"
+            },
+            "github_issue_numbers": {
+              "items": {
+                "type": "integer"
+              },
+              "title": "Github Issue Numbers",
+              "type": "array"
+            },
+            "repo": {
+              "title": "Repo",
+              "type": "string"
+            }
+          },
+          "required": [
+            "repo",
+            "deleted",
+            "github_issue_numbers"
+          ],
+          "title": "RepoDeleteOut",
+          "type": "object"
+        },
+        "RepoOut": {
+          "properties": {
+            "name": {
+              "title": "Name",
+              "type": "string"
+            },
+            "projects": {
+              "items": {
+                "$ref": "#/components/schemas/ProjectOut"
+              },
+              "title": "Projects",
+              "type": "array"
+            }
+          },
+          "required": [
+            "name",
+            "projects"
+          ],
+          "title": "RepoOut",
+          "type": "object"
+        },
+        "ReportCountsOut": {
+          "properties": {
+            "failed": {
+              "title": "Failed",
+              "type": "integer"
+            },
+            "pending": {
+              "title": "Pending",
+              "type": "integer"
+            },
+            "processed": {
+              "title": "Processed",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "pending",
+            "processed",
+            "failed"
+          ],
+          "title": "ReportCountsOut",
+          "type": "object"
+        },
+        "ReportOut": {
+          "properties": {
+            "branch": {
+              "title": "Branch",
+              "type": "string"
+            },
+            "ci_run_id": {
+              "title": "Ci Run Id",
+              "type": "string"
+            },
+            "commit_sha": {
+              "title": "Commit Sha",
+              "type": "string"
+            },
+            "counts": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Counts"
+            },
+            "created_at": {
+              "format": "date-time",
+              "title": "Created At",
+              "type": "string"
+            },
+            "error": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Error"
+            },
+            "id": {
+              "title": "Id",
+              "type": "integer"
+            },
+            "kind": {
+              "title": "Kind",
+              "type": "string"
+            },
+            "processed_at": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Processed At"
+            },
+            "project": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Project"
+            },
+            "repo": {
+              "title": "Repo",
+              "type": "string"
+            },
+            "retry_count": {
+              "title": "Retry Count",
+              "type": "integer"
+            },
+            "run_id": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Run Id"
+            },
+            "status": {
+              "title": "Status",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "kind",
+            "repo",
+            "project",
+            "commit_sha",
+            "branch",
+            "ci_run_id",
+            "status",
+            "error",
+            "counts",
+            "run_id",
+            "retry_count",
+            "created_at",
+            "processed_at"
+          ],
+          "title": "ReportOut",
+          "type": "object"
+        },
+        "ReportSummaryOut": {
+          "properties": {
+            "failed": {
+              "title": "Failed",
+              "type": "integer"
+            },
+            "pending": {
+              "title": "Pending",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "pending",
+            "failed"
+          ],
+          "title": "ReportSummaryOut",
+          "type": "object"
+        },
+        "RunnerStatOut": {
+          "properties": {
+            "executions": {
+              "title": "Executions",
+              "type": "integer"
+            },
+            "labels": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Labels",
+              "type": "array"
+            },
+            "runner_name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Runner Name"
+            },
+            "unexplained_failures": {
+              "title": "Unexplained Failures",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "labels",
+            "runner_name",
+            "executions",
+            "unexplained_failures"
+          ],
+          "title": "RunnerStatOut",
+          "type": "object"
+        },
+        "ScorePointOut": {
+          "properties": {
+            "confirmed_flake_count": {
+              "title": "Confirmed Flake Count",
+              "type": "integer"
+            },
+            "day": {
+              "format": "date",
+              "title": "Day",
+              "type": "string"
+            },
+            "executions": {
+              "title": "Executions",
+              "type": "integer"
+            },
+            "failures": {
+              "title": "Failures",
+              "type": "integer"
+            },
+            "flakiness_score": {
+              "title": "Flakiness Score",
+              "type": "number"
+            }
+          },
+          "required": [
+            "day",
+            "flakiness_score",
+            "confirmed_flake_count",
+            "executions",
+            "failures"
+          ],
+          "title": "ScorePointOut",
+          "type": "object"
+        },
+        "SummaryOut": {
+          "properties": {
+            "category_counts": {
+              "additionalProperties": {
+                "type": "integer"
+              },
+              "title": "Category Counts",
+              "type": "object"
+            },
+            "confirmed_flaky_tests": {
+              "title": "Confirmed Flaky Tests",
+              "type": "integer"
+            },
+            "executions_30d": {
+              "title": "Executions 30D",
+              "type": "integer"
+            },
+            "failures_30d": {
+              "title": "Failures 30D",
+              "type": "integer"
+            },
+            "flake_threshold": {
+              "title": "Flake Threshold",
+              "type": "number"
+            },
+            "flaky_tests": {
+              "title": "Flaky Tests",
+              "type": "integer"
+            },
+            "new_flaky_7d": {
+              "title": "New Flaky 7D",
+              "type": "integer"
+            },
+            "suspect_tests": {
+              "title": "Suspect Tests",
+              "type": "integer"
+            },
+            "total_runs": {
+              "title": "Total Runs",
+              "type": "integer"
+            },
+            "total_tests": {
+              "title": "Total Tests",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "total_tests",
+            "flaky_tests",
+            "suspect_tests",
+            "confirmed_flaky_tests",
+            "new_flaky_7d",
+            "total_runs",
+            "executions_30d",
+            "failures_30d",
+            "flake_threshold",
+            "category_counts"
+          ],
+          "title": "SummaryOut",
+          "type": "object"
+        },
+        "TestJobLinkOut": {
+          "properties": {
+            "job_id": {
+              "title": "Job Id",
+              "type": "integer"
+            },
+            "name": {
+              "title": "Name",
+              "type": "string"
+            },
+            "pipeline": {
+              "title": "Pipeline",
+              "type": "string"
+            }
+          },
+          "required": [
+            "job_id",
+            "pipeline",
+            "name"
+          ],
+          "title": "TestJobLinkOut",
+          "type": "object"
+        },
+        "TestOut": {
+          "properties": {
+            "broken": {
+              "title": "Broken",
+              "type": "boolean"
+            },
+            "classname": {
+              "title": "Classname",
+              "type": "string"
+            },
+            "clean_streak": {
+              "title": "Clean Streak",
+              "type": "integer"
+            },
+            "confirmed_flake_count": {
+              "title": "Confirmed Flake Count",
+              "type": "integer"
+            },
+            "fail_streak": {
+              "title": "Fail Streak",
+              "type": "integer"
+            },
+            "failure_category": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Failure Category"
+            },
+            "file": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "File"
+            },
+            "fingerprint": {
+              "title": "Fingerprint",
+              "type": "string"
+            },
+            "flakiness_score": {
+              "title": "Flakiness Score",
+              "type": "number"
+            },
+            "github_issue_closed": {
+              "title": "Github Issue Closed",
+              "type": "boolean"
+            },
+            "github_issue_number": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Github Issue Number"
+            },
+            "github_issue_url": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Github Issue Url"
+            },
+            "id": {
+              "title": "Id",
+              "type": "integer"
+            },
+            "last_seen_at": {
+              "format": "date-time",
+              "title": "Last Seen At",
+              "type": "string"
+            },
+            "last_status": {
+              "title": "Last Status",
+              "type": "string"
+            },
+            "line": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Line"
+            },
+            "name": {
+              "title": "Name",
+              "type": "string"
+            },
+            "project": {
+              "title": "Project",
+              "type": "string"
+            },
+            "quarantine_expires_at": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Quarantine Expires At"
+            },
+            "quarantine_reason": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Quarantine Reason"
+            },
+            "quarantined": {
+              "title": "Quarantined",
+              "type": "boolean"
+            },
+            "quarantined_at": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Quarantined At"
+            },
+            "repo": {
+              "title": "Repo",
+              "type": "string"
+            },
+            "suite": {
+              "title": "Suite",
+              "type": "string"
+            },
+            "tier": {
+              "enum": [
+                "flaky",
+                "suspect",
+                "stable"
+              ],
+              "title": "Tier",
+              "type": "string"
+            },
+            "trend": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "worsening",
+                    "improving",
+                    "steady"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Trend"
+            }
+          },
+          "required": [
+            "id",
+            "repo",
+            "project",
+            "fingerprint",
+            "suite",
+            "classname",
+            "name",
+            "file",
+            "line",
+            "flakiness_score",
+            "tier",
+            "confirmed_flake_count",
+            "failure_category",
+            "clean_streak",
+            "fail_streak",
+            "broken",
+            "last_status",
+            "last_seen_at",
+            "quarantined",
+            "quarantined_at",
+            "quarantine_reason",
+            "quarantine_expires_at",
+            "github_issue_number",
+            "github_issue_url",
+            "github_issue_closed"
+          ],
+          "title": "TestOut",
+          "type": "object"
+        },
+        "TestPage": {
+          "properties": {
+            "items": {
+              "items": {
+                "$ref": "#/components/schemas/TestOut"
+              },
+              "title": "Items",
+              "type": "array"
+            },
+            "page": {
+              "title": "Page",
+              "type": "integer"
+            },
+            "page_size": {
+              "title": "Page Size",
+              "type": "integer"
+            },
+            "total": {
+              "title": "Total",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "items",
+            "total",
+            "page",
+            "page_size"
+          ],
+          "title": "TestPage",
+          "type": "object"
+        },
+        "ValidationError": {
+          "properties": {
+            "ctx": {
+              "title": "Context",
+              "type": "object"
+            },
+            "input": {
+              "title": "Input"
+            },
+            "loc": {
+              "items": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "integer"
+                  }
+                ]
+              },
+              "title": "Location",
+              "type": "array"
+            },
+            "msg": {
+              "title": "Message",
+              "type": "string"
+            },
+            "type": {
+              "title": "Error Type",
+              "type": "string"
+            }
+          },
+          "required": [
+            "loc",
+            "msg",
+            "type"
+          ],
+          "title": "ValidationError",
+          "type": "object"
+        }
+      }
+    },
+    "info": {
+      "title": "FlakeRadar",
+      "version": "2.0.0"
+    },
+    "openapi": "3.1.0",
+    "paths": {
+      "/api/ci-runs/{ci_run_id}/failures": {
+        "get": {
+          "operationId": "ci_run_failures_api_ci_runs__ci_run_id__failures_get",
+          "parameters": [
+            {
+              "in": "path",
+              "name": "ci_run_id",
+              "required": true,
+              "schema": {
+                "maxLength": 255,
+                "minLength": 1,
+                "title": "Ci Run Id",
+                "type": "string"
+              }
+            },
+            {
+              "in": "query",
+              "name": "repo",
+              "required": true,
+              "schema": {
+                "maxLength": 255,
+                "title": "Repo",
+                "type": "string"
+              }
+            },
+            {
+              "in": "query",
+              "name": "ci_run_attempt",
+              "required": false,
+              "schema": {
+                "anyOf": [
+                  {
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Ci Run Attempt"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/CiRunFailuresOut"
+                  }
+                }
+              },
+              "description": "Successful Response"
+            },
+            "422": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              },
+              "description": "Validation Error"
+            }
+          },
+          "summary": "Ci Run Failures"
+        }
+      },
+      "/api/health": {
+        "get": {
+          "operationId": "health_api_health_get",
+          "responses": {
+            "200": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "additionalProperties": true,
+                    "title": "Response Health Api Health Get",
+                    "type": "object"
+                  }
+                }
+              },
+              "description": "Successful Response"
+            }
+          },
+          "summary": "Health"
+        }
+      },
+      "/api/health/ready": {
+        "get": {
+          "operationId": "ready_api_health_ready_get",
+          "responses": {
+            "200": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ReadinessOut"
+                  }
+                }
+              },
+              "description": "Successful Response"
+            }
+          },
+          "summary": "Ready"
+        }
+      },
+      "/api/ingest": {
+        "post": {
+          "description": "Accept a JUnit XML report as multipart upload (`report`) or raw body.\n\nOnly validation happens here; the Report is queued and processed later.",
+          "operationId": "ingest_endpoint_api_ingest_post",
+          "parameters": [
+            {
+              "in": "query",
+              "name": "repo",
+              "required": true,
+              "schema": {
+                "maxLength": 255,
+                "title": "Repo",
+                "type": "string"
+              }
+            },
+            {
+              "in": "query",
+              "name": "project",
+              "required": false,
+              "schema": {
+                "default": "default",
+                "maxLength": 100,
+                "title": "Project",
+                "type": "string"
+              }
+            },
+            {
+              "in": "query",
+              "name": "root",
+              "required": false,
+              "schema": {
+                "anyOf": [
+                  {
+                    "maxLength": 1024,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Root"
+              }
+            },
+            {
+              "in": "query",
+              "name": "line_base",
+              "required": false,
+              "schema": {
+                "default": 1,
+                "maximum": 1,
+                "minimum": 0,
+                "title": "Line Base",
+                "type": "integer"
+              }
+            },
+            {
+              "in": "query",
+              "name": "commit_sha",
+              "required": true,
+              "schema": {
+                "maxLength": 64,
+                "minLength": 1,
+                "title": "Commit Sha",
+                "type": "string"
+              }
+            },
+            {
+              "in": "query",
+              "name": "branch",
+              "required": false,
+              "schema": {
+                "default": "main",
+                "maxLength": 255,
+                "title": "Branch",
+                "type": "string"
+              }
+            },
+            {
+              "in": "query",
+              "name": "ci_run_id",
+              "required": false,
+              "schema": {
+                "default": "",
+                "maxLength": 255,
+                "title": "Ci Run Id",
+                "type": "string"
+              }
+            },
+            {
+              "in": "query",
+              "name": "default_branch",
+              "required": false,
+              "schema": {
+                "anyOf": [
+                  {
+                    "maxLength": 255,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Default Branch"
+              }
+            },
+            {
+              "in": "query",
+              "name": "ci_job_id",
+              "required": false,
+              "schema": {
+                "anyOf": [
+                  {
+                    "maxLength": 255,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Ci Job Id"
+              }
+            },
+            {
+              "in": "query",
+              "name": "ci_run_attempt",
+              "required": false,
+              "schema": {
+                "anyOf": [
+                  {
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Ci Run Attempt"
+              }
+            },
+            {
+              "in": "query",
+              "name": "pipeline",
+              "required": false,
+              "schema": {
+                "anyOf": [
+                  {
+                    "maxLength": 512,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Pipeline"
+              }
+            },
+            {
+              "in": "header",
+              "name": "x-api-key",
+              "required": false,
+              "schema": {
+                "default": "",
+                "title": "X-Api-Key",
+                "type": "string"
+              }
+            }
+          ],
+          "responses": {
+            "202": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/IngestAccepted"
+                  }
+                }
+              },
+              "description": "Successful Response"
+            },
+            "422": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              },
+              "description": "Validation Error"
+            }
+          },
+          "summary": "Ingest Endpoint"
+        }
+      },
+      "/api/ingest/pipeline": {
+        "post": {
+          "description": "Accept one attempt of one Pipeline run as a JSON report.\n\nPipelineReportIn already validated and normalized it; this queues a\n`pending` pipeline Report that the processor turns into Job executions.",
+          "operationId": "ingest_pipeline_api_ingest_pipeline_post",
+          "parameters": [
+            {
+              "in": "header",
+              "name": "x-api-key",
+              "required": false,
+              "schema": {
+                "default": "",
+                "title": "X-Api-Key",
+                "type": "string"
+              }
+            }
+          ],
+          "requestBody": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PipelineReportIn"
+                }
+              }
+            },
+            "required": true
+          },
+          "responses": {
+            "202": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/IngestAccepted"
+                  }
+                }
+              },
+              "description": "Successful Response"
+            },
+            "422": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              },
+              "description": "Validation Error"
+            }
+          },
+          "summary": "Ingest Pipeline"
+        }
+      },
+      "/api/jobs": {
+        "get": {
+          "operationId": "list_jobs_api_jobs_get",
+          "parameters": [
+            {
+              "in": "query",
+              "name": "repo",
+              "required": false,
+              "schema": {
+                "anyOf": [
+                  {
+                    "maxLength": 255,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Repo"
+              }
+            },
+            {
+              "in": "query",
+              "name": "include_stable",
+              "required": false,
+              "schema": {
+                "default": false,
+                "title": "Include Stable",
+                "type": "boolean"
+              }
+            },
+            {
+              "in": "query",
+              "name": "sort",
+              "required": false,
+              "schema": {
+                "default": "score",
+                "enum": [
+                  "score",
+                  "last_seen",
+                  "proven"
+                ],
+                "title": "Sort",
+                "type": "string"
+              }
+            },
+            {
+              "in": "query",
+              "name": "page",
+              "required": false,
+              "schema": {
+                "default": 1,
+                "minimum": 1,
+                "title": "Page",
+                "type": "integer"
+              }
+            },
+            {
+              "in": "query",
+              "name": "page_size",
+              "required": false,
+              "schema": {
+                "default": 50,
+                "maximum": 100,
+                "minimum": 1,
+                "title": "Page Size",
+                "type": "integer"
+              }
+            },
+            {
+              "in": "query",
+              "name": "q",
+              "required": false,
+              "schema": {
+                "anyOf": [
+                  {
+                    "maxLength": 200,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Q"
+              }
+            },
+            {
+              "in": "query",
+              "name": "pipeline",
+              "required": false,
+              "schema": {
+                "anyOf": [
+                  {
+                    "maxLength": 512,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Pipeline"
+              }
+            },
+            {
+              "in": "query",
+              "name": "has_issue",
+              "required": false,
+              "schema": {
+                "anyOf": [
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Has Issue"
+              }
+            },
+            {
+              "in": "query",
+              "name": "new_within_days",
+              "required": false,
+              "schema": {
+                "anyOf": [
+                  {
+                    "maximum": 90,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "New Within Days"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/JobPage"
+                  }
+                }
+              },
+              "description": "Successful Response"
+            },
+            "422": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              },
+              "description": "Validation Error"
+            }
+          },
+          "summary": "List Jobs"
+        }
+      },
+      "/api/jobs/summary": {
+        "get": {
+          "operationId": "summary_api_jobs_summary_get",
+          "parameters": [
+            {
+              "in": "query",
+              "name": "repo",
+              "required": false,
+              "schema": {
+                "anyOf": [
+                  {
+                    "maxLength": 255,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Repo"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/JobSummaryOut"
+                  }
+                }
+              },
+              "description": "Successful Response"
+            },
+            "422": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              },
+              "description": "Validation Error"
+            }
+          },
+          "summary": "Summary"
+        }
+      },
+      "/api/jobs/{job_id}/history": {
+        "get": {
+          "operationId": "job_history_api_jobs__job_id__history_get",
+          "parameters": [
+            {
+              "in": "path",
+              "name": "job_id",
+              "required": true,
+              "schema": {
+                "title": "Job Id",
+                "type": "integer"
+              }
+            },
+            {
+              "in": "query",
+              "name": "limit",
+              "required": false,
+              "schema": {
+                "default": 60,
+                "maximum": 500,
+                "minimum": 1,
+                "title": "Limit",
+                "type": "integer"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/JobHistoryOut"
+                  }
+                }
+              },
+              "description": "Successful Response"
+            },
+            "422": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              },
+              "description": "Validation Error"
+            }
+          },
+          "summary": "Job History"
+        }
+      },
+      "/api/jobs/{job_id}/issue": {
+        "delete": {
+          "description": "Remove the Job's Issue link.",
+          "operationId": "unlink_issue_api_jobs__job_id__issue_delete",
+          "parameters": [
+            {
+              "in": "path",
+              "name": "job_id",
+              "required": true,
+              "schema": {
+                "title": "Job Id",
+                "type": "integer"
+              }
+            },
+            {
+              "in": "header",
+              "name": "x-api-key",
+              "required": false,
+              "schema": {
+                "default": "",
+                "title": "X-Api-Key",
+                "type": "string"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/JobOut"
+                  }
+                }
+              },
+              "description": "Successful Response"
+            },
+            "422": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              },
+              "description": "Validation Error"
+            }
+          },
+          "summary": "Unlink Issue"
+        },
+        "put": {
+          "description": "Link a GitHub issue filed elsewhere; FlakeRadar then files none for this Job.",
+          "operationId": "link_issue_api_jobs__job_id__issue_put",
+          "parameters": [
+            {
+              "in": "path",
+              "name": "job_id",
+              "required": true,
+              "schema": {
+                "title": "Job Id",
+                "type": "integer"
+              }
+            },
+            {
+              "in": "query",
+              "name": "replace",
+              "required": false,
+              "schema": {
+                "default": false,
+                "title": "Replace",
+                "type": "boolean"
+              }
+            },
+            {
+              "in": "header",
+              "name": "x-api-key",
+              "required": false,
+              "schema": {
+                "default": "",
+                "title": "X-Api-Key",
+                "type": "string"
+              }
+            }
+          ],
+          "requestBody": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssueLinkIn"
+                }
+              }
+            },
+            "required": true
+          },
+          "responses": {
+            "200": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/JobOut"
+                  }
+                }
+              },
+              "description": "Successful Response"
+            },
+            "422": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              },
+              "description": "Validation Error"
+            }
+          },
+          "summary": "Link Issue"
+        }
+      },
+      "/api/quarantine": {
+        "get": {
+          "description": "For test runners: the Tests to skip in one Repo + Project.",
+          "operationId": "quarantine_list_api_quarantine_get",
+          "parameters": [
+            {
+              "in": "query",
+              "name": "repo",
+              "required": true,
+              "schema": {
+                "maxLength": 255,
+                "title": "Repo",
+                "type": "string"
+              }
+            },
+            {
+              "in": "query",
+              "name": "project",
+              "required": false,
+              "schema": {
+                "default": "default",
+                "maxLength": 100,
+                "title": "Project",
+                "type": "string"
+              }
+            },
+            {
+              "in": "header",
+              "name": "x-api-key",
+              "required": false,
+              "schema": {
+                "default": "",
+                "title": "X-Api-Key",
+                "type": "string"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "items": {
+                      "$ref": "#/components/schemas/QuarantineItem"
+                    },
+                    "title": "Response Quarantine List Api Quarantine Get",
+                    "type": "array"
+                  }
+                }
+              },
+              "description": "Successful Response"
+            },
+            "422": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              },
+              "description": "Validation Error"
+            }
+          },
+          "summary": "Quarantine List"
+        }
+      },
+      "/api/reports": {
+        "get": {
+          "operationId": "list_reports_api_reports_get",
+          "parameters": [
+            {
+              "in": "query",
+              "name": "status",
+              "required": false,
+              "schema": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Status"
+              }
+            },
+            {
+              "in": "query",
+              "name": "limit",
+              "required": false,
+              "schema": {
+                "default": 50,
+                "maximum": 200,
+                "minimum": 1,
+                "title": "Limit",
+                "type": "integer"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "items": {
+                      "$ref": "#/components/schemas/ReportOut"
+                    },
+                    "title": "Response List Reports Api Reports Get",
+                    "type": "array"
+                  }
+                }
+              },
+              "description": "Successful Response"
+            },
+            "422": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              },
+              "description": "Validation Error"
+            }
+          },
+          "summary": "List Reports"
+        }
+      },
+      "/api/reports/summary": {
+        "get": {
+          "operationId": "report_summary_api_reports_summary_get",
+          "responses": {
+            "200": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ReportSummaryOut"
+                  }
+                }
+              },
+              "description": "Successful Response"
+            }
+          },
+          "summary": "Report Summary"
+        }
+      },
+      "/api/reports/{report_id}": {
+        "delete": {
+          "description": "Dismiss a failed report by deleting it. Other statuses return 409.",
+          "operationId": "delete_report_api_reports__report_id__delete",
+          "parameters": [
+            {
+              "in": "path",
+              "name": "report_id",
+              "required": true,
+              "schema": {
+                "title": "Report Id",
+                "type": "integer"
+              }
+            },
+            {
+              "in": "header",
+              "name": "x-api-key",
+              "required": false,
+              "schema": {
+                "default": "",
+                "title": "X-Api-Key",
+                "type": "string"
+              }
+            }
+          ],
+          "responses": {
+            "204": {
+              "description": "Successful Response"
+            },
+            "422": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              },
+              "description": "Validation Error"
+            }
+          },
+          "summary": "Delete Report"
+        },
+        "get": {
+          "operationId": "get_report_api_reports__report_id__get",
+          "parameters": [
+            {
+              "in": "path",
+              "name": "report_id",
+              "required": true,
+              "schema": {
+                "title": "Report Id",
+                "type": "integer"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ReportOut"
+                  }
+                }
+              },
+              "description": "Successful Response"
+            },
+            "422": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              },
+              "description": "Validation Error"
+            }
+          },
+          "summary": "Get Report"
+        }
+      },
+      "/api/reports/{report_id}/retry": {
+        "post": {
+          "operationId": "retry_report_api_reports__report_id__retry_post",
+          "parameters": [
+            {
+              "in": "path",
+              "name": "report_id",
+              "required": true,
+              "schema": {
+                "title": "Report Id",
+                "type": "integer"
+              }
+            },
+            {
+              "in": "header",
+              "name": "x-api-key",
+              "required": false,
+              "schema": {
+                "default": "",
+                "title": "X-Api-Key",
+                "type": "string"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ReportOut"
+                  }
+                }
+              },
+              "description": "Successful Response"
+            },
+            "422": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              },
+              "description": "Validation Error"
+            }
+          },
+          "summary": "Retry Report"
+        }
+      },
+      "/api/repos": {
+        "get": {
+          "operationId": "list_repos_api_repos_get",
+          "responses": {
+            "200": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "items": {
+                      "$ref": "#/components/schemas/RepoOut"
+                    },
+                    "title": "Response List Repos Api Repos Get",
+                    "type": "array"
+                  }
+                }
+              },
+              "description": "Successful Response"
+            }
+          },
+          "summary": "List Repos"
+        }
+      },
+      "/api/repos/{owner}/{name}": {
+        "delete": {
+          "description": "Delete a Repo and, by cascade, everything in it.",
+          "operationId": "delete_repo_api_repos__owner___name__delete",
+          "parameters": [
+            {
+              "in": "path",
+              "name": "owner",
+              "required": true,
+              "schema": {
+                "title": "Owner",
+                "type": "string"
+              }
+            },
+            {
+              "in": "path",
+              "name": "name",
+              "required": true,
+              "schema": {
+                "title": "Name",
+                "type": "string"
+              }
+            },
+            {
+              "in": "header",
+              "name": "x-api-key",
+              "required": false,
+              "schema": {
+                "default": "",
+                "title": "X-Api-Key",
+                "type": "string"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/RepoDeleteOut"
+                  }
+                }
+              },
+              "description": "Successful Response"
+            },
+            "422": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              },
+              "description": "Validation Error"
+            }
+          },
+          "summary": "Delete Repo"
+        }
+      },
+      "/api/repos/{owner}/{name}/projects/{project}": {
+        "delete": {
+          "description": "Delete one Project of a Repo and, by cascade, its Tests, Runs, Executions and Reports.",
+          "operationId": "delete_project_api_repos__owner___name__projects__project__delete",
+          "parameters": [
+            {
+              "in": "path",
+              "name": "owner",
+              "required": true,
+              "schema": {
+                "title": "Owner",
+                "type": "string"
+              }
+            },
+            {
+              "in": "path",
+              "name": "name",
+              "required": true,
+              "schema": {
+                "title": "Name",
+                "type": "string"
+              }
+            },
+            {
+              "in": "path",
+              "name": "project",
+              "required": true,
+              "schema": {
+                "title": "Project",
+                "type": "string"
+              }
+            },
+            {
+              "in": "header",
+              "name": "x-api-key",
+              "required": false,
+              "schema": {
+                "default": "",
+                "title": "X-Api-Key",
+                "type": "string"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ProjectDeleteOut"
+                  }
+                }
+              },
+              "description": "Successful Response"
+            },
+            "422": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              },
+              "description": "Validation Error"
+            }
+          },
+          "summary": "Delete Project"
+        }
+      },
+      "/api/summary": {
+        "get": {
+          "operationId": "summary_api_summary_get",
+          "parameters": [
+            {
+              "in": "query",
+              "name": "repo",
+              "required": false,
+              "schema": {
+                "anyOf": [
+                  {
+                    "maxLength": 255,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Repo"
+              }
+            },
+            {
+              "in": "query",
+              "name": "project",
+              "required": false,
+              "schema": {
+                "anyOf": [
+                  {
+                    "maxLength": 100,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Project"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/SummaryOut"
+                  }
+                }
+              },
+              "description": "Successful Response"
+            },
+            "422": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              },
+              "description": "Validation Error"
+            }
+          },
+          "summary": "Summary"
+        }
+      },
+      "/api/tests": {
+        "get": {
+          "operationId": "list_tests_api_tests_get",
+          "parameters": [
+            {
+              "in": "query",
+              "name": "include_stable",
+              "required": false,
+              "schema": {
+                "default": false,
+                "title": "Include Stable",
+                "type": "boolean"
+              }
+            },
+            {
+              "in": "query",
+              "name": "sort",
+              "required": false,
+              "schema": {
+                "default": "score",
+                "enum": [
+                  "score",
+                  "last_seen",
+                  "proven"
+                ],
+                "title": "Sort",
+                "type": "string"
+              }
+            },
+            {
+              "in": "query",
+              "name": "page",
+              "required": false,
+              "schema": {
+                "default": 1,
+                "minimum": 1,
+                "title": "Page",
+                "type": "integer"
+              }
+            },
+            {
+              "in": "query",
+              "name": "page_size",
+              "required": false,
+              "schema": {
+                "default": 50,
+                "maximum": 100,
+                "minimum": 1,
+                "title": "Page Size",
+                "type": "integer"
+              }
+            },
+            {
+              "in": "query",
+              "name": "file",
+              "required": false,
+              "schema": {
+                "anyOf": [
+                  {
+                    "maxLength": 1024,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "File"
+              }
+            },
+            {
+              "in": "query",
+              "name": "category",
+              "required": false,
+              "schema": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "network",
+                      "environment",
+                      "timing",
+                      "assertion",
+                      "other"
+                    ],
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Category"
+              }
+            },
+            {
+              "in": "query",
+              "name": "q",
+              "required": false,
+              "schema": {
+                "anyOf": [
+                  {
+                    "maxLength": 200,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Q"
+              }
+            },
+            {
+              "in": "query",
+              "name": "quarantined",
+              "required": false,
+              "schema": {
+                "anyOf": [
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Quarantined"
+              }
+            },
+            {
+              "in": "query",
+              "name": "has_issue",
+              "required": false,
+              "schema": {
+                "anyOf": [
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Has Issue"
+              }
+            },
+            {
+              "in": "query",
+              "name": "new_within_days",
+              "required": false,
+              "schema": {
+                "anyOf": [
+                  {
+                    "maximum": 90,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "New Within Days"
+              }
+            },
+            {
+              "in": "query",
+              "name": "broken",
+              "required": false,
+              "schema": {
+                "default": false,
+                "title": "Broken",
+                "type": "boolean"
+              }
+            },
+            {
+              "in": "query",
+              "name": "repo",
+              "required": false,
+              "schema": {
+                "anyOf": [
+                  {
+                    "maxLength": 255,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Repo"
+              }
+            },
+            {
+              "in": "query",
+              "name": "project",
+              "required": false,
+              "schema": {
+                "anyOf": [
+                  {
+                    "maxLength": 100,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Project"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/TestPage"
+                  }
+                }
+              },
+              "description": "Successful Response"
+            },
+            "422": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              },
+              "description": "Validation Error"
+            }
+          },
+          "summary": "List Tests"
+        }
+      },
+      "/api/tests/{test_id}/history": {
+        "get": {
+          "operationId": "test_history_api_tests__test_id__history_get",
+          "parameters": [
+            {
+              "in": "path",
+              "name": "test_id",
+              "required": true,
+              "schema": {
+                "title": "Test Id",
+                "type": "integer"
+              }
+            },
+            {
+              "in": "query",
+              "name": "limit",
+              "required": false,
+              "schema": {
+                "default": 60,
+                "maximum": 500,
+                "minimum": 1,
+                "title": "Limit",
+                "type": "integer"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HistoryOut"
+                  }
+                }
+              },
+              "description": "Successful Response"
+            },
+            "422": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              },
+              "description": "Validation Error"
+            }
+          },
+          "summary": "Test History"
+        }
+      },
+      "/api/tests/{test_id}/issue": {
+        "delete": {
+          "description": "Remove the Test's Issue link.",
+          "operationId": "unlink_issue_api_tests__test_id__issue_delete",
+          "parameters": [
+            {
+              "in": "path",
+              "name": "test_id",
+              "required": true,
+              "schema": {
+                "title": "Test Id",
+                "type": "integer"
+              }
+            },
+            {
+              "in": "header",
+              "name": "x-api-key",
+              "required": false,
+              "schema": {
+                "default": "",
+                "title": "X-Api-Key",
+                "type": "string"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/TestOut"
+                  }
+                }
+              },
+              "description": "Successful Response"
+            },
+            "422": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              },
+              "description": "Validation Error"
+            }
+          },
+          "summary": "Unlink Issue"
+        },
+        "put": {
+          "description": "Link a GitHub issue filed elsewhere; FlakeRadar then files none for this Test.",
+          "operationId": "link_issue_api_tests__test_id__issue_put",
+          "parameters": [
+            {
+              "in": "path",
+              "name": "test_id",
+              "required": true,
+              "schema": {
+                "title": "Test Id",
+                "type": "integer"
+              }
+            },
+            {
+              "in": "query",
+              "name": "replace",
+              "required": false,
+              "schema": {
+                "default": false,
+                "title": "Replace",
+                "type": "boolean"
+              }
+            },
+            {
+              "in": "header",
+              "name": "x-api-key",
+              "required": false,
+              "schema": {
+                "default": "",
+                "title": "X-Api-Key",
+                "type": "string"
+              }
+            }
+          ],
+          "requestBody": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssueLinkIn"
+                }
+              }
+            },
+            "required": true
+          },
+          "responses": {
+            "200": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/TestOut"
+                  }
+                }
+              },
+              "description": "Successful Response"
+            },
+            "422": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              },
+              "description": "Validation Error"
+            }
+          },
+          "summary": "Link Issue"
+        }
+      },
+      "/api/tests/{test_id}/quarantine": {
+        "post": {
+          "operationId": "set_quarantine_api_tests__test_id__quarantine_post",
+          "parameters": [
+            {
+              "in": "path",
+              "name": "test_id",
+              "required": true,
+              "schema": {
+                "title": "Test Id",
+                "type": "integer"
+              }
+            }
+          ],
+          "requestBody": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QuarantineIn"
+                }
+              }
+            },
+            "required": true
+          },
+          "responses": {
+            "200": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/TestOut"
+                  }
+                }
+              },
+              "description": "Successful Response"
+            },
+            "422": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              },
+              "description": "Validation Error"
+            }
+          },
+          "summary": "Set Quarantine"
+        }
+      },
+      "/metrics": {
+        "get": {
+          "operationId": "metrics_metrics_get",
+          "responses": {
+            "200": {
+              "content": {
+                "application/json": {
+                  "schema": {}
+                }
+              },
+              "description": "Successful Response"
+            }
+          },
+          "summary": "Metrics"
+        }
+      }
+    }
+  },
+  "content-type": "application/json",
+  "request": {
+    "method": "GET",
+    "path": "/openapi.json",
+    "query": {}
+  },
+  "status": 200,
+  "step": 9
+}

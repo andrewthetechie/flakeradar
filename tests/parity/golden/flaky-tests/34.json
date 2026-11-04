@@ -1,0 +1,48 @@
+{
+  "body": {
+    "items": [
+      {
+        "broken": true,
+        "classname": "tests.test_cart",
+        "clean_streak": 0,
+        "confirmed_flake_count": 0,
+        "fail_streak": 8,
+        "failure_category": "timing",
+        "file": "tests/test_cart.py",
+        "fingerprint": "0986a9a1dffafd3e068826719fc268f1ae9cd84a",
+        "flakiness_score": 0.0,
+        "github_issue_closed": false,
+        "github_issue_number": null,
+        "github_issue_url": null,
+        "id": 4,
+        "last_seen_at": "<timestamp>",
+        "last_status": "failed",
+        "line": 66,
+        "name": "test_broken",
+        "project": "default",
+        "quarantine_expires_at": null,
+        "quarantine_reason": null,
+        "quarantined": false,
+        "quarantined_at": null,
+        "repo": "o/r",
+        "suite": "unit",
+        "tier": "stable",
+        "trend": null
+      }
+    ],
+    "page": 1,
+    "page_size": 50,
+    "total": 1
+  },
+  "content-type": "application/json",
+  "request": {
+    "method": "GET",
+    "path": "/api/tests",
+    "query": {
+      "broken": "true",
+      "repo": "o/r"
+    }
+  },
+  "status": 200,
+  "step": 34
+}

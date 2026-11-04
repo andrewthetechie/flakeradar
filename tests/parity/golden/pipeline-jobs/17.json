@@ -1,0 +1,23 @@
+{
+  "body": {
+    "confirmed_flaky_jobs": 0,
+    "flake_threshold": 0.3,
+    "flaky_jobs": 1,
+    "job_executions_30d": 20,
+    "job_failures_30d": 13,
+    "new_flaky_7d": 1,
+    "pipelines": [
+      ".github/workflows/ci.yml"
+    ],
+    "suspect_jobs": 0,
+    "total_jobs": 4
+  },
+  "content-type": "application/json",
+  "request": {
+    "method": "GET",
+    "path": "/api/jobs/summary",
+    "query": {}
+  },
+  "status": 200,
+  "step": 17
+}

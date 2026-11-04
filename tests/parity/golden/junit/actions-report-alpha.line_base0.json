@@ -1,0 +1,32 @@
+{
+  "cases": [
+    {
+      "category": null,
+      "classname": "alpha.test_checkout",
+      "details": "",
+      "duration": 0.101,
+      "file": null,
+      "fingerprint": "b2974f8ed74ff7494160dd614bbfe89d54ff4258",
+      "line": null,
+      "message": "",
+      "name": "test_cart_total_sums_line_items",
+      "status": "passed",
+      "suite": "alpha-suite"
+    },
+    {
+      "category": "assertion",
+      "classname": "alpha.test_checkout",
+      "details": "Traceback (most recent call last):\n  File \"actions/report/test/fixture-alpha.xml\", line 1, in test_refund_requires_an_order\nAssertionError: assert 1 == 2",
+      "duration": 0.511,
+      "file": null,
+      "fingerprint": "d188d639202dff825fc7ff2e9746cdd0942ee72d",
+      "line": null,
+      "message": "assert 1 == 2",
+      "name": "test_refund_requires_an_order",
+      "status": "failed",
+      "suite": "alpha-suite"
+    }
+  ],
+  "line_base": 0,
+  "source": "junit/actions-report-alpha.xml"
+}

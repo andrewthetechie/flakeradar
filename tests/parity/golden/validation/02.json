@@ -1,0 +1,28 @@
+{
+  "body": {
+    "detail": [
+      {
+        "ctx": {
+          "le": 500
+        },
+        "input": "501",
+        "loc": [
+          "query",
+          "limit"
+        ],
+        "msg": "Input should be less than or equal to 500",
+        "type": "less_than_equal"
+      }
+    ]
+  },
+  "content-type": "application/json",
+  "request": {
+    "method": "GET",
+    "path": "/api/tests/1/history",
+    "query": {
+      "limit": "501"
+    }
+  },
+  "status": 422,
+  "step": 2
+}

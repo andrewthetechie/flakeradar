@@ -1,0 +1,15 @@
+{
+  "body": {
+    "detail": "repo must look like 'owner/name', got 'not a repo'"
+  },
+  "content-type": "application/json",
+  "request": {
+    "method": "GET",
+    "path": "/api/ci-runs/777/failures",
+    "query": {
+      "repo": "not a repo"
+    }
+  },
+  "status": 422,
+  "step": 12
+}

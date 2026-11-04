@@ -1,0 +1,17 @@
+{
+  "result": {
+    "_meta": null,
+    "content": [
+      {
+        "_meta": null,
+        "annotations": null,
+        "text": "Pass job_id, or repo + name (+ pipeline when ambiguous).",
+        "type": "text"
+      }
+    ],
+    "isError": true,
+    "resultType": "complete",
+    "structuredContent": null
+  },
+  "step": 32
+}

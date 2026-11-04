@@ -1,0 +1,15 @@
+{
+  "body": {
+    "detail": "Not Found"
+  },
+  "content-type": "application/json",
+  "request": {
+    "method": "GET",
+    "path": "/api/ci-runs//failures",
+    "query": {
+      "repo": "o/r"
+    }
+  },
+  "status": 404,
+  "step": 7
+}

@@ -1,0 +1,26 @@
+{
+  "body": {
+    "detail": [
+      {
+        "ctx": {
+          "le": 365
+        },
+        "input": 366,
+        "loc": [
+          "body",
+          "expires_in_days"
+        ],
+        "msg": "Input should be less than or equal to 365",
+        "type": "less_than_equal"
+      }
+    ]
+  },
+  "content-type": "application/json",
+  "request": {
+    "method": "POST",
+    "path": "/api/tests/1/quarantine",
+    "query": {}
+  },
+  "status": 422,
+  "step": 18
+}

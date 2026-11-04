@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="jest tests" tests="4" failures="2" errors="0" time="2.512">
+  <testsuite name="Cart" errors="0" failures="2" skipped="1" timestamp="2026-10-20T11:15:44" time="2.512" tests="4">
+    <testcase classname="src/cart.test.ts Cart adds items" name="adds items" time="0.042" file="src/cart.test.ts">
+    </testcase>
+    <testcase classname="src/cart.test.ts Cart rounds money" name="rounds money" time="0.017" file="src/cart.test.ts">
+    </testcase>
+    <testcase classname="src/cart.test.ts Cart rejects a negative quantity" name="rejects a negative quantity" time="0.063" file="src/cart.test.ts">
+      <failure>expect(received).toBe(expected) // Object.is equality
+
+Expected: 0
+Received: -1</failure>
+      <system-out>console.log
+    cart total computed</system-out>
+    </testcase>
+    <testcase classname="src/cart.test.ts Cart skips on CI" name="skips on CI" time="0.001" file="src/cart.test.ts">
+      <skipped/>
+    </testcase>
+    <testcase classname="src/order.test.ts Order fetches the profile" name="fetches the profile" time="1.802" file="src/order.test.ts">
+      <failure>TypeError: fetch failed
+
+  at Object.&lt;anonymous&gt; (src/order.test.ts:22:11)</failure>
+      <system-err>node:internal/process/promises: warning</system-err>
+    </testcase>
+  </testsuite>
+</testsuites>

@@ -1,0 +1,13 @@
+{
+  "body": {
+    "detail": "Report not found"
+  },
+  "content-type": "application/json",
+  "request": {
+    "method": "DELETE",
+    "path": "/api/reports/999",
+    "query": {}
+  },
+  "status": 404,
+  "step": 26
+}

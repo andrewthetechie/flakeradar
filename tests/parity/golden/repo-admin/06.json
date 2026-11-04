@@ -1,0 +1,13 @@
+{
+  "body": {
+    "detail": "Project not found"
+  },
+  "content-type": "application/json",
+  "request": {
+    "method": "DELETE",
+    "path": "/api/repos/a/b/projects/nope",
+    "query": {}
+  },
+  "status": 404,
+  "step": 6
+}

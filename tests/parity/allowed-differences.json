@@ -1,0 +1,75 @@
+[
+  {
+    "id": "unparsable-testcase-time",
+    "differenceRow": "A `<testcase time>` attribute that is not a number",
+    "reason": "Python crashes with an unhandled junitparser ValueError (HTTP 500); Rust validates the attribute and answers 400, as the user approved on 2026-11-04. The allowance covers exactly these fields in these three goldens and nothing else.",
+    "allows": [
+      {
+        "file": "golden/junit/invalid-time.line_base1.json",
+        "field": "error"
+      },
+      {
+        "file": "golden/junit/invalid-time.line_base0.json",
+        "field": "error"
+      },
+      {
+        "file": "golden/ingest-junit/07.json",
+        "field": "status",
+        "pythonValue": 500,
+        "rustValue": 400
+      }
+    ]
+  },
+  {
+    "id": "junit-parse-error-suffix",
+    "differenceRow": "The suffix of a JUnit parse-error detail",
+    "reason": "The prefix \"Not a valid JUnit XML report: \" and the 422 status stay identical; the parser's own wording after the prefix cannot be reproduced by roxmltree. Each allowance names one field of one golden and requires the prefix.",
+    "allows": [
+      {
+        "file": "golden/junit/bad-empty.line_base0.json",
+        "field": "error",
+        "match": {"kind": "prefix", "value": "Not a valid JUnit XML report: "}
+      },
+      {
+        "file": "golden/junit/bad-empty.line_base1.json",
+        "field": "error",
+        "match": {"kind": "prefix", "value": "Not a valid JUnit XML report: "}
+      },
+      {
+        "file": "golden/junit/bad-not-xml.line_base0.json",
+        "field": "error",
+        "match": {"kind": "prefix", "value": "Not a valid JUnit XML report: "}
+      },
+      {
+        "file": "golden/junit/bad-not-xml.line_base1.json",
+        "field": "error",
+        "match": {"kind": "prefix", "value": "Not a valid JUnit XML report: "}
+      },
+      {
+        "file": "golden/junit/bad-external-entity.line_base0.json",
+        "field": "error",
+        "match": {"kind": "prefix", "value": "Not a valid JUnit XML report: "}
+      },
+      {
+        "file": "golden/junit/bad-external-entity.line_base1.json",
+        "field": "error",
+        "match": {"kind": "prefix", "value": "Not a valid JUnit XML report: "}
+      },
+      {
+        "file": "golden/junit/bad-nested-entities.line_base0.json",
+        "field": "error",
+        "match": {"kind": "prefix", "value": "Not a valid JUnit XML report: "}
+      },
+      {
+        "file": "golden/junit/bad-nested-entities.line_base1.json",
+        "field": "error",
+        "match": {"kind": "prefix", "value": "Not a valid JUnit XML report: "}
+      },
+      {
+        "file": "golden/ingest-junit/05.json",
+        "field": "body.detail",
+        "match": {"kind": "prefix", "value": "Not a valid JUnit XML report: "}
+      }
+    ]
+  }
+]

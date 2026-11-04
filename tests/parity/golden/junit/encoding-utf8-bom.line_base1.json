@@ -1,0 +1,19 @@
+{
+  "cases": [
+    {
+      "category": "other",
+      "classname": "tests.test_encoding",
+      "details": "élément",
+      "duration": 0.01,
+      "file": null,
+      "fingerprint": "bc428ca5ed9f26579d5d0903bf69a37ea1054a07",
+      "line": null,
+      "message": "mémo 你好",
+      "name": "test_bom_café",
+      "status": "failed",
+      "suite": "bom"
+    }
+  ],
+  "line_base": 1,
+  "source": "junit/encoding-utf8-bom.xml"
+}

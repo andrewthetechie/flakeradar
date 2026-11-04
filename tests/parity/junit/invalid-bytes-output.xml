@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="invalid-bytes" tests="1">
+  <testcase classname="tests.test_encoding" name="test_binary_output" time="0.01">
+    <failure message="binary junk in the log">Traceback</failure>
+    <system-out>before ÿşÃ( after</system-out>
+  </testcase>
+</testsuite>

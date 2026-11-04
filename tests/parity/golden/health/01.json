@@ -1,0 +1,13 @@
+{
+  "body": {
+    "status": "ok"
+  },
+  "content-type": "application/json",
+  "request": {
+    "method": "GET",
+    "path": "/api/health",
+    "query": {}
+  },
+  "status": 200,
+  "step": 1
+}

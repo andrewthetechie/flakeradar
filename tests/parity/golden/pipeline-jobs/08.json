@@ -1,0 +1,100 @@
+{
+  "body": {
+    "ci_run_attempt": 1,
+    "ci_run_id": "777",
+    "failed_jobs": [
+      {
+        "ci_job_id": "12",
+        "clean_streak": 0,
+        "confirmed_flake_count": 0,
+        "flakiness_score": 0.0,
+        "github_issue_closed": false,
+        "github_issue_number": null,
+        "github_issue_url": null,
+        "job_id": 2,
+        "name": "gate",
+        "outcome": "explained",
+        "pipeline": ".github/workflows/ci.yml",
+        "summary": true,
+        "tier": "stable",
+        "url": ""
+      },
+      {
+        "ci_job_id": "11",
+        "clean_streak": 0,
+        "confirmed_flake_count": 0,
+        "flakiness_score": 0.6667,
+        "github_issue_closed": false,
+        "github_issue_number": null,
+        "github_issue_url": null,
+        "job_id": 3,
+        "name": "lint",
+        "outcome": "unexplained",
+        "pipeline": ".github/workflows/ci.yml",
+        "summary": false,
+        "tier": "flaky",
+        "url": ""
+      },
+      {
+        "ci_job_id": "10",
+        "clean_streak": 0,
+        "confirmed_flake_count": 0,
+        "flakiness_score": 0.0,
+        "github_issue_closed": false,
+        "github_issue_number": null,
+        "github_issue_url": null,
+        "job_id": 4,
+        "name": "unit",
+        "outcome": "explained",
+        "pipeline": ".github/workflows/ci.yml",
+        "summary": false,
+        "tier": "stable",
+        "url": "https://github.com/o/r/actions/runs/777/job/10"
+      }
+    ],
+    "failures": [
+      {
+        "broken": false,
+        "ci_job_id": "10",
+        "classname": "tests.test_cart",
+        "clean_streak": 0,
+        "confirmed_flake_count": 0,
+        "fail_streak": 1,
+        "failed_attempts": 1,
+        "failure_category": "assertion",
+        "flakiness_score": 0.0,
+        "github_issue_closed": false,
+        "github_issue_number": null,
+        "github_issue_url": null,
+        "message": "assert 1 == 2",
+        "name": "test_total",
+        "project": "default",
+        "quarantined": false,
+        "run_id": 1,
+        "status": "failed",
+        "suite": "unit",
+        "test_id": 1,
+        "tier": "stable"
+      }
+    ],
+    "flake_threshold": 0.3,
+    "repo": "o/r",
+    "reports": {
+      "failed": 0,
+      "pending": 0,
+      "processed": 2
+    },
+    "total_failures": 1,
+    "truncated": false
+  },
+  "content-type": "application/json",
+  "request": {
+    "method": "GET",
+    "path": "/api/ci-runs/777/failures",
+    "query": {
+      "repo": "o/r"
+    }
+  },
+  "status": 200,
+  "step": 8
+}

@@ -1,0 +1,58 @@
+{
+  "cases": [
+    {
+      "category": "assertion",
+      "classname": "com.example.CartTest",
+      "details": "java.lang.AssertionError: expected: <3> but was: <4>\n\tat com.example.CartTest.addsTwoItems(CartTest.java:24)",
+      "duration": 0.032,
+      "file": null,
+      "fingerprint": "b7465cf4c770f7c5794aad2ea9264c633a5cfe90",
+      "line": null,
+      "message": "expected: <3> but was: <4>",
+      "name": "addsTwoItems",
+      "status": "failed",
+      "suite": "com.example.CartTest"
+    },
+    {
+      "category": "assertion",
+      "classname": "com.example.CartTest",
+      "details": "java.lang.AssertionError: first try: expected: <3> but was: <5>\n\tat com.example.CartTest.addsTwoItems(CartTest.java:24)\n\n--- stdout ---\nrerun stdout line\n\n--- stderr ---\nrerun stderr line",
+      "duration": 0.021,
+      "file": null,
+      "fingerprint": "b7465cf4c770f7c5794aad2ea9264c633a5cfe90",
+      "line": null,
+      "message": "first try: expected: <3> but was: <5>",
+      "name": "addsTwoItems",
+      "status": "failed",
+      "suite": "com.example.CartTest"
+    },
+    {
+      "category": "other",
+      "classname": "com.example.CartTest",
+      "details": "java.lang.IllegalStateException: cart is closed\n\tat com.example.CartTest.addsTwoItems(CartTest.java:25)",
+      "duration": 0.0,
+      "file": null,
+      "fingerprint": "b7465cf4c770f7c5794aad2ea9264c633a5cfe90",
+      "line": null,
+      "message": "java.lang.IllegalStateException: cart is closed",
+      "name": "addsTwoItems",
+      "status": "error",
+      "suite": "com.example.CartTest"
+    },
+    {
+      "category": null,
+      "classname": "com.example.CartTest",
+      "details": "",
+      "duration": 0.012,
+      "file": null,
+      "fingerprint": "9e890f26b6b54597168c3a47c4b0a9a72d264de4",
+      "line": null,
+      "message": "",
+      "name": "removesAnItem",
+      "status": "passed",
+      "suite": "com.example.CartTest"
+    }
+  ],
+  "line_base": 0,
+  "source": "junit/surefire-rerun.xml"
+}

@@ -1,0 +1,11 @@
+{
+  "body": "",
+  "location": "/metrics",
+  "request": {
+    "method": "GET",
+    "path": "/metrics/",
+    "query": {}
+  },
+  "status": 307,
+  "step": 6
+}

@@ -1,0 +1,19 @@
+{
+  "cases": [
+    {
+      "category": null,
+      "classname": "bare",
+      "details": "",
+      "duration": 0.5,
+      "file": null,
+      "fingerprint": "274480e0dda3cb97af291ab8d362cdeded683f7d",
+      "line": null,
+      "message": "",
+      "name": "test_only_case",
+      "status": "passed",
+      "suite": ""
+    }
+  ],
+  "line_base": 0,
+  "source": "junit/bare-testsuite.xml"
+}

@@ -1,0 +1,13 @@
+{
+  "body": {
+    "detail": "Test already links issue #12; pass replace=true to replace it"
+  },
+  "content-type": "application/json",
+  "request": {
+    "method": "PUT",
+    "path": "/api/tests/1/issue",
+    "query": {}
+  },
+  "status": 409,
+  "step": 8
+}

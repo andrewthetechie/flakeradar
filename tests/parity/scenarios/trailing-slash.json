@@ -1,0 +1,14 @@
+{
+  "name": "trailing-slash",
+  "steps": [
+    {"http": {"method": "GET", "path": "/api/tests/"}},
+    {"http": {"method": "GET", "path": "/api/health/"}},
+    {"http": {"method": "GET", "path": "/api/reports/"}},
+    {"http": {"method": "GET", "path": "/api/jobs/summary/"}},
+    {"http": {"method": "GET", "path": "/api/repos/"}},
+    {"http": {"method": "GET", "path": "/metrics/"}},
+    {"http": {"method": "POST", "path": "/mcp", "headers": {"Content-Type": "application/json"}, "body_json": {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "probe", "version": "0"}}}}},
+    {"http": {"method": "POST", "path": "/mcp/", "headers": {"Content-Type": "application/json"}, "body_json": {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "probe", "version": "0"}}}}},
+    {"http": {"method": "GET", "path": "/openapi.json"}}
+  ]
+}

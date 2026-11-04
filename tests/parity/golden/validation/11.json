@@ -1,0 +1,26 @@
+{
+  "body": {
+    "detail": [
+      {
+        "input": "sure",
+        "loc": [
+          "query",
+          "broken"
+        ],
+        "msg": "Input should be a valid boolean, unable to interpret input",
+        "type": "bool_parsing"
+      }
+    ]
+  },
+  "content-type": "application/json",
+  "request": {
+    "method": "GET",
+    "path": "/api/tests",
+    "query": {
+      "broken": "sure",
+      "repo": "o/r"
+    }
+  },
+  "status": 422,
+  "step": 11
+}

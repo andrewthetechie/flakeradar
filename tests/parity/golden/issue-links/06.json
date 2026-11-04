@@ -1,0 +1,38 @@
+{
+  "body": {
+    "broken": false,
+    "classname": "tests.test_cart",
+    "clean_streak": 0,
+    "confirmed_flake_count": 0,
+    "fail_streak": 1,
+    "failure_category": "assertion",
+    "file": "tests/test_cart.py",
+    "fingerprint": "25cdd150e8f4335ddfb17485d80e2defa6b56643",
+    "flakiness_score": 0.0,
+    "github_issue_closed": false,
+    "github_issue_number": 12,
+    "github_issue_url": "https://github.com/o/r/issues/12",
+    "id": 1,
+    "last_seen_at": "<timestamp>",
+    "last_status": "failed",
+    "line": 12,
+    "name": "test_total",
+    "project": "default",
+    "quarantine_expires_at": null,
+    "quarantine_reason": null,
+    "quarantined": false,
+    "quarantined_at": null,
+    "repo": "o/r",
+    "suite": "unit",
+    "tier": "stable",
+    "trend": null
+  },
+  "content-type": "application/json",
+  "request": {
+    "method": "PUT",
+    "path": "/api/tests/1/issue",
+    "query": {}
+  },
+  "status": 200,
+  "step": 6
+}

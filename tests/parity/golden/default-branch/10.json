@@ -1,0 +1,94 @@
+{
+  "body": {
+    "executions": [
+      {
+        "attempt": 0,
+        "branch": "main",
+        "ci_run_id": "",
+        "commit_sha": "d3",
+        "created_at": "<timestamp>",
+        "details": "",
+        "duration": 0.01,
+        "failure_category": null,
+        "id": 3,
+        "message": "",
+        "status": "passed"
+      },
+      {
+        "attempt": 0,
+        "branch": "feature",
+        "ci_run_id": "",
+        "commit_sha": "d2",
+        "created_at": "<timestamp>",
+        "details": "",
+        "duration": 0.01,
+        "failure_category": null,
+        "id": 2,
+        "message": "",
+        "status": "passed"
+      },
+      {
+        "attempt": 0,
+        "branch": "feature",
+        "ci_run_id": "",
+        "commit_sha": "d1",
+        "created_at": "<timestamp>",
+        "details": "AssertionError: assert 1 == 2",
+        "duration": 0.01,
+        "failure_category": "assertion",
+        "id": 1,
+        "message": "assert 1 == 2",
+        "status": "failed"
+      }
+    ],
+    "jobs": [],
+    "last_failing_branch": "feature",
+    "last_failing_sha": "d1",
+    "location": null,
+    "score_history": [
+      {
+        "confirmed_flake_count": 0,
+        "day": "<date>",
+        "executions": 3,
+        "failures": 1,
+        "flakiness_score": 0.0
+      }
+    ],
+    "test": {
+      "broken": false,
+      "classname": "tests.test_cart",
+      "clean_streak": 1,
+      "confirmed_flake_count": 0,
+      "fail_streak": 0,
+      "failure_category": "assertion",
+      "file": null,
+      "fingerprint": "25cdd150e8f4335ddfb17485d80e2defa6b56643",
+      "flakiness_score": 0.0,
+      "github_issue_closed": false,
+      "github_issue_number": null,
+      "github_issue_url": null,
+      "id": 1,
+      "last_seen_at": "<timestamp>",
+      "last_status": "passed",
+      "line": null,
+      "name": "test_total",
+      "project": "default",
+      "quarantine_expires_at": null,
+      "quarantine_reason": null,
+      "quarantined": false,
+      "quarantined_at": null,
+      "repo": "o/r",
+      "suite": "unit",
+      "tier": "stable",
+      "trend": null
+    }
+  },
+  "content-type": "application/json",
+  "request": {
+    "method": "GET",
+    "path": "/api/tests/1/history",
+    "query": {}
+  },
+  "status": 200,
+  "step": 10
+}

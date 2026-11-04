@@ -1,0 +1,45 @@
+{
+  "cases": [
+    {
+      "category": "other",
+      "classname": "tests.test_results",
+      "details": "first: failure",
+      "duration": 0.01,
+      "file": null,
+      "fingerprint": "5ccdaa4945594170ec3226a7ffae3c2eaae11b0d",
+      "line": null,
+      "message": "the first result wins",
+      "name": "test_failure_then_error",
+      "status": "failed",
+      "suite": "several-results"
+    },
+    {
+      "category": null,
+      "classname": "tests.test_results",
+      "details": "",
+      "duration": 0.02,
+      "file": null,
+      "fingerprint": "48a5f289430e31be4f632ab4ecf66cd1f23eae8b",
+      "line": null,
+      "message": "the first result wins",
+      "name": "test_skipped_then_failure",
+      "status": "skipped",
+      "suite": "several-results"
+    },
+    {
+      "category": null,
+      "classname": "tests.test_results",
+      "details": "",
+      "duration": 0.03,
+      "file": null,
+      "fingerprint": "787c5e0010c25e436620885c9d39abca3dd36e5e",
+      "line": null,
+      "message": "",
+      "name": "test_passed_with_no_result",
+      "status": "passed",
+      "suite": "several-results"
+    }
+  ],
+  "line_base": 0,
+  "source": "junit/several-results-one-case.xml"
+}

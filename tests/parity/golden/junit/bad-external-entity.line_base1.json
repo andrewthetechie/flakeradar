@@ -1,0 +1,5 @@
+{
+  "error": "Not a valid JUnit XML report: undefined entity &secret;: line 3, column 101",
+  "line_base": 1,
+  "source": "junit/bad-external-entity.xml"
+}

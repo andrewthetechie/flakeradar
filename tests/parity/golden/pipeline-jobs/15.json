@@ -1,0 +1,35 @@
+{
+  "body": {
+    "items": [
+      {
+        "clean_streak": 0,
+        "confirmed_flake_count": 0,
+        "flakiness_score": 0.6667,
+        "github_issue_closed": false,
+        "github_issue_number": null,
+        "github_issue_url": null,
+        "id": 3,
+        "last_seen_at": "<timestamp>",
+        "last_status": "failed",
+        "name": "lint",
+        "pipeline": ".github/workflows/ci.yml",
+        "provider": "github",
+        "repo": "o/r",
+        "summary": false,
+        "tier": "flaky",
+        "trend": null
+      }
+    ],
+    "page": 1,
+    "page_size": 50,
+    "total": 1
+  },
+  "content-type": "application/json",
+  "request": {
+    "method": "GET",
+    "path": "/api/jobs",
+    "query": {}
+  },
+  "status": 200,
+  "step": 15
+}

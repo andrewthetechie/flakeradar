@@ -1,0 +1,59 @@
+{
+  "step": 18,
+  "tables": {
+    "test_cases": [
+      {
+        "classname": "tests.test_cart",
+        "clean_streak": 0,
+        "confirmed_flake_count": 0,
+        "fail_streak": 1,
+        "failure_category": "assertion",
+        "file": "tests/test_cart.py",
+        "fingerprint": "25cdd150e8f4335ddfb17485d80e2defa6b56643",
+        "flakiness_score": 0,
+        "github_issue_checked_at": null,
+        "github_issue_closed": false,
+        "github_issue_filed": null,
+        "github_issue_fixed_noted_at": null,
+        "github_issue_number": null,
+        "id": 1,
+        "last_seen_at": "<timestamp>",
+        "last_status": "failed",
+        "line": 12,
+        "name": "test_total",
+        "project_id": 1,
+        "quarantine_expires_at": null,
+        "quarantine_reason": null,
+        "quarantined": false,
+        "quarantined_at": null,
+        "suite": "unit"
+      },
+      {
+        "classname": "tests.test_cart",
+        "clean_streak": 1,
+        "confirmed_flake_count": 0,
+        "fail_streak": 0,
+        "failure_category": null,
+        "file": "tests/test_cart.py",
+        "fingerprint": "a97cddcdc015eee23feaf27c920433747e51adc3",
+        "flakiness_score": 0,
+        "github_issue_checked_at": null,
+        "github_issue_closed": false,
+        "github_issue_filed": null,
+        "github_issue_fixed_noted_at": null,
+        "github_issue_number": null,
+        "id": 2,
+        "last_seen_at": "<timestamp>",
+        "last_status": "passed",
+        "line": 20,
+        "name": "test_tax",
+        "project_id": 1,
+        "quarantine_expires_at": null,
+        "quarantine_reason": null,
+        "quarantined": false,
+        "quarantined_at": null,
+        "suite": "unit"
+      }
+    ]
+  }
+}

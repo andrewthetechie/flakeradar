@@ -1,0 +1,78 @@
+{
+  "body": {
+    "executions": [
+      {
+        "attempt": 0,
+        "branch": "main",
+        "ci_run_id": "12345",
+        "commit_sha": "9f8e7d6",
+        "created_at": "<timestamp>",
+        "details": "",
+        "duration": 0.01,
+        "failure_category": null,
+        "id": 1,
+        "message": "",
+        "status": "passed"
+      }
+    ],
+    "jobs": [
+      {
+        "job_id": 2,
+        "name": "test (ubuntu, 3.12)",
+        "pipeline": ".github/workflows/ci.yml"
+      }
+    ],
+    "last_failing_branch": null,
+    "last_failing_sha": null,
+    "location": {
+      "line": 11,
+      "path": "backend/tests/test_checkout.py",
+      "url": null
+    },
+    "score_history": [
+      {
+        "confirmed_flake_count": 0,
+        "day": "<date>",
+        "executions": 1,
+        "failures": 0,
+        "flakiness_score": 0.0
+      }
+    ],
+    "test": {
+      "broken": false,
+      "classname": "tests.test_checkout",
+      "clean_streak": 1,
+      "confirmed_flake_count": 0,
+      "fail_streak": 0,
+      "failure_category": null,
+      "file": "tests/test_checkout.py",
+      "fingerprint": "04c2ee91a56c895aae52b8f23009bf266c09c9ad",
+      "flakiness_score": 0.0,
+      "github_issue_closed": false,
+      "github_issue_number": null,
+      "github_issue_url": null,
+      "id": 1,
+      "last_seen_at": "<timestamp>",
+      "last_status": "passed",
+      "line": 11,
+      "name": "test_cart_total",
+      "project": "backend",
+      "quarantine_expires_at": null,
+      "quarantine_reason": null,
+      "quarantined": false,
+      "quarantined_at": null,
+      "repo": "andrewthetechie/writers-app",
+      "suite": "pytest",
+      "tier": "stable",
+      "trend": null
+    }
+  },
+  "content-type": "application/json",
+  "request": {
+    "method": "GET",
+    "path": "/api/tests/1/history",
+    "query": {}
+  },
+  "status": 200,
+  "step": 8
+}

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<testsuites name="pytest" errors="1" failures="1" skipped="1" tests="5" time="1.276">
+  <testsuite name="tests.integration.test_orders" errors="1" failures="1" skipped="1" tests="5" time="1.276" timestamp="2026-10-20T10:02:11.004000+00:00" hostname="runner-2">
+    <testcase classname="tests.integration.test_orders" name="test_places_order" time="0.101" file="tests/integration/test_orders.py" line="18" />
+    <testcase classname="tests.integration.test_orders" name="test_refunds_order" time="0.211" file="tests/integration/test_orders.py" line="33">
+      <failure message="AssertionError: expected 3, got 4">tests/integration/test_orders.py:33: in test_refunds_order
+    assert total == 3
+E   assert 4 == 3</failure>
+    </testcase>
+    <testcase classname="tests.integration.test_orders" name="test_cancels_order" time="0.145" file="tests/integration/test_orders.py" line="47">
+      <skipped type="pytest.skip" message="needs a staging database" />
+    </testcase>
+    <testcase classname="tests.integration.test_orders" name="test_ships_order" time="0.302" file="tests/integration/test_orders.py" line="61">
+      <error message="teardown error">E   RuntimeError: teardown left the session dirty</error>
+    </testcase>
+    <testcase classname="tests.integration.test_orders" name="test_reports_order" time="0.517" file="tests/integration/test_orders.py" line="75">
+      <system-out>printed while the test ran</system-out>
+    </testcase>
+  </testsuite>
+</testsuites>

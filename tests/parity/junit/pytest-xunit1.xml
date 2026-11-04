@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<testsuite name="pytest" errors="0" failures="2" skipped="0" tests="9" time="3.751" timestamp="2026-10-20T09:31:02.208000+00:00" hostname="runner-1">
+  <testcase classname="tests.auth.test_login" name="test_signs_in" time="0.012" file="tests/auth/test_login.py" line="14" />
+  <testcase classname="tests.auth.test_login" name="test_token_expires" time="0.008" file="tests/auth/test_login.py" line="88" />
+  <testcase classname="tests.auth.test_login" name="test_lockout" time="3.401" file="tests/auth/test_login.py" line="120">
+    <failure message="assert 3 == 2">tests/auth/test_login.py:120: in test_lockout
+    assert attempts == 2
+E   assert 3 == 2</failure>
+  </testcase>
+  <testcase classname="tests.auth.test_login" name="test_login_timeout" time="0.031" file="tests/auth/test_login.py" line="150">
+    <failure message="socket.timeout: timed out while waiting for the response">tests/auth/test_login.py:150: in test_login_timeout
+E   socket.timeout: timed out while waiting for the response</failure>
+  </testcase>
+  <testcase classname="tests.api.test_health" name="test_health" time="0.003" file="tests/api/test_health.py" line="9" />
+  <testcase classname="tests.api.test_health" name="test_ready" time="0.004" file="tests/api/test_health.py" line="17" />
+  <testcase classname="tests.models.test_cart" name="test_totals" time="0.007" file="tests/models/test_cart.py" line="31" />
+  <testcase classname="tests.models.test_cart" name="test_discount" time="0.006" file="tests/models/test_cart.py" line="44" />
+  <testcase classname="tests.models.test_cart" name="test_currency" time="0.005" file="tests/models/test_cart.py" line="58" />
+</testsuite>

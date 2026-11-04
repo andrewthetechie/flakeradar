@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="nested">
+  <testsuite name="outer" tests="1">
+    <testsuite name="inner" tests="1">
+      <testcase classname="tests.test_nested" name="test_inner" time="0.02" />
+    </testsuite>
+    <testcase classname="tests.test_nested" name="test_outer" time="0.01" />
+  </testsuite>
+</testsuites>

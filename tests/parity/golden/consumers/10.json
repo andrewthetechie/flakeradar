@@ -1,0 +1,28 @@
+{
+  "body": {
+    "clean_streak": 1,
+    "confirmed_flake_count": 0,
+    "flakiness_score": 0.0,
+    "github_issue_closed": false,
+    "github_issue_number": 77,
+    "github_issue_url": "https://github.com/andrewthetechie/writers-app/issues/77",
+    "id": 1,
+    "last_seen_at": "<timestamp>",
+    "last_status": "passed",
+    "name": "lint",
+    "pipeline": ".github/workflows/ci.yml",
+    "provider": "github",
+    "repo": "andrewthetechie/writers-app",
+    "summary": false,
+    "tier": "stable",
+    "trend": null
+  },
+  "content-type": "application/json",
+  "request": {
+    "method": "PUT",
+    "path": "/api/jobs/1/issue",
+    "query": {}
+  },
+  "status": 200,
+  "step": 10
+}

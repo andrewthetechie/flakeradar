@@ -1,0 +1,16 @@
+{
+  "result": {
+    "_meta": {
+      "fastmcp": {
+        "wrap_result": true
+      }
+    },
+    "content": [],
+    "isError": false,
+    "resultType": "complete",
+    "structuredContent": {
+      "result": []
+    }
+  },
+  "step": 26
+}

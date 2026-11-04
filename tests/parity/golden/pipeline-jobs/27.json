@@ -1,0 +1,29 @@
+{
+  "body": {
+    "detail": [
+      {
+        "ctx": {
+          "expected": "'score', 'last_seen' or 'proven'"
+        },
+        "input": "bogus",
+        "loc": [
+          "query",
+          "sort"
+        ],
+        "msg": "Input should be 'score', 'last_seen' or 'proven'",
+        "type": "literal_error"
+      }
+    ]
+  },
+  "content-type": "application/json",
+  "request": {
+    "method": "GET",
+    "path": "/api/jobs",
+    "query": {
+      "repo": "o/r",
+      "sort": "bogus"
+    }
+  },
+  "status": 422,
+  "step": 27
+}

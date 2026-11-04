@@ -1,0 +1,93 @@
+{
+  "result": {
+    "_meta": null,
+    "content": [
+      {
+        "_meta": null,
+        "annotations": null,
+        "text": "{\"test\":{\"id\":1,\"repo\":\"o/r\",\"project\":\"default\",\"fingerprint\":\"25cdd150e8f4335ddfb17485d80e2defa6b56643\",\"suite\":\"unit\",\"classname\":\"tests.test_cart\",\"name\":\"test_total\",\"file\":\"tests/test_cart.py\",\"line\":12,\"flakiness_score\":0.1667,\"tier\":\"suspect\",\"confirmed_flake_count\":0,\"failure_category\":\"assertion\",\"clean_streak\":1,\"fail_streak\":0,\"broken\":false,\"trend\":null,\"last_status\":\"passed\",\"last_seen_at\":\"<timestamp>\",\"quarantined\":false,\"quarantined_at\":null,\"quarantine_reason\":null,\"quarantine_expires_at\":null,\"github_issue_number\":null,\"github_issue_url\":null,\"github_issue_closed\":false},\"location\":{\"path\":\"tests/test_cart.py\",\"line\":12,\"url\":\"https://github.com/o/r/blob/m1/tests/test_cart.py#L12\"},\"last_failing_sha\":\"m1\",\"last_failing_branch\":\"main\",\"latest_failure\":{\"status\":\"failed\",\"message\":\"assert 1 == 2\",\"details\":\"AssertionError: assert 1 == 2\\n  at tests/test_cart.py:12\",\"commit_sha\":\"m1\",\"branch\":\"main\",\"failure_category\":\"assertion\",\"created_at\":\"<timestamp>\"},\"executions\":[{\"status\":\"passed\",\"commit_sha\":\"m2\",\"branch\":\"main\",\"ci_run_id\":\"\",\"created_at\":\"<timestamp>\",\"duration\":0.01,\"message\":\"\",\"attempt\":0,\"failure_category\":null},{\"status\":\"failed\",\"commit_sha\":\"m1\",\"branch\":\"main\",\"ci_run_id\":\"\",\"created_at\":\"<timestamp>\",\"duration\":0.01,\"message\":\"assert 1 == 2\",\"attempt\":0,\"failure_category\":\"assertion\"}],\"jobs\":[],\"score_history\":[{\"day\":\"<date>\",\"flakiness_score\":0.1667}]}",
+        "type": "text"
+      }
+    ],
+    "isError": false,
+    "resultType": "complete",
+    "structuredContent": {
+      "executions": [
+        {
+          "attempt": 0,
+          "branch": "main",
+          "ci_run_id": "",
+          "commit_sha": "m2",
+          "created_at": "<timestamp>",
+          "duration": 0.01,
+          "failure_category": null,
+          "message": "",
+          "status": "passed"
+        },
+        {
+          "attempt": 0,
+          "branch": "main",
+          "ci_run_id": "",
+          "commit_sha": "m1",
+          "created_at": "<timestamp>",
+          "duration": 0.01,
+          "failure_category": "assertion",
+          "message": "assert 1 == 2",
+          "status": "failed"
+        }
+      ],
+      "jobs": [],
+      "last_failing_branch": "main",
+      "last_failing_sha": "m1",
+      "latest_failure": {
+        "branch": "main",
+        "commit_sha": "m1",
+        "created_at": "<timestamp>",
+        "details": "AssertionError: assert 1 == 2\n  at tests/test_cart.py:12",
+        "failure_category": "assertion",
+        "message": "assert 1 == 2",
+        "status": "failed"
+      },
+      "location": {
+        "line": 12,
+        "path": "tests/test_cart.py",
+        "url": "https://github.com/o/r/blob/m1/tests/test_cart.py#L12"
+      },
+      "score_history": [
+        {
+          "day": "<date>",
+          "flakiness_score": 0.1667
+        }
+      ],
+      "test": {
+        "broken": false,
+        "classname": "tests.test_cart",
+        "clean_streak": 1,
+        "confirmed_flake_count": 0,
+        "fail_streak": 0,
+        "failure_category": "assertion",
+        "file": "tests/test_cart.py",
+        "fingerprint": "25cdd150e8f4335ddfb17485d80e2defa6b56643",
+        "flakiness_score": 0.1667,
+        "github_issue_closed": false,
+        "github_issue_number": null,
+        "github_issue_url": null,
+        "id": 1,
+        "last_seen_at": "<timestamp>",
+        "last_status": "passed",
+        "line": 12,
+        "name": "test_total",
+        "project": "default",
+        "quarantine_expires_at": null,
+        "quarantine_reason": null,
+        "quarantined": false,
+        "quarantined_at": null,
+        "repo": "o/r",
+        "suite": "unit",
+        "tier": "suspect",
+        "trend": null
+      }
+    }
+  },
+  "step": 19
+}

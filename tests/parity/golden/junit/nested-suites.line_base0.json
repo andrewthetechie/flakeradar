@@ -1,0 +1,32 @@
+{
+  "cases": [
+    {
+      "category": null,
+      "classname": "tests.test_nested",
+      "details": "",
+      "duration": 0.01,
+      "file": null,
+      "fingerprint": "e5c111beb7a2cf1d1438fe4d3802c67a345a04c1",
+      "line": null,
+      "message": "",
+      "name": "test_outer",
+      "status": "passed",
+      "suite": "outer"
+    },
+    {
+      "category": null,
+      "classname": "tests.test_nested",
+      "details": "",
+      "duration": 0.02,
+      "file": null,
+      "fingerprint": "3a0f27b01411d22a792e83f3e6354f7738aa395f",
+      "line": null,
+      "message": "",
+      "name": "test_inner",
+      "status": "passed",
+      "suite": "outer"
+    }
+  ],
+  "line_base": 0,
+  "source": "junit/nested-suites.xml"
+}

@@ -1,0 +1,13 @@
+{
+  "body": {
+    "detail": "Test not found"
+  },
+  "content-type": "application/json",
+  "request": {
+    "method": "GET",
+    "path": "/api/tests/999/history",
+    "query": {}
+  },
+  "status": 404,
+  "step": 47
+}

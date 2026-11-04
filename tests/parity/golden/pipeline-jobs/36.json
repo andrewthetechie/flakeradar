@@ -1,0 +1,22 @@
+{
+  "body": {
+    "detail": [
+      {
+        "input": "{\"repo\": \"o/r\", \"provider\": \"github\", \"pipeline\": \"ci.yml\", \"commit_sha\": \"c9\", \"branch\": \"main\"}",
+        "loc": [
+          "body"
+        ],
+        "msg": "Input should be a valid dictionary or object to extract fields from",
+        "type": "model_attributes_type"
+      }
+    ]
+  },
+  "content-type": "application/json",
+  "request": {
+    "method": "POST",
+    "path": "/api/ingest/pipeline",
+    "query": {}
+  },
+  "status": 422,
+  "step": 36
+}

@@ -1,0 +1,71 @@
+{
+  "cases": [
+    {
+      "category": null,
+      "classname": "src/cart.test.ts Cart adds items",
+      "details": "",
+      "duration": 0.042,
+      "file": "src/cart.test.ts",
+      "fingerprint": "731e8991e7b00bf6d72d41247e5f3eaf8c0f359d",
+      "line": null,
+      "message": "",
+      "name": "adds items",
+      "status": "passed",
+      "suite": "Cart"
+    },
+    {
+      "category": null,
+      "classname": "src/cart.test.ts Cart rounds money",
+      "details": "",
+      "duration": 0.017,
+      "file": "src/cart.test.ts",
+      "fingerprint": "5efcdcb076034158459a7f84e4dcd308cbd0ad5d",
+      "line": null,
+      "message": "",
+      "name": "rounds money",
+      "status": "passed",
+      "suite": "Cart"
+    },
+    {
+      "category": "assertion",
+      "classname": "src/cart.test.ts Cart rejects a negative quantity",
+      "details": "expect(received).toBe(expected) // Object.is equality\n\nExpected: 0\nReceived: -1\n\n--- stdout ---\nconsole.log\n    cart total computed",
+      "duration": 0.063,
+      "file": "src/cart.test.ts",
+      "fingerprint": "016c59f8a95d89a6ef6edb94324e688d4d182a84",
+      "line": null,
+      "message": "expect(received).toBe(expected) // Object.is equality",
+      "name": "rejects a negative quantity",
+      "status": "failed",
+      "suite": "Cart"
+    },
+    {
+      "category": null,
+      "classname": "src/cart.test.ts Cart skips on CI",
+      "details": "",
+      "duration": 0.001,
+      "file": "src/cart.test.ts",
+      "fingerprint": "87584a4574724cdf6ff8322e43f973186731a33d",
+      "line": null,
+      "message": "",
+      "name": "skips on CI",
+      "status": "skipped",
+      "suite": "Cart"
+    },
+    {
+      "category": "other",
+      "classname": "src/order.test.ts Order fetches the profile",
+      "details": "TypeError: fetch failed\n\n  at Object.<anonymous> (src/order.test.ts:22:11)\n\n--- stderr ---\nnode:internal/process/promises: warning",
+      "duration": 1.802,
+      "file": "src/order.test.ts",
+      "fingerprint": "a7bac9397de9ba41af05113ad2dc5a3db0cc1753",
+      "line": null,
+      "message": "TypeError: fetch failed",
+      "name": "fetches the profile",
+      "status": "failed",
+      "suite": "Cart"
+    }
+  ],
+  "line_base": 1,
+  "source": "junit/jest.xml"
+}

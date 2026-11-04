@@ -1,0 +1,23 @@
+{
+  "body": {
+    "detail": [
+      {
+        "input": "abc",
+        "loc": [
+          "path",
+          "test_id"
+        ],
+        "msg": "Input should be a valid integer, unable to parse string as an integer",
+        "type": "int_parsing"
+      }
+    ]
+  },
+  "content-type": "application/json",
+  "request": {
+    "method": "POST",
+    "path": "/api/tests/abc/quarantine",
+    "query": {}
+  },
+  "status": 422,
+  "step": 15
+}

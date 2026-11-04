@@ -1,0 +1,78 @@
+{
+  "body": [
+    {
+      "branch": "main",
+      "ci_run_id": "",
+      "commit_sha": "a3",
+      "counts": {
+        "error": 0,
+        "failed": 0,
+        "passed": 1,
+        "retried": 0,
+        "skipped": 0
+      },
+      "created_at": "<timestamp>",
+      "error": null,
+      "id": 3,
+      "kind": "junit",
+      "processed_at": "<timestamp>",
+      "project": "default",
+      "repo": "o/r",
+      "retry_count": 0,
+      "run_id": 3,
+      "status": "processed"
+    },
+    {
+      "branch": "main",
+      "ci_run_id": "",
+      "commit_sha": "a2",
+      "counts": {
+        "error": 0,
+        "failed": 0,
+        "passed": 1,
+        "retried": 0,
+        "skipped": 0
+      },
+      "created_at": "<timestamp>",
+      "error": null,
+      "id": 2,
+      "kind": "junit",
+      "processed_at": "<timestamp>",
+      "project": "default",
+      "repo": "o/r",
+      "retry_count": 0,
+      "run_id": 2,
+      "status": "processed"
+    },
+    {
+      "branch": "main",
+      "ci_run_id": "",
+      "commit_sha": "a1",
+      "counts": {
+        "error": 0,
+        "failed": 0,
+        "passed": 1,
+        "retried": 0,
+        "skipped": 0
+      },
+      "created_at": "<timestamp>",
+      "error": null,
+      "id": 1,
+      "kind": "junit",
+      "processed_at": "<timestamp>",
+      "project": "default",
+      "repo": "o/r",
+      "retry_count": 0,
+      "run_id": 1,
+      "status": "processed"
+    }
+  ],
+  "content-type": "application/json",
+  "request": {
+    "method": "GET",
+    "path": "/api/reports",
+    "query": {}
+  },
+  "status": 200,
+  "step": 16
+}
