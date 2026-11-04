@@ -380,11 +380,14 @@ export default function App() {
 
       <footer className="mt-8 text-xs text-muted">
         Ingest from CI:{" "}
-        <code className="rounded border border-line bg-surface px-1.5 py-0.5 font-mono [overflow-wrap:anywhere]">
-          curl -X POST
-          "$URL/api/ingest?repo=$OWNER/$REPO&amp;project=backend&amp;commit_sha=$SHA&amp;branch=$BRANCH"
-          -H "X-API-Key: $TOKEN" --data-binary @junit.xml
-        </code>
+        <a
+          href="https://github.com/andrewthetechie/flakeradar/blob/main/README.md#ci-integration"
+          target="_blank"
+          rel="noreferrer"
+          className="text-link underline-offset-2 hover:underline"
+        >
+          see the README — CI integration
+        </a>
         <br />
         Job-level flakiness: add{" "}
         <code className="rounded border border-line bg-surface px-1.5 py-0.5 font-mono [overflow-wrap:anywhere]">
