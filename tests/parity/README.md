@@ -209,6 +209,15 @@ rules:
   answer 503 only when a query fails, which a scenario cannot arrange without
   stopping its own database mid-request. `tests/test_ops_api.py` owns those
   cases (task 05).
+- **A delete that deadlocks with the report processor.**
+  `DELETE /api/repos/{owner}/{name}` and
+  `DELETE /api/repos/{owner}/{name}/projects/{project}` answer 503 with the
+  hand-written `"Delete raced with the report processor; retry."` only when
+  Postgres aborts the delete for a lock cycle with the processor
+  (`backend/app/routers/repos.py:171` and `:214`). A scenario would have to hold
+  a Report mid-processing while it deletes the Repo, which it cannot arrange.
+  `tests/test_repos_api.py::test_delete_deadlocking_with_the_processor_gets_a_retryable_503`
+  owns both endpoints (task 10).
 - **Time.** Trends, retention and `new_within_days` depend on the clock; the
   scenarios record their current-day values with `<date>`/`<timestamp>`
   placeholders, and the ported unit tests own the time-dependent behaviour.

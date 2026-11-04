@@ -60,7 +60,7 @@ Prefer the builder where it is readable. Use a raw `Statement` for anything else
 
 ## Done when
 
-- [ ] All verification in `00-shared-context.md` passes, with the `--no-tests=pass` flag removed.
+- [ ] All verification in `00-shared-context.md` passes, with the `--no-tests=pass` flag removed and the coverage job's `has-coverage` guard deleted (with the notice it prints), so the `--no-tests=pass` and guard pair is not orphaned.
 - [ ] `spike-notes.md` covers all 8 queries.
 - [ ] Manifest rows for this task are not `pending`, and gaps are logged.
 - [ ] `STATUS.md` is updated, and the branch is pushed.
