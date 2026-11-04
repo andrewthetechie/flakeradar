@@ -17,7 +17,10 @@ use axum::http::{Method, StatusCode};
 use common::{Reply, get, post, request, send, settings};
 use flakeradar_db::entities::{projects, reports, repos};
 use flakeradar_test_support::{TestDb, make_junit};
-use sea_orm::{ColumnTrait, DbErr, EntityTrait, PaginatorTrait as _, QueryFilter, QueryOrder};
+use sea_orm::{
+    ColumnTrait, ConnectionTrait as _, DbErr, EntityTrait, PaginatorTrait as _, QueryFilter,
+    QueryOrder,
+};
 use serde_json::{Value, json};
 
 /// The token the tests present.
@@ -245,6 +248,177 @@ async fn ingest_rejects_ci_run_attempt_zero() {
         json!(["query", "ci_run_attempt"])
     );
     assert_eq!(stored_reports(&db).await.len(), 0);
+}
+
+#[tokio::test]
+async fn ingest_rejects_a_ci_run_attempt_past_the_column() {
+    // The column is `int4`: Python's `ge=1` let a bigger number through and the
+    // driver raised, which answered 500 after creating rows. A value the column
+    // cannot hold is refused with 400 and queues nothing, as an unparsable
+    // `time` is.
+    let db = TestDb::new().await.expect("a test database is available");
+    let reply = ingest(
+        &test_app(&db),
+        &[("ci_run_attempt", "2147483648")],
+        passing_report(),
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{}", reply.text());
+    assert_eq!(
+        reply.json(),
+        json!({"detail": "ci_run_attempt must be at most 2147483647"})
+    );
+    assert_eq!(stored_reports(&db).await.len(), 0);
+}
+
+#[tokio::test]
+async fn ingest_rejects_a_ci_run_attempt_past_i64() {
+    // Python holds arbitrary-precision ints, so this reached the driver and
+    // answered 500. It is past the column by any reading, so it is a 400.
+    let db = TestDb::new().await.expect("a test database is available");
+    let reply = ingest(
+        &test_app(&db),
+        &[("ci_run_attempt", "9223372036854775808")],
+        passing_report(),
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{}", reply.text());
+    assert_eq!(
+        reply.json(),
+        json!({"detail": "ci_run_attempt must be at most 2147483647"})
+    );
+    assert_eq!(stored_reports(&db).await.len(), 0);
+}
+
+#[tokio::test]
+async fn ingest_stores_the_largest_ci_run_attempt() {
+    let db = TestDb::new().await.expect("a test database is available");
+    let reply = ingest(
+        &test_app(&db),
+        &[("ci_run_attempt", "2147483647")],
+        passing_report(),
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::ACCEPTED, "{}", reply.text());
+    assert_eq!(
+        stored_reports(&db)
+            .await
+            .first()
+            .expect("one Report")
+            .ci_run_attempt,
+        Some(i32::MAX)
+    );
+}
+
+#[tokio::test]
+async fn ingest_rejects_a_ci_run_attempt_that_is_a_word() {
+    // Pydantic's `int_parsing`, which is what keeps a word apart from a number
+    // past the column's range.
+    let db = TestDb::new().await.expect("a test database is available");
+    let reply = ingest(
+        &test_app(&db),
+        &[("ci_run_attempt", "first")],
+        passing_report(),
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(reply.json()["detail"][0]["type"], json!("int_parsing"));
+    assert_eq!(
+        reply.json()["detail"][0]["loc"],
+        json!(["query", "ci_run_attempt"])
+    );
+    assert_eq!(stored_reports(&db).await.len(), 0);
+}
+
+#[tokio::test]
+async fn ingest_defaults_branch_and_ci_run_id() {
+    // `build_junit_report`'s defaults, which the route supplies now that the
+    // builder is a struct: an upload that names no attribution is on `main`
+    // with an empty CI run id, pending, and without a Job or attempt.
+    let db = TestDb::new().await.expect("a test database is available");
+    let app = test_app(&db);
+    let reply = ingest(&app, &[], passing_report()).await;
+    assert_eq!(reply.status, StatusCode::ACCEPTED, "{}", reply.text());
+
+    let stored = stored_reports(&db).await;
+    let report = stored.first().expect("one Report");
+    assert_eq!(
+        (report.branch.as_str(), report.ci_run_id.as_str()),
+        ("main", "")
+    );
+    assert_eq!(report.status, "pending");
+    assert_eq!(
+        (report.ci_job_id.as_deref(), report.ci_run_attempt),
+        (None, None)
+    );
+
+    // The served Report carries the same two defaults.
+    let served = get(&app, &format!("/api/reports/{}", report.id)).await;
+    assert_eq!(served.status, StatusCode::OK);
+    assert_eq!(served.json()["branch"], json!("main"));
+    assert_eq!(served.json()["ci_run_id"], json!(""));
+    assert_eq!(served.json()["status"], json!("pending"));
+}
+
+#[tokio::test]
+async fn a_failed_ingest_leaves_no_repo_or_project() {
+    // Python committed the Repo, Project and Report once, at the end, so a
+    // failure after the get-or-create left none of them. Here the insert is what
+    // fails: a CHECK the row cannot satisfy refuses it after the Repo and
+    // Project are in the transaction.
+    let db = TestDb::new().await.expect("a test database is available");
+    db.connection()
+        .execute_unprepared("ALTER TABLE reports ADD CONSTRAINT ingest_always_fails CHECK (false)")
+        .await
+        .expect("the fixture constraint is installed");
+    let reply = ingest(&test_app(&db), &[], passing_report()).await;
+    assert_eq!(
+        reply.status,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "{}",
+        reply.text()
+    );
+    assert_eq!(stored_reports(&db).await.len(), 0);
+    assert_eq!(
+        repos::Entity::find()
+            .count(db.connection())
+            .await
+            .expect("the Repo count"),
+        0
+    );
+    assert_eq!(
+        projects::Entity::find()
+            .count(db.connection())
+            .await
+            .expect("the Project count"),
+        0
+    );
+}
+
+#[tokio::test]
+async fn a_duplicate_upload_creates_no_extra_rows() {
+    let db = TestDb::new().await.expect("a test database is available");
+    let app = test_app(&db);
+    let content = passing_report();
+    let first = ingest(&app, &[("ci_run_id", "9")], content.clone()).await;
+    let second = ingest(&app, &[("ci_run_id", "9")], content).await;
+    assert_eq!(first.json()["duplicate"], json!(false));
+    assert_eq!(second.json()["duplicate"], json!(true));
+    assert_eq!(stored_reports(&db).await.len(), 1);
+    assert_eq!(
+        repos::Entity::find()
+            .count(db.connection())
+            .await
+            .expect("the Repo count"),
+        1
+    );
+    assert_eq!(
+        projects::Entity::find()
+            .count(db.connection())
+            .await
+            .expect("the Project count"),
+        1
+    );
 }
 
 #[tokio::test]

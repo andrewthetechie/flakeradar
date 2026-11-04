@@ -30,7 +30,7 @@ use flakeradar_db::{
 use sea_orm::entity::prelude::DateTimeWithTimeZone;
 use sea_orm::{
     ConnectionTrait, DbBackend, DbErr, EntityTrait, FromQueryResult as _, QueryResult, Set,
-    Statement, Value,
+    Statement, TransactionTrait as _, Value,
 };
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
@@ -202,8 +202,12 @@ pub struct IngestQuery {
     #[serde(default)]
     ci_job_id: Option<String>,
     /// Which attempt of the CI run this is, numbered from 1.
+    ///
+    /// Read as text so a number too long for the `int4` column — even one past
+    /// `i64` — is still told apart from a word, because the two get different
+    /// answers: 400 for the first, 422 for the second.
     #[serde(default)]
-    ci_run_attempt: Option<i64>,
+    ci_run_attempt: Option<String>,
     /// The Pipeline the Job belongs to.
     #[serde(default)]
     pipeline: Option<String>,
@@ -262,24 +266,74 @@ impl Validate for IngestQuery {
         if let Some(ci_job_id) = &self.ci_job_id {
             check_max(ci_job_id, 255, "ci_job_id", &mut issues);
         }
-        if let Some(ci_run_attempt) = self.ci_run_attempt
-            && ci_run_attempt < 1
-        {
-            issues.push(ValidationIssue::greater_than_equal(
-                query_loc("ci_run_attempt"),
-                JsonValue::from(ci_run_attempt),
-                1,
-            ));
+        let mut attempt_over_range = false;
+        if let Some(text) = &self.ci_run_attempt {
+            match attempt_value(text) {
+                AttemptValue::Number(attempt) if attempt < 1 => {
+                    issues.push(ValidationIssue::greater_than_equal(
+                        query_loc("ci_run_attempt"),
+                        attempt.into(),
+                        1,
+                    ));
+                }
+                AttemptValue::Number(attempt) => {
+                    attempt_over_range = attempt > i64::from(i32::MAX);
+                }
+                AttemptValue::PastEveryRange => attempt_over_range = true,
+                AttemptValue::NotANumber => issues.push(ValidationIssue::int_parsing(
+                    query_loc("ci_run_attempt"),
+                    text.clone().into(),
+                )),
+            }
         }
         if let Some(pipeline) = &self.pipeline {
             check_max(pipeline, 512, "pipeline", &mut issues);
         }
-        if issues.is_empty() {
-            Ok(())
-        } else {
-            Err(ApiError::unprocessable(issues))
+        if !issues.is_empty() {
+            return Err(ApiError::unprocessable(issues));
         }
+        // An attempt past the column's range is not a body this server can
+        // store, and Python crashed on it after creating rows this Request
+        // would have to undo. It is refused with 400, the same way an
+        // unparsable `time` is, rather than rewritten into a value CI never
+        // sent.
+        if attempt_over_range {
+            return Err(too_large_attempt());
+        }
+        Ok(())
     }
+}
+
+/// A `ci_run_attempt` query value as the number it spells.
+#[derive(Debug, Clone, Copy)]
+enum AttemptValue {
+    /// The number the text spells, when it fits `i64`.
+    Number(i64),
+    /// A run of digits longer than `i64` holds, so past the column's range
+    /// whatever it spells.
+    PastEveryRange,
+    /// Something that is not an integer.
+    NotANumber,
+}
+
+/// The number `text` spells, as far as it can be told without a range in mind.
+fn attempt_value(text: &str) -> AttemptValue {
+    let text = text.trim();
+    if let Ok(number) = text.parse::<i64>() {
+        return AttemptValue::Number(number);
+    }
+    if !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit()) {
+        return AttemptValue::PastEveryRange;
+    }
+    AttemptValue::NotANumber
+}
+
+/// The 400 for a `ci_run_attempt` the `int4` column cannot hold.
+fn too_large_attempt() -> ApiError {
+    ApiError::new(
+        StatusCode::BAD_REQUEST,
+        format!("ci_run_attempt must be at most {}", i32::MAX),
+    )
 }
 
 /// Records a maximum-length failure for `field`, in characters as Python counted.
@@ -387,10 +441,11 @@ where
 ///
 /// # Errors
 ///
-/// Answers 400 for an empty body and for a `<testcase time>` that is not a
-/// number, 413 for an upload over [`MAX_REPORT_BYTES`], 422 for an unusable
-/// Repo, Project or root name and for a body that is not a JUnit XML report, 401
-/// without the token, and 500 when a query fails.
+/// Answers 400 for an empty body, for a `<testcase time>` that is not a number
+/// and for a `ci_run_attempt` past the column's range, 413 for an upload over
+/// [`MAX_REPORT_BYTES`], 422 for an unusable Repo, Project or root name and for
+/// a body that is not a JUnit XML report, 401 without the token, and 500 when a
+/// query fails.
 #[utoipa::path(
     post,
     path = "/api/ingest",
@@ -405,12 +460,12 @@ where
         ("ci_run_id" = Option<String>, Query, description = "The CI provider's run id"),
         ("default_branch" = Option<String>, Query, description = "The Repo's Default branch"),
         ("ci_job_id" = Option<String>, Query, description = "The CI provider's Job id"),
-        ("ci_run_attempt" = Option<i64>, Query, description = "Which attempt of the CI run this is"),
+        ("ci_run_attempt" = Option<i64>, Query, description = "Which attempt of the CI run this is, from 1 to 2147483647"),
         ("pipeline" = Option<String>, Query, description = "The Pipeline the Job belongs to")
     ),
     responses(
         (status = 202, body = IngestAccepted),
-        (status = 400, description = "Empty body, or a testcase time that is not a number"),
+        (status = 400, description = "Empty body, a testcase time that is not a number, or a ci_run_attempt past the column's range"),
         (status = 413, description = "The upload exceeds 20 MB"),
         (status = 422, description = "An unusable name, or a body that is not JUnit XML")
     )
@@ -435,9 +490,16 @@ pub async fn ingest(
     let root = normalize_root(query.root.as_deref()).map_err(|error| named_error(&error))?;
     let line_base = query.line_base;
     parse_upload(content.clone(), line_base).await?;
+    // Checked here, where Python's insert failed on the same value, so every
+    // refusal before this one answers exactly as it did.
+    let ci_run_attempt = stored_ci_run_attempt(query.ci_run_attempt.as_deref())?;
 
     let now = Utc::now().fixed_offset();
-    let project = get_or_create_project(state.pool(), &repo_name, &project_name, now).await?;
+    // The Repo, Project and Report are one unit of work: Python committed them
+    // once, at the end, so a duplicate answer or a failed insert left none of
+    // them behind. A transaction keeps that promise when the insert fails.
+    let txn = state.pool().begin().await?;
+    let project = get_or_create_project(&txn, &repo_name, &project_name, now).await?;
     let candidate = NewJunitReport {
         project_id: project.id,
         repo_id: project.repo_id,
@@ -448,11 +510,15 @@ pub async fn ingest(
         root,
         line_base: Some(stored_attempt(line_base)),
         ci_job_id: blank_to_none(query.ci_job_id),
-        ci_run_attempt: query.ci_run_attempt.map(stored_attempt),
+        ci_run_attempt,
         pipeline: blank_to_none(query.pipeline),
         default_branch: blank_to_none(query.default_branch),
     };
-    if let Some(existing) = find_junit_duplicate(state.pool(), &candidate).await? {
+    if let Some(existing) = find_junit_duplicate(&txn, &candidate).await? {
+        // A duplicate queues nothing, and the Repo and Project this request may
+        // have created are not committed either, as Python's single `commit`
+        // site never reached them.
+        txn.rollback().await?;
         return Ok(accepted(IngestAccepted {
             report_id: i64::from(existing.id),
             status: existing.status,
@@ -460,8 +526,9 @@ pub async fn ingest(
         }));
     }
     let inserted = reports::Entity::insert(candidate.into_active_model(now))
-        .exec_with_returning(state.pool())
+        .exec_with_returning(&txn)
         .await?;
+    txn.commit().await?;
     Ok(accepted(IngestAccepted {
         report_id: i64::from(inserted.id),
         status: REPORT_PENDING.to_owned(),
@@ -488,14 +555,43 @@ async fn report_body(request: Request) -> Result<Vec<u8>, ApiError> {
     let bytes = Bytes::from_request(request, &())
         .await
         .map_err(|rejection| upload_error(&rejection))?;
-    Ok(match content_type {
-        content_type if content_type.starts_with("multipart/form-data") => {
-            file_field(&bytes, &content_type, REPORT_FIELD)
-                .unwrap_or_default()
-                .to_vec()
-        }
-        _ => bytes.to_vec(),
+    if !content_type.starts_with("multipart/form-data") {
+        return Ok(bytes.to_vec());
+    }
+    // Finding the field reads the whole body, which can be 20 MiB, so it runs
+    // on a blocking thread rather than on the one serving every other request.
+    let found = tokio::task::spawn_blocking(move || {
+        file_field(&bytes, &content_type, REPORT_FIELD).map(<[u8]>::to_vec)
     })
+    .await
+    .map_err(|error| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("The multipart scan did not finish: {error}"),
+        )
+    })?;
+    Ok(found.unwrap_or_default())
+}
+
+/// The `ci_run_attempt` to store, refusing one the `int4` column cannot hold.
+///
+/// [`IngestQuery::validate`] has already answered 422 for everything that is
+/// not an integer at all, so a text that does not read as one here is a run of
+/// digits past `i64`: out of range either way.
+///
+/// # Errors
+///
+/// Returns the 400 for a number past the column's range.
+fn stored_ci_run_attempt(text: Option<&str>) -> ApiResult<Option<i32>> {
+    let Some(text) = text else {
+        return Ok(None);
+    };
+    text.trim()
+        .parse::<i64>()
+        .ok()
+        .and_then(|attempt| i32::try_from(attempt).ok())
+        .map(Some)
+        .ok_or_else(too_large_attempt)
 }
 
 /// The 413 or 500 for an upload that could not be read.
@@ -584,7 +680,10 @@ pub async fn ingest_pipeline(
     PipelineBody(payload): PipelineBody,
 ) -> ReportResult<Response> {
     let now = Utc::now().fixed_offset();
-    let repo = get_or_create_repo(state.pool(), &payload.repo, now).await?;
+    // The Repo and the Report are one unit of work, as they were for Python's
+    // single `commit`: a failed insert leaves no Repo behind.
+    let txn = state.pool().begin().await?;
+    let repo = get_or_create_repo(&txn, &payload.repo, now).await?;
     let report = NewPipelineReport {
         repo_id: repo.id,
         body: pipeline_body(&payload),
@@ -596,8 +695,9 @@ pub async fn ingest_pipeline(
         default_branch: payload.default_branch.clone(),
     };
     let inserted = reports::Entity::insert(report.into_active_model(now))
-        .exec_with_returning(state.pool())
+        .exec_with_returning(&txn)
         .await?;
+    txn.commit().await?;
     Ok(accepted(IngestAccepted {
         report_id: i64::from(inserted.id),
         status: REPORT_PENDING.to_owned(),
