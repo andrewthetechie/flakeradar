@@ -2102,3 +2102,105 @@ async def test_fixed_note_network_error_is_logged_and_never_raises(db, fixed_set
     await db.refresh(obj)
     assert obj.github_issue_fixed_noted_at is None
     assert any("unreachable, skipping" in r.getMessage() for r in caplog.records)
+
+
+# --- filing and noting in one Report (issue #33) --------------------------
+
+
+def _file_entry(entity: str):
+    """The filing entry point of one entity, so every scenario can run both sides."""
+    return github_integration.file_issues_for if entity == "test" else github_integration.file_job_issues_for
+
+
+def _hook_outcome(entity: str, objs) -> ProcessOutcome:
+    """A processed Report whose only touched ids are these Tests/Jobs."""
+    ids = [o.id for o in objs]
+    return ProcessOutcome(
+        report_id=1,
+        status="processed",
+        run_id=1,
+        counts={},
+        touched_test_ids=ids if entity == "test" else [],
+        touched_job_ids=ids if entity == "job" else [],
+        error=None,
+    )
+
+
+@pytest.mark.parametrize("entity", ["test", "job"])
+async def test_filing_gate_skips_rows_at_the_fixed_note_streak(db, fixed_settings, entity):
+    """A row whose fix holds answers with a note, not an Issue: the gate refuses it."""
+    at_streak = await _note_row(db, entity, "at-streak", clean_streak=5)  # score 0.6 clears the filing gate
+    below = await _note_row(db, entity, "below", clean_streak=4)
+    calls, transport = _recorder(number=101)
+    filed = await _file_entry(entity)(db, [at_streak.id, below.id], transport=transport)
+    assert filed == {below.id}
+    assert [(r.method, r.url.path) for r in calls] == [("POST", "/repos/acme/app/issues")]
+    await db.refresh(at_streak)
+    assert at_streak.github_issue_number is None  # no Issue to comment "the fix appears to hold" on
+    await db.refresh(below)
+    assert below.github_issue_number == 101
+
+
+@pytest.mark.parametrize("entity", ["test", "job"])
+async def test_processed_report_never_notes_an_issue_it_filed(db, fixed_settings, entity, session_factory):
+    """One Report files and notes, and never the same link: no note on the Issue it just filed.
+
+    With `github_close_fixed` on, the collision was a loop: file, note, close, re-arm,
+    file again, one turn per Report with no new failure anywhere. A Test that only the
+    filing gate fits and a sibling already linked at the threshold show that both steps
+    ran in this same pass, and the second Report shows the silence is the steady state,
+    not one lucky pass.
+    """
+    fixed_settings.github_close_fixed = True
+    live = await _note_row(db, entity, "live", clean_streak=0)  # files, and must not be noted
+    fresh = await _note_row(db, entity, "fresh", clean_streak=5)  # meets the filing gate and the note one
+    linked = await _note_row(db, entity, "linked", github_issue_number=88, clean_streak=5)  # the note step's work
+    calls, transport = _note_recorder()
+    outcome = _hook_outcome(entity, [live, fresh, linked])
+
+    await github_integration.on_report_processed(session_factory, outcome, transport=transport)
+    assert [(r.method, r.url.path) for r in calls] == [
+        ("POST", "/repos/acme/app/issues"),
+        ("POST", "/repos/acme/app/issues/88/comments"),
+        ("PATCH", "/repos/acme/app/issues/88"),
+    ]  # the Issue filed in this pass gets no comment and no close: only the old link is touched
+    await db.refresh(fresh)
+    assert fresh.github_issue_number is None
+    await db.refresh(live)
+    assert live.github_issue_number == 99
+    assert live.github_issue_fixed_noted_at is None
+
+    await github_integration.on_report_processed(session_factory, outcome, transport=transport)
+    assert len(calls) == 3  # the next Report adds neither an Issue nor a comment
+
+
+@pytest.mark.parametrize("entity", ["test", "job"])
+async def test_note_step_skips_the_link_this_same_pass_filed(db, fixed_settings, entity, session_factory):
+    """A fresh link stays off-limits to the note step even if it becomes noteable mid-pass.
+
+    A concurrent Report can lift the streak between the two selects, so the filing gate
+    alone cannot catch this: the row was below the threshold when it was filed, and
+    reaches it only while the Issue is in flight. Commenting there, and closing it with
+    `github_close_fixed`, is the self-contradictory note on a brand-new Issue.
+    """
+    obj = await _note_row(db, entity, "fresh", clean_streak=4)
+    fixed_settings.github_close_fixed = True
+    model = TestCase if entity == "test" else Job
+    calls: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if request.url.path == "/repos/acme/app/issues":
+            async with session_factory() as other_session:  # another Report's rescore
+                await other_session.execute(update(model).where(model.id == obj.id).values(clean_streak=5))
+                await other_session.commit()
+        return httpx.Response(201 if request.method == "POST" else 200, json={"number": 123})
+
+    await github_integration.on_report_processed(
+        session_factory, _hook_outcome(entity, [obj]), transport=httpx.MockTransport(handler)
+    )
+    assert [(r.method, r.url.path) for r in calls] == [("POST", "/repos/acme/app/issues")]
+    await db.refresh(obj)
+    assert obj.github_issue_number == 123  # the filing itself stands
+    assert obj.github_issue_fixed_noted_at is None
+    assert obj.clean_streak == 5  # and it is noteable from the next Report on

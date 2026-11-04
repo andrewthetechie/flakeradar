@@ -654,6 +654,11 @@ change the tier threshold for this. If all three minimums are `0` and a token
 is set, FlakeRadar opens an issue for each test that it processes. Keep
 `MIN_SCORE` above 0.
 
+`FLAKERADAR_GITHUB_FIXED_STREAK`, when it is set, adds a fourth signal: a test or
+job already at that Clean streak gets no new issue, because its fix holds rather
+than being a live flake (see "When the fix holds" below). A failure drops the
+streak and re-arms filing.
+
 For a job, the failure count includes only unexplained failures.
 
 ### Duplicate issues
