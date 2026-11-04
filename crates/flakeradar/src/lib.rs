@@ -17,9 +17,21 @@
     )
 )]
 
+pub mod app;
+pub mod docs;
+pub mod error;
+pub mod extract;
+pub mod middleware;
+pub mod routes;
 pub mod settings;
 mod telemetry;
 
+#[doc(inline)]
+pub use app::{AppState, JSON_BODY_LIMIT, build_app, with_common_layers};
+#[doc(inline)]
+pub use error::{ApiError, ApiResult, Detail};
+#[doc(inline)]
+pub use extract::{ApiJson, ApiPath, ApiQuery, Validate, body_loc, query_loc};
 #[doc(inline)]
 pub use settings::{Secret, Settings, SettingsError, check_api_token, is_default_token};
 #[doc(inline)]

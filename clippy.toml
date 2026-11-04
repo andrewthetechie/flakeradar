@@ -10,4 +10,4 @@ allow-indexing-slicing-in-tests = true
 # backticks. This project's own name and the names of the systems it talks to
 # recur in doc comments, and backticking them everywhere makes the docs harder to
 # read. ".." keeps clippy's default list (GitHub, OAuth, ...).
-doc-valid-idents = ["FlakeRadar", "SeaORM", "PostgreSQL", "JUnit", ".."]
+doc-valid-idents = ["FlakeRadar", "SeaORM", "PostgreSQL", "JUnit", "FastAPI", "OpenAPI", "Redoc", "Pydantic", "Prometheus", ".."]

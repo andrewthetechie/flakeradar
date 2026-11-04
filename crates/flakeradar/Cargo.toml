@@ -16,7 +16,7 @@ dotenvy.workspace = true
 flakeradar-core = { path = "../flakeradar-core" }
 flakeradar-db = { path = "../flakeradar-db" }
 form_urlencoded.workspace = true
-rust-embed = { workspace = true, features = ["debug-embed"] }
+sea-orm.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 serde_path_to_error.workspace = true
