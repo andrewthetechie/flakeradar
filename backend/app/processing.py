@@ -138,7 +138,8 @@ async def rescore(
     and joins each one until it has `window` Default rows or runs out. A Test with
     fewer than `window` Default-branch Executions in retention (for example a Repo
     whose Default branch rarely runs CI) therefore still reads all of its
-    Executions in that arm.
+    Executions in that arm (measured before and after, both shapes:
+    docs/perf/20-test-rescore-explain.md).
     """
     settings = get_settings()
     history: dict[int, list[tuple[str, str, str]]] = defaultdict(list)  # id -> [(sha, branch, status)]

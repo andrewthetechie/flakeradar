@@ -285,8 +285,9 @@ def test_execution_window_ids(
     """The newest `window` Test-execution ids per Test: unnest + LATERAL ... LIMIT.
 
     The overall lateral stops after `window` rows per Test on ix_exec_case_id, so
-    its cost tracks the window, not the Test's retained history (the Job-side
-    twin was measured before and after: docs/perf/21-job-rescore-explain.md).
+    its cost tracks the window, not the Test's retained history (measured before
+    and after: docs/perf/20-test-rescore-explain.md; the Job-side twin:
+    docs/perf/21-job-rescore-explain.md).
     With `include_default_branch`, also the newest `window` per Test on its
     Repo's Default branch (a NULL Default branch matches every branch),
     UNION-deduped. Whether a Run is on the Default branch lives in
