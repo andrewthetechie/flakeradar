@@ -405,7 +405,7 @@ tests/test_report_action.py::test_both_fixture_files_are_uploaded_and_processed,
 tests/test_report_action.py::test_no_match_warns_without_failing_or_uploading,14,pending,,
 tests/test_report_intake.py::test_body_digest_is_the_sha256_of_the_bytes,6,ported,a_digest_is_the_sha256_of_the_bytes,
 tests/test_report_intake.py::test_build_junit_report_carries_the_body_and_its_digest,6,ported,the_junit_row_carries_the_body_and_its_digest,
-tests/test_report_intake.py::test_build_junit_report_defaults,6,na,,"the Rust builder is a struct with no defaults: the route supplies every field, and the defaults Python tested (branch ""main"", ci_run_id """", status ""pending"") are covered where they live, by tests/test_ingest_api.py's ported cases `ingest_queues_report`, `ingest_line_base_defaults_to_one` and `ingest_empty_attribution_params_become_none`, plus `the_junit_row_carries_the_body_and_its_digest`"
+tests/test_report_intake.py::test_build_junit_report_defaults,6,ported,ingest_defaults_branch_and_ci_run_id,
 tests/test_report_intake.py::test_build_pipeline_report_has_no_project_and_no_digest,6,ported,the_pipeline_row_has_no_project_and_no_digest,
 tests/test_report_intake.py::test_complete_report_is_the_processed_transition,6,ported,completing_a_report_records_its_counts_and_its_run,
 tests/test_report_intake.py::test_fail_report_is_the_permanent_failure_transition,6,ported,failing_a_report_records_the_error_and_no_retry,

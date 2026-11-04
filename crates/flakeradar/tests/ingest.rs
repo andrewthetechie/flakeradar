@@ -311,6 +311,16 @@ async fn ingest_stores_the_largest_ci_run_attempt() {
 }
 
 #[tokio::test]
+async fn ingest_rejects_an_empty_ci_run_attempt() {
+    // Pydantic reads an empty string as no integer at all, not as no value.
+    let db = TestDb::new().await.expect("a test database is available");
+    let reply = ingest(&test_app(&db), &[("ci_run_attempt", "")], passing_report()).await;
+    assert_eq!(reply.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(reply.json()["detail"][0]["type"], json!("int_parsing"));
+    assert_eq!(stored_reports(&db).await.len(), 0);
+}
+
+#[tokio::test]
 async fn ingest_rejects_a_ci_run_attempt_that_is_a_word() {
     // Pydantic's `int_parsing`, which is what keeps a word apart from a number
     // past the column's range.

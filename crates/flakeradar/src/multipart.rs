@@ -241,7 +241,10 @@ struct Needle {
 impl Needle {
     /// The needle `bytes`, with its failure table built once.
     fn new(bytes: Vec<u8>) -> Self {
-        let mut failure = vec![0_usize; bytes.len()];
+        let mut failure = Vec::with_capacity(bytes.len());
+        // The table has one entry per needle byte, so the first byte's border is
+        // zero and each byte after it gets the border of the prefix up to it.
+        failure.extend(bytes.first().map(|_| 0));
         let mut border = 0;
         for at in 1..bytes.len() {
             let byte = bytes.get(at).copied().unwrap_or_default();
@@ -251,9 +254,7 @@ impl Needle {
             if bytes.get(border).copied() == Some(byte) {
                 border += 1;
             }
-            if let Some(slot) = failure.get_mut(at) {
-                *slot = border;
-            }
+            failure.push(border);
         }
         Self { bytes, failure }
     }
@@ -504,7 +505,7 @@ mod tests {
     #[test]
     fn a_parameter_that_names_nothing_is_skipped() {
         let body = b"--b\r\nContent-Disposition: form-data; flag; size=9; name=\"report\"; \
-                     filename=\"r.xml\"\r\n\r\n<x/>\r\n--b--\r\n";
+                     filename=\"r.xml\"\r\nX-NoColon\r\n\r\n<x/>\r\n--b--\r\n";
         assert_eq!(
             file_field(body, "multipart/form-data; boundary=b", REPORT_FIELD),
             Some(&b"<x/>"[..])
@@ -680,6 +681,20 @@ mod tests {
             file_field(&body, "multipart/form-data; boundary=b", REPORT_FIELD),
             None
         );
+    }
+
+    #[test]
+    fn a_needle_that_repeats_its_own_prefix_is_found() {
+        // A boundary the parser is handed never repeats its own CRLF prefix, so
+        // the part of the KMP search that falls back to a shorter prefix is
+        // exercised here, on a needle that does repeat its prefix.
+        let needle = super::Needle::new(b"aabaa".to_vec());
+        assert_eq!(needle.find(b"aaaaabaabaa", 0), Some(3));
+        assert_eq!(needle.find(b"aaaaabaabaa", 6), Some(6));
+        assert_eq!(needle.find(b"ababab", 0), None);
+        // A needle longer than the haystack, and an empty one, are never found.
+        assert_eq!(needle.find(b"aab", 0), None);
+        assert_eq!(super::Needle::new(Vec::new()).find(b"aab", 0), None);
     }
 
     #[test]
