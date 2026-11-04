@@ -21,7 +21,10 @@
       {
         "file": "golden/ingest-junit/07.json",
         "field": "body",
-        "pythonValue": "Internal Server Error"
+        "pythonValue": "Internal Server Error",
+        "rustValue": {
+          "detail": "Not a valid JUnit XML report: testcase time 'abc' is not a number"
+        }
       },
       {
         "file": "golden/ingest-junit/07.json",
