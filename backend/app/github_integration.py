@@ -39,10 +39,12 @@ Error handling: never raises.
 - The fixed-note step (`note_fixed_issues_for`, after filing) follows the same
   policy for the comment POST and the optional close PATCH. It stamps
   `github_issue_fixed_noted_at` the moment the comment lands, so a later close
-  failure never causes a second comment on the same fix. The stamp is reset to
-  NULL when the Clean streak collapses (`processing.rescore`/`rescore_jobs`) and
-  by every write of the link (here in the re-arm, and in `issue_links`), so a
-  re-armed link can be noted again.
+  failure never causes a second comment on the same fix, and it stamps
+  conditionally — only while the row is still at the streak and on the Issue the
+  comment was posted to — so a failure the processor handled mid-POST keeps the
+  note re-armed. The stamp is reset to NULL when the Clean streak collapses
+  (`processing.rescore`/`rescore_jobs`) and by every write of the link (here in
+  the re-arm, and in `issue_links`), so a re-armed link can be noted again.
 - A response body FlakeRadar cannot use (a 201 without an issue number, a
   sync 200 that is not a JSON object with a `state`) -> log a warning, go on;
   no issue number is stored and no link is cleared (the sync still stamps the
@@ -55,7 +57,7 @@ import logging
 from dataclasses import dataclass
 
 import httpx
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm.exc import StaleDataError
 
@@ -826,6 +828,53 @@ async def _fixed_note_job_candidates(db: AsyncSession, job_ids: list[int]) -> li
     return candidates
 
 
+async def _stamp_note(
+    db: AsyncSession, obj: Job | TestCase, repo: str, number: int, *, entity: str, threshold: int
+) -> bool:
+    """Land the fixed-note stamp only while the row is still noteable; True when it landed.
+
+    The comment POST hands the row over to whoever can change it first: a failure the
+    processor handles mid-POST resets `clean_streak` to 0 and clears the stamp
+    (`processing.rescore`), and a re-armed or replaced link clears it too
+    (`issue_links`). Stamping unconditionally after either of those would undo that
+    reset, and every later clean run is then filtered out as already noted — so the
+    write is one conditional UPDATE on the state the note was selected for, which
+    Postgres re-checks against the row as of the write itself. A miss says what the
+    row became and leaves the stamp NULL, so the next clean streak notes it again;
+    the vanished row an admin delete leaves behind costs this note only.
+    """
+    model = type(obj)
+    result = await db.execute(
+        update(model)
+        .where(
+            model.id == obj.id,
+            model.github_issue_fixed_noted_at.is_(None),
+            model.github_issue_number == number,
+            model.clean_streak >= threshold,
+        )
+        .values(github_issue_fixed_noted_at=utcnow())
+        .execution_options(synchronize_session="fetch")  # refresh only a row the write hit
+    )
+    if result.rowcount:
+        return True
+    streak, linked = (
+        await db.execute(select(model.clean_streak, model.github_issue_number).where(model.id == obj.id))
+    ).first() or (None, None)
+    if streak is None:  # an admin delete won the race: the comment is on an issue with no row
+        logger.warning(
+            "%s %s deleted (admin delete) while noting issue %s#%s", entity.capitalize(), obj.id, repo, number
+        )
+    else:
+        logger.warning(
+            "%s %s stopped being noteable (streak %s, issue %s) while its comment was posted",
+            entity.capitalize(),
+            obj.id,
+            streak,
+            linked,
+        )
+    return False
+
+
 async def _note_batch(
     db: AsyncSession,
     rows: list[tuple[Job | TestCase, str, str]],
@@ -842,7 +891,9 @@ async def _note_batch(
 
     The stamp lands as soon as the comment POST succeeds — before the close, and
     kept even if the close fails — because the rule is *one* comment per fix, and
-    re-posting after a failed close would break it.
+    re-posting after a failed close would break it. It is a conditional write,
+    though: the POST gives up the row's streak and link as they were at the select,
+    so the stamp lands only while the row is still noteable (see `_stamp_note`).
     """
     s = get_settings()
     try:
@@ -856,23 +907,9 @@ async def _note_batch(
                 number = obj.github_issue_number
                 resp = await client.post(f"/repos/{repo}/issues/{number}/comments", json={"body": body})
                 if resp.status_code == 201:
-                    obj_id = obj.id  # the object is expired after the savepoint rollback below
-                    nested = await db.begin_nested()
-                    obj.github_issue_fixed_noted_at = utcnow()
-                    try:
-                        await nested.commit()
-                    except StaleDataError:
-                        # An admin delete won the race: the comment is on an issue
-                        # whose row is gone, which costs this note only.
-                        await nested.rollback()
-                        logger.warning(
-                            "%s %s deleted (admin delete) while noting issue %s#%s",
-                            entity.capitalize(),
-                            obj_id,
-                            repo,
-                            number,
-                        )
-                        continue
+                    obj_id = obj.id  # the object is refreshed (or left alone) by the stamp write
+                    if not await _stamp_note(db, obj, repo, number, entity=entity, threshold=s.github_fixed_streak):
+                        continue  # the row stopped being noteable mid-POST: no stamp, and no close
                     await db.commit()
                     logger.info("Noted the fix appears to hold on issue %s#%s for %s %s", repo, number, entity, obj_id)
                     if s.github_close_fixed:

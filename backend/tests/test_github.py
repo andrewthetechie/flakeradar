@@ -9,7 +9,7 @@ from app import github_integration, issue_links
 from app.config import Settings
 from app.models import Job, Project, Repo, TestCase
 from app.processing import ProcessOutcome
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 
 from tests.factories import (
     make_execution,
@@ -2037,6 +2037,54 @@ async def test_fixed_note_admin_delete_race_costs_only_that_note(db, fixed_setti
     await db.refresh(other)
     assert other.github_issue_fixed_noted_at is not None
     assert any("deleted (admin delete) while noting" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.parametrize("entity", ["test", "job"])
+async def test_fixed_note_stamp_loses_to_a_clean_streak_reset_during_the_post(
+    db, fixed_settings, entity, session_factory, caplog
+):
+    """A comment that lands after the streak reset must not stamp the row (issue #33).
+
+    The note is selected at the threshold, the POST is slow, and the processor handles a
+    failure whose rescore resets `clean_streak` to 0 and clears the stamp: stamping here
+    would undo that reset, and every later clean run is filtered out as already noted.
+    """
+    note = _note_entry(entity)
+    obj = await _note_row(db, entity, "linked", github_issue_number=77, clean_streak=5)
+    model = TestCase if entity == "test" else Job
+    calls: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if request.method == "POST":
+            async with session_factory() as other_session:  # `rescore` resets the streak
+                await other_session.execute(
+                    update(model).where(model.id == obj.id).values(clean_streak=0, github_issue_fixed_noted_at=None)
+                )
+                await other_session.commit()
+        return httpx.Response(201 if request.method == "POST" else 200, json={})
+
+    fixed_settings.github_close_fixed = True  # a fix that did not hold must not be closed
+    with caplog.at_level(logging.WARNING, logger="flakeradar.github"):
+        await note(db, [obj.id], transport=httpx.MockTransport(handler))
+    assert [(r.method, r.url.path) for r in calls] == [("POST", "/repos/acme/app/issues/77/comments")]
+    await db.refresh(obj)
+    assert obj.clean_streak == 0
+    assert obj.github_issue_fixed_noted_at is None  # the reset stands: the row is noteable again
+    assert any("stopped being noteable" in r.getMessage() for r in caplog.records)
+
+    # the re-armed note really does come: the streak is back at the threshold
+    async with session_factory() as other_session:
+        await other_session.execute(update(model).where(model.id == obj.id).values(clean_streak=5))
+        await other_session.commit()
+    calls, transport = _note_recorder()
+    await note(db, [obj.id], transport=transport)
+    assert [(r.method, r.url.path) for r in calls] == [
+        ("POST", "/repos/acme/app/issues/77/comments"),
+        ("PATCH", "/repos/acme/app/issues/77"),
+    ]
+    await db.refresh(obj)
+    assert obj.github_issue_fixed_noted_at is not None
 
 
 @pytest.mark.parametrize("entity", ["test", "job"])
