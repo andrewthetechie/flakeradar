@@ -58,7 +58,10 @@ impl AppState {
 /// Builds the server's router over `state`.
 pub fn build_app(state: AppState) -> Router {
     let settings = Arc::clone(&state.settings);
-    let router = Router::new().merge(routes::router()).fallback(not_found);
+    let router = Router::new()
+        .merge(routes::router())
+        .fallback(not_found)
+        .method_not_allowed_fallback(method_not_allowed);
     with_common_layers(router, &settings).with_state(state)
 }
 
@@ -75,6 +78,15 @@ pub fn with_common_layers(router: Router<AppState>, settings: &Settings) -> Rout
         .layer(DefaultBodyLimit::max(JSON_BODY_LIMIT))
         .layer(cors_layer(settings))
         .layer(request_log_layer())
+}
+
+/// The response for a path that exists but does not answer this method.
+///
+/// The frozen server answered with Starlette's `HTTPException`, which FastAPI
+/// renders as the usual `{"detail": ...}` document; Axum's own 405 has an empty
+/// body. Both send an `Allow` header naming the methods the path does answer.
+async fn method_not_allowed() -> Response {
+    ApiError::new(StatusCode::METHOD_NOT_ALLOWED, "Method Not Allowed").into_response()
 }
 
 /// The response for a path no route matched.

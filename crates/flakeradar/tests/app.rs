@@ -72,11 +72,19 @@ async fn a_trailing_slash_redirects_to_the_path_without_it() {
 }
 
 #[tokio::test]
-async fn a_method_a_path_does_not_answer_is_a_405() {
+async fn a_method_a_path_does_not_answer_is_a_405_with_fastapis_body() {
     let db = TestDb::new().await.expect("a test database is available");
     let app = app(&db, &[]);
     let reply = request(&app, Method::POST, "/api/health").await;
     assert_eq!(reply.status, StatusCode::METHOD_NOT_ALLOWED);
+    assert_eq!(reply.json(), json!({"detail": "Method Not Allowed"}));
+    assert_eq!(
+        reply.header("content-type").as_deref(),
+        Some("application/json")
+    );
+    // Starlette names the methods the path does answer, and so does Axum.
+    let allow = reply.header("allow").expect("the answer names its methods");
+    assert!(allow.contains("GET"), "{allow}");
 }
 
 #[tokio::test]

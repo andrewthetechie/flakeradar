@@ -19,7 +19,7 @@ use serde::Serialize;
 use utoipa::ToSchema;
 
 use crate::app::AppState;
-use crate::error::{ApiError, ApiResult};
+use crate::error::ApiResult;
 
 /// The media type of the Prometheus text exposition format, version 0.0.4.
 pub const PROMETHEUS_MEDIA_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
@@ -102,9 +102,10 @@ pub async fn health() -> Json<HealthOut> {
 ///
 /// # Errors
 ///
-/// Returns a 500 when the database answered the connectivity check but the queue
-/// query then failed. A database that does not answer at all is a 503 body
-/// rather than an error, because the probe exists to report exactly that.
+/// Returns the 500 the frozen server's unhandled query error became when the
+/// database answered the connectivity check but the queue query then failed. A
+/// database that does not answer at all is a 503 body rather than an error,
+/// because the probe exists to report exactly that.
 #[utoipa::path(
     get,
     path = "/api/health/ready",
@@ -121,7 +122,10 @@ pub async fn ready(State(state): State<AppState>) -> ApiResult<Response> {
     {
         return Ok(unavailable());
     }
-    let facts = queue_facts(pool).await.map_err(|error| database(&error))?;
+    let facts = match queue_facts(pool).await {
+        Ok(facts) => facts,
+        Err(error) => return Ok(database_failure(&error)),
+    };
     Ok(Json(ReadinessOut {
         database: true,
         processor_leader: facts.leader,
@@ -329,10 +333,21 @@ fn python_float(value: f64) -> String {
     text
 }
 
-/// Turns a query failure into the 500 a scrape or probe reports.
-fn database(error: &sea_orm::DbErr) -> ApiError {
-    tracing::error!(error = %error, "ops query failed");
-    ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "Database error")
+/// The 500 a readiness probe answers when its queue query fails.
+///
+/// The frozen server ran that query outside its `try`, so the unhandled
+/// `SQLAlchemyError` reached Starlette's error handler and became a plain-text
+/// 500, not the `{"detail": ...}` document every other failure carries. The
+/// scrape answers 503 instead, because its whole query block was inside the
+/// `try`.
+fn database_failure(error: &sea_orm::DbErr) -> Response {
+    tracing::error!(error = %error, "readiness query failed");
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+        "Internal Server Error",
+    )
+        .into_response()
 }
 
 #[cfg(test)]
