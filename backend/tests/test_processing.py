@@ -14,6 +14,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 
 from tests.conftest import make_junit
 from tests.factories import (
+    _notify_settings,
     make_execution,
     make_job,
     make_pipeline,
@@ -570,13 +571,6 @@ async def test_fail_streak_marks_broken_after_five_default_branch_failures(db, s
 # --- Notifications: tier crossings (ADR 0009) -----------------------------
 
 
-def _notify_settings(**kw) -> Settings:
-    """Decay 0 makes the score depend on one transition, so crossings are exact."""
-    base = {"flake_threshold": 0.05, "score_decay": 0.0, "score_window": 50, "broken_streak": 5}
-    base.update(kw)
-    return Settings(**base)
-
-
 async def test_rescore_reports_an_upward_tier_crossing(db, session_factory, monkeypatch):
     monkeypatch.setattr("app.processing.get_settings", lambda: _notify_settings())
     proj = await make_project(db, "acme/app", "backend")
@@ -643,6 +637,21 @@ async def test_a_broken_test_reports_no_recovery(db, session_factory, monkeypatc
     assert outcome.tier_changes == []
 
 
+async def test_fixing_a_broken_test_can_report_flaky_again(db, session_factory, monkeypatch):
+    """No recovery was sent, and the pass that ends the failures is a new flip."""
+    monkeypatch.setattr("app.processing.get_settings", lambda: _notify_settings(broken_streak=2))
+    proj = await make_project(db, "acme/app", "backend")
+    for sha, status in (("a", "failed"), ("b", "passed"), ("c", "failed"), ("d", "failed")):
+        await _queue(db, make_junit([("t", status)]), project=proj, commit_sha=sha)
+        await process_next(session_factory)
+    await _queue(db, make_junit([("t", "passed")]), project=proj, commit_sha="e")
+    (change,) = (await process_next(session_factory)).tier_changes
+    assert change.event == "test.flaky"
+    await _queue(db, make_junit([("t", "passed")]), project=proj, commit_sha="f")
+    (change,) = (await process_next(session_factory)).tier_changes
+    assert change.event == "test.recovered"
+
+
 async def test_a_new_test_above_the_threshold_is_reported_flaky(db, session_factory, monkeypatch):
     monkeypatch.setattr("app.processing.get_settings", lambda: _notify_settings())
     proj = await make_project(db, "acme/app", "backend")
@@ -670,6 +679,24 @@ async def test_rescore_repo_reports_no_crossings(db, session_factory, monkeypatc
     assert tests["t2"].flakiness_score == 0.0  # its flaky tier was left...
     assert outcome.tier_changes == []  # ...but rescore_repo sends no event
     assert "dropped 1 Notification(s)" in caplog.text  # the count is all it reports
+
+
+async def test_a_default_branch_change_drops_the_reports_own_tier_changes(db, session_factory, monkeypatch, caplog):
+    """A Report that changes the Default branch and touches the crossing Test sends nothing either."""
+    monkeypatch.setattr("app.processing.get_settings", lambda: _notify_settings())
+    proj = await make_project(db, "acme/app", "backend")
+    await _queue(db, make_junit([("t", "failed")]), project=proj, branch="feat", commit_sha="a")
+    await process_next(session_factory)
+    await _queue(db, make_junit([("t", "passed")]), project=proj, branch="feat", commit_sha="b")
+    assert (await process_next(session_factory)).tier_changes  # t became flaky on 'feat'
+    await _queue(db, make_junit([("t", "passed")]), project=proj, branch="main", commit_sha="c", default_branch="main")
+    with caplog.at_level("INFO", logger="flakeradar.processing"):
+        outcome = await process_next(session_factory)
+    db.expire_all()
+    (tc,) = await _tests(db)
+    assert tc.flakiness_score == 0.0  # the new Default branch has no flips, so t left the flaky tier...
+    assert outcome.tier_changes == []  # ...but a Report of every Test must not send one event per Test
+    assert "dropped 1 Notification(s)" in caplog.text
 
 
 async def test_a_move_into_suspect_reports_nothing(db, session_factory, monkeypatch):

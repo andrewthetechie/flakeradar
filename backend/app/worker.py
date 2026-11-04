@@ -45,6 +45,7 @@ from sqlalchemy.exc import DBAPIError, InvalidRequestError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, AsyncSession, async_sessionmaker
 
 from . import github_integration, notify
+from .config import WebhookFormat
 from .db import WORKER_LOCK_KEY
 from .models import REPORT_PENDING
 from .processing import ProcessOutcome, process_next
@@ -177,19 +178,17 @@ class WebhookWorker:
         self,
         urls: Sequence[str],
         *,
-        fmt: notify.Format = "json",
+        fmt: WebhookFormat = "json",
         public_url: str = "",
         maxsize: int = 1000,
         transport: httpx.AsyncBaseTransport | None = None,
         retry_delays: Sequence[float] = WEBHOOK_RETRY_DELAYS,
-        timeout: float = WEBHOOK_TIMEOUT,
     ) -> None:
         self._urls = list(urls)
         self._format = fmt
         self._public_url = public_url
         self._transport = transport
         self._retry_delays = tuple(retry_delays)
-        self._timeout = timeout
         self._queue: asyncio.Queue[list[notify.TierChange]] = asyncio.Queue(maxsize=maxsize)
         self._dropped = 0
         self._task: asyncio.Task | None = None
@@ -240,7 +239,7 @@ class WebhookWorker:
         for attempt in range(attempts):
             delay = self._retry_delays[attempt] if attempt < len(self._retry_delays) else 0.0
             try:
-                async with httpx.AsyncClient(timeout=self._timeout, transport=self._transport) as client:
+                async with httpx.AsyncClient(timeout=WEBHOOK_TIMEOUT, transport=self._transport) as client:
                     resp = await client.post(url, json=body)
             except httpx.HTTPError as exc:
                 logger.warning(

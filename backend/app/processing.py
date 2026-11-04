@@ -12,7 +12,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any
 
-from sqlalchemy import insert, select, update
+from sqlalchemy import Row, Select, insert, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import InterfaceError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -71,8 +71,8 @@ class ProcessOutcome:
     error: str | None
     touched_job_ids: list[int] = field(default_factory=list)
     # Tests and Jobs whose tier crossed the Flake threshold in this Report, in
-    # the direction it crossed. A caller that must stay silent (rescore_repo,
-    # retention) simply ignores what rescore returns (ADR 0009).
+    # the direction it crossed. Empty when the Report changed the Default branch:
+    # that rescore must stay silent (ADR 0009).
     tier_changes: list[TierChange] = field(default_factory=list)
     # Retries already spent on this Report: the worker backs off before the next
     # claim, so it needs the value the requeue just bumped.
@@ -123,22 +123,22 @@ async def _upsert_test_cases(db: AsyncSession, project_id: int, parsed: list[Par
     return ids
 
 
-async def _old_test_scores(db: AsyncSession, test_case_ids: list[int]) -> dict[int, float]:
-    """The scores a rescore is about to replace, read before the UPDATE."""
-    old: dict[int, float] = {}
-    for chunk in chunks(test_case_ids):
-        rows = await db.execute(select(TestCase.id, TestCase.flakiness_score).where(TestCase.id.in_(chunk)))
-        old.update(rows.all())
-    return old
+async def _rows_by_id(db: AsyncSession, stmt: Select, id_column: Any, ids: list[int]) -> dict[int, Row]:
+    """The rows `stmt` selects for `ids` (chunked), keyed by id, in id order.
+
+    `stmt` must select `id_column` under the name `id`. A Test or Job deleted
+    before this read has no row: it names nothing, so it sends nothing.
+    """
+    rows: dict[int, Row] = {}
+    for chunk in chunks(ids):
+        rows.update({row.id: row for row in (await db.execute(stmt.where(id_column.in_(chunk)))).all()})
+    return dict(sorted(rows.items()))
 
 
-async def _old_job_scores(db: AsyncSession, job_ids: list[int]) -> dict[int, float]:
-    """The scores a Job rescore is about to replace, read before the UPDATE."""
-    old: dict[int, float] = {}
-    for chunk in chunks(job_ids):
-        rows = await db.execute(select(Job.id, Job.flakiness_score).where(Job.id.in_(chunk)))
-        old.update(rows.all())
-    return old
+async def _old_scores(db: AsyncSession, model: type[TestCase] | type[Job], ids: list[int]) -> dict[int, float]:
+    """The scores a rescore of `model` is about to replace, read before the UPDATE."""
+    rows = await _rows_by_id(db, select(model.id, model.flakiness_score), model.id, ids)
+    return {row.id: row.flakiness_score for row in rows.values()}
 
 
 def _crossed(updates: list[dict[str, Any]], old: dict[int, float], threshold: float) -> list[dict[str, Any]]:
@@ -148,34 +148,6 @@ def _crossed(updates: list[dict[str, Any]], old: dict[int, float], threshold: fl
     changes the tier but crosses nothing, so it sends no Notification.
     """
     return [u for u in updates if (u["flakiness_score"] >= threshold) != (old.get(u["id"], 0.0) >= threshold)]
-
-
-async def _test_change_rows(db: AsyncSession, ids: list[int]) -> dict[int, tuple[str | None, str, str, str]]:
-    """(classname, name, project, repo) for the Tests a Notification names."""
-    rows: dict[int, tuple[str | None, str, str, str]] = {}
-    for chunk in chunks(ids):
-        result = await db.execute(
-            select(TestCase.id, TestCase.classname, TestCase.name, Project.name, Repo.name)
-            .join(Project, Project.id == TestCase.project_id)
-            .join(Repo, Repo.id == Project.repo_id)
-            .where(TestCase.id.in_(chunk))
-        )
-        rows.update({r[0]: (r[1], r[2], r[3], r[4]) for r in result.all()})
-    return rows
-
-
-async def _job_change_rows(db: AsyncSession, ids: list[int]) -> dict[int, tuple[str, str, str]]:
-    """(name, pipeline, repo) for the Jobs a Notification names."""
-    rows: dict[int, tuple[str, str, str]] = {}
-    for chunk in chunks(ids):
-        result = await db.execute(
-            select(Job.id, Job.name, Pipeline.name, Repo.name)
-            .join(Pipeline, Pipeline.id == Job.pipeline_id)
-            .join(Repo, Repo.id == Pipeline.repo_id)
-            .where(Job.id.in_(chunk))
-        )
-        rows.update({r[0]: (r[1], r[2], r[3]) for r in result.all()})
-    return rows
 
 
 async def _test_tier_changes(
@@ -195,24 +167,26 @@ async def _test_tier_changes(
     ]
     if not crossed:
         return []
-    rows = await _test_change_rows(db, [u["id"] for u in crossed])
+    stmt = (
+        select(TestCase.id, TestCase.classname, TestCase.name, Project.name.label("project"), Repo.name.label("repo"))
+        .join(Project, Project.id == TestCase.project_id)
+        .join(Repo, Repo.id == Project.repo_id)
+    )
+    rows = await _rows_by_id(db, stmt, TestCase.id, [u["id"] for u in crossed])
     by_id = {u["id"]: u for u in crossed}
     changes: list[TierChange] = []
-    for tc_id, (classname, name, project, repo) in sorted(rows.items()):
-        # A Test deleted before this read has no row: it names nothing, so it
-        # sends nothing. Iterating the rows keeps that case branch-free.
-        u = by_id[tc_id]
-        tier = tier_for(u["flakiness_score"], threshold)
+    for row in rows.values():
+        u = by_id[row.id]
         changes.append(
             TierChange(
                 kind="test",
-                id=u["id"],
-                repo=repo,
-                project=project,
-                name=name,
-                classname=classname,
+                id=row.id,
+                repo=row.repo,
+                project=row.project,
+                name=row.name,
+                classname=row.classname,
                 flakiness_score=u["flakiness_score"],
-                tier=tier,
+                tier=tier_for(u["flakiness_score"], threshold),
                 confirmed_flake_count=u["confirmed_flake_count"],
                 failure_category=u["failure_category"],
             )
@@ -228,22 +202,26 @@ async def _job_tier_changes(
     crossed = _crossed(updates, old, threshold)
     if not crossed:
         return []
-    rows = await _job_change_rows(db, [u["id"] for u in crossed])
+    stmt = (
+        select(Job.id, Job.name, Pipeline.name.label("pipeline"), Repo.name.label("repo"))
+        .join(Pipeline, Pipeline.id == Job.pipeline_id)
+        .join(Repo, Repo.id == Pipeline.repo_id)
+    )
+    rows = await _rows_by_id(db, stmt, Job.id, [u["id"] for u in crossed])
     by_id = {u["id"]: u for u in crossed}
     changes: list[TierChange] = []
-    for job_id, (name, pipeline, repo) in sorted(rows.items()):
-        u = by_id[job_id]  # a Job deleted before this read sends nothing
-        tier = tier_for(u["flakiness_score"], threshold)
+    for row in rows.values():
+        u = by_id[row.id]
         changes.append(
             TierChange(
                 kind="job",
-                id=u["id"],
-                repo=repo,
+                id=row.id,
+                repo=row.repo,
                 project=None,  # a Job belongs to a Repo, not a Project
-                name=name,
-                pipeline=pipeline,
+                name=row.name,
+                pipeline=row.pipeline,
                 flakiness_score=u["flakiness_score"],
-                tier=tier,
+                tier=tier_for(u["flakiness_score"], threshold),
                 confirmed_flake_count=u["confirmed_flake_count"],
             )
         )
@@ -276,7 +254,7 @@ async def rescore(
 
     Returns the Tier changes this rescore caused, for the caller to notify
     about. Nothing is emitted here: rescore_repo and the retention prune are
-    callers that must stay silent, and they do so by ignoring the return value.
+    callers that must stay silent, so they log a count of them and pass none on.
     """
     settings = get_settings()
     history: dict[int, list[tuple[str, str, str]]] = defaultdict(list)  # id -> [(sha, branch, status)]
@@ -328,7 +306,7 @@ async def rescore(
             # the key out of the bulk update, which is what preserves an existing stamp.
             values["github_issue_fixed_noted_at"] = None
         updates.append(values)
-    changes = await _test_tier_changes(db, updates, await _old_test_scores(db, test_case_ids), settings)
+    changes = await _test_tier_changes(db, updates, await _old_scores(db, TestCase, test_case_ids), settings)
     for chunk in chunks(updates):
         await db.execute(update(TestCase), chunk)
     if updates:
@@ -348,12 +326,17 @@ async def apply_default_branch(db: AsyncSession, repo_id: int, value: str | None
     return True
 
 
-async def rescore_repo(db: AsyncSession, repo_id: int) -> tuple[list[int], list[int]]:
+async def rescore_repo(
+    db: AsyncSession, repo_id: int, *, report_tier_changes: list[TierChange]
+) -> tuple[list[int], list[int]]:
     """Rescore every Test and every Job in the Repo (chunked).
 
     Returns (test_ids, job_ids), each sorted. The Tier changes this causes are
     dropped on purpose: a Default branch change rescores the whole Repo at once,
     so notifying about it would send hundreds of events for one Report (ADR 0009).
+    The caller's own rescore already ran under the new branch, so its
+    `report_tier_changes` have the same cause: the caller drops them and they
+    only count towards the logged total here.
     """
     test_ids = list(
         (
@@ -370,7 +353,7 @@ async def rescore_repo(db: AsyncSession, repo_id: int) -> tuple[list[int], list[
         ).scalars()
     )
     test_ids, job_ids = sorted(test_ids), sorted(job_ids)
-    dropped = await rescore(db, test_ids)
+    dropped = report_tier_changes + await rescore(db, test_ids)
     dropped += await rescore_jobs(db, job_ids)
     if dropped:
         # One event per changed Test would flood the channel, so only the count
@@ -445,7 +428,7 @@ async def rescore_jobs(
         if streak == 0:  # the same reset as in `rescore`, for Jobs too (issue #33)
             values["github_issue_fixed_noted_at"] = None
         updates.append(values)
-    changes = await _job_tier_changes(db, updates, await _old_job_scores(db, job_ids), settings)
+    changes = await _job_tier_changes(db, updates, await _old_scores(db, Job, job_ids), settings)
     for chunk in chunks(updates):
         await db.execute(update(Job), chunk)
     if updates:
@@ -582,7 +565,8 @@ async def process_pipeline_report(db: AsyncSession, report: Report) -> ProcessOu
     touched = sorted(jobs_with_new_exec | flag_changed)
     tier_changes = await rescore_jobs(db, touched, day_counts=day_counts)
     if branch_changed:
-        await rescore_repo(db, report.repo_id)  # whole-Repo rescore: no Notifications
+        await rescore_repo(db, report.repo_id, report_tier_changes=tier_changes)
+        tier_changes = []  # whole-Repo rescore: no Notifications
 
     counts_out = {**new_counts, "duplicate": len(pipeline_report.jobs) - sum(new_counts.values())}
     report_intake.complete_report(report, now=now, run_id=None, counts=counts_out)
@@ -677,7 +661,7 @@ async def process_report(db: AsyncSession, report: Report) -> ProcessOutcome:
         day_counts[ex["test_case_id"]] = (n + 1, f + (ex["status"] in scoring.FAILING))
     tier_changes = await rescore(db, touched, day_counts=day_counts)
     if branch_changed:
-        await rescore_repo(db, report.repo_id)  # whole-Repo rescore: no Notifications
+        await rescore_repo(db, report.repo_id, report_tier_changes=tier_changes)
 
     # A linked JUnit report explains (or un-explains) Job failures: rescore the
     # Jobs that carry this ci_job_id, so order of arrival does not matter.
@@ -695,7 +679,7 @@ async def process_report(db: AsyncSession, report: Report) -> ProcessOutcome:
         touched_test_ids=touched,
         error=None,
         touched_job_ids=touched_jobs,
-        tier_changes=tier_changes,
+        tier_changes=[] if branch_changed else tier_changes,  # whole-Repo rescore: no Notifications
     )
 
 

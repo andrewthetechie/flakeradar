@@ -11,12 +11,21 @@ in one direction or the other (`test.flaky`, `test.recovered`, `job.flaky`,
 `job.recovered`).
 
 Detection lives inside `rescore` and `rescore_jobs`, which *return* the
-crossings and never emit them. Two other callers — `rescore_repo`, which runs
-when a Report changes the Repo's Default branch, and the retention prune — must
-stay silent: a Default branch change rescores the whole Repo at once, so
-emitting there would send hundreds of messages for one Report. A caller that
-must stay silent ignores the return value; the two processing paths put it on
-`ProcessOutcome.tier_changes`.
+crossings and never emit them. The two processing paths put them on
+`ProcessOutcome.tier_changes`. Two other causes must stay silent: a Report that
+changes the Repo's Default branch, because it rescores the whole Repo at once
+and emitting would send hundreds of messages for one Report, and the retention
+prune, because losing old Executions is not news. Each logs how many Tier
+changes it dropped and passes none on. A Report that changes the Default branch
+also drops the Tier changes of the Tests or Jobs it touched itself, because
+those were rescored under the new branch too.
+
+A Test that leaves the flaky tier while it is broken sends nothing, because it
+has not recovered. Its fix has no event of its own: the first pass is a new flip
+that may cross the threshold and send another `test.flaky`, or may cross nothing
+and send nothing. So a subscriber can see `test.flaky` with no closing event. We
+accept that gap over a "recovered" message about a Test that fails every run.
+Stating it is cheaper than a new event type or stored state.
 
 Each crossing carries a snapshot of the values that produced it: repo, project,
 classname, name, the new score and tier, the Proven flake count, and the Failure

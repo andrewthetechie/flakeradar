@@ -771,9 +771,19 @@ A message is sent only when a test or job **crosses the Flake threshold**:
 | `job.flaky` | A job's score reached the threshold. |
 | `job.recovered` | A job's score fell below the threshold again. |
 
-Nothing is sent when the score moves but the tier stays the same, when a test
-that is now [broken](#broken-tests) leaves the flaky tier (a broken test has
-not recovered), or when a change of the default branch rescores a whole repo.
+Nothing is sent in these cases:
+
+- The score moves but the test or job stays on the same side of the threshold.
+- A report changes the default branch. That rescores the whole repo, so the
+  report sends no events at all, even for the tests and jobs it touched. The
+  log records how many were dropped.
+- Retention deletes old executions and a score falls as a result. The log
+  records how many were dropped.
+- A test that is now [broken](#broken-tests) leaves the flaky tier, because a
+  broken test has not recovered. There is no closing event for this, so
+  `test.flaky` can be the last event you see for that test. When the test is
+  later fixed, you get an event only if the score crosses the threshold again:
+  the first pass can send a new `test.flaky`, and a later pass `test.recovered`.
 
 `json` (the default) posts a list of event objects, one per test or job the
 report changed. One report is one request:
@@ -814,8 +824,10 @@ with a short wait between them, and a rate limit's `retry-after` is honoured up
 to ten seconds. A timeout, a `5xx`, a `408` and a `429` are retried; any other
 `4xx` is a configuration error and is not. FlakeRadar keeps no queue on disk,
 so a message that cannot be delivered — or one that is still queued when the
-process stops — is lost. The dashboard still shows the current tier, and the
-next report that changes it sends a new message.
+process stops — is lost. The queue holds 1000 reports' worth of messages and
+drops the oldest when it is full, so a long endpoint outage also loses messages.
+The dashboard still shows the current tier, and the next report that changes it
+sends a new message.
 
 ## How scoring works
 

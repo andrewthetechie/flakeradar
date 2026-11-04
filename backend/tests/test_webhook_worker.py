@@ -3,6 +3,7 @@
 import asyncio
 import json
 
+import app.main  # noqa: F401  (its logging setup is part of what these tests cover)
 import httpx
 import pytest
 from app.processing import ProcessOutcome
@@ -207,7 +208,9 @@ async def test_a_webhook_url_is_never_logged(caplog):
         return httpx.Response(400)
 
     worker = _worker(httpx.MockTransport(handler))
-    with caplog.at_level("WARNING"):
+    # INFO on the root logger is what app.main configures, and httpx logs each
+    # request's full URL at INFO unless its own logger is pinned above that.
+    with caplog.at_level("INFO"):
         await worker.start()
         try:
             await worker.enqueue(_outcome(_test_change()))

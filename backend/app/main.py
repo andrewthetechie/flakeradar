@@ -23,6 +23,10 @@ logger = logging.getLogger("flakeradar")
 # Alembic's fileConfig sets the root logger to WARNING at startup; pin our
 # own level so flakeradar.* INFO logs (e.g. processor election) still show.
 logger.setLevel(logging.INFO)
+# httpx logs each request's full URL at INFO, and a Webhook URL is a credential
+# (ADR 0009). Alembic's root WARNING happens to hide that after startup; pin it
+# here so the guarantee does not depend on migrations having run.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 @asynccontextmanager

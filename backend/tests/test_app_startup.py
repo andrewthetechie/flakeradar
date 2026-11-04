@@ -114,8 +114,6 @@ async def test_the_lifespan_builds_a_webhook_worker_only_when_urls_are_set(datab
     monkeypatch.setattr(main, "get_settings", lambda: Settings(api_token="real-token"))
     async with main.lifespan(main.app):
         assert built == []
-    async with main.lifespan(main.app):
-        assert built == []
 
     monkeypatch.setattr(
         main,

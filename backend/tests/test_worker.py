@@ -13,8 +13,7 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import DBAPIError
 
 from tests.conftest import make_junit
-from tests.factories import make_project, make_report
-from tests.test_processing import _notify_settings
+from tests.factories import _notify_settings, make_project, make_report
 
 
 async def _wait_for(predicate, timeout: float = 10.0) -> None:

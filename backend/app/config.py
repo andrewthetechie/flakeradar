@@ -10,6 +10,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 DEFAULT_INSECURE_TOKEN = "changeme"
 DEFAULT_DATABASE_URL = "postgresql+asyncpg://flakeradar:flakeradar@localhost:5432/flakeradar"
 
+WebhookFormat = Literal["json", "slack"]
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_prefix="FLAKERADAR_", extra="ignore")
@@ -72,7 +74,7 @@ class Settings(BaseSettings):
     # disables them. One format applies to every endpoint: "json" posts a list
     # of event objects, "slack" posts {"text": ...} with one line per event.
     webhook_urls: str = ""
-    webhook_format: Literal["json", "slack"] = "json"
+    webhook_format: WebhookFormat = "json"
 
     cors_origins: str = "http://localhost:5173"
 

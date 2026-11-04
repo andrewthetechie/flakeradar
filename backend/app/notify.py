@@ -13,9 +13,10 @@ from dataclasses import dataclass
 from typing import Any, Literal
 from urllib.parse import quote
 
+from .classify import FailureCategory
+from .config import WebhookFormat
 from .schemas import Tier
 
-Format = Literal["json", "slack"]
 Kind = Literal["test", "job"]
 
 
@@ -38,7 +39,7 @@ class TierChange:
     confirmed_flake_count: int
     classname: str | None = None  # tests only
     pipeline: str | None = None  # jobs only
-    failure_category: str | None = None  # tests only
+    failure_category: FailureCategory | None = None  # tests only
 
     @property
     def event(self) -> str:
@@ -119,6 +120,6 @@ def render_slack(changes: list[TierChange], public_url: str) -> dict[str, str]:
     return {"text": "\n".join(_slack_line(change, public_url) for change in changes)}
 
 
-def render(changes: list[TierChange], fmt: Format, public_url: str) -> dict[str, Any] | list[dict[str, Any]]:
+def render(changes: list[TierChange], fmt: WebhookFormat, public_url: str) -> dict[str, Any] | list[dict[str, Any]]:
     """The request body for one Report's batch of Tier changes, in `fmt`."""
     return render_slack(changes, public_url) if fmt == "slack" else render_json(changes, public_url)
