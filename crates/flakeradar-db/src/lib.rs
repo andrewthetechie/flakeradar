@@ -15,6 +15,7 @@
 mod batching;
 mod connect;
 mod error;
+mod identity;
 mod migration;
 
 /// The `SeaORM` entities, generated from the baseline schema by `sea-orm-cli`.
@@ -36,6 +37,8 @@ pub use batching::{CHUNK, chunks};
 pub use connect::{DbSettings, connect};
 #[doc(inline)]
 pub use error::DbError;
+#[doc(inline)]
+pub use identity::{get_or_create_project, get_or_create_repo};
 #[doc(inline)]
 pub use migration::{BASELINE_SQL, Migrator, run_migrations, split_statements};
 

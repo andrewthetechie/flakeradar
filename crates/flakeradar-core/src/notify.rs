@@ -1,0 +1,410 @@
+//! Webhook Notifications: one message per Tier change, as `json` or `slack`.
+//!
+//! A Notification is best effort (ADR 0009): the leader renders it and posts it
+//! from its own task, so a slow or unreachable endpoint never delays Report
+//! processing. Nothing is stored, so one that is not delivered is lost. The
+//! payload is built from a [`TierChange`], the snapshot a rescore took when the
+//! Test or Job crossed the Flake threshold, so the numbers can never contradict
+//! the direction of the event.
+
+// Rust guideline compliant 2026-07-21
+
+use std::fmt::Write as _;
+
+use serde_json::{Map, Value};
+
+use crate::classify::FailureCategory;
+use crate::model::Tier;
+
+/// What a Tier change happened to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    /// A Test crossed the Flake threshold.
+    Test,
+    /// A Job crossed the Flake threshold.
+    Job,
+}
+
+impl Kind {
+    /// The key the entity's object takes in the JSON payload.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Test => "test",
+            Self::Job => "job",
+        }
+    }
+}
+
+/// The format a Webhook URL expects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WebhookFormat {
+    /// A JSON array with one event object per Tier change.
+    Json,
+    /// Slack's incoming-webhook body: one `text` field.
+    Slack,
+}
+
+/// One Test's or Job's crossing of the Flake threshold, snapshotted at detection.
+///
+/// `tier` is the new tier, so the direction of the event follows from it and the
+/// two can never disagree. Test values come from the same rescore that wrote
+/// them; a Job has no Project and no Failure category.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TierChange {
+    /// Whether a Test or a Job crossed.
+    pub kind: Kind,
+    /// The Test's or Job's id.
+    pub id: i64,
+    /// The Repo's `owner/name`.
+    pub repo: String,
+    /// The Test's Project, or `None` for a Job.
+    pub project: Option<String>,
+    /// The Test's name, or the Job's name.
+    pub name: String,
+    /// The score the rescore wrote.
+    pub flakiness_score: f64,
+    /// The tier the entity is in now.
+    pub tier: Tier,
+    /// How many commit SHAs recorded both outcomes.
+    pub confirmed_flake_count: usize,
+    /// The Test's classname, or `None` for a Job.
+    pub classname: Option<String>,
+    /// The Job's Pipeline, or `None` for a Test.
+    pub pipeline: Option<String>,
+    /// The Test's Failure category, or `None` for a Job.
+    pub failure_category: Option<FailureCategory>,
+}
+
+impl TierChange {
+    /// The event name: `test.flaky`, `test.recovered`, `job.flaky` or
+    /// `job.recovered`.
+    #[must_use]
+    pub fn event(&self) -> String {
+        let direction = if self.tier == Tier::Flaky {
+            "flaky"
+        } else {
+            "recovered"
+        };
+        format!("{}.{direction}", self.kind.as_str())
+    }
+}
+
+/// Splits the comma-separated Webhook setting, dropping blanks.
+///
+/// # Examples
+///
+/// ```
+/// assert_eq!(
+///     flakeradar_core::parse_urls(" https://a , ,https://b "),
+///     ["https://a", "https://b"]
+/// );
+/// ```
+#[must_use]
+pub fn parse_urls(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .map(str::trim)
+        .filter(|url| !url.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+/// The dashboard deep link for one Test or Job, or `None` without a public URL.
+///
+/// Mirrors `frontend/src/urlstate.ts`, so the link opens the drawer.
+fn dashboard_url(change: &TierChange, public_url: &str) -> Option<String> {
+    let base = public_url.trim_end_matches('/');
+    if base.is_empty() {
+        return None;
+    }
+    let repo = python_quote(&change.repo);
+    match change.kind {
+        Kind::Job => Some(format!("{base}/?view=jobs&repo={repo}&job={}", change.id)),
+        Kind::Test => {
+            let project = python_quote(change.project.as_deref().unwrap_or_default());
+            Some(format!(
+                "{base}/?repo={repo}&project={project}&test={}",
+                change.id
+            ))
+        }
+    }
+}
+
+/// Percent-encodes text the way `urllib.parse.quote(text, safe="")` does.
+///
+/// Python always keeps the ASCII letters, digits and `_.-~`, and writes every
+/// other byte of the UTF-8 encoding as uppercase `%XX`.
+fn python_quote(text: &str) -> String {
+    let mut encoded = String::with_capacity(text.len());
+    for byte in text.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'-' | b'~') {
+            encoded.push(char::from(byte));
+        } else {
+            let _ = write!(encoded, "%{byte:02X}");
+        }
+    }
+    encoded
+}
+
+/// One Tier change as the JSON webhook sees it.
+fn json_payload(change: &TierChange, public_url: &str) -> Value {
+    let mut entity = Map::new();
+    let _ = entity.insert("id".to_owned(), Value::from(change.id));
+    match change.kind {
+        Kind::Job => {
+            let _ = entity.insert(
+                "pipeline".to_owned(),
+                change.pipeline.clone().map_or(Value::Null, Value::from),
+            );
+        }
+        Kind::Test => {
+            let _ = entity.insert(
+                "classname".to_owned(),
+                change.classname.clone().map_or(Value::Null, Value::from),
+            );
+        }
+    }
+    let _ = entity.insert("name".to_owned(), Value::from(change.name.clone()));
+    let _ = entity.insert(
+        "flakiness_score".to_owned(),
+        Value::from(change.flakiness_score),
+    );
+    let _ = entity.insert("tier".to_owned(), Value::from(change.tier.as_str()));
+    let _ = entity.insert(
+        "confirmed_flake_count".to_owned(),
+        Value::from(change.confirmed_flake_count),
+    );
+    if change.kind == Kind::Test {
+        let _ = entity.insert(
+            "failure_category".to_owned(),
+            change
+                .failure_category
+                .map_or(Value::Null, |category| Value::from(category.as_str())),
+        );
+    }
+
+    let mut payload = Map::new();
+    let _ = payload.insert("event".to_owned(), Value::from(change.event()));
+    let _ = payload.insert("repo".to_owned(), Value::from(change.repo.clone()));
+    let _ = payload.insert(
+        "project".to_owned(),
+        change.project.clone().map_or(Value::Null, Value::from),
+    );
+    let _ = payload.insert(change.kind.as_str().to_owned(), Value::Object(entity));
+    if let Some(url) = dashboard_url(change, public_url) {
+        let _ = payload.insert("url".to_owned(), Value::from(url));
+    }
+    Value::Object(payload)
+}
+
+/// A list of event objects: one shape whether the Report crossed one tier or many.
+#[must_use]
+pub fn render_json(changes: &[TierChange], public_url: &str) -> Vec<Value> {
+    changes
+        .iter()
+        .map(|change| json_payload(change, public_url))
+        .collect()
+}
+
+/// One line per event; Slack renders the newlines as separate lines.
+fn slack_line(change: &TierChange, public_url: &str) -> String {
+    let subject = match change.kind {
+        Kind::Test => format!(
+            "{} / {}",
+            change.repo,
+            change.project.as_deref().unwrap_or_default()
+        ),
+        Kind::Job => change.repo.clone(),
+    };
+    let noun = change.kind.as_str();
+    let where_ = match change.kind {
+        Kind::Test => String::new(),
+        Kind::Job => change
+            .pipeline
+            .as_deref()
+            .map_or_else(String::new, |pipeline| format!(" in {pipeline}")),
+    };
+    let verb = if change.tier == Tier::Flaky {
+        "became flaky"
+    } else {
+        "recovered"
+    };
+    let line = format!(
+        "FlakeRadar: {subject} — {noun} \"{}\"{where_} {verb} (score {:.2})",
+        change.name, change.flakiness_score
+    );
+    match dashboard_url(change, public_url) {
+        Some(url) => format!("{line} {url}"),
+        None => line,
+    }
+}
+
+/// One `text` with a line per event.
+#[must_use]
+pub fn render_slack(changes: &[TierChange], public_url: &str) -> Value {
+    let text = changes
+        .iter()
+        .map(|change| slack_line(change, public_url))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut payload = Map::new();
+    let _ = payload.insert("text".to_owned(), Value::from(text));
+    Value::Object(payload)
+}
+
+/// The request body for one Report's batch of Tier changes, in `format`.
+#[must_use]
+pub fn render(changes: &[TierChange], format: WebhookFormat, public_url: &str) -> Value {
+    match format {
+        WebhookFormat::Slack => render_slack(changes, public_url),
+        WebhookFormat::Json => Value::Array(render_json(changes, public_url)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{Kind, TierChange, WebhookFormat, dashboard_url, parse_urls, render, render_json};
+    use crate::classify::FailureCategory;
+    use crate::model::Tier;
+
+    fn test_change() -> TierChange {
+        TierChange {
+            kind: Kind::Test,
+            id: 7,
+            repo: "acme/app".to_owned(),
+            project: Some("frontend".to_owned()),
+            name: "test_login".to_owned(),
+            flakiness_score: 0.5,
+            tier: Tier::Flaky,
+            confirmed_flake_count: 2,
+            classname: Some("tests.login".to_owned()),
+            pipeline: None,
+            failure_category: Some(FailureCategory::Assertion),
+        }
+    }
+
+    fn job_change() -> TierChange {
+        TierChange {
+            kind: Kind::Job,
+            id: 3,
+            repo: "acme/app".to_owned(),
+            project: None,
+            name: "test (ubuntu)".to_owned(),
+            flakiness_score: 0.125,
+            tier: Tier::Stable,
+            confirmed_flake_count: 0,
+            classname: None,
+            pipeline: Some("ci.yml".to_owned()),
+            failure_category: None,
+        }
+    }
+
+    #[test]
+    fn events_follow_the_new_tier() {
+        assert_eq!(test_change().event(), "test.flaky");
+        assert_eq!(job_change().event(), "job.recovered");
+        let mut change = test_change();
+        change.tier = Tier::Stable;
+        assert_eq!(change.event(), "test.recovered");
+        let mut change = job_change();
+        change.tier = Tier::Flaky;
+        assert_eq!(change.event(), "job.flaky");
+    }
+
+    #[test]
+    fn parse_urls_trims_and_drops_blanks() {
+        assert_eq!(
+            parse_urls(" https://a , ,https://b ,"),
+            ["https://a", "https://b"]
+        );
+        assert_eq!(parse_urls(""), Vec::<String>::new());
+    }
+
+    #[test]
+    fn dashboard_links_encode_every_reserved_character() {
+        let mut change = test_change();
+        change.repo = "acme/my app".to_owned();
+        change.project = Some("front end".to_owned());
+        assert_eq!(
+            dashboard_url(&change, "https://flakes.example/"),
+            Some(
+                "https://flakes.example/?repo=acme%2Fmy%20app&project=front%20end&test=7"
+                    .to_owned()
+            )
+        );
+        assert_eq!(
+            dashboard_url(&job_change(), "https://flakes.example"),
+            Some("https://flakes.example/?view=jobs&repo=acme%2Fapp&job=3".to_owned())
+        );
+    }
+
+    #[test]
+    fn dashboard_links_are_omitted_without_a_public_url() {
+        assert_eq!(dashboard_url(&test_change(), ""), None);
+        assert_eq!(dashboard_url(&test_change(), "/"), None);
+    }
+
+    #[test]
+    fn json_payloads_carry_the_rescore_snapshot() {
+        assert_eq!(
+            render_json(&[test_change()], "https://flakes.example"),
+            [json!({
+                "event": "test.flaky",
+                "repo": "acme/app",
+                "project": "frontend",
+                "test": {
+                    "id": 7,
+                    "classname": "tests.login",
+                    "name": "test_login",
+                    "flakiness_score": 0.5,
+                    "tier": "flaky",
+                    "confirmed_flake_count": 2,
+                    "failure_category": "assertion"
+                },
+                "url": "https://flakes.example/?repo=acme%2Fapp&project=frontend&test=7"
+            })]
+        );
+        assert_eq!(
+            render_json(&[job_change()], ""),
+            [json!({
+                "event": "job.recovered",
+                "repo": "acme/app",
+                "project": null,
+                "job": {
+                    "id": 3,
+                    "pipeline": "ci.yml",
+                    "name": "test (ubuntu)",
+                    "flakiness_score": 0.125,
+                    "tier": "stable",
+                    "confirmed_flake_count": 0
+                }
+            })]
+        );
+    }
+
+    #[test]
+    fn slack_renders_one_line_per_event() {
+        let body = render(
+            &[test_change(), job_change()],
+            WebhookFormat::Slack,
+            "https://flakes.example",
+        );
+        assert_eq!(
+            body,
+            json!({"text": "FlakeRadar: acme/app / frontend — test \"test_login\" became flaky (score 0.50) https://flakes.example/?repo=acme%2Fapp&project=frontend&test=7\nFlakeRadar: acme/app — job \"test (ubuntu)\" in ci.yml recovered (score 0.12) https://flakes.example/?view=jobs&repo=acme%2Fapp&job=3"})
+        );
+    }
+
+    #[test]
+    fn render_selects_the_format() {
+        let json_body = render(&[job_change()], WebhookFormat::Json, "");
+        assert!(json_body.is_array());
+        let slack_body = render(&[job_change()], WebhookFormat::Slack, "");
+        assert!(slack_body.is_object());
+        let text = slack_body["text"].as_str().expect("slack carries text");
+        assert!(text.starts_with("FlakeRadar: "), "{text}");
+        assert!(!text.contains("https://"), "{text}");
+    }
+}

@@ -671,10 +671,17 @@ def check_allowed_differences(files: dict[Path, str]) -> None:
                 continue
             node = json.loads(content)
             for part in allowance["field"].split("."):
-                if not isinstance(node, dict) or part not in node:
+                if isinstance(node, list):
+                    index = int(part) if part.isdigit() else -1
+                    if not 0 <= index < len(node):
+                        problems.append(f"{entry['id']}: {allowance['file']} has no field {allowance['field']}")
+                        break
+                    node = node[index]
+                elif isinstance(node, dict) and part in node:
+                    node = node[part]
+                else:
                     problems.append(f"{entry['id']}: {allowance['file']} has no field {allowance['field']}")
                     break
-                node = node[part]
     if problems:
         die("allowed-differences.json is stale:\n  " + "\n  ".join(problems))
 

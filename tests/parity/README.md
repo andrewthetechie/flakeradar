@@ -189,7 +189,8 @@ rules:
 - **Anything else fails**, unless `allowed-differences.json` has an entry that
   covers exactly that file and field. An allowance is a list of
   `{file, field}` entries (`field` is a dotted path into the golden, such as
-  `body.detail`), optionally narrowed:
+  `body.detail`; a numeric part indexes an array, such as `cases.2.line`),
+  optionally narrowed:
   - `pythonValue`/`rustValue`: the two exact values, for a status-code change.
   - `match: {"kind": "prefix", "value": "..."}`: the Rust value must start with
     that prefix and may differ after it, for parser wording. Every entry names a row in
