@@ -48,7 +48,11 @@ pub fn file_field<'a>(body: &'a [u8], content_type: &str, field: &str) -> Option
 /// The bytes of the boundary parameter in `content_type`.
 fn boundary_of(content_type: &str) -> Option<&str> {
     for parameter in content_type.split(';').skip(1) {
-        let (key, value) = parameter.split_once('=')?;
+        // A parameter without a value, such as a bare `charset`, is not the
+        // boundary, and does not stop the search for it.
+        let Some((key, value)) = parameter.split_once('=') else {
+            continue;
+        };
         if !key.trim().eq_ignore_ascii_case("boundary") {
             continue;
         }
@@ -267,6 +271,28 @@ mod tests {
                 "multipart/form-data; boundary=b",
                 REPORT_FIELD
             ),
+            None
+        );
+    }
+
+    #[test]
+    fn a_flag_before_the_boundary_does_not_hide_it() {
+        let (body, _) = multipart(REPORT_FIELD, Some("junit.xml"), b"<x/>");
+        assert_eq!(
+            file_field(
+                &body,
+                "multipart/form-data; charset; boundary=-----flakeradar-test-boundary",
+                REPORT_FIELD
+            ),
+            Some(&b"<x/>"[..])
+        );
+    }
+
+    #[test]
+    fn an_unterminated_quote_is_not_the_field_name() {
+        let body = b"--b\r\nContent-Disposition: form-data; name=\"report; filename=\"r\"\r\n\r\n<x/>\r\n--b--\r\n";
+        assert_eq!(
+            file_field(body, "multipart/form-data; boundary=b", REPORT_FIELD),
             None
         );
     }

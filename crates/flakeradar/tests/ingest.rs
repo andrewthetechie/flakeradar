@@ -923,6 +923,29 @@ async fn ingest_answers_a_body_that_fails_while_it_is_read() {
 }
 
 #[tokio::test]
+async fn pipeline_ingest_answers_a_body_that_fails_while_it_is_read() {
+    let db = TestDb::new().await.expect("a test database is available");
+    let stream = futures_util::stream::iter(vec![
+        Ok(axum::body::Bytes::from_static(b"{\"repo\":")),
+        Err(std::io::Error::other("the client went away")),
+    ]);
+    let request = axum::http::Request::builder()
+        .method(Method::POST)
+        .uri("/api/ingest/pipeline")
+        .header("x-api-key", TOKEN)
+        .header("content-type", "application/json")
+        .body(Body::from_stream(stream))
+        .expect("the fixture request builds");
+    let reply = send(&test_app(&db), request).await;
+    assert_eq!(reply.status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(
+        reply.text().contains("Reading the request body failed"),
+        "{}",
+        reply.text()
+    );
+}
+
+#[tokio::test]
 async fn a_reports_list_counts_only_the_rows_it_holds() {
     use flakeradar_test_support::make_project;
     let db = TestDb::new().await.expect("a test database is available");
