@@ -129,6 +129,8 @@ jobs:
     env:
       # Pinned so the cached binary is replaced when this is bumped.
       CARGO_AUDIT_VERSION: 0.22.2
+      # Pinned to the sea-orm version the workspace depends on.
+      SEA_ORM_CLI_VERSION: 2.0.4
       # Nextest starts its own Postgres only when this is unset; CI points the
       # suite at the service below instead, so no Docker is needed.
       FLAKERADAR_TEST_DATABASE_URL: postgresql://flakeradar:flakeradar@localhost:5432/flakeradar
@@ -167,9 +169,32 @@ jobs:
 
       - name: Run tests (cargo nextest)
         # --profile ci activates [profile.ci] (retries, flaky handling) and writes
-        # the JUnit report to target/nextest/ci/junit.xml. --no-tests=pass lets the
-        # empty workspace pass; task 03 removes it when the first tests land.
-        run: cargo nextest run --all-features --profile ci --no-tests=pass
+        # the JUnit report to target/nextest/ci/junit.xml. The workspace has tests
+        # from task 03 on, so an empty run is a failure, not a pass.
+        run: cargo nextest run --all-features --profile ci
+
+      - name: Cache sea-orm-cli binary
+        id: cache-sea-orm-cli
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/sea-orm-cli
+          key: sea-orm-cli-${{ runner.os }}-${{ env.SEA_ORM_CLI_VERSION }}
+
+      - name: Install sea-orm-cli
+        if: steps.cache-sea-orm-cli.outputs.cache-hit != 'true'
+        run: cargo install sea-orm-cli --version "$SEA_ORM_CLI_VERSION" --locked
+
+      - name: Check the entities match the migrated schema
+        # The entities are generated from a migrated database, so a baseline change
+        # that the committed entities do not reflect fails here instead of surfacing
+        # as a query that names a column the schema no longer has.
+        run: |
+          cargo run -q -p flakeradar-db --example migrate -- "$FLAKERADAR_TEST_DATABASE_URL"
+          sea-orm-cli generate entity \
+            --database-url "$FLAKERADAR_TEST_DATABASE_URL" \
+            --output-dir crates/flakeradar-db/src/entities \
+            --with-prelude none
+          git diff --exit-code -- crates/flakeradar-db/src/entities
 
       - name: Upload JUnit test report
         # if-no-files-found: error turns a missing report into a visible CI
@@ -278,24 +303,10 @@ jobs:
           node-version: 22
 
       - name: Run tests with coverage
-        id: collect
-        # cargo-llvm-cov cannot export anything when no test has run, so a
-        # workspace with no tests collects nothing and says so. Task 03 deletes
-        # this guard along with `--no-tests=pass` once the first tests land.
         # --no-report: collect once, then export each format from the same data.
-        run: |
-          test_count=$(cargo "+$COVERAGE_TOOLCHAIN" nextest list --all-features --profile ci --message-format json \
-            | jq '."test-count"')
-          if [ "$test_count" -eq 0 ]; then
-            echo "::notice::The workspace has no tests yet, so there is no coverage to collect."
-            echo "has-coverage=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          echo "has-coverage=true" >> "$GITHUB_OUTPUT"
-          cargo "+$COVERAGE_TOOLCHAIN" llvm-cov nextest --branch --all-features --profile ci --no-report
+        run: cargo "+$COVERAGE_TOOLCHAIN" llvm-cov nextest --branch --all-features --profile ci --no-report
 
       - name: Export coverage reports
-        if: steps.collect.outputs.has-coverage == 'true'
         run: |
           cargo "+$COVERAGE_TOOLCHAIN" llvm-cov report --branch --lcov --output-path lcov.info
           cargo "+$COVERAGE_TOOLCHAIN" llvm-cov report --branch --json --summary-only --output-path coverage-summary.json
@@ -305,7 +316,6 @@ jobs:
         run: node --test scripts/coverage-gate.test.mjs
 
       - name: Check coverage floors and no decrease
-        if: steps.collect.outputs.has-coverage == 'true'
         # Writes the totals and the worst files to the job summary, and fails if
         # line or branch coverage is below `coverage-floor.json`. On a PR it also
         # fails when a total fell below the newest coverage that the base branch

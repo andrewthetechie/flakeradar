@@ -17,6 +17,12 @@ mod connect;
 mod error;
 mod migration;
 
+/// The `SeaORM` entities, generated from the baseline schema by `sea-orm-cli`.
+///
+/// Regeneration overwrites every file in the module, so a doc comment in one of
+/// them would fail the CI check that regenerates them. The two names
+/// `CONTEXT.md` spells differently are therefore noted here: `test_cases` holds
+/// Tests, and `confirmed_flake_count` is a Proven flake count.
 #[expect(
     missing_docs,
     reason = "sea-orm-cli generate entity writes these files; a doc comment here \
