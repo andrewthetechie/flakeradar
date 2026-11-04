@@ -108,10 +108,27 @@ struct Deferred {
 /// steps 1-6 are the fallback's 307, which answers whether or not the target
 /// route exists, exactly as Starlette's `redirect_slashes` did. Validation step
 /// 7 is a path no route matches, so it is task 05's 404 body too.
+///
+/// Task 06 adds every ingest and Report step that needs no processing: the
+/// ingest refusals and the two queued uploads of `ingest-junit`, the Report
+/// summary poll, the 401s the token check answers on the ingest and Report write
+/// routes, the ingest validation shapes, and the Pipeline payload refusals.
 const ENABLED: &[Enabled] = &[
     Enabled {
+        name: "auth",
+        steps: &[1, 2, 3, 4, 5],
+    },
+    Enabled {
         name: "health",
-        steps: &[1, 2, 3],
+        steps: &[1, 2, 3, 5],
+    },
+    Enabled {
+        name: "ingest-junit",
+        steps: &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14],
+    },
+    Enabled {
+        name: "pipeline-jobs",
+        steps: &[33, 34, 35, 36],
     },
     Enabled {
         name: "trailing-slash",
@@ -119,7 +136,7 @@ const ENABLED: &[Enabled] = &[
     },
     Enabled {
         name: "validation",
-        steps: &[7],
+        steps: &[4, 5, 6, 7, 22, 23, 24, 25, 26, 27],
     },
 ];
 
@@ -130,11 +147,10 @@ const ENABLED: &[Enabled] = &[
 const DEFERRED: &[Deferred] = &[
     Deferred {
         scenario: "auth",
-        steps: None,
+        steps: Some(&[6, 7, 8, 9, 10, 11, 12, 13]),
         task: 10,
-        reason: "every step needs a route that checks the token: POST /api/ingest and the \
-                 Report retry and delete routes (task 06), GET /api/quarantine and /api/tests \
-                 (task 09), and the issue, repo and project routes (task 10)",
+        reason: "every remaining step needs a route that checks the token: GET /api/quarantine \
+                 and /api/tests (task 09), and the issue, repo and project routes (task 10)",
     },
     Deferred {
         scenario: "consumers",
@@ -165,16 +181,12 @@ const DEFERRED: &[Deferred] = &[
         reason: "GET /api/repos is a read API",
     },
     Deferred {
-        scenario: "health",
-        steps: Some(&[5]),
-        task: 6,
-        reason: "GET /api/reports/summary is a Report route",
-    },
-    Deferred {
         scenario: "ingest-junit",
-        steps: None,
-        task: 6,
-        reason: "POST /api/ingest and the Report list, detail, retry and delete routes",
+        steps: Some(&[15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27]),
+        task: 8,
+        reason: "the steps after `wait_processed` read the state the Report processor produces \
+                 (task 08): the queue drains, and the list, detail, retry and delete answers \
+                 carry the counts, the Run link and the processed_at that only processing sets",
     },
     Deferred {
         scenario: "issue-links",
@@ -191,10 +203,14 @@ const DEFERRED: &[Deferred] = &[
     },
     Deferred {
         scenario: "pipeline-jobs",
-        steps: None,
+        steps: Some(&[
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
+            25, 26, 27, 28, 29, 30, 31, 32, 37,
+        ]),
         task: 9,
-        reason: "POST /api/ingest/pipeline (task 06), the Job reads and \
-                 /api/ci-runs/{id}/failures (task 09)",
+        reason: "the pipeline Reports the scenario queues have to be processed (task 08) before \
+                 the Job reads, /api/ci-runs/{id}/failures and the database dump can answer \
+                 (task 09)",
     },
     Deferred {
         scenario: "quarantine",
@@ -226,16 +242,15 @@ const DEFERRED: &[Deferred] = &[
     Deferred {
         scenario: "validation",
         steps: Some(&[
-            1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
-            26, 27,
+            1, 2, 3, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
         ]),
         task: 10,
-        reason: "the 422 shapes of the read APIs (task 09), of the quarantine and issue routes \
-                 (task 09 and task 10), and of ingest (task 06). Step 17 is not a 422: Python's \
-                 lax bool takes {\"quarantined\": \"yes\"} as true, so the quarantine route \
-                 looked up a missing Test and answered 404 {\"detail\": \"Test not found\"} \
-                 (golden 17). Whichever task lands that route must take Pydantic's bool spellings \
-                 and reproduce the 404, never a 422",
+        reason: "the 422 shapes of the read APIs (task 09) and of the quarantine and issue routes \
+                 (task 09 and task 10). Step 17 is not a 422: Python's lax bool takes \
+                 {\"quarantined\": \"yes\"} as true, so the quarantine route looked up a \
+                 missing Test and answered 404 {\"detail\": \"Test not found\"} (golden 17). \
+                 Whichever task lands that route must take Pydantic's bool spellings and \
+                 reproduce the 404, never a 422",
     },
 ];
 
@@ -244,7 +259,7 @@ const DEFERRED: &[Deferred] = &[
 /// A later task enables steps and lowers this number; the test that reads it
 /// fails both when a step is switched off without a reason and when an enabled
 /// step is left in [`DEFERRED`]. It never goes up.
-const DEFERRED_STEPS: usize = 290;
+const DEFERRED_STEPS: usize = 257;
 
 /// One scenario file.
 #[derive(Debug, Deserialize)]
@@ -459,7 +474,14 @@ async fn replay_http(
         .await
         .expect("the body reads to the end");
 
-    let mut failures = header_differences(scenario, step, recorded, status, &headers);
+    let mut failures = header_differences(
+        scenario,
+        step,
+        recorded,
+        status,
+        &headers,
+        &allowances(scenario, step),
+    );
     let content_type = media_type(&headers);
     let actual = decode_body(&bytes, content_type.as_deref());
     failures.extend(compare_body(
@@ -502,8 +524,11 @@ fn body_of(request: &Value) -> (Body, Option<String>) {
         return (Body::from(payload), None);
     }
     if let Some(value) = request.get("body_json") {
+        // The recorder sent these bytes with no content type, and only a step
+        // that names one sends it: `json.dumps` text is the body, not a typed
+        // document, which is why Python read it as raw text.
         let payload = serde_json::to_vec(value).expect("the fixture body serializes");
-        return (Body::from(payload), Some("application/json".to_owned()));
+        return (Body::from(payload), None);
     }
     if let Some(text) = request.get("body_text").and_then(Value::as_str) {
         return (Body::from(text.to_owned()), None);
@@ -551,39 +576,53 @@ fn media_type(headers: &HeaderMap) -> Option<String> {
 }
 
 /// Every difference in the status line and the recorded headers.
+///
+/// A status or content type an allowance covers is not a difference: the
+/// allowances name those fields where a pre-approved change touches them.
 fn header_differences(
     scenario: &str,
     step: usize,
     recorded: &Value,
     status: StatusCode,
     headers: &HeaderMap,
+    allowances: &[AllowedField],
 ) -> Mismatches {
     let mut failures = Vec::new();
     let expected_status = recorded
         .get("status")
         .and_then(Value::as_u64)
         .unwrap_or_default();
-    if u64::from(status.as_u16()) != expected_status {
+    let actual_status = u64::from(status.as_u16());
+    if actual_status != expected_status
+        && !allowed(
+            "status",
+            &Value::from(expected_status),
+            &Value::from(actual_status),
+            allowances,
+        )
+    {
         failures.push(format!(
             "{scenario} step {step}: status {status} does not match {expected_status}"
         ));
     }
     for name in ["content-type", "location"] {
         let actual = headers.get(name).and_then(|value| value.to_str().ok());
-        match recorded.get(name).and_then(Value::as_str) {
-            Some(expected) => {
-                if actual != Some(expected) {
-                    failures.push(format!(
-                        "{scenario} step {step}: {name} {actual:?} does not match {expected:?}"
-                    ));
-                }
-            }
-            None => {
-                if actual.is_some() {
-                    failures.push(format!(
-                        "{scenario} step {step}: {name} {actual:?} was not recorded"
-                    ));
-                }
+        let recorded_value = recorded.get(name).and_then(Value::as_str);
+        let differs = actual != recorded_value;
+        let covered = allowed(
+            name,
+            &recorded_value.map_or(Value::Null, Value::from),
+            &actual.map_or(Value::Null, Value::from),
+            allowances,
+        );
+        if differs && !covered {
+            match recorded_value {
+                Some(expected) => failures.push(format!(
+                    "{scenario} step {step}: {name} {actual:?} does not match {expected:?}"
+                )),
+                None => failures.push(format!(
+                    "{scenario} step {step}: {name} {actual:?} was not recorded"
+                )),
             }
         }
     }
