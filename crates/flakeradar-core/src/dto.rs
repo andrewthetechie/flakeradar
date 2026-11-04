@@ -227,6 +227,115 @@ impl ValidationIssue {
         }
     }
 
+    /// A value above its maximum.
+    #[must_use]
+    pub fn less_than_equal(loc: Vec<LocSegment>, input: Value, limit: i64) -> Self {
+        let mut ctx = serde_json::Map::new();
+        let _ = ctx.insert("le".to_owned(), Value::from(limit));
+        Self {
+            r#type: "less_than_equal".to_owned(),
+            loc,
+            msg: format!("Input should be less than or equal to {limit}"),
+            input: Some(input),
+            ctx: Some(Value::Object(ctx)),
+        }
+    }
+
+    /// A value that is not an integer.
+    #[must_use]
+    pub fn int_parsing(loc: Vec<LocSegment>, input: Value) -> Self {
+        Self::parsing(
+            "int_parsing",
+            "Input should be a valid integer, unable to parse string as an integer",
+            loc,
+            input,
+        )
+    }
+
+    /// A value that is not a number.
+    #[must_use]
+    pub fn float_parsing(loc: Vec<LocSegment>, input: Value) -> Self {
+        Self::parsing(
+            "float_parsing",
+            "Input should be a valid number, unable to parse string as a number",
+            loc,
+            input,
+        )
+    }
+
+    /// A value that is not a boolean.
+    #[must_use]
+    pub fn bool_parsing(loc: Vec<LocSegment>, input: Value) -> Self {
+        Self::parsing(
+            "bool_parsing",
+            "Input should be a valid boolean, unable to interpret input",
+            loc,
+            input,
+        )
+    }
+
+    /// A value that is not a dictionary or object, where a model was expected.
+    #[must_use]
+    pub fn model_attributes_type(loc: Vec<LocSegment>, input: Value) -> Self {
+        Self::parsing(
+            "model_attributes_type",
+            "Input should be a valid dictionary or object to extract fields from",
+            loc,
+            input,
+        )
+    }
+
+    /// A required field that was not there.
+    #[must_use]
+    pub fn missing(loc: Vec<LocSegment>) -> Self {
+        Self {
+            r#type: "missing".to_owned(),
+            loc,
+            msg: "Field required".to_owned(),
+            input: Some(Value::Null),
+            ctx: None,
+        }
+    }
+
+    /// A value that is not one of a fixed set.
+    #[must_use]
+    pub fn literal_error(loc: Vec<LocSegment>, input: Value, expected: &str) -> Self {
+        let mut ctx = serde_json::Map::new();
+        let _ = ctx.insert("expected".to_owned(), Value::from(expected));
+        Self {
+            r#type: "literal_error".to_owned(),
+            loc,
+            msg: format!("Input should be {expected}"),
+            input: Some(input),
+            ctx: Some(Value::Object(ctx)),
+        }
+    }
+
+    /// A request body that is not valid JSON.
+    #[must_use]
+    pub fn json_invalid(loc: Vec<LocSegment>, error: &str) -> Self {
+        let mut ctx = serde_json::Map::new();
+        let _ = ctx.insert("error".to_owned(), Value::from(error));
+        Self {
+            r#type: "json_invalid".to_owned(),
+            loc,
+            msg: "JSON decode error".to_owned(),
+            input: Some(Value::Object(serde_json::Map::new())),
+            ctx: Some(Value::Object(ctx)),
+        }
+    }
+
+    /// A value a field type could not parse, with Pydantic's message for it.
+    fn parsing(error_type: &str, msg: &str, loc: Vec<LocSegment>, input: Value) -> Self {
+        Self {
+            r#type: error_type.to_owned(),
+            loc,
+            msg: msg.to_owned(),
+            input: Some(input),
+            ctx: None,
+        }
+    }
+
     /// A value a field validator rejected.
     #[must_use]
     pub fn value_error(error: &IdentityError, loc: Vec<LocSegment>, input: Value) -> Self {

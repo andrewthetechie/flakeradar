@@ -511,3 +511,103 @@ fn an_issue_link_body_keeps_the_url_when_present() {
         Some("https://github.com/o/r/issues/14")
     );
 }
+
+/// The loc of a bad field in the request body.
+fn body(field: &str) -> Vec<LocSegment> {
+    vec![
+        LocSegment::Field("body".to_owned()),
+        LocSegment::Field(field.to_owned()),
+    ]
+}
+
+#[test]
+fn a_validation_issue_keeps_pydantics_kind_loc_and_wording() {
+    let cases = [
+        (
+            ValidationIssue::int_parsing(body("number"), json!("twelve")),
+            "int_parsing",
+            "Input should be a valid integer, unable to parse string as an integer",
+        ),
+        (
+            ValidationIssue::float_parsing(body("score"), json!("high")),
+            "float_parsing",
+            "Input should be a valid number, unable to parse string as a number",
+        ),
+        (
+            ValidationIssue::bool_parsing(body("quarantined"), json!("yes")),
+            "bool_parsing",
+            "Input should be a valid boolean, unable to interpret input",
+        ),
+        (
+            ValidationIssue::model_attributes_type(body(""), json!("not json")),
+            "model_attributes_type",
+            "Input should be a valid dictionary or object to extract fields from",
+        ),
+        (
+            ValidationIssue::missing(body("quarantined")),
+            "missing",
+            "Field required",
+        ),
+        (
+            ValidationIssue::less_than_equal(body("expires_in_days"), json!(366), 365),
+            "less_than_equal",
+            "Input should be less than or equal to 365",
+        ),
+        (
+            ValidationIssue::literal_error(
+                body("sort"),
+                json!("bogus"),
+                "'score', 'last_seen' or 'proven'",
+            ),
+            "literal_error",
+            "Input should be 'score', 'last_seen' or 'proven'",
+        ),
+        (
+            ValidationIssue::json_invalid(
+                vec![LocSegment::Field("body".to_owned()), LocSegment::Index(6)],
+                "expected value",
+            ),
+            "json_invalid",
+            "JSON decode error",
+        ),
+    ];
+    for (issue, kind, msg) in cases {
+        assert_eq!(issue.r#type, kind);
+        assert_eq!(issue.msg, msg);
+        let written = serde_json::to_value(&issue).expect("the issue serializes");
+        assert_eq!(written["type"], json!(kind));
+        assert_eq!(written["msg"], json!(msg));
+    }
+}
+
+#[test]
+fn a_validation_issue_reports_the_constraint_it_broke() {
+    let le = serde_json::to_value(ValidationIssue::less_than_equal(
+        body("expires_in_days"),
+        json!(366),
+        365,
+    ))
+    .expect("the issue serializes");
+    assert_eq!(le["ctx"], json!({"le": 365}));
+    assert_eq!(le["input"], json!(366));
+    assert_eq!(le["loc"], json!(["body", "expires_in_days"]));
+
+    let literal = serde_json::to_value(ValidationIssue::literal_error(
+        body("sort"),
+        json!("bogus"),
+        "'score', 'last_seen' or 'proven'",
+    ))
+    .expect("the issue serializes");
+    assert_eq!(
+        literal["ctx"],
+        json!({"expected": "'score', 'last_seen' or 'proven'"})
+    );
+
+    let invalid = serde_json::to_value(ValidationIssue::json_invalid(
+        vec![LocSegment::Field("body".to_owned()), LocSegment::Index(6)],
+        "expected value",
+    ))
+    .expect("the issue serializes");
+    assert_eq!(invalid["loc"], json!(["body", 6]));
+    assert_eq!(invalid["ctx"], json!({"error": "expected value"}));
+}

@@ -109,9 +109,7 @@ struct Raw<'a> {
 impl Raw<'_> {
     /// The trimmed value of `field`, or `None` when the variable is unset.
     fn raw(&self, field: &str) -> Option<&str> {
-        self.values
-            .get(&variable(field))
-            .map(|value| value.trim())
+        self.values.get(&variable(field)).map(|value| value.trim())
     }
 
     /// The value of `field`, or `default` when it is unset.
@@ -375,11 +373,7 @@ impl Settings {
     /// PostgreSQL spellings are all accepted, because
     /// [`flakeradar_db::connect`] rewrites them.
     fn check_database_url(&self) -> Result<(), SettingsError> {
-        for prefix in [
-            "postgresql://",
-            "postgres://",
-            "postgresql+asyncpg://",
-        ] {
+        for prefix in ["postgresql://", "postgres://", "postgresql+asyncpg://"] {
             if self.database_url.starts_with(prefix) {
                 return Ok(());
             }
@@ -510,7 +504,10 @@ mod tests {
         assert_eq!(settings.public_url, "");
         assert_eq!(settings.flake_threshold, 0.30);
         assert_eq!(settings.webhook_urls.expose(), "");
-        assert_eq!(settings.webhook_format, flakeradar_core::WebhookFormat::Json);
+        assert_eq!(
+            settings.webhook_format,
+            flakeradar_core::WebhookFormat::Json
+        );
         assert_eq!(settings.cors_origins, "http://localhost:5173");
         assert_eq!(settings.worker_poll_seconds, 1.0);
         assert_eq!(settings.db_command_timeout_seconds, 30.0);
@@ -547,7 +544,10 @@ mod tests {
             ("FLAKERADAR_FLAKE_THRESHOLD", "0.5"),
             ("FLAKERADAR_WEBHOOK_URLS", "https://hooks.example.com/a"),
             ("FLAKERADAR_WEBHOOK_FORMAT", "slack"),
-            ("FLAKERADAR_CORS_ORIGINS", "https://a.example.com, https://b.example.com"),
+            (
+                "FLAKERADAR_CORS_ORIGINS",
+                "https://a.example.com, https://b.example.com",
+            ),
             ("FLAKERADAR_WORKER_POLL_SECONDS", "0.05"),
             ("FLAKERADAR_DB_COMMAND_TIMEOUT_SECONDS", "5"),
             ("FLAKERADAR_MAX_REPORT_RETRIES", "9"),
@@ -578,7 +578,10 @@ mod tests {
         assert!(settings.github_close_fixed);
         assert_eq!(settings.public_url, "https://flake.example.com");
         assert_eq!(settings.flake_threshold, 0.5);
-        assert_eq!(settings.webhook_urls.expose(), "https://hooks.example.com/a");
+        assert_eq!(
+            settings.webhook_urls.expose(),
+            "https://hooks.example.com/a"
+        );
         assert_eq!(
             settings.webhook_format,
             flakeradar_core::WebhookFormat::Slack
@@ -627,8 +630,8 @@ mod tests {
             ("FLAKERADAR_PRUNE_BATCH", "1.5"),
         ];
         for (variable, value) in cases {
-            let error = Settings::from_map(&map(&[(variable, value)]))
-                .expect_err("the value is invalid");
+            let error =
+                Settings::from_map(&map(&[(variable, value)])).expect_err("the value is invalid");
             match &error {
                 SettingsError::InvalidValue {
                     variable: named, ..
@@ -672,7 +675,10 @@ mod tests {
         let settings = Settings::from_map(&map(&[
             ("FLAKERADAR_API_TOKEN", "super-secret-token"),
             ("FLAKERADAR_GITHUB_TOKEN", "ghp_secret"),
-            ("FLAKERADAR_WEBHOOK_URLS", "https://hooks.example.com/T000/B000/xyz"),
+            (
+                "FLAKERADAR_WEBHOOK_URLS",
+                "https://hooks.example.com/T000/B000/xyz",
+            ),
         ]))
         .expect("the fixture is valid");
         let printed = format!("{settings:?}");
@@ -695,7 +701,10 @@ mod tests {
             settings.cors_origin_list(),
             ["http://localhost:5173", "https://a.example.com"]
         );
-        assert_eq!(Settings::default().cors_origin_list(), ["http://localhost:5173"]);
+        assert_eq!(
+            Settings::default().cors_origin_list(),
+            ["http://localhost:5173"]
+        );
     }
 
     #[test]
@@ -707,7 +716,8 @@ mod tests {
 
     #[test]
     fn the_default_token_is_allowed_when_explicitly_opted_in() {
-        check_api_token(DEFAULT_INSECURE_TOKEN, Some(" 1 ")).expect("the opt-in allows the default");
+        check_api_token(DEFAULT_INSECURE_TOKEN, Some(" 1 "))
+            .expect("the opt-in allows the default");
     }
 
     #[test]
@@ -715,18 +725,21 @@ mod tests {
         for allow in [Some("0"), Some(""), Some("true"), None] {
             let error = check_api_token(DEFAULT_INSECURE_TOKEN, allow)
                 .expect_err("the default token is refused");
-            assert!(error.to_string().starts_with("FLAKERADAR_API_TOKEN is still the default"));
+            assert!(
+                error
+                    .to_string()
+                    .starts_with("FLAKERADAR_API_TOKEN is still the default")
+            );
         }
     }
 
     #[test]
     fn a_command_timeout_of_zero_is_refused() {
-        let settings = Settings::from_map(&map(&[(
-            "FLAKERADAR_DB_COMMAND_TIMEOUT_SECONDS",
-            "0",
-        )]))
-        .expect("the fixture is valid");
-        settings.database_settings().expect_err("a zero timeout is refused");
+        let settings = Settings::from_map(&map(&[("FLAKERADAR_DB_COMMAND_TIMEOUT_SECONDS", "0")]))
+            .expect("the fixture is valid");
+        settings
+            .database_settings()
+            .expect_err("a zero timeout is refused");
         assert_eq!(
             Settings::default()
                 .database_settings()
@@ -738,10 +751,8 @@ mod tests {
 
     /// The path of a `.env` fixture in the temporary directory.
     fn dotenv_fixture(name: &str, contents: &str) -> std::path::PathBuf {
-        let path = std::env::temp_dir().join(format!(
-            "flakeradar-env-{}-{name}",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("flakeradar-env-{}-{name}", std::process::id()));
         std::fs::write(&path, contents).expect("the fixture is written");
         path
     }
@@ -767,8 +778,8 @@ mod tests {
     #[test]
     fn a_malformed_dotenv_file_names_itself() {
         let path = dotenv_fixture("malformed", "this line has no separator\n");
-        let error = environment_values(&path, std::iter::empty())
-            .expect_err("a malformed line is refused");
+        let error =
+            environment_values(&path, std::iter::empty()).expect_err("a malformed line is refused");
         assert!(error.to_string().contains("flakeradar-env-"), "{error}");
         std::fs::remove_file(&path).expect("the fixture is removed");
     }
