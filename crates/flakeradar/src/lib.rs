@@ -4,7 +4,8 @@
 //! The library holds everything the binary runs, so the routes and workers are
 //! reachable from integration tests without starting a process. [`build_app`]
 //! assembles the router over a [`flakeradar_db::connect`] pool and an
-//! [`AppState`]; [`Settings`] is the configuration it runs with.
+//! [`AppState`]; [`Server`] adds the migration, the socket and the shutdown, and
+//! [`Settings`] is the configuration both run with.
 
 // Rust guideline compliant 2026-07-21
 
@@ -23,6 +24,7 @@ pub mod error;
 pub mod extract;
 pub mod middleware;
 pub mod routes;
+pub mod server;
 pub mod settings;
 mod telemetry;
 
@@ -33,6 +35,11 @@ pub use error::{ApiError, ApiResult, Detail};
 #[doc(inline)]
 pub use extract::{ApiJson, ApiPath, ApiQuery, Validate, body_loc, query_loc};
 #[doc(inline)]
-pub use settings::{Secret, Settings, SettingsError, check_api_token, is_default_token};
+pub use server::Server;
+#[doc(inline)]
+pub use settings::{
+    ALLOW_INSECURE_VARIABLE, Secret, Settings, SettingsError, assert_secure_token, check_api_token,
+    is_default_token,
+};
 #[doc(inline)]
 pub use telemetry::init_tracing;

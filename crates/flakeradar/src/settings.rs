@@ -403,12 +403,18 @@ impl Settings {
     }
 }
 
+/// The variable that allows the shipped default token for a throwaway demo.
+///
+/// It is not a [`Settings`] field, because it can only lift the default-token
+/// refusal and never configures the server. The frozen server read it with
+/// `os.getenv`, so a value in `.env` never lifted it there and does not here.
+pub const ALLOW_INSECURE_VARIABLE: &str = "FLAKERADAR_ALLOW_INSECURE";
+
 /// Refuses the shipped default token unless the operator opted in.
 ///
-/// `allow_insecure` is the raw value of `FLAKERADAR_ALLOW_INSECURE`, or `None`
-/// when the variable is unset. It is not a [`Settings`] field: it can only lift
-/// this one refusal, never anything else. When it opts in, a warning names the
-/// default token, because the running instance is open to anyone who reaches it.
+/// `allow_insecure` is the raw value of [`ALLOW_INSECURE_VARIABLE`], or `None`
+/// when the variable is unset. When it opts in, a warning names the default
+/// token, because the running instance is open to anyone who reaches it.
 ///
 /// # Errors
 ///
@@ -432,6 +438,22 @@ pub fn check_api_token(token: &str, allow_insecure: Option<&str>) -> Result<(), 
 #[must_use]
 pub fn is_default_token(token: &str) -> bool {
     token == DEFAULT_INSECURE_TOKEN
+}
+
+/// Refuses to serve with the shipped default token, unless the operator opted in.
+///
+/// This is the start-up gate the binary runs before it touches the database, so
+/// an instance left on `changeme` never answers a request.
+///
+/// # Errors
+///
+/// Returns [`SettingsError::InsecureToken`] with the message the frozen server
+/// printed, when the token is the default and `allow_insecure` is not `1`.
+pub fn assert_secure_token(
+    settings: &Settings,
+    allow_insecure: Option<&str>,
+) -> Result<(), SettingsError> {
+    check_api_token(settings.api_token.expose(), allow_insecure)
 }
 
 /// The variables from the `.env` file at `path` overlaid with `process`.
@@ -474,7 +496,7 @@ mod tests {
 
     use super::{
         DEFAULT_DATABASE_URL, DEFAULT_HOST, DEFAULT_INSECURE_TOKEN, DEFAULT_PORT, Secret, Settings,
-        SettingsError, check_api_token, environment_values, is_default_token,
+        SettingsError, assert_secure_token, check_api_token, environment_values, is_default_token,
     };
 
     /// A settings map holding `pairs`.
@@ -731,6 +753,22 @@ mod tests {
                     .starts_with("FLAKERADAR_API_TOKEN is still the default")
             );
         }
+    }
+
+    #[test]
+    fn the_start_up_gate_reads_the_settings_token() {
+        let secure = Settings::default().with_api_token("a-real-token");
+        assert_secure_token(&secure, None).expect("a real token is allowed");
+
+        let shipped = Settings::default();
+        assert!(is_default_token(shipped.api_token.expose()));
+        let error = assert_secure_token(&shipped, None).expect_err("the default token is refused");
+        assert_eq!(
+            error.to_string(),
+            "FLAKERADAR_API_TOKEN is still the default 'changeme'. Set a real token (see \
+             .env.example) or set FLAKERADAR_ALLOW_INSECURE=1 for a throwaway local demo."
+        );
+        assert_secure_token(&shipped, Some("1")).expect("the opt-in allows the default");
     }
 
     #[test]
