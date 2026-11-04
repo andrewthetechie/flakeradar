@@ -13,8 +13,8 @@
 
 use chrono::{DateTime, NaiveDate, TimeZone as _, Utc};
 use flakeradar_core::{
-    JobResultIn, LocSegment, PipelineReportIn, ReportOut, ScorePointOut, TestOut, Tier, Trend,
-    ValidationIssue,
+    IssueLinkIn, JobResultIn, LocSegment, PipelineReportIn, QuarantineIn, ReportOut, ScorePointOut,
+    TestOut, Tier, Trend, ValidationIssue,
 };
 use serde_json::{Value, json};
 
@@ -451,4 +451,63 @@ fn a_job_validation_is_usable_on_its_own() {
     assert_eq!(job.name, "build");
     assert_eq!(job.url, "");
     assert!(!job.summary);
+}
+
+#[test]
+fn a_quarantine_body_may_omit_the_reason_and_expiry() {
+    // `tests/parity/scenarios/quarantine.json` step 10 POSTs exactly this body,
+    // and Python's `QuarantineIn` defaults both optional fields, so serde must
+    // accept the body and read the documented defaults.
+    let body: QuarantineIn = serde_json::from_value(json!({"quarantined": false}))
+        .expect("a body with only `quarantined` deserializes");
+    assert!(!body.quarantined);
+    assert_eq!((body.reason, body.expires_in_days), (None, None));
+}
+
+#[test]
+fn a_quarantine_body_keeps_the_optional_fields_when_present() {
+    let body: QuarantineIn = serde_json::from_value(json!({
+        "quarantined": true,
+        "reason": "known race in the tax service",
+        "expires_in_days": 7
+    }))
+    .expect("a full body deserializes");
+    assert!(body.quarantined);
+    assert_eq!(
+        body.reason.as_deref(),
+        Some("known race in the tax service")
+    );
+    assert_eq!(body.expires_in_days, Some(7));
+
+    let explicit_nulls: QuarantineIn = serde_json::from_value(
+        json!({"quarantined": false, "reason": null, "expires_in_days": null}),
+    )
+    .expect("explicit nulls deserialize");
+    assert_eq!(
+        (explicit_nulls.reason, explicit_nulls.expires_in_days),
+        (None, None)
+    );
+}
+
+#[test]
+fn an_issue_link_body_may_omit_the_url() {
+    // `tests/parity/scenarios/issue-links.json` step 8 PUTs exactly this body,
+    // and Python's `IssueLinkIn` defaults `url` to `None`.
+    let body: IssueLinkIn = serde_json::from_value(json!({"number": 12}))
+        .expect("a body with only `number` deserializes");
+    assert_eq!((body.number, body.url), (12, None));
+}
+
+#[test]
+fn an_issue_link_body_keeps_the_url_when_present() {
+    let body: IssueLinkIn = serde_json::from_value(json!({
+        "number": 14,
+        "url": "https://github.com/o/r/issues/14"
+    }))
+    .expect("a body with a url deserializes");
+    assert_eq!(body.number, 14);
+    assert_eq!(
+        body.url.as_deref(),
+        Some("https://github.com/o/r/issues/14")
+    );
 }

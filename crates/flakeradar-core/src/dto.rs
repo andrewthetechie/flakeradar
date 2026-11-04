@@ -1055,8 +1055,10 @@ pub struct QuarantineIn {
     /// Whether the Test is quarantined.
     pub quarantined: bool,
     /// Why the human quarantined it.
+    #[serde(default)]
     pub reason: Option<String>,
     /// How many days the quarantine lasts.
+    #[serde(default)]
     pub expires_in_days: Option<i64>,
 }
 
@@ -1210,5 +1212,6 @@ pub struct IssueLinkIn {
     /// The GitHub issue number.
     pub number: i64,
     /// The issue's url, when the caller has one.
+    #[serde(default)]
     pub url: Option<String>,
 }
