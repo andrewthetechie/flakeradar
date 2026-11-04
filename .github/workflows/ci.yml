@@ -2,11 +2,27 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # `feat/rust-rewrite` is here so the Rust rewrite branch gets CI with no PR
+    # open. Task 15 (cutover) removes it, in the same PR that deletes backend/.
+    branches: [main, feat/rust-rewrite]
   pull_request:
+
+# Every push to a PR head re-triggers this workflow through `pull_request:
+# synchronize`, and only the newest commit's result is read, so superseded PR
+# runs are cancelled. Pushes are never cancelled: a push to `main` is the
+# release path, and a push to `feat/rust-rewrite` is one task's whole result.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # Warnings are errors, so a lint that fires on a newer toolchain cannot pass
+  # unnoticed. The coverage job clears it; see that job.
+  RUSTFLAGS: "-D warnings"
 
 jobs:
   backend:
@@ -106,6 +122,242 @@ jobs:
               print(f"::error::Backend coverage fell from {base:.2f}% to {head:.2f}%. Add tests for the new or changed code.")
               sys.exit(1)
           EOF
+
+  rust:
+    name: Rust (fmt + clippy + test + audit)
+    runs-on: ubuntu-24.04
+    env:
+      # Pinned so the cached binary is replaced when this is bumped.
+      CARGO_AUDIT_VERSION: 0.22.2
+      # Nextest starts its own Postgres only when this is unset; CI points the
+      # suite at the service below instead, so no Docker is needed.
+      FLAKERADAR_TEST_DATABASE_URL: postgresql://flakeradar:flakeradar@localhost:5432/flakeradar
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: flakeradar
+          POSTGRES_PASSWORD: flakeradar
+          POSTGRES_DB: flakeradar
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U flakeradar"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "cargo"
+
+      - name: Check formatting (rustfmt)
+        run: cargo fmt --all -- --check
+
+      - name: Run Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Install cargo-nextest
+        # The taiki-e action pulls the prebuilt binary off the release URLs.
+        uses: taiki-e/install-action@nextest
+
+      - name: Run tests (cargo nextest)
+        # --profile ci activates [profile.ci] (retries, flaky handling) and writes
+        # the JUnit report to target/nextest/ci/junit.xml. --no-tests=pass lets the
+        # empty workspace pass; task 03 removes it when the first tests land.
+        run: cargo nextest run --all-features --profile ci --no-tests=pass
+
+      - name: Upload JUnit test report
+        # if-no-files-found: error turns a missing report into a visible CI
+        # failure rather than silently succeeding without an artifact.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-rust
+          path: target/nextest/ci/junit.xml
+          if-no-files-found: error
+
+      - name: Cache cargo-audit binary
+        id: cache-audit
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-audit
+          key: cargo-audit-${{ runner.os }}-${{ env.CARGO_AUDIT_VERSION }}
+
+      - name: Install cargo-audit
+        if: steps.cache-audit.outputs.cache-hit != 'true'
+        run: cargo install cargo-audit --version "$CARGO_AUDIT_VERSION" --locked
+
+      - name: Compute advisory database cache day
+        id: advisory-day
+        run: echo "day=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache RustSec advisory database
+        # Restores the newest clone; `cargo audit` then fetches only the new
+        # commits instead of cloning the whole database. Saved once a day.
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/advisory-db
+          key: advisory-db-${{ steps.advisory-day.outputs.day }}
+          restore-keys: advisory-db-
+
+      - name: Run cargo audit
+        run: cargo audit
+
+  coverage:
+    name: Rust coverage (lines + branches)
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      # Read main's coverage artifact for the PR comparison.
+      actions: read
+    env:
+      # Pinned nightly; bump deliberately, then re-check the floors.
+      COVERAGE_TOOLCHAIN: nightly-2026-10-25
+      # Warnings are already a hard gate in the `rust` job. Unset the
+      # workflow-wide `-D warnings` here so a new nightly-only lint cannot fail
+      # coverage; cargo-llvm-cov adds its own instrumentation flags.
+      RUSTFLAGS: ""
+      FLAKERADAR_TEST_DATABASE_URL: postgresql://flakeradar:flakeradar@localhost:5432/flakeradar
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: flakeradar
+          POSTGRES_PASSWORD: flakeradar
+          POSTGRES_DB: flakeradar
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U flakeradar"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install the coverage toolchain
+        # Installed by name and invoked as `cargo +$COVERAGE_TOOLCHAIN`, never
+        # made the rustup default, so the stable build stays the default.
+        run: rustup toolchain install "$COVERAGE_TOOLCHAIN" --profile minimal -c llvm-tools-preview
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Separate key: the instrumented nightly build shares nothing with the
+          # stable build and would only evict it.
+          prefix-key: "cargo-cov-nightly"
+
+      - name: Install cargo-llvm-cov and cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov@0.9.1,cargo-nextest
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Run tests with coverage
+        id: collect
+        # cargo-llvm-cov cannot export anything when no test has run, so a
+        # workspace with no tests collects nothing and says so. Task 03 deletes
+        # this guard along with `--no-tests=pass` once the first tests land.
+        # --no-report: collect once, then export each format from the same data.
+        run: |
+          test_count=$(cargo "+$COVERAGE_TOOLCHAIN" nextest list --all-features --profile ci --message-format json \
+            | jq '."test-count"')
+          if [ "$test_count" -eq 0 ]; then
+            echo "::notice::The workspace has no tests yet, so there is no coverage to collect."
+            echo "has-coverage=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "has-coverage=true" >> "$GITHUB_OUTPUT"
+          cargo "+$COVERAGE_TOOLCHAIN" llvm-cov nextest --branch --all-features --profile ci --no-report
+
+      - name: Export coverage reports
+        if: steps.collect.outputs.has-coverage == 'true'
+        run: |
+          cargo "+$COVERAGE_TOOLCHAIN" llvm-cov report --branch --lcov --output-path lcov.info
+          cargo "+$COVERAGE_TOOLCHAIN" llvm-cov report --branch --json --summary-only --output-path coverage-summary.json
+          cargo "+$COVERAGE_TOOLCHAIN" llvm-cov report --branch --summary-only
+
+      - name: Test the coverage gate script
+        run: node --test scripts/coverage-gate.test.mjs
+
+      - name: Check coverage floors and no decrease
+        if: steps.collect.outputs.has-coverage == 'true'
+        # Writes the totals and the worst files to the job summary, and fails if
+        # line or branch coverage is below `coverage-floor.json`. On a PR it also
+        # fails when a total fell below the newest coverage that the base branch
+        # uploaded, compared at two decimals with no tolerance.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          baseline=""
+          if [ -n "$BASE_REF" ]; then
+            run_id=$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=rust-coverage&per_page=100" \
+              --jq "[.artifacts[] | select(.expired | not) | select(.workflow_run.head_branch == \"$BASE_REF\")]
+                    | sort_by(.created_at) | last | .workflow_run.id // empty")
+            if [ -z "$run_id" ]; then
+              echo "::notice::No rust-coverage baseline for $BASE_REF; only the floors apply."
+              echo "Rust coverage: no baseline for \`$BASE_REF\` yet; only the floors apply." >> "$GITHUB_STEP_SUMMARY"
+            else
+              gh run download "$run_id" --repo "$GITHUB_REPOSITORY" -n rust-coverage -D "$RUNNER_TEMP/base-coverage"
+              baseline="$RUNNER_TEMP/base-coverage/coverage-summary.json"
+            fi
+          fi
+          if [ -n "$baseline" ]; then
+            node scripts/coverage-gate.mjs coverage-summary.json --baseline "$baseline"
+          else
+            node scripts/coverage-gate.mjs coverage-summary.json
+          fi
+
+      - name: Upload coverage reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-rust
+          path: |
+            lcov.info
+            coverage-summary.json
+          if-no-files-found: warn
+
+      # Each push to main stores its coverage; PRs compare against it.
+      - name: Upload coverage baseline (main only)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-coverage
+          path: coverage-summary.json
+          if-no-files-found: warn
+          retention-days: 90
+
+  # Always runs, on every push and PR, so a version drift is caught before it can
+  # reach a release. Needs only checkout and Node.
+  version-consistency:
+    name: Release version consistency
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Test the version script
+        run: node --test scripts/version.test.mjs
+
+      - name: Check release version consistency
+        run: node scripts/version.mjs check
 
   frontend:
     name: Frontend (typecheck + tests)
