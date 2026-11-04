@@ -371,8 +371,10 @@ mod tests {
         assert!(body.contains("flakeradar_processor_leader 0"));
         assert!(body.contains("flakeradar_reports{status=\"pending\"} 0"));
         assert!(body.contains("flakeradar_tests{tier=\"stable\"} 0"));
-        // A zero would mean the epoch, so the sample is absent until a Report is processed.
-        assert!(!body.contains("flakeradar_last_report_processed_timestamp_seconds "));
+        // A zero would mean the epoch, so the sample is absent until a Report is
+        // processed; its HELP and TYPE lines stay, keeping the scrape stable.
+        assert!(!body.lines().any(|line| line
+            .starts_with("flakeradar_last_report_processed_timestamp_seconds ")));
         assert!(body.contains("# TYPE flakeradar_last_report_processed_timestamp_seconds gauge"));
         assert!(body.ends_with('\n'));
     }

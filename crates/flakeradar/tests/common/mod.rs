@@ -9,6 +9,11 @@
     clippy::panic,
     reason = "a test helper fails loudly when a fixture cannot be built"
 )]
+// Each test binary uses a few of these helpers, so the rest look unused to it.
+#![allow(
+    dead_code,
+    reason = "one shared module is compiled into every test binary, and each uses a subset"
+)]
 
 use std::sync::Arc;
 

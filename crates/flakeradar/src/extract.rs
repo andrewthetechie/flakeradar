@@ -264,7 +264,7 @@ fn issue_for(scope: &str, path: &ErrorPath, message: &str) -> ValidationIssue {
 /// message falls back to `value_error` rather than guessing a narrower kind.
 fn kind_for(message: &str) -> &'static str {
     let lowered = message.to_lowercase();
-    if lowered.contains("expected a boolean") {
+    if lowered.contains("expected a boolean") || lowered.contains("was not `true` or `false`") {
         "bool_parsing"
     } else if lowered.contains("unknown variant") {
         "literal_error"
@@ -279,6 +279,16 @@ fn kind_for(message: &str) -> &'static str {
         "missing"
     } else {
         "value_error"
+    }
+}
+
+/// Pydantic's error kind for a type name `serde` or Axum printed.
+fn kind_for_type_name(name: &str) -> &'static str {
+    match name {
+        "bool" => "bool_parsing",
+        "f32" | "f64" => "float_parsing",
+        other if is_integer_failure(&format!("expected {other}")) => "int_parsing",
+        _ => "value_error",
     }
 }
 
@@ -368,7 +378,7 @@ fn path_error(rejection: axum::extract::rejection::PathRejection) -> ApiError {
 fn path_issue(tail: Vec<LocSegment>, value: &str, expected_type: &str) -> ValidationIssue {
     let mut loc = scope_loc("path");
     loc.extend(tail);
-    match kind_for(expected_type) {
+    match kind_for_type_name(expected_type) {
         "int_parsing" => ValidationIssue::int_parsing(loc, Value::from(value)),
         "float_parsing" => ValidationIssue::float_parsing(loc, Value::from(value)),
         "bool_parsing" => ValidationIssue::bool_parsing(loc, Value::from(value)),
