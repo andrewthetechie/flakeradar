@@ -39,7 +39,10 @@ Error handling: never raises.
 - The fixed-note step (`note_fixed_issues_for`, after filing) follows the same
   policy for the comment POST and the optional close PATCH. It stamps
   `github_issue_fixed_noted_at` the moment the comment lands, so a later close
-  failure never causes a second comment on the same fix.
+  failure never causes a second comment on the same fix. The stamp is reset to
+  NULL when the Clean streak collapses (`processing.rescore`/`rescore_jobs`) and
+  by every write of the link (here in the re-arm, and in `issue_links`), so a
+  re-armed link can be noted again.
 - A response body FlakeRadar cannot use (a 201 without an issue number, a
   sync 200 that is not a JSON object with a `state`) -> log a warning, go on;
   no issue number is stored and no link is cleared (the sync still stamps the
@@ -587,6 +590,11 @@ async def _clear_if_closed(
     these links in the rotation: a declined issue that is reopened re-arms filing. A 404
     (deleted, or invisible to the token) clears link and flag exactly like a close.
 
+    A re-arm also clears `github_issue_fixed_noted_at` (issue #33): the stamp says the
+    Issue this row no longer points at has its "the fix appears to hold" comment, so the
+    Issue filed after the re-arm would never get one. The kept `not_planned` link keeps
+    its stamp, because it is the same Issue with the same comment on it.
+
     Returns False on a rate limit, when the batch must stop; a definitive
     Repo-wide client error (a permission 403, bad credentials 401, a gone
     Repo 410) adds `repo` to `skipped` and leaves the link as it is.
@@ -654,6 +662,7 @@ async def _clear_if_closed(
                 obj.github_issue_number = None
                 obj.github_issue_filed = None
                 obj.github_issue_closed = False
+                obj.github_issue_fixed_noted_at = None  # the Issue filed next has not been noted
         elif state == "open":
             # Possibly reopened after a close as not planned: filing is live again.
             obj.github_issue_closed = False
@@ -663,6 +672,7 @@ async def _clear_if_closed(
         obj.github_issue_number = None
         obj.github_issue_filed = None
         obj.github_issue_closed = False
+        obj.github_issue_fixed_noted_at = None  # the Issue filed next has not been noted
     return True
 
 

@@ -3,15 +3,17 @@
 import asyncio
 from pathlib import Path
 
+import pytest
 from app.config import Settings
-from app.models import Repo, Report, TestCase, TestExecution, TestRun, TestScoreHistory, utcnow
+from app.models import Job, Repo, Report, TestCase, TestExecution, TestRun, TestScoreHistory, utcnow
 from app.processing import claim_next_report, process_next
 from sqlalchemy import event as sa_event
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError, OperationalError
 
 from tests.conftest import make_junit
-from tests.factories import make_project, make_report
+from tests.factories import make_job, make_pipeline, make_project, make_report, make_test_case
+from tests.test_pipeline_processing import _job, _payload, _queue_pipeline
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -25,6 +27,10 @@ async def _queue(db, body: bytes, project=None, **kw) -> Report:
 
 async def _tests(db) -> list[TestCase]:
     return list((await db.execute(select(TestCase).order_by(TestCase.name))).scalars())
+
+
+async def _jobs(db) -> list[Job]:
+    return list((await db.execute(select(Job).order_by(Job.name))).scalars())
 
 
 async def test_empty_queue_returns_none(session_factory):
@@ -421,6 +427,72 @@ async def test_clean_streak_counts_passes_since_last_failure(db, session_factory
         await process_next(session_factory)
     (tc,) = await _tests(db)
     assert tc.clean_streak == 2
+
+
+@pytest.mark.parametrize("entity", ["test", "job"])
+async def test_a_failure_back_to_a_zero_streak_clears_the_fixed_note_stamp(db, session_factory, entity):
+    """Issue #33: a Report that collapses the Clean streak clears the note stamp, for both entities.
+
+    A stamp that survived a new failure would suppress the next "the fix appears to hold"
+    comment forever, so `rescore`/`rescore_jobs` reset it exactly when `clean_streak` is 0. One
+    Report carries both rows in the same bulk update: only the collapsed one may lose its stamp.
+    """
+    if entity == "test":
+        proj = await make_project(db, "acme/app", "backend")
+        # `held` first on purpose: `rescore` walks ascending ids, so the bulk update sees a
+        # dict WITHOUT the reset key first and one WITH it second.
+        held = await make_test_case(db, proj, name="t_keep", clean_streak=3, github_issue_fixed_noted_at=utcnow())
+        broke = await make_test_case(db, proj, name="t_fail", clean_streak=3, github_issue_fixed_noted_at=utcnow())
+        await db.commit()
+        await _queue(
+            db,
+            make_junit([("t_fail", "failed"), ("t_keep", "passed")]),
+            project=proj,
+            branch="main",
+            commit_sha="f9",
+            default_branch="main",
+        )
+    else:
+        pipe = await make_pipeline(db, "acme/app")
+        held = await make_job(db, pipe, name="lint", clean_streak=3, github_issue_fixed_noted_at=utcnow())
+        broke = await make_job(db, pipe, name="e2e", clean_streak=3, github_issue_fixed_noted_at=utcnow())
+        await db.commit()
+        await _queue_pipeline(db, _payload([_job("1", "e2e", "failed"), _job("2", "lint", "passed")], sha="f9"))
+    await process_next(session_factory)
+    await db.refresh(broke)
+    await db.refresh(held)
+    assert broke.clean_streak == 0
+    assert broke.github_issue_fixed_noted_at is None
+    assert held.clean_streak > 0
+    assert held.github_issue_fixed_noted_at is not None  # the sibling keeps the note it earned
+
+
+@pytest.mark.parametrize("entity", ["test", "job"])
+async def test_a_rescore_with_a_clean_streak_keeps_the_fixed_note_stamp(db, session_factory, entity):
+    """The reset is keyed on the computed streak, not on any rescore: a streak above 0 keeps it."""
+    if entity == "test":
+        proj = await make_project(db, "acme/app", "backend")
+        await make_test_case(db, proj, name="t", clean_streak=3, github_issue_fixed_noted_at=utcnow())
+        await db.commit()
+        await _queue(
+            db,
+            make_junit([("t", "passed")]),
+            project=proj,
+            branch="main",
+            commit_sha="f9",
+            default_branch="main",
+        )
+    else:
+        pipe = await make_pipeline(db, "acme/app")
+        await make_job(db, pipe, name="test", clean_streak=3, github_issue_fixed_noted_at=utcnow())
+        await db.commit()
+        await _queue_pipeline(db, _payload([_job("1", "test", "passed")], sha="f9"))
+    await process_next(session_factory)
+    db.expire_all()
+    rows = await _tests(db) if entity == "test" else await _jobs(db)
+    (row,) = rows
+    assert row.clean_streak > 0
+    assert row.github_issue_fixed_noted_at is not None  # the note this row already earned survives
 
 
 async def test_fail_streak_marks_broken_after_five_default_branch_failures(db, session_factory, monkeypatch):

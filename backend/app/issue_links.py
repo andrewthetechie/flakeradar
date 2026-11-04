@@ -155,12 +155,16 @@ def store_filed_link(obj: Job | TestCase, number: int) -> None:
     provenance the admin delete reads before it comments on and closes an issue: a
     number stored here was created by FlakeRadar, so closing it is ours to do. The
     closed-as-not-planned flag is reset too: a fresh link points at an open Issue, and a
-    flag left over from the number it replaces would keep the filer quiet forever.
+    flag left over from the number it replaces would keep the filer quiet forever. The
+    fixed-note stamp goes with the old number as well (issue #33): the Issue stored here
+    has no "the fix appears to hold" comment on it yet, so a kept stamp would leave it
+    unnoted for good.
     """
     obj.github_issue_number = number
     obj.github_issue_checked_at = None  # a new link is checked first
     obj.github_issue_filed = True
     obj.github_issue_closed = False
+    obj.github_issue_fixed_noted_at = None  # a new link has never been noted
 
 
 def clear_link(obj: Job | TestCase) -> None:
@@ -174,12 +178,14 @@ def clear_link(obj: Job | TestCase) -> None:
 
     The not-planned flag goes with the link: unlinking a Test the team had declined is how a
     person re-arms filing, so a kept flag would be the one thing left standing between the row
-    and a fresh Issue.
+    and a fresh Issue. The fixed-note stamp goes too (issue #33): whoever links an Issue next
+    must be able to note it.
     """
     obj.github_issue_number = None
     obj.github_issue_checked_at = None
     obj.github_issue_filed = None
     obj.github_issue_closed = False
+    obj.github_issue_fixed_noted_at = None
 
 
 async def _link(

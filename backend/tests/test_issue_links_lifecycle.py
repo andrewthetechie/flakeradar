@@ -22,6 +22,7 @@ import httpx
 import pytest
 from app import github_integration, issue_links
 from app.config import Settings
+from app.models import utcnow
 
 from tests.factories import make_job, make_pipeline, make_project, make_test_case
 
@@ -226,6 +227,82 @@ async def test_unlink_rearms_a_closed_as_not_planned_link(db, gh_settings, sessi
     calls.clear()
     await github_integration.sync_closed_issues(session_factory, transport=transport)
     assert [r.url.path for r in calls] == ["/repos/acme/app/issues/77"]  # only the new link remains
+
+
+async def test_a_link_change_clears_the_fixed_note_stamp(db, gh_settings, session_factory):
+    """Issue #33: the fixed-note stamp belongs to the link, so every new link write clears it.
+
+    Both `store_filed_link` writers (the filer and a re-link with a different number) and
+    `clear_link` re-arm noting: the Issue a row points at next has no "the fix appears to hold"
+    comment on it yet, so a stamp carried over would leave that Issue unnoted forever.
+    """
+    filed = await _test(db, project="p1", name="t1")
+    relinked = await _test(db, project="p2", name="t2")
+    unlinked = await _test(db, project="p3", name="t3")
+    job = await _job(db, github_issue_number=40)
+    for obj in (filed, relinked, unlinked, job):
+        obj.github_issue_fixed_noted_at = utcnow()  # the row was already noted on its current Issue
+    await db.commit()
+
+    issue_links.store_filed_link(filed, 11)  # the filer storing what GitHub just created
+    await issue_links.link_issue(db, "Test", relinked.id, 22, threshold=0.3)  # a number from elsewhere
+    await db.commit()
+    await db.refresh(filed)
+    assert filed.github_issue_fixed_noted_at is None
+    await db.refresh(relinked)
+    assert relinked.github_issue_fixed_noted_at is None
+
+    await issue_links.link_issue(db, "Job", job.id, 41, replace=True, threshold=0.3)
+    await db.refresh(job)
+    assert job.github_issue_number == 41
+    assert job.github_issue_fixed_noted_at is None  # a replaced link is a different Issue too
+
+    await issue_links.unlink_issue(db, "Test", unlinked.id, threshold=0.3)
+    await db.refresh(unlinked)
+    assert unlinked.github_issue_number is None
+    assert unlinked.github_issue_fixed_noted_at is None  # with no Issue, a stamp would note nothing
+
+
+async def test_the_sync_rearm_clears_the_fixed_note_stamp(db, gh_settings, session_factory):
+    """Issue #33: the re-arm clears the stamp with the number it clears; a kept link keeps its stamp.
+
+    Three links, three answers: a plain close and a 404 both re-arm the row, so the Issue FlakeRadar
+    files next must be noteable again. A close as `not_planned` keeps the link, so the comment the
+    row already earned still sits on that same Issue and its stamp survives.
+    """
+    closed = await _test(db, project="p1", name="t1")
+    gone = await _test(db, project="p2", name="t2")
+    declined = await _test(db, project="p3", name="t3")
+    answers = {
+        "/repos/acme/app/issues/11": httpx.Response(200, json={"state": "closed", "state_reason": "completed"}),
+        "/repos/acme/app/issues/22": httpx.Response(404, json={"message": "Not Found"}),
+        "/repos/acme/app/issues/33": httpx.Response(200, json={"state": "closed", "state_reason": "not_planned"}),
+    }
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return answers[request.url.path]
+
+    for tc, number in ((closed, 11), (gone, 22), (declined, 33)):
+        await issue_links.link_issue(db, "Test", tc.id, number, threshold=0.3)
+        tc.github_issue_fixed_noted_at = utcnow()  # each Issue was noted before somebody closed it
+    await db.commit()
+
+    await github_integration.sync_closed_issues(session_factory, transport=httpx.MockTransport(handler))
+    assert [r.url.path for r in calls] == [
+        "/repos/acme/app/issues/11",
+        "/repos/acme/app/issues/22",
+        "/repos/acme/app/issues/33",
+    ]
+    for tc in (closed, gone):
+        await db.refresh(tc)
+        assert tc.github_issue_number is None
+        assert tc.github_issue_fixed_noted_at is None  # re-armed: the next Issue gets its own comment
+    await db.refresh(declined)
+    assert declined.github_issue_number == 33
+    assert declined.github_issue_closed is True
+    assert declined.github_issue_fixed_noted_at is not None  # the same Issue, the same comment on it
 
 
 async def test_job_provider_gate(db):
