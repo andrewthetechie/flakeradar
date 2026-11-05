@@ -366,30 +366,46 @@ async fn a_link_a_human_made_is_never_refiled() {
 #[tokio::test]
 async fn a_row_at_the_fixed_note_streak_has_no_live_flake_to_file() {
     let db = TestDb::new().await.expect("a test database");
-    let test = flaky_test(&db).await;
+    let at_streak = flaky_test(&db).await;
+    let below = flaky_test_in(&db, "acme/app", "p2", "below").await;
     db.connection()
         .execute_raw(Statement::from_sql_and_values(
             DbBackend::Postgres,
             "UPDATE test_cases SET clean_streak = 3 WHERE id = $1",
-            [Value::from(test)],
+            [Value::from(at_streak)],
         ))
         .await
         .expect("the streak writes");
     let server = MockServer::start().await;
+    mount_create(
+        &server,
+        ResponseTemplate::new(201).set_body_json(json!({"number": 101})),
+    )
+    .await;
     let settings = fixed_settings(&[]);
 
-    assert!(
-        github::file_issues_for(db.connection(), &[test], &settings, &api(&server))
-            .await
-            .is_empty()
+    let filed = github::file_issues_for(
+        db.connection(),
+        &[at_streak, below],
+        &settings,
+        &api(&server),
+    )
+    .await;
+    assert_eq!(
+        filed.into_iter().collect::<Vec<_>>(),
+        vec![below],
+        "a row whose fix holds answers with a note, not an Issue"
     );
-    assert!(
-        server
-            .received_requests()
-            .await
-            .expect("a record")
-            .is_empty()
+    assert_eq!(
+        requested_paths(&server).await,
+        vec!["/repos/acme/app/issues"]
     );
+    assert_eq!(
+        test_link(&db, at_streak).await.0,
+        None,
+        "no Issue to comment the fix on"
+    );
+    assert_eq!(test_link(&db, below).await.0, Some(101));
 }
 
 #[tokio::test]
@@ -1234,11 +1250,21 @@ async fn a_job_body_without_history_still_carries_the_table_heading() {
         confirmed_flake_count: 1,
     };
     let body = github::job_issue_body(&job, "ci", "acme/app", None, &gh_settings(&[]));
+    assert!(body.contains("**Job:** `unit`"), "{body}");
+    assert!(body.contains("**Flakiness score:**"), "{body}");
+    assert!(!body.contains("Unexplained failures"), "{body}");
+    assert!(!body.contains("Explained by tests"), "{body}");
+    let table = body
+        .split("### Last 10 executions")
+        .nth(1)
+        .expect("the executions heading is there");
     assert!(
-        body.contains("| Outcome | Commit | Branch | Attempt | Runner | Job |"),
+        table.contains("| Outcome | Commit | Branch | Attempt | Runner | Job |"),
         "{body}"
     );
-    assert!(!body.contains("- **Unexplained failures:**"), "{body}");
+    assert!(table.contains("|---|---|---|---|---|---|"), "{body}");
+    assert!(!table.contains("| failed |"), "{body}");
+    assert!(!table.contains("| passed |"), "{body}");
 }
 
 #[tokio::test]
@@ -3779,4 +3805,45 @@ async fn a_test_sync_rearms_its_closed_issue_and_the_filer_files_again() {
     assert_eq!(filed.into_iter().collect::<Vec<_>>(), vec![test]);
     assert_eq!(test_link(&db, test).await.0, Some(77));
     assert!(!test_link(&db, test).await.2, "a new link is checked first");
+}
+
+#[tokio::test]
+async fn a_linked_test_and_a_linked_job_are_never_filed() {
+    let db = TestDb::new().await.expect("a test database");
+    let linked = flaky_test(&db).await;
+    let other = flaky_test_in(&db, "acme/other", "backend", "other").await;
+    stamp_link(&db, linked, 300, true, false).await;
+    let job = flaky_job(&db).await;
+    stamp_job_link(&db, job, 301, true).await;
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/repos/acme/other/issues"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({"number": 88})))
+        .mount(&server)
+        .await;
+
+    let filed = github::file_issues_for(
+        db.connection(),
+        &[linked, other],
+        &gh_settings(&[]),
+        &api(&server),
+    )
+    .await;
+    assert_eq!(filed.into_iter().collect::<Vec<_>>(), vec![other]);
+    assert_eq!(
+        requested_paths(&server).await,
+        vec!["/repos/acme/other/issues"],
+        "the linked Test is skipped and the other Repo is filed"
+    );
+    assert_eq!(test_link(&db, linked).await.0, Some(300));
+
+    let jobs =
+        github::file_job_issues_for(db.connection(), &[job], &gh_settings(&[]), &api(&server))
+            .await;
+    assert!(jobs.is_empty(), "a linked Job is never filed");
+    assert!(
+        server.received_requests().await.expect("a record").len() == 1,
+        "no request for the linked Job"
+    );
+    assert_eq!(job_link(&db, job).await.0, Some(301));
 }
