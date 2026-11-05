@@ -503,6 +503,12 @@ async def _select_candidates(db: AsyncSession, test_case_ids: list[int]) -> list
 # way a permission 403 does, so the loop's response to them is the same skip.
 _FILING_SKIP_REPO_KINDS = frozenset({"unauthorized", "repo_denied", "not_found", "gone"})
 
+# The outcomes the fixed-note loop treats as Repo-scoped: exactly today's `(403, 404, 410)`
+# skip set. Unlike filing, a bad-credentials 401 is *not* Repo-wide here — it is a per-item
+# failure that logs the "comment failed"/"close failed" warning and goes on — so this set
+# deliberately leaves "unauthorized" out, and `_FILING_SKIP_REPO_KINDS` must not be reused.
+_NOTE_SKIP_REPO_KINDS = frozenset({"repo_denied", "not_found", "gone"})
+
 
 async def _file_batch(
     db: AsyncSession,
@@ -1095,71 +1101,60 @@ async def _note_batch(
     so the stamp lands only while the row is still noteable (see `_stamp_note`).
     """
     s = get_settings()
-    try:
-        async with httpx.AsyncClient(
-            base_url=API_BASE, headers=_headers(s.github_token), timeout=15, transport=transport
-        ) as client:
-            skipped: set[str] = set()
-            for obj, repo, body in rows:
-                if repo in skipped:
-                    continue
-                number = obj.github_issue_number
-                resp = await client.post(f"/repos/{repo}/issues/{number}/comments", json={"body": body})
-                if resp.status_code == 201:
-                    obj_id = obj.id  # the object is refreshed (or left alone) by the stamp write
-                    if not await _stamp_note(db, obj, repo, number, entity=entity, threshold=s.github_fixed_streak):
-                        continue  # the row stopped being noteable mid-POST: no stamp, and no close
-                    await db.commit()
-                    logger.info("Noted the fix appears to hold on issue %s#%s for %s %s", repo, number, entity, obj_id)
-                    if s.github_close_fixed:
-                        close = await client.patch(
-                            f"/repos/{repo}/issues/{number}",
-                            json={"state": "closed", "state_reason": "completed"},
+    async with _GitHubClient(s.github_token, transport=transport) as client:
+        skipped: set[str] = set()
+        for obj, repo, body in rows:
+            if repo in skipped:
+                continue
+            number = obj.github_issue_number
+            outcome = await client.comment(repo, number, body)
+            if outcome.kind == "created":
+                obj_id = obj.id  # the object is refreshed (or left alone) by the stamp write
+                if not await _stamp_note(db, obj, repo, number, entity=entity, threshold=s.github_fixed_streak):
+                    continue  # the row stopped being noteable mid-POST: no stamp, and no close
+                await db.commit()
+                logger.info("Noted the fix appears to hold on issue %s#%s for %s %s", repo, number, entity, obj_id)
+                if s.github_close_fixed:
+                    close = await client.close_issue(repo, number, state_reason="completed")
+                    if close.kind == "rate_limited":
+                        logger.warning(
+                            "GitHub rate limit (remaining=%s) closing issue %s#%s; stopping the batch",
+                            close.remaining,
+                            repo,
+                            number,
                         )
-                        if _rate_limited(close):
-                            logger.warning(
-                                "GitHub rate limit (remaining=%s) closing issue %s#%s; stopping the batch",
-                                close.headers.get("x-ratelimit-remaining"),
-                                repo,
-                                number,
-                            )
-                            return
-                        if close.status_code in (403, 404, 410):
-                            logger.warning(
-                                "GitHub issue close skipped for repo %s: %s %s",
-                                repo,
-                                close.status_code,
-                                close.text[:300],
-                            )
-                            skipped.add(repo)
-                        elif close.status_code == 200:
-                            logger.info("Closed issue %s#%s after noting the fix", repo, number)
-                        else:
-                            logger.warning(
-                                "GitHub close of %s#%s failed: %s %s", repo, number, close.status_code, close.text[:300]
-                            )
-                elif _rate_limited(resp):
-                    logger.warning(
-                        "GitHub rate limit (remaining=%s); stopping the note batch",
-                        resp.headers.get("x-ratelimit-remaining"),
-                    )
-                    return
-                elif resp.status_code in (403, 404, 410):
-                    logger.warning(
-                        "GitHub fixed-note skipped for repo %s: %s %s", repo, resp.status_code, resp.text[:300]
-                    )
-                    skipped.add(repo)
-                else:
-                    logger.warning(
-                        "GitHub fixed-note comment failed for %s %s in %s: %s %s",
-                        entity,
-                        obj.id,
-                        repo,
-                        resp.status_code,
-                        resp.text[:300],
-                    )
-    except httpx.HTTPError as exc:
-        logger.warning("GitHub unreachable, skipping %s fixed-note comments: %s", entity, exc)
+                        return
+                    if close.kind in _NOTE_SKIP_REPO_KINDS:
+                        logger.warning(
+                            "GitHub issue close skipped for repo %s: %s %s", repo, close.status, close.excerpt
+                        )
+                        skipped.add(repo)
+                    elif close.kind == "ok" and close.status == 200:
+                        logger.info("Closed issue %s#%s after noting the fix", repo, number)
+                    elif close.kind == "network":
+                        logger.warning("GitHub unreachable, skipping %s fixed-note comments: %s", entity, close.error)
+                        return
+                    else:
+                        logger.warning("GitHub close of %s#%s failed: %s %s", repo, number, close.status, close.excerpt)
+            elif outcome.kind == "rate_limited":
+                logger.warning("GitHub rate limit (remaining=%s); stopping the note batch", outcome.remaining)
+                return
+            elif outcome.kind in _NOTE_SKIP_REPO_KINDS:
+                logger.warning("GitHub fixed-note skipped for repo %s: %s %s", repo, outcome.status, outcome.excerpt)
+                skipped.add(repo)
+            elif outcome.kind == "network":
+                # No answer at all: as today, the rest of the batch is not worth trying.
+                logger.warning("GitHub unreachable, skipping %s fixed-note comments: %s", entity, outcome.error)
+                return
+            else:
+                logger.warning(
+                    "GitHub fixed-note comment failed for %s %s in %s: %s %s",
+                    entity,
+                    obj.id,
+                    repo,
+                    outcome.status,
+                    outcome.excerpt,
+                )
 
 
 async def note_fixed_issues_for(
