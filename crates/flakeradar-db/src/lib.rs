@@ -16,8 +16,10 @@ pub mod attribution;
 mod batching;
 pub mod clock;
 mod connect;
+mod deletes;
 mod error;
 mod identity;
+pub mod issue_links;
 mod migration;
 pub mod processing;
 pub mod reads;
@@ -51,9 +53,13 @@ pub use clock::{
 #[doc(inline)]
 pub use connect::{DbSettings, connect, connect_session};
 #[doc(inline)]
+pub use deletes::{DeleteError, DeletedProject, DeletedRepo, delete_project, delete_repo};
+#[doc(inline)]
 pub use error::DbError;
 #[doc(inline)]
 pub use identity::{get_or_create_project, get_or_create_repo};
+#[doc(inline)]
+pub use issue_links::{LinkError, LinkTarget, LinkedIssue, LinkedOut, NoteStamp};
 #[doc(inline)]
 pub use migration::{BASELINE_SQL, Migrator, run_migrations, split_statements};
 #[doc(inline)]

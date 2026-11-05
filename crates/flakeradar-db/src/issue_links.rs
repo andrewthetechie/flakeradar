@@ -1,0 +1,657 @@
+//! Issue links: the GitHub issue a Test or Job points at.
+//!
+//! This module owns the `(github_issue_number, github_issue_checked_at)` pair
+//! for both linkable entities. The REST routes and the MCP tools link and unlink
+//! it, the GitHub filer stores a number it just filed, and the issue-state sync
+//! takes its rotation list from [`linked_for_check`]. A linked entity is treated
+//! exactly like a filed one: the filer skips it, and the sync clears the link
+//! when the issue closes as completed or is gone.
+//!
+//! The rules live in the engines, once for both targets; only an intended
+//! per-target difference is [`LinkTarget::data`] (a Job may link an issue only
+//! on a GitHub Pipeline). The two targets select genuinely different row shapes,
+//! which is the one place the engines switch on the target.
+
+// Rust guideline compliant 2026-07-21
+
+use chrono::{DateTime, FixedOffset, Utc};
+use flakeradar_core::{JobOut, MAX_ISSUE_NUMBER, TestOut, issue_url, py_strip};
+use sea_orm::{ConnectionTrait, DbBackend, Statement, TransactionSession, TransactionTrait, Value};
+
+use crate::error::DbError;
+use crate::reads::{
+    JOBS_FROM, JOBS_SELECT, ReadSettings, TESTS_FROM, TESTS_SELECT, get, job_out, one,
+    optional_timestamp, rows, test_out,
+};
+
+/// The two entities that can hold an Issue link.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum LinkTarget {
+    /// A Test, which reaches its Repo through a Project.
+    Test,
+    /// A Job, which reaches its Repo through its Pipeline.
+    Job,
+}
+
+impl LinkTarget {
+    /// Both targets, in the order the sync checks them.
+    pub const ALL: [Self; 2] = [Self::Test, Self::Job];
+
+    /// The noun a 404 and a log line use: `Test` or `Job`.
+    #[must_use]
+    pub fn kind(self) -> &'static str {
+        match self {
+            Self::Test => "Test",
+            Self::Job => "Job",
+        }
+    }
+
+    /// The noun a log line uses, lowercase: `test` or `job`.
+    #[must_use]
+    pub fn entity(self) -> &'static str {
+        match self {
+            Self::Test => "test",
+            Self::Job => "job",
+        }
+    }
+
+    /// The table that holds this target's link columns.
+    const fn table(self) -> &'static str {
+        match self {
+            Self::Test => "test_cases",
+            Self::Job => "jobs",
+        }
+    }
+
+    /// Whether only a GitHub Pipeline's Job can hold a link (ADR 0008).
+    #[must_use]
+    pub const fn github_provider_only(self) -> bool {
+        matches!(self, Self::Job)
+    }
+}
+
+/// What a link or unlink answered: the target's own response shape.
+#[derive(Debug, Clone)]
+pub enum LinkedOut {
+    /// A Test, in the leaderboard shape.
+    Test(TestOut),
+    /// A Job, in the leaderboard shape.
+    Job(JobOut),
+}
+
+/// A refused Issue-link operation; the text is the response `detail`.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum IssueLinkError {
+    /// No such Test or Job.
+    #[error("{0}")]
+    NotFound(String),
+    /// A different issue is already linked and the caller did not pass `replace`.
+    #[error("{0}")]
+    Conflict(String),
+    /// The request breaks a link rule.
+    #[error("{0}")]
+    NotLinkable(String),
+}
+
+impl IssueLinkError {
+    /// The status code the refusal answers with.
+    #[must_use]
+    pub fn status(&self) -> u16 {
+        match self {
+            Self::NotFound(_) => 404,
+            Self::Conflict(_) => 409,
+            Self::NotLinkable(_) => 422,
+        }
+    }
+
+    /// The response `detail` text.
+    #[must_use]
+    pub fn detail(&self) -> &str {
+        match self {
+            Self::NotFound(detail) | Self::Conflict(detail) | Self::NotLinkable(detail) => detail,
+        }
+    }
+}
+
+/// Everything a link engine can fail with.
+#[derive(Debug, thiserror::Error)]
+pub enum LinkError {
+    /// The link rules refused the request.
+    #[error(transparent)]
+    Refused(#[from] IssueLinkError),
+    /// A statement failed.
+    #[error(transparent)]
+    Database(#[from] DbError),
+}
+
+impl From<sea_orm::DbErr> for LinkError {
+    fn from(error: sea_orm::DbErr) -> Self {
+        Self::Database(DbError::Database(error))
+    }
+}
+
+/// One row of the sync's rotation list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkedIssue {
+    /// The Test's or Job's id.
+    pub entity_id: i32,
+    /// The Repo name the issue lives in.
+    pub repo: String,
+    /// The stored issue number.
+    pub number: i32,
+}
+
+/// The columns of the link pair, as a linked row holds them.
+#[derive(Debug, Clone, Copy)]
+struct LinkState {
+    number: Option<i32>,
+    checked_at: Option<DateTime<FixedOffset>>,
+    closed: bool,
+    fixed_noted_at: Option<DateTime<FixedOffset>>,
+}
+
+/// The number, url and conflict rules of a link.
+fn check_link(
+    target: LinkTarget,
+    current: Option<i32>,
+    number: i64,
+    repo: &str,
+    url: Option<&str>,
+    replace: bool,
+) -> Result<(), IssueLinkError> {
+    if number < 1 || number > MAX_ISSUE_NUMBER {
+        return Err(IssueLinkError::NotLinkable(format!(
+            "number must be between 1 and {MAX_ISSUE_NUMBER}"
+        )));
+    }
+    let expected = issue_url(repo, Some(number)).unwrap_or_default();
+    if let Some(url) = url {
+        let normalized = py_strip(url).trim_end_matches('/').to_lowercase();
+        if normalized != expected {
+            return Err(IssueLinkError::NotLinkable(format!(
+                "url must be {expected}: the issue must be in the {}'s own Repo",
+                target.kind()
+            )));
+        }
+    }
+    if let Some(current) = current
+        && i64::from(current) != number
+        && !replace
+    {
+        return Err(IssueLinkError::Conflict(format!(
+            "{} already links issue #{current}; pass replace=true to replace it",
+            target.kind()
+        )));
+    }
+    Ok(())
+}
+
+/// Reads the link columns of an already-selected row.
+fn link_state(row: &sea_orm::QueryResult) -> Result<LinkState, DbError> {
+    let number: Option<i32> = get(row, "github_issue_number")?;
+    Ok(LinkState {
+        number,
+        checked_at: optional_timestamp(row, "checked_at")?.map(|at| at.fixed_offset()),
+        closed: get(row, "closed")?,
+        fixed_noted_at: optional_timestamp(row, "fixed_noted_at")?.map(|at| at.fixed_offset()),
+    })
+}
+
+/// The response shape of one locked row.
+fn out_for(
+    target: LinkTarget,
+    row: &sea_orm::QueryResult,
+    settings: &ReadSettings,
+) -> Result<LinkedOut, DbError> {
+    match target {
+        LinkTarget::Test => Ok(LinkedOut::Test(test_out(
+            row,
+            settings.flake_threshold,
+            settings.broken_streak,
+            None,
+        )?)),
+        LinkTarget::Job => Ok(LinkedOut::Job(job_out(
+            row,
+            settings.flake_threshold,
+            None,
+        )?)),
+    }
+}
+
+/// Applies the written link to the response shape, as the reference's ORM object did.
+fn patched_out(mut out: LinkedOut, repo: &str, number: Option<i32>, closed: bool) -> LinkedOut {
+    let number = number.map(|number| i64::from(number));
+    match &mut out {
+        LinkedOut::Test(test) => {
+            test.github_issue_number = number;
+            test.github_issue_url = issue_url(repo, number);
+            test.github_issue_closed = closed;
+        }
+        LinkedOut::Job(job) => {
+            job.github_issue_number = number;
+            job.github_issue_url = if job.provider == "github" {
+                issue_url(repo, number)
+            } else {
+                None
+            };
+            job.github_issue_closed = closed;
+        }
+    }
+    out
+}
+
+/// Writes one target's link columns.
+async fn write_link(
+    db: &impl ConnectionTrait,
+    target: LinkTarget,
+    target_id: i64,
+    state: LinkState,
+) -> Result<(), DbError> {
+    let sql = format!(
+        "UPDATE {} SET github_issue_number = $2, github_issue_checked_at = $3, \
+         github_issue_filed = $4, github_issue_closed = $5, \
+         github_issue_fixed_noted_at = $6 WHERE id = $1",
+        target.table()
+    );
+    let filed = match target {
+        // A front door linked this one, so FlakeRadar must not close it.
+        LinkTarget::Test | LinkTarget::Job => state.number.map(|_| false),
+    };
+    db.execute_raw(Statement::from_sql_and_values(
+        DbBackend::Postgres,
+        sql,
+        [
+            Value::from(target_id),
+            Value::from(state.number),
+            Value::from(state.checked_at),
+            Value::from(filed),
+            Value::from(state.closed),
+            Value::from(state.fixed_noted_at),
+        ],
+    ))
+    .await?;
+    Ok(())
+}
+
+/// Links `number` to one Test or Job: the one link engine.
+///
+/// Locks the row, applies the number/url/conflict rules, stores the pair and
+/// answers the target's response shape.
+///
+/// # Errors
+///
+/// Returns [`LinkError::Refused`] for a 404, 409 or 422 the rules produce, and
+/// [`LinkError::Database`] when a statement fails.
+pub async fn link_issue(
+    db: &(impl ConnectionTrait + TransactionTrait),
+    target: LinkTarget,
+    target_id: i64,
+    number: i64,
+    url: Option<&str>,
+    replace: bool,
+    settings: &ReadSettings,
+) -> Result<LinkedOut, LinkError> {
+    let transaction = db.begin().await?;
+    let row = one(
+        &transaction,
+        locked_select_sql(target),
+        vec![Value::from(target_id)],
+    )
+    .await?;
+    let Some(row) = row else {
+        transaction.rollback().await?;
+        return Err(IssueLinkError::NotFound(format!("{} not found", target.kind())).into());
+    };
+    let repo = repo_of(target, &row)?;
+    if target.github_provider_only() {
+        let provider: String = get(&row, "provider")?;
+        if provider != "github" {
+            transaction.rollback().await?;
+            return Err(IssueLinkError::NotLinkable(
+                "Only Jobs of GitHub Pipelines can link a GitHub issue".to_owned(),
+            )
+            .into());
+        }
+    }
+    let current = link_state(&row)?;
+    if let Err(error) = check_link(target, current.number, number, &repo, url, replace) {
+        transaction.rollback().await?;
+        return Err(error.into());
+    }
+    let stored = if current.number == Some(stored_number(number)) {
+        // The same number keeps its check stamp: it was just checked.
+        LinkState {
+            number: current.number,
+            ..current
+        }
+    } else {
+        // A new link is checked first, is FlakeRadar's own for a moment, points
+        // at an open issue, and has never been noted.
+        LinkState {
+            number: Some(stored_number(number)),
+            checked_at: None,
+            closed: false,
+            fixed_noted_at: None,
+        }
+    };
+    write_link(&transaction, target, target_id, stored).await?;
+    transaction.commit().await?;
+    tracing::info!(
+        repo = %repo,
+        number,
+        target = target.entity(),
+        entity_id = target_id,
+        previous = ?current.number,
+        "linked a GitHub issue"
+    );
+    Ok(patched_out(
+        out_for(target, &row, settings)?,
+        &repo,
+        stored.number,
+        false,
+    ))
+}
+
+/// Removes one Test's or Job's link: the one unlink engine.
+///
+/// # Errors
+///
+/// Returns [`LinkError::Refused`] for an unknown Test or Job and
+/// [`LinkError::Database`] when a statement fails.
+pub async fn unlink_issue(
+    db: &(impl ConnectionTrait + TransactionTrait),
+    target: LinkTarget,
+    target_id: i64,
+    settings: &ReadSettings,
+) -> Result<LinkedOut, LinkError> {
+    let transaction = db.begin().await?;
+    let row = one(
+        &transaction,
+        locked_select_sql(target),
+        vec![Value::from(target_id)],
+    )
+    .await?;
+    let Some(row) = row else {
+        transaction.rollback().await?;
+        return Err(IssueLinkError::NotFound(format!("{} not found", target.kind())).into());
+    };
+    let repo = repo_of(target, &row)?;
+    let previous = link_state(&row)?.number;
+    // Both halves go unconditionally: with no number there is nothing for the
+    // rotation to look up, so a stamp left behind only misleads.
+    write_link(
+        &transaction,
+        target,
+        target_id,
+        LinkState {
+            number: None,
+            checked_at: None,
+            closed: false,
+            fixed_noted_at: None,
+        },
+    )
+    .await?;
+    transaction.commit().await?;
+    if let Some(previous) = previous {
+        tracing::info!(
+            repo = %repo,
+            number = previous,
+            target = target.entity(),
+            entity_id = target_id,
+            "unlinked a GitHub issue"
+        );
+    }
+    Ok(patched_out(
+        out_for(target, &row, settings)?,
+        &repo,
+        None,
+        false,
+    ))
+}
+
+/// The Repo name a locked row belongs to.
+fn repo_of(_target: LinkTarget, row: &sea_orm::QueryResult) -> Result<String, DbError> {
+    get(row, "repo_name")
+}
+
+/// A number the `INTEGER` column can hold.
+fn stored_number(number: i64) -> i32 {
+    // The range rule above narrowed this to 1..=MAX_ISSUE_NUMBER, and
+    // MAX_ISSUE_NUMBER is i32::MAX.
+    i32::try_from(number).unwrap_or(i32::MAX)
+}
+
+/// The locked select of one target, as SQL.
+fn locked_select_sql(target: LinkTarget) -> String {
+    match target {
+        LinkTarget::Test => format!(
+            "{TESTS_SELECT}, t.github_issue_checked_at AS checked_at, \
+             t.github_issue_closed AS closed, \
+             t.github_issue_fixed_noted_at AS fixed_noted_at \
+             {TESTS_FROM} WHERE t.id = $1 FOR UPDATE OF t"
+        ),
+        LinkTarget::Job => format!(
+            "{JOBS_SELECT}, j.github_issue_checked_at AS checked_at, \
+             j.github_issue_closed AS closed, \
+             j.github_issue_fixed_noted_at AS fixed_noted_at \
+             {JOBS_FROM} WHERE j.id = $1 FOR UPDATE OF j"
+        ),
+    }
+}
+
+/// This target's linked rows in check order, with their Repo names.
+///
+/// One statement of the rule the two partial indexes encode: never checked
+/// (or just re-linked) first, then least recently checked. No row lock, because
+/// the sync is leader-only maintenance.
+///
+/// # Errors
+///
+/// Returns [`DbError::Database`] when the statement fails.
+pub async fn linked_for_check(
+    db: &impl ConnectionTrait,
+    target: LinkTarget,
+    batch: i64,
+) -> Result<Vec<LinkedIssue>, DbError> {
+    let sql = match target {
+        LinkTarget::Test => {
+            "SELECT t.id AS id, t.github_issue_number AS number, r.name AS repo_name \
+             FROM test_cases t JOIN projects p ON p.id = t.project_id \
+             JOIN repos r ON r.id = p.repo_id \
+             WHERE t.github_issue_number IS NOT NULL \
+             ORDER BY t.github_issue_checked_at ASC NULLS FIRST, t.id LIMIT $1"
+        }
+        LinkTarget::Job => {
+            "SELECT j.id AS id, j.github_issue_number AS number, r.name AS repo_name \
+             FROM jobs j JOIN pipelines p ON p.id = j.pipeline_id \
+             JOIN repos r ON r.id = p.repo_id \
+             WHERE j.github_issue_number IS NOT NULL \
+             ORDER BY j.github_issue_checked_at ASC NULLS FIRST, j.id LIMIT $1"
+        }
+    };
+    let mut linked = Vec::new();
+    for row in rows(db, sql.to_owned(), vec![Value::from(batch)]).await? {
+        linked.push(LinkedIssue {
+            entity_id: get(&row, "id")?,
+            repo: get(&row, "repo_name")?,
+            number: get(&row, "number")?,
+        });
+    }
+    Ok(linked)
+}
+
+/// Stores the number GitHub just created: the one write of a brand-new link.
+///
+/// The check stamp is cleared, the link is marked as FlakeRadar's own, the
+/// not-planned flag reset and the fixed-note stamp cleared, because a fresh
+/// Issue points at an open issue with no comment on it yet.
+///
+/// # Errors
+///
+/// Returns [`DbError::Database`] when the statement fails.
+pub async fn store_filed_link(
+    db: &impl ConnectionTrait,
+    target: LinkTarget,
+    target_id: i64,
+    number: i32,
+) -> Result<(), DbError> {
+    let sql = format!(
+        "UPDATE {} SET github_issue_number = $2, github_issue_checked_at = NULL, \
+         github_issue_filed = TRUE, github_issue_closed = FALSE, \
+         github_issue_fixed_noted_at = NULL WHERE id = $1",
+        target.table()
+    );
+    db.execute_raw(Statement::from_sql_and_values(
+        DbBackend::Postgres,
+        sql,
+        [Value::from(target_id), Value::from(number)],
+    ))
+    .await?;
+    Ok(())
+}
+
+/// Stamps when one linked row was last checked.
+///
+/// # Errors
+///
+/// Returns [`DbError::Database`] when the statement fails.
+pub async fn stamp_checked(
+    db: &impl ConnectionTrait,
+    target: LinkTarget,
+    target_id: i64,
+    at: DateTime<Utc>,
+) -> Result<(), DbError> {
+    let sql = format!(
+        "UPDATE {} SET github_issue_checked_at = $2 WHERE id = $1",
+        target.table()
+    );
+    db.execute_raw(Statement::from_sql_and_values(
+        DbBackend::Postgres,
+        sql,
+        [Value::from(target_id), Value::from(at)],
+    ))
+    .await?;
+    Ok(())
+}
+
+/// Clears the number and everything that went with it, keeping the check stamp.
+///
+/// The sync's re-arm: the issue it just read really was checked, so the row goes
+/// to the back of the rotation rather than the front.
+///
+/// # Errors
+///
+/// Returns [`DbError::Database`] when the statement fails.
+pub async fn rearm_link(
+    db: &impl ConnectionTrait,
+    target: LinkTarget,
+    target_id: i64,
+) -> Result<(), DbError> {
+    let sql = format!(
+        "UPDATE {} SET github_issue_number = NULL, github_issue_filed = NULL, \
+         github_issue_closed = FALSE, github_issue_fixed_noted_at = NULL WHERE id = $1",
+        target.table()
+    );
+    db.execute_raw(Statement::from_sql_and_values(
+        DbBackend::Postgres,
+        sql,
+        [Value::from(target_id)],
+    ))
+    .await?;
+    Ok(())
+}
+
+/// Sets the closed-as-not-planned flag on one linked row.
+///
+/// # Errors
+///
+/// Returns [`DbError::Database`] when the statement fails.
+pub async fn set_closed(
+    db: &impl ConnectionTrait,
+    target: LinkTarget,
+    target_id: i64,
+    closed: bool,
+) -> Result<(), DbError> {
+    let sql = format!(
+        "UPDATE {} SET github_issue_closed = $2 WHERE id = $1",
+        target.table()
+    );
+    db.execute_raw(Statement::from_sql_and_values(
+        DbBackend::Postgres,
+        sql,
+        [Value::from(target_id), Value::from(closed)],
+    ))
+    .await?;
+    Ok(())
+}
+
+/// What a conditional fixed-note stamp found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NoteStamp {
+    /// Whether the stamp landed.
+    pub stamped: bool,
+    /// The row's Clean streak and issue number when the stamp did not land, or
+    /// `None` when the row is gone.
+    pub state: Option<(i32, Option<i32>)>,
+}
+
+/// Lands the fixed-note stamp only while the row is still noteable.
+///
+/// The comment POST hands the row over to whoever can change it first: a failure
+/// the processor handles mid-POST resets the Clean streak, and a re-armed or
+/// replaced link clears the stamp. Stamping unconditionally would undo that
+/// reset, so the write is one conditional UPDATE on the state the note was
+/// selected for, which PostgreSQL re-checks against the row as of the write.
+///
+/// # Errors
+///
+/// Returns [`DbError::Database`] when a statement fails.
+pub async fn stamp_fixed_note(
+    db: &impl ConnectionTrait,
+    target: LinkTarget,
+    target_id: i64,
+    number: i32,
+    threshold: i32,
+    at: DateTime<Utc>,
+) -> Result<NoteStamp, DbError> {
+    let sql = format!(
+        "UPDATE {} SET github_issue_fixed_noted_at = $4 WHERE id = $1 \
+         AND github_issue_fixed_noted_at IS NULL AND github_issue_number = $2 \
+         AND clean_streak >= $3",
+        target.table()
+    );
+    let result = db
+        .execute_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            sql,
+            [
+                Value::from(target_id),
+                Value::from(number),
+                Value::from(threshold),
+                Value::from(at),
+            ],
+        ))
+        .await?;
+    if result.rows_affected() > 0 {
+        return Ok(NoteStamp {
+            stamped: true,
+            state: None,
+        });
+    }
+    let sql = format!(
+        "SELECT clean_streak, github_issue_number FROM {} WHERE id = $1",
+        target.table()
+    );
+    let state = one(db, sql, vec![Value::from(target_id)]).await?;
+    let state = match state {
+        Some(row) => Some((
+            get::<i32>(&row, "clean_streak")?,
+            get(&row, "github_issue_number")?,
+        )),
+        None => None,
+    };
+    Ok(NoteStamp {
+        stamped: false,
+        state,
+    })
+}

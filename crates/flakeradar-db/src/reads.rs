@@ -167,13 +167,13 @@ pub enum ReadError {
 }
 
 /// Reads one column of a raw row.
-fn get<T: TryGetable>(row: &QueryResult, column: &str) -> Result<T, DbError> {
+pub(crate) fn get<T: TryGetable>(row: &QueryResult, column: &str) -> Result<T, DbError> {
     row.try_get("", column)
         .map_err(|error: DbErr| DbError::Database(error))
 }
 
 /// Runs a statement and reads every row.
-async fn rows(
+pub(crate) async fn rows(
     db: &impl ConnectionTrait,
     sql: String,
     values: Vec<Value>,
@@ -188,7 +188,7 @@ async fn rows(
 }
 
 /// Runs a statement and reads its first row.
-async fn one(
+pub(crate) async fn one(
     db: &impl ConnectionTrait,
     sql: String,
     values: Vec<Value>,
@@ -255,19 +255,22 @@ fn newest_history_join(kind: HistoryKind, alias: &str, cutoff: NaiveDate) -> Str
 }
 
 /// A timestamp column read as UTC.
-fn timestamp(row: &QueryResult, column: &str) -> Result<DateTime<Utc>, DbError> {
+pub(crate) fn timestamp(row: &QueryResult, column: &str) -> Result<DateTime<Utc>, DbError> {
     let value: DateTime<FixedOffset> = get(row, column)?;
     Ok(value.with_timezone(&Utc))
 }
 
 /// An optional timestamp column read as UTC.
-fn optional_timestamp(row: &QueryResult, column: &str) -> Result<Option<DateTime<Utc>>, DbError> {
+pub(crate) fn optional_timestamp(
+    row: &QueryResult,
+    column: &str,
+) -> Result<Option<DateTime<Utc>>, DbError> {
     let value: Option<DateTime<FixedOffset>> = get(row, column)?;
     Ok(value.map(|value| value.with_timezone(&Utc)))
 }
 
 /// Converts a stored `INTEGER` id to the DTO's `i64`.
-fn id(value: i32) -> i64 {
+pub(crate) fn id(value: i32) -> i64 {
     i64::from(value)
 }
 
@@ -389,14 +392,14 @@ impl Board<'_> {
 }
 
 /// The row shape both leaderboards select: the entity's columns, then the names.
-const TESTS_SELECT: &str = "SELECT t.*, p.name AS project_name, r.name AS repo_name";
-const TESTS_FROM: &str = "FROM test_cases t \
+pub(crate) const TESTS_SELECT: &str = "SELECT t.*, p.name AS project_name, r.name AS repo_name";
+pub(crate) const TESTS_FROM: &str = "FROM test_cases t \
      JOIN projects p ON p.id = t.project_id \
      JOIN repos r ON r.id = p.repo_id";
 
-const JOBS_SELECT: &str = "SELECT j.*, p.name AS pipeline_name, p.provider AS provider, \
+pub(crate) const JOBS_SELECT: &str = "SELECT j.*, p.name AS pipeline_name, p.provider AS provider, \
      p.repo_id AS repo_id, r.name AS repo_name";
-const JOBS_FROM: &str = "FROM jobs j \
+pub(crate) const JOBS_FROM: &str = "FROM jobs j \
      JOIN pipelines p ON p.id = j.pipeline_id \
      JOIN repos r ON r.id = p.repo_id";
 
@@ -436,7 +439,7 @@ pub async fn list_repos(db: &impl ConnectionTrait) -> Result<Vec<RepoOut>, DbErr
 }
 
 /// Reads one Test row into its response shape.
-fn test_out(
+pub(crate) fn test_out(
     row: &QueryResult,
     threshold: f64,
     broken_streak: i64,
@@ -479,7 +482,11 @@ fn test_out(
 }
 
 /// Reads one Job row into its response shape.
-fn job_out(row: &QueryResult, threshold: f64, trend: Option<Trend>) -> Result<JobOut, DbError> {
+pub(crate) fn job_out(
+    row: &QueryResult,
+    threshold: f64,
+    trend: Option<Trend>,
+) -> Result<JobOut, DbError> {
     let score: f64 = get(row, "flakiness_score")?;
     let repo: String = get(row, "repo_name")?;
     let provider: String = get(row, "provider")?;

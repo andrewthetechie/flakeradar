@@ -1522,3 +1522,41 @@ pub struct IssueLinkIn {
     #[serde(default)]
     pub url: Option<String>,
 }
+
+impl IssueLinkIn {
+    /// Checks the rules `schemas.py` put on the body.
+    ///
+    /// # Errors
+    ///
+    /// Returns the issues a 422 carries when a rule fails.
+    pub fn validate(&self) -> Result<(), Vec<ValidationIssue>> {
+        let mut issues = Vec::new();
+        if self.number < 1 {
+            issues.push(ValidationIssue::greater_than_equal(
+                body_field("number"),
+                Value::from(self.number),
+                1,
+            ));
+        } else if self.number > MAX_ISSUE_NUMBER {
+            issues.push(ValidationIssue::less_than_equal(
+                body_field("number"),
+                Value::from(self.number),
+                MAX_ISSUE_NUMBER,
+            ));
+        }
+        if let Some(url) = &self.url
+            && url.chars().count() > 2048
+        {
+            issues.push(ValidationIssue::string_too_long(
+                body_field("url"),
+                Value::from(url.clone()),
+                2048,
+            ));
+        }
+        if issues.is_empty() {
+            Ok(())
+        } else {
+            Err(issues)
+        }
+    }
+}
