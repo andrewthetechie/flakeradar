@@ -372,6 +372,42 @@ impl LockSession for FailingLock {
     }
 }
 
+/// A lock session that leads normally and whose unlock fails, like a shutdown
+/// where the server killed the session first.
+#[derive(Debug)]
+struct FailingUnlockLock {
+    inner: AdvisoryLock,
+}
+
+impl FailingUnlockLock {
+    fn new(db: &TestDb) -> Self {
+        Self {
+            inner: AdvisoryLock::new(db.url(), DbSettings::default()),
+        }
+    }
+}
+
+impl LockSession for FailingUnlockLock {
+    fn try_lock(&self) -> LockFuture<'_> {
+        self.inner.try_lock()
+    }
+
+    fn check(&self) -> SessionFuture<'_> {
+        self.inner.check()
+    }
+
+    fn unlock(&self) -> SessionFuture<'_> {
+        Box::pin(async move {
+            // Release the lock for real first, so the test can prove the worker
+            // logged the failure and let go anyway.
+            self.inner.unlock().await?;
+            Err(DbError::Database(sea_orm::DbErr::Custom(
+                "unlock failed".to_owned(),
+            )))
+        })
+    }
+}
+
 /// A processor that answers a script of outcomes, then an empty queue.
 #[derive(Debug)]
 struct ScriptedProcessor {
@@ -544,6 +580,51 @@ impl MonotonicClock for ManualMonotonic {
     }
 }
 
+/// A log sink a test can read back, installed for the current thread only.
+struct CapturedLog {
+    lines: Arc<Mutex<Vec<u8>>>,
+    _guard: tracing::subscriber::DefaultGuard,
+}
+
+impl CapturedLog {
+    fn install() -> Self {
+        let lines = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&lines);
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_writer(move || SharedWriter(Arc::clone(&sink)))
+            .finish();
+        let guard = tracing::subscriber::set_default(subscriber);
+        Self {
+            lines,
+            _guard: guard,
+        }
+    }
+
+    fn lines(&self) -> String {
+        let guard = self.lines.lock().unwrap_or_else(PoisonError::into_inner);
+        String::from_utf8_lossy(&guard).into_owned()
+    }
+}
+
+/// An `io::Write` that appends to the shared buffer.
+struct SharedWriter(Arc<Mutex<Vec<u8>>>);
+
+impl std::io::Write for SharedWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let mut guard = self
+            .0
+            .lock()
+            .map_err(|_error| std::io::Error::other("the log sink is poisoned"))?;
+        guard.extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 #[tokio::test]
 async fn the_leader_processes_queued_reports_and_hands_them_over() {
     let db = TestDb::new().await.expect("a test database");
@@ -625,6 +706,30 @@ async fn stopping_releases_the_lock() {
 }
 
 #[tokio::test]
+async fn a_failing_unlock_is_logged_and_the_lock_is_let_go() {
+    let db = TestDb::new().await.expect("a test database");
+    let lock = Arc::new(FailingUnlockLock::new(&db));
+    let worker = Arc::new(worker(&db, shared_lock(&lock), fast()));
+    Arc::clone(&worker).start().await;
+    wait_until("the worker leads", || async { worker.is_leader() }).await;
+
+    let log = CapturedLog::install();
+    worker.stop().await;
+
+    assert!(!worker.is_leader());
+    assert!(
+        log.lines()
+            .contains("the lock connection is broken; it has been dropped"),
+        "the failed unlock is logged: {}",
+        log.lines()
+    );
+    wait_until("the lock is free", || async {
+        lock_is_free(db.url()).await
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn a_broken_lock_connection_drops_leadership_and_re_elects() {
     let db = TestDb::new().await.expect("a test database");
     let counted = Arc::new(CountingLock::new(&db));
@@ -688,6 +793,7 @@ async fn a_failed_election_is_retried() {
     let db = TestDb::new().await.expect("a test database");
     let failing = Arc::new(FailingLock::new());
     let worker = Arc::new(worker(&db, shared_lock(&failing), fast()));
+    let log = CapturedLog::install();
     Arc::clone(&worker).start().await;
     wait_until("the election was retried", || async {
         failing.try_locks() >= 2
@@ -695,6 +801,12 @@ async fn a_failed_election_is_retried() {
     .await;
     assert!(!worker.is_leader());
     worker.stop().await;
+    assert!(
+        log.lines()
+            .contains("Report worker error; dropping leadership and retrying"),
+        "a failed election is logged: {}",
+        log.lines()
+    );
     assert!(
         !worker.is_leader(),
         "a failed election never makes a leader"
@@ -708,6 +820,7 @@ async fn a_failed_prune_is_logged_and_processing_continues() {
     queue(&db, &project, "a").await;
     let pruner = Arc::new(CountingPruner::new(true));
     let worker = Arc::new(worker(&db, lock(&db), fast()).with_pruner(shared_pruner(&pruner)));
+    let log = CapturedLog::install();
     Arc::clone(&worker).start().await;
 
     // The prune runs before the claim, so a processed Report proves the loop
@@ -718,6 +831,12 @@ async fn a_failed_prune_is_logged_and_processing_continues() {
     .await;
     worker.stop().await;
     assert_eq!(pruner.runs(), 1, "the failed prune is not retried per poll");
+    assert!(
+        log.lines()
+            .contains("Retention prune failed; will retry next interval"),
+        "the failed prune is logged: {}",
+        log.lines()
+    );
 }
 
 #[tokio::test]
@@ -748,7 +867,14 @@ async fn a_failing_leader_task_stop_is_logged_and_the_lock_released_anyway() {
     Arc::clone(&worker).start().await;
     wait_until("the worker leads", || async { worker.is_leader() }).await;
 
+    let log = CapturedLog::install();
     worker.stop().await;
+    assert!(
+        log.lines()
+            .contains("stopping the GitHub leader task failed; releasing the lock anyway"),
+        "the failed stop is logged: {}",
+        log.lines()
+    );
 
     assert!(!worker.is_leader());
     // The second task still stopped, in order, after the first one failed.
@@ -803,6 +929,7 @@ async fn a_failing_hook_does_not_stop_processing() {
     let events = Arc::new(Mutex::new(Vec::new()));
     let task = Arc::new(RecordingTask::new("hook", Arc::clone(&events)).failing_to_enqueue());
     let worker = Arc::new(worker(&db, lock(&db), fast()).with_leader_task(task));
+    let log = CapturedLog::install();
     Arc::clone(&worker).start().await;
 
     wait_until("both Reports are processed", || async {
@@ -810,6 +937,11 @@ async fn a_failing_hook_does_not_stop_processing() {
     })
     .await;
     worker.stop().await;
+    assert!(
+        log.lines().contains("failed to take processed Report"),
+        "a failed hand-over is logged: {}",
+        log.lines()
+    );
     let handed = events
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
@@ -903,6 +1035,34 @@ async fn the_leader_prunes_once_per_interval() {
     // A clock past the interval lets the next loop prune again.
     monotonic.set(3601.0);
     wait_until("the second prune ran", || async { pruner.runs() == 2 }).await;
+    worker.stop().await;
+}
+
+#[tokio::test]
+async fn starting_a_running_worker_is_a_no_op() {
+    let db = TestDb::new().await.expect("a test database");
+    let processor = Arc::new(ScriptedProcessor::empty());
+    let counted = Arc::new(CountingLock::new(&db));
+    let worker = Arc::new(
+        worker(&db, shared_lock(&counted), fast()).with_processor(shared_processor(&processor)),
+    );
+    Arc::clone(&worker).start().await;
+    wait_until("the worker leads", || async { worker.is_leader() }).await;
+    // A second start leaves the running loop alone rather than spawning another.
+    Arc::clone(&worker).start().await;
+    let elections = counted.try_locks();
+    wait_until("the loop polled again", || async {
+        processor.claims() >= 3
+    })
+    .await;
+    assert!(
+        counted.try_locks() <= elections + 1,
+        "a second start did not spawn a second leader loop"
+    );
+    assert!(
+        format!("{worker:?}").contains("leader: true"),
+        "the worker describes its leadership: {worker:?}"
+    );
     worker.stop().await;
 }
 

@@ -15,12 +15,12 @@ use flakeradar_db::entities::{
     job_executions, job_score_history, reports, test_cases, test_executions, test_runs,
     test_score_history,
 };
-use flakeradar_db::{FixedClock, ProcessingSettings, RetentionSettings, prune, run_prune};
+use flakeradar_db::{DbError, FixedClock, ProcessingSettings, RetentionSettings, prune, run_prune};
 use flakeradar_test_support::{
     ScriptedMonotonic, TestDb, make_execution, make_job, make_job_execution, make_job_score,
     make_pipeline, make_project, make_report, make_run, make_test_case, make_test_score,
 };
-use sea_orm::{EntityTrait, QueryOrder as _};
+use sea_orm::{ConnectionTrait as _, EntityTrait, QueryOrder as _};
 
 /// The instant every test measures its windows from.
 fn now() -> DateTime<FixedOffset> {
@@ -296,7 +296,7 @@ async fn run_prune_applies_the_failed_report_setting() {
 
     assert_eq!((result.reports, result.failed_reports), (1, 2));
     assert!(
-        log.lines().contains("failed_reports=2"),
+        log.lines().contains("2 failed reports"),
         "the run reports the failed Reports it deleted: {}",
         log.lines()
     );
@@ -978,6 +978,7 @@ async fn run_prune_stops_at_time_budget() {
     // The first reading sets the deadline; the later ones are past it.
     let past_deadline =
         std::iter::once(0.0).chain(std::iter::repeat_n(settings.time_budget_seconds + 1.0, 8));
+    let log = CapturedLog::install();
     let result = run_prune(
         db.connection(),
         &settings,
@@ -990,6 +991,65 @@ async fn run_prune_stops_at_time_budget() {
     // Only the first committed batch; the backlog waits for the next interval.
     assert_eq!(result.executions, 2, "{result:?}");
     assert_eq!(count::<test_executions::Entity>(&db).await, 4);
+    assert!(
+        log.lines().contains("Retention prune hit its budget"),
+        "the budget stop is logged: {}",
+        log.lines()
+    );
+}
+
+#[tokio::test]
+async fn a_failed_round_rolls_back_its_deletes() {
+    // A round is one transaction: a statement that fails late must not leave the
+    // earlier deletes committed.
+    let now = now();
+    let old = days_before(now, 100);
+    let db = TestDb::new().await.expect("a test database");
+    let project = make_project()
+        .repo("acme/app")
+        .project("backend")
+        .build(db.connection())
+        .await
+        .expect("a Project");
+    let test = make_test_case(&project)
+        .build(db.connection())
+        .await
+        .expect("a Test");
+    let run = make_run(&project)
+        .commit_sha("old")
+        .created_at(old)
+        .build(db.connection())
+        .await
+        .expect("an old Run");
+    make_execution(&test, &run)
+        .created_at(old)
+        .build(db.connection())
+        .await
+        .expect("an old Execution");
+    make_report(&project, project.repo_id)
+        .status("processed")
+        .processed_at(days_before(now, 8))
+        .build(db.connection())
+        .await
+        .expect("a stale Report");
+    db.connection()
+        .execute_unprepared("DROP TABLE job_score_history")
+        .await
+        .expect("the last table the round deletes from is gone");
+
+    let error = run_prune(
+        db.connection(),
+        &retention(),
+        &processing(now),
+        &ScriptedMonotonic::new([0.0]),
+    )
+    .await
+    .expect_err("the missing table fails the round");
+    assert!(matches!(error, DbError::Database(_)), "{error}");
+
+    // The Report and Execution the same round had already deleted are back.
+    assert_eq!(count::<reports::Entity>(&db).await, 1);
+    assert_eq!(count::<test_executions::Entity>(&db).await, 1);
 }
 
 #[tokio::test]

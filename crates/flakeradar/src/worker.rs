@@ -137,13 +137,6 @@ impl RetentionPrune {
             monotonic: Arc::new(SystemMonotonic::new()),
         }
     }
-
-    /// Reads the run's time budget from `monotonic` instead of the real clock.
-    #[must_use]
-    pub fn with_monotonic(mut self, monotonic: SharedMonotonic) -> Self {
-        self.monotonic = monotonic;
-        self
-    }
 }
 
 impl Pruner for RetentionPrune {
@@ -220,64 +213,54 @@ impl AdvisoryLock {
         }
     }
 
-    /// The dedicated connection and the statement that asks it something.
+    /// The dedicated connection, opened on first use.
     ///
-    /// The connection is opened on first use, so a standby replica that never
-    /// wins only ever holds the connection it tried with.
-    async fn ready(
+    /// A standby replica that never wins holds the one connection it tried
+    /// with, so the next attempt is a query rather than a new session.
+    async fn session(
         &self,
-        sql: &str,
-    ) -> Result<
-        (
-            tokio::sync::MutexGuard<'_, Option<DatabaseConnection>>,
-            Statement,
-        ),
-        DbError,
-    > {
-        let mut guard = self.connection.lock().await;
-        if guard.is_none() {
-            *guard = Some(connect_session(&self.url, self.settings).await?);
+        guard: &mut tokio::sync::MutexGuard<'_, Option<DatabaseConnection>>,
+    ) -> Result<DatabaseConnection, DbError> {
+        if let Some(connection) = guard.as_ref() {
+            return Ok(connection.clone());
         }
+        let connection = connect_session(&self.url, self.settings).await?;
+        **guard = Some(connection.clone());
+        Ok(connection)
+    }
+
+    /// One lock statement's answer, dropping the session when the statement fails.
+    async fn query(&self, sql: &str) -> Result<Option<sea_orm::QueryResult>, DbError> {
+        let mut guard = self.connection.lock().await;
+        let connection = self.session(&mut guard).await?;
         let statement =
             Statement::from_sql_and_values(DbBackend::Postgres, sql, [WORKER_LOCK_KEY.into()]);
-        Ok((guard, statement))
+        match connection.query_one_raw(statement).await {
+            Ok(row) => Ok(row),
+            Err(error) => {
+                // A session the server closed has already lost the lock, so it
+                // must not be reused: dropping the pool ends it for good.
+                *guard = None;
+                Err(DbError::Database(error))
+            }
+        }
     }
 }
 
 impl LockSession for AdvisoryLock {
     fn try_lock(&self) -> LockFuture<'_> {
         Box::pin(async move {
-            let (mut guard, statement) = self.ready(TRY_LOCK_SQL).await?;
-            let Some(connection) = guard.as_ref() else {
-                return Ok(false);
-            };
-            match connection.query_one_raw(statement).await {
-                // A query with no FROM clause always answers one row; the arm for
-                // a missing one is logged in coverage-gaps.md and means "not locked".
-                Ok(Some(row)) => Ok(row.try_get("", "locked")?),
-                Ok(None) => Ok(false),
-                Err(error) => {
-                    // A connection the server closed has already lost the lock, so
-                    // it must not be reused: dropping the pool ends the session.
-                    *guard = None;
-                    Err(DbError::Database(error))
-                }
+            // A query with no FROM clause always answers one row; the arm for a
+            // missing one is logged in coverage-gaps.md and means "not locked".
+            match self.query(TRY_LOCK_SQL).await? {
+                Some(row) => Ok(row.try_get("", "locked")?),
+                None => Ok(false),
             }
         })
     }
 
     fn check(&self) -> SessionFuture<'_> {
-        Box::pin(async move {
-            let (mut guard, statement) = self.ready(ALIVE_SQL).await?;
-            let Some(connection) = guard.as_ref() else {
-                return Ok(());
-            };
-            if let Err(error) = connection.query_one_raw(statement).await {
-                *guard = None;
-                return Err(DbError::Database(error));
-            }
-            Ok(())
-        })
+        Box::pin(async move { self.query(ALIVE_SQL).await.map(|_row| ()) })
     }
 
     fn unlock(&self) -> SessionFuture<'_> {
@@ -296,8 +279,8 @@ impl LockSession for AdvisoryLock {
                 .await
                 .map(|_row| ())
                 .map_err(DbError::Database);
-            // Whether the unlock worked or the connection was broken, this
-            // session is over; dropping the pool is what closes it.
+            // Whether the unlock worked or the session was broken, this session
+            // is over; dropping the pool is what closes it.
             *guard = None;
             answer
         })
@@ -326,17 +309,6 @@ impl WorkerSettings {
             poll: seconds(settings.worker_poll_seconds),
             standby: Duration::from_secs(5),
             prune_interval: seconds(settings.prune_interval_seconds),
-            max_backoff: Duration::from_secs(30),
-        }
-    }
-}
-
-impl Default for WorkerSettings {
-    fn default() -> Self {
-        Self {
-            poll: Duration::from_secs(1),
-            standby: Duration::from_secs(5),
-            prune_interval: Duration::from_secs(3600),
             max_backoff: Duration::from_secs(30),
         }
     }
@@ -532,10 +504,10 @@ impl ReportWorker {
         for task in &self.leader_tasks {
             if let Err(error) = task.enqueue(outcome) {
                 tracing::error!(
-                    task = task.name(),
-                    report_id = outcome.report_id,
-                    error = %error,
-                    "a leader task failed to take a processed Report"
+                    "the {} leader task failed to take processed Report {}: {}",
+                    task.name(),
+                    outcome.report_id,
+                    error
                 );
             }
         }
@@ -585,9 +557,9 @@ impl ReportWorker {
         for task in &self.leader_tasks {
             if let Err(error) = task.stop().await {
                 tracing::error!(
-                    task = task.name(),
-                    error = %error,
-                    "stopping a leader task failed; releasing the lock anyway"
+                    "stopping the {} leader task failed; releasing the lock anyway: {}",
+                    task.name(),
+                    error
                 );
             }
         }

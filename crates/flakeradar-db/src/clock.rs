@@ -79,15 +79,15 @@ impl SystemMonotonic {
     /// A clock whose origin is now.
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            start: Instant::now(),
-        }
+        Self::default()
     }
 }
 
 impl Default for SystemMonotonic {
     fn default() -> Self {
-        Self::new()
+        Self {
+            start: Instant::now(),
+        }
     }
 }
 

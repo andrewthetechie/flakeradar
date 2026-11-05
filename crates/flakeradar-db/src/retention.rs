@@ -509,21 +509,23 @@ pub async fn run_prune(
         }
         if monotonic.now() >= deadline {
             info!(
-                budget = retention.time_budget_seconds,
-                "Retention prune hit its budget; the rest waits for the next interval"
+                "Retention prune hit its {}s budget; the rest waits for the next interval",
+                retention.time_budget_seconds
             );
             break;
         }
     }
+    // The frozen server's own summary line, with the counts in the same order.
     info!(
-        reports = totals.reports,
-        failed_reports = totals.failed_reports,
-        executions = totals.executions,
-        job_executions = totals.job_executions,
-        runs = totals.runs,
-        score_history = totals.score_history(),
-        expired_quarantines = totals.expired_quarantines,
-        "Pruned the expired backlog"
+        "Pruned {} reports, {} failed reports, {} executions, {} job executions, {} runs, \
+         {} score history rows, cleared {} expired quarantines",
+        totals.reports,
+        totals.failed_reports,
+        totals.executions,
+        totals.job_executions,
+        totals.runs,
+        totals.score_history(),
+        totals.expired_quarantines
     );
     Ok(totals)
 }

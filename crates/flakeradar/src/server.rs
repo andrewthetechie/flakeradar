@@ -98,12 +98,6 @@ impl Server {
         self.address
     }
 
-    /// The worker this server runs, for a test that inspects its leadership.
-    #[must_use]
-    pub fn worker(&self) -> &Arc<ReportWorker> {
-        &self.worker
-    }
-
     /// Serves requests until `shutdown` resolves, then stops the worker and closes the pool.
     ///
     /// Shutting the worker down after the socket stops accepting requests is
