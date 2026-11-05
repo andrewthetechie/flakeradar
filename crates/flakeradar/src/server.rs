@@ -17,8 +17,11 @@ use sea_orm::DatabaseConnection;
 use tokio::net::TcpListener;
 
 use crate::app::{AppState, build_app};
+use crate::github::Api;
+use crate::github_worker::GitHubWorker;
 use crate::settings::Settings;
-use crate::worker::{AdvisoryLock, ReportWorker, RetentionPrune};
+use crate::webhooks::WebhookWorker;
+use crate::worker::{AdvisoryLock, LeaderTask, ReportWorker, RetentionPrune};
 
 /// A server that has migrated its database and bound its socket.
 ///
@@ -67,18 +70,37 @@ impl Server {
         // before this point has no lock to hold and no task to leak.
         let lock = AdvisoryLock::new(settings.database_url.clone(), settings.database_settings()?);
         let processing = settings.processing();
-        let worker = Arc::new(
-            ReportWorker::new(
-                pool.clone(),
-                Arc::new(lock),
-                processing.clone(),
-                settings.worker(),
-            )
-            .with_pruner(Arc::new(RetentionPrune::new(
-                settings.retention(),
-                processing,
-            ))),
-        );
+        let mut worker = ReportWorker::new(
+            pool.clone(),
+            Arc::new(lock),
+            processing.clone(),
+            settings.worker(),
+        )
+        .with_pruner(Arc::new(RetentionPrune::new(
+            settings.retention(),
+            processing,
+        )));
+        // The GitHub task re-checks stored links once per prune interval, the
+        // same interval the reference used for both.
+        let github: Arc<dyn LeaderTask> = Arc::new(GitHubWorker::new(
+            pool.clone(),
+            Arc::new(settings.clone()),
+            Api::production(settings.github_token.clone()),
+            std::time::Duration::try_from_secs_f64(settings.prune_interval_seconds)
+                .unwrap_or_default(),
+        ));
+        worker = worker.with_leader_task(github);
+        // The Notification task exists only when an endpoint is configured.
+        let urls = flakeradar_core::parse_urls(settings.webhook_urls.expose());
+        if !urls.is_empty() {
+            let webhook: Arc<dyn LeaderTask> = Arc::new(WebhookWorker::new(
+                urls,
+                settings.webhook_format,
+                &settings.public_url,
+            ));
+            worker = worker.with_leader_task(webhook);
+        }
+        let worker = Arc::new(worker);
         Arc::clone(&worker).start().await;
         Ok(Self {
             listener,

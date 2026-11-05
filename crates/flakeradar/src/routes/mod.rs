@@ -8,6 +8,8 @@
 
 // Rust guideline compliant 2026-07-21
 
+pub mod admin;
+pub mod issues;
 pub mod ops;
 pub mod reads;
 pub mod reports;
@@ -28,6 +30,8 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/api/health/ready", get(ops::ready))
         .route("/metrics", get(ops::metrics))
         .merge(reports::router(state.clone()))
-        .merge(reads::router(state));
+        .merge(reads::router(state.clone()))
+        .merge(issues::router(state.clone()))
+        .merge(admin::router(state));
     docs::router(router)
 }

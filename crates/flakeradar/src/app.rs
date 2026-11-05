@@ -16,6 +16,7 @@ use axum::response::{IntoResponse, Redirect, Response};
 use sea_orm::DatabaseConnection;
 
 use crate::error::ApiError;
+use crate::github::Api;
 use crate::middleware::{cors_layer, request_log_layer};
 use crate::routes;
 use crate::settings::Settings;
@@ -33,13 +34,35 @@ pub const JSON_BODY_LIMIT: usize = 20 * 1024 * 1024;
 pub struct AppState {
     pool: DatabaseConnection,
     settings: Arc<Settings>,
+    github: Api,
 }
 
 impl AppState {
     /// Builds the state from the connection pool and the settings.
+    ///
+    /// The GitHub client talks to the production REST API; a test that needs a
+    /// different base URL calls [`AppState::with_github`].
     #[must_use]
     pub fn new(pool: DatabaseConnection, settings: Arc<Settings>) -> Self {
-        Self { pool, settings }
+        let github = Api::production(settings.github_token.clone());
+        Self {
+            pool,
+            settings,
+            github,
+        }
+    }
+
+    /// The GitHub client every outward call goes through.
+    #[must_use]
+    pub fn github(&self) -> &Api {
+        &self.github
+    }
+
+    /// Replaces the GitHub client, so a test can point it at a stub server.
+    #[must_use]
+    pub fn with_github(mut self, github: Api) -> Self {
+        self.github = github;
+        self
     }
 
     /// The connection pool every query borrows from.
