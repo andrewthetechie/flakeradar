@@ -36,6 +36,23 @@ pub struct Server {
     worker: Arc<ReportWorker>,
 }
 
+/// The Notification task, built only when at least one Webhook URL is configured.
+///
+/// No URLs means no task at all, not an idle one: the reference's lifespan built
+/// `WebhookWorker` only when `parse_urls` answered a non-empty list.
+fn webhook_task(settings: &Settings) -> Option<Arc<WebhookWorker>> {
+    let urls = flakeradar_core::parse_urls(settings.webhook_urls.expose());
+    if urls.is_empty() {
+        None
+    } else {
+        Some(Arc::new(WebhookWorker::new(
+            urls,
+            settings.webhook_format,
+            &settings.public_url,
+        )))
+    }
+}
+
 impl Server {
     /// Connects, migrates the database, builds the app and binds the socket.
     ///
@@ -90,14 +107,7 @@ impl Server {
                 .unwrap_or_default(),
         ));
         worker = worker.with_leader_task(github);
-        // The Notification task exists only when an endpoint is configured.
-        let urls = flakeradar_core::parse_urls(settings.webhook_urls.expose());
-        if !urls.is_empty() {
-            let webhook: Arc<dyn LeaderTask> = Arc::new(WebhookWorker::new(
-                urls,
-                settings.webhook_format,
-                &settings.public_url,
-            ));
+        if let Some(webhook) = webhook_task(&settings) {
             worker = worker.with_leader_task(webhook);
         }
         let worker = Arc::new(worker);
@@ -145,5 +155,36 @@ impl Server {
         }
         tracing::info!("flakeradar stopped");
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use super::webhook_task;
+    use crate::Settings;
+
+    /// Settings built from `pairs`.
+    fn settings(pairs: &[(&str, &str)]) -> Settings {
+        let values: BTreeMap<String, String> = pairs
+            .iter()
+            .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+            .collect();
+        Settings::from_map(&values).expect("the test's settings are valid")
+    }
+
+    #[test]
+    fn the_lifespan_builds_a_webhook_worker_only_when_urls_are_set() {
+        assert!(
+            webhook_task(&settings(&[("FLAKERADAR_API_TOKEN", "real-token")])).is_none(),
+            "no URLs means no Notification task at all"
+        );
+        let task = webhook_task(&settings(&[
+            ("FLAKERADAR_API_TOKEN", "real-token"),
+            ("FLAKERADAR_WEBHOOK_URLS", " https://hooks.example.com/a , "),
+        ]))
+        .expect("a configured endpoint builds the task");
+        assert_eq!(task.urls(), vec!["https://hooks.example.com/a"]);
     }
 }

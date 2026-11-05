@@ -12,7 +12,7 @@
 use flakeradar::Settings;
 use flakeradar::github::{self, Api};
 use flakeradar::{FilingGate, JobRow, RecentExecution, TestRow, settings::Secret};
-use flakeradar_db::issue_links::{self, LinkTarget};
+use flakeradar_db::issue_links::{self, LinkTarget, linked_for_check};
 use flakeradar_db::{ProcessOutcome, ReadSettings};
 use flakeradar_test_support::{
     TestDb, make_execution, make_job, make_job_execution, make_pipeline, make_project, make_run,
@@ -4336,4 +4336,318 @@ async fn a_processed_report_never_notes_the_issue_it_filed() {
             "the next Report files no Issue and comments on none: that is the steady state"
         );
     }
+}
+
+/// Stamps one Test's or Job's fixed-note stamp, as a note run would have.
+async fn stamp_note(db: &TestDb, table: &str, id: i32) {
+    db.connection()
+        .execute_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            format!("UPDATE {table} SET github_issue_fixed_noted_at = now() WHERE id = $1"),
+            [Value::from(id)],
+        ))
+        .await
+        .expect("the fixed-note stamp writes");
+}
+
+#[tokio::test]
+async fn an_unlink_clears_both_halves_and_a_rearm_keeps_its_stamp() {
+    let db = TestDb::new().await.expect("a test database");
+    let unlinked = flaky_test_in(&db, "acme/app", "p1", "t1").await;
+    let rearmed = flaky_test_in(&db, "acme/app", "p2", "t2").await;
+    stamp_link(&db, unlinked, 11, false, false).await;
+    stamp_link(&db, rearmed, 22, false, false).await;
+
+    issue_links::unlink_issue(
+        db.connection(),
+        LinkTarget::Test,
+        i64::from(unlinked),
+        &ReadSettings::default(),
+    )
+    .await
+    .expect("the unlink succeeds");
+    let (number, filed, checked, closed) = test_link(&db, unlinked).await;
+    assert_eq!(number, None, "unlink drops the number");
+    assert_eq!(filed, None, "and the provenance");
+    assert!(!checked, "and the check stamp");
+    assert!(!closed);
+
+    let server = MockServer::start().await;
+    mount_state(
+        &server,
+        ResponseTemplate::new(200)
+            .set_body_json(json!({"state": "closed", "state_reason": "completed"})),
+    )
+    .await;
+    github::sync_closed_issues(db.connection(), &gh_settings(&[]), &api(&server)).await;
+    assert_eq!(
+        requested_paths(&server).await,
+        vec!["/repos/acme/app/issues/22"],
+        "the unlinked row is out of the rotation"
+    );
+    let (number, _, checked, _) = test_link(&db, rearmed).await;
+    assert_eq!(number, None, "the re-arm clears the number");
+    assert!(checked, "and keeps the stamp it just wrote");
+    assert!(
+        !test_link(&db, unlinked).await.2,
+        "and leaves the unlinked row alone"
+    );
+}
+
+#[tokio::test]
+async fn an_unlink_after_a_rearm_clears_the_kept_stamp_on_a_test_and_a_job() {
+    for entity in ["test", "job"] {
+        let db = TestDb::new().await.expect("a test database");
+        let (id, number, target) = if entity == "test" {
+            let id = flaky_test(&db).await;
+            stamp_link(&db, id, 300, false, false).await;
+            (id, 300, LinkTarget::Test)
+        } else {
+            let id = flaky_job(&db).await;
+            stamp_job_link(&db, id, 302, false).await;
+            (id, 302, LinkTarget::Job)
+        };
+        let server = MockServer::start().await;
+        mount_state(
+            &server,
+            ResponseTemplate::new(200).set_body_json(json!({"state": "closed"})),
+        )
+        .await;
+        github::sync_closed_issues(db.connection(), &gh_settings(&[]), &api(&server)).await;
+        assert_eq!(
+            requested_paths(&server).await,
+            vec![format!("/repos/acme/app/issues/{number}")]
+        );
+        let rearmed = if entity == "test" {
+            let (number, _, checked, _) = test_link(&db, id).await;
+            assert_eq!(number, None);
+            checked
+        } else {
+            assert_eq!(job_link(&db, id).await.0, None);
+            job_checked(&db, id).await
+        };
+        assert!(rearmed, "the re-arm keeps the stamp it wrote");
+
+        issue_links::unlink_issue(
+            db.connection(),
+            target,
+            i64::from(id),
+            &ReadSettings::default(),
+        )
+        .await
+        .expect("the unlink succeeds");
+        let cleared = if entity == "test" {
+            let (number, filed, checked, _) = test_link(&db, id).await;
+            assert_eq!(filed, None);
+            assert_eq!(number, None);
+            checked
+        } else {
+            assert_eq!(job_link(&db, id).await.0, None);
+            job_checked(&db, id).await
+        };
+        assert!(!cleared, "unlink drops the stamp the re-arm kept");
+        assert!(
+            linked_for_check(db.connection(), target, 10)
+                .await
+                .expect("the rotation reads")
+                .is_empty(),
+            "the pair is fully reset"
+        );
+
+        let before = requested_paths(&server).await.len();
+        github::sync_closed_issues(db.connection(), &gh_settings(&[]), &api(&server)).await;
+        assert_eq!(
+            requested_paths(&server).await.len(),
+            before,
+            "the unlinked {entity} is out of the rotation for good"
+        );
+    }
+}
+
+#[tokio::test]
+async fn an_unlink_rearms_a_declined_link_and_the_filer_files_it_again() {
+    let db = TestDb::new().await.expect("a test database");
+    let test = flaky_test(&db).await;
+    let job = flaky_job(&db).await;
+    for (table, id, number) in [("test_cases", test, 11), ("jobs", job, 22)] {
+        db.connection()
+            .execute_raw(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                format!(
+                    "UPDATE {table} SET github_issue_number = $2, github_issue_filed = TRUE, \
+                     github_issue_closed = TRUE WHERE id = $1"
+                ),
+                [Value::from(id), Value::from(number)],
+            ))
+            .await
+            .expect("the declined link writes");
+    }
+
+    issue_links::unlink_issue(
+        db.connection(),
+        LinkTarget::Test,
+        i64::from(test),
+        &ReadSettings::default(),
+    )
+    .await
+    .expect("the Test unlink succeeds");
+    let (number, filed, _, closed) = test_link(&db, test).await;
+    assert_eq!(number, None);
+    assert_eq!(filed, None, "no provenance without a number");
+    assert!(!closed, "the declined flag goes with the link");
+
+    issue_links::unlink_issue(
+        db.connection(),
+        LinkTarget::Job,
+        i64::from(job),
+        &ReadSettings::default(),
+    )
+    .await
+    .expect("the Job unlink succeeds");
+    let (number, filed) = job_link(&db, job).await;
+    assert_eq!(number, None);
+    assert_eq!(filed, None);
+
+    let filing = MockServer::start().await;
+    mount_create(
+        &filing,
+        ResponseTemplate::new(201).set_body_json(json!({"number": 77})),
+    )
+    .await;
+    github::file_issues_for(db.connection(), &[test], &gh_settings(&[]), &api(&filing)).await;
+    let (number, _, _, closed) = test_link(&db, test).await;
+    assert_eq!(number, Some(77), "the filer files the re-armed Test");
+    assert!(!closed, "a fresh link starts unflagged");
+
+    let sync = MockServer::start().await;
+    mount_state(
+        &sync,
+        ResponseTemplate::new(200).set_body_json(json!({"state": "open"})),
+    )
+    .await;
+    github::sync_closed_issues(db.connection(), &gh_settings(&[]), &api(&sync)).await;
+    assert_eq!(
+        requested_paths(&sync).await,
+        vec!["/repos/acme/app/issues/77"],
+        "only the fresh link remains in the rotation"
+    );
+}
+
+#[tokio::test]
+async fn every_link_write_clears_the_fixed_note_stamp() {
+    let db = TestDb::new().await.expect("a test database");
+    let filed = flaky_test_in(&db, "acme/app", "p1", "t1").await;
+    let relinked = flaky_test_in(&db, "acme/app", "p2", "t2").await;
+    let unlinked = flaky_test_in(&db, "acme/app", "p3", "t3").await;
+    let job = flaky_job(&db).await;
+    stamp_job_link(&db, job, 40, true).await;
+    for (table, id) in [("test_cases", filed), ("test_cases", relinked)] {
+        stamp_note(&db, table, id).await;
+    }
+    stamp_note(&db, "test_cases", unlinked).await;
+    stamp_note(&db, "jobs", job).await;
+
+    issue_links::store_filed_link(db.connection(), LinkTarget::Test, i64::from(filed), 11)
+        .await
+        .expect("the filer stores what GitHub created");
+    assert!(!noted(&db, "test_cases", filed).await);
+
+    issue_links::link_issue(
+        db.connection(),
+        LinkTarget::Test,
+        i64::from(relinked),
+        22,
+        None,
+        false,
+        &ReadSettings::default(),
+    )
+    .await
+    .expect("the number from elsewhere links");
+    assert!(!noted(&db, "test_cases", relinked).await);
+
+    issue_links::link_issue(
+        db.connection(),
+        LinkTarget::Job,
+        i64::from(job),
+        41,
+        None,
+        true,
+        &ReadSettings::default(),
+    )
+    .await
+    .expect("the replaced Job link writes");
+    assert_eq!(job_link(&db, job).await.0, Some(41));
+    assert!(!noted(&db, "jobs", job).await);
+
+    issue_links::unlink_issue(
+        db.connection(),
+        LinkTarget::Test,
+        i64::from(unlinked),
+        &ReadSettings::default(),
+    )
+    .await
+    .expect("the unlink succeeds");
+    assert_eq!(test_link(&db, unlinked).await.0, None);
+    assert!(
+        !noted(&db, "test_cases", unlinked).await,
+        "with no Issue a stamp would note nothing"
+    );
+}
+
+#[tokio::test]
+async fn the_sync_rearm_clears_the_fixed_note_stamp_but_a_declined_link_keeps_it() {
+    let db = TestDb::new().await.expect("a test database");
+    let closed = flaky_test_in(&db, "acme/app", "p1", "t1").await;
+    let gone = flaky_test_in(&db, "acme/app", "p2", "t2").await;
+    let declined = flaky_test_in(&db, "acme/app", "p3", "t3").await;
+    for (id, number) in [(closed, 11), (gone, 22), (declined, 33)] {
+        stamp_link(&db, id, number, true, false).await;
+        stamp_note(&db, "test_cases", id).await;
+    }
+    let server = MockServer::start().await;
+    mount_issue(
+        &server,
+        "acme/app",
+        11,
+        ResponseTemplate::new(200)
+            .set_body_json(json!({"state": "closed", "state_reason": "completed"})),
+    )
+    .await;
+    mount_issue(
+        &server,
+        "acme/app",
+        22,
+        ResponseTemplate::new(404).set_body_json(json!({"message": "Not Found"})),
+    )
+    .await;
+    mount_issue(
+        &server,
+        "acme/app",
+        33,
+        ResponseTemplate::new(200)
+            .set_body_json(json!({"state": "closed", "state_reason": "not_planned"})),
+    )
+    .await;
+
+    github::sync_closed_issues(db.connection(), &gh_settings(&[]), &api(&server)).await;
+    assert_eq!(
+        requested_paths(&server).await,
+        vec![
+            "/repos/acme/app/issues/11",
+            "/repos/acme/app/issues/22",
+            "/repos/acme/app/issues/33"
+        ]
+    );
+    for id in [closed, gone] {
+        let (number, _, _, _) = test_link(&db, id).await;
+        assert_eq!(number, None, "the closed or gone link re-arms");
+        assert!(!noted(&db, "test_cases", id).await);
+    }
+    let (number, _, _, is_closed) = test_link(&db, declined).await;
+    assert_eq!(number, Some(33), "a declined link is kept");
+    assert!(is_closed);
+    assert!(
+        noted(&db, "test_cases", declined).await,
+        "the same Issue keeps the comment it already earned"
+    );
 }

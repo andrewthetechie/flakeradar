@@ -202,6 +202,17 @@ async fn the_same_number_twice_keeps_the_check_stamp() {
         checked,
         "the same number was just checked, so its stamp stays"
     );
+
+    let replaced = put(
+        &app,
+        &format!("/api/tests/{}/issue?replace=true", test.id),
+        &json!({"number": 44}),
+    )
+    .await;
+    assert_eq!(replaced.status, StatusCode::OK);
+    let (number, _, checked, _, _) = test_link(&db, test.id).await;
+    assert_eq!(number, Some(44));
+    assert!(!checked, "a different number starts checked-first again");
 }
 
 #[tokio::test]

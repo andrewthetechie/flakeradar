@@ -15,12 +15,12 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use chrono::{DateTime, FixedOffset};
-use flakeradar::LeaderTask;
 use flakeradar::worker::{
     AdvisoryLock, LockFuture, LockSession, ProcessFuture, PruneFuture, Pruner, ReportProcessor,
     ReportWorker, SessionFuture, StartFuture, StopFuture, WaitFuture, Waiter, WorkerSettings,
 };
-use flakeradar_core::TierChange;
+use flakeradar::{LeaderTask, WebhookWorker};
+use flakeradar_core::{TierChange, WebhookFormat};
 use flakeradar_db::entities::{projects, reports};
 use flakeradar_db::{
     DbError, DbSettings, FixedClock, MonotonicClock, ProcessOutcome, ProcessingSettings,
@@ -28,6 +28,9 @@ use flakeradar_db::{
 };
 use flakeradar_test_support::{TestDb, make_junit, make_project, make_report};
 use sea_orm::{ConnectionTrait, DatabaseConnection, EntityTrait, QueryOrder as _, Statement};
+use serde_json::Value as Json;
+use wiremock::matchers::method;
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 /// A fixed instant, so every stored timestamp is deterministic.
 fn at() -> DateTime<FixedOffset> {
@@ -1428,4 +1431,66 @@ async fn the_leader_checks_its_lock_connection_when_the_queue_is_empty() {
     })
     .await;
     worker.stop().await;
+}
+
+#[tokio::test]
+async fn a_tier_change_reaches_the_webhook_task() {
+    let db = TestDb::new().await.expect("a test database");
+    let project = project(&db).await;
+    for (status, sha) in [("failed", "a"), ("passed", "b")] {
+        make_report(&project, project.repo_id)
+            .commit_sha(sha)
+            .body(&make_junit(&[("t", status)]))
+            .build(db.connection())
+            .await
+            .expect("a queued Report");
+    }
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&server)
+        .await;
+    let webhook = Arc::new(WebhookWorker::new(
+        vec![format!("{}/hook", server.uri())],
+        WebhookFormat::Json,
+        "",
+    ));
+    let processing = ProcessingSettings {
+        flake_threshold: 0.05,
+        score_decay: 0.0,
+        clock: Arc::new(FixedClock::new(at())),
+        ..ProcessingSettings::default()
+    };
+    let worker = Arc::new(
+        ReportWorker::new(db.connection().clone(), lock(&db), processing, fast())
+            .with_leader_task(webhook),
+    );
+    Arc::clone(&worker).start().await;
+
+    wait_until("the tier change is delivered", || async {
+        server
+            .received_requests()
+            .await
+            .is_some_and(|requests| requests.len() == 1)
+    })
+    .await;
+    worker.stop().await;
+
+    let requests = server
+        .received_requests()
+        .await
+        .expect("the stub records requests");
+    assert_eq!(requests.len(), 1);
+    let body: Json = serde_json::from_slice(&requests[0].body).expect("the body is JSON");
+    let events: Vec<&str> = body
+        .as_array()
+        .expect("the payload is a list")
+        .iter()
+        .map(|event| event["event"].as_str().expect("an event name"))
+        .collect();
+    assert_eq!(events, vec!["test.flaky"]);
+    assert!(
+        lock_is_free(db.url()).await,
+        "the Notification task stopped before the lock was released"
+    );
 }
