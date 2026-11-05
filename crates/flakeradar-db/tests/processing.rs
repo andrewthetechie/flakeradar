@@ -2129,3 +2129,39 @@ async fn a_skipped_job_counts_as_skipped() {
         (Some(1), Some(1))
     );
 }
+
+#[tokio::test]
+async fn a_job_whose_execution_is_a_duplicate_keeps_its_row() {
+    // Only brand-new executions count, so a payload that repeats one Job and adds
+    // another touches the added one alone.
+    let db = TestDb::new().await.expect("a test database");
+    let project = project(&db, "acme/app", "backend").await;
+    let first = payload(vec![job_in("1", "lint", JobStatus::Passed)]);
+    queue_pipeline(&db, &project, &first).await;
+    process_next(db.connection(), &settings())
+        .await
+        .expect("the processor runs")
+        .expect("a Report");
+    let mut second = payload(vec![
+        job_in("1", "lint", JobStatus::Passed),
+        job_in("2", "gate", JobStatus::Failed),
+    ]);
+    second.commit_sha = "sha2".to_owned();
+    second.ci_run_id = "2".to_owned();
+    queue_pipeline(&db, &project, &second).await;
+    let outcome = process_next(db.connection(), &settings())
+        .await
+        .expect("the processor runs")
+        .expect("a Report");
+    let stored = jobs(&db).await;
+    let gate = stored
+        .iter()
+        .find(|row| row.name == "gate")
+        .expect("the added Job");
+    assert_eq!(outcome.touched_job_ids, vec![gate.id]);
+    let counts = outcome.counts.expect("counts");
+    assert_eq!(
+        (counts["failed"].as_i64(), counts["passed"].as_i64()),
+        (Some(1), Some(0))
+    );
+}

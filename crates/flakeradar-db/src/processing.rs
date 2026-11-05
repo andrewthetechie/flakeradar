@@ -1759,7 +1759,7 @@ mod tests {
     use sea_orm::error::{ConnAcquireErr, RuntimeErr};
     use sea_orm::sqlx::error::Error as SqlxError;
 
-    use super::{ProcessError, transient_db_error};
+    use super::{ProcessError, transient_db_error, transient_sqlstate};
     use crate::DbError;
 
     /// A statement failure, wrapped the way the driver returns one.
@@ -1796,6 +1796,16 @@ mod tests {
         assert!(!transient_db_error(&driver(SqlxError::Protocol(
             "57014: statement timeout".to_owned()
         ))));
+    }
+
+    #[test]
+    fn a_transient_sqlstate_is_the_three_classes_and_the_two_codes() {
+        for code in ["08006", "53300", "57014", "40001", "40P01"] {
+            assert!(transient_sqlstate(code), "{code}");
+        }
+        for code in ["23514", "42601", "4000", "40P0"] {
+            assert!(!transient_sqlstate(code), "{code}");
+        }
     }
 
     #[test]
