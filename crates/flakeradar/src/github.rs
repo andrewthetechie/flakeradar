@@ -1214,8 +1214,10 @@ async fn commit_filed_link(
         number,
     )
     .await;
+    // A vanished row is an UPDATE that affected no row: the admin delete won the
+    // race, so the number is referenced nowhere and the new issue is stranded.
     let exists = match stored {
-        Ok(()) => row_exists(&savepoint, request.target, request.entity_id).await,
+        Ok(affected) => affected > 0,
         Err(error) => {
             tracing::warn!(error = %error, "GitHub filing could not store its link");
             false
@@ -1230,16 +1232,6 @@ async fn commit_filed_link(
         return false;
     }
     true
-}
-
-/// Whether the linked row still exists, inside the write's own transaction.
-async fn row_exists(db: &impl ConnectionTrait, target: LinkTarget, entity_id: i32) -> bool {
-    let table = match target {
-        LinkTarget::Test => "test_cases",
-        LinkTarget::Job => "jobs",
-    };
-    let sql = format!("SELECT id FROM {table} WHERE id = $1");
-    matches!(rows(db, sql, vec![QueryValue::from(entity_id)]).await, Ok(rows) if !rows.is_empty())
 }
 
 /// Re-arms deduplication for Tests and Jobs whose GitHub issue has been closed.

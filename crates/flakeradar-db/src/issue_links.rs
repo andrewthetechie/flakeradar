@@ -494,20 +494,21 @@ pub async fn store_filed_link(
     target: LinkTarget,
     target_id: i64,
     number: i32,
-) -> Result<(), DbError> {
+) -> Result<u64, DbError> {
     let sql = format!(
         "UPDATE {} SET github_issue_number = $2, github_issue_checked_at = NULL, \
          github_issue_filed = TRUE, github_issue_closed = FALSE, \
          github_issue_fixed_noted_at = NULL WHERE id = $1",
         target.table()
     );
-    db.execute_raw(Statement::from_sql_and_values(
-        DbBackend::Postgres,
-        sql,
-        [Value::from(target_id), Value::from(number)],
-    ))
-    .await?;
-    Ok(())
+    let result = db
+        .execute_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            sql,
+            [Value::from(target_id), Value::from(number)],
+        ))
+        .await?;
+    Ok(result.rows_affected())
 }
 
 /// Stamps when one linked row was last checked.
