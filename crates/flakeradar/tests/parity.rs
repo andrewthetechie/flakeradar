@@ -121,10 +121,27 @@ struct Deferred {
 /// Score history those Reports score. Step 48 is the only end-to-end comparison
 /// of the Flakiness scores, Clean streaks, Proven flakes and history rows this
 /// harness makes, so it is worthwhile on its own account.
+///
+/// Task 08 adds `default-branch` steps 1-3, 7, 8, 12, 13 and 15: the ingests and
+/// the `wait_processed` that drains them through the real worker, and the dump of
+/// the Tests and Executions the Default-branch rule scores. Steps 4-6 and 9-11,
+/// 14 are the reads, which change no state, so the dump is the same one the
+/// recorder took. It also adds the ingests and the drain of `consumers`,
+/// `issue-links`, `quarantine` and `repo-admin`, whose own steps need the task 09
+/// and task 10 routes; each of those scenarios' dump stays deferred, because it
+/// records what those routes wrote.
 const ENABLED: &[Enabled] = &[
     Enabled {
         name: "auth",
         steps: &[1, 2, 3, 4, 5],
+    },
+    Enabled {
+        name: "consumers",
+        steps: &[1, 2, 3, 4, 5],
+    },
+    Enabled {
+        name: "default-branch",
+        steps: &[1, 2, 3, 7, 8, 12, 13, 15],
     },
     Enabled {
         name: "health",
@@ -142,8 +159,20 @@ const ENABLED: &[Enabled] = &[
         steps: &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 48],
     },
     Enabled {
+        name: "issue-links",
+        steps: &[1, 2, 3, 4],
+    },
+    Enabled {
         name: "pipeline-jobs",
         steps: &[1, 2, 3, 4, 5, 6, 7, 33, 34, 35, 36, 37],
+    },
+    Enabled {
+        name: "quarantine",
+        steps: &[1, 2],
+    },
+    Enabled {
+        name: "repo-admin",
+        steps: &[1, 2, 3, 4, 5],
     },
     Enabled {
         name: "trailing-slash",
@@ -169,18 +198,18 @@ const DEFERRED: &[Deferred] = &[
     },
     Deferred {
         scenario: "consumers",
-        steps: None,
+        steps: Some(&[6, 7, 8, 9, 10, 11, 12, 13]),
         task: 10,
-        reason: "the writers-app pipeline: ingest (task 06), the Report summary poll and \
-                 /api/ci-runs/{id}/failures (task 06), the Test and Job reads (task 09) and the \
-                 issue links the actions set (task 10)",
+        reason: "the writers-app reads: /api/ci-runs/{id}/failures and /api/tests (task 09), and \
+                 the issue links the actions set, which step 13 dumps (task 10). The ingests and \
+                 the drain they need replay already",
     },
     Deferred {
         scenario: "default-branch",
-        steps: None,
+        steps: Some(&[4, 5, 6, 9, 10, 11, 14]),
         task: 9,
-        reason: "ingest (task 06) then GET /api/repos, /api/tests, /api/tests/{id}/history and the \
-                 database dump of the scores it produces (task 09)",
+        reason: "the reads: GET /api/repos, /api/tests and /api/tests/{id}/history. The ingests \
+                 and the dump of the scores they produce replay already",
     },
     Deferred {
         scenario: "flaky-tests",
@@ -202,10 +231,13 @@ const DEFERRED: &[Deferred] = &[
     },
     Deferred {
         scenario: "issue-links",
-        steps: None,
+        steps: Some(&[
+            5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27,
+        ]),
         task: 10,
-        reason: "ingest and the pipeline report (task 06), then PUT and DELETE \
-                 /api/tests/{id}/issue and /api/jobs/{id}/issue (task 10)",
+        reason: "PUT and DELETE /api/tests/{id}/issue and /api/jobs/{id}/issue (task 10), the Test \
+                 and Job reads (task 09), and step 27, the dump of the issue links they set. The \
+                 ingests and the drain replay already",
     },
     Deferred {
         scenario: "mcp",
@@ -225,17 +257,18 @@ const DEFERRED: &[Deferred] = &[
     },
     Deferred {
         scenario: "quarantine",
-        steps: None,
+        steps: Some(&[3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]),
         task: 9,
-        reason: "ingest (task 06), then POST /api/tests/{id}/quarantine and \
-                 GET /api/quarantine (task 09)",
+        reason: "POST /api/tests/{id}/quarantine and GET /api/quarantine (task 09), the Test reads, \
+                 and step 18, the dump of the quarantines they set. The ingest and the drain replay \
+                 already",
     },
     Deferred {
         scenario: "repo-admin",
-        steps: None,
+        steps: Some(&[6, 7, 8, 9, 10, 11, 12, 13, 14, 15]),
         task: 10,
-        reason: "ingest and pipeline reports (task 06), then DELETE /api/repos/... and \
-                 GET /api/repos (task 10)",
+        reason: "DELETE /api/repos/... and GET /api/repos (task 10), and step 15, the dump of what \
+                 they deleted. The ingests and the drain replay already",
     },
     Deferred {
         scenario: "trailing-slash",
@@ -270,7 +303,7 @@ const DEFERRED: &[Deferred] = &[
 /// A later task enables steps and lowers this number; the test that reads it
 /// fails both when a step is switched off without a reason and when an enabled
 /// step is left in [`DEFERRED`]. It never goes up.
-const DEFERRED_STEPS: usize = 223;
+const DEFERRED_STEPS: usize = 199;
 
 /// One scenario file.
 #[derive(Debug, Deserialize)]
