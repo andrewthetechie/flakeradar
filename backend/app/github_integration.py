@@ -509,6 +509,11 @@ _FILING_SKIP_REPO_KINDS = frozenset({"unauthorized", "repo_denied", "not_found",
 # deliberately leaves "unauthorized" out, and `_FILING_SKIP_REPO_KINDS` must not be reused.
 _NOTE_SKIP_REPO_KINDS = frozenset({"repo_denied", "not_found", "gone"})
 
+# The outcomes the issue-state sync treats as Repo-scoped: exactly today's `(401, 403, 410)`
+# skip set. 404 is deliberately NOT in it — unlike filing and noting, a 404 answer here
+# means the Issue itself is gone, which re-arms the link rather than skipping the Repo.
+_SYNC_SKIP_REPO_KINDS = frozenset({"unauthorized", "repo_denied", "gone"})
+
 
 async def _file_batch(
     db: AsyncSession,
@@ -763,23 +768,18 @@ async def sync_closed_issues(
             return
         rows = [(tc, repo, "test") for tc, repo in test_rows] + [(job, repo, "job") for job, repo in job_rows]
         skipped: set[str] = set()
-        try:
-            async with httpx.AsyncClient(
-                base_url=API_BASE, headers=_headers(get_settings().github_token), timeout=15, transport=transport
-            ) as client:
-                for obj, repo, entity in rows:
-                    if repo in skipped:
-                        obj.github_issue_checked_at = utcnow()  # unreadable repo this run; rotate it like a checked row
-                        continue
-                    if not await _clear_if_closed(client, obj, repo, entity, skipped):
-                        break
-        except httpx.HTTPError as exc:
-            logger.warning("GitHub unreachable, skipping issue-state sync: %s", exc)
+        async with _GitHubClient(get_settings().github_token, transport=transport) as client:
+            for obj, repo, entity in rows:
+                if repo in skipped:
+                    obj.github_issue_checked_at = utcnow()  # unreadable repo this run; rotate it like a checked row
+                    continue
+                if not await _clear_if_closed(client, obj, repo, entity, skipped):
+                    break
         await db.commit()  # keeps whatever was cleared before a stop or a network error
 
 
 async def _clear_if_closed(
-    client: httpx.AsyncClient, obj: Job | TestCase, repo: str, entity: str, skipped: set[str]
+    client: _GitHubClient, obj: Job | TestCase, repo: str, entity: str, skipped: set[str]
 ) -> bool:
     """Check one issue; clear its number on the ORM object when closed/gone.
 
@@ -797,9 +797,9 @@ async def _clear_if_closed(
     Issue filed after the re-arm would never get one. The kept `not_planned` link keeps
     its stamp, because it is the same Issue with the same comment on it.
 
-    Returns False on a rate limit, when the batch must stop; a definitive
-    Repo-wide client error (a permission 403, bad credentials 401, a gone
-    Repo 410) adds `repo` to `skipped` and leaves the link as it is.
+    Returns False on a rate limit or a network error, when the batch must stop; a
+    definitive Repo-wide client error (a permission 403, bad credentials 401, a
+    gone Repo 410) adds `repo` to `skipped` and leaves the link as it is.
 
     Every row this got an answer for is stamped with `utcnow()` — open,
     closed, gone, a Repo-wide client error, an unexpected status, and even a
@@ -811,36 +811,43 @@ async def _clear_if_closed(
     set. Only a rate-limit stop and a transport error leave a row unstamped,
     so those are retried first.
     """
-    resp = await client.get(f"/repos/{repo}/issues/{obj.github_issue_number}")
-    if _rate_limited(resp):
+    outcome = await client.fetch_issue(repo, obj.github_issue_number)
+    if outcome.kind == "rate_limited":
         logger.warning("GitHub rate limit in sync; stopping")
+        return False
+    if outcome.kind == "network":
+        # No answer at all: as with a rate limit, this row goes unstamped and the
+        # caller stops the run, committing whatever earlier rows it already stamped.
+        logger.warning("GitHub unreachable, skipping issue-state sync: %s", outcome.error)
         return False
     # The request was answered, whatever it said: this row has been checked.
     obj.github_issue_checked_at = utcnow()
-    if resp.status_code in (401, 403, 410):
+    if outcome.kind in _SYNC_SKIP_REPO_KINDS:
         # Definitive, Repo-wide client error (bad credentials, a permission
         # error, a gone Repo): this Repo's links stay as they are; skip it for
         # the rest of the sync and go on with the other Repos.
-        logger.warning(
-            "GitHub issue-state sync skipped for repo %s: %s %s",
-            repo,
-            resp.status_code,
-            resp.text[:300],
-        )
+        logger.warning("GitHub issue-state sync skipped for repo %s: %s %s", repo, outcome.status, outcome.excerpt)
         skipped.add(repo)
-        return True
-    if resp.status_code == 200:
-        state = _issue_state(resp)
-        if state is None:
-            # An unreadable body says nothing about the issue: leave the link alone.
-            logger.warning(
-                "GitHub issue-state sync got an unusable 200 body for %s#%s: %s",
-                repo,
-                obj.github_issue_number,
-                resp.text[:300],
-            )
-        elif state == "closed":
-            reason = _issue_state_reason(resp)
+    elif outcome.kind == "not_found":
+        # Issue deleted or token can no longer see it — do not hold dedup forever.
+        logger.info("Issue gone %s#%s; re-arming %s %s", repo, obj.github_issue_number, entity, obj.id)
+        obj.github_issue_number = None
+        obj.github_issue_filed = None
+        obj.github_issue_closed = False
+        obj.github_issue_fixed_noted_at = None  # the Issue filed next has not been noted
+    elif outcome.kind == "unusable_body":
+        # An unreadable body says nothing about the issue: leave the link alone.
+        logger.warning(
+            "GitHub issue-state sync got an unusable 200 body for %s#%s: %s",
+            repo,
+            obj.github_issue_number,
+            outcome.excerpt,
+        )
+    elif outcome.kind == "ok":
+        # Only a 200 whose body carried a state classifies ok.
+        state = outcome.state
+        if state == "closed":
+            reason = outcome.state_reason
             if reason == "not_planned":
                 # Known, accepted, will not fix: keep the link so the filer (which skips
                 # any row that carries a number) never files this again, and say so.
@@ -868,13 +875,8 @@ async def _clear_if_closed(
         elif state == "open":
             # Possibly reopened after a close as not planned: filing is live again.
             obj.github_issue_closed = False
-    elif resp.status_code == 404:
-        # Issue deleted or token can no longer see it — do not hold dedup forever.
-        logger.info("Issue gone %s#%s; re-arming %s %s", repo, obj.github_issue_number, entity, obj.id)
-        obj.github_issue_number = None
-        obj.github_issue_filed = None
-        obj.github_issue_closed = False
-        obj.github_issue_fixed_noted_at = None  # the Issue filed next has not been noted
+    # Any other answer ("other": a 500, a non-200 2xx) has no branch, as today: the
+    # link stays and the row is stamped above, so it keeps its place in the rotation.
     return True
 
 
