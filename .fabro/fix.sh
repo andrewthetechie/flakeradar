@@ -4,7 +4,7 @@
 # script always exits 0.
 set -u
 
-(cd backend && .venv/bin/ruff check --fix . && .venv/bin/ruff format .) || true
+cargo fmt --all || true
 (cd frontend && npm run lint:fix && npm run format) || true
 
 exit 0
