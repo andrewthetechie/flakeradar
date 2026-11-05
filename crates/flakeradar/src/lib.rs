@@ -23,6 +23,7 @@
 )]
 
 pub mod app;
+pub mod assets;
 pub mod docs;
 pub mod error;
 pub mod extract;
@@ -40,6 +41,8 @@ pub mod worker;
 
 #[doc(inline)]
 pub use app::{AppState, JSON_BODY_LIMIT, build_app, with_common_layers};
+#[doc(inline)]
+pub use assets::{Asset, AssetSource};
 #[doc(inline)]
 pub use error::{ApiError, ApiResult, Detail};
 #[doc(inline)]

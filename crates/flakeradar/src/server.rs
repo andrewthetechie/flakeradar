@@ -72,7 +72,10 @@ impl Server {
         flakeradar_db::run_migrations(&pool)
             .await
             .context("migrating the database")?;
-        let app = build_app(AppState::new(pool.clone(), Arc::new(settings.clone())));
+        let app = build_app(
+            AppState::new(pool.clone(), Arc::new(settings.clone()))
+                .with_assets(crate::assets::embedded()),
+        );
         let requested = format!("{}:{}", settings.host, settings.port);
         let listener = TcpListener::bind(&requested)
             .await

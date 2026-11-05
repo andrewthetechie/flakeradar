@@ -15,12 +15,13 @@
     reason = "one shared module is compiled into every test binary, and each uses a subset"
 )]
 
+use std::borrow::Cow;
 use std::sync::Arc;
 
 use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{HeaderMap, Method, Request, StatusCode};
-use flakeradar::{AppState, Settings, build_app};
+use flakeradar::{AppState, Asset, AssetSource, Settings, build_app};
 use flakeradar_test_support::TestDb;
 use serde_json::Value;
 use tower::ServiceExt as _;
@@ -43,6 +44,63 @@ pub(crate) fn app(db: &TestDb, pairs: &[(&str, &str)]) -> Router {
 /// The app over `db`, with `settings`.
 pub(crate) fn app_with(db: &TestDb, settings: Settings) -> Router {
     build_app(AppState::new(db.connection().clone(), Arc::new(settings)))
+}
+
+/// A stand-in for the embedded frontend: the files, bodies and `ETag`s a test hands it.
+#[derive(Debug, Default)]
+pub(crate) struct MemoryAssets {
+    files: Vec<(&'static str, &'static [u8], &'static str)>,
+}
+
+impl MemoryAssets {
+    /// Serves exactly `files`, each as its path, its body and its `ETag`.
+    pub(crate) fn new(files: &[(&'static str, &'static [u8], &'static str)]) -> Self {
+        Self {
+            files: files.to_vec(),
+        }
+    }
+}
+
+impl AssetSource for MemoryAssets {
+    /// Looks `path` up the way a directory on disk would answer it.
+    ///
+    /// A `.` or `..` segment is resolved before the lookup, so a request that
+    /// climbs out of the root reaches the file it names. The real source is a
+    /// table of exact names and could never be climbed out of; making the
+    /// double answer as a filesystem does is what lets a test prove the route
+    /// refuses the path rather than relying on the table's shape.
+    fn get(&self, path: &str) -> Option<Asset> {
+        let path = normalize(path);
+        self.files
+            .iter()
+            .find(|(name, _, _)| *name == path)
+            .map(|(_, body, etag)| Asset::new(Cow::Borrowed(*body), *etag))
+    }
+}
+
+/// `path` with its `.` and `..` segments resolved.
+fn normalize(path: &str) -> String {
+    let mut segments: Vec<&str> = Vec::new();
+    for segment in path.split('/') {
+        match segment {
+            "" | "." => {}
+            ".." => {
+                segments.pop();
+            }
+            name => segments.push(name),
+        }
+    }
+    segments.join("/")
+}
+
+/// The app over `db`, serving `files` from memory.
+pub(crate) fn app_serving(
+    db: &TestDb,
+    files: &[(&'static str, &'static [u8], &'static str)],
+) -> Router {
+    let state = AppState::new(db.connection().clone(), Arc::new(settings(&[])))
+        .with_assets(Arc::new(MemoryAssets::new(files)));
+    build_app(state)
 }
 
 /// One answered request, with its body already read.
