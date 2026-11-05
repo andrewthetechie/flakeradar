@@ -1824,3 +1824,208 @@ async fn a_default_branch_change_silences_the_pipeline_reports_own_crossings() {
         .expect("a Report");
     assert_eq!(outcome.tier_changes, Vec::new());
 }
+
+/// A `cargo-nextest` run whose flaky try failed and whose re-run passed.
+///
+/// Inlined next to the parser's own copy, because the frozen Python tree goes at
+/// cutover.
+const NEXTEST_FLAKY_FAIL_XML: &str =
+    include_str!("../../flakeradar-core/tests/fixtures/nextest_flaky_fail.xml");
+
+#[tokio::test]
+async fn a_nextest_flaky_fail_is_a_proven_flake_from_one_report() {
+    // `flaky-result = "fail"` writes the flaky try as a `<failure>` marked by its
+    // message and the passed re-run as a sibling, so one Report holds both tries.
+    let db = TestDb::new().await.expect("a test database");
+    let project = project(&db, "acme/app", "backend").await;
+    queue_with(&db, &project, NEXTEST_FLAKY_FAIL_XML.as_bytes(), |b| {
+        b.commit_sha("777022bf")
+    })
+    .await;
+    let outcome = process_next(db.connection(), &settings())
+        .await
+        .expect("the processor runs")
+        .expect("a Report");
+    assert_eq!(
+        outcome.counts,
+        Some(serde_json::json!({
+            "passed": 2, "failed": 1, "error": 0, "skipped": 0, "retried": 1
+        }))
+    );
+    let flaky = tests(&db)
+        .await
+        .into_iter()
+        .find(|row| {
+            row.name
+                .ends_with("invalidate_priority_readiness_drops_from_each_driver")
+        })
+        .expect("the flaky Test");
+    assert_eq!(flaky.confirmed_flake_count, 1);
+    assert!(flaky.flakiness_score >= 0.6);
+    assert_eq!(flaky.last_status, "passed");
+    let tries: Vec<(String, i32, bool)> = test_executions::Entity::find()
+        .filter(test_executions::Column::TestCaseId.eq(flaky.id))
+        .order_by_asc(test_executions::Column::Id)
+        .all(db.connection())
+        .await
+        .expect("the Executions")
+        .into_iter()
+        .map(|row| (row.status, row.attempt, row.failure_category.is_some()))
+        .collect();
+    // The failed try is still classified; the converted pass is not.
+    assert_eq!(
+        tries,
+        [
+            ("failed".to_owned(), 0, true),
+            ("passed".to_owned(), 1, false)
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_report_rewrites_no_project_root_it_does_not_change() {
+    // A trigger turns any `UPDATE projects` into a failure, so the processor can
+    // only answer `processed` when the same root costs no write.
+    let db = TestDb::new().await.expect("a test database");
+    let project = project(&db, "acme/app", "backend").await;
+    projects::Entity::update(projects::ActiveModel {
+        id: sea_orm::Set(project.id),
+        root: sea_orm::Set("backend".to_owned()),
+        ..Default::default()
+    })
+    .exec(db.connection())
+    .await
+    .expect("the Project root");
+    db.connection()
+        .execute_unprepared(
+            "CREATE FUNCTION no_project_update() RETURNS trigger LANGUAGE plpgsql AS \
+             $$ BEGIN RAISE EXCEPTION 'projects was rewritten'; END $$",
+        )
+        .await
+        .expect("the trigger function");
+    db.connection()
+        .execute_unprepared(
+            "CREATE TRIGGER no_project_update BEFORE UPDATE ON projects \
+             FOR EACH ROW EXECUTE FUNCTION no_project_update()",
+        )
+        .await
+        .expect("the trigger");
+
+    // The trigger bites: a rewrite of the row is refused, so a `processed` outcome
+    // below can only mean the processor issued no `UPDATE`.
+    let refused = projects::Entity::update(projects::ActiveModel {
+        id: sea_orm::Set(project.id),
+        root: sea_orm::Set("elsewhere".to_owned()),
+        ..Default::default()
+    })
+    .exec(db.connection())
+    .await;
+    assert!(refused.is_err(), "the trigger refuses a Project rewrite");
+
+    queue_with(&db, &project, &make_junit(&[("t", "passed")]), |b| {
+        b.root("backend")
+    })
+    .await;
+    let outcome = process_next(db.connection(), &settings())
+        .await
+        .expect("the processor runs")
+        .expect("a Report");
+    assert_eq!(outcome.status, "processed");
+    let stored = projects::Entity::find_by_id(project.id)
+        .one(db.connection())
+        .await
+        .expect("the Project")
+        .expect("the Project exists");
+    assert_eq!(stored.root, "backend");
+
+    // A root that does change is written.
+    db.connection()
+        .execute_unprepared("DROP TRIGGER no_project_update ON projects")
+        .await
+        .expect("the trigger is dropped");
+    queue_with(&db, &project, &make_junit(&[("t", "passed")]), |b| {
+        b.root("frontend")
+    })
+    .await;
+    process_next(db.connection(), &settings())
+        .await
+        .expect("the processor runs")
+        .expect("a Report");
+    let stored = projects::Entity::find_by_id(project.id)
+        .one(db.connection())
+        .await
+        .expect("the Project")
+        .expect("the Project exists");
+    assert_eq!(stored.root, "frontend");
+}
+
+#[tokio::test]
+async fn a_report_that_changes_the_default_branch_drops_its_own_crossings() {
+    let db = TestDb::new().await.expect("a test database");
+    let project = project(&db, "acme/app", "backend").await;
+    for (status, sha) in [("failed", "a"), ("passed", "b")] {
+        queue_with(&db, &project, &make_junit(&[("t", status)]), |b| {
+            b.branch("feat").commit_sha(sha)
+        })
+        .await;
+        let outcome = process_next(db.connection(), &notify_settings())
+            .await
+            .expect("the processor runs")
+            .expect("a Report");
+        if status == "passed" {
+            // The flip on `feat` is a crossing while `feat` is not the Default branch.
+            assert_eq!(
+                outcome.tier_changes.first().map(|change| change.event()),
+                Some("test.flaky".to_owned())
+            );
+        }
+    }
+    queue_with(&db, &project, &make_junit(&[("t", "passed")]), |b| {
+        b.branch("main").commit_sha("c").default_branch("main")
+    })
+    .await;
+    let outcome = process_next(db.connection(), &notify_settings())
+        .await
+        .expect("the processor runs")
+        .expect("a Report");
+    // The new Default branch has no flips, so the Test left the flaky tier, but a
+    // Report that rescores every Test must not send one event per Test.
+    assert_eq!(test(&db).await.flakiness_score, 0.0);
+    assert_eq!(outcome.tier_changes, Vec::new());
+}
+
+#[tokio::test]
+async fn a_default_branch_change_silences_a_linked_junit_reports_job_crossings() {
+    let db = TestDb::new().await.expect("a test database");
+    let project = project(&db, "acme/app", "backend").await;
+    // Fail then pass on either branch, so the Job is flaky under either Default.
+    for (branch, failed, passed) in [("dev", "1", "2"), ("main", "3", "4")] {
+        for (ci_job_id, status) in [(failed, JobStatus::Failed), (passed, JobStatus::Passed)] {
+            let mut report = payload(vec![job_in(ci_job_id, "lint", status)]);
+            report.commit_sha = ci_job_id.to_owned();
+            report.ci_run_id = ci_job_id.to_owned();
+            report.branch = branch.to_owned();
+            queue_pipeline(&db, &project, &report).await;
+            process_next(db.connection(), &notify_settings())
+                .await
+                .expect("the processor runs");
+        }
+    }
+    queue_with(&db, &project, &make_junit(&[("t", "failed")]), |b| {
+        b.branch("dev")
+            .commit_sha("z")
+            .default_branch("dev")
+            .ci_job_id("1")
+    })
+    .await;
+    let outcome = process_next(db.connection(), &notify_settings())
+        .await
+        .expect("the processor runs")
+        .expect("a Report");
+    let stored = job(&db).await;
+    assert_eq!(outcome.touched_job_ids, vec![stored.id]);
+    // The failure is explained now, so the Job left the flaky tier, but the Default
+    // branch change keeps the crossing silent.
+    assert_eq!(stored.flakiness_score, 0.0);
+    assert_eq!(outcome.tier_changes, Vec::new());
+}
