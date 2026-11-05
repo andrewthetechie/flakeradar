@@ -9,10 +9,11 @@ asyncpg's 32,767 bind-parameter limit and avoid per-test round-trips.
 import asyncio
 import logging
 from collections import defaultdict
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from sqlalchemy import Row, Select, insert, select, update
+from sqlalchemy import ColumnElement, Row, Select, insert, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import InterfaceError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -150,7 +151,82 @@ def _crossed(updates: list[dict[str, Any]], old: dict[int, float], threshold: fl
     return [u for u in updates if (u["flakiness_score"] >= threshold) != (old.get(u["id"], 0.0) >= threshold)]
 
 
-async def _test_tier_changes(
+@dataclass(frozen=True)
+class RescoreWindow:
+    """What one rescore target's fetch found for one row: its Default branch and its Executions.
+
+    `execs` holds `(commit_sha, branch, status)` triples newest first; `categories` holds the
+    matching Executions' failure categories, newest first, and stays empty for a target with no
+    category. A row with no Executions in the window has an empty list and no Default branch.
+    """
+
+    default_branch: str | None = None
+    execs: list[tuple[str, str, str]] = field(default_factory=list)
+    categories: list[str | None] = field(default_factory=list)
+
+
+async def _test_window(db: AsyncSession, test_case_ids: list[int], settings: Settings) -> dict[int, RescoreWindow]:
+    """The Executions `rescore` scores each Test from, with their categories and Default branch.
+
+    The windowed read itself (`attribution.test_execution_window_ids`) and its accepted worst case
+    are documented on `rescore`, the public function this fetch serves; one Test's rows come back
+    newest first, in the order `scoring.branch_scoped_*` reads them.
+    """
+    history: dict[int, list[tuple[str, str, str]]] = defaultdict(list)  # id -> [(sha, branch, status)]
+    categories: dict[int, list[str | None]] = defaultdict(list)  # id -> [category, ...] newest first
+    default_branch: dict[int, str | None] = {}  # id -> branch (constant per Test/Repo)
+    for chunk in chunks(test_case_ids):
+        windowed = test_execution_window_ids(chunk, settings.score_window, include_default_branch=True).subquery()
+        rows = await db.execute(
+            select(
+                TestExecution.test_case_id,
+                TestRun.commit_sha,
+                TestRun.branch,
+                TestExecution.status,
+                TestExecution.failure_category,
+                Repo.default_branch,
+            )
+            .join(TestRun, TestRun.id == TestExecution.test_run_id)
+            .join(Project, Project.id == TestRun.project_id)
+            .join(Repo, Repo.id == Project.repo_id)
+            .where(TestExecution.id.in_(select(windowed.c.id)))
+            .order_by(TestExecution.test_case_id, TestExecution.id.desc())
+        )
+        for tc_id, sha, branch, status, category, def_branch in rows.all():
+            history[tc_id].append((sha, branch, status))
+            categories[tc_id].append(category)
+            default_branch[tc_id] = def_branch
+    return {
+        tc_id: RescoreWindow(default_branch.get(tc_id), history[tc_id], categories[tc_id]) for tc_id in test_case_ids
+    }
+
+
+def _test_update_row(tc_id: int, window: RescoreWindow, settings: Settings) -> dict[str, Any]:
+    """The cached columns `rescore` writes for one Test, from the window the fetch collected."""
+    score, confirmed = scoring.branch_scoped_score(
+        window.execs,
+        window.default_branch,
+        settings.score_decay,
+        settings.score_window,
+    )
+    streak = scoring.branch_scoped_streak(window.execs, window.default_branch)
+    values: dict[str, Any] = {
+        "id": tc_id,
+        "flakiness_score": score,
+        "confirmed_flake_count": confirmed,
+        "failure_category": dominant_category(window.categories[: settings.score_window]),
+        "clean_streak": streak,
+        "fail_streak": scoring.branch_scoped_fail_streak(window.execs, window.default_branch),
+    }
+    if streak == 0:
+        # Issue #33: the Test failed again, so the "the fix appears to hold" note is stale
+        # and the next clean streak must be able to post it again. Any other streak leaves
+        # the key out of the bulk update, which is what preserves an existing stamp.
+        values["github_issue_fixed_noted_at"] = None
+    return values
+
+
+async def _test_tier_snapshot(
     db: AsyncSession, updates: list[dict[str, Any]], old: dict[int, float], settings: Settings
 ) -> list[TierChange]:
     """Notifications for the Tests whose tier this rescore moves (ADR 0009).
@@ -191,6 +267,68 @@ async def _test_tier_changes(
                 failure_category=u["failure_category"],
             )
         )
+    return changes
+
+
+@dataclass(frozen=True)
+class RescoreTarget:
+    """Everything the rescore engine below needs to know about one scored entity (issue #129).
+
+    Follows `LeaderboardEntity` (queries.py): pure data plus per-entity callables, one instance per
+    entity, consumed by the engine. Nothing in here may encode a shared rule — the Settings read,
+    the old-score read, the chunked bulk update and the Score-history write all live in
+    `_rescore_engine` only, and an intended per-entity difference (the Test's failure category,
+    Fail streak and broken filter, the history owner column) is descriptor data, as on TEST.
+    `fetch` returns one entry per id, an empty `RescoreWindow` for a row with no Executions, which
+    is what lets the engine read the update rows in the order the bulk update relies on.
+    """
+
+    model: type[TestCase] | type[Job]
+    history_model: type
+    owner_col: ColumnElement[int]
+    fetch: Callable[[AsyncSession, list[int], Settings], Awaitable[dict[int, RescoreWindow]]]
+    update_row: Callable[[int, RescoreWindow, Settings], dict[str, Any]]
+    tier_snapshot: Callable[
+        [AsyncSession, list[dict[str, Any]], dict[int, float], Settings], Awaitable[list[TierChange]]
+    ]
+
+
+TEST = RescoreTarget(
+    model=TestCase,
+    history_model=TestScoreHistory,
+    owner_col=TestScoreHistory.test_case_id,
+    fetch=_test_window,
+    update_row=_test_update_row,
+    # A Test that becomes broken has not recovered, so it is not a Tier change worth sending:
+    # the filter is Tests-only (a Job has no Fail streak to be broken by) and lives here, as
+    # descriptor data, and nowhere else in the engine.
+    tier_snapshot=_test_tier_snapshot,
+)
+
+
+async def _rescore_engine(
+    db: AsyncSession, ids: list[int], target: RescoreTarget, *, day_counts: dict[int, tuple[int, int]] | None = None
+) -> list[TierChange]:
+    """Recompute the cached scoring columns of `ids`, then write the day's Score history.
+
+    The sequence every rescore shares, stated once: read Settings, fetch each row's windowed
+    Executions, build one update row per id in the given order (the bulk update relies on that
+    order), read the scores the UPDATE is about to replace, snapshot the Tier changes it causes,
+    apply the chunked bulk update, and upsert today's Score history. `day_counts` maps an id to
+    (executions, failures) added today, so the same rescore writes that day's history row.
+
+    Returns the Tier changes for the caller to notify about. Nothing is emitted here: rescore_repo
+    and the retention prune are callers that must stay silent, so they log a count and pass none on
+    (ADR 0009).
+    """
+    settings = get_settings()
+    windows = await target.fetch(db, ids, settings)
+    updates = [target.update_row(row_id, windows[row_id], settings) for row_id in ids]
+    changes = await target.tier_snapshot(db, updates, await _old_scores(db, target.model, ids), settings)
+    for chunk in chunks(updates):
+        await db.execute(update(target.model), chunk)
+    if updates:
+        await write_today_history(db, target.history_model, target.owner_col, updates, day_counts=day_counts)
     return changes
 
 
@@ -255,63 +393,10 @@ async def rescore(
     Returns the Tier changes this rescore caused, for the caller to notify
     about. Nothing is emitted here: rescore_repo and the retention prune are
     callers that must stay silent, so they log a count of them and pass none on.
-    """
-    settings = get_settings()
-    history: dict[int, list[tuple[str, str, str]]] = defaultdict(list)  # id -> [(sha, branch, status)]
-    categories: dict[int, list[str | None]] = defaultdict(list)  # id -> [category, ...] newest first
-    default_branch: dict[int, str | None] = {}  # id -> branch (constant per Test/Repo)
-    for chunk in chunks(test_case_ids):
-        windowed = test_execution_window_ids(chunk, settings.score_window, include_default_branch=True).subquery()
-        rows = await db.execute(
-            select(
-                TestExecution.test_case_id,
-                TestRun.commit_sha,
-                TestRun.branch,
-                TestExecution.status,
-                TestExecution.failure_category,
-                Repo.default_branch,
-            )
-            .join(TestRun, TestRun.id == TestExecution.test_run_id)
-            .join(Project, Project.id == TestRun.project_id)
-            .join(Repo, Repo.id == Project.repo_id)
-            .where(TestExecution.id.in_(select(windowed.c.id)))
-            .order_by(TestExecution.test_case_id, TestExecution.id.desc())
-        )
-        for tc_id, sha, branch, status, category, def_branch in rows.all():
-            history[tc_id].append((sha, branch, status))
-            categories[tc_id].append(category)
-            default_branch[tc_id] = def_branch
 
-    updates: list[dict[str, Any]] = []
-    for tc_id in test_case_ids:
-        execs = history.get(tc_id, [])
-        score, confirmed = scoring.branch_scoped_score(
-            execs,
-            default_branch.get(tc_id),
-            settings.score_decay,
-            settings.score_window,
-        )
-        streak = scoring.branch_scoped_streak(execs, default_branch.get(tc_id))
-        values: dict[str, Any] = {
-            "id": tc_id,
-            "flakiness_score": score,
-            "confirmed_flake_count": confirmed,
-            "failure_category": dominant_category(categories.get(tc_id, [])[: settings.score_window]),
-            "clean_streak": streak,
-            "fail_streak": scoring.branch_scoped_fail_streak(execs, default_branch.get(tc_id)),
-        }
-        if streak == 0:
-            # Issue #33: the Test failed again, so the "the fix appears to hold" note is stale
-            # and the next clean streak must be able to post it again. Any other streak leaves
-            # the key out of the bulk update, which is what preserves an existing stamp.
-            values["github_issue_fixed_noted_at"] = None
-        updates.append(values)
-    changes = await _test_tier_changes(db, updates, await _old_scores(db, TestCase, test_case_ids), settings)
-    for chunk in chunks(updates):
-        await db.execute(update(TestCase), chunk)
-    if updates:
-        await write_today_history(db, TestScoreHistory, TestScoreHistory.test_case_id, updates, day_counts=day_counts)
-    return changes
+    The work itself is the shared `_rescore_engine` run with the TEST descriptor.
+    """
+    return await _rescore_engine(db, test_case_ids, TEST, day_counts=day_counts)
 
 
 async def apply_default_branch(db: AsyncSession, repo_id: int, value: str | None) -> bool:
