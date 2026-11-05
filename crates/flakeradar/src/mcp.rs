@@ -25,8 +25,9 @@
 use std::sync::Arc;
 
 use axum::Router;
+use axum::body::Body;
 use axum::extract::{Request, State};
-use axum::http::{HeaderValue, StatusCode, header};
+use axum::http::{HeaderValue, Method, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::routing::any;
@@ -56,7 +57,7 @@ use sea_orm::DatabaseConnection;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::app::AppState;
+use crate::app::{AppState, JSON_BODY_LIMIT};
 use crate::middleware::constant_time_eq;
 use crate::settings::Settings;
 
@@ -207,20 +208,37 @@ or job_id), for example a link to the wrong issue. Returns the test or job."#;
 /// Why a tool could not answer.
 ///
 /// A refusal is the tool working: the client sees it as an `isError` result
-/// with the message, exactly as the frozen server's `ToolError` did. A
-/// [`ToolFailure::Protocol`] is the server failing, which reaches the client as
-/// a JSON-RPC error instead.
+/// with the message, exactly as the frozen server's `ToolError` did. The other
+/// two `isError` results are also the frozen server's measured answers, driven
+/// over its own Streamable HTTP transport: [`ToolFailure::Raised`] for a tool
+/// whose own work failed (prefixed `Error calling tool '<name>': `),
+/// [`ToolFailure::UnknownTool`] for a name that no tool has, and
+/// [`ToolFailure::InvalidArguments`] for arguments that do not deserialize.
+/// Only a [`ToolFailure::Protocol`] — a request the server cannot read as
+/// JSON-RPC at all — reaches the client as a JSON-RPC error.
 #[derive(Debug)]
 enum ToolFailure {
     /// The tool refused the request; the text is the `isError` message.
     Tool(String),
-    /// The server could not answer at all.
+    /// The tool could not do its work; the text says what failed.
+    Raised(String),
+    /// No tool has the requested name.
+    UnknownTool(String),
+    /// The arguments did not deserialize; the path is the failing field, `.`
+    /// when the failure is the argument object itself.
+    InvalidArguments {
+        /// The failing field, as `serde_path_to_error` reports it.
+        path: String,
+        /// The diagnosis `serde` gave.
+        detail: String,
+    },
+    /// The server could not read the request.
     Protocol(McpError),
 }
 
 impl From<DbError> for ToolFailure {
     fn from(error: DbError) -> Self {
-        Self::Protocol(McpError::internal_error(error.to_string(), None))
+        Self::Raised(error.to_string())
     }
 }
 
@@ -534,10 +552,7 @@ impl McpServer {
             CI_RUN_FAILURES => self.ci_run_failures(parse(arguments)?).await,
             LINK_ISSUE => self.link_issue(parse(arguments)?).await,
             UNLINK_ISSUE => self.unlink_issue(parse(arguments)?).await,
-            other => Err(ToolFailure::Protocol(McpError::invalid_params(
-                format!("unknown tool '{other}'"),
-                None,
-            ))),
+            other => Err(ToolFailure::UnknownTool(other.to_owned())),
         }
     }
 }
@@ -567,6 +582,15 @@ impl ServerHandler for McpServer {
         Ok(match outcome {
             Ok(value) => CallToolResponse::Complete(success(&name, value)),
             Err(ToolFailure::Tool(message)) => CallToolResponse::Complete(tool_error(&message)),
+            Err(ToolFailure::Raised(message)) => {
+                CallToolResponse::Complete(raised_error(&name, &message))
+            }
+            Err(ToolFailure::UnknownTool(missing)) => {
+                CallToolResponse::Complete(unknown_tool(&missing))
+            }
+            Err(ToolFailure::InvalidArguments { path, detail }) => {
+                CallToolResponse::Complete(invalid_arguments(&name, &path, &detail))
+            }
             Err(ToolFailure::Protocol(error)) => return Err(error),
         })
     }
@@ -638,13 +662,43 @@ fn tool_error(message: &str) -> CallToolResult {
     result
 }
 
-/// Deserializes one tool's arguments.
+/// The result a tool call whose own work failed becomes: the frozen server's
+/// `Error calling tool '<name>': <what failed>` text, and — unlike a refusal,
+/// which answers an explicit `null` — no structured content field at all.
+fn raised_error(name: &str, message: &str) -> CallToolResult {
+    CallToolResult::error(vec![ContentBlock::text(format!(
+        "Error calling tool '{name}': {message}"
+    ))])
+}
+
+/// The result a call to a name no tool has becomes: the frozen server's text,
+/// and no structured content field.
+fn unknown_tool(name: &str) -> CallToolResult {
+    CallToolResult::error(vec![ContentBlock::text(format!("Unknown tool: '{name}'"))])
+}
+
+/// The result a call with arguments that do not deserialize becomes.
+///
+/// Pydantic's text opens with `1 validation error for call[<tool>]`, then the
+/// field, then the diagnosis; the fields are named here from the path `serde`
+/// failed at, and `arguments` stands in when it failed at the object itself (a
+/// missing required field, whose name the diagnosis carries). `serde` reports
+/// one error, so the count is always one. Pydantic's `[type=…, input_value=…,
+/// input_type=…]` tail and its `errors.pydantic.dev` link are not reproduced;
+/// `differences.md` records that.
+fn invalid_arguments(name: &str, path: &str, detail: &str) -> CallToolResult {
+    // `Path` prints `.` for the root, where a missing field is reported.
+    let field = if path == "." { "arguments" } else { path };
+    CallToolResult::error(vec![ContentBlock::text(format!(
+        "1 validation error for call[{name}]\n{field}\n  {detail}"
+    ))])
+}
+
+/// Deserializes one tool's arguments, keeping the field `serde` failed at.
 fn parse<T: serde::de::DeserializeOwned>(arguments: Value) -> Result<T, ToolFailure> {
-    serde_json::from_value(arguments).map_err(|error| {
-        ToolFailure::Protocol(McpError::invalid_params(
-            format!("invalid arguments: {error}"),
-            None,
-        ))
+    serde_path_to_error::deserialize(arguments).map_err(|error| ToolFailure::InvalidArguments {
+        path: error.path().to_string(),
+        detail: error.into_inner().to_string(),
     })
 }
 
@@ -1342,9 +1396,16 @@ pub fn router(state: AppState) -> Router<AppState> {
         Arc::new(NeverSessionManager::default()),
         server_config(),
     );
-    let guarded = Router::new().route_service(MCP_PATH, service).route_layer(
-        axum::middleware::from_fn_with_state(state, require_bearer_token),
-    );
+    let guarded = Router::new()
+        .route_service(MCP_PATH, service)
+        // Inner to outer: the body has to be JSON before the transport parses
+        // it, and the token is checked before either, as the frozen server's
+        // auth middleware ran first.
+        .route_layer(axum::middleware::from_fn(require_json_body))
+        .route_layer(axum::middleware::from_fn_with_state(
+            state,
+            require_bearer_token,
+        ));
     Router::new()
         .route(MCP_BARE_PATH, any(redirect_to_mcp_path))
         .merge(guarded)
@@ -1367,6 +1428,45 @@ fn server_config() -> StreamableHttpServerConfig {
 /// `redirect_slashes` did.
 async fn redirect_to_mcp_path() -> Response {
     axum::response::Redirect::temporary(MCP_PATH).into_response()
+}
+
+/// Reads a POST's body, and answers a body that is not JSON the way the frozen
+/// server did: HTTP 400 with JSON-RPC `-32700`.
+///
+/// rmcp answers 415 with a plain-text body when it cannot deserialize one, while
+/// the frozen server's transport (fastmcp 4.1.6, measured over a loopback port)
+/// answered 400 with `{"jsonrpc":"2.0","id":null,"error":{"code":-32700,
+/// "message":"Parse error: <message>"}}`. Both sides parse with serde's JSON
+/// decoder, so the message after the prefix is the same text for the same body.
+/// The body is put back for the transport to read; a request that is not a POST
+/// passes through untouched, and so does one whose body reads to a JSON value.
+async fn require_json_body(request: Request, next: Next) -> Response {
+    if request.method() != Method::POST {
+        return next.run(request).await;
+    }
+    let (parts, body) = request.into_parts();
+    let bytes = match axum::body::to_bytes(body, JSON_BODY_LIMIT).await {
+        Ok(bytes) => bytes,
+        Err(error) => return parse_error(&error.to_string()),
+    };
+    if let Err(error) = serde_json::from_slice::<Value>(&bytes) {
+        return parse_error(&error.to_string());
+    }
+    next.run(Request::from_parts(parts, Body::from(bytes)))
+        .await
+}
+
+/// The protocol's parse-error answer, `-32700`, as the frozen server sent it.
+fn parse_error(detail: &str) -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        axum::Json(json!({
+            "jsonrpc": "2.0",
+            "id": null,
+            "error": {"code": -32700, "message": format!("Parse error: {detail}")},
+        })),
+    )
+        .into_response()
 }
 
 /// Refuses a request whose `Authorization` is not `Bearer <token>`.

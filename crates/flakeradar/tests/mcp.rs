@@ -111,6 +111,52 @@ fn assert_answered_ok(reply: &Reply) {
     );
 }
 
+/// Asserts a tool failure is the reference's `isError` result, and answers the
+/// text it carries.
+///
+/// Measured over the pinned fastmcp 4.1.6's own Streamable HTTP app: a tool that
+/// raises, a name no tool has and arguments that do not validate all answer HTTP
+/// 200 with a JSON-RPC *result* — never a JSON-RPC `error`, because the request
+/// itself was well formed — whose only content is one text block, whose
+/// `isError` is true, and which carries no structured content field at all. (A
+/// refusal does the same but with an explicit `null`, golden `mcp/09`.)
+fn error_result_text(reply: &Reply) -> String {
+    assert_answered_ok(reply);
+    let body = reply.json();
+    assert!(
+        body.get("error").is_none(),
+        "a tool failure is an isError result, not a JSON-RPC error: {body}"
+    );
+    let result = body.get("result").expect("a failed call answers a result");
+    assert_eq!(result.get("isError"), Some(&Value::Bool(true)), "{body}");
+    assert!(
+        result.get("structuredContent").is_none(),
+        "the reference sends no structured content on this failure: {body}"
+    );
+    result
+        .get("content")
+        .and_then(Value::as_array)
+        .and_then(|blocks| blocks.first())
+        .and_then(|block| block.get("text"))
+        .and_then(Value::as_str)
+        .expect("the error result carries its message as text")
+        .to_owned()
+}
+
+/// Asserts a tool-execution failure is the reference's `isError` result, and
+/// answers the text after the `Error calling tool '<tool>': ` prefix.
+fn assert_raised(reply: &Reply, tool: &str) -> String {
+    let text = error_result_text(reply);
+    let prefix = format!("Error calling tool '{tool}': ");
+    assert!(
+        text.starts_with(&prefix),
+        "the message starts with {prefix:?}: {text}"
+    );
+    text.strip_prefix(&prefix)
+        .expect("the assertion above found the prefix")
+        .to_owned()
+}
+
 /// Calls one tool and answers what a client reads as its data.
 fn data(result: &Value) -> Value {
     let structured = result
@@ -1407,9 +1453,9 @@ async fn link_issue_refuses_a_conflict_unless_it_may_replace() {
 }
 
 #[tokio::test]
-async fn an_unknown_tool_and_an_unreadable_argument_are_protocol_errors() {
-    // A refusal is an `isError` result; a request the server cannot route at all
-    // is a JSON-RPC error, which is what a client's protocol layer sees.
+async fn an_unknown_tool_and_an_unreadable_argument_are_error_results() {
+    // Both are HTTP 200 `isError` results in the reference: the request routed
+    // and its JSON-RPC was well formed, so only the tool could not be run.
     let db = TestDb::new().await.expect("a test database is available");
     let app = mcp_app(&db);
     let unknown = rpc(
@@ -1419,18 +1465,7 @@ async fn an_unknown_tool_and_an_unreadable_argument_are_protocol_errors() {
         json!({"name": "no_such_tool", "arguments": {}}),
     )
     .await;
-    let body = unknown.json();
-    assert!(
-        body.get("result").is_none(),
-        "an unknown tool answered a result: {body}"
-    );
-    assert!(
-        body["error"]["message"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("unknown tool 'no_such_tool'"),
-        "{body}"
-    );
+    assert_eq!(error_result_text(&unknown), "Unknown tool: 'no_such_tool'");
     let unreadable = rpc(
         &app,
         "tools/call",
@@ -1438,20 +1473,125 @@ async fn an_unknown_tool_and_an_unreadable_argument_are_protocol_errors() {
         json!({"name": "top_flaky_tests", "arguments": {"repo": "acme/app", "limit": "many"}}),
     )
     .await;
-    let body = unreadable.json();
+    let text = error_result_text(&unreadable);
     assert!(
-        body["error"]["message"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("invalid arguments"),
+        text.starts_with("1 validation error for call[top_flaky_tests]\nlimit\n  "),
+        "the reference opens with Pydantic's header and the field: {text:?}"
+    );
+    assert!(
+        text.contains("\"many\""),
+        "the refused value is named: {text:?}"
+    );
+    let missing = rpc(
+        &app,
+        "tools/call",
+        Some("top_flaky_tests"),
+        json!({"name": "top_flaky_tests", "arguments": {}}),
+    )
+    .await;
+    let text = error_result_text(&missing);
+    assert!(
+        text.starts_with("1 validation error for call[top_flaky_tests]\narguments\n  "),
+        "a missing field fails at the argument object: {text:?}"
+    );
+    assert!(
+        text.contains("missing field `repo`"),
+        "the missing field is named: {text:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_body_that_is_not_json_is_a_protocol_error() {
+    // The one case the reference keeps out of the result: measured, a `POST
+    // /mcp/` whose body is not JSON answers 400 with JSON-RPC -32700 and the
+    // same serde message this server gives, because both parse with serde.
+    let db = TestDb::new().await.expect("a test database is available");
+    let app = mcp_app(&db);
+    let reply = send(&app, raw_post(Body::from("{not json"))).await;
+    assert_eq!(
+        reply.status,
+        StatusCode::BAD_REQUEST,
+        "the reference answers 400: {}",
+        reply.text()
+    );
+    let body = reply.json();
+    assert!(body.get("result").is_none(), "{body}");
+    assert_eq!(body.get("id"), Some(&Value::Null), "{body}");
+    assert_eq!(
+        body.get("error").and_then(|error| error.get("code")),
+        Some(&json!(-32700)),
+        "{body}"
+    );
+    assert_eq!(
+        body.get("error").and_then(|error| error.get("message")),
+        Some(&json!(
+            "Parse error: key must be a string at line 1 column 2"
+        )),
+        "{body}"
+    );
+    // An empty body is the same case in the reference: nothing to parse.
+    let empty = send(&app, raw_post(Body::from(""))).await;
+    assert_eq!(empty.status, StatusCode::BAD_REQUEST, "{}", empty.text());
+    let body = empty.json();
+    assert_eq!(
+        body.get("error").and_then(|error| error.get("message")),
+        Some(&json!(
+            "Parse error: EOF while parsing a value at line 1 column 0"
+        )),
         "{body}"
     );
 }
 
 #[tokio::test]
-async fn a_broken_database_is_a_protocol_error_rather_than_a_refusal() {
-    // A tool whose statement fails has not refused anything: the server could not
-    // answer, which the client must see as an error rather than as data.
+async fn a_body_that_fails_while_it_is_read_is_a_protocol_error() {
+    // A body the server cannot read is a body it cannot parse, so it gets the
+    // same 400 and -32700 rather than reaching the transport half-read.
+    let db = TestDb::new().await.expect("a test database is available");
+    let app = mcp_app(&db);
+    let stream = futures_util::stream::iter(vec![
+        Ok(axum::body::Bytes::from_static(b"{")),
+        Err(std::io::Error::other("the client went away")),
+    ]);
+    let reply = send(&app, raw_post(Body::from_stream(stream))).await;
+    assert_eq!(
+        reply.status,
+        StatusCode::BAD_REQUEST,
+        "a body that cannot be read cannot be parsed: {}",
+        reply.text()
+    );
+    let body = reply.json();
+    assert_eq!(
+        body.get("error").and_then(|error| error.get("code")),
+        Some(&json!(-32700)),
+        "{body}"
+    );
+    assert!(
+        body.get("error")
+            .and_then(|error| error.get("message"))
+            .and_then(Value::as_str)
+            .is_some_and(|message| message.starts_with("Parse error: ")),
+        "{body}"
+    );
+}
+
+/// A `POST /mcp/` as a client holding the token sends it, with `body`.
+fn raw_post(body: Body) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri("/mcp/")
+        .header("host", "localhost")
+        .header("content-type", "application/json")
+        .header("accept", "application/json, text/event-stream")
+        .header("authorization", format!("Bearer {TOKEN}"))
+        .header("mcp-protocol-version", VERSION)
+        .body(body)
+        .expect("the request builds")
+}
+
+#[tokio::test]
+async fn a_broken_database_is_an_error_result_rather_than_a_protocol_error() {
+    // The reference puts a tool's own failure inside the answer, not beside it:
+    // `Error calling tool 'list_repos': <what failed>`, with `isError` true.
     let db = TestDb::new().await.expect("a test database is available");
     let app = mcp_app(&db);
     let _ = seed(&db).await;
@@ -1465,17 +1605,15 @@ async fn a_broken_database_is_a_protocol_error_rather_than_a_refusal() {
         json!({"name": "list_repos", "arguments": {}}),
     )
     .await;
-    assert_answered_ok(&reply);
-    let body = reply.json();
+    let message = assert_raised(&reply, "list_repos");
     assert!(
-        body.get("result").is_none(),
-        "a dropped table answered a result: {body}"
+        message.contains(r#"relation "repos" does not exist"#),
+        "the driver's own message reaches the client: {message}"
     );
-    assert!(body.get("error").is_some(), "{body}");
 }
 
 #[tokio::test]
-async fn a_failing_read_of_one_ci_run_is_a_protocol_error() {
+async fn a_failing_read_of_one_ci_run_is_an_error_result() {
     let db = TestDb::new().await.expect("a test database is available");
     let app = mcp_app(&db);
     let _ = seed(&db).await;
@@ -1492,9 +1630,7 @@ async fn a_failing_read_of_one_ci_run_is_a_protocol_error() {
         }),
     )
     .await;
-    assert_answered_ok(&reply);
-    let body = reply.json();
-    assert!(body.get("error").is_some(), "{body}");
+    let _ = assert_raised(&reply, "ci_run_failures");
 }
 
 #[tokio::test]
@@ -1535,7 +1671,7 @@ async fn a_non_finite_score_is_answered_as_null_not_as_a_failure() {
 }
 
 #[tokio::test]
-async fn a_failing_link_is_a_protocol_error() {
+async fn a_failing_link_is_an_error_result() {
     let db = TestDb::new().await.expect("a test database is available");
     let app = mcp_app(&db);
     let flaky = seed(&db).await;
@@ -1549,9 +1685,7 @@ async fn a_failing_link_is_a_protocol_error() {
         json!({"name": "link_issue", "arguments": {"number": 7, "test_id": flaky}}),
     )
     .await;
-    assert_answered_ok(&reply);
-    let body = reply.json();
-    assert!(body.get("error").is_some(), "{body}");
+    let _ = assert_raised(&reply, "link_issue");
 }
 
 #[tokio::test]
@@ -1603,4 +1737,33 @@ async fn the_transport_answers_over_a_real_socket() {
         assert_eq!(answer["result"]["isError"], false, "{answer}");
     }
     server.abort();
+}
+
+#[tokio::test]
+async fn a_request_that_is_not_a_post_reaches_the_transport_unchanged() {
+    // The JSON check reads a POST body only. A method this transport does not
+    // serve is refused by the transport, with the 405 and the plain-text body
+    // the reference answers a PUT with.
+    let db = TestDb::new().await.expect("a test database is available");
+    let app = mcp_app(&db);
+    let reply = send(
+        &app,
+        Request::builder()
+            .method("PUT")
+            .uri("/mcp/")
+            .header("host", "localhost")
+            .header("accept", "text/event-stream")
+            .header("authorization", format!("Bearer {TOKEN}"))
+            .header("mcp-protocol-version", VERSION)
+            .body(Body::empty())
+            .expect("the request builds"),
+    )
+    .await;
+    assert_eq!(
+        reply.status,
+        StatusCode::METHOD_NOT_ALLOWED,
+        "{}",
+        reply.text()
+    );
+    assert_eq!(reply.text(), "Method Not Allowed");
 }
