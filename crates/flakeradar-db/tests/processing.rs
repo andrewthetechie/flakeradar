@@ -1228,10 +1228,7 @@ async fn touched_tests_are_rescored_in_id_order_not_report_order() {
     .await;
     drain(&db, &settings()).await;
     let rows = tests(&db).await;
-    let by_name: BTreeMap<&str, i32> = rows
-        .iter()
-        .map(|row| (row.name.as_str(), row.id))
-        .collect();
+    let by_name: BTreeMap<&str, i32> = rows.iter().map(|row| (row.name.as_str(), row.id)).collect();
     let report_order = vec![by_name["t3"], by_name["t1"], by_name["t2"]];
     let mut by_id = report_order.clone();
     by_id.sort_unstable();
