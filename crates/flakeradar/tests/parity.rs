@@ -114,6 +114,12 @@ struct Deferred {
 /// ingest refusals and the two queued uploads of `ingest-junit`, the Report
 /// summary poll, the 401s the token check answers on the ingest and Report write
 /// routes, the ingest validation shapes, and the Pipeline payload refusals.
+///
+/// Task 07 adds `flaky-tests` steps 1-12, its ingests and the `wait_processed`
+/// that drains them, and step 48, the dump of the Tests, Runs, Executions and
+/// Score history those Reports score. Step 48 is the only end-to-end comparison
+/// of the Flakiness scores, Clean streaks, Proven flakes and history rows this
+/// harness makes, so it is worthwhile on its own account.
 const ENABLED: &[Enabled] = &[
     Enabled {
         name: "auth",
@@ -129,6 +135,10 @@ const ENABLED: &[Enabled] = &[
             1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
             25, 26, 27,
         ],
+    },
+    Enabled {
+        name: "flaky-tests",
+        steps: &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 48],
     },
     Enabled {
         name: "pipeline-jobs",
@@ -173,10 +183,15 @@ const DEFERRED: &[Deferred] = &[
     },
     Deferred {
         scenario: "flaky-tests",
-        steps: None,
+        steps: Some(&[
+            13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34,
+            35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47,
+        ]),
         task: 9,
-        reason: "ingest (task 06) and the processing that scores it (task 07), then the Test and \
-                 summary reads (task 09)",
+        reason: "the reads: GET /api/repos, /api/tests with every filter, sort and page, \
+                 /api/tests/{id}/history and /api/summary. The ingests (task 06), the processing \
+                 that scores them (task 07) and the database dump of the scores (step 48) \
+                 replay already",
     },
     Deferred {
         scenario: "health",
@@ -254,7 +269,7 @@ const DEFERRED: &[Deferred] = &[
 /// A later task enables steps and lowers this number; the test that reads it
 /// fails both when a step is switched off without a reason and when an enabled
 /// step is left in [`DEFERRED`]. It never goes up.
-const DEFERRED_STEPS: usize = 236;
+const DEFERRED_STEPS: usize = 223;
 
 /// One scenario file.
 #[derive(Debug, Deserialize)]
@@ -1472,6 +1487,18 @@ mod tests {
         );
         assert_eq!(failures.len(), 1, "{failures:?}");
         assert!(failures[0].contains("rows.0.body"), "{failures:?}");
+
+        // The shape that scopes the decoding: one dumped table's row, one column.
+        assert!(super::names_a_dumped_column("body.tables.reports.0.body"));
+        assert!(!super::names_a_dumped_column("body.detail.body"));
+        assert!(!super::names_a_dumped_column("body.tables.reports"));
+        assert!(!super::names_a_dumped_column("body.tables.reports..body"));
+        assert!(!super::names_a_dumped_column(
+            "body.tables.reports.first.body"
+        ));
+        assert!(!super::names_a_dumped_column(
+            "body.tables.reports.0.body.extra"
+        ));
     }
 
     #[test]
