@@ -652,18 +652,23 @@ jobs:
         include:
           - target: x86_64-unknown-linux-musl
             os: ubuntu-24.04
+            binary: flakeradar
             rustflags: "-D warnings"
           - target: aarch64-unknown-linux-musl
             os: ubuntu-24.04-arm
+            binary: flakeradar
             rustflags: "-D warnings"
           - target: x86_64-apple-darwin
             os: macos-15-intel
+            binary: flakeradar
             rustflags: "-D warnings"
           - target: aarch64-apple-darwin
             os: macos-15
+            binary: flakeradar
             rustflags: "-D warnings"
           - target: x86_64-pc-windows-msvc
             os: windows-latest
+            binary: flakeradar.exe
             # Static CRT, so the binary needs no Visual C++ redistributable.
             rustflags: "-D warnings -C target-feature=+crt-static"
     runs-on: ${{ matrix.os }}
@@ -713,13 +718,18 @@ jobs:
 
       - name: Check the Linux binary is static
         if: contains(matrix.target, 'linux-musl')
+        # `rustc` links the x86_64 musl target as a static PIE, which `file`
+        # calls `static-pie linked`; the aarch64 musl target is plain static and
+        # reads `statically linked`. Both have no dynamic loader and no shared
+        # library, which is the property under test, so both spellings pass and
+        # a dynamically linked binary still fails either check.
         run: |
-          binary="target/${{ matrix.target }}/release/flakeradar"
+          binary="target/${{ matrix.target }}/release/${{ matrix.binary }}"
           file "$binary"
-          file "$binary" | grep -q "statically linked" || {
+          file "$binary" | grep -Eq "statically linked|static-pie linked" || {
             echo "::error::$binary is not statically linked"; exit 1;
           }
-          ldd "$binary" 2>&1 | grep -q "not a dynamic executable" || {
+          ldd "$binary" 2>&1 | grep -Eq "not a dynamic executable|statically linked" || {
             echo "::error::$binary has dynamic dependencies"; exit 1;
           }
 
@@ -735,14 +745,13 @@ jobs:
       - name: Smoke test the binary
         shell: bash
         run: |
-          binary="target/${{ matrix.target }}/release/flakeradar"
-          [ -f "$binary" ] || binary="$binary.exe"
-          scripts/smoke.sh "$binary" "$FLAKERADAR_TEST_DATABASE_URL"
+          scripts/smoke.sh "target/${{ matrix.target }}/release/${{ matrix.binary }}" \
+            "$FLAKERADAR_TEST_DATABASE_URL"
 
       - name: Upload the binary
         uses: actions/upload-artifact@v4
         with:
           name: flakeradar-${{ matrix.target }}
-          path: target/${{ matrix.target }}/release/flakeradar
+          path: target/${{ matrix.target }}/release/${{ matrix.binary }}
           if-no-files-found: error
           retention-days: 7
