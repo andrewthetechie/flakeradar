@@ -178,20 +178,18 @@ async fn lock_is_free(url: &str) -> bool {
     free
 }
 
-/// Ends the session holding the processor lock, as a server restart does.
+/// The backend id that holds the processor lock for `database`.
 ///
-/// The lock is session-scoped, so the server frees it the moment the session
-/// dies; a replacement leader could take it at any moment after this.
-async fn terminate_lock_session(db: &TestDb, database: &str) {
-    // Both statements run from the maintenance database, so this works while the
-    // test's own database already refuses new connections.
+/// Read while the worker leads and nothing else has been changed, so the answer
+/// cannot race the loss the caller stages next.
+async fn lock_holder(db: &TestDb, database: &str) -> i32 {
     let admin = connect(db.maintenance_url(), DbSettings::default())
         .await
         .expect("the maintenance connection");
     let statement = Statement::from_sql_and_values(
         sea_orm::DbBackend::Postgres,
-        "SELECT pid FROM pg_locks WHERE locktype = 'advisory' AND classid = 0 \
-           AND objid::bigint = $1 \
+        "SELECT pid FROM pg_locks WHERE locktype = 'advisory' AND granted \
+           AND classid = 0 AND objid::bigint = $1 \
            AND database = (SELECT oid FROM pg_database WHERE datname = $2)",
         [WORKER_LOCK_KEY.into(), database.into()],
     );
@@ -199,20 +197,47 @@ async fn terminate_lock_session(db: &TestDb, database: &str) {
         .query_one_raw(statement)
         .await
         .expect("the lock query runs")
-        .expect("the lock is held");
+        .expect("a session holds the processor lock");
     let pid: i32 = row.try_get("", "pid").expect("a backend id");
-    admin
-        .execute_raw(Statement::from_sql_and_values(
-            sea_orm::DbBackend::Postgres,
-            "SELECT pg_terminate_backend($1)",
-            [pid.into()],
-        ))
-        .await
-        .expect("the backend is terminated");
     admin
         .close()
         .await
         .expect("the maintenance connection closes");
+    pid
+}
+
+/// Ends the backend `pid`, answering whether it was still there.
+async fn end_session(db: &TestDb, pid: i32) -> bool {
+    let admin = connect(db.maintenance_url(), DbSettings::default())
+        .await
+        .expect("the maintenance connection");
+    let row = admin
+        .query_one_raw(Statement::from_sql_and_values(
+            sea_orm::DbBackend::Postgres,
+            "SELECT pg_terminate_backend($1) AS ended",
+            [pid.into()],
+        ))
+        .await
+        .expect("the terminate query runs")
+        .expect("the terminate query answers");
+    let ended: bool = row.try_get("", "ended").expect("a flag");
+    admin
+        .close()
+        .await
+        .expect("the maintenance connection closes");
+    ended
+}
+
+/// Ends the session holding the processor lock, as a server restart does.
+///
+/// The lock is session-scoped, so the server frees it the moment the session
+/// dies; a replacement leader could take it at any moment after this.
+async fn terminate_lock_session(db: &TestDb, database: &str) {
+    let pid = lock_holder(db, database).await;
+    assert!(
+        end_session(db, pid).await,
+        "the session holding the processor lock was still there to end"
+    );
 }
 
 /// The name of the test's own database, read while its pool still answers.
@@ -886,9 +911,14 @@ async fn an_unreachable_database_drops_leadership_and_re_elects_after_recovery()
     // refused as well, which stages a database no session can reach: the lock
     // connection has nowhere left to answer from, which is the failure a server
     // restart or a network partition gives.
+    //
+    // The holder is read first: the refusal can make the worker's own pool fail,
+    // which drops leadership and releases the lock, so a read after it would race
+    // the release it is about to stage.
     let database = database_name(&db).await;
+    let holder = lock_holder(&db, &database).await;
     set_connections_allowed(&db, &database, false).await;
-    terminate_lock_session(&db, &database).await;
+    end_session(&db, holder).await;
 
     // The next empty-queue check cannot be answered, so the worker releases and
     // re-elects once connections are allowed again; stopping then still ends with
@@ -1065,9 +1095,11 @@ async fn a_failed_lock_statement_drops_the_session() {
     );
     // Refuse new connections first, so the pool cannot replace the session this
     // statement is about to run on, and end that session from the maintenance
-    // database, which the refusal does not touch.
+    // database, which the refusal does not touch. The holder is read before the
+    // refusal, because only the refusal comes between the read and the end.
+    let holder = lock_holder(&db, &database).await;
     set_connections_allowed(&db, &database, false).await;
-    terminate_lock_session(&db, &database).await;
+    end_session(&db, holder).await;
 
     let failed = session.try_lock().await;
     // The failed statement dropped the session, so ending it needs no statement

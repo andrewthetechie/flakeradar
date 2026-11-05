@@ -18,13 +18,15 @@ use flakeradar::worker::{AdvisoryLock, LockSession, ReportWorker, WorkerSettings
 use flakeradar::{Api, Settings, settings::Secret};
 use flakeradar::{GitHubWorker, LeaderTask};
 use flakeradar_db::entities::{projects, reports};
-use flakeradar_db::{DbSettings, ProcessingSettings, WORKER_LOCK_KEY, connect};
+use flakeradar_db::{DbSettings, ProcessingSettings, WORKER_LOCK_KEY, connect, connect_session};
 use flakeradar_test_support::{
     ScriptedMonotonic, TestDb, make_job, make_junit, make_pipeline, make_project, make_report,
     make_test_case,
 };
 use sea_orm::ConnectionTrait as _;
-use sea_orm::{DbBackend, EntityTrait as _, QueryOrder as _, Statement, Value};
+use sea_orm::{
+    DatabaseConnection, DbBackend, DbErr, EntityTrait as _, QueryOrder as _, Statement, Value,
+};
 use serde_json::json;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
@@ -376,17 +378,18 @@ async fn database_name(db: &TestDb) -> String {
     row.try_get("", "name").expect("a database name")
 }
 
-/// Ends the backend holding the processor lock.
-async fn terminate_lock_session(db: &TestDb, database: &str) {
-    // Both statements run from the maintenance database, so this works while the
-    // test's own database already refuses new connections.
+/// The backend id that holds the processor lock for `database`.
+///
+/// Read while the worker leads and nothing else has been changed, so the answer
+/// cannot race the loss the caller stages next.
+async fn lock_holder(db: &TestDb, database: &str) -> i32 {
     let admin = connect(db.maintenance_url(), DbSettings::default())
         .await
         .expect("the maintenance connection");
     let statement = Statement::from_sql_and_values(
         DbBackend::Postgres,
-        "SELECT pid FROM pg_locks WHERE locktype = 'advisory' AND classid = 0 \
-           AND objid::bigint = $1 \
+        "SELECT pid FROM pg_locks WHERE locktype = 'advisory' AND granted \
+           AND classid = 0 AND objid::bigint = $1 \
            AND database = (SELECT oid FROM pg_database WHERE datname = $2)",
         [WORKER_LOCK_KEY.into(), database.into()],
     );
@@ -394,44 +397,86 @@ async fn terminate_lock_session(db: &TestDb, database: &str) {
         .query_one_raw(statement)
         .await
         .expect("the lock query runs")
-        .expect("the lock is held");
+        .expect("the worker that leads holds the processor lock");
     let pid: i32 = row.try_get("", "pid").expect("a backend id");
-    admin
-        .execute_raw(Statement::from_sql_and_values(
-            DbBackend::Postgres,
-            "SELECT pg_terminate_backend($1)",
-            [pid.into()],
-        ))
-        .await
-        .expect("the backend ends");
     admin
         .close()
         .await
         .expect("the maintenance connection closes");
+    pid
 }
 
-/// Refuses, or again allows, new connections to `database`.
-///
-/// The pool opens a replacement for a connection the server closed, so a
-/// terminated lock backend is not enough on its own: with new connections
-/// refused, the replacement cannot be opened and the failure is certain. The
-/// policy changes from the maintenance database because the server refuses to
-/// disallow connections for the database the statement runs in.
-async fn set_connections_allowed(db: &TestDb, database: &str, allowed: bool) {
+/// Ends the backend `pid`, answering whether it was still there.
+async fn end_session(db: &TestDb, pid: i32) -> bool {
     let admin = connect(db.maintenance_url(), DbSettings::default())
         .await
         .expect("the maintenance connection");
-    let allowed = if allowed { "true" } else { "false" };
-    admin
-        .execute_unprepared(&format!(
-            "ALTER DATABASE \"{database}\" ALLOW_CONNECTIONS {allowed}"
+    let row = admin
+        .query_one_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "SELECT pg_terminate_backend($1) AS ended",
+            [pid.into()],
         ))
         .await
-        .expect("the connection policy changes");
+        .expect("the terminate query runs")
+        .expect("the terminate query answers");
+    let ended: bool = row.try_get("", "ended").expect("a flag");
     admin
         .close()
         .await
         .expect("the maintenance connection closes");
+    ended
+}
+
+/// A claim on the processor lock, queued on a session of the test's own.
+///
+/// `pg_advisory_lock` blocks on the session until the server grants it, so a claim
+/// queued before the holder's session dies is granted the instant the lock is free.
+/// That puts it ahead of a worker which must first find the loss, stop its task,
+/// release and wait a poll before trying again, so the server's queue — not elapsed
+/// time — decides who holds the lock next.
+#[derive(Debug)]
+struct LockClaim {
+    waiting: tokio::task::JoinHandle<(DatabaseConnection, Result<(), DbErr>)>,
+}
+
+impl LockClaim {
+    /// Queues for the processor lock, on a session of its own.
+    async fn queue(db: &TestDb) -> Self {
+        let session = connect_session(db.url(), DbSettings::default())
+            .await
+            .expect("the claim's own session");
+        let statement = Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "SELECT pg_advisory_lock($1)",
+            [WORKER_LOCK_KEY.into()],
+        );
+        let waiting = tokio::spawn(async move {
+            let answer = session.query_one_raw(statement).await.map(|_row| ());
+            (session, answer)
+        });
+        Self { waiting }
+    }
+
+    /// Waits until the server grants the claim, then answers its session.
+    async fn granted(self) -> DatabaseConnection {
+        let (session, answer) = self.waiting.await.expect("the claim's task finishes");
+        answer.expect("the claim's lock statement answers");
+        session
+    }
+}
+
+/// Releases the claim's lock and closes its session.
+async fn release_lock(session: DatabaseConnection) {
+    session
+        .query_one_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "SELECT pg_advisory_unlock($1)",
+            [WORKER_LOCK_KEY.into()],
+        ))
+        .await
+        .expect("the claim releases the lock");
+    session.close().await.expect("the claim's session closes");
 }
 
 /// A linked Test in `acme/app` at issue `number`, so a sync has work to do.
@@ -789,15 +834,26 @@ async fn a_lost_lock_connection_stops_the_github_task() {
     wait_until("the worker leads", || async { worker.is_leader() }).await;
     until_count(&server, 1).await;
 
-    // The error path releases through the same door as stop: break the session
-    // that holds the lock and refuse a replacement, so the worker must release.
+    // Queue for the lock before the session that holds it dies: the server grants
+    // the claim the moment the lock is free, ahead of a worker that must first find
+    // the loss, stop its task, release and wait a poll. So the worker cannot
+    // re-elect while the test proves its GitHub task stopped.
     let database = database_name(&db).await;
-    set_connections_allowed(&db, &database, false).await;
-    terminate_lock_session(&db, &database).await;
+    let claim = LockClaim::queue(&db).await;
+
+    // The worker leads, so it holds the lock: read the session that holds it and end
+    // it while nothing has been disturbed, so neither read races the loss that
+    // follows the way it would if the read came after the database was touched.
+    let holder = lock_holder(&db, &database).await;
+    assert!(
+        end_session(&db, holder).await,
+        "the session that held the processor lock was still there to end"
+    );
+    let claim = claim.granted().await;
     wait_until("leadership is released", || async { !worker.is_leader() }).await;
 
-    // While the database refuses new connections the worker cannot re-elect, so
-    // an outcome queued now has no running task to drain it.
+    // The GitHub task stopped with the leadership: an outcome queued now has no
+    // running task to drain it, however often the worker asks for the lock.
     LeaderTask::enqueue(github.as_ref(), &processed(&[test])).expect("the queue takes it");
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert_eq!(
@@ -807,7 +863,7 @@ async fn a_lost_lock_connection_stops_the_github_task() {
     );
     assert_eq!(stored_number(&db, test).await, None);
     assert_eq!(stored_number(&db, linked).await, Some(12));
-    set_connections_allowed(&db, &database, true).await;
+    release_lock(claim).await;
     worker.stop().await;
 }
 
