@@ -34,6 +34,15 @@ pub enum FailureCategory {
 }
 
 impl FailureCategory {
+    /// Every category, in the order the frozen server's `CATEGORIES` lists them.
+    pub const ALL: [Self; 5] = [
+        Self::Network,
+        Self::Environment,
+        Self::Timing,
+        Self::Assertion,
+        Self::Other,
+    ];
+
     /// The category as the Python server spelled it.
     #[must_use]
     pub fn as_str(self) -> &'static str {
