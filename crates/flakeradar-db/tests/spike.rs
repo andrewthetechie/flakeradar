@@ -11,7 +11,7 @@
 )]
 use chrono::{Duration, Utc};
 use flakeradar_db::entities::{reports, test_cases, test_score_history};
-use flakeradar_db::{DbSettings, connect};
+use flakeradar_db::{DbSettings, connect_session};
 use flakeradar_test_support::{
     TestDb, make_execution, make_job, make_job_execution, make_pipeline, make_project, make_run,
     make_test_case, make_test_score,
@@ -545,11 +545,12 @@ const WORKER_KEY: i64 = 726_300_002;
 #[tokio::test]
 async fn one_dedicated_connection_holds_the_worker_lock() {
     let db = TestDb::new().await.expect("a migrated test database");
-    // A separate pool of its own is the dedicated connection: it is never
-    // handed back to the pool the queries share, so the session lock survives.
-    let leader = connect(db.url(), DbSettings::default())
+    // A pool of exactly one connection is the dedicated connection the worker
+    // holds: every statement goes to that one session, so the lock survives and
+    // the unlock reaches the session that took it.
+    let leader = connect_session(db.url(), DbSettings::default())
         .await
-        .expect("the leader's pool");
+        .expect("the leader's session");
     assert!(try_lock(&leader, WORKER_KEY).await);
     assert!(
         !try_lock(db.connection(), WORKER_KEY).await,
