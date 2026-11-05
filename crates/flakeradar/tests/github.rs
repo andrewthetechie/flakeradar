@@ -12,7 +12,8 @@
 use flakeradar::Settings;
 use flakeradar::github::{self, Api};
 use flakeradar::{FilingGate, JobRow, RecentExecution, TestRow, settings::Secret};
-use flakeradar_db::ProcessOutcome;
+use flakeradar_db::issue_links::{self, LinkTarget};
+use flakeradar_db::{ProcessOutcome, ReadSettings};
 use flakeradar_test_support::{
     TestDb, make_execution, make_job, make_job_execution, make_pipeline, make_project, make_run,
     make_test_case,
@@ -21,8 +22,8 @@ use sea_orm::ConnectionTrait as _;
 use sea_orm::EntityTrait as _;
 use sea_orm::{DbBackend, Statement, Value};
 use serde_json::{Value as Json, json};
-use wiremock::matchers::{method, path};
-use wiremock::{Mock, MockServer, ResponseTemplate};
+use wiremock::matchers::{any, method, path};
+use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
 /// The GitHub token every request presents, which no log line may carry.
 const TOKEN: &str = "ghs_testtoken";
@@ -3846,4 +3847,493 @@ async fn a_linked_test_and_a_linked_job_are_never_filed() {
         "no request for the linked Job"
     );
     assert_eq!(job_link(&db, job).await.0, Some(301));
+}
+
+// --- link writes and the races a slow request can stage --------------------
+
+/// Runs one statement on the test's own pool from inside a stub's synchronous answer.
+///
+/// The fixed-note step POSTs the comment and stamps the row afterwards, so the
+/// only place a concurrent admin delete or rescore can commit is while the
+/// request is in flight. `Respond::respond` is synchronous and sqlx drives its
+/// own socket thread, so blocking on the statement here completes even though
+/// the stub's worker thread holds the runtime.
+fn stage_mid_request(db: &sea_orm::DatabaseConnection, sql: String) {
+    block_on(db.execute_raw(Statement::from_string(DbBackend::Postgres, sql)))
+        .expect("the staged statement commits");
+}
+
+/// Drives one future to completion on the current thread.
+///
+/// The stub's `Respond::respond` is synchronous, so a mid-request database change
+/// has to drive its query here. sqlx runs each connection's socket on its own
+/// thread, so this thread can block without the reactor it is holding.
+fn block_on<F: Future>(future: F) -> F::Output {
+    use std::pin::pin;
+    use std::sync::Arc;
+    use std::task::{Context, Poll, Wake, Waker};
+
+    /// Wakes the thread that parked on one pending poll.
+    struct Unpark(std::thread::Thread);
+
+    impl Wake for Unpark {
+        fn wake(self: Arc<Self>) {
+            self.0.unpark();
+        }
+    }
+
+    let mut future = pin!(future);
+    let waker = Waker::from(Arc::new(Unpark(std::thread::current())));
+    let mut context = Context::from_waker(&waker);
+    loop {
+        if let Poll::Ready(output) = future.as_mut().poll(&mut context) {
+            return output;
+        }
+        std::thread::park();
+    }
+}
+
+/// The table that holds one entity's link columns.
+fn link_table(entity: &str) -> &'static str {
+    if entity == "test" {
+        "test_cases"
+    } else {
+        "jobs"
+    }
+}
+
+/// A Test (`test`) or Job (`job`) named `name` in `repo`, linked to `number`
+/// when one is given, and at `streak` passing runs.
+async fn note_row(
+    db: &TestDb,
+    entity: &str,
+    repo: &str,
+    name: &str,
+    number: Option<i32>,
+    streak: i32,
+) -> i32 {
+    let id = if entity == "test" {
+        flaky_test_in(db, repo, name, name).await
+    } else {
+        flaky_job_in(db, repo, &format!(".github/workflows/{name}.yml"), name).await
+    };
+    if let Some(number) = number {
+        if entity == "test" {
+            stamp_link(db, id, number, false, false).await;
+        } else {
+            stamp_job_link(db, id, number, false).await;
+        }
+    }
+    set_clean_streak(db, link_table(entity), id, streak).await;
+    id
+}
+
+/// The fixed-note entry point of one entity.
+async fn note_entity(db: &TestDb, entity: &str, ids: &[i32], settings: &Settings, api: &Api) {
+    if entity == "test" {
+        github::note_fixed_issues_for(db.connection(), ids, settings, api).await;
+    } else {
+        github::note_fixed_job_issues_for(db.connection(), ids, settings, api).await;
+    }
+}
+
+/// The method and path of every request a stub server was asked for, in order.
+async fn requested_calls(server: &MockServer) -> Vec<(String, String)> {
+    server
+        .received_requests()
+        .await
+        .expect("the stub records requests")
+        .iter()
+        .map(|request| {
+            (
+                request.method.as_str().to_owned(),
+                request.url.path().to_owned(),
+            )
+        })
+        .collect()
+}
+
+/// One Test's or Job's Clean streak.
+async fn clean_streak_of(db: &TestDb, table: &str, id: i32) -> i32 {
+    let row = db
+        .connection()
+        .query_one_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            format!("SELECT clean_streak FROM {table} WHERE id = $1"),
+            [Value::from(id)],
+        ))
+        .await
+        .expect("the row reads")
+        .expect("the row exists");
+    row.try_get("", "clean_streak").expect("a streak")
+}
+
+/// One Test's or Job's stored issue number.
+async fn number_of(db: &TestDb, table: &str, id: i32) -> Option<i32> {
+    let row = db
+        .connection()
+        .query_one_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            format!("SELECT github_issue_number FROM {table} WHERE id = $1"),
+            [Value::from(id)],
+        ))
+        .await
+        .expect("the row reads")
+        .expect("the row exists");
+    row.try_get("", "github_issue_number").expect("a number")
+}
+
+#[tokio::test]
+async fn link_writes_reset_the_closed_flag() {
+    let db = TestDb::new().await.expect("a test database");
+    let flagged = flaky_test_in(&db, "acme/app", "flagged", "flagged").await;
+    db.connection()
+        .execute_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "UPDATE test_cases SET github_issue_number = 11, github_issue_filed = TRUE, \
+             github_issue_closed = TRUE WHERE id = $1",
+            [Value::from(flagged)],
+        ))
+        .await
+        .expect("the fixture link writes");
+
+    issue_links::unlink_issue(
+        db.connection(),
+        LinkTarget::Test,
+        i64::from(flagged),
+        &ReadSettings::default(),
+    )
+    .await
+    .expect("the unlink succeeds");
+    assert_eq!(test_link(&db, flagged).await.0, None, "no number is kept");
+    assert_eq!(
+        test_link(&db, flagged).await.1,
+        None,
+        "an unlinked row is nobody's"
+    );
+    assert!(
+        !test_link(&db, flagged).await.3,
+        "unlink re-arms filing, so the declined flag goes too"
+    );
+
+    let relinked = flaky_test_in(&db, "acme/app", "p2", "relinked").await;
+    db.connection()
+        .execute_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "UPDATE test_cases SET github_issue_number = 11, github_issue_closed = TRUE WHERE id = $1",
+            [Value::from(relinked)],
+        ))
+        .await
+        .expect("the fixture link writes");
+    issue_links::store_filed_link(db.connection(), LinkTarget::Test, i64::from(relinked), 44)
+        .await
+        .expect("the fresh link writes");
+    assert_eq!(
+        test_link(&db, relinked).await.0,
+        Some(44),
+        "a fresh link is stored"
+    );
+    assert_eq!(
+        test_link(&db, relinked).await.1,
+        Some(true),
+        "ours to close"
+    );
+    assert!(
+        !test_link(&db, relinked).await.3,
+        "a fresh link points at an open issue"
+    );
+}
+
+#[tokio::test]
+async fn job_link_change_and_unlink_reset_the_check_stamp() {
+    let db = TestDb::new().await.expect("a test database");
+    let job = flaky_job(&db).await;
+    let server = MockServer::start().await;
+    for number in [301, 44] {
+        mount_issue(
+            &server,
+            "acme/app",
+            number,
+            ResponseTemplate::new(200).set_body_json(json!({"state": "open"})),
+        )
+        .await;
+    }
+    let settings = gh_settings(&[("FLAKERADAR_GITHUB_SYNC_BATCH", "2")]);
+    let reads = ReadSettings::default();
+
+    issue_links::link_issue(
+        db.connection(),
+        LinkTarget::Job,
+        i64::from(job),
+        301,
+        None,
+        false,
+        &reads,
+    )
+    .await
+    .expect("the link succeeds");
+    github::sync_closed_issues(db.connection(), &settings, &api(&server)).await;
+    assert!(
+        job_checked(&db, job).await,
+        "an open issue is still a check"
+    );
+
+    issue_links::link_issue(
+        db.connection(),
+        LinkTarget::Job,
+        i64::from(job),
+        44,
+        None,
+        true,
+        &reads,
+    )
+    .await
+    .expect("the replace succeeds");
+    assert_eq!(job_link(&db, job).await.0, Some(44));
+    assert!(
+        !job_checked(&db, job).await,
+        "a replaced link is checked first"
+    );
+    github::sync_closed_issues(db.connection(), &settings, &api(&server)).await;
+    assert!(job_checked(&db, job).await, "the new link is checked");
+
+    issue_links::unlink_issue(db.connection(), LinkTarget::Job, i64::from(job), &reads)
+        .await
+        .expect("the unlink succeeds");
+    assert_eq!(job_link(&db, job).await.0, None, "no number is left");
+    assert!(
+        !job_checked(&db, job).await,
+        "with no number the stamp has nothing to rotate"
+    );
+}
+
+#[tokio::test]
+async fn a_deleted_row_costs_only_that_fixed_note() {
+    for entity in ["test", "job"] {
+        let db = TestDb::new().await.expect("a test database");
+        let doomed = note_row(&db, entity, "acme/app", "doomed", Some(77), 3).await;
+        let kept = note_row(&db, entity, "acme/b", "kept", Some(78), 3).await;
+        let server = MockServer::start().await;
+        let table = link_table(entity);
+        let connection = db.connection().clone();
+        Mock::given(any())
+            .respond_with(move |request: &Request| {
+                if request.url.path() == "/repos/acme/app/issues/77/comments" {
+                    stage_mid_request(
+                        &connection,
+                        format!("DELETE FROM {table} WHERE id = {doomed}"),
+                    );
+                }
+                ResponseTemplate::new(201).set_body_json(json!({"number": 99}))
+            })
+            .mount(&server)
+            .await;
+        let settings = fixed_settings(&[]);
+
+        let logged = logged_from(note_entity(
+            &db,
+            entity,
+            &[doomed, kept],
+            &settings,
+            &api(&server),
+        ))
+        .await;
+        assert_eq!(
+            requested_paths(&server).await,
+            vec![
+                "/repos/acme/app/issues/77/comments",
+                "/repos/acme/b/issues/78/comments"
+            ],
+            "the vanished row costs one note, not the batch"
+        );
+        assert!(noted(&db, table, kept).await, "the surviving note lands");
+        assert!(
+            lines_with(&logged, "deleted (admin delete) while noting").len() == 1,
+            "the lost note is reported: {logged}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_clean_streak_reset_mid_post_is_not_undone_by_the_stamp() {
+    for entity in ["test", "job"] {
+        let db = TestDb::new().await.expect("a test database");
+        let obj = note_row(&db, entity, "acme/app", "linked", Some(77), 3).await;
+        let server = MockServer::start().await;
+        let table = link_table(entity);
+        let connection = db.connection().clone();
+        Mock::given(any())
+            .respond_with(move |request: &Request| {
+                if request.method.as_str() == "POST" {
+                    stage_mid_request(
+                        &connection,
+                        format!(
+                            "UPDATE {table} SET clean_streak = 0, \
+                             github_issue_fixed_noted_at = NULL WHERE id = {obj}"
+                        ),
+                    );
+                }
+                ResponseTemplate::new(201).set_body_json(json!({"number": 99}))
+            })
+            .mount(&server)
+            .await;
+        let settings = fixed_settings(&[("FLAKERADAR_GITHUB_CLOSE_FIXED", "true")]);
+
+        let logged = logged_from(note_entity(&db, entity, &[obj], &settings, &api(&server))).await;
+        assert_eq!(
+            requested_calls(&server).await,
+            vec![(
+                "POST".to_owned(),
+                "/repos/acme/app/issues/77/comments".to_owned()
+            )],
+            "a fix that did not hold is neither noted twice nor closed"
+        );
+        assert_eq!(
+            clean_streak_of(&db, table, obj).await,
+            0,
+            "the reset stands"
+        );
+        assert!(
+            !noted(&db, table, obj).await,
+            "the reset must not be undone by a stamp"
+        );
+        assert!(
+            lines_with(&logged, "stopped being noteable").len() == 1,
+            "the skipped stamp is reported: {logged}"
+        );
+
+        // The re-armed note really does come once the streak is back.
+        set_clean_streak(&db, table, obj, 3).await;
+        let second = MockServer::start().await;
+        mount_comment(
+            &second,
+            "acme/app",
+            77,
+            ResponseTemplate::new(201).set_body_json(json!({"number": 99})),
+        )
+        .await;
+        mount_patch(&second, "acme/app", 77, ResponseTemplate::new(200)).await;
+        note_entity(&db, entity, &[obj], &settings, &api(&second)).await;
+        assert_eq!(
+            requested_calls(&second).await,
+            vec![
+                (
+                    "POST".to_owned(),
+                    "/repos/acme/app/issues/77/comments".to_owned()
+                ),
+                ("PATCH".to_owned(), "/repos/acme/app/issues/77".to_owned())
+            ]
+        );
+        assert!(noted(&db, table, obj).await, "the fresh note stamps");
+    }
+}
+
+#[tokio::test]
+async fn the_note_step_skips_the_link_this_same_pass_filed() {
+    for entity in ["test", "job"] {
+        let db = TestDb::new().await.expect("a test database");
+        let obj = note_row(&db, entity, "acme/app", "fresh", None, 2).await;
+        let table = link_table(entity);
+        let server = MockServer::start().await;
+        let connection = db.connection().clone();
+        Mock::given(any())
+            .respond_with(move |request: &Request| {
+                if request.url.path() == "/repos/acme/app/issues" {
+                    stage_mid_request(
+                        &connection,
+                        format!("UPDATE {table} SET clean_streak = 3 WHERE id = {obj}"),
+                    );
+                }
+                ResponseTemplate::new(201).set_body_json(json!({"number": 123}))
+            })
+            .mount(&server)
+            .await;
+        let settings = fixed_settings(&[("FLAKERADAR_GITHUB_CLOSE_FIXED", "true")]);
+        let outcome = if entity == "test" {
+            processed(&[obj], &[])
+        } else {
+            processed(&[], &[obj])
+        };
+
+        github::on_report_processed(db.connection(), &outcome, &settings, &api(&server)).await;
+        assert_eq!(
+            requested_calls(&server).await,
+            vec![("POST".to_owned(), "/repos/acme/app/issues".to_owned())],
+            "the link filed in this pass is never commented on or closed"
+        );
+        assert_eq!(
+            number_of(&db, table, obj).await,
+            Some(123),
+            "the filing itself stands"
+        );
+        assert!(!noted(&db, table, obj).await);
+        assert_eq!(
+            clean_streak_of(&db, table, obj).await,
+            3,
+            "and it is noteable from the next Report on"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_processed_report_never_notes_the_issue_it_filed() {
+    for entity in ["test", "job"] {
+        let db = TestDb::new().await.expect("a test database");
+        let live = note_row(&db, entity, "acme/app", "live", None, 0).await;
+        let fresh = note_row(&db, entity, "acme/app", "fresh", None, 3).await;
+        let linked = note_row(&db, entity, "acme/app", "linked", Some(88), 3).await;
+        let table = link_table(entity);
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/repos/acme/app/issues"))
+            .respond_with(ResponseTemplate::new(201).set_body_json(json!({"number": 99})))
+            .mount(&server)
+            .await;
+        mount_comment(
+            &server,
+            "acme/app",
+            88,
+            ResponseTemplate::new(201).set_body_json(json!({})),
+        )
+        .await;
+        mount_patch(&server, "acme/app", 88, ResponseTemplate::new(200)).await;
+        let settings = fixed_settings(&[("FLAKERADAR_GITHUB_CLOSE_FIXED", "true")]);
+        let outcome = if entity == "test" {
+            processed(&[live, fresh, linked], &[])
+        } else {
+            processed(&[], &[live, fresh, linked])
+        };
+
+        github::on_report_processed(db.connection(), &outcome, &settings, &api(&server)).await;
+        assert_eq!(
+            requested_calls(&server).await,
+            vec![
+                ("POST".to_owned(), "/repos/acme/app/issues".to_owned()),
+                (
+                    "POST".to_owned(),
+                    "/repos/acme/app/issues/88/comments".to_owned()
+                ),
+                ("PATCH".to_owned(), "/repos/acme/app/issues/88".to_owned())
+            ],
+            "only the old link is touched: the Issue filed this pass gets no comment and no close"
+        );
+        assert_eq!(
+            number_of(&db, table, fresh).await,
+            None,
+            "a row at the note streak has no live flake to file"
+        );
+        assert_eq!(
+            number_of(&db, table, live).await,
+            Some(99),
+            "the row that only met the filing gate is filed"
+        );
+        assert!(!noted(&db, table, live).await, "and never noted");
+
+        github::on_report_processed(db.connection(), &outcome, &settings, &api(&server)).await;
+        assert_eq!(
+            requested_calls(&server).await.len(),
+            3,
+            "the next Report files no Issue and comments on none: that is the steady state"
+        );
+    }
 }
