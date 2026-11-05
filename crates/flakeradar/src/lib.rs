@@ -32,6 +32,7 @@ pub mod routes;
 pub mod server;
 pub mod settings;
 mod telemetry;
+pub mod worker;
 
 #[doc(inline)]
 pub use app::{AppState, JSON_BODY_LIMIT, build_app, with_common_layers};
@@ -50,3 +51,8 @@ pub use settings::{
 };
 #[doc(inline)]
 pub use telemetry::init_tracing;
+#[doc(inline)]
+pub use worker::{
+    AdvisoryLock, DatabaseProcessor, LeaderTask, LockSession, Pruner, ReportProcessor,
+    ReportWorker, RetentionPrune, StartFuture, StopFuture, TokioWaiter, Waiter, WorkerSettings,
+};

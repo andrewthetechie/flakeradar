@@ -80,6 +80,33 @@ pub async fn connect(url: &str, settings: DbSettings) -> Result<DatabaseConnecti
     Ok(Database::connect(options).await?)
 }
 
+/// Opens a pool of exactly one connection, for a session-scoped advisory lock.
+///
+/// A session lock lives and dies with the connection that took it, so the
+/// connection must stay the same one for as long as the lock is held. A pool of
+/// one guarantees that, and both pool reapers are turned off: an idle or
+/// over-age connection closed behind the lock's back would leave this process
+/// believing it still leads while the next process takes the lock. A dead
+/// connection is therefore reported rather than silently replaced.
+///
+/// # Errors
+///
+/// Returns [`DbError::NotPostgres`] for any URL that is not PostgreSQL, and
+/// [`DbError::Database`] when the server cannot be reached.
+pub async fn connect_session(
+    url: &str,
+    settings: DbSettings,
+) -> Result<DatabaseConnection, DbError> {
+    let mut options = ConnectOptions::new(postgres_url(url)?);
+    options.max_connections(1);
+    options.min_connections(1);
+    options.test_before_acquire(false);
+    options.idle_timeout(None::<Duration>);
+    options.max_lifetime(None::<Duration>);
+    options.statement_timeout(settings.command_timeout());
+    Ok(Database::connect(options).await?)
+}
+
 /// Rewrites the accepted PostgreSQL spellings to the one `SQLx` parses.
 fn postgres_url(url: &str) -> Result<String, DbError> {
     if let Some(rest) = url.strip_prefix("postgresql+asyncpg://") {

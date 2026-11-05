@@ -1,0 +1,615 @@
+//! The Report processor: one elected process drains the queue, prunes and stops cleanly.
+//!
+//! Every server process runs one [`ReportWorker`], and only the holder of the
+//! Report processor advisory lock leads (ADR 0002: scoring depends on Execution
+//! order, so exactly one processor runs). The others stay on standby and take
+//! over when the leader stops or its connection dies.
+//!
+//! The loop claims one Report at a time, prunes at most once per interval, and
+//! hands each outcome to the [`LeaderTask`]s that need it — the GitHub and
+//! Webhook work of task 10 — without waiting for their I/O. Hands over are
+//! non-blocking, so a slow or hanging external call cannot stop processing. When
+//! leadership ends, the leader tasks stop *before* the lock is released, so a
+//! replacement leader never sees the lock free while this process still has an
+//! issue POST in flight.
+//!
+//! Everything the loop reads from the outside — the processor, the prune, the
+//! waits, the monotonic clock and the lock session — is a trait this module
+//! takes, so a test drives the loop without a clock or a real interval.
+
+// Rust guideline compliant 2026-07-21
+
+use std::fmt;
+use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::time::Duration;
+
+use flakeradar_db::{
+    DbError, DbSettings, ProcessOutcome, ProcessingSettings, PruneResult, REPORT_PENDING,
+    RetentionSettings, SharedMonotonic, SystemMonotonic, WORKER_LOCK_KEY, connect_session,
+    process_next, run_prune,
+};
+use sea_orm::{ConnectionTrait, DatabaseConnection, DbBackend, Statement};
+use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
+
+use crate::settings::Settings;
+
+/// The advisory lock every process tries to take to become the processor.
+const TRY_LOCK_SQL: &str = "SELECT pg_try_advisory_lock($1) AS locked";
+
+/// Releases the session lock the leader holds.
+const UNLOCK_SQL: &str = "SELECT pg_advisory_unlock($1) AS released";
+
+/// The cheapest statement that proves the lock connection still answers.
+const ALIVE_SQL: &str = "SELECT 1 AS alive";
+
+/// What a [`LeaderTask`] does once it is running.
+pub type StartFuture<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+
+/// What a [`LeaderTask`] does to stop; the error says why it could not.
+pub type StopFuture<'a> = Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
+
+/// Work only the leader runs: it starts with leadership and stops before the lock is released.
+///
+/// Task 10 implements this for the GitHub issue filer and the Notification
+/// sender. [`LeaderTask::enqueue`] never waits for the task's network I/O, so a
+/// slow endpoint cannot delay Report processing, and its error is logged rather
+/// than allowed to stop the loop.
+pub trait LeaderTask: fmt::Debug + Send + Sync {
+    /// The name a log line uses for this task, such as `GitHub`.
+    fn name(&self) -> &'static str;
+
+    /// Starts the task's own background work. Calling it twice is the task's problem.
+    fn start(&self) -> StartFuture<'_>;
+
+    /// Stops the task, finishing or cancelling whatever it has in flight.
+    ///
+    /// # Errors
+    ///
+    /// Returns why the task could not stop. The lock is released anyway.
+    fn stop(&self) -> StopFuture<'_>;
+
+    /// Hands a processed Report over without waiting for the task's I/O.
+    ///
+    /// # Errors
+    ///
+    /// Returns why the hand-over failed; the worker logs it and carries on.
+    fn enqueue(&self, outcome: &ProcessOutcome) -> anyhow::Result<()>;
+}
+
+/// What the loop claims a Report with.
+pub type ProcessFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<Option<ProcessOutcome>, DbError>> + Send + 'a>>;
+
+/// Claims and processes the next pending Report.
+///
+/// The loop holds [`DatabaseProcessor`]; a test substitutes its own to reach the
+/// loop's error and backoff paths without a database that fails on cue.
+pub trait ReportProcessor: fmt::Debug + Send + Sync {
+    /// Processes the oldest pending Report, or returns `None` when the queue is empty.
+    fn process_next(
+        &self,
+        pool: DatabaseConnection,
+        settings: ProcessingSettings,
+    ) -> ProcessFuture<'static>;
+}
+
+/// The real processor: [`flakeradar_db::process_next`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DatabaseProcessor;
+
+impl ReportProcessor for DatabaseProcessor {
+    fn process_next(
+        &self,
+        pool: DatabaseConnection,
+        settings: ProcessingSettings,
+    ) -> ProcessFuture<'static> {
+        Box::pin(async move { process_next(&pool, &settings).await })
+    }
+}
+
+/// What one retention run does.
+pub type PruneFuture<'a> = Pin<Box<dyn Future<Output = Result<PruneResult, DbError>> + Send + 'a>>;
+
+/// The retention run the leader repeats once per interval.
+pub trait Pruner: fmt::Debug + Send + Sync {
+    /// Prunes one time-budgeted run of the expired backlog.
+    fn prune(&self, pool: DatabaseConnection) -> PruneFuture<'static>;
+}
+
+/// The real retention run: [`flakeradar_db::run_prune`] with these settings.
+#[derive(Debug)]
+pub struct RetentionPrune {
+    retention: RetentionSettings,
+    processing: ProcessingSettings,
+    monotonic: SharedMonotonic,
+}
+
+impl RetentionPrune {
+    /// A prune run with the settings the server was configured with.
+    #[must_use]
+    pub fn new(retention: RetentionSettings, processing: ProcessingSettings) -> Self {
+        Self {
+            retention,
+            processing,
+            monotonic: Arc::new(SystemMonotonic::new()),
+        }
+    }
+
+    /// Reads the run's time budget from `monotonic` instead of the real clock.
+    #[must_use]
+    pub fn with_monotonic(mut self, monotonic: SharedMonotonic) -> Self {
+        self.monotonic = monotonic;
+        self
+    }
+}
+
+impl Pruner for RetentionPrune {
+    fn prune(&self, pool: DatabaseConnection) -> PruneFuture<'static> {
+        let retention = self.retention;
+        let processing = self.processing.clone();
+        let monotonic = Arc::clone(&self.monotonic);
+        Box::pin(async move { run_prune(&pool, &retention, &processing, monotonic.as_ref()).await })
+    }
+}
+
+/// What the loop waits on between claims, leadership attempts and prunes.
+pub type WaitFuture<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+
+/// How the loop waits, so a test never spends real time on an interval.
+pub trait Waiter: fmt::Debug + Send + Sync {
+    /// Resolves after `delay`, unless the worker is cancelled first.
+    fn wait(&self, delay: Duration) -> WaitFuture<'_>;
+}
+
+/// The real wait: [`tokio::time::sleep`], which `tokio::time::pause` controls.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TokioWaiter;
+
+impl Waiter for TokioWaiter {
+    fn wait(&self, delay: Duration) -> WaitFuture<'_> {
+        Box::pin(tokio::time::sleep(delay))
+    }
+}
+
+/// What a lock query answers.
+pub type LockFuture<'a> = Pin<Box<dyn Future<Output = Result<bool, DbError>> + Send + 'a>>;
+
+/// What a lock statement answers when it reports no value.
+pub type SessionFuture<'a> = Pin<Box<dyn Future<Output = Result<(), DbError>> + Send + 'a>>;
+
+/// The dedicated connection that carries the processor's advisory lock.
+///
+/// The real one is [`AdvisoryLock`]; a test substitutes its own to make an
+/// election fail or to count attempts without a database on cue.
+pub trait LockSession: fmt::Debug + Send + Sync {
+    /// Tries to take the lock, answering whether this session now holds it.
+    fn try_lock(&self) -> LockFuture<'_>;
+
+    /// Proves the lock connection still answers, so the lock is still this process's.
+    fn check(&self) -> SessionFuture<'_>;
+
+    /// Releases the lock and closes the session. A broken session is reported.
+    fn unlock(&self) -> SessionFuture<'_>;
+}
+
+/// The session lock, held on a pool of exactly one connection.
+///
+/// The lock is session-scoped and survives a connection being returned to a
+/// pool, so the leader keeps one dedicated connection for as long as it leads
+/// and closes it after unlocking. The connection is opened lazily, so a standby
+/// replica that never wins the election only ever holds the standby connection
+/// it needs to try.
+#[derive(Debug)]
+pub struct AdvisoryLock {
+    url: String,
+    settings: DbSettings,
+    connection: tokio::sync::Mutex<Option<DatabaseConnection>>,
+}
+
+impl AdvisoryLock {
+    /// A lock session over the pool `url` names.
+    #[must_use]
+    pub fn new(url: impl Into<String>, settings: DbSettings) -> Self {
+        Self {
+            url: url.into(),
+            settings,
+            connection: tokio::sync::Mutex::new(None),
+        }
+    }
+
+    /// The dedicated connection and the statement that asks it something.
+    ///
+    /// The connection is opened on first use, so a standby replica that never
+    /// wins only ever holds the connection it tried with.
+    async fn ready(
+        &self,
+        sql: &str,
+    ) -> Result<
+        (
+            tokio::sync::MutexGuard<'_, Option<DatabaseConnection>>,
+            Statement,
+        ),
+        DbError,
+    > {
+        let mut guard = self.connection.lock().await;
+        if guard.is_none() {
+            *guard = Some(connect_session(&self.url, self.settings).await?);
+        }
+        let statement =
+            Statement::from_sql_and_values(DbBackend::Postgres, sql, [WORKER_LOCK_KEY.into()]);
+        Ok((guard, statement))
+    }
+}
+
+impl LockSession for AdvisoryLock {
+    fn try_lock(&self) -> LockFuture<'_> {
+        Box::pin(async move {
+            let (mut guard, statement) = self.ready(TRY_LOCK_SQL).await?;
+            let Some(connection) = guard.as_ref() else {
+                return Ok(false);
+            };
+            match connection.query_one_raw(statement).await {
+                // A query with no FROM clause always answers one row; the arm for
+                // a missing one is logged in coverage-gaps.md and means "not locked".
+                Ok(Some(row)) => Ok(row.try_get("", "locked")?),
+                Ok(None) => Ok(false),
+                Err(error) => {
+                    // A connection the server closed has already lost the lock, so
+                    // it must not be reused: dropping the pool ends the session.
+                    *guard = None;
+                    Err(DbError::Database(error))
+                }
+            }
+        })
+    }
+
+    fn check(&self) -> SessionFuture<'_> {
+        Box::pin(async move {
+            let (mut guard, statement) = self.ready(ALIVE_SQL).await?;
+            let Some(connection) = guard.as_ref() else {
+                return Ok(());
+            };
+            if let Err(error) = connection.query_one_raw(statement).await {
+                *guard = None;
+                return Err(DbError::Database(error));
+            }
+            Ok(())
+        })
+    }
+
+    fn unlock(&self) -> SessionFuture<'_> {
+        Box::pin(async move {
+            let mut guard = self.connection.lock().await;
+            let Some(connection) = guard.as_ref() else {
+                return Ok(());
+            };
+            let statement = Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                UNLOCK_SQL,
+                [WORKER_LOCK_KEY.into()],
+            );
+            let answer = connection
+                .query_one_raw(statement)
+                .await
+                .map(|_row| ())
+                .map_err(DbError::Database);
+            // Whether the unlock worked or the connection was broken, this
+            // session is over; dropping the pool is what closes it.
+            *guard = None;
+            answer
+        })
+    }
+}
+
+/// The loop's intervals, so no test depends on a real one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WorkerSettings {
+    /// How long the leader waits before asking for another Report.
+    pub poll: Duration,
+    /// How long a standby replica waits before trying the lock again.
+    pub standby: Duration,
+    /// How long the leader waits between retention runs.
+    pub prune_interval: Duration,
+    /// The ceiling for the wait after a Report was requeued for a retry.
+    pub max_backoff: Duration,
+}
+
+impl WorkerSettings {
+    /// The frozen server's `worker_poll_seconds` and `prune_interval_seconds`,
+    /// with its fixed 5-second standby and 30-second retry ceiling.
+    #[must_use]
+    pub fn from_settings(settings: &Settings) -> Self {
+        Self {
+            poll: seconds(settings.worker_poll_seconds),
+            standby: Duration::from_secs(5),
+            prune_interval: seconds(settings.prune_interval_seconds),
+            max_backoff: Duration::from_secs(30),
+        }
+    }
+}
+
+impl Default for WorkerSettings {
+    fn default() -> Self {
+        Self {
+            poll: Duration::from_secs(1),
+            standby: Duration::from_secs(5),
+            prune_interval: Duration::from_secs(3600),
+            max_backoff: Duration::from_secs(30),
+        }
+    }
+}
+
+/// A configured number of seconds as a duration, never a panic.
+fn seconds(value: f64) -> Duration {
+    Duration::try_from_secs_f64(value).unwrap_or_default()
+}
+
+/// The single elected Report processor of one server process.
+///
+/// [`ReportWorker::start`] spawns the loop, [`ReportWorker::stop`] cancels it,
+/// waits for it and then ends leadership. A worker that never started is
+/// stopped without any task to cancel, exactly as the frozen server's was.
+pub struct ReportWorker {
+    pool: DatabaseConnection,
+    lock: Arc<dyn LockSession>,
+    processing: ProcessingSettings,
+    settings: WorkerSettings,
+    processor: Arc<dyn ReportProcessor>,
+    pruner: Option<Arc<dyn Pruner>>,
+    waiter: Arc<dyn Waiter>,
+    monotonic: SharedMonotonic,
+    leader_tasks: Vec<Arc<dyn LeaderTask>>,
+    leader: AtomicBool,
+    last_prune: Mutex<Option<f64>>,
+    cancel: CancellationToken,
+    task: tokio::sync::Mutex<Option<JoinHandle<()>>>,
+}
+
+impl fmt::Debug for ReportWorker {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ReportWorker")
+            .field("settings", &self.settings)
+            .field("leader", &self.is_leader())
+            .field("leader_tasks", &self.leader_tasks)
+            .finish_non_exhaustive()
+    }
+}
+
+impl ReportWorker {
+    /// A worker over `pool` that elects itself through `lock`.
+    #[must_use]
+    pub fn new(
+        pool: DatabaseConnection,
+        lock: Arc<dyn LockSession>,
+        processing: ProcessingSettings,
+        settings: WorkerSettings,
+    ) -> Self {
+        Self {
+            pool,
+            lock,
+            processing,
+            settings,
+            processor: Arc::new(DatabaseProcessor),
+            pruner: None,
+            waiter: Arc::new(TokioWaiter),
+            monotonic: Arc::new(SystemMonotonic::new()),
+            leader_tasks: Vec::new(),
+            leader: AtomicBool::new(false),
+            last_prune: Mutex::new(None),
+            cancel: CancellationToken::new(),
+            task: tokio::sync::Mutex::new(None),
+        }
+    }
+
+    /// Replaces the claim of the next Report.
+    #[must_use]
+    pub fn with_processor(mut self, processor: Arc<dyn ReportProcessor>) -> Self {
+        self.processor = processor;
+        self
+    }
+
+    /// Adds the retention run the leader repeats.
+    #[must_use]
+    pub fn with_pruner(mut self, pruner: Arc<dyn Pruner>) -> Self {
+        self.pruner = Some(pruner);
+        self
+    }
+
+    /// Adds a task that starts and stops with leadership.
+    #[must_use]
+    pub fn with_leader_task(mut self, task: Arc<dyn LeaderTask>) -> Self {
+        self.leader_tasks.push(task);
+        self
+    }
+
+    /// Replaces the wait, so a test never spends a configured interval.
+    #[must_use]
+    pub fn with_waiter(mut self, waiter: Arc<dyn Waiter>) -> Self {
+        self.waiter = waiter;
+        self
+    }
+
+    /// Reads the prune interval from `monotonic` instead of the real clock.
+    #[must_use]
+    pub fn with_monotonic(mut self, monotonic: SharedMonotonic) -> Self {
+        self.monotonic = monotonic;
+        self
+    }
+
+    /// Whether this process currently holds the processor lock.
+    #[must_use]
+    pub fn is_leader(&self) -> bool {
+        self.leader.load(Ordering::SeqCst)
+    }
+
+    /// Starts the loop. Starting a running worker is a no-op.
+    ///
+    /// The worker is handed over rather than borrowed because the loop outlives
+    /// the call; keep the other handle to [`ReportWorker::stop`] it.
+    pub async fn start(self: Arc<Self>) {
+        let worker = Arc::clone(&self);
+        let mut task = self.task.lock().await;
+        if task.as_ref().is_some_and(|handle| !handle.is_finished()) {
+            return;
+        }
+        *task = Some(tokio::spawn(async move { worker.run().await }));
+    }
+
+    /// Cancels the loop, waits for it and then ends leadership.
+    ///
+    /// The wait is the graceful part: a Report transaction in flight is rolled
+    /// back by the processor's own transaction, so the Report simply stays
+    /// pending. Leadership actually ends in [`ReportWorker::release`], which
+    /// stops the leader tasks before it unlocks.
+    pub async fn stop(&self) {
+        self.cancel.cancel();
+        let handle = self.task.lock().await.take();
+        if let Some(handle) = handle {
+            let _ = handle.await;
+        }
+        self.release().await;
+    }
+
+    /// The loop: elect, prune, claim, hand over, wait.
+    async fn run(&self) {
+        while !self.cancel.is_cancelled() {
+            if !self.is_leader() {
+                match self.lock.try_lock().await {
+                    Ok(true) => self.take_leadership().await,
+                    Ok(false) => {
+                        self.sleep(self.settings.standby).await;
+                        continue;
+                    }
+                    Err(error) => {
+                        self.drop_leadership(&error).await;
+                        continue;
+                    }
+                }
+            }
+            self.maybe_prune().await;
+            match self
+                .processor
+                .process_next(self.pool.clone(), self.processing.clone())
+                .await
+            {
+                Ok(Some(outcome)) => self.deliver(&outcome).await,
+                Ok(None) => {
+                    // The queue is empty, so prove the lock connection still
+                    // answers: if it died, the lock is already free for another
+                    // process and this one must stop believing it leads.
+                    if let Err(error) = self.lock.check().await {
+                        self.drop_leadership(&error).await;
+                        continue;
+                    }
+                    self.sleep(self.settings.poll).await;
+                }
+                Err(error) => self.drop_leadership(&error).await,
+            }
+        }
+    }
+
+    /// Marks this process as the leader and starts every leader task.
+    async fn take_leadership(&self) {
+        self.leader.store(true, Ordering::SeqCst);
+        for task in &self.leader_tasks {
+            task.start().await;
+        }
+        tracing::info!("This process is now the Report processor");
+    }
+
+    /// Logs the error, ends leadership and waits one poll before trying again.
+    async fn drop_leadership(&self, error: &DbError) {
+        tracing::error!(error = %error, "Report worker error; dropping leadership and retrying");
+        self.release().await;
+        self.sleep(self.settings.poll).await;
+    }
+
+    /// Hands one outcome to every leader task, then waits out a retry's backoff.
+    async fn deliver(&self, outcome: &ProcessOutcome) {
+        for task in &self.leader_tasks {
+            if let Err(error) = task.enqueue(outcome) {
+                tracing::error!(
+                    task = task.name(),
+                    report_id = outcome.report_id,
+                    error = %error,
+                    "a leader task failed to take a processed Report"
+                );
+            }
+        }
+        if outcome.status == REPORT_PENDING {
+            self.sleep(self.backoff(outcome.retry_count)).await;
+        }
+    }
+
+    /// The wait after a Report was requeued for a retry: `poll * 2^retry_count`, capped.
+    ///
+    /// Without the wait, a transiently failed Report is still the oldest pending
+    /// one, so claiming again right away would spend the whole retry budget in
+    /// milliseconds.
+    fn backoff(&self, retry_count: i32) -> Duration {
+        let seconds = (self.settings.poll.as_secs_f64() * 2f64.powi(retry_count))
+            .min(self.settings.max_backoff.as_secs_f64());
+        Duration::from_secs_f64(seconds.max(0.0))
+    }
+
+    /// Runs the retention prune, at most once per `prune_interval`.
+    ///
+    /// The interval is claimed before the run, so a failed prune waits a whole
+    /// interval instead of retrying on every poll; it is logged and the loop
+    /// carries on.
+    async fn maybe_prune(&self) {
+        let Some(pruner) = &self.pruner else {
+            return;
+        };
+        let now = self.monotonic.now();
+        let last = *self.last_prune();
+        if last.is_some_and(|last| now - last < self.settings.prune_interval.as_secs_f64()) {
+            return;
+        }
+        *self.last_prune() = Some(now);
+        if let Err(error) = pruner.prune(self.pool.clone()).await {
+            tracing::error!(error = %error, "Retention prune failed; will retry next interval");
+        }
+    }
+
+    /// Ends leadership: the leader tasks stop first, then the lock is given up.
+    ///
+    /// The order matters. Unlocking while a leader task still has a call in
+    /// flight would let a replacement leader take the lock and file the same
+    /// issue twice. A task that cannot stop is logged, and the lock is released
+    /// anyway rather than held by a process that no longer processes.
+    async fn release(&self) {
+        for task in &self.leader_tasks {
+            if let Err(error) = task.stop().await {
+                tracing::error!(
+                    task = task.name(),
+                    error = %error,
+                    "stopping a leader task failed; releasing the lock anyway"
+                );
+            }
+        }
+        self.leader.store(false, Ordering::SeqCst);
+        if let Err(error) = self.lock.unlock().await {
+            // The server already dropped the session lock with the connection.
+            tracing::warn!(error = %error, "the lock connection is broken; it has been dropped");
+        }
+    }
+
+    /// Waits `delay`, or returns early when the worker is cancelled.
+    async fn sleep(&self, delay: Duration) {
+        tokio::select! {
+            () = self.waiter.wait(delay) => {}
+            () = self.cancel.cancelled() => {}
+        }
+    }
+
+    /// The last prune time, tolerating a panic in another task that held the lock.
+    fn last_prune(&self) -> MutexGuard<'_, Option<f64>> {
+        self.last_prune
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+}

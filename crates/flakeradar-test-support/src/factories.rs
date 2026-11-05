@@ -133,6 +133,9 @@ pub struct TestCaseBuilder {
     clean_streak: i32,
     github_issue_fixed_noted_at: Option<DateTimeWithTimeZone>,
     github_issue_number: Option<i32>,
+    quarantined_at: Option<DateTimeWithTimeZone>,
+    quarantine_reason: Option<String>,
+    quarantine_expires_at: Option<DateTimeWithTimeZone>,
 }
 
 /// Builds a Test named `t1` of the suite `unit`.
@@ -148,6 +151,9 @@ pub fn make_test_case(project: &projects::Model) -> TestCaseBuilder {
         clean_streak: 0,
         github_issue_fixed_noted_at: None,
         github_issue_number: None,
+        quarantined_at: None,
+        quarantine_reason: None,
+        quarantine_expires_at: None,
     }
 }
 
@@ -208,12 +214,36 @@ impl TestCaseBuilder {
         self
     }
 
+    /// Quarantines the Test at `at`. Any quarantine field implies the quarantine.
+    #[must_use]
+    pub fn quarantined_at(mut self, at: DateTimeWithTimeZone) -> Self {
+        self.quarantined_at = Some(at);
+        self
+    }
+
+    /// Records why a person quarantined the Test.
+    #[must_use]
+    pub fn quarantine_reason(mut self, reason: &str) -> Self {
+        self.quarantine_reason = Some(reason.to_owned());
+        self
+    }
+
+    /// Sets when the quarantine clears on its own.
+    #[must_use]
+    pub fn quarantine_expires_at(mut self, at: DateTimeWithTimeZone) -> Self {
+        self.quarantine_expires_at = Some(at);
+        self
+    }
+
     /// Inserts the Test.
     ///
     /// # Errors
     ///
     /// Returns [`TestError::Database`] when the insert violates a constraint.
     pub async fn build(self, db: &impl ConnectionTrait) -> Result<test_cases::Model, TestError> {
+        let quarantined = self.quarantined_at.is_some()
+            || self.quarantine_reason.is_some()
+            || self.quarantine_expires_at.is_some();
         let fingerprint = self
             .fingerprint
             .unwrap_or_else(|| fingerprint(&self.suite, &self.classname, &self.name));
@@ -232,10 +262,10 @@ impl TestCaseBuilder {
                 fail_streak: Set(0),
                 last_status: Set("passed".to_owned()),
                 last_seen_at: Set(now()),
-                quarantined: Set(false),
-                quarantined_at: Set(None),
-                quarantine_reason: Set(None),
-                quarantine_expires_at: Set(None),
+                quarantined: Set(quarantined),
+                quarantined_at: Set(self.quarantined_at),
+                quarantine_reason: Set(self.quarantine_reason),
+                quarantine_expires_at: Set(self.quarantine_expires_at),
                 github_issue_number: Set(self.github_issue_number),
                 github_issue_filed: Set(None),
                 github_issue_checked_at: Set(None),

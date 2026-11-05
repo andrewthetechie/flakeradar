@@ -15,7 +15,7 @@ mod common;
 
 use flakeradar::{Server, Settings};
 use flakeradar_test_support::TestDb;
-use sea_orm::ConnectionTrait as _;
+use sea_orm::{ConnectionTrait as _, EntityTrait as _, PaginatorTrait as _};
 use serde_json::json;
 use tokio::sync::oneshot;
 
@@ -136,4 +136,150 @@ async fn a_port_already_in_use_stops_the_start_up() {
     taken
         .local_addr()
         .expect("the holding socket is still open");
+}
+
+/// Whether another session can take the Report processor lock right now.
+async fn processor_lock_is_free(db: &TestDb) -> bool {
+    use flakeradar_db::{DbSettings, WORKER_LOCK_KEY, connect};
+    use sea_orm::Statement;
+
+    let pool = connect(db.url(), DbSettings::default())
+        .await
+        .expect("the probe's pool");
+    let statement = Statement::from_sql_and_values(
+        sea_orm::DbBackend::Postgres,
+        "SELECT pg_try_advisory_lock($1) AS locked",
+        [WORKER_LOCK_KEY.into()],
+    );
+    let row = pool
+        .query_one_raw(statement)
+        .await
+        .expect("the probe query runs")
+        .expect("the probe query answers");
+    let free: bool = sea_orm::TryGetable::try_get(&row, "", "locked").expect("a flag");
+    if free {
+        let statement = Statement::from_sql_and_values(
+            sea_orm::DbBackend::Postgres,
+            "SELECT pg_advisory_unlock($1)",
+            [WORKER_LOCK_KEY.into()],
+        );
+        pool.execute_raw(statement)
+            .await
+            .expect("the probe releases the lock");
+    }
+    pool.close().await.expect("the probe's pool closes");
+    free
+}
+
+#[tokio::test]
+async fn the_readiness_probe_reports_the_worker_leading_and_releases_it_on_shutdown() {
+    let db = TestDb::new().await.expect("a test database");
+    let server = Server::start(settings_for(&db))
+        .await
+        .expect("the server starts");
+    let address = server.local_addr();
+    let (stop, stopped) = oneshot::channel();
+    let serving = tokio::spawn(server.serve(async move {
+        let _ = stopped.await;
+    }));
+
+    // The worker elects itself on its first poll, so the probe reports the leader
+    // once that has happened; the wait bounds a failure, not a duration.
+    let client = reqwest::Client::new();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let body: serde_json::Value = client
+            .get(format!("http://{address}/api/health/ready"))
+            .send()
+            .await
+            .expect("the socket answers")
+            .json()
+            .await
+            .expect("a JSON body");
+        if body["processor_leader"] == json!(true) {
+            assert_eq!(body["database"], json!(true), "{body}");
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the worker never led: {body}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+
+    let _ = stop.send(());
+    serving
+        .await
+        .expect("the serving task ends")
+        .expect("the server stops cleanly");
+
+    // After the shutdown the lock is free again, so the next readiness probe any
+    // process answers says no leader.
+    assert!(
+        processor_lock_is_free(&db).await,
+        "the worker released its lock"
+    );
+}
+
+#[tokio::test]
+async fn a_shutdown_finishes_an_in_flight_request_and_stops_the_worker() {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    let db = TestDb::new().await.expect("a test database");
+    let server = Server::start(settings_for(&db))
+        .await
+        .expect("the server starts");
+    let address = server.local_addr();
+    let (stop, stopped) = oneshot::channel();
+    let serving = tokio::spawn(server.serve(async move {
+        let _ = stopped.await;
+    }));
+
+    let body = flakeradar_test_support::make_junit(&[("t", "passed")]);
+    // Half the body is sent first, so the upload is still being read when the
+    // shutdown starts: the handler finishes and answers.
+    let head = format!(
+        "POST /api/ingest?repo=o/r&commit_sha=a1 HTTP/1.1\r\nHost: {address}\r\n\
+         X-API-Key: a-real-token\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    let mut stream = tokio::net::TcpStream::connect(address)
+        .await
+        .expect("the socket connects");
+    stream
+        .write_all(head.as_bytes())
+        .await
+        .expect("the request head is written");
+    let (sent, rest) = body.split_at(body.len() / 2);
+    stream.write_all(sent).await.expect("half the body is sent");
+    for _ in 0..4 {
+        tokio::task::yield_now().await;
+    }
+
+    let _ = stop.send(());
+    stream
+        .write_all(rest)
+        .await
+        .expect("the rest of the body is sent");
+    let mut response = Vec::new();
+    stream
+        .read_to_end(&mut response)
+        .await
+        .expect("the response is read");
+    let text = String::from_utf8_lossy(&response);
+    assert!(text.starts_with("HTTP/1.1 202 Accepted"), "{text}");
+
+    serving
+        .await
+        .expect("the serving task ends")
+        .expect("the server stops cleanly");
+    let reports: u64 = flakeradar_db::entities::reports::Entity::find()
+        .count(db.connection())
+        .await
+        .expect("the Reports count");
+    assert_eq!(reports, 1, "the in-flight upload was queued");
+    assert!(
+        processor_lock_is_free(&db).await,
+        "the worker released its lock"
+    );
 }

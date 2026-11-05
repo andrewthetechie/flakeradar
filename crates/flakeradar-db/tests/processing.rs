@@ -21,9 +21,12 @@ use flakeradar_db::entities::{
     test_executions, test_runs, test_score_history,
 };
 use flakeradar_db::{
-    FixedClock, ProcessingSettings, claim_next_report, get_or_create_project, process_next, rescore,
+    FixedClock, ProcessingSettings, claim_next_report, get_or_create_project, process_next,
+    rescore, rescore_jobs,
 };
-use flakeradar_test_support::{TestDb, make_junit, make_report};
+use flakeradar_test_support::{
+    TestDb, make_job, make_job_execution, make_junit, make_pipeline, make_report,
+};
 use sea_orm::{
     ColumnTrait, ConnectionTrait, EntityTrait, PaginatorTrait as _, QueryFilter, QueryOrder,
     TransactionTrait as _,
@@ -1290,6 +1293,57 @@ async fn tier_changes_are_emitted_in_id_order() {
     // Python read the Tests back through `_rows_by_id`, a dict sorted by id, so the
     // events go out in id order whatever order the caller lists the ids in.
     let changes = rescore(
+        db.connection(),
+        &[second.id, first.id],
+        None,
+        &notify_settings(),
+    )
+    .await
+    .expect("the rescore");
+    assert_eq!(
+        changes.iter().map(|change| change.id).collect::<Vec<_>>(),
+        [i64::from(first.id), i64::from(second.id)]
+    );
+}
+
+#[tokio::test]
+async fn job_tier_changes_are_emitted_in_id_order() {
+    // The webhook task posts Tier changes in the order this rescore emits them,
+    // so a Job rescore on ids listed out of order must still emit by id.
+    let db = TestDb::new().await.expect("a test database");
+    let pipeline = make_pipeline()
+        .repo("acme/app")
+        .build(db.connection())
+        .await
+        .expect("a Pipeline");
+    db.connection()
+        .execute_unprepared("UPDATE repos SET default_branch = 'main'")
+        .await
+        .expect("the Default branch");
+    let first = make_job(&pipeline)
+        .name("first")
+        .build(db.connection())
+        .await
+        .expect("a Job");
+    let second = make_job(&pipeline)
+        .name("second")
+        .build(db.connection())
+        .await
+        .expect("a Job");
+    // An unexplained failure then a pass on different commits of the Default
+    // branch is a flake, and neither Job's score has been written yet, so both
+    // cross the Flake threshold.
+    for (ci_job_id, status) in [("f", "failed"), ("g", "passed")] {
+        for job in [&first, &second] {
+            make_job_execution(job)
+                .ci_job_id(ci_job_id)
+                .status(status)
+                .build(db.connection())
+                .await
+                .expect("a Job execution");
+        }
+    }
+    let changes = rescore_jobs(
         db.connection(),
         &[second.id, first.id],
         None,

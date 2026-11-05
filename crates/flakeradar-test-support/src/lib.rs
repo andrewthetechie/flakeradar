@@ -15,6 +15,7 @@ mod db;
 mod error;
 mod factories;
 mod junit;
+mod monotonic;
 mod postgres;
 
 #[doc(inline)]
@@ -30,5 +31,7 @@ pub use factories::{
 };
 #[doc(inline)]
 pub use junit::make_junit;
+#[doc(inline)]
+pub use monotonic::ScriptedMonotonic;
 #[doc(inline)]
 pub use postgres::ensure_postgres;

@@ -18,6 +18,7 @@ use tokio::net::TcpListener;
 
 use crate::app::{AppState, build_app};
 use crate::settings::Settings;
+use crate::worker::{AdvisoryLock, ReportWorker, RetentionPrune};
 
 /// A server that has migrated its database and bound its socket.
 ///
@@ -29,6 +30,7 @@ pub struct Server {
     address: SocketAddr,
     app: Router,
     pool: DatabaseConnection,
+    worker: Arc<ReportWorker>,
 }
 
 impl Server {
@@ -61,11 +63,29 @@ impl Server {
         // The address is worth logging on its own: port 0 means the kernel chose
         // the port, and an operator reading the log needs the number it chose.
         tracing::info!(address = %address, "flakeradar listening");
+        // The worker starts only once the socket is bound: a start-up that fails
+        // before this point has no lock to hold and no task to leak.
+        let lock = AdvisoryLock::new(settings.database_url.clone(), settings.database_settings()?);
+        let processing = settings.processing();
+        let worker = Arc::new(
+            ReportWorker::new(
+                pool.clone(),
+                Arc::new(lock),
+                processing.clone(),
+                settings.worker(),
+            )
+            .with_pruner(Arc::new(RetentionPrune::new(
+                settings.retention(),
+                processing,
+            ))),
+        );
+        Arc::clone(&worker).start().await;
         Ok(Self {
             listener,
             address,
             app,
             pool,
+            worker,
         })
     }
 
@@ -78,13 +98,23 @@ impl Server {
         self.address
     }
 
-    /// Serves requests until `shutdown` resolves, then closes the pool.
+    /// The worker this server runs, for a test that inspects its leadership.
+    #[must_use]
+    pub fn worker(&self) -> &Arc<ReportWorker> {
+        &self.worker
+    }
+
+    /// Serves requests until `shutdown` resolves, then stops the worker and closes the pool.
+    ///
+    /// Shutting the worker down after the socket stops accepting requests is
+    /// what makes an in-flight upload finish: the processor keeps draining the
+    /// queue until the last request has been answered, then leadership ends.
     ///
     /// # Errors
     ///
-    /// Returns an error when the socket fails while serving. Closing the pool
-    /// afterwards is best effort: the process is on its way out, and a failure
-    /// there changes nothing a caller could act on.
+    /// Returns an error when the socket fails while serving. Stopping the worker
+    /// and closing the pool afterwards are best effort: the process is on its
+    /// way out, and a failure there changes nothing a caller could act on.
     pub async fn serve(
         self,
         shutdown: impl Future<Output = ()> + Send + 'static,
@@ -93,6 +123,7 @@ impl Server {
             .with_graceful_shutdown(shutdown)
             .await
             .context("serving requests");
+        self.worker.stop().await;
         if let Err(error) = self.pool.close().await {
             tracing::warn!(error = %error, "closing the pool failed");
         }

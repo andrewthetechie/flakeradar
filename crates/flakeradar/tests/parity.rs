@@ -21,6 +21,8 @@ mod common;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use axum::Json;
@@ -29,13 +31,12 @@ use axum::body::Body;
 use axum::http::{HeaderMap, Method, Request, StatusCode};
 use axum::routing::get;
 use chrono::DateTime;
+use flakeradar::{AdvisoryLock, DatabaseProcessor, ReportProcessor, ReportWorker, WorkerSettings};
 use flakeradar::{AppState, Settings, build_app};
 use flakeradar_db::entities::repos;
-use flakeradar_db::{WORKER_LOCK_KEY, process_next};
+use flakeradar_db::{DbSettings, ProcessingSettings};
 use flakeradar_test_support::TestDb;
-use sea_orm::{
-    ConnectionTrait, DbBackend, EntityTrait, JsonValue, Statement, TransactionTrait as _,
-};
+use sea_orm::{ConnectionTrait, DbBackend, EntityTrait, JsonValue, Statement};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use tower::ServiceExt as _;
@@ -312,6 +313,48 @@ fn golden(scenario: &str, step: usize) -> Value {
         .unwrap_or_else(|error| panic!("parsing {}: {error}", path.display()))
 }
 
+/// Holds the worker's first claim until a scenario's `wait_processed` step.
+///
+/// The recorder's server ran its worker from start-up, so a golden reports a
+/// Report as still `pending` only because the recorder reached that step before
+/// the worker's first claim. A replay worker that claims eagerly would race the
+/// steps it is compared against, so the replay's worker leads from start-up —
+/// the readiness and metrics goldens need a leader — but claims nothing until
+/// the scenario asks the queue to drain. The claim itself is the real one.
+#[derive(Debug)]
+struct GatedProcessor {
+    open: Arc<AtomicBool>,
+}
+
+impl GatedProcessor {
+    fn new() -> Self {
+        Self {
+            open: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    fn open(&self) {
+        self.open.store(true, Ordering::SeqCst);
+    }
+}
+
+impl ReportProcessor for GatedProcessor {
+    fn process_next(
+        &self,
+        pool: sea_orm::DatabaseConnection,
+        settings: ProcessingSettings,
+    ) -> flakeradar::worker::ProcessFuture<'static> {
+        let open = Arc::clone(&self.open);
+        Box::pin(async move {
+            if open.load(Ordering::SeqCst) {
+                DatabaseProcessor.process_next(pool, settings).await
+            } else {
+                Ok(None)
+            }
+        })
+    }
+}
+
 #[tokio::test]
 async fn every_enabled_scenario_replays_identically() {
     let mut failures: Mismatches = Vec::new();
@@ -319,74 +362,62 @@ async fn every_enabled_scenario_replays_identically() {
         let scenario = scenario(enabled.name);
         assert_eq!(scenario.name, enabled.name);
         let db = TestDb::new().await.expect("a test database is available");
-        // The recorded goldens came from a process that ran its Report processor,
-        // so `processor_leader` was true. The Rust worker arrives in task 08;
-        // until then the replay holds the lock the worker will hold.
-        let leader = processor_lock(&db).await;
-        let settings = settings_for(&scenario);
+        let settings = settings_for(&scenario, &db);
         let app = build_app(AppState::new(
             db.connection().clone(),
-            std::sync::Arc::new(settings.clone()),
+            Arc::new(settings.clone()),
         ));
+        // The recorded goldens came from a process that ran its Report
+        // processor, so the replay runs the real worker over the same database.
+        let gate = Arc::new(GatedProcessor::new());
+        let gate_held: Arc<GatedProcessor> = Arc::clone(&gate);
+        let processor: Arc<dyn ReportProcessor> = gate_held;
+        let worker = Arc::new(
+            ReportWorker::new(
+                db.connection().clone(),
+                Arc::new(AdvisoryLock::new(db.url(), DbSettings::default())),
+                processing_of(&settings),
+                WorkerSettings::from_settings(&settings),
+            )
+            .with_processor(Arc::clone(&processor)),
+        );
+        Arc::clone(&worker).start().await;
         for step in enabled.steps {
             let recorded = golden(enabled.name, *step);
             let spec = scenario
                 .steps
                 .get(step - 1)
                 .unwrap_or_else(|| panic!("{} has no step {step}", enabled.name));
+            if spec.get("wait_processed").is_some() {
+                gate.open();
+            }
             failures.extend(
                 replay_step(&app, &db, &settings, enabled.name, *step, spec, &recorded).await,
             );
         }
-        release_processor_lock(&db, leader).await;
+        worker.stop().await;
     }
     assert!(failures.is_empty(), "\n{}", failures.join("\n"));
 }
 
-/// Takes the Report processor's advisory lock, as the leader holds it.
-async fn processor_lock(db: &TestDb) -> sea_orm::DatabaseTransaction {
-    let transaction = db
-        .connection()
-        .begin()
-        .await
-        .expect("a transaction on this test's pool");
-    let taken: bool = transaction
-        .query_one_raw(Statement::from_sql_and_values(
-            DbBackend::Postgres,
-            "SELECT pg_try_advisory_lock($1) AS locked",
-            [WORKER_LOCK_KEY.into()],
-        ))
-        .await
-        .expect("the lock query runs")
-        .expect("the lock query returns a row")
-        .try_get("", "locked")
-        .expect("the answer is a boolean");
-    assert!(taken, "the processor lock is free");
-    transaction
-}
-
-/// Releases the lock [`processor_lock`] took and ends its transaction.
-async fn release_processor_lock(db: &TestDb, transaction: sea_orm::DatabaseTransaction) {
-    // The lock is session-scoped, so ending the transaction would not release it.
-    let _ = transaction
-        .query_one_raw(Statement::from_sql_and_values(
-            DbBackend::Postgres,
-            "SELECT pg_advisory_unlock($1)",
-            [WORKER_LOCK_KEY.into()],
-        ))
-        .await;
-    let _ = db;
-    transaction.rollback().await.expect("the transaction ends");
-}
-
 /// The settings a scenario's server runs with.
-fn settings_for(scenario: &ScenarioFile) -> Settings {
+///
+/// The recorder's `FIXED_SETTINGS` name no database, because its server read the
+/// one in its own environment; the replay's worker needs the URL of the database
+/// this scenario owns.
+fn settings_for(scenario: &ScenarioFile, db: &TestDb) -> Settings {
     let mut values: BTreeMap<String, String> = FIXED_SETTINGS
         .iter()
         .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
         .collect();
     values.extend(scenario.settings.clone());
+    let _ = values.insert("FLAKERADAR_DATABASE_URL".to_owned(), db.url().to_owned());
     Settings::from_map(&values).expect("the recorded settings are valid")
+}
+
+/// The processor settings the worker claims and rescores with.
+fn processing_of(settings: &Settings) -> ProcessingSettings {
+    settings.processing()
 }
 
 /// Replays one step and reports every difference from its golden.
@@ -1084,18 +1115,8 @@ fn test_settings() -> Settings {
     Settings::from_map(&BTreeMap::new()).expect("the default settings are valid")
 }
 
-/// Drains the queue with `process_next`, then polls `GET /api/reports/summary`
-/// until it reports nothing pending.
-async fn wait_processed(app: &Router, db: &TestDb, settings: &Settings) -> Value {
-    // The worker that drains the queue on its own lands in task 08, so until then
-    // the replay is the worker: it processes the oldest pending Report each turn,
-    // exactly as `process_next` is meant to be driven.
-    let processing = settings.processing();
-    while process_next(db.connection(), &processing)
-        .await
-        .expect("the processor runs")
-        .is_some()
-    {}
+/// Polls `GET /api/reports/summary` until the running worker has drained the queue.
+async fn wait_processed(app: &Router, _db: &TestDb, _settings: &Settings) -> Value {
     wait_for_drain(app).await
 }
 

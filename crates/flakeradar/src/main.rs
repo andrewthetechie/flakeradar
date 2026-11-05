@@ -47,12 +47,38 @@ fn run() -> anyhow::Result<()> {
         .context("starting the async runtime")?;
     runtime.block_on(async move {
         let server = Server::start(settings).await?;
-        server
-            .serve(async {
-                // A Ctrl-C stops the socket before the process exits, so a request
-                // in flight finishes.
-                let _ = tokio::signal::ctrl_c().await;
-            })
-            .await
+        server.serve(shutdown_signal()).await
     })
+}
+
+/// Resolves on Ctrl-C, or on SIGTERM where the platform has it.
+///
+/// The serve loop stops accepting requests and then stops the worker, so a
+/// request in flight finishes. Signal wiring is the one part of the process a
+/// test cannot run, so the coverage policy excludes it; see
+/// `docs/plans/rust-rewrite/coverage-gaps.md`.
+#[cfg_attr(coverage_nightly, coverage(off))]
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        // A failure to listen leaves the other arm to stop the process.
+        let _ = tokio::signal::ctrl_c().await;
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut stream) => {
+                let _ = stream.recv().await;
+            }
+            Err(error) => {
+                tracing::error!(error = %error, "listening for SIGTERM failed");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+    tokio::select! {
+        () = ctrl_c => {}
+        () = terminate => {}
+    }
 }

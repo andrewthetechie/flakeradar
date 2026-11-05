@@ -414,6 +414,28 @@ impl Settings {
         Err(SettingsError::NotPostgres)
     }
 
+    /// The retention settings one prune run reads.
+    ///
+    /// The database layer cannot depend on this module, so it takes only the
+    /// values retention reads.
+    #[must_use]
+    pub fn retention(&self) -> flakeradar_db::RetentionSettings {
+        flakeradar_db::RetentionSettings {
+            report_days: self.report_retention_days,
+            failed_report_days: self.failed_report_retention_days,
+            execution_days: self.execution_retention_days,
+            history_days: self.score_history_retention_days,
+            batch: self.prune_batch,
+            time_budget_seconds: self.prune_time_budget_seconds,
+        }
+    }
+
+    /// The intervals the Report worker runs on.
+    #[must_use]
+    pub fn worker(&self) -> crate::worker::WorkerSettings {
+        crate::worker::WorkerSettings::from_settings(self)
+    }
+
     /// The database settings the connection pool is built with.
     ///
     /// # Errors

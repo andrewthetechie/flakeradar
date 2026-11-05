@@ -7,7 +7,9 @@
 
 // Rust guideline compliant 2026-07-21
 
+use std::fmt;
 use std::sync::Arc;
+use std::time::Instant;
 
 use chrono::{DateTime, FixedOffset, NaiveDate, Utc};
 use sea_orm::entity::prelude::DateTimeWithTimeZone;
@@ -55,3 +57,45 @@ impl Clock for FixedClock {
 
 /// The clock a [`ProcessingSettings`](crate::ProcessingSettings) carries.
 pub type SharedClock = Arc<dyn Clock>;
+
+/// Where a background run learns how much time it has spent.
+///
+/// The frozen Python server's retention read `time.monotonic` through a module
+/// attribute so a test could stop it; here the run takes each reading from this
+/// seam. Only differences between two readings are meaningful, and the origin is
+/// an arbitrary instant, so nothing here reports a wall-clock time.
+pub trait MonotonicClock: fmt::Debug + Send + Sync {
+    /// Seconds from this clock's origin.
+    fn now(&self) -> f64;
+}
+
+/// The real monotonic clock, measured from the moment it was built.
+#[derive(Debug, Clone, Copy)]
+pub struct SystemMonotonic {
+    start: Instant,
+}
+
+impl SystemMonotonic {
+    /// A clock whose origin is now.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            start: Instant::now(),
+        }
+    }
+}
+
+impl Default for SystemMonotonic {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl MonotonicClock for SystemMonotonic {
+    fn now(&self) -> f64 {
+        self.start.elapsed().as_secs_f64()
+    }
+}
+
+/// The monotonic clock a retention run or the Report worker carries.
+pub type SharedMonotonic = Arc<dyn MonotonicClock>;

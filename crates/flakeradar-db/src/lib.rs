@@ -21,6 +21,7 @@ mod identity;
 mod migration;
 pub mod processing;
 mod report_intake;
+pub mod retention;
 pub mod score_history;
 
 /// The `SeaORM` entities, generated from the baseline schema by `sea-orm-cli`.
@@ -43,9 +44,11 @@ pub use attribution::{
 #[doc(inline)]
 pub use batching::{CHUNK, chunks};
 #[doc(inline)]
-pub use clock::{Clock, FixedClock, SharedClock, SystemClock};
+pub use clock::{
+    Clock, FixedClock, MonotonicClock, SharedClock, SharedMonotonic, SystemClock, SystemMonotonic,
+};
 #[doc(inline)]
-pub use connect::{DbSettings, connect};
+pub use connect::{DbSettings, connect, connect_session};
 #[doc(inline)]
 pub use error::DbError;
 #[doc(inline)]
@@ -64,6 +67,8 @@ pub use report_intake::{
     find_junit_duplicate, requeue_report, retry_failed_report, stored_attempt, stored_junit_body,
     stored_pipeline_payload,
 };
+#[doc(inline)]
+pub use retention::{PruneResult, RetentionSettings, prune, run_prune};
 #[doc(inline)]
 pub use score_history::{
     HISTORY_DAYS, HistoryKind, HistoryUpdate, ScoreHistoryRow, newest_history_before, past_scores,
