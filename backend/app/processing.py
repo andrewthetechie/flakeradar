@@ -278,7 +278,8 @@ class RescoreTarget:
     entity, consumed by the engine. Nothing in here may encode a shared rule — the Settings read,
     the old-score read, the chunked bulk update and the Score-history write all live in
     `_rescore_engine` only, and an intended per-entity difference (the Test's failure category,
-    Fail streak and broken filter, the history owner column) is descriptor data, as on TEST.
+    Fail streak and broken filter, the Job's Pipeline and absent Project, the history owner column)
+    is descriptor data, as it is on TEST and JOB.
     `fetch` returns one entry per id, an empty `RescoreWindow` for a row with no Executions, which
     is what lets the engine read the update rows in the order the bulk update relies on.
     """
@@ -329,40 +330,6 @@ async def _rescore_engine(
         await db.execute(update(target.model), chunk)
     if updates:
         await write_today_history(db, target.history_model, target.owner_col, updates, day_counts=day_counts)
-    return changes
-
-
-async def _job_tier_changes(
-    db: AsyncSession, updates: list[dict[str, Any]], old: dict[int, float], settings: Settings
-) -> list[TierChange]:
-    """Notifications for the Jobs whose tier this rescore moves (ADR 0009)."""
-    threshold = settings.flake_threshold
-    crossed = _crossed(updates, old, threshold)
-    if not crossed:
-        return []
-    stmt = (
-        select(Job.id, Job.name, Pipeline.name.label("pipeline"), Repo.name.label("repo"))
-        .join(Pipeline, Pipeline.id == Job.pipeline_id)
-        .join(Repo, Repo.id == Pipeline.repo_id)
-    )
-    rows = await _rows_by_id(db, stmt, Job.id, [u["id"] for u in crossed])
-    by_id = {u["id"]: u for u in crossed}
-    changes: list[TierChange] = []
-    for row in rows.values():
-        u = by_id[row.id]
-        changes.append(
-            TierChange(
-                kind="job",
-                id=row.id,
-                repo=row.repo,
-                project=None,  # a Job belongs to a Repo, not a Project
-                name=row.name,
-                pipeline=row.pipeline,
-                flakiness_score=u["flakiness_score"],
-                tier=tier_for(u["flakiness_score"], threshold),
-                confirmed_flake_count=u["confirmed_flake_count"],
-            )
-        )
     return changes
 
 
@@ -482,6 +449,100 @@ async def _job_history(
     return {jid: (branches.get(jid), history[jid]) for jid in job_ids}
 
 
+async def _job_window(db: AsyncSession, job_ids: list[int], settings: Settings) -> dict[int, RescoreWindow]:
+    """The Executions `rescore_jobs` scores each Job from, with its Repo's Default branch.
+
+    The fetch is `_job_history` above, whose explained-`failed` to `JOB_SKIPPED` mapping is the
+    Job's row-to-status mapping and therefore travels with this descriptor (issue #129); it stays a
+    function of its own because `tests/test_attribution.py` reads it directly. A Job has no failure
+    category, so its windows carry none, and `settings` goes unused here: `_job_history` reads the
+    window size itself.
+    """
+    history = await _job_history(db, job_ids)
+    windows: dict[int, RescoreWindow] = {}
+    for job_id in job_ids:
+        def_branch, execs = history[job_id]
+        windows[job_id] = RescoreWindow(def_branch, execs)
+    return windows
+
+
+def _job_update_row(job_id: int, window: RescoreWindow, settings: Settings) -> dict[str, Any]:
+    """The cached columns `rescore_jobs` writes for one Job, from the window the fetch collected.
+
+    A Job has no failure category and no Fail streak column (`models.py`), so this row stops at
+    `clean_streak` where a Test's row goes on.
+    """
+    score, confirmed = scoring.branch_scoped_score(
+        window.execs,
+        window.default_branch,
+        settings.score_decay,
+        settings.score_window,
+    )
+    streak = scoring.branch_scoped_streak(window.execs, window.default_branch)
+    values: dict[str, Any] = {
+        "id": job_id,
+        "flakiness_score": score,
+        "confirmed_flake_count": confirmed,
+        "clean_streak": streak,
+    }
+    if streak == 0:
+        # Issue #33: the Job failed again, so the "the fix appears to hold" note is stale — the
+        # same reset `_test_update_row` states for Tests. Any other streak leaves the key out of
+        # the bulk update, which is what preserves an existing stamp.
+        values["github_issue_fixed_noted_at"] = None
+    return values
+
+
+async def _job_tier_snapshot(
+    db: AsyncSession, updates: list[dict[str, Any]], old: dict[int, float], settings: Settings
+) -> list[TierChange]:
+    """Notifications for the Jobs whose tier this rescore moves (ADR 0009).
+
+    Every crossing is a change worth sending: the broken-is-not-recovered filter `TEST` applies
+    needs a Fail streak, which a Job does not have.
+    """
+    threshold = settings.flake_threshold
+    crossed = _crossed(updates, old, threshold)
+    if not crossed:
+        return []
+    stmt = (
+        select(Job.id, Job.name, Pipeline.name.label("pipeline"), Repo.name.label("repo"))
+        .join(Pipeline, Pipeline.id == Job.pipeline_id)
+        .join(Repo, Repo.id == Pipeline.repo_id)
+    )
+    rows = await _rows_by_id(db, stmt, Job.id, [u["id"] for u in crossed])
+    by_id = {u["id"]: u for u in crossed}
+    changes: list[TierChange] = []
+    for row in rows.values():
+        u = by_id[row.id]
+        changes.append(
+            TierChange(
+                kind="job",
+                id=row.id,
+                repo=row.repo,
+                project=None,  # a Job belongs to a Repo, not a Project
+                name=row.name,
+                pipeline=row.pipeline,
+                flakiness_score=u["flakiness_score"],
+                tier=tier_for(u["flakiness_score"], threshold),
+                confirmed_flake_count=u["confirmed_flake_count"],
+            )
+        )
+    return changes
+
+
+JOB = RescoreTarget(
+    model=Job,
+    history_model=JobScoreHistory,
+    owner_col=JobScoreHistory.job_id,
+    fetch=_job_window,
+    update_row=_job_update_row,
+    # A Job is scored with no broken filter, names no Project and no failure category, and names
+    # its Pipeline instead: all of that is descriptor data, as on TEST, and nowhere else.
+    tier_snapshot=_job_tier_snapshot,
+)
+
+
 async def rescore_jobs(
     db: AsyncSession, job_ids: list[int], *, day_counts: dict[int, tuple[int, int]] | None = None
 ) -> list[TierChange]:
@@ -491,34 +552,10 @@ async def rescore_jobs(
     rescore also writes that day's Score history row. Explained failures are
     already `JOB_SKIPPED` in `_job_history`, so they never break the streak.
     Returns the Tier changes, as `rescore` does.
+
+    The work itself is the shared `_rescore_engine` run with the JOB descriptor.
     """
-    settings = get_settings()
-    history = await _job_history(db, job_ids)
-    updates: list[dict[str, Any]] = []
-    for job_id in job_ids:
-        def_branch, execs = history.get(job_id, (None, []))
-        score, confirmed = scoring.branch_scoped_score(
-            execs,
-            def_branch,
-            settings.score_decay,
-            settings.score_window,
-        )
-        streak = scoring.branch_scoped_streak(execs, def_branch)
-        values: dict[str, Any] = {
-            "id": job_id,
-            "flakiness_score": score,
-            "confirmed_flake_count": confirmed,
-            "clean_streak": streak,
-        }
-        if streak == 0:  # the same reset as in `rescore`, for Jobs too (issue #33)
-            values["github_issue_fixed_noted_at"] = None
-        updates.append(values)
-    changes = await _job_tier_changes(db, updates, await _old_scores(db, Job, job_ids), settings)
-    for chunk in chunks(updates):
-        await db.execute(update(Job), chunk)
-    if updates:
-        await write_today_history(db, JobScoreHistory, JobScoreHistory.job_id, updates, day_counts=day_counts)
-    return changes
+    return await _rescore_engine(db, job_ids, JOB, day_counts=day_counts)
 
 
 async def _rescore_jobs_for_ci_job_id(
