@@ -1683,22 +1683,7 @@ async fn note_batch(
                     }
                 };
                 if !stamp.stamped {
-                    match stamp.state {
-                        None => tracing::warn!(
-                            entity,
-                            entity_id = row.entity_id,
-                            repo = %row.repo,
-                            number = row.number,
-                            "row deleted (admin delete) while noting its issue"
-                        ),
-                        Some((streak, linked)) => tracing::warn!(
-                            entity,
-                            entity_id = row.entity_id,
-                            streak,
-                            number = ?linked,
-                            "row stopped being noteable while its comment was posted"
-                        ),
-                    }
+                    log_note_stamp_failure(stamp.state, entity, &row);
                     continue;
                 }
                 tracing::info!(
@@ -1741,6 +1726,26 @@ async fn note_batch(
                 );
             }
         }
+    }
+}
+
+/// Logs why a note's stamp did not land: the row vanished or stopped being noteable.
+fn log_note_stamp_failure(state: Option<(i32, Option<i32>)>, entity: &str, row: &NoteCandidate) {
+    match state {
+        None => tracing::warn!(
+            entity,
+            entity_id = row.entity_id,
+            repo = %row.repo,
+            number = row.number,
+            "row deleted (admin delete) while noting its issue"
+        ),
+        Some((streak, linked)) => tracing::warn!(
+            entity,
+            entity_id = row.entity_id,
+            streak,
+            number = ?linked,
+            "row stopped being noteable while its comment was posted"
+        ),
     }
 }
 
