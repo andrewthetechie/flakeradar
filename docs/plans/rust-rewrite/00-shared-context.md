@@ -1,6 +1,6 @@
 # 00 — Shared context for the Rust rewrite
 
-**Read this whole file before you start any task in `docs/plans/rust-rewrite/`.** Each task file gives the contracts for its own step. This file gives the decisions, ground rules and traps that all tasks share. Also read `CONTEXT.md` and `docs/adr/0010-rust-rewrite.md`.
+**Read this whole file before you start any task in `docs/plans/rust-rewrite/`.** Each task file gives the contracts for its own step. This file gives the decisions, ground rules and traps that all tasks share. Also read `CONTEXT.md` and `docs/adr/0010-rust-rewrite.md`. For tasks 16–31, also read `00-fixes-context.md`, which overrides this file where they differ.
 
 ## What we are building
 
