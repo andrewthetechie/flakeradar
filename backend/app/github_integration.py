@@ -128,7 +128,9 @@ def _json_object(resp: httpx.Response) -> dict | None:
     """The body parsed as a JSON object, or None when it is not one. Never raises."""
     try:
         payload = resp.json()
-    except ValueError:  # non-JSON body (a proxy error page, an empty response)
+    except (ValueError, httpx.HTTPError):
+        # non-JSON body (a proxy error page, an empty response), or a body that was
+        # never read (`ResponseNotRead`), which is as unusable as an empty one
         return None
     return payload if isinstance(payload, dict) else None
 
@@ -182,6 +184,30 @@ def _rate_limited(resp: httpx.Response) -> bool:
 # line in this module, so an excerpt is always enough to diagnose a failure.
 _GITHUB_EXCERPT_MAX = 300
 
+
+def _excerpt(resp: httpx.Response) -> str:
+    """The start of a response body, decoded without trusting what it says it is.
+
+    Never raises, which `resp.text` alone does: it decodes with the charset the response
+    declares, and a bogus one (`Content-Type: application/json; charset=rot13`) makes the
+    stdlib codec machinery raise a TypeError, AssertionError or UnicodeError — none of them
+    an `httpx.HTTPError` — rather than substitute. An unread stream adds
+    `httpx.ResponseNotRead`. Classification happens after the request `try` block, so any
+    of those would escape the seam, past the loops that no longer catch anything, and the
+    body is only ever wanted for a log line: fall back to the bytes the client already
+    content-decoded, then to no excerpt at all.
+    """
+    try:
+        return resp.text[:_GITHUB_EXCERPT_MAX]
+    except (AssertionError, TypeError, ValueError, httpx.HTTPError):  # see the docstring
+        pass
+    try:
+        raw = resp.content
+    except httpx.HTTPError:  # an unread stream simply has no body to excerpt
+        return ""
+    return raw[:_GITHUB_EXCERPT_MAX].decode("utf-8", errors="replace")
+
+
 IssueOutcomeKind = Literal[
     "ok",  # answered, and the body (if any) says what the caller asked for
     "created",  # 201 on an interaction that creates something
@@ -226,7 +252,7 @@ def _github_outcome(resp: httpx.Response, *, expect: Literal["number", "state"] 
     fields: dict = {
         "status": status,
         "remaining": resp.headers.get("x-ratelimit-remaining"),
-        "excerpt": resp.text[:_GITHUB_EXCERPT_MAX],
+        "excerpt": _excerpt(resp),
     }
     if expect == "number":
         fields["number"] = _issue_number(resp)
