@@ -9,7 +9,7 @@
     reason = "a test fails loudly when a stub or a delivery does not behave"
 )]
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use flakeradar::LeaderTask;
@@ -95,6 +95,66 @@ async fn until_count(server: &MockServer, expected: usize) {
         recorded(server).await,
         expected,
         "the stub never recorded the expected requests"
+    );
+}
+
+/// An `io::Write` that appends to the shared buffer.
+struct Sink(Arc<Mutex<Vec<u8>>>);
+
+impl std::io::Write for Sink {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// A subscriber that records every level, and the buffer it writes to.
+fn captured() -> (tracing::subscriber::DefaultGuard, Arc<Mutex<Vec<u8>>>) {
+    let lines = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&lines);
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .with_writer(move || Sink(Arc::clone(&sink)))
+        .with_max_level(tracing::Level::TRACE)
+        .finish();
+    (tracing::subscriber::set_default(subscriber), lines)
+}
+
+/// The log text recorded so far.
+fn logged(lines: &Arc<Mutex<Vec<u8>>>) -> String {
+    String::from_utf8_lossy(
+        &lines
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+    )
+    .into_owned()
+}
+
+/// How many times `needle` appears in the log so far.
+fn log_count(lines: &Arc<Mutex<Vec<u8>>>, needle: &str) -> usize {
+    logged(lines).matches(needle).count()
+}
+
+/// Waits until the log carries `expected` occurrences of `needle`.
+async fn until_logged(lines: &Arc<Mutex<Vec<u8>>>, needle: &str, expected: usize) {
+    for _ in 0..400 {
+        if log_count(lines, needle) >= expected {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert_eq!(
+        log_count(lines, needle),
+        expected,
+        "the log never carried {expected} `{needle}` lines; it says: {}",
+        logged(lines)
     );
 }
 
@@ -189,29 +249,39 @@ async fn a_transient_failure_is_retried_until_it_succeeds() {
 
 #[tokio::test]
 async fn a_client_error_is_permanent_and_is_not_retried() {
-    let server = MockServer::start().await;
-    Mock::given(method("POST"))
-        .and(path("/hook"))
-        .respond_with(ResponseTemplate::new(400))
-        .mount(&server)
-        .await;
-    let worker = Arc::new(worker(vec![format!("{}/hook", server.uri())]));
-    LeaderTask::start(worker.as_ref()).await;
-    LeaderTask::enqueue(worker.as_ref(), &outcome(vec![test_change()]))
-        .expect("the queue takes it");
-    until_count(&server, 1).await;
-    tokio::time::sleep(Duration::from_millis(60)).await;
-    LeaderTask::stop(worker.as_ref())
-        .await
-        .expect("the task stops");
-    assert_eq!(
-        server
-            .received_requests()
+    // The retry delays are zero, so an attempt this policy retried would show up
+    // as a second request rather than as a wait.
+    for status in [400, 401, 403, 404] {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/hook"))
+            .respond_with(ResponseTemplate::new(status))
+            .mount(&server)
+            .await;
+        let worker = Arc::new(WebhookWorker::with_retry_delays(
+            vec![format!("{}/hook", server.uri())],
+            WebhookFormat::Json,
+            "",
+            [0.0, 0.0],
+        ));
+        LeaderTask::start(worker.as_ref()).await;
+        LeaderTask::enqueue(worker.as_ref(), &outcome(vec![test_change()]))
+            .expect("the queue takes it");
+        until_count(&server, 1).await;
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        LeaderTask::stop(worker.as_ref())
             .await
-            .expect("the stub records requests")
-            .len(),
-        1
-    );
+            .expect("the task stops");
+        assert_eq!(
+            server
+                .received_requests()
+                .await
+                .expect("the stub records requests")
+                .len(),
+            1,
+            "{status} is a permanent client error and was not retried"
+        );
+    }
 }
 
 #[tokio::test]
@@ -276,19 +346,83 @@ async fn three_attempts_then_the_task_keeps_serving() {
 }
 
 #[tokio::test]
-async fn an_unreachable_endpoint_never_raises_and_never_stops_the_task() {
+async fn an_unreachable_endpoint_is_tried_three_times_and_the_task_keeps_serving() {
     // Nothing is listening on this port: every attempt fails to connect.
-    let worker = Arc::new(worker(vec!["http://127.0.0.1:1/hook".to_owned()]));
+    let (guard, lines) = captured();
+    let worker = Arc::new(WebhookWorker::with_retry_delays(
+        vec!["http://127.0.0.1:1/hook".to_owned()],
+        WebhookFormat::Json,
+        "",
+        [0.0, 0.0],
+    ));
     LeaderTask::start(worker.as_ref()).await;
     LeaderTask::enqueue(worker.as_ref(), &outcome(vec![test_change()]))
         .expect("the queue takes it");
+    until_logged(&lines, "Webhook endpoint unreachable", 3).await;
     // A second batch proves the task is still serving after the failures.
-    tokio::time::sleep(Duration::from_millis(20)).await;
     LeaderTask::enqueue(worker.as_ref(), &outcome(vec![job_change()])).expect("the queue takes it");
-    tokio::time::sleep(Duration::from_millis(20)).await;
+    until_logged(&lines, "Webhook endpoint unreachable", 6).await;
     LeaderTask::stop(worker.as_ref())
         .await
         .expect("the task stops");
+    drop(guard);
+    assert_eq!(
+        log_count(&lines, "Webhook endpoint unreachable"),
+        6,
+        "three attempts per batch, and the task delivered the second one: {}",
+        logged(&lines)
+    );
+}
+
+#[tokio::test]
+async fn an_endpoint_that_is_not_a_url_is_retried_and_never_logged() {
+    /// A credential no log line may carry.
+    const SECRET: &str = "SECRETTOKEN";
+
+    let (guard, lines) = captured();
+    let worker = Arc::new(WebhookWorker::with_retry_delays(
+        vec![format!("not a url/{SECRET}")],
+        WebhookFormat::Json,
+        "",
+        [0.0, 0.0],
+    ));
+    LeaderTask::start(worker.as_ref()).await;
+    LeaderTask::enqueue(worker.as_ref(), &outcome(vec![test_change()]))
+        .expect("the queue takes it");
+    until_logged(&lines, "Webhook endpoint unreachable", 3).await;
+    LeaderTask::stop(worker.as_ref())
+        .await
+        .expect("the task stops");
+    drop(guard);
+
+    let logged = logged(&lines);
+    assert!(
+        log_count(&lines, "endpoint=endpoint") >= 3,
+        "a URL that cannot be parsed is named by its fallback label: {logged}"
+    );
+    assert!(
+        !logged.contains(SECRET),
+        "no log line carries the URL: {logged}"
+    );
+}
+
+#[tokio::test]
+async fn the_task_names_itself_and_its_debug_line_carries_no_endpoint() {
+    /// A credential in the path, which no `Debug` line may carry.
+    const SECRET: &str = "SECRETTOKEN";
+
+    let worker = worker(vec![format!("https://hooks.example.com/{SECRET}")]);
+    assert_eq!(LeaderTask::name(&worker), "Notification");
+    let debug = format!("{worker:?}");
+    assert!(debug.contains("WebhookWorker"), "{debug}");
+    assert!(
+        debug.contains("endpoints: 1"),
+        "the shared state's endpoint count is formatted: {debug}"
+    );
+    assert!(
+        !debug.contains(SECRET),
+        "the Debug line names no Webhook URL: {debug}"
+    );
 }
 
 #[tokio::test]
@@ -407,26 +541,6 @@ async fn a_slack_payload_is_one_text_with_a_line_per_event() {
 
 #[tokio::test]
 async fn a_webhook_url_is_never_logged_at_any_level() {
-    use std::io::Write as _;
-    use std::sync::Mutex;
-
-    /// An `io::Write` that appends to the shared buffer.
-    struct Sink(Arc<Mutex<Vec<u8>>>);
-
-    impl std::io::Write for Sink {
-        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            self.0
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .extend_from_slice(buf);
-            Ok(buf.len())
-        }
-
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
     /// A credential in the path, which no log line may carry.
     const SECRET: &str = "SECRETTOKEN";
 
@@ -439,14 +553,7 @@ async fn a_webhook_url_is_never_logged_at_any_level() {
     let url = format!("{}/{SECRET}/hook", server.uri());
     let worker = Arc::new(worker(vec![url]));
 
-    let lines = Arc::new(Mutex::new(Vec::new()));
-    let sink = Arc::clone(&lines);
-    let subscriber = tracing_subscriber::fmt()
-        .with_ansi(false)
-        .with_writer(move || Sink(Arc::clone(&sink)))
-        .with_max_level(tracing::Level::TRACE)
-        .finish();
-    let guard = tracing::subscriber::set_default(subscriber);
+    let (guard, lines) = captured();
 
     LeaderTask::start(worker.as_ref()).await;
     LeaderTask::enqueue(worker.as_ref(), &outcome(vec![test_change()]))
@@ -457,12 +564,7 @@ async fn a_webhook_url_is_never_logged_at_any_level() {
         .expect("the task stops");
     drop(guard);
 
-    let logged = String::from_utf8_lossy(
-        &lines
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner),
-    )
-    .into_owned();
+    let logged = logged(&lines);
     assert!(!logged.is_empty(), "the rejected batch logged something");
     assert!(
         !logged.contains(SECRET),
@@ -472,7 +574,6 @@ async fn a_webhook_url_is_never_logged_at_any_level() {
         logged.contains("127.0.0.1"),
         "the endpoint's host is enough to find it: {logged}"
     );
-    let _ = std::io::stdout().flush();
 }
 
 #[tokio::test]

@@ -52,6 +52,7 @@ struct WebhookShared {
     urls: Vec<String>,
     format: WebhookFormat,
     public_url: String,
+    retry_delays: [f64; 2],
     client: reqwest::Client,
     queue: Mutex<VecDeque<Vec<TierChange>>>,
     dropped: Mutex<usize>,
@@ -135,7 +136,7 @@ impl WebhookShared {
         let body = render(batch, self.format, &self.public_url);
         let label = Self::endpoint(url);
         for attempt in 0..ATTEMPTS {
-            let mut delay = RETRY_DELAYS.get(attempt).copied().unwrap_or_default();
+            let mut delay = self.retry_delays.get(attempt).copied().unwrap_or_default();
             let answer = self
                 .client
                 .post(url)
@@ -219,11 +220,23 @@ impl WebhookWorker {
     /// A task that posts to `urls` in `format`.
     #[must_use]
     pub fn new(urls: Vec<String>, format: WebhookFormat, public_url: &str) -> Self {
+        Self::with_retry_delays(urls, format, public_url, RETRY_DELAYS)
+    }
+
+    /// The same task, waiting `retry_delays` before its second and third attempt.
+    #[must_use]
+    pub fn with_retry_delays(
+        urls: Vec<String>,
+        format: WebhookFormat,
+        public_url: &str,
+        retry_delays: [f64; 2],
+    ) -> Self {
         Self {
             shared: Arc::new(WebhookShared {
                 urls,
                 format,
                 public_url: public_url.to_owned(),
+                retry_delays,
                 client: reqwest::Client::builder()
                     .timeout(Duration::from_secs(WEBHOOK_TIMEOUT_SECONDS))
                     .user_agent(format!("flakeradar/{}", env!("CARGO_PKG_VERSION")))
