@@ -508,79 +508,67 @@ pub async fn store_filed_link(
     Ok(result.rows_affected())
 }
 
-/// Stamps when one linked row was last checked.
+/// What one answered sync check decided about the row's link.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Check {
+    /// The answer changed nothing: the link keeps its number and its flags.
+    Kept,
+    /// The issue is closed or gone: clear the link so the next Report files again.
+    Rearmed,
+    /// The issue was closed as not planned: keep the link and flag the row.
+    Declined,
+    /// A declined issue was reopened, so filing is live again.
+    Reopened,
+}
+
+/// Records one sync check in a single statement, guarded on the number it checked.
+///
+/// The `GET` that produced the decision runs with no statement open, so the row can
+/// change under it: a re-link, an unlink or a fresh filing clears or replaces
+/// `github_issue_number`. This write therefore applies only while the row still
+/// holds the number that was checked, so a link replaced mid-`GET` survives, and the
+/// replacement is not stamped as checked on the old number's answer.
+///
+/// The stamp lands for every answer, whatever it said, which is what keeps a link
+/// whose answer stays unusable rotating instead of pinning the front of the queue;
+/// a caller leaves a rate-limited or unanswered row unwritten so it is retried first.
 ///
 /// # Errors
 ///
 /// Returns [`DbError::Database`] when the statement fails.
-pub async fn stamp_checked(
+pub async fn record_check(
     db: &impl ConnectionTrait,
     target: LinkTarget,
     target_id: i64,
+    number: i32,
+    check: Check,
     at: DateTime<Utc>,
-) -> Result<(), DbError> {
+) -> Result<bool, DbError> {
+    let mut set = vec!["github_issue_checked_at = $3"];
+    match check {
+        Check::Kept => {}
+        Check::Rearmed => set.extend([
+            "github_issue_number = NULL",
+            "github_issue_filed = NULL",
+            "github_issue_closed = FALSE",
+            "github_issue_fixed_noted_at = NULL",
+        ]),
+        Check::Declined => set.push("github_issue_closed = TRUE"),
+        Check::Reopened => set.push("github_issue_closed = FALSE"),
+    }
     let sql = format!(
-        "UPDATE {} SET github_issue_checked_at = $2 WHERE id = $1",
-        target.table()
+        "UPDATE {} SET {} WHERE id = $1 AND github_issue_number = $2",
+        target.table(),
+        set.join(", ")
     );
-    db.execute_raw(Statement::from_sql_and_values(
-        DbBackend::Postgres,
-        sql,
-        [Value::from(target_id), Value::from(at)],
-    ))
-    .await?;
-    Ok(())
-}
-
-/// Clears the number and everything that went with it, keeping the check stamp.
-///
-/// The sync's re-arm: the issue it just read really was checked, so the row goes
-/// to the back of the rotation rather than the front.
-///
-/// # Errors
-///
-/// Returns [`DbError::Database`] when the statement fails.
-pub async fn rearm_link(
-    db: &impl ConnectionTrait,
-    target: LinkTarget,
-    target_id: i64,
-) -> Result<(), DbError> {
-    let sql = format!(
-        "UPDATE {} SET github_issue_number = NULL, github_issue_filed = NULL, \
-         github_issue_closed = FALSE, github_issue_fixed_noted_at = NULL WHERE id = $1",
-        target.table()
-    );
-    db.execute_raw(Statement::from_sql_and_values(
-        DbBackend::Postgres,
-        sql,
-        [Value::from(target_id)],
-    ))
-    .await?;
-    Ok(())
-}
-
-/// Sets the closed-as-not-planned flag on one linked row.
-///
-/// # Errors
-///
-/// Returns [`DbError::Database`] when the statement fails.
-pub async fn set_closed(
-    db: &impl ConnectionTrait,
-    target: LinkTarget,
-    target_id: i64,
-    closed: bool,
-) -> Result<(), DbError> {
-    let sql = format!(
-        "UPDATE {} SET github_issue_closed = $2 WHERE id = $1",
-        target.table()
-    );
-    db.execute_raw(Statement::from_sql_and_values(
-        DbBackend::Postgres,
-        sql,
-        [Value::from(target_id), Value::from(closed)],
-    ))
-    .await?;
-    Ok(())
+    let result = db
+        .execute_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            sql,
+            [Value::from(target_id), Value::from(number), Value::from(at)],
+        ))
+        .await?;
+    Ok(result.rows_affected() > 0)
 }
 
 /// What a conditional fixed-note stamp found.

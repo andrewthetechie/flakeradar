@@ -204,7 +204,7 @@ async fn no_token_is_a_silent_no_op() {
 
     let filed =
         github::file_issues_for(db.connection(), &[test], &settings, &api, &unstopped()).await;
-    assert!(filed.is_empty());
+    assert!(filed.linked.is_empty());
     assert_eq!(test_link(&db, test).await.0, None);
     assert!(
         server
@@ -236,7 +236,7 @@ async fn a_flaky_test_is_filed_in_its_own_repo_with_its_evidence() {
         &unstopped(),
     )
     .await;
-    assert_eq!(filed.into_iter().collect::<Vec<_>>(), vec![test]);
+    assert_eq!(filed.linked.into_iter().collect::<Vec<_>>(), vec![test]);
     let (number, is_filed, checked, closed) = test_link(&db, test).await;
     assert_eq!(number, Some(7));
     assert_eq!(is_filed, Some(true), "a filed link is FlakeRadar's own");
@@ -323,7 +323,7 @@ async fn a_test_below_the_score_gate_is_not_filed() {
         &unstopped(),
     )
     .await;
-    assert!(filed.is_empty());
+    assert!(filed.linked.is_empty());
     assert!(
         server
             .received_requests()
@@ -354,6 +354,7 @@ async fn the_proven_flake_gate_and_the_failure_gate_each_withhold_a_filing() {
             &unstopped()
         )
         .await
+        .linked
         .is_empty()
     );
     let failures = gh_settings(&[("FLAKERADAR_GITHUB_ISSUE_MIN_FAILURES", "2")]);
@@ -366,6 +367,7 @@ async fn the_proven_flake_gate_and_the_failure_gate_each_withhold_a_filing() {
             &unstopped()
         )
         .await
+        .linked
         .is_empty()
     );
     // One failure in the window meets a gate of one.
@@ -373,6 +375,7 @@ async fn the_proven_flake_gate_and_the_failure_gate_each_withhold_a_filing() {
     assert_eq!(
         github::file_issues_for(db.connection(), &[test], &one, &api(&server), &unstopped())
             .await
+            .linked
             .len(),
         1
     );
@@ -395,7 +398,7 @@ async fn a_link_a_human_made_is_never_refiled() {
     )
     .await;
     assert!(
-        filed.is_empty(),
+        filed.linked.is_empty(),
         "a row that carries a number is already linked"
     );
     assert!(
@@ -437,7 +440,7 @@ async fn a_row_at_the_fixed_note_streak_has_no_live_flake_to_file() {
     )
     .await;
     assert_eq!(
-        filed.into_iter().collect::<Vec<_>>(),
+        filed.linked.into_iter().collect::<Vec<_>>(),
         vec![below],
         "a row whose fix holds answers with a note, not an Issue"
     );
@@ -485,7 +488,7 @@ async fn a_rate_limit_stops_the_batch_without_storing_anything() {
         &unstopped(),
     )
     .await;
-    assert!(filed.is_empty());
+    assert!(filed.linked.is_empty());
     assert_eq!(
         server.received_requests().await.expect("a record").len(),
         1,
@@ -532,7 +535,10 @@ async fn a_permission_403_skips_that_repo_and_files_the_other_one() {
         &unstopped(),
     )
     .await;
-    assert_eq!(filed.into_iter().collect::<Vec<_>>(), vec![allowed.id]);
+    assert_eq!(
+        filed.linked.into_iter().collect::<Vec<_>>(),
+        vec![allowed.id]
+    );
     assert_eq!(test_link(&db, denied).await.0, None);
 }
 
@@ -572,7 +578,7 @@ async fn a_bad_credentials_401_skips_that_repo_and_files_the_other_one() {
         &unstopped(),
     )
     .await;
-    assert_eq!(filed.into_iter().collect::<Vec<_>>(), vec![allowed]);
+    assert_eq!(filed.linked.into_iter().collect::<Vec<_>>(), vec![allowed]);
     assert_eq!(test_link(&db, first).await.0, None);
     assert_eq!(test_link(&db, second).await.0, None);
 }
@@ -593,6 +599,7 @@ async fn issues_disabled_skips_the_rest_of_that_repo() {
             &unstopped()
         )
         .await
+        .linked
         .is_empty()
     );
     assert_eq!(test_link(&db, test).await.0, None);
@@ -618,6 +625,7 @@ async fn a_201_without_a_number_never_raises_and_stores_nothing() {
             &unstopped()
         )
         .await
+        .linked
         .is_empty()
     );
     assert_eq!(test_link(&db, test).await.0, None);
@@ -674,7 +682,7 @@ async fn a_row_deleted_while_filing_closes_the_issue_it_just_created() {
             &unstopped(),
         )
         .await;
-        assert!(filed.is_empty(), "a vanished row is not a link");
+        assert!(filed.linked.is_empty(), "a vanished row is not a link");
     })
     .await;
     assert_eq!(
@@ -706,7 +714,12 @@ async fn a_network_error_never_raises() {
         &unstopped(),
     )
     .await;
-    assert!(filed.is_empty());
+    assert!(filed.linked.is_empty());
+    assert_eq!(
+        filed.stopped,
+        Some(github::BatchStop::Unreachable),
+        "the batch reports that nothing answered"
+    );
     assert_eq!(test_link(&db, test).await.0, None);
 }
 
@@ -754,7 +767,7 @@ async fn a_flaky_job_is_filed_with_its_pipeline_and_unexplained_failures() {
         &unstopped(),
     )
     .await;
-    assert_eq!(filed.into_iter().collect::<Vec<_>>(), vec![job]);
+    assert_eq!(filed.linked.into_iter().collect::<Vec<_>>(), vec![job]);
     let requests = server.received_requests().await.expect("a record");
     let body: Json = serde_json::from_slice(&requests[0].body).expect("the body is JSON");
     assert_eq!(
@@ -803,6 +816,7 @@ async fn a_job_of_another_provider_is_never_filed() {
             &unstopped()
         )
         .await
+        .linked
         .is_empty()
     );
     assert!(
@@ -1492,7 +1506,7 @@ async fn the_run_hint_follows_the_file_extension() {
 }
 
 #[tokio::test]
-async fn a_candidate_read_that_fails_is_logged_and_files_nothing() {
+async fn a_candidate_read_that_fails_logs_and_reports_an_empty_batch() {
     let db = TestDb::new().await.expect("a test database");
     let test = flaky_test(&db).await;
     let job = flaky_job(&db).await;
@@ -1510,7 +1524,10 @@ async fn a_candidate_read_that_fails_is_logged_and_files_nothing() {
         &unstopped(),
     )
     .await;
-    assert!(fired.is_empty(), "a batch it could not read files nothing");
+    assert!(
+        fired.linked.is_empty(),
+        "a batch it could not read files nothing"
+    );
     let fired = github::file_job_issues_for(
         db.connection(),
         &[job],
@@ -1519,7 +1536,19 @@ async fn a_candidate_read_that_fails_is_logged_and_files_nothing() {
         &unstopped(),
     )
     .await;
-    assert!(fired.is_empty());
+    assert!(fired.linked.is_empty());
+
+    // The note step reads the same two tables, and reports an empty batch rather
+    // than raising.
+    let settings = fixed_settings(&[]);
+    for report in [
+        github::note_fixed_issues_for(db.connection(), &[test], &settings, &api, &unstopped())
+            .await,
+        github::note_fixed_job_issues_for(db.connection(), &[job], &settings, &api, &unstopped())
+            .await,
+    ] {
+        assert_eq!(report, github::BatchReport::default());
+    }
 }
 
 #[tokio::test]
@@ -1579,7 +1608,7 @@ async fn a_test_whose_executions_cannot_be_read_is_still_filed_without_them() {
     )
     .await;
 
-    assert_eq!(fired.len(), 1, "the Test is filed");
+    assert_eq!(fired.linked.len(), 1, "the Test is filed");
     assert_eq!(test_link(&db, test).await.0, Some(7));
 }
 
@@ -1627,7 +1656,6 @@ async fn a_token_the_header_cannot_carry_goes_out_with_no_credentials() {
     let logged = logged_from(github::close_issues_for_deleted_repo(
         "acme/app",
         &[123],
-        &gh_settings(&[]),
         &api,
     ))
     .await;
@@ -1987,6 +2015,169 @@ async fn a_rate_limit_classifies_only_throttling() {
     assert!(!answer(201, &[], r#"{"number": 5}"#).rate_limited());
 }
 
+/// One answered call, as [`github::Answer::classify`] reads it.
+fn classified(status: u16, headers: &[(&str, &str)], success: github::Success) -> github::Verdict {
+    let mut map = reqwest::header::HeaderMap::new();
+    for (name, value) in headers {
+        map.insert(
+            reqwest::header::HeaderName::from_bytes(name.as_bytes()).expect("a header name"),
+            reqwest::header::HeaderValue::from_str(value).expect("a header value"),
+        );
+    }
+    github::Answer {
+        status,
+        headers: map,
+        text: String::new(),
+    }
+    .classify(success)
+}
+
+#[test]
+fn classify_names_every_answer_as_one_verdict() {
+    use github::{Success, Verdict};
+
+    // The status a call asks for is its success; any other 2xx is a failure each
+    // operation reads for itself, which is why a close's 201 and a create's 200
+    // both land on `Other`.
+    assert_eq!(classified(201, &[], Success::Created), Verdict::Accepted);
+    assert_eq!(classified(200, &[], Success::Fetched), Verdict::Accepted);
+    assert_eq!(classified(201, &[], Success::Fetched), Verdict::Other);
+    assert_eq!(classified(200, &[], Success::Created), Verdict::Other);
+    assert_eq!(classified(204, &[], Success::Created), Verdict::Other);
+    assert_eq!(
+        classified(401, &[], Success::Created),
+        Verdict::Unauthorized
+    );
+    assert_eq!(
+        classified(403, &[], Success::Created),
+        Verdict::RepoDenied,
+        "a permission 403 is not throttling"
+    );
+    assert_eq!(
+        classified(403, &[("x-ratelimit-remaining", "0")], Success::Created),
+        Verdict::RateLimited,
+        "the rate limit is decided first, as every batch stops on it"
+    );
+    assert_eq!(classified(429, &[], Success::Created), Verdict::RateLimited);
+    assert_eq!(classified(404, &[], Success::Created), Verdict::NotFound);
+    assert_eq!(classified(410, &[], Success::Created), Verdict::Gone);
+    assert_eq!(classified(500, &[], Success::Created), Verdict::Other);
+    assert_eq!(classified(302, &[], Success::Created), Verdict::Other);
+}
+
+#[test]
+fn every_operation_judges_every_verdict_as_the_reference_does() {
+    use github::Action::{Rearm, SkipRepo, SkipRow, Stop, Use};
+    use github::Operation::{CloseDeleted, CloseNote, File, Note, Sync};
+    use github::Verdict::{
+        Accepted, Gone, NotFound, Other, RateLimited, RepoDenied, Unauthorized, Unreachable,
+    };
+    use github::{Action, Operation, Verdict, action};
+
+    // The expected pair is the Python reference's own policy: `_FILING_SKIP_REPO_KINDS`,
+    // `_SYNC_SKIP_REPO_KINDS`, `_NOTE_SKIP_REPO_KINDS` and `_ALREADY_GONE_KINDS`. The
+    // three cells that differ between operations are the ones that always did: a 404
+    // in a sync re-arms the link, a 401 on the note paths costs only its item, and the
+    // post-delete close has no Repo skip at all.
+    let policy: [(Operation, [(Verdict, Action); 8]); 5] = [
+        (
+            File,
+            [
+                (Accepted, Use),
+                (RateLimited, Stop),
+                (Unauthorized, SkipRepo),
+                (RepoDenied, SkipRepo),
+                (NotFound, SkipRepo),
+                (Gone, SkipRepo),
+                (Other, SkipRow),
+                (Unreachable, Stop),
+            ],
+        ),
+        (
+            Sync,
+            [
+                (Accepted, Use),
+                (RateLimited, Stop),
+                (Unauthorized, SkipRepo),
+                (RepoDenied, SkipRepo),
+                (NotFound, Rearm),
+                (Gone, SkipRepo),
+                (Other, SkipRow),
+                (Unreachable, Stop),
+            ],
+        ),
+        (
+            Note,
+            [
+                (Accepted, Use),
+                (RateLimited, Stop),
+                (Unauthorized, SkipRow),
+                (RepoDenied, SkipRepo),
+                (NotFound, SkipRepo),
+                (Gone, SkipRepo),
+                (Other, SkipRow),
+                (Unreachable, Stop),
+            ],
+        ),
+        (
+            CloseNote,
+            [
+                (Accepted, Use),
+                (RateLimited, Stop),
+                (Unauthorized, SkipRow),
+                (RepoDenied, SkipRepo),
+                (NotFound, SkipRepo),
+                (Gone, SkipRepo),
+                (Other, SkipRow),
+                (Unreachable, Stop),
+            ],
+        ),
+        (
+            CloseDeleted,
+            [
+                (Accepted, Use),
+                (RateLimited, Stop),
+                (Unauthorized, SkipRow),
+                (RepoDenied, SkipRow),
+                (NotFound, SkipRow),
+                (Gone, SkipRow),
+                (Other, SkipRow),
+                (Unreachable, SkipRow),
+            ],
+        ),
+    ];
+
+    let mut stated: Vec<(Operation, Verdict)> = Vec::new();
+    for (operation, row) in policy {
+        for (verdict, expected) in row {
+            assert!(
+                !stated.contains(&(operation, verdict)),
+                "{operation:?} on {verdict:?} is stated twice"
+            );
+            stated.push((operation, verdict));
+            assert_eq!(
+                action(operation, verdict),
+                expected,
+                "what {operation:?} does with {verdict:?}"
+            );
+            if verdict == Unreachable {
+                // Nothing can act on an answer it never got, which is what lets
+                // every loop read the body without a second check.
+                assert_ne!(
+                    action(operation, verdict),
+                    Use,
+                    "{operation:?} cannot use an answer it does not have"
+                );
+            }
+        }
+    }
+    assert_eq!(
+        stated.len(),
+        40,
+        "every operation and verdict pair is stated"
+    );
+}
+
 #[tokio::test]
 async fn a_linked_row_and_a_calm_row_are_both_left_alone() {
     let db = TestDb::new().await.expect("a test database");
@@ -2011,7 +2202,7 @@ async fn a_linked_row_and_a_calm_row_are_both_left_alone() {
         &unstopped(),
     )
     .await;
-    assert!(filed_ids.is_empty());
+    assert!(filed_ids.linked.is_empty());
     assert!(
         server
             .received_requests()
@@ -2045,6 +2236,7 @@ async fn a_kept_not_planned_link_is_never_refiled() {
             &unstopped(),
         )
         .await
+        .linked
         .is_empty()
     );
     assert!(
@@ -2578,6 +2770,7 @@ async fn two_proven_flakes_meet_the_proven_flake_gate() {
             &unstopped()
         )
         .await
+        .linked
         .is_empty(),
         "one proven flake is under a gate of two"
     );
@@ -2599,6 +2792,7 @@ async fn two_proven_flakes_meet_the_proven_flake_gate() {
             &unstopped()
         )
         .await
+        .linked
         .len(),
         1,
         "two proven flakes meet it"
@@ -2626,6 +2820,7 @@ async fn a_second_failure_meets_the_min_failures_gate() {
             &unstopped()
         )
         .await
+        .linked
         .is_empty(),
         "one failure in the window is under a gate of two"
     );
@@ -2662,6 +2857,7 @@ async fn a_second_failure_meets_the_min_failures_gate() {
             &unstopped()
         )
         .await
+        .linked
         .len(),
         1,
         "a second failure in the window meets the gate"
@@ -2729,7 +2925,7 @@ async fn only_the_newest_window_counts_a_failure() {
     )
     .await;
     assert_eq!(
-        filed.into_iter().collect::<Vec<_>>(),
+        filed.linked.into_iter().collect::<Vec<_>>(),
         vec![new.id],
         "the failures outside the newest window do not count"
     );
@@ -2826,7 +3022,7 @@ async fn a_row_deleted_while_filing_leaves_the_rest_of_the_batch_filed() {
         &unstopped(),
     )
     .await;
-    assert_eq!(filed.into_iter().collect::<Vec<_>>(), vec![b]);
+    assert_eq!(filed.linked.into_iter().collect::<Vec<_>>(), vec![b]);
     assert_eq!(
         requested_paths(&server).await,
         vec![
@@ -3106,6 +3302,7 @@ async fn a_job_that_was_reported_is_not_filed_twice() {
             &unstopped()
         )
         .await
+        .linked
         .len(),
         1
     );
@@ -3118,6 +3315,7 @@ async fn a_job_that_was_reported_is_not_filed_twice() {
             &unstopped()
         )
         .await
+        .linked
         .is_empty()
     );
     assert_eq!(requested_paths(&server).await.len(), 1);
@@ -3134,6 +3332,7 @@ async fn a_job_filing_without_a_token_is_silent() {
     assert!(
         github::file_job_issues_for(db.connection(), &[job], &settings, &api, &unstopped())
             .await
+            .linked
             .is_empty()
     );
     assert!(
@@ -3180,6 +3379,7 @@ async fn only_unexplained_job_failures_meet_the_min_failures_gate() {
             &unstopped()
         )
         .await
+        .linked
         .is_empty(),
         "three explained failures are none of them unexplained"
     );
@@ -3209,6 +3409,7 @@ async fn only_unexplained_job_failures_meet_the_min_failures_gate() {
             &unstopped()
         )
         .await
+        .linked
         .len(),
         1,
         "two unexplained failures meet the gate"
@@ -3370,18 +3571,102 @@ async fn a_never_checked_link_goes_before_a_stamped_one() {
 }
 
 #[tokio::test]
-async fn a_sync_rate_limit_stops_the_batch_and_keeps_the_stamps_it_made() {
+async fn a_sync_stops_at_a_transport_error_with_one_request() {
+    let db = TestDb::new().await.expect("a test database");
+    let first = flaky_test_in(&db, "acme/a", "p1", "a").await;
+    let second = flaky_test_in(&db, "acme/b", "p2", "b").await;
+    stamp_link(&db, first, 1, false, false).await;
+    stamp_link(&db, second, 2, false, false).await;
+    // Every connection is accepted and dropped without an answer at all.
+    let loopback = Loopback::dropping().await;
+
+    let report = github::sync_closed_issues(
+        db.connection(),
+        &gh_settings(&[]),
+        &Api::new(Secret::new(TOKEN), &loopback.base),
+        &unstopped(),
+    )
+    .await;
+
+    assert_eq!(
+        report.stopped,
+        Some(github::BatchStop::Unreachable),
+        "the batch reports why it ended"
+    );
+    assert_eq!(
+        loopback.accepted(),
+        1,
+        "an unreachable GitHub ends the sync at the first call, not after every row"
+    );
+    assert!(
+        !test_link(&db, first).await.2,
+        "a row GitHub never answered for is not stamped"
+    );
+    assert!(
+        !test_link(&db, second).await.2,
+        "the batch never reached the second row"
+    );
+}
+
+#[tokio::test]
+async fn a_sync_rate_limit_stops_the_batch_and_keeps_the_stamp_it_made() {
     let db = TestDb::new().await.expect("a test database");
     let first = flaky_test_in(&db, "acme/a", "p1", "a").await;
     let second = flaky_test_in(&db, "acme/b", "p2", "b").await;
     stamp_link(&db, first, 1, false, false).await;
     stamp_link(&db, second, 2, false, false).await;
 
-    // An unreachable GitHub never raises: nothing is stamped, and the batch ends.
-    let offline = Api::new(Secret::new(TOKEN), "http://127.0.0.1:1");
-    github::sync_closed_issues(db.connection(), &gh_settings(&[]), &offline, &unstopped()).await;
-    assert!(!test_link(&db, first).await.2);
+    let server = MockServer::start().await;
+    mount_issue(
+        &server,
+        "acme/a",
+        1,
+        ResponseTemplate::new(200).set_body_json(json!({"state": "open"})),
+    )
+    .await;
+    mount_issue(
+        &server,
+        "acme/b",
+        2,
+        ResponseTemplate::new(403).insert_header("x-ratelimit-remaining", "0"),
+    )
+    .await;
+    let report = github::sync_closed_issues(
+        db.connection(),
+        &gh_settings(&[]),
+        &api(&server),
+        &unstopped(),
+    )
+    .await;
+    assert_eq!(
+        report.stopped,
+        Some(github::BatchStop::RateLimited),
+        "the batch reports why it ended"
+    );
+    assert_eq!(
+        requested_paths(&server).await,
+        vec!["/repos/acme/a/issues/1", "/repos/acme/b/issues/2"],
+        "the limit is met on the second request and stops the batch"
+    );
+    assert!(
+        test_link(&db, first).await.2,
+        "the checked stamp is written"
+    );
+    assert!(
+        !test_link(&db, second).await.2,
+        "the rate-limited row is never stamped"
+    );
+}
 
+#[tokio::test]
+async fn a_sync_continues_from_the_stamp_a_stopped_run_left() {
+    let db = TestDb::new().await.expect("a test database");
+    let first = flaky_test_in(&db, "acme/a", "p1", "a").await;
+    let second = flaky_test_in(&db, "acme/b", "p2", "b").await;
+    stamp_link(&db, first, 1, false, false).await;
+    stamp_link(&db, second, 2, false, false).await;
+    // The first run stops on a rate limit at the second row, leaving the first
+    // stamped and the second not.
     let server = MockServer::start().await;
     mount_issue(
         &server,
@@ -3404,17 +3689,8 @@ async fn a_sync_rate_limit_stops_the_batch_and_keeps_the_stamps_it_made() {
         &unstopped(),
     )
     .await;
-    assert_eq!(
-        requested_paths(&server).await,
-        vec!["/repos/acme/a/issues/1", "/repos/acme/b/issues/2"],
-        "the limit is met on the second request and stops the batch"
-    );
-    assert!(test_link(&db, first).await.2, "the checked stamp commits");
-    assert!(
-        !test_link(&db, second).await.2,
-        "the rate-limited row is never stamped"
-    );
 
+    // The retried row still sorts first, because nothing stamped it.
     let second_server = MockServer::start().await;
     mount_issue(
         &second_server,
@@ -3440,7 +3716,7 @@ async fn a_sync_rate_limit_stops_the_batch_and_keeps_the_stamps_it_made() {
     assert_eq!(
         requested_paths(&second_server).await,
         vec!["/repos/acme/b/issues/2", "/repos/acme/a/issues/1"],
-        "rotation continues from the committed stamp"
+        "the unstamped row goes first, and the stamped one follows"
     );
 }
 
@@ -3780,6 +4056,7 @@ async fn the_job_sync_rearms_a_closed_issue_and_the_filer_files_again() {
             &unstopped()
         )
         .await
+        .linked
         .len(),
         1,
         "the re-armed Job is filed again"
@@ -3817,13 +4094,7 @@ async fn deleting_a_repo_comments_then_closes_each_issue() {
         mount_close(&server, number, 200, true).await;
     }
 
-    github::close_issues_for_deleted_repo(
-        "acme/app",
-        &[123, 456],
-        &gh_settings(&[]),
-        &api(&server),
-    )
-    .await;
+    github::close_issues_for_deleted_repo("acme/app", &[123, 456], &api(&server)).await;
     let requests = server.received_requests().await.expect("a record");
     let calls: Vec<(String, String)> = requests
         .iter()
@@ -3858,11 +4129,10 @@ async fn deleting_a_repo_comments_then_closes_each_issue() {
 
     // No numbers and no token are both silent.
     let empty = MockServer::start().await;
-    github::close_issues_for_deleted_repo("acme/app", &[], &gh_settings(&[]), &api(&empty)).await;
+    github::close_issues_for_deleted_repo("acme/app", &[], &api(&empty)).await;
     github::close_issues_for_deleted_repo(
         "acme/app",
         &[123],
-        &gh_settings(&[]),
         &Api::new(Secret::new(""), &empty.uri()),
     )
     .await;
@@ -3879,8 +4149,7 @@ async fn deleting_a_repo_comments_then_closes_each_issue() {
     mount_close(&gone, 123, 404, false).await;
     mount_close(&gone, 456, 201, false).await;
     mount_close(&gone, 456, 200, true).await;
-    github::close_issues_for_deleted_repo("acme/app", &[123, 456], &gh_settings(&[]), &api(&gone))
-        .await;
+    github::close_issues_for_deleted_repo("acme/app", &[123, 456], &api(&gone)).await;
     assert_eq!(
         requested_paths(&gone).await,
         vec![
@@ -3899,13 +4168,7 @@ async fn a_failed_post_delete_request_costs_only_that_issue() {
     mount_close(&failed_comment, 123, 500, false).await;
     mount_close(&failed_comment, 456, 201, false).await;
     mount_close(&failed_comment, 456, 200, true).await;
-    github::close_issues_for_deleted_repo(
-        "acme/app",
-        &[123, 456],
-        &gh_settings(&[]),
-        &api(&failed_comment),
-    )
-    .await;
+    github::close_issues_for_deleted_repo("acme/app", &[123, 456], &api(&failed_comment)).await;
     assert_eq!(
         requested_paths(&failed_comment).await,
         vec![
@@ -3924,7 +4187,6 @@ async fn a_failed_post_delete_request_costs_only_that_issue() {
     let logged = logged_from(github::close_issues_for_deleted_repo(
         "acme/app",
         &[123, 456],
-        &gh_settings(&[]),
         &api(&gone_close),
     ))
     .await;
@@ -3951,7 +4213,6 @@ async fn a_failed_post_delete_request_costs_only_that_issue() {
     let logged = logged_from(github::close_issues_for_deleted_repo(
         "acme/app",
         &[123, 456],
-        &gh_settings(&[]),
         &api(&failed_close),
     ))
     .await;
@@ -3978,7 +4239,6 @@ async fn the_post_delete_close_never_raises_when_github_is_unreachable() {
     let logged = logged_from(github::close_issues_for_deleted_repo(
         "acme/app",
         &[123],
-        &gh_settings(&[]),
         &api,
     ))
     .await;
@@ -3994,13 +4254,7 @@ async fn a_rate_limit_on_either_post_delete_request_stops_the_batch() {
     let comment_limit = MockServer::start().await;
     mount_close(&comment_limit, 123, 429, false).await;
     mount_close(&comment_limit, 456, 201, false).await;
-    github::close_issues_for_deleted_repo(
-        "acme/app",
-        &[123, 456],
-        &gh_settings(&[]),
-        &api(&comment_limit),
-    )
-    .await;
+    github::close_issues_for_deleted_repo("acme/app", &[123, 456], &api(&comment_limit)).await;
     assert_eq!(
         requested_paths(&comment_limit).await,
         vec!["/repos/acme/app/issues/123/comments"],
@@ -4018,7 +4272,6 @@ async fn a_rate_limit_on_either_post_delete_request_stops_the_batch() {
     let logged = logged_from(github::close_issues_for_deleted_repo(
         "acme/app",
         &[123, 456],
-        &gh_settings(&[]),
         &api(&close_limit),
     ))
     .await;
@@ -4063,6 +4316,17 @@ impl Loopback {
     ///
     /// Every later connection is accepted and closed without an answer at all.
     async fn answering(first: String) -> Self {
+        Self::start(Some(first)).await
+    }
+
+    /// Starts an endpoint that hangs up on every connection it accepts.
+    async fn dropping() -> Self {
+        Self::start(None).await
+    }
+
+    /// Starts an endpoint that answers its first request with `first`, if there is
+    /// one, and hangs up on every later connection.
+    async fn start(first: Option<String>) -> Self {
         use tokio::io::AsyncWriteExt as _;
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -4075,7 +4339,7 @@ impl Loopback {
         let connections = Arc::new(AtomicUsize::new(0));
         let counter = Arc::clone(&connections);
         let task = tokio::spawn(async move {
-            let mut first = Some(first);
+            let mut first = first;
             loop {
                 let Ok((mut socket, _)) = listener.accept().await else {
                     return;
@@ -4135,6 +4399,98 @@ async fn read_request(socket: &mut tokio::net::TcpStream) {
     }
 }
 
+/// A stub answer that reports its request as arrived and waits to be released.
+///
+/// Holding a GitHub call open this way keeps "while a call is in flight"
+/// deterministic: no part of the test waits on elapsed time.
+struct Held {
+    arrived: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+    released: std::sync::atomic::AtomicBool,
+    answer: Json,
+}
+
+impl Held {
+    /// A gate whose first request is reported on `arrived` and held until released.
+    fn new(
+        arrived: tokio::sync::oneshot::Sender<()>,
+        release: std::sync::mpsc::Receiver<()>,
+        answer: Json,
+    ) -> Self {
+        Self {
+            arrived: std::sync::Mutex::new(Some(arrived)),
+            release: std::sync::Mutex::new(release),
+            released: std::sync::atomic::AtomicBool::new(false),
+            answer,
+        }
+    }
+}
+
+impl wiremock::Respond for Held {
+    fn respond(&self, _request: &Request) -> ResponseTemplate {
+        let arrived = self
+            .arrived
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(arrived) = arrived {
+            let _ = arrived.send(());
+        }
+        if !self.released.load(Ordering::SeqCst) {
+            let _ = self
+                .release
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .recv_timeout(std::time::Duration::from_secs(30));
+            self.released.store(true, Ordering::SeqCst);
+        }
+        ResponseTemplate::new(200).set_body_json(self.answer.clone())
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 3)]
+async fn a_link_replaced_during_the_sync_get_survives() {
+    let db = TestDb::new().await.expect("a test database");
+    let test = flaky_test_in(&db, "acme/app", "linked", "linked").await;
+    stamp_link(&db, test, 11, true, false).await;
+    let (arrived, arrived_rx) = tokio::sync::oneshot::channel();
+    let (release, released) = std::sync::mpsc::channel();
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/app/issues/11"))
+        .respond_with(Held::new(arrived, released, json!({"state": "closed"})))
+        .mount(&server)
+        .await;
+
+    // While the sync's GET is in flight, someone re-links the Test to a different
+    // issue. The answer to the old number must not touch the new link.
+    let relink = async {
+        arrived_rx.await.expect("the sync's GET arrives");
+        issue_links::store_filed_link(db.connection(), LinkTarget::Test, i64::from(test), 99)
+            .await
+            .expect("the link is replaced");
+        release.send(()).expect("the GET is released");
+    };
+    let settings = gh_settings(&[]);
+    let api = api(&server);
+    let stop = unstopped();
+    tokio::join!(
+        github::sync_closed_issues(db.connection(), &settings, &api, &stop),
+        relink
+    );
+
+    let (number, _, checked, _) = test_link(&db, test).await;
+    assert_eq!(
+        number,
+        Some(99),
+        "the link replaced during the GET stands, whatever the old answer said"
+    );
+    assert!(
+        !checked,
+        "the old number's answer does not stamp the new link as checked"
+    );
+}
+
 #[tokio::test]
 async fn a_body_that_dies_after_the_status_line_is_a_transport_error() {
     // The status line and headers arrive, then the connection dies mid-body, so
@@ -4146,7 +4502,6 @@ async fn a_body_that_dies_after_the_status_line_is_a_transport_error() {
     let logged = logged_from(github::close_issues_for_deleted_repo(
         "acme/app",
         &[123],
-        &gh_settings(&[]),
         &api,
     ))
     .await;
@@ -4181,7 +4536,6 @@ async fn a_post_delete_close_whose_connection_dies_costs_that_issue() {
     let logged = logged_from(github::close_issues_for_deleted_repo(
         "acme/app",
         &[123],
-        &gh_settings(&[]),
         &api,
     ))
     .await;
@@ -4633,6 +4987,49 @@ async fn a_note_network_error_is_logged_and_never_raises() {
 }
 
 #[tokio::test]
+async fn a_transport_error_on_a_fixed_note_close_ends_the_batch() {
+    let db = TestDb::new().await.expect("a test database");
+    let first = flaky_test_in(&db, "acme/a", "linked", "linked").await;
+    let second = flaky_test_in(&db, "acme/b", "other", "other").await;
+    stamp_link(&db, first, 71, true, false).await;
+    stamp_link(&db, second, 72, true, false).await;
+    set_clean_streak(&db, "test_cases", first, 3).await;
+    set_clean_streak(&db, "test_cases", second, 3).await;
+    // The first comment lands, then every later connection is dropped: the close
+    // of the first issue is the transport failure that ends the batch.
+    let loopback = Loopback::answering(CREATED.to_owned()).await;
+    let settings = fixed_settings(&[("FLAKERADAR_GITHUB_CLOSE_FIXED", "true")]);
+
+    let report = github::note_fixed_issues_for(
+        db.connection(),
+        &[first, second],
+        &settings,
+        &Api::new(Secret::new(TOKEN), &loopback.base),
+        &unstopped(),
+    )
+    .await;
+
+    assert_eq!(
+        report.stopped,
+        Some(github::BatchStop::Unreachable),
+        "the batch reports why it ended"
+    );
+    assert_eq!(
+        loopback.accepted(),
+        2,
+        "the second Test's comment is not posted after the close gave no answer"
+    );
+    assert!(
+        noted(&db, "test_cases", first).await,
+        "the first comment landed before the close was tried"
+    );
+    assert!(
+        !noted(&db, "test_cases", second).await,
+        "the batch ended before the second comment"
+    );
+}
+
+#[tokio::test]
 async fn a_fixed_note_close_whose_connection_dies_keeps_the_stamp() {
     let db = TestDb::new().await.expect("a test database");
     let test = flaky_test_in(&db, "acme/app", "linked", "linked").await;
@@ -4749,7 +5146,7 @@ async fn a_test_sync_rearms_its_closed_issue_and_the_filer_files_again() {
         &unstopped(),
     )
     .await;
-    assert_eq!(filed.into_iter().collect::<Vec<_>>(), vec![test]);
+    assert_eq!(filed.linked.into_iter().collect::<Vec<_>>(), vec![test]);
     assert_eq!(test_link(&db, test).await.0, Some(77));
     assert!(!test_link(&db, test).await.2, "a new link is checked first");
 }
@@ -4777,7 +5174,7 @@ async fn a_linked_test_and_a_linked_job_are_never_filed() {
         &unstopped(),
     )
     .await;
-    assert_eq!(filed.into_iter().collect::<Vec<_>>(), vec![other]);
+    assert_eq!(filed.linked.into_iter().collect::<Vec<_>>(), vec![other]);
     assert_eq!(
         requested_paths(&server).await,
         vec!["/repos/acme/other/issues"],
@@ -4793,7 +5190,7 @@ async fn a_linked_test_and_a_linked_job_are_never_filed() {
         &unstopped(),
     )
     .await;
-    assert!(jobs.is_empty(), "a linked Job is never filed");
+    assert!(jobs.linked.is_empty(), "a linked Job is never filed");
     assert!(
         server.received_requests().await.expect("a record").len() == 1,
         "no request for the linked Job"

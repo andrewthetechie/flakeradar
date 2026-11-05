@@ -20,22 +20,32 @@
 //! the number and flags the row, so nothing is filed again until a person
 //! unlinks it.
 //!
-//! **Error policy: this module never raises.** Every failure is logged and the
-//! batch moves on, so a GitHub outage costs filings rather than Report processing:
+//! **Error policy: this module never raises.** Every answer is classified once,
+//! next to the seam ([`Answer::classify`]), into one [`Verdict`], and one table
+//! ([`action`]) states what each operation does with each verdict. A GitHub outage
+//! therefore costs filings rather than Report processing:
 //!
 //! - No token configured: a silent no-op.
-//! - A rate limit on create: stop this batch and log a warning.
-//! - A 401 (bad credentials), any other 403, or a 404/410 (issues disabled): skip
-//!   that Repo for the rest of the batch. The token is refused for every Repo, so
-//!   a second candidate in that Repo is never posted to.
-//! - In the sync, a definitive Repo-wide client error (403, 401, 410) leaves the
-//!   link as it is, skips that Repo, and stamps its rows so they rotate; 404
-//!   still re-arms.
+//! - A rate limit ([`Verdict::RateLimited`]) ends every batch.
+//! - A call that nothing answers ([`Verdict::Unreachable`]) ends filing, the sync
+//!   and the fixed note; the post-delete close costs that one issue and goes on.
+//! - A 401, 403, 404 or 410 costs the Repo for the rest of a filing, noting or sync
+//!   batch, apart from the three cells the table spells out: a 404 in the sync is
+//!   the issue itself being gone, so the link re-arms; a 404 or 410 in the
+//!   post-delete close is the issue already being gone; and bad credentials (401)
+//!   are a per-item failure on the note paths, not a Repo-wide one.
+//! - Any other answer costs that one row, and the batch goes on.
 //! - After an admin delete, any failure but a rate limit costs that one issue.
 //! - A row deleted between a filing POST and the filer's commit costs that
 //!   filing: the new issue is commented on and closed best effort.
 //! - An unreadable body is logged and the row is stamped, so an unusable link
 //!   keeps rotating instead of pinning the front of the queue.
+//!
+//! **No database statement is open across a GitHub call.** The sync reads its
+//! rotation list, then calls GitHub for one row, then writes that one row in its
+//! own short statement, so a slow or hanging GitHub can never hold a row lock a
+//! Report or a route needs. That write applies only while the row still holds the
+//! number that was checked, so a link replaced during the `GET` survives it.
 //!
 //! **Stopping: every batch respects the leader's stop signal.** A sync's `GET`,
 //! a fixed note's comment and its close end as soon as the signal fires, so a
@@ -53,6 +63,7 @@
 use std::collections::BTreeSet;
 use std::fmt;
 use std::fmt::Write as _;
+use std::ops::ControlFlow;
 
 use chrono::{DateTime, Utc};
 use flakeradar_core::{JobExecutionOut, JobHistoryOut, MAX_ISSUE_NUMBER, repo_path};
@@ -221,6 +232,35 @@ pub struct TransportError {
 }
 
 impl Answer {
+    /// Classifies this answer into the one verdict every operation reads.
+    ///
+    /// `success` is the status this call's success carries: a `201` for a create or
+    /// a comment, a `200` for a read or a close. Any other 2xx is
+    /// [`Verdict::Other`], which each operation treats as a failure of its own.
+    ///
+    /// The rate limit is decided first, by [`Answer::rate_limited`], so a batch
+    /// stops on exactly the answers it stops on elsewhere.
+    #[must_use]
+    pub fn classify(&self, success: Success) -> Verdict {
+        if self.rate_limited() {
+            return Verdict::RateLimited;
+        }
+        match self.status {
+            401 => Verdict::Unauthorized,
+            403 => Verdict::RepoDenied,
+            404 => Verdict::NotFound,
+            410 => Verdict::Gone,
+            status if (200..300).contains(&status) => {
+                if status == success.status() {
+                    Verdict::Accepted
+                } else {
+                    Verdict::Other
+                }
+            }
+            _ => Verdict::Other,
+        }
+    }
+
     /// The body parsed as a JSON object, or `None` when it is not one.
     #[must_use]
     pub fn json_object(&self) -> Option<Value> {
@@ -299,6 +339,184 @@ impl Answer {
             .and_then(|value| value.to_str().ok())
             .unwrap_or("unknown")
             .to_owned()
+    }
+}
+
+/// The status one call's success carries, and nothing else.
+///
+/// GitHub answers `201` to a create or a comment and `200` to a read or a close; a
+/// 2xx that is not the one the call asks for is a failure the caller reads itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Success {
+    /// A create or a comment: `201`.
+    Created,
+    /// A read or a close: `200`.
+    Fetched,
+}
+
+impl Success {
+    /// The status code this success carries.
+    #[must_use]
+    fn status(self) -> u16 {
+        match self {
+            Self::Created => 201,
+            Self::Fetched => 200,
+        }
+    }
+}
+
+/// What GitHub said, as one verdict every operation reads the same way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verdict {
+    /// The 2xx the call asked for.
+    Accepted,
+    /// GitHub is throttling: a `429`, or a `403` that rides a rate limit.
+    RateLimited,
+    /// `401`: bad credentials.
+    Unauthorized,
+    /// A `403` that is not a rate limit: permission, or issues disabled.
+    RepoDenied,
+    /// `404`.
+    NotFound,
+    /// `410`.
+    Gone,
+    /// Any other answer.
+    Other,
+    /// No answer at all.
+    ///
+    /// [`Answer::classify`] never returns this: a caller turns a
+    /// [`TransportError`] into it, so a batch's policy covers it too.
+    Unreachable,
+}
+
+/// One of the four GitHub operations a verdict is judged for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Operation {
+    /// Creating an issue for a Test or a Job.
+    File,
+    /// Reading one linked issue's state in the sync.
+    Sync,
+    /// Commenting that a fix appears to hold.
+    Note,
+    /// Closing the issue that comment landed on.
+    CloseNote,
+    /// Commenting on and closing the issues an admin delete stranded.
+    CloseDeleted,
+}
+
+/// What one operation does when GitHub answers with one verdict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Action {
+    /// Act on the answer: file the issue, or read the issue's state.
+    Use,
+    /// The issue itself is gone: clear the link and re-arm filing.
+    Rearm,
+    /// Cost this row only, and go on with the next.
+    SkipRow,
+    /// Skip this row's Repo for the rest of the batch.
+    SkipRepo,
+    /// End the batch.
+    Stop,
+}
+
+/// Why a batch ended before its last row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BatchStop {
+    /// GitHub is throttling, which ends every batch.
+    RateLimited,
+    /// Nothing answered, so the rest of the batch is not worth trying.
+    Unreachable,
+    /// The leader lost leadership, so the batch gave up.
+    Stopped,
+}
+
+/// What one batch did, as a value a caller can assert on.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BatchReport {
+    /// The entity ids the batch stored a link for.
+    pub linked: BTreeSet<i32>,
+    /// The Repos the batch skipped for the rest of its run.
+    pub skipped: BTreeSet<String>,
+    /// Why the batch ended before its last row, when it did.
+    pub stopped: Option<BatchStop>,
+}
+
+impl BatchReport {
+    /// Logs this batch's summary once, at the edge that owns it.
+    fn log(&self, operation: Operation) {
+        tracing::info!(
+            operation = ?operation,
+            linked = self.linked.len(),
+            skipped_repos = self.skipped.len(),
+            stopped = ?self.stopped,
+            "GitHub batch finished"
+        );
+    }
+}
+
+/// What every operation does with every verdict: the module's one status policy.
+///
+/// A row is an operation and a column a verdict, and every cell is what the
+/// reference does with that pair:
+///
+/// | verdict | `File` | `Sync` | `Note` | `CloseNote` | `CloseDeleted` |
+/// |---|---|---|---|---|---|
+/// | `Accepted` | use | use | use | use | use |
+/// | `RateLimited` | stop | stop | stop | stop | stop |
+/// | `Unauthorized` | skip Repo | skip Repo | skip row | skip row | skip row |
+/// | `RepoDenied` | skip Repo | skip Repo | skip Repo | skip Repo | skip row |
+/// | `NotFound` | skip Repo | re-arm | skip Repo | skip Repo | skip row |
+/// | `Gone` | skip Repo | skip Repo | skip Repo | skip Repo | skip row |
+/// | `Other` | skip row | skip row | skip row | skip row | skip row |
+/// | `Unreachable` | stop | stop | stop | stop | skip row |
+///
+/// Three cells are the intended differences, and each is the reference's own:
+/// a `404` in the sync is the issue itself being gone, so the link re-arms rather
+/// than the Repo being skipped; a `401` is a per-item failure on the note paths,
+/// because bad credentials are not Repo-wide there; and the post-delete close has
+/// no Repo-skip cell at all, because it works through one Repo's numbers and
+/// skipping the Repo would end the batch.
+#[must_use]
+pub fn action(operation: Operation, verdict: Verdict) -> Action {
+    use Action::{Rearm, SkipRepo, SkipRow, Stop, Use};
+    use Operation::{CloseDeleted, CloseNote, File, Note, Sync};
+    use Verdict::{
+        Accepted, Gone, NotFound, Other, RateLimited, RepoDenied, Unauthorized, Unreachable,
+    };
+    match operation {
+        File => match verdict {
+            Accepted => Use,
+            RateLimited | Unreachable => Stop,
+            Unauthorized | RepoDenied | NotFound | Gone => SkipRepo,
+            Other => SkipRow,
+        },
+        Sync => match verdict {
+            Accepted => Use,
+            NotFound => Rearm,
+            RateLimited | Unreachable => Stop,
+            Unauthorized | RepoDenied | Gone => SkipRepo,
+            Other => SkipRow,
+        },
+        Note | CloseNote => match verdict {
+            Accepted => Use,
+            RateLimited | Unreachable => Stop,
+            RepoDenied | NotFound | Gone => SkipRepo,
+            Unauthorized | Other => SkipRow,
+        },
+        CloseDeleted => match verdict {
+            Accepted => Use,
+            RateLimited => Stop,
+            Unauthorized | RepoDenied | NotFound | Gone | Other | Unreachable => SkipRow,
+        },
+    }
+}
+
+/// Why GitHub's verdict ends a batch.
+fn batch_stop(verdict: Verdict) -> BatchStop {
+    if verdict == Verdict::Unreachable {
+        BatchStop::Unreachable
+    } else {
+        BatchStop::RateLimited
     }
 }
 
@@ -1019,27 +1237,27 @@ async fn job_candidates(
 
 /// Files issues for Tests that now meet the filing gate. Never raises.
 ///
-/// Returns the Test ids it linked, so the caller can keep the fixed-note step
-/// off a link this same Report created.
+/// The report names the Test ids it linked, so the caller can keep the fixed-note
+/// step off a link this same Report created.
 pub async fn file_issues_for(
     db: &(impl ConnectionTrait + TransactionTrait),
     test_ids: &[i32],
     settings: &Settings,
     api: &Api,
     stop: &CancellationToken,
-) -> BTreeSet<i32> {
+) -> BatchReport {
     if !api.configured() || test_ids.is_empty() {
-        return BTreeSet::new();
+        return BatchReport::default();
     }
     let candidates = match test_candidates(db, test_ids, settings).await {
         Ok(candidates) => candidates,
         Err(error) => {
             tracing::warn!(error = %error, "GitHub issue filing could not read its Test candidates");
-            return BTreeSet::new();
+            return BatchReport::default();
         }
     };
     if candidates.is_empty() {
-        return BTreeSet::new();
+        return BatchReport::default();
     }
     let mut batch = Vec::new();
     for candidate in candidates {
@@ -1067,7 +1285,9 @@ pub async fn file_issues_for(
             body,
         });
     }
-    file_batch(db, batch, "test", settings, api, stop).await
+    let report = file_batch(db, batch, "test", settings, api, stop).await;
+    report.log(Operation::File);
+    report
 }
 
 /// Files issues for github-provider Jobs that now meet the filing gate. Never raises.
@@ -1077,19 +1297,19 @@ pub async fn file_job_issues_for(
     settings: &Settings,
     api: &Api,
     stop: &CancellationToken,
-) -> BTreeSet<i32> {
+) -> BatchReport {
     if !api.configured() || job_ids.is_empty() {
-        return BTreeSet::new();
+        return BatchReport::default();
     }
     let candidates = match job_candidates(db, job_ids, settings).await {
         Ok(candidates) => candidates,
         Err(error) => {
             tracing::warn!(error = %error, "GitHub issue filing could not read its Job candidates");
-            return BTreeSet::new();
+            return BatchReport::default();
         }
     };
     if candidates.is_empty() {
-        return BTreeSet::new();
+        return BatchReport::default();
     }
     let mut batch = Vec::new();
     for candidate in candidates {
@@ -1118,7 +1338,9 @@ pub async fn file_job_issues_for(
             body,
         });
     }
-    file_batch(db, batch, "job", settings, api, stop).await
+    let report = file_batch(db, batch, "job", settings, api, stop).await;
+    report.log(Operation::File);
+    report
 }
 
 /// One rendered issue to file.
@@ -1142,81 +1364,86 @@ async fn file_batch(
     settings: &Settings,
     api: &Api,
     stop: &CancellationToken,
-) -> BTreeSet<i32> {
-    let mut linked = BTreeSet::new();
-    let mut skipped: BTreeSet<String> = BTreeSet::new();
+) -> BatchReport {
+    let mut report = BatchReport::default();
     for request in batch {
         if stop.is_cancelled() {
             tracing::info!(entity, "stopping the issue-filing batch: leadership ended");
+            report.stopped = Some(BatchStop::Stopped);
             break;
         }
-        if skipped.contains(&request.repo) {
+        if report.skipped.contains(&request.repo) {
             continue;
         }
-        let answer = match api
+        let answered = api
             .create_issue(
                 &request.repo,
                 &request.title,
                 &request.body,
                 &settings.github_issue_label,
             )
-            .await
-        {
+            .await;
+        let answer = match answered {
             Ok(answer) => answer,
             Err(error) => {
+                // Filing never carries on without an answer, which is the table's
+                // `File`/`Unreachable` cell.
                 tracing::warn!(error = %error, entity, "GitHub unreachable, skipping issue filing");
-                return linked;
+                report.stopped = Some(batch_stop(Verdict::Unreachable));
+                break;
             }
         };
-        match answer.status {
-            201 => {
-                let Some(number) = answer.issue_number() else {
+        let verdict = answer.classify(Success::Created);
+        match action(Operation::File, verdict) {
+            Action::Use => {
+                if let Some(number) = answer.issue_number() {
+                    if !commit_filed_link(db, &request, number).await {
+                        // The row vanished mid-filing: the number is referenced
+                        // nowhere, so close the issue just created, best effort.
+                        let _ = close_issues_for_deleted_repo(&request.repo, &[number], api).await;
+                        tracing::warn!(
+                            entity,
+                            entity_id = request.entity_id,
+                            repo = %request.repo,
+                            number,
+                            "row deleted (admin delete) while filing; closed the new issue"
+                        );
+                        continue;
+                    }
+                    report.linked.insert(request.entity_id);
+                    tracing::info!(
+                        repo = %request.repo,
+                        number,
+                        entity,
+                        entity_id = request.entity_id,
+                        "filed a GitHub issue"
+                    );
+                } else {
                     tracing::warn!(
                         repo = %request.repo,
                         body = %answer.short_text(),
                         "GitHub issue creation returned 201 with no issue number"
                     );
-                    continue;
-                };
-                if !commit_filed_link(db, &request, number).await {
-                    // The row vanished mid-filing: the number is referenced
-                    // nowhere, so close the issue just created, best effort.
-                    close_issues_for_deleted_repo(&request.repo, &[number], settings, api).await;
-                    tracing::warn!(
-                        entity,
-                        entity_id = request.entity_id,
-                        repo = %request.repo,
-                        number,
-                        "row deleted (admin delete) while filing; closed the new issue"
-                    );
-                    continue;
                 }
-                linked.insert(request.entity_id);
-                tracing::info!(
-                    repo = %request.repo,
-                    number,
-                    entity,
-                    entity_id = request.entity_id,
-                    "filed a GitHub issue"
-                );
             }
-            _ if answer.rate_limited() => {
+            Action::Stop => {
                 tracing::warn!(
                     remaining = %answer.remaining_text(),
                     "GitHub rate limit; stopping the filing batch"
                 );
-                return linked;
+                report.stopped = Some(batch_stop(verdict));
+                break;
             }
-            _ if matches!(answer.status, 401 | 403 | 404 | 410) => {
+            Action::SkipRepo => {
                 tracing::warn!(
                     repo = %request.repo,
                     status = answer.status,
                     body = %answer.short_text(),
                     "GitHub issue creation skipped for this Repo"
                 );
-                skipped.insert(request.repo.clone());
+                report.skipped.insert(request.repo.clone());
             }
-            _ => {
+            Action::SkipRow | Action::Rearm => {
                 tracing::warn!(
                     entity,
                     entity_id = request.entity_id,
@@ -1228,7 +1455,7 @@ async fn file_batch(
             }
         }
     }
-    linked
+    report
 }
 
 /// Stores the number GitHub just created, answering whether the row was still there.
@@ -1277,132 +1504,118 @@ async fn commit_filed_link(
 
 /// Re-arms deduplication for Tests and Jobs whose GitHub issue has been closed.
 ///
-/// Leader-only maintenance: each stored link is checked with its own GET, capped
-/// at the configured batch for each target, newest-never-checked first. Never
-/// raises.
+/// Leader-only maintenance: each stored link is checked with its own `GET`, capped
+/// at the configured batch for each target, never-checked first. Never raises.
+///
+/// No statement is open across a `GET`: the rotation list is read first, and each
+/// answered row is then written by its own short statement, which is guarded on the
+/// issue number that was checked (see [`issue_links::record_check`]).
 pub async fn sync_closed_issues(
-    db: &(impl ConnectionTrait + TransactionTrait),
+    db: &impl ConnectionTrait,
     settings: &Settings,
     api: &Api,
     stop: &CancellationToken,
-) {
+) -> BatchReport {
+    let mut report = BatchReport::default();
     if !api.configured() {
-        return;
+        return report;
     }
     let batch = settings.github_sync_batch;
-    let transaction = match db.begin().await {
-        Ok(transaction) => transaction,
-        Err(error) => {
-            tracing::warn!(error = %error, "GitHub issue-state sync could not open a transaction");
-            return;
-        }
-    };
     let mut rows: Vec<(LinkTarget, issue_links::LinkedIssue)> = Vec::new();
     for target in LinkTarget::ALL {
-        match issue_links::linked_for_check(&transaction, target, batch).await {
+        match issue_links::linked_for_check(db, target, batch).await {
             Ok(linked) => rows.extend(linked.into_iter().map(|row| (target, row))),
             Err(error) => {
                 tracing::warn!(error = %error, "GitHub issue-state sync could not read its rotation list");
-                return;
+                return report;
             }
         }
-    }
-    if rows.is_empty() {
-        let _ = transaction.rollback().await;
-        return;
     }
     let now = Utc::now();
-    let mut skipped: BTreeSet<String> = BTreeSet::new();
     for (target, row) in rows {
-        if skipped.contains(&row.repo) {
+        if report.skipped.contains(&row.repo) {
             // An unreadable Repo this run: rotate it like a checked row.
-            if let Err(error) =
-                issue_links::stamp_checked(&transaction, target, i64::from(row.entity_id), now)
-                    .await
-            {
-                tracing::warn!(error = %error, "GitHub issue-state sync could not stamp a row");
-            }
+            record_check(db, target, &row, issue_links::Check::Kept, now).await;
             continue;
         }
-        if !clear_if_closed(
-            &transaction,
-            target,
-            &row,
-            settings,
-            api,
-            &mut skipped,
-            now,
-            stop,
-        )
-        .await
+        if let ControlFlow::Break(stop_reason) =
+            clear_if_closed(db, target, &row, api, &mut report, now, stop).await
         {
+            report.stopped = Some(stop_reason);
             break;
         }
     }
-    if let Err(error) = transaction.commit().await {
-        tracing::warn!(error = %error, "GitHub issue-state sync could not commit");
-    }
+    report.log(Operation::Sync);
+    report
 }
 
-/// Checks one issue and clears its number when it is closed or gone.
+/// Checks one issue and records what the answer meant for its link.
 ///
-/// Returns `false` on a rate limit or a stop, when the batch must end. Every row
-/// that got an answer is stamped, so an unusable link keeps rotating instead of
-/// pinning the front of the queue.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "one call site, and the row, the batch state and the stop signal are all read in place"
-)]
+/// Stamping stays as the reference's `_clear_if_closed` docstring states: every row
+/// that got an answer is stamped, whatever the answer said, while a rate-limit stop
+/// or a transport error leaves the row unstamped so it is retried first.
 async fn clear_if_closed(
     db: &impl ConnectionTrait,
     target: LinkTarget,
     row: &issue_links::LinkedIssue,
-    settings: &Settings,
     api: &Api,
-    skipped: &mut BTreeSet<String>,
+    report: &mut BatchReport,
     now: DateTime<Utc>,
     stop: &CancellationToken,
-) -> bool {
-    let Some(answer) = until_stopped(stop, api.get_issue(&row.repo, row.number)).await else {
+) -> ControlFlow<BatchStop> {
+    let Some(answered) = until_stopped(stop, api.get_issue(&row.repo, row.number)).await else {
         tracing::info!("stopping the GitHub issue-state sync: leadership ended");
-        return false;
+        return ControlFlow::Break(BatchStop::Stopped);
     };
-    let answer = match answer {
+    let answer = match answered {
         Ok(answer) => answer,
         Err(error) => {
+            // No answer at all, so this row goes unstamped and the run stops here.
             tracing::warn!(error = %error, "GitHub unreachable, skipping issue-state sync");
-            return true;
+            return ControlFlow::Break(batch_stop(Verdict::Unreachable));
         }
     };
-    if answer.rate_limited() {
-        tracing::warn!("GitHub rate limit in sync; stopping the batch");
-        return false;
-    }
-    if let Err(error) = issue_links::stamp_checked(db, target, i64::from(row.entity_id), now).await
-    {
-        tracing::warn!(error = %error, "GitHub issue-state sync could not stamp a row");
-    }
-    if matches!(answer.status, 401 | 403 | 410) {
-        tracing::warn!(
-            repo = %row.repo,
-            status = answer.status,
-            body = %answer.short_text(),
-            "GitHub issue-state sync skipped for this Repo"
-        );
-        skipped.insert(row.repo.clone());
-        return true;
-    }
-    if answer.status == 200 {
-        let Some(state) = answer.issue_state() else {
-            tracing::warn!(
+    let verdict = answer.classify(Success::Fetched);
+    let checked = match action(Operation::Sync, verdict) {
+        Action::Use => sync_decision(&answer, row, target),
+        Action::Rearm => {
+            tracing::info!(
                 repo = %row.repo,
                 number = row.number,
-                body = %answer.short_text(),
-                "GitHub issue-state sync got an unusable 200 body"
+                target = target.entity(),
+                entity_id = row.entity_id,
+                "issue gone; re-arming the link"
             );
-            return true;
-        };
-        if state == "closed" {
+            issue_links::Check::Rearmed
+        }
+        Action::SkipRepo => {
+            tracing::warn!(
+                repo = %row.repo,
+                status = answer.status,
+                body = %answer.short_text(),
+                "GitHub issue-state sync skipped for this Repo"
+            );
+            report.skipped.insert(row.repo.clone());
+            issue_links::Check::Kept
+        }
+        Action::SkipRow => issue_links::Check::Kept,
+        Action::Stop => {
+            tracing::warn!("GitHub rate limit in sync; stopping the batch");
+            return ControlFlow::Break(batch_stop(verdict));
+        }
+    };
+    record_check(db, target, row, checked, now).await;
+    ControlFlow::Continue(())
+}
+
+/// What one answered check means for its link, with the line that says why.
+fn sync_decision(
+    answer: &Answer,
+    row: &issue_links::LinkedIssue,
+    target: LinkTarget,
+) -> issue_links::Check {
+    match answer.issue_state().as_deref() {
+        Some("closed") => {
             let reason = answer.state_reason();
             if reason.as_deref() == Some("not_planned") {
                 tracing::info!(
@@ -1412,11 +1625,7 @@ async fn clear_if_closed(
                     entity_id = row.entity_id,
                     "issue closed as not planned; keeping the link"
                 );
-                if let Err(error) =
-                    issue_links::set_closed(db, target, i64::from(row.entity_id), true).await
-                {
-                    tracing::warn!(error = %error, "GitHub issue-state sync could not keep the link");
-                }
+                issue_links::Check::Declined
             } else {
                 tracing::info!(
                     repo = %row.repo,
@@ -1426,36 +1635,39 @@ async fn clear_if_closed(
                     reason = %reason.as_deref().unwrap_or("without a reason"),
                     "issue closed; re-arming the link"
                 );
-                if let Err(error) =
-                    issue_links::rearm_link(db, target, i64::from(row.entity_id)).await
-                {
-                    tracing::warn!(error = %error, "GitHub issue-state sync could not re-arm the link");
-                }
+                issue_links::Check::Rearmed
             }
-        } else if state == "open" {
+        }
+        Some("open") => {
             // Possibly reopened after a close as not planned: filing is live again.
-            if let Err(error) =
-                issue_links::set_closed(db, target, i64::from(row.entity_id), false).await
-            {
-                tracing::warn!(error = %error, "GitHub issue-state sync could not clear the flag");
-            }
+            issue_links::Check::Reopened
         }
-        return true;
-    }
-    if answer.status == 404 {
-        tracing::info!(
-            repo = %row.repo,
-            number = row.number,
-            target = target.entity(),
-            entity_id = row.entity_id,
-            "issue gone; re-arming the link"
-        );
-        if let Err(error) = issue_links::rearm_link(db, target, i64::from(row.entity_id)).await {
-            tracing::warn!(error = %error, "GitHub issue-state sync could not re-arm the link");
+        Some(_) => issue_links::Check::Kept,
+        None => {
+            tracing::warn!(
+                repo = %row.repo,
+                number = row.number,
+                body = %answer.short_text(),
+                "GitHub issue-state sync got an unusable 200 body"
+            );
+            issue_links::Check::Kept
         }
     }
-    let _ = settings;
-    true
+}
+
+/// Writes one row's check, warning when the write cannot land.
+async fn record_check(
+    db: &impl ConnectionTrait,
+    target: LinkTarget,
+    row: &issue_links::LinkedIssue,
+    check: issue_links::Check,
+    at: DateTime<Utc>,
+) {
+    if let Err(error) =
+        issue_links::record_check(db, target, i64::from(row.entity_id), row.number, check, at).await
+    {
+        tracing::warn!(error = %error, "GitHub issue-state sync could not write its check");
+    }
 }
 
 /// Closes the issues whose Test or Job rows an admin delete removed, best effort.
@@ -1464,19 +1676,14 @@ async fn clear_if_closed(
 /// syncs the issue: without this it would stay open forever, pointing at
 /// permalinks that now 404. Never raises; a rate limit stops the batch and any
 /// other failure costs that one issue.
-pub async fn close_issues_for_deleted_repo(
-    repo: &str,
-    numbers: &[i32],
-    settings: &Settings,
-    api: &Api,
-) {
+pub async fn close_issues_for_deleted_repo(repo: &str, numbers: &[i32], api: &Api) -> BatchReport {
+    let mut report = BatchReport::default();
     if !api.configured() || numbers.is_empty() {
-        return;
+        return report;
     }
-    let _ = settings;
     for number in numbers {
-        let answer = match api.comment(repo, *number, CLOSE_COMMENT).await {
-            Ok(answer) => answer,
+        let comment = match api.comment(repo, *number, CLOSE_COMMENT).await {
+            Ok(comment) => comment,
             Err(error) => {
                 tracing::warn!(
                     error = %error,
@@ -1487,29 +1694,34 @@ pub async fn close_issues_for_deleted_repo(
                 continue;
             }
         };
-        if answer.rate_limited() {
-            tracing::warn!(
-                remaining = %answer.remaining_text(),
-                "GitHub rate limit; stopping the post-delete close batch"
-            );
-            return;
-        }
-        if matches!(answer.status, 404 | 410) {
-            tracing::info!(repo = %repo, number, "issue already gone after an admin delete");
-            continue;
-        }
-        if answer.status != 201 {
-            tracing::warn!(
-                repo = %repo,
-                number,
-                status = answer.status,
-                body = %answer.short_text(),
-                "GitHub comment after an admin delete failed"
-            );
-            continue;
+        let verdict = comment.classify(Success::Created);
+        match action(Operation::CloseDeleted, verdict) {
+            Action::Use => {}
+            Action::Stop => {
+                tracing::warn!(
+                    remaining = %comment.remaining_text(),
+                    "GitHub rate limit; stopping the post-delete close batch"
+                );
+                report.stopped = Some(batch_stop(verdict));
+                break;
+            }
+            Action::SkipRow | Action::SkipRepo | Action::Rearm => {
+                if already_gone(&comment) {
+                    tracing::info!(repo = %repo, number, "issue already gone after an admin delete");
+                } else {
+                    tracing::warn!(
+                        repo = %repo,
+                        number,
+                        status = comment.status,
+                        body = %comment.short_text(),
+                        "GitHub comment after an admin delete failed"
+                    );
+                }
+                continue;
+            }
         }
         let close = match api.close_issue(repo, *number, None).await {
-            Ok(answer) => answer,
+            Ok(close) => close,
             Err(error) => {
                 tracing::warn!(
                     error = %error,
@@ -1520,29 +1732,46 @@ pub async fn close_issues_for_deleted_repo(
                 continue;
             }
         };
-        if close.rate_limited() {
-            tracing::warn!(
-                remaining = %close.remaining_text(),
-                repo = %repo,
-                number,
-                "GitHub rate limit; stopping the post-delete close batch"
-            );
-            return;
-        }
-        if matches!(close.status, 404 | 410) {
-            tracing::info!(repo = %repo, number, "issue already gone after an admin delete");
-        } else if close.status == 200 {
-            tracing::info!(repo = %repo, number, "closed an issue after an admin delete");
-        } else {
-            tracing::warn!(
-                repo = %repo,
-                number,
-                status = close.status,
-                body = %close.short_text(),
-                "GitHub close after an admin delete failed"
-            );
+        let verdict = close.classify(Success::Fetched);
+        match action(Operation::CloseDeleted, verdict) {
+            Action::Use => {
+                tracing::info!(repo = %repo, number, "closed an issue after an admin delete");
+            }
+            Action::Stop => {
+                tracing::warn!(
+                    remaining = %close.remaining_text(),
+                    repo = %repo,
+                    number,
+                    "GitHub rate limit; stopping the post-delete close batch"
+                );
+                report.stopped = Some(batch_stop(verdict));
+                break;
+            }
+            Action::SkipRow | Action::SkipRepo | Action::Rearm => {
+                if already_gone(&close) {
+                    tracing::info!(repo = %repo, number, "issue already gone after an admin delete");
+                } else {
+                    tracing::warn!(
+                        repo = %repo,
+                        number,
+                        status = close.status,
+                        body = %close.short_text(),
+                        "GitHub close after an admin delete failed"
+                    );
+                }
+            }
         }
     }
+    report.log(Operation::CloseDeleted);
+    report
+}
+
+/// Whether a post-delete answer is the issue already being gone.
+///
+/// That is the outcome this batch wanted: it costs that one number and the next is
+/// still tried, exactly as a failure other than a rate limit does.
+fn already_gone(answer: &Answer) -> bool {
+    matches!(answer.status, 404 | 410)
 }
 
 /// One linked row the fixed-note step selected.
@@ -1641,17 +1870,20 @@ pub async fn note_fixed_issues_for(
     settings: &Settings,
     api: &Api,
     stop: &CancellationToken,
-) {
+) -> BatchReport {
     if !api.configured() || settings.github_fixed_streak <= 0 || test_ids.is_empty() {
-        return;
+        return BatchReport::default();
     }
     match note_test_candidates(db, test_ids, settings).await {
         Ok(candidates) if !candidates.is_empty() => {
-            note_batch(db, candidates, "test", settings, api, stop).await;
+            let report = note_batch(db, candidates, "test", settings, api, stop).await;
+            report.log(Operation::Note);
+            report
         }
-        Ok(_) => {}
+        Ok(_) => BatchReport::default(),
         Err(error) => {
             tracing::warn!(error = %error, "GitHub fixed-note could not read its candidates");
+            BatchReport::default()
         }
     }
 }
@@ -1663,17 +1895,20 @@ pub async fn note_fixed_job_issues_for(
     settings: &Settings,
     api: &Api,
     stop: &CancellationToken,
-) {
+) -> BatchReport {
     if !api.configured() || settings.github_fixed_streak <= 0 || job_ids.is_empty() {
-        return;
+        return BatchReport::default();
     }
     match note_job_candidates(db, job_ids, settings).await {
         Ok(candidates) if !candidates.is_empty() => {
-            note_batch(db, candidates, "job", settings, api, stop).await;
+            let report = note_batch(db, candidates, "job", settings, api, stop).await;
+            report.log(Operation::Note);
+            report
         }
-        Ok(_) => {}
+        Ok(_) => BatchReport::default(),
         Err(error) => {
             tracing::warn!(error = %error, "GitHub fixed-note could not read its candidates");
+            BatchReport::default()
         }
     }
 }
@@ -1689,10 +1924,10 @@ async fn note_batch(
     settings: &Settings,
     api: &Api,
     stop: &CancellationToken,
-) {
-    let mut skipped: BTreeSet<String> = BTreeSet::new();
+) -> BatchReport {
+    let mut report = BatchReport::default();
     for row in rows {
-        if skipped.contains(&row.repo) {
+        if report.skipped.contains(&row.repo) {
             continue;
         }
         let body = fixed_comment(
@@ -1703,82 +1938,101 @@ async fn note_batch(
             row.default_branch.as_deref(),
             &settings.public_url,
         );
-        let answer = until_stopped(stop, api.comment(&row.repo, row.number, &body)).await;
-        let answer = match answer {
-            None => {
-                tracing::info!(entity, "stopping the fixed-note batch: leadership ended");
-                return;
-            }
-            Some(Ok(answer)) => answer,
-            Some(Err(error)) => {
+        let Some(answered) = until_stopped(stop, api.comment(&row.repo, row.number, &body)).await
+        else {
+            tracing::info!(entity, "stopping the fixed-note batch: leadership ended");
+            report.stopped = Some(BatchStop::Stopped);
+            break;
+        };
+        let comment = match answered {
+            Ok(comment) => comment,
+            Err(error) => {
                 tracing::warn!(error = %error, entity, "GitHub unreachable, skipping fixed-note comments");
-                return;
+                report.stopped = Some(batch_stop(Verdict::Unreachable));
+                break;
             }
         };
-        match answer.status {
-            201 => {
-                let threshold = i32::try_from(settings.github_fixed_streak).unwrap_or(i32::MAX);
-                let stamp = match issue_links::stamp_fixed_note(
-                    db,
-                    row.target,
-                    i64::from(row.entity_id),
-                    row.number,
-                    threshold,
-                    Utc::now(),
-                )
-                .await
-                {
-                    Ok(stamp) => stamp,
-                    Err(error) => {
-                        tracing::warn!(error = %error, "GitHub fixed-note could not stamp its row");
-                        continue;
-                    }
-                };
-                if !stamp.stamped {
-                    log_note_stamp_failure(stamp.state, entity, &row);
+        let verdict = comment.classify(Success::Created);
+        match action(Operation::Note, verdict) {
+            Action::Use => {
+                if !stamp_note(db, &row, entity, settings).await || !settings.github_close_fixed {
                     continue;
                 }
-                tracing::info!(
-                    repo = %row.repo,
-                    number = row.number,
-                    entity,
-                    entity_id = row.entity_id,
-                    "noted that the fix appears to hold"
-                );
-                if settings.github_close_fixed
-                    && close_note(db, &row, entity, settings, api, &mut skipped, stop).await
+                if let ControlFlow::Break(stop_reason) =
+                    close_note(&row, entity, api, &mut report.skipped, stop).await
                 {
-                    return;
+                    report.stopped = Some(stop_reason);
+                    break;
                 }
             }
-            _ if answer.rate_limited() => {
+            Action::Stop => {
                 tracing::warn!(
-                    remaining = %answer.remaining_text(),
+                    remaining = %comment.remaining_text(),
                     "GitHub rate limit; stopping the fixed-note batch"
                 );
-                return;
+                report.stopped = Some(batch_stop(verdict));
+                break;
             }
-            _ if matches!(answer.status, 403 | 404 | 410) => {
+            Action::SkipRepo => {
                 tracing::warn!(
                     repo = %row.repo,
-                    status = answer.status,
-                    body = %answer.short_text(),
+                    status = comment.status,
+                    body = %comment.short_text(),
                     "GitHub fixed-note skipped for this Repo"
                 );
-                skipped.insert(row.repo.clone());
+                report.skipped.insert(row.repo.clone());
             }
-            _ => {
+            Action::SkipRow | Action::Rearm => {
                 tracing::warn!(
                     entity,
                     entity_id = row.entity_id,
                     repo = %row.repo,
-                    status = answer.status,
-                    body = %answer.short_text(),
+                    status = comment.status,
+                    body = %comment.short_text(),
                     "GitHub fixed-note comment failed"
                 );
             }
         }
     }
+    report
+}
+
+/// Lands the fixed-note stamp for one row, answering whether it landed.
+async fn stamp_note(
+    db: &impl ConnectionTrait,
+    row: &NoteCandidate,
+    entity: &str,
+    settings: &Settings,
+) -> bool {
+    let threshold = i32::try_from(settings.github_fixed_streak).unwrap_or(i32::MAX);
+    let stamp = match issue_links::stamp_fixed_note(
+        db,
+        row.target,
+        i64::from(row.entity_id),
+        row.number,
+        threshold,
+        Utc::now(),
+    )
+    .await
+    {
+        Ok(stamp) => stamp,
+        Err(error) => {
+            tracing::warn!(error = %error, "GitHub fixed-note could not stamp its row");
+            return false;
+        }
+    };
+    if !stamp.stamped {
+        log_note_stamp_failure(stamp.state, entity, row);
+        return false;
+    }
+    tracing::info!(
+        repo = %row.repo,
+        number = row.number,
+        entity,
+        entity_id = row.entity_id,
+        "noted that the fix appears to hold"
+    );
+    true
 }
 
 /// Logs why a note's stamp did not land: the row vanished or stopped being noteable.
@@ -1803,67 +2057,70 @@ fn log_note_stamp_failure(state: Option<(i32, Option<i32>)>, entity: &str, row: 
 
 /// Closes the issue a fix was noted on, when the configuration asks for it.
 ///
-/// Returns `true` when GitHub is throttling, which stops the whole batch rather
-/// than only this issue, the same way the close of a deleted Repo's issues does.
+/// A stop signal or a rate limit ends the whole batch rather than only this issue.
 async fn close_note(
-    db: &impl ConnectionTrait,
     row: &NoteCandidate,
     entity: &str,
-    settings: &Settings,
     api: &Api,
     skipped: &mut BTreeSet<String>,
     stop: &CancellationToken,
-) -> bool {
-    let _ = (db, settings);
-    let answer = until_stopped(
+) -> ControlFlow<BatchStop> {
+    let Some(answered) = until_stopped(
         stop,
         api.close_issue(&row.repo, row.number, Some("completed")),
     )
-    .await;
-    let answer = match answer {
-        None => {
-            tracing::info!(entity, "stopping the fixed-close batch: leadership ended");
-            return true;
-        }
-        Some(Ok(answer)) => answer,
-        Some(Err(error)) => {
+    .await
+    else {
+        tracing::info!(entity, "stopping the fixed-close batch: leadership ended");
+        return ControlFlow::Break(BatchStop::Stopped);
+    };
+    let close = match answered {
+        Ok(close) => close,
+        Err(error) => {
             tracing::warn!(error = %error, entity, "GitHub unreachable, skipping the close");
-            return false;
+            return ControlFlow::Break(batch_stop(Verdict::Unreachable));
         }
     };
-    if answer.rate_limited() {
-        tracing::warn!(
-            remaining = %answer.remaining_text(),
-            repo = %row.repo,
-            number = row.number,
-            "GitHub rate limit; stopping the fixed-close batch"
-        );
-        return true;
+    let verdict = close.classify(Success::Fetched);
+    match action(Operation::CloseNote, verdict) {
+        Action::Use => {
+            tracing::info!(
+                repo = %row.repo,
+                number = row.number,
+                "closed an issue after noting the fix"
+            );
+            ControlFlow::Continue(())
+        }
+        Action::Stop => {
+            tracing::warn!(
+                remaining = %close.remaining_text(),
+                repo = %row.repo,
+                number = row.number,
+                "GitHub rate limit; stopping the fixed-close batch"
+            );
+            ControlFlow::Break(batch_stop(verdict))
+        }
+        Action::SkipRepo => {
+            tracing::warn!(
+                repo = %row.repo,
+                status = close.status,
+                body = %close.short_text(),
+                "GitHub issue close skipped for this Repo"
+            );
+            skipped.insert(row.repo.clone());
+            ControlFlow::Continue(())
+        }
+        Action::SkipRow | Action::Rearm => {
+            tracing::warn!(
+                repo = %row.repo,
+                number = row.number,
+                status = close.status,
+                body = %close.short_text(),
+                "GitHub close after noting the fix failed"
+            );
+            ControlFlow::Continue(())
+        }
     }
-    if matches!(answer.status, 403 | 404 | 410) {
-        tracing::warn!(
-            repo = %row.repo,
-            status = answer.status,
-            body = %answer.short_text(),
-            "GitHub issue close skipped for this Repo"
-        );
-        skipped.insert(row.repo.clone());
-    } else if answer.status == 200 {
-        tracing::info!(
-            repo = %row.repo,
-            number = row.number,
-            "closed an issue after noting the fix"
-        );
-    } else {
-        tracing::warn!(
-            repo = %row.repo,
-            number = row.number,
-            status = answer.status,
-            body = %answer.short_text(),
-            "GitHub close after noting the fix failed"
-        );
-    }
-    false
 }
 
 /// The `ReportWorker` hook: file issues for the Tests and Jobs a Report touched.
@@ -1889,13 +2146,13 @@ pub async fn on_report_processed(
         .touched_test_ids
         .iter()
         .copied()
-        .filter(|id| !filed.contains(id))
+        .filter(|id| !filed.linked.contains(id))
         .collect();
     let note_job_ids: Vec<i32> = outcome
         .touched_job_ids
         .iter()
         .copied()
-        .filter(|id| !filed_jobs.contains(id))
+        .filter(|id| !filed_jobs.linked.contains(id))
         .collect();
     note_fixed_issues_for(db, &note_ids, settings, api, stop).await;
     note_fixed_job_issues_for(db, &note_job_ids, settings, api, stop).await;

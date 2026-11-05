@@ -32,7 +32,8 @@ use flakeradar_test_support::{
 };
 use sea_orm::ConnectionTrait as _;
 use sea_orm::{
-    DatabaseConnection, DbBackend, DbErr, EntityTrait as _, QueryOrder as _, Statement, Value,
+    DatabaseConnection, DbBackend, DbErr, EntityTrait as _, QueryOrder as _, Statement,
+    TransactionTrait as _, Value,
 };
 use serde_json::json;
 use wiremock::matchers::{method, path};
@@ -637,23 +638,42 @@ struct GatedAnswer {
     release: Mutex<std::sync::mpsc::Receiver<()>>,
     released: AtomicBool,
     status: u16,
-    number: i32,
+    body: serde_json::Value,
 }
 
 impl GatedAnswer {
-    /// A gate whose first request is reported on `arrived` and held until released.
+    /// A gate answering with an issue number, as a create or a comment does.
     fn new(
         arrived: tokio::sync::oneshot::Sender<()>,
         release: std::sync::mpsc::Receiver<()>,
         status: u16,
         number: i32,
     ) -> Self {
+        Self::answering(arrived, release, status, json!({ "number": number }))
+    }
+
+    /// A gate answering with an issue state, as a sync's `GET` does.
+    fn state(
+        arrived: tokio::sync::oneshot::Sender<()>,
+        release: std::sync::mpsc::Receiver<()>,
+        state: &str,
+    ) -> Self {
+        Self::answering(arrived, release, 200, json!({ "state": state }))
+    }
+
+    /// A gate answering `body` with `status`.
+    fn answering(
+        arrived: tokio::sync::oneshot::Sender<()>,
+        release: std::sync::mpsc::Receiver<()>,
+        status: u16,
+        body: serde_json::Value,
+    ) -> Self {
         Self {
             arrived: Mutex::new(Some(arrived)),
             release: Mutex::new(release),
             released: AtomicBool::new(false),
             status,
-            number,
+            body,
         }
     }
 }
@@ -677,7 +697,7 @@ impl wiremock::Respond for GatedAnswer {
 
             self.released.store(true, Ordering::SeqCst);
         }
-        ResponseTemplate::new(self.status).set_body_json(json!({ "number": self.number }))
+        ResponseTemplate::new(self.status).set_body_json(self.body.clone())
     }
 }
 
@@ -1622,4 +1642,111 @@ async fn stopping_ends_an_unanswered_close_at_once() {
         !closed(&db, test).await,
         "a close GitHub never answered closed nothing"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_sync_holds_no_row_lock_across_its_get() {
+    let db = TestDb::new().await.expect("a test database");
+    // The first row in the rotation is answered and written; the second row's `GET`
+    // is then held open, so the first row's write is the one a second connection
+    // races against. Only a sync that keeps its statements open across the call
+    // can still be holding that row.
+    let checked = linked_test(&db, 12).await;
+    let held = linked_test_in(&db, "other/app", 13).await;
+    let (arrived, arrived_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let server = MockServer::start().await;
+    mount_open_issue(&server, 12).await;
+    Mock::given(method("GET"))
+        .and(path("/repos/other/app/issues/13"))
+        .respond_with(GatedAnswer::state(arrived, release_rx, "open"))
+        .mount(&server)
+        .await;
+    let worker = GitHubWorker::new(
+        db.connection().clone(),
+        Arc::new(settings()),
+        Api::new(Secret::new(TOKEN), &server.uri()),
+        Duration::from_secs(3600),
+    );
+
+    LeaderTask::start(&worker).await;
+    arrived_rx.await.expect("the second row's GET is in flight");
+
+    // A second connection writes the row the sync already checked, under a
+    // lock_timeout far shorter than any GitHub call: a held row lock fails this
+    // with 55P03 instead of waiting for it.
+    let neighbour = db.connection().begin().await.expect("a transaction");
+    neighbour
+        .execute_unprepared("SET LOCAL lock_timeout = '250ms'")
+        .await
+        .expect("the short timeout is set");
+    neighbour
+        .execute_unprepared(&format!(
+            "UPDATE test_cases SET quarantine_reason = 'seen' WHERE id = {checked}"
+        ))
+        .await
+        .expect("the row the sync already wrote is not locked");
+    neighbour.commit().await.expect("the write commits");
+
+    // The quarantine route wants that same row, and answers 200 rather than the
+    // 500 a statement timeout would give it.
+    let app = common::app(&db, &[]);
+    let reply = common::post(
+        &app,
+        &format!("/api/tests/{checked}/quarantine"),
+        &[("content-type", "application/json")],
+        json!({"quarantined": true}).to_string(),
+    )
+    .await;
+    assert_eq!(reply.status, 200, "{}", reply.text());
+
+    // A Report touching that Test has to write it too, and reaches `processed` on
+    // its first try instead of spending its retries on a lock.
+    let project_id: i32 = db
+        .connection()
+        .query_one_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "SELECT project_id FROM test_cases WHERE id = $1",
+            [Value::from(checked)],
+        ))
+        .await
+        .expect("the Test reads")
+        .expect("the Test exists")
+        .try_get("", "project_id")
+        .expect("a project id");
+    let project = projects::Entity::find_by_id(project_id)
+        .one(db.connection())
+        .await
+        .expect("the Project reads")
+        .expect("the Project exists");
+    make_report(&project, project.repo_id)
+        .commit_sha("s1")
+        .body(&make_junit(&[("test_linked", "failed")]))
+        .build(db.connection())
+        .await
+        .expect("a queued Report");
+    let outcome = flakeradar_db::process_next(db.connection(), &ProcessingSettings::default())
+        .await
+        .expect("the processor runs")
+        .expect("the Report is queued");
+    assert_eq!(
+        outcome.status,
+        "processed",
+        "{}",
+        outcome.error.clone().unwrap_or_default()
+    );
+    assert_eq!(outcome.retry_count, 0, "no retry was spent on a lock");
+    assert_eq!(
+        outcome.touched_test_ids,
+        vec![checked],
+        "the Report touched the row the sync wrote"
+    );
+    assert_eq!(
+        stored_number(&db, held).await,
+        Some(13),
+        "the held row is untouched"
+    );
+
+    release_tx.send(()).expect("the stub is released");
+    LeaderTask::stop(&worker).await.expect("the task stops");
 }
