@@ -41,8 +41,7 @@ async fn recorded(server: &MockServer) -> usize {
     server
         .received_requests()
         .await
-        .map(|requests| requests.len())
-        .unwrap_or(0)
+        .map_or(0, |requests| requests.len())
 }
 
 /// Waits until the stub has recorded `expected` requests.
@@ -53,9 +52,10 @@ async fn until_count(server: &MockServer, expected: usize) {
         }
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
-    panic!(
-        "the stub recorded {} requests, not {expected}",
-        recorded(server).await
+    assert_eq!(
+        recorded(server).await,
+        expected,
+        "the stub never recorded the expected requests"
     );
 }
 

@@ -20,6 +20,7 @@
 mod common;
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -287,7 +288,9 @@ fn encoded_path(path: &str) -> String {
             | b':'
             | b'@'
             | b'/' => encoded.push(char::from(byte)),
-            other => encoded.push_str(&format!("%{other:02X}")),
+            other => {
+                write!(encoded, "%{other:02X}").expect("a String takes every write");
+            }
         }
     }
     encoded

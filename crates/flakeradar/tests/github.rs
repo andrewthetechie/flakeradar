@@ -236,7 +236,7 @@ async fn a_flaky_test_is_filed_in_its_own_repo_with_its_evidence() {
         json!("[FlakeRadar] Flaky test: tests.test_cart::test_total")
     );
     assert_eq!(body["labels"], json!(["flakeradar"]));
-    let text = body["body"].as_str().expect("a body").to_owned();
+    let body_text = body["body"].as_str().expect("a body").to_owned();
     for expected in [
         "FlakeRadar detected a flaky test: `tests.test_cart::test_total`",
         "- **Repo / project:** `acme/app` / `backend`",
@@ -252,8 +252,8 @@ async fn a_flaky_test_is_filed_in_its_own_repo_with_its_evidence() {
         "_Fingerprint: `abc123`_",
     ] {
         assert!(
-            text.contains(expected),
-            "the body carries {expected:?}: {text}"
+            body_text.contains(expected),
+            "the body carries {expected:?}: {body_text}"
         );
     }
     let authorization = request

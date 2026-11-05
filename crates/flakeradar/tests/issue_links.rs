@@ -56,7 +56,7 @@ async fn test_link(db: &TestDb, id: i32) -> (Option<i32>, Option<bool>, bool, bo
             "SELECT github_issue_number, github_issue_filed, github_issue_checked_at IS NOT NULL \
              AS checked, github_issue_closed, github_issue_fixed_noted_at IS NOT NULL AS noted \
              FROM test_cases WHERE id = $1",
-            [i32::from(id).into()],
+            [id.into()],
         ))
         .await
         .expect("the row reads")
@@ -133,7 +133,7 @@ async fn the_same_number_twice_keeps_the_check_stamp() {
         .execute_raw(Statement::from_sql_and_values(
             DbBackend::Postgres,
             "UPDATE test_cases SET github_issue_checked_at = now() WHERE id = $1",
-            [i32::from(test.id).into()],
+            [test.id.into()],
         ))
         .await
         .expect("the stamp writes");
@@ -195,7 +195,7 @@ async fn replace_stores_the_new_number_and_resets_everything_that_went_with_the_
             DbBackend::Postgres,
             "UPDATE test_cases SET github_issue_checked_at = now(), github_issue_closed = TRUE, \
              github_issue_fixed_noted_at = now(), github_issue_filed = TRUE WHERE id = $1",
-            [i32::from(test.id).into()],
+            [test.id.into()],
         ))
         .await
         .expect("the old link's flags write");
@@ -284,7 +284,7 @@ async fn a_number_out_of_range_is_the_validation_error_pydantic_gave() {
     let too_high = put(
         &app,
         &format!("/api/tests/{}/issue", test.id),
-        &json!({"number": 2147483648_i64}),
+        &json!({"number": 2_147_483_648_i64}),
     )
     .await;
     assert_eq!(too_high.status, StatusCode::UNPROCESSABLE_ENTITY);
@@ -346,7 +346,7 @@ async fn unlinking_clears_both_halves_and_every_flag() {
             DbBackend::Postgres,
             "UPDATE test_cases SET github_issue_checked_at = now(), github_issue_fixed_noted_at = now(), \
              github_issue_filed = TRUE, github_issue_closed = TRUE WHERE id = $1",
-            [i32::from(test.id).into()],
+            [test.id.into()],
         ))
         .await
         .expect("the link's flags write");
