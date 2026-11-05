@@ -1,9 +1,10 @@
 //! The parity replay: every recorded scenario step, against the Rust app.
 //!
-//! The contract is `tests/parity/README.md`. `tools/parity-record/record.py`
-//! recorded what the frozen Python server answered for each step of each
-//! scenario; this harness sends the same requests to
-//! [`flakeradar::build_app`] on a database of its own and compares the answers.
+//! The contract is `tests/parity/README.md`. The deleted recorder
+//! (`tools/parity-record/record.py` at `97b933d`) recorded what the frozen
+//! Python server answered for each step of each scenario; this harness sends the
+//! same requests to [`flakeradar::build_app`] on a database of its own and
+//! compares the answers.
 //!
 //! Every scenario in `tests/parity/scenarios/` runs every step: there is no list
 //! of enabled steps to fall behind and no way to switch a scenario off. A new
@@ -47,9 +48,10 @@ const TOKEN: &str = "parity-token";
 
 /// The `FLAKERADAR_*` settings the recorder pinned for every scenario.
 ///
-/// Copied from `FIXED_SETTINGS` in `tools/parity-record/record.py`: a scenario
-/// recorded against these values must be replayed against them, or the server
-/// under test answers a different instance's question.
+/// Copied from the deleted recorder's `FIXED_SETTINGS` (`tools/parity-record/record.py`
+/// at `97b933d`): a scenario recorded against these values must be replayed
+/// against them, or the server under test answers a different instance's
+/// question.
 const FIXED_SETTINGS: &[(&str, &str)] = &[
     ("FLAKERADAR_API_TOKEN", TOKEN),
     ("FLAKERADAR_WORKER_POLL_SECONDS", "0.05"),

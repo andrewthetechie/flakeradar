@@ -22,7 +22,7 @@ services:
       - "127.0.0.1:8000:8000"
     env_file: .env
     environment:
-      # SQLx reads `postgresql://`; the Python server needed `postgresql+asyncpg://`.
+      # A `postgresql://` URL: the driver prefix is not part of the contract.
       FLAKERADAR_DATABASE_URL: postgresql://flakeradar:${POSTGRES_PASSWORD:-flakeradar}@db:5432/flakeradar
     depends_on:
       db:

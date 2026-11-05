@@ -5,8 +5,6 @@
 **/__pycache__
 # The frontend stage builds `dist` itself; a local one must not override it.
 frontend/dist
-# The Python reference is deleted in task 15 and is not part of the image.
-backend
 .git
 .env
 target

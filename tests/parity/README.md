@@ -1,8 +1,16 @@
 # Parity fixtures
 
-What the frozen Python backend does, captured once as committed files. The Rust
-rewrite replays them, so Python never runs in CI. Task 02 records them; task 15
-deletes the recorder and keeps these files as regression tests.
+The frozen Python backend's answers, recorded once as committed files, replayed
+by `crates/flakeradar/tests/parity.rs`. Python never runs in CI.
+
+The golden files were recorded from the Python server at commit `97b933d`, the
+last commit before the Rust rewrite branched. The recorder is gone with the
+Python code it drove. **A golden file changes only for an intended behaviour
+change, and only together with an entry in
+`docs/plans/rust-rewrite/differences.md`**; a difference the replay must accept
+also needs an entry in `allowed-differences.json`, which
+`record.py --verify` used to reconcile against `differences.md` and no longer
+can.
 
 ```
 junit/                    the JUnit XML corpus (inputs)
@@ -13,29 +21,26 @@ schema.sql                pg_dump of Alembic head, minus alembic_version
 allowed-differences.json  the only mismatches a replay may accept
 ```
 
-Nothing here is edited by hand. `tools/parity-record/record.py` writes all of
-it, and `record.py --verify` fails when a committed file no longer matches what
-the Python reference produces.
+Nothing here is edited by hand: a replay compares against these files byte for
+byte, so a hand edit is an unreviewed behaviour change. When a difference is
+intended, record why in `docs/plans/rust-rewrite/differences.md`, add the
+narrowest matching entry to `allowed-differences.json`, and change the golden
+in the same PR.
 
-## Recording
+## Recording (historical)
 
-Docker must be running. From the repo root:
-
-```bash
-backend/.venv/bin/python tools/parity-record/record.py            # rewrite
-backend/.venv/bin/python tools/parity-record/record.py --verify   # check
-```
-
-Each run starts a throwaway `postgres:17-alpine`, creates a fresh database per
-scenario, starts one `uvicorn` process against it (the lifespan runs the
-migrations), runs the steps, and stops the server. If `frontend/dist` exists it
-is moved aside for the run and put back afterwards: with a built frontend
-mounted at `/`, a trailing-slash request is answered 404 by the static files
-instead of Starlette's 307, and a fresh checkout has no `dist`. Every golden is
-recorded against the routes-only app. Recording is deterministic:
-two runs produce byte-identical files. The parts are reproducible on their own
-with `--only junit`, `--only scenarios` or `--only schema`, and one scenario at
-a time with `--scenario NAME`.
+The files were produced by `tools/parity-record/record.py` at `97b933d`, which
+task 15 deleted with `backend/`. The recipe, kept so the fixtures stay
+readable: the recorder started a throwaway `postgres:17-alpine`, created a
+fresh database per scenario, started one `uvicorn` process against it (the
+lifespan ran the migrations), ran the steps, and stopped the server. If
+`frontend/dist` existed it was moved aside for the run and put back afterwards:
+with a built frontend mounted at `/`, a trailing-slash request is answered 404
+by the static files instead of Starlette's 307, and a fresh checkout has no
+`dist`. Every golden was recorded against the routes-only app. Recording was
+deterministic: two runs produced byte-identical files. The parts were
+reproducible on their own with `--only junit`, `--only scenarios` or
+`--only schema`, and one scenario at a time with `--scenario NAME`.
 
 Values the server takes from the clock are replaced after being checked to
 parse:
@@ -50,12 +55,14 @@ parse:
 - Ids, scores and fingerprints are kept exact. Sequence values start at 1 on
   every fresh database, so ids are stable.
 
-`record.py` also fails when a route in FastAPI's own route table (`app.openapi()["paths"]`)
-appears in no scenario, except the docs routes and `/mcp`, which the Rust binary
-serves differently on purpose (see `docs/plans/rust-rewrite/differences.md`).
+`record.py` (deleted with the Python code) also failed when a route in
+FastAPI's own route table (`app.openapi()["paths"]`) appeared in no scenario,
+except the docs routes and `/mcp`, which the Rust binary serves differently on
+purpose (see `docs/plans/rust-rewrite/differences.md`).
 
 A PostgreSQL minor-version bump changes the version comment in `schema.sql`;
-re-record and commit it.
+the file is now a fixture, so a bump means editing it by hand and saying why in
+the commit.
 
 ## The JUnit corpus
 
@@ -204,21 +211,20 @@ rules:
   API accepts is one the processor can parse, so no upload produces a `failed`
   Report. `POST /api/reports/{id}/retry` and `DELETE /api/reports/{id}` are
   recorded for their hand-written errors (404 and 409); their success paths are
-  covered by the ported unit tests in the manifest
-  (`tests/test_reports_api.py::test_retry`, `::test_delete`, task 06).
+  covered by the ported tests (`crates/flakeradar/tests/reports.rs`'s `retry`
+  and `delete`, task 06).
 - **A database that is down.** `GET /api/health/ready` and `GET /metrics`
   answer 503 only when a query fails, which a scenario cannot arrange without
-  stopping its own database mid-request. `tests/test_ops_api.py` owns those
-  cases (task 05).
+  stopping its own database mid-request. `crates/flakeradar/src/ops.rs`'s tests
+  own those cases (task 05).
 - **A delete that deadlocks with the report processor.**
   `DELETE /api/repos/{owner}/{name}` and
   `DELETE /api/repos/{owner}/{name}/projects/{project}` answer 503 with the
   hand-written `"Delete raced with the report processor; retry."` only when
   Postgres aborts the delete for a lock cycle with the processor
-  (`backend/app/routers/repos.py:171` and `:214`). A scenario would have to hold
+  (`crates/flakeradar/src/routes/admin.rs`). A scenario would have to hold
   a Report mid-processing while it deletes the Repo, which it cannot arrange.
-  `tests/test_repos_api.py::test_delete_deadlocking_with_the_processor_gets_a_retryable_503`
-  owns both endpoints (task 10).
+  `crates/flakeradar/tests/admin.rs` owns both endpoints (task 10).
 - **Time.** Trends, retention and `new_within_days` depend on the clock; the
   scenarios record their current-day values with `<date>`/`<timestamp>`
   placeholders, and the ported unit tests own the time-dependent behaviour.
