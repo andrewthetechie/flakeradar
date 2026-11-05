@@ -87,6 +87,19 @@ impl WebhookShared {
 
     /// The task's loop: take a batch, deliver it to every endpoint.
     async fn run(self: &Arc<Self>, cancel: &CancellationToken) {
+        self.run_with(cancel, |shared, url, batch| async move {
+            shared.post(&url, &batch).await;
+        })
+        .await;
+    }
+
+    /// `run` with one endpoint's delivery injected, so a test can prove that a
+    /// delivery which fails unexpectedly is logged and the loop keeps working.
+    async fn run_with<F, Fut>(self: &Arc<Self>, cancel: &CancellationToken, deliver: F)
+    where
+        F: Fn(Arc<Self>, String, Vec<TierChange>) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = ()> + Send + 'static,
+    {
         while !cancel.is_cancelled() {
             let notified = self.notify.notified();
             let batch = guard(&self.queue).pop_front();
@@ -96,14 +109,16 @@ impl WebhookShared {
                     () = notified => continue,
                 }
             };
+            let events = batch.len();
             let mut set = tokio::task::JoinSet::new();
             for url in &self.urls {
-                let shared = Arc::clone(self);
-                let url = url.clone();
-                let batch = batch.clone();
-                set.spawn(async move { shared.post(&url, &batch).await });
+                set.spawn(deliver(Arc::clone(self), url.clone(), batch.clone()));
             }
-            while set.join_next().await.is_some() {}
+            while let Some(result) = set.join_next().await {
+                if let Err(error) = result {
+                    tracing::error!(events, error = %error, "Webhook delivery failed");
+                }
+            }
         }
     }
 
@@ -270,5 +285,174 @@ impl LeaderTask for WebhookWorker {
         }
         self.shared.push(outcome.tier_changes.clone());
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    use super::{WebhookShared, WebhookWorker, retry_after_seconds};
+    use flakeradar_core::{Kind, Tier, TierChange, WebhookFormat};
+    use reqwest::header::{HeaderMap, HeaderValue};
+
+    /// A header map carrying one `retry-after` spelling.
+    fn retry_after(value: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "retry-after",
+            HeaderValue::from_str(value).expect("the test value is a header"),
+        );
+        headers
+    }
+
+    /// One Test crossing the Flake threshold.
+    fn change(id: i64) -> TierChange {
+        TierChange {
+            kind: Kind::Test,
+            id,
+            repo: "acme/app".to_owned(),
+            project: Some("backend".to_owned()),
+            name: "test_total".to_owned(),
+            flakiness_score: 0.42,
+            tier: Tier::Flaky,
+            confirmed_flake_count: 2,
+            classname: Some("tests.test_cart".to_owned()),
+            pipeline: None,
+            failure_category: None,
+        }
+    }
+
+    #[test]
+    fn a_rate_limit_waits_as_long_as_the_retry_after_says() {
+        assert_eq!(retry_after_seconds(&retry_after("1")), Some(1.0));
+        assert_eq!(retry_after_seconds(&retry_after("2.5")), Some(2.5));
+        assert_eq!(
+            retry_after_seconds(&retry_after("15")),
+            Some(10.0),
+            "the wait is capped at ten seconds"
+        );
+        assert_eq!(
+            retry_after_seconds(&retry_after("-1")),
+            Some(0.0),
+            "a negative wait is no wait"
+        );
+        assert_eq!(
+            retry_after_seconds(&retry_after("Wed, 21 Oct 2015 07:28:00 GMT")),
+            None,
+            "an HTTP date is ignored and the default wait used"
+        );
+        assert_eq!(retry_after_seconds(&retry_after("soon")), None);
+        assert_eq!(retry_after_seconds(&HeaderMap::new()), None);
+    }
+
+    #[tokio::test]
+    async fn a_delivery_that_raises_is_logged_and_the_task_keeps_serving() {
+        use std::io::Write as _;
+
+        /// An `io::Write` that appends to the shared buffer.
+        struct Sink(Arc<Mutex<Vec<u8>>>);
+
+        impl std::io::Write for Sink {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .extend_from_slice(buf);
+                Ok(buf.len())
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let worker = Arc::new(WebhookWorker::new(
+            vec!["http://127.0.0.1:1/hook".to_owned()],
+            WebhookFormat::Json,
+            "",
+        ));
+        let shared = Arc::clone(&worker.shared);
+        let cancel = worker.cancel.clone();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let delivered = Arc::new(Mutex::new(Vec::<i64>::new()));
+
+        let lines = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&lines);
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_writer(move || Sink(Arc::clone(&sink)))
+            .with_max_level(tracing::Level::ERROR)
+            .finish();
+        let guard = tracing::subscriber::set_default(subscriber);
+
+        let handle = {
+            let shared = Arc::clone(&shared);
+            let cancel = cancel.clone();
+            let attempts = Arc::clone(&attempts);
+            let delivered = Arc::clone(&delivered);
+            tokio::spawn(async move {
+                WebhookShared::run_with(&shared, &cancel, move |_shared, _url, batch| {
+                    let attempt = attempts.fetch_add(1, Ordering::SeqCst);
+                    let delivered = Arc::clone(&delivered);
+                    async move {
+                        assert!(attempt > 0, "the delivery raised");
+                        delivered
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .push(batch[0].id);
+                    }
+                })
+                .await;
+            })
+        };
+
+        shared.push(vec![change(1)]);
+        for _ in 0..1000 {
+            if attempts.load(Ordering::SeqCst) >= 1 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        shared.push(vec![change(2)]);
+        for _ in 0..1000 {
+            if !delivered
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_empty()
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        let delivered = delivered
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        cancel.cancel();
+        handle.await.expect("the loop ends when it is cancelled");
+        drop(guard);
+
+        let logged = String::from_utf8_lossy(
+            &lines
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+        .into_owned();
+        assert!(
+            logged.contains("Webhook delivery failed"),
+            "a delivery that raised is logged: {logged}"
+        );
+        assert!(
+            !logged.contains("127.0.0.1"),
+            "the log names no endpoint: {logged}"
+        );
+        assert_eq!(
+            delivered,
+            vec![2],
+            "the task delivered the next batch after the failure"
+        );
+        let _ = std::io::stdout().flush();
     }
 }
