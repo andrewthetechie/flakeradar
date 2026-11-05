@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<testsuites>
+  <testsuite name="summary-suite" errors="0" failures="2" skipped="0" tests="2" time="2.114">
+    <testcase classname="tests.test_summary" name="test_known_flaky" file="tests/test_summary.py" line="10" time="2.083">
+      <failure message="TimeoutError: the poller gave up after 2.0s">TimeoutError</failure>
+    </testcase>
+    <testcase classname="tests.test_summary" name="test_new_failure" file="tests/test_summary.py" line="30" time="0.031">
+      <failure message="AssertionError: expected 2 rows, got 3">AssertionError</failure>
+    </testcase>
+  </testsuite>
+</testsuites>

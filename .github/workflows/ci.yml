@@ -479,14 +479,39 @@ jobs:
           }
           EOF
 
-  # Exercises the standalone summary action (issue #36) end to end: a real
-  # backend plus a fixture CI run (one known-flaky Test, one new failure), then
-  # asserts on the Markdown the action writes. The reporter (#35) is not in the
-  # tree yet, so this job seeds the /api/ci-runs/{id}/failures data directly
-  # through the models and runs the action against it.
-  summary-action:
-    name: Summary action (fixture)
-    runs-on: ubuntu-latest
+  # Builds the binary once and hands it to the jobs that exercise the shipped
+  # interfaces, exactly as a user downloads it. `frontend/dist` is not built
+  # here, so this binary serves the API only: every job below uses `/api`, and
+  # the packaging jobs in `release.yml` are what prove the full binary.
+  binary:
+    name: Binary (release)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "cargo"
+
+      - name: Build the release binary
+        run: cargo build --release --locked
+
+      - name: Upload the binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: flakeradar-linux-x86_64
+          path: target/release/flakeradar
+          if-no-files-found: error
+
+  # The `actions/report` composite action on its two fixtures, against the real
+  # binary: one Report per matched file, every one of them processed. This is
+  # the CI half of what `backend/tests/test_report_action.py` used to prove.
+  report-action:
+    name: Report action (fixtures)
+    needs: binary
+    runs-on: ubuntu-24.04
     services:
       postgres:
         image: postgres:17-alpine
@@ -502,38 +527,176 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     env:
-      FLAKERADAR_DATABASE_URL: postgresql+asyncpg://flakeradar:flakeradar@localhost:5432/flakeradar
+      FLAKERADAR_DATABASE_URL: postgresql://flakeradar:flakeradar@localhost:5432/flakeradar
       FLAKERADAR_ALLOW_INSECURE: "1"
       FLAKERADAR_API_TOKEN: flakeradar-test-token
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Download the binary
+        uses: actions/download-artifact@v4
         with:
-          python-version: "3.12"
+          name: flakeradar-linux-x86_64
+          path: ${{ runner.temp }}/bin
 
-      - name: Install backend dependencies
-        run: pip install -r backend/requirements-dev.txt
-
-      - name: Start the backend (migrations run on startup)
+      - name: Start FlakeRadar
         run: |
-          cd backend
-          python -m alembic upgrade head
-          nohup python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 >/tmp/uvicorn.log 2>&1 &
-          for i in $(seq 1 30); do
-            curl -sf http://127.0.0.1:8000/api/health >/dev/null 2>&1 && break
+          chmod +x "$RUNNER_TEMP/bin/flakeradar"
+          "$RUNNER_TEMP/bin/flakeradar" >/tmp/flakeradar.log 2>&1 &
+          for i in $(seq 1 60); do
+            curl -sf http://127.0.0.1:8000/api/health/ready >/dev/null 2>&1 && break
             sleep 1
           done
-          curl -fsS http://127.0.0.1:8000/api/health
+          curl -fsS http://127.0.0.1:8000/api/health/ready
 
-      - name: Seed the fixture (one known-flaky Test, one new failure)
-        run: python actions/summary/test/seed_fixture.py
+      - name: Run the report action on both fixtures
+        id: report
+        uses: ./actions/report
+        with:
+          url: http://127.0.0.1:8000
+          token: flakeradar-test-token
+          project: fixtures
+          files: |
+            actions/report/test/fixture-alpha.xml
+            actions/report/test/fixture-beta.xml
+
+      - name: One Report per fixture, and every one of them processed
+        run: |
+          ids="${{ steps.report.outputs.report_ids }}"
+          count=$(printf '%s' "$ids" | awk -F, '{print NF}')
+          if [ "$count" -ne 2 ]; then
+            echo "::error::expected one Report per fixture, got report_ids='$ids'"
+            exit 1
+          fi
+          IFS=, read -r first second <<< "$ids"
+          for id in "$first" "$second"; do
+            for i in $(seq 1 60); do
+              body=$(curl -fsS -H "X-API-Key: $FLAKERADAR_API_TOKEN" \
+                "http://127.0.0.1:8000/api/reports/$id")
+              status=$(printf '%s' "$body" | jq -r .status)
+              [ "$status" = "pending" ] || break
+              sleep 1
+            done
+            if [ "$status" != "processed" ]; then
+              echo "::error::Report $id ended $status, not processed: $body"
+              exit 1
+            fi
+            echo "$body" | jq -r '"Report \(.id) \(.status): \(.counts)"'
+          done
+          echo "::notice::Both fixtures became processed Reports."
+
+  # Exercises the standalone summary action (issue #36) end to end against the
+  # real binary: the Reports are seeded through the `actions/report` action
+  # rather than through the models, so the action reads data a reporter wrote.
+  # `test_known_flaky` passes and fails on three commits, which is three Proven
+  # flakes and the flaky tier; `test_new_failure` fails once, in the fixture CI
+  # run. The values grepped below are the ones this pipeline produces, measured
+  # on the binary (flaky 0.8, three proven flakes).
+  summary-action:
+    name: Summary action (fixture)
+    needs: binary
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:17-alpine
         env:
-          CI_RUN_ID: "12345"
-          CI_RUN_ATTEMPT: "1"
-          CI_JOB_ID: "999"
+          POSTGRES_USER: flakeradar
+          POSTGRES_PASSWORD: flakeradar
+          POSTGRES_DB: flakeradar
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U flakeradar"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      FLAKERADAR_DATABASE_URL: postgresql://flakeradar:flakeradar@localhost:5432/flakeradar
+      FLAKERADAR_ALLOW_INSECURE: "1"
+      FLAKERADAR_API_TOKEN: flakeradar-test-token
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download the binary
+        uses: actions/download-artifact@v4
+        with:
+          name: flakeradar-linux-x86_64
+          path: ${{ runner.temp }}/bin
+
+      - name: Start FlakeRadar
+        run: |
+          chmod +x "$RUNNER_TEMP/bin/flakeradar"
+          "$RUNNER_TEMP/bin/flakeradar" >/tmp/flakeradar.log 2>&1 &
+          for i in $(seq 1 60); do
+            curl -sf http://127.0.0.1:8000/api/health/ready >/dev/null 2>&1 && break
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:8000/api/health/ready
+
+      # Three commits, each with a pass and a fail for the same Test: this is
+      # the Proven flake the summary action should recognise. The metadata comes
+      # from the runner, which these steps set per upload.
+      - name: Seed commit aaa111
+        uses: ./actions/report
+        env:
+          GITHUB_SHA: aaa111
+          GITHUB_REF_NAME: main
+          GITHUB_RUN_ID: "1001"
+          GITHUB_RUN_ATTEMPT: "1"
+        with:
+          url: http://127.0.0.1:8000
+          token: flakeradar-test-token
+          project: summary
+          files: |
+            actions/summary/test/fixture-known-flaky-pass.xml
+            actions/summary/test/fixture-known-flaky-fail.xml
+
+      - name: Seed commit bbb222
+        uses: ./actions/report
+        env:
+          GITHUB_SHA: bbb222
+          GITHUB_REF_NAME: main
+          GITHUB_RUN_ID: "1002"
+          GITHUB_RUN_ATTEMPT: "1"
+        with:
+          url: http://127.0.0.1:8000
+          token: flakeradar-test-token
+          project: summary
+          files: |
+            actions/summary/test/fixture-known-flaky-pass.xml
+            actions/summary/test/fixture-known-flaky-fail.xml
+
+      - name: Seed commit ccc333
+        uses: ./actions/report
+        env:
+          GITHUB_SHA: ccc333
+          GITHUB_REF_NAME: main
+          GITHUB_RUN_ID: "1003"
+          GITHUB_RUN_ATTEMPT: "1"
+        with:
+          url: http://127.0.0.1:8000
+          token: flakeradar-test-token
+          project: summary
+          files: |
+            actions/summary/test/fixture-known-flaky-pass.xml
+            actions/summary/test/fixture-known-flaky-fail.xml
+
+      # The fixture CI run: the known-flaky Test fails again, and a Test nobody
+      # has seen fail before fails for the first time.
+      - name: Seed the fixture CI run (12345)
+        uses: ./actions/report
+        env:
+          GITHUB_SHA: ccc333
+          GITHUB_REF_NAME: main
+          GITHUB_RUN_ID: "12345"
+          GITHUB_RUN_ATTEMPT: "1"
+        with:
+          url: http://127.0.0.1:8000
+          token: flakeradar-test-token
+          project: summary
+          files: actions/summary/test/fixture-run-failures.xml
 
       - name: Run the summary action against the fixture
         uses: ./actions/summary
@@ -543,8 +706,8 @@ jobs:
           repo: andrewthetechie/flakeradar
           ci_run_id: "12345"
           ci_run_attempt: "1"
-          ci_job_id: "999"
-          summary-timeout: "30"
+          ci_job_id: ${{ job.check_run_id }}
+          summary-timeout: "60"
           dashboard-url: https://flakeradar.example.com
           # The action appends the same Markdown it writes to $GITHUB_STEP_SUMMARY
           # here too, so the next step can assert on a stable path.
@@ -555,10 +718,89 @@ jobs:
           # dashboard-url links each Test, so the names appear inside Markdown links.
           grep -Fq "1 of 2 failures are known flaky tests" summary.md
           grep -Fq "[test_known_flaky](https://flakeradar.example.com?repo=andrewthetechie%2Fflakeradar&test=" summary.md
-          grep -Fq "| flaky (0.9) | 3 | no |" summary.md
+          grep -Fq "| flaky (0.8) | 3 | no |" summary.md
           grep -Fq "[test_new_failure](https://flakeradar.example.com?repo=andrewthetechie%2Fflakeradar&test=" summary.md
           grep -Fq "| stable (0) | 0 | no |" summary.md
           echo "::notice::Summary action output verified: one known-flaky and one new failure rendered."
+
+  # The two samples against the real binary: the GitLab reporter's payload is
+  # accepted by `/api/ingest/pipeline`, and `simulate_ci.py`'s demo history is
+  # visible through the read APIs. Needs pytest, httpx and the standard library,
+  # not the backend's requirements.
+  samples:
+    name: Samples (GitLab reporter + demo data)
+    needs: binary
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: flakeradar
+          POSTGRES_PASSWORD: flakeradar
+          POSTGRES_DB: flakeradar
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U flakeradar"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      FLAKERADAR_DATABASE_URL: postgresql://flakeradar:flakeradar@localhost:5432/flakeradar
+      FLAKERADAR_ALLOW_INSECURE: "1"
+      FLAKERADAR_API_TOKEN: flakeradar-test-token
+      FLAKERADAR_URL: http://127.0.0.1:8000
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          # The GitLab reporter sample is standard library only, and its test
+          # needs nothing but pytest; the demo simulator reads its results over
+          # httpx.
+          python-version: "3.12"
+
+      - name: Install the sample test's two dependencies
+        run: pip install pytest httpx
+
+      - name: Download the binary
+        uses: actions/download-artifact@v4
+        with:
+          name: flakeradar-linux-x86_64
+          path: ${{ runner.temp }}/bin
+
+      - name: Start FlakeRadar
+        run: |
+          chmod +x "$RUNNER_TEMP/bin/flakeradar"
+          "$RUNNER_TEMP/bin/flakeradar" >/tmp/flakeradar.log 2>&1 &
+          for i in $(seq 1 60); do
+            curl -sf "$FLAKERADAR_URL/api/health/ready" >/dev/null 2>&1 && break
+            sleep 1
+          done
+          curl -fsS "$FLAKERADAR_URL/api/health/ready"
+
+      - name: The GitLab reporter's payload is accepted by the real endpoint
+        run: |
+          FLAKERADAR_TOKEN="$FLAKERADAR_API_TOKEN" \
+            python -m pytest samples/gitlab/test_report_pipeline.py -q
+
+      - name: The demo history is visible through the read APIs
+        run: |
+          python samples/simulate_ci.py "$FLAKERADAR_URL" "$FLAKERADAR_API_TOKEN"
+          key=(-H "X-API-Key: $FLAKERADAR_API_TOKEN")
+          tests=$(curl -fsS "${key[@]}" "$FLAKERADAR_URL/api/tests?repo=demo%2Fshop&include_stable=true")
+          jobs=$(curl -fsS "${key[@]}" "$FLAKERADAR_URL/api/jobs?repo=demo%2Fshop&include_stable=true")
+          [ "$(printf '%s' "$tests" | jq -r .total)" -eq 10 ] || { echo "::error::expected 10 demo Tests: $tests"; exit 1; }
+          [ "$(printf '%s' "$jobs" | jq -r .total)" -eq 4 ] || { echo "::error::expected 4 demo Jobs: $jobs"; exit 1; }
+          # The demo history is built to prove the two scoring rules: a Test that
+          # flips on one SHA, and an infrastructure Job with no failing Test.
+          printf '%s' "$tests" | jq -e '[.items[] | select(.tier == "flaky")] | length >= 2' >/dev/null \
+            || { echo "::error::the demo Tests carry no flaky rows: $tests"; exit 1; }
+          printf '%s' "$jobs" | jq -e '[.items[] | select(.tier == "flaky")] | length >= 1' >/dev/null \
+            || { echo "::error::the demo Jobs carry no flaky row: $jobs"; exit 1; }
+          echo "::notice::The demo history is visible: 10 Tests and 4 Jobs in demo/shop."
 
   # Paths the five-target matrix depends on. The matrix is the slowest thing CI
   # runs, so a PR that touches none of these does not pay for it; every push to

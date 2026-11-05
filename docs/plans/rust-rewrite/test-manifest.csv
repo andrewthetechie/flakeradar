@@ -190,19 +190,19 @@ tests/test_github_worker.py::test_sync_failure_is_logged_and_retried,10,ported,a
 tests/test_github_worker.py::test_sync_runs_on_start_and_on_interval,10,ported,the_first_sync_runs_at_start_and_the_next_one_on_the_interval,
 tests/test_github_worker.py::test_the_github_task_ends_before_the_lock_is_released,10,ported,the_github_task_ends_before_the_lock_is_released,
 tests/test_github_worker.py::test_the_replacement_leader_waits_for_the_former_github_task,10,ported,a_standby_leads_only_after_the_former_github_task_stops,
-tests/test_gitlab_reporter.py::test_a_job_only_reaches_the_report_once,14,pending,,
-tests/test_gitlab_reporter.py::test_build_report_carries_job_fields_onto_the_job_result,14,pending,,
-tests/test_gitlab_reporter.py::test_build_report_keeps_both_tries_of_a_retried_job,14,pending,,
-tests/test_gitlab_reporter.py::test_build_report_maps_every_reportable_job,14,pending,,
-tests/test_gitlab_reporter.py::test_build_report_top_level_fields_come_from_the_ci_environment,14,pending,,
-tests/test_gitlab_reporter.py::test_map_job_returns_none_for_unmapped_status,14,pending,,
-tests/test_gitlab_reporter.py::test_payload_validates_against_the_real_schema,14,pending,,
-tests/test_gitlab_reporter.py::test_pipeline_name_is_the_real_ci_config_path_not_an_assumed_default,14,pending,,
-tests/test_gitlab_reporter.py::test_sample_exposes_the_planned_api,14,pending,,
-tests/test_gitlab_reporter.py::test_status_map_is_the_documented_mapping,14,pending,,
-tests/test_gitlab_reporter.py::test_summary_jobs_are_flagged_in_the_payload,14,pending,,
-tests/test_gitlab_reporter.py::test_the_reporter_job_is_skipped_even_when_it_is_final,14,pending,,
-tests/test_gitlab_reporter.py::test_unmapped_statuses_produce_no_jobs,14,pending,,
+tests/test_gitlab_reporter.py::test_a_job_only_reaches_the_report_once,14,na,,"The sample's own tests moved with it to samples/gitlab/test_report_pipeline.py, where the samples CI job runs them against the real binary; nothing Rust can port proves which payload a Python sample builds"
+tests/test_gitlab_reporter.py::test_build_report_carries_job_fields_onto_the_job_result,14,na,,"The sample's own tests moved with it to samples/gitlab/test_report_pipeline.py, where the samples CI job runs them against the real binary; nothing Rust can port proves which payload a Python sample builds"
+tests/test_gitlab_reporter.py::test_build_report_keeps_both_tries_of_a_retried_job,14,na,,"The sample's own tests moved with it to samples/gitlab/test_report_pipeline.py, where the samples CI job runs them against the real binary; nothing Rust can port proves which payload a Python sample builds"
+tests/test_gitlab_reporter.py::test_build_report_maps_every_reportable_job,14,na,,"The sample's own tests moved with it to samples/gitlab/test_report_pipeline.py, where the samples CI job runs them against the real binary; nothing Rust can port proves which payload a Python sample builds"
+tests/test_gitlab_reporter.py::test_build_report_top_level_fields_come_from_the_ci_environment,14,na,,"The sample's own tests moved with it to samples/gitlab/test_report_pipeline.py, where the samples CI job runs them against the real binary; nothing Rust can port proves which payload a Python sample builds"
+tests/test_gitlab_reporter.py::test_map_job_returns_none_for_unmapped_status,14,na,,"The sample's own tests moved with it to samples/gitlab/test_report_pipeline.py, where the samples CI job runs them against the real binary; nothing Rust can port proves which payload a Python sample builds"
+tests/test_gitlab_reporter.py::test_payload_validates_against_the_real_schema,14,na,,"The sample's own tests moved with it to samples/gitlab/test_report_pipeline.py, where the samples CI job runs them against the real binary; nothing Rust can port proves which payload a Python sample builds"
+tests/test_gitlab_reporter.py::test_pipeline_name_is_the_real_ci_config_path_not_an_assumed_default,14,na,,"The sample's own tests moved with it to samples/gitlab/test_report_pipeline.py, where the samples CI job runs them against the real binary; nothing Rust can port proves which payload a Python sample builds"
+tests/test_gitlab_reporter.py::test_sample_exposes_the_planned_api,14,na,,"The sample's own tests moved with it to samples/gitlab/test_report_pipeline.py, where the samples CI job runs them against the real binary; nothing Rust can port proves which payload a Python sample builds"
+tests/test_gitlab_reporter.py::test_status_map_is_the_documented_mapping,14,na,,"The sample's own tests moved with it to samples/gitlab/test_report_pipeline.py, where the samples CI job runs them against the real binary; nothing Rust can port proves which payload a Python sample builds"
+tests/test_gitlab_reporter.py::test_summary_jobs_are_flagged_in_the_payload,14,na,,"The sample's own tests moved with it to samples/gitlab/test_report_pipeline.py, where the samples CI job runs them against the real binary; nothing Rust can port proves which payload a Python sample builds"
+tests/test_gitlab_reporter.py::test_the_reporter_job_is_skipped_even_when_it_is_final,14,na,,"The sample's own tests moved with it to samples/gitlab/test_report_pipeline.py, where the samples CI job runs them against the real binary; nothing Rust can port proves which payload a Python sample builds"
+tests/test_gitlab_reporter.py::test_unmapped_statuses_produce_no_jobs,14,na,,"The sample's own tests moved with it to samples/gitlab/test_report_pipeline.py, where the samples CI job runs them against the real binary; nothing Rust can port proves which payload a Python sample builds"
 tests/test_identity.py::test_get_or_create_project_is_idempotent,4,ported,flakeradar-db::identity::get_or_create_project_is_idempotent,
 tests/test_identity.py::test_get_or_create_project_selects_first_when_it_exists,4,ported,flakeradar-db::identity::get_or_create_project_selects_first_when_it_exists,
 tests/test_identity.py::test_normalize_project,4,ported,flakeradar-core::identity::tests::normalize_project_defaults_and_lowercases,
@@ -401,8 +401,8 @@ tests/test_processing.py::test_same_sha_retry_is_proven_flake,7,ported,flakerada
 tests/test_processing.py::test_same_test_twice_in_one_report,7,ported,flakeradar-db::processing::the_last_occurrence_of_a_test_wins,
 tests/test_processing.py::test_staying_flaky_reports_no_second_event,7,ported,flakeradar-db::processing::staying_flaky_reports_no_second_event,
 tests/test_processing.py::test_transient_failure_is_retried_then_capped,7,ported,flakeradar-db::processing::a_transient_failure_is_retried_then_capped,
-tests/test_report_action.py::test_both_fixture_files_are_uploaded_and_processed,14,pending,,
-tests/test_report_action.py::test_no_match_warns_without_failing_or_uploading,14,pending,,
+tests/test_report_action.py::test_both_fixture_files_are_uploaded_and_processed,14,na,,"Replaced by the `Report action` CI job: it runs ./actions/report on both fixtures against the real binary and asserts one Report per file, each processed. A composite bash action cannot be run from a Rust test"
+tests/test_report_action.py::test_no_match_warns_without_failing_or_uploading,14,na,,"Replaced by the `Report action` CI job: it runs ./actions/report on both fixtures against the real binary and asserts one Report per file, each processed. A composite bash action cannot be run from a Rust test"
 tests/test_report_intake.py::test_body_digest_is_the_sha256_of_the_bytes,6,ported,a_digest_is_the_sha256_of_the_bytes,
 tests/test_report_intake.py::test_build_junit_report_carries_the_body_and_its_digest,6,ported,the_junit_row_carries_the_body_and_its_digest,
 tests/test_report_intake.py::test_build_junit_report_defaults,6,ported,ingest_defaults_branch_and_ci_run_id,
