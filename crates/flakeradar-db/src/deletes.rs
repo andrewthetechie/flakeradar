@@ -49,7 +49,18 @@ pub struct DeletedRepo {
     /// The response: what was removed and every issue number stored on it.
     pub out: RepoDeleteOut,
     /// The numbers of the issues FlakeRadar filed itself, which it may close.
-    pub filed: Vec<i64>,
+    pub filed: Vec<i32>,
+}
+
+/// What a Project delete found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProjectDelete {
+    /// The Repo does not exist.
+    RepoNotFound,
+    /// The Repo exists but the Project does not.
+    ProjectNotFound,
+    /// The Project was deleted.
+    Deleted(Box<DeletedProject>),
 }
 
 /// What a Project delete removed, and which issues FlakeRadar owns.
@@ -58,7 +69,7 @@ pub struct DeletedProject {
     /// The response: what was removed and every issue number stored on it.
     pub out: ProjectDeleteOut,
     /// The numbers of the issues FlakeRadar filed itself, which it may close.
-    pub filed: Vec<i64>,
+    pub filed: Vec<i32>,
 }
 
 /// Deletes one Repo and, by cascade, everything in it.
@@ -92,7 +103,7 @@ pub async fn delete_repo(
         out: RepoDeleteOut {
             repo: repo_name,
             deleted,
-            github_issue_numbers: numbers,
+            github_issue_numbers: numbers.iter().copied().map(i64::from).collect(),
         },
         filed,
     }))
@@ -108,7 +119,7 @@ pub async fn delete_project(
     db: &(impl ConnectionTrait + TransactionTrait),
     repo: &str,
     project: &str,
-) -> Result<Option<DeletedProject>, DeleteError> {
+) -> Result<ProjectDelete, DeleteError> {
     let transaction = db.begin().await?;
     let repo_row = one(
         &transaction,
@@ -118,7 +129,7 @@ pub async fn delete_project(
     .await?;
     let Some(row) = repo_row else {
         transaction.rollback().await?;
-        return Ok(None);
+        return Ok(ProjectDelete::RepoNotFound);
     };
     let repo_id: i32 = get(&row, "id")?;
     let repo_name: String = get(&row, "name")?;
@@ -130,7 +141,7 @@ pub async fn delete_project(
     .await?;
     let Some(row) = project_row else {
         transaction.rollback().await?;
-        return Ok(None);
+        return Ok(ProjectDelete::ProjectNotFound);
     };
     let project_id: i32 = get(&row, "id")?;
     let project_name: String = get(&row, "name")?;
@@ -138,15 +149,15 @@ pub async fn delete_project(
     let (numbers, filed) = project_issue_numbers(&transaction, project_id).await?;
     delete_row(&transaction, "projects", project_id).await?;
     transaction.commit().await?;
-    Ok(Some(DeletedProject {
+    Ok(ProjectDelete::Deleted(Box::new(DeletedProject {
         out: ProjectDeleteOut {
             repo: repo_name,
             project: project_name,
             deleted,
-            github_issue_numbers: numbers,
+            github_issue_numbers: numbers.iter().copied().map(i64::from).collect(),
         },
         filed,
-    }))
+    })))
 }
 
 /// Deletes one row by id, reporting a lock cycle as a deadlock.
@@ -270,7 +281,7 @@ async fn count(db: &impl ConnectionTrait, sql: &str, parameter: i32) -> Result<i
 async fn repo_issue_numbers(
     db: &impl ConnectionTrait,
     repo_id: i32,
-) -> Result<(Vec<i64>, Vec<i64>), DeleteError> {
+) -> Result<(Vec<i32>, Vec<i32>), DeleteError> {
     let tests = "SELECT t.github_issue_number AS number FROM test_cases t \
                  JOIN projects p ON p.id = t.project_id \
                  WHERE p.repo_id = $1 AND t.github_issue_number IS NOT NULL";
@@ -291,7 +302,7 @@ async fn repo_issue_numbers(
 async fn project_issue_numbers(
     db: &impl ConnectionTrait,
     project_id: i32,
-) -> Result<(Vec<i64>, Vec<i64>), DeleteError> {
+) -> Result<(Vec<i32>, Vec<i32>), DeleteError> {
     let tests = "SELECT github_issue_number AS number FROM test_cases \
                  WHERE project_id = $1 AND github_issue_number IS NOT NULL";
     let filed = format!("{tests} AND github_issue_filed IS TRUE");
@@ -305,8 +316,8 @@ async fn issue_numbers(
     db: &impl ConnectionTrait,
     statements: &[&str],
     parameter: i32,
-) -> Result<Vec<i64>, DeleteError> {
-    let mut numbers: Vec<i64> = Vec::new();
+) -> Result<Vec<i32>, DeleteError> {
+    let mut numbers: Vec<i32> = Vec::new();
     for sql in statements {
         let Some(rows) = one_many(db, sql, parameter).await? else {
             continue;
@@ -323,7 +334,7 @@ async fn one_many(
     db: &impl ConnectionTrait,
     sql: &str,
     parameter: i32,
-) -> Result<Option<Vec<i64>>, DeleteError> {
+) -> Result<Option<Vec<i32>>, DeleteError> {
     let rows = db
         .query_all_raw(Statement::from_sql_and_values(
             DbBackend::Postgres,
@@ -335,7 +346,7 @@ async fn one_many(
     let mut numbers = Vec::new();
     for row in rows {
         let number: i32 = get(&row, "number")?;
-        numbers.push(i64::from(number));
+        numbers.push(number);
     }
     Ok(Some(numbers))
 }

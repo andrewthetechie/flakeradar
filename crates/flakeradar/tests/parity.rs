@@ -142,11 +142,11 @@ struct Deferred {
 const ENABLED: &[Enabled] = &[
     Enabled {
         name: "auth",
-        steps: &[1, 2, 3, 4, 5, 6, 13],
+        steps: &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13],
     },
     Enabled {
         name: "consumers",
-        steps: &[1, 2, 3, 4, 5, 6, 7, 8, 9],
+        steps: &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13],
     },
     Enabled {
         name: "default-branch",
@@ -173,7 +173,10 @@ const ENABLED: &[Enabled] = &[
     },
     Enabled {
         name: "issue-links",
-        steps: &[1, 2, 3, 4],
+        steps: &[
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
+            25, 26, 27,
+        ],
     },
     Enabled {
         name: "pipeline-jobs",
@@ -190,7 +193,7 @@ const ENABLED: &[Enabled] = &[
     },
     Enabled {
         name: "repo-admin",
-        steps: &[1, 2, 3, 4, 5],
+        steps: &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
     },
     Enabled {
         name: "trailing-slash",
@@ -199,8 +202,8 @@ const ENABLED: &[Enabled] = &[
     Enabled {
         name: "validation",
         steps: &[
-            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 22, 23, 24, 25, 26,
-            27,
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
+            25, 26, 27,
         ],
     },
 ];
@@ -211,44 +214,10 @@ const ENABLED: &[Enabled] = &[
 /// them, and its reason names each one.
 const DEFERRED: &[Deferred] = &[
     Deferred {
-        scenario: "auth",
-        steps: Some(&[7, 8, 9, 10, 11, 12]),
-        task: 10,
-        reason: "every remaining step is a token-checked write that task 10 lands: PUT and DELETE \
-                 /api/tests/{id}/issue and /api/jobs/{id}/issue, and DELETE /api/repos/... and its \
-                 project",
-    },
-    Deferred {
-        scenario: "consumers",
-        steps: Some(&[10, 11, 12, 13]),
-        task: 10,
-        reason: "the issue links the actions set (PUT /api/jobs/{id}/issue and \
-                 PUT /api/tests/{id}/issue, task 10), step 12, the same CI-run failures read with \
-                 those links in it, and step 13, the dump of what they wrote. The writes the \
-                 writers-app actions make and the reads they depend on replay already",
-    },
-    Deferred {
-        scenario: "issue-links",
-        steps: Some(&[
-            5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27,
-        ]),
-        task: 10,
-        reason: "PUT and DELETE /api/tests/{id}/issue and /api/jobs/{id}/issue (task 10), steps 7 \
-                 and 20, the Test and Job reads of the links those steps set, and step 27, the dump \
-                 of the links they set. The ingests and the drain replay already",
-    },
-    Deferred {
         scenario: "mcp",
         steps: None,
         task: 11,
         reason: "every step is an MCP call: initialize, tools/list and tools/call",
-    },
-    Deferred {
-        scenario: "repo-admin",
-        steps: Some(&[6, 7, 8, 9, 10, 11, 12, 13, 14, 15]),
-        task: 10,
-        reason: "DELETE /api/repos/... and GET /api/repos (task 10), and step 15, the dump of what \
-                 they deleted. The ingests and the drain replay already",
     },
     Deferred {
         scenario: "trailing-slash",
@@ -263,13 +232,6 @@ const DEFERRED: &[Deferred] = &[
         reason: "GET /openapi.json is served, but this golden is FastAPI's generated document, \
                  which task 14 compares against utoipa's path by path",
     },
-    Deferred {
-        scenario: "validation",
-        steps: Some(&[20, 21]),
-        task: 10,
-        reason: "the 422 shapes of `PUT /api/tests/{id}/issue`: a `number` that is not an \
-                 integer, and a body that is not a JSON object",
-    },
 ];
 
 /// How many scenario steps are deferred.
@@ -277,7 +239,7 @@ const DEFERRED: &[Deferred] = &[
 /// A later task enables steps and lowers this number; the test that reads it
 /// fails both when a step is switched off without a reason and when an enabled
 /// step is left in [`DEFERRED`]. It never goes up.
-const DEFERRED_STEPS: usize = 94;
+const DEFERRED_STEPS: usize = 49;
 
 /// One scenario file.
 #[derive(Debug, Deserialize)]
@@ -293,6 +255,43 @@ struct ScenarioFile {
 
 /// A failure a replay reports, naming the scenario and the step.
 type Mismatches = Vec<String>;
+
+/// The request path with the characters an HTTP client percent-encodes encoded.
+///
+/// The recorder's client encoded a space in a path the same way, so a scenario
+/// step that names a Repo or Project the identity rules refuse still reaches the
+/// route the recording reached. Everything in the path a URI may carry unescaped
+/// is left as it was.
+fn encoded_path(path: &str) -> String {
+    let mut encoded = String::with_capacity(path.len());
+    for byte in path.bytes() {
+        match byte {
+            b'A'..=b'Z'
+            | b'a'..=b'z'
+            | b'0'..=b'9'
+            | b'-'
+            | b'_'
+            | b'.'
+            | b'~'
+            | b'!'
+            | b'$'
+            | b'&'
+            | b'\''
+            | b'('
+            | b')'
+            | b'*'
+            | b'+'
+            | b','
+            | b';'
+            | b'='
+            | b':'
+            | b'@'
+            | b'/' => encoded.push(char::from(byte)),
+            other => encoded.push_str(&format!("%{other:02X}")),
+        }
+    }
+    encoded
+}
 
 /// The root of the recorded fixtures.
 fn parity_root() -> PathBuf {
@@ -477,7 +476,7 @@ async fn replay_http(
         .and_then(Value::as_str)
         .expect("the step names a path");
 
-    let mut uri = path.to_owned();
+    let mut uri = encoded_path(path);
     let query = request
         .get("query")
         .and_then(Value::as_object)

@@ -53,7 +53,9 @@ pub use clock::{
 #[doc(inline)]
 pub use connect::{DbSettings, connect, connect_session};
 #[doc(inline)]
-pub use deletes::{DeleteError, DeletedProject, DeletedRepo, delete_project, delete_repo};
+pub use deletes::{
+    DeleteError, DeletedProject, DeletedRepo, ProjectDelete, delete_project, delete_repo,
+};
 #[doc(inline)]
 pub use error::DbError;
 #[doc(inline)]
