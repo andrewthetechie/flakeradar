@@ -259,6 +259,319 @@ def test_rate_limited_classifies_only_throttling():
     assert not rl(resp(201, body={"number": 5}))
 
 
+def _outcome_resp(status, *, headers=None, body=None, raw=None):
+    """A plain answered response — all the seam classifier needs."""
+    if raw is not None:
+        return httpx.Response(status, headers=headers or {}, text=raw)
+    return httpx.Response(status, headers=headers or {}, json=body if body is not None else {})
+
+
+def test_github_outcome_classifies_the_table():
+    """Every kind, straight from a plain response: no client, no transport, no raise."""
+    outcome = github_integration._github_outcome
+
+    created = outcome(_outcome_resp(201, body={"number": 77}, headers={"x-ratelimit-remaining": "99"}), expect="number")
+    assert (created.kind, created.status, created.remaining, created.number) == ("created", 201, "99", 77)
+
+    # A 201 whose body carries no number filed nothing.
+    for bodyless in (_outcome_resp(201), _outcome_resp(201, raw="<html>proxy</html>")):
+        unusable = outcome(bodyless, expect="number")
+        assert unusable.kind == "unusable_body" and unusable.number is None
+    # A 200 from a create is not a create, whatever it says.
+    assert outcome(_outcome_resp(200, body={"number": 77}), expect="number").kind == "ok"
+
+    # A fetch parses the state, and an answer without one says nothing.
+    fetched = outcome(_outcome_resp(200, body={"state": "closed", "state_reason": "not_planned"}), expect="state")
+    assert (fetched.kind, fetched.state, fetched.state_reason) == ("ok", "closed", "not_planned")
+    assert outcome(_outcome_resp(200, body={"number": 5}), expect="state").kind == "unusable_body"
+    assert outcome(_outcome_resp(201, body={"state": "open"}), expect="state").kind == "other"
+
+    # A comment or a close carries no body the caller reads, so it groups on status.
+    assert outcome(_outcome_resp(201, body={"html_url": "u"})).kind == "created"
+    assert outcome(_outcome_resp(200, body={"state": "closed"})).kind == "ok"
+    assert outcome(_outcome_resp(204)).kind == "ok"
+
+    # Throttling wins over every other reading, for each of the three body shapes;
+    # the remaining statuses of the loops' grouping come apart.
+    for expect in (None, "number", "state"):
+        assert outcome(_outcome_resp(429, headers={"retry-after": "60"}), expect=expect).kind == "rate_limited"
+        limited = outcome(_outcome_resp(403, headers={"x-ratelimit-remaining": "0"}), expect=expect)
+        assert (limited.kind, limited.status, limited.remaining) == ("rate_limited", 403, "0")
+        for status, kind in (
+            (401, "unauthorized"),
+            (403, "repo_denied"),  # a 403 that is not throttling
+            (404, "not_found"),
+            (410, "gone"),
+            (301, "other"),
+            (500, "other"),
+        ):
+            assert outcome(_outcome_resp(status, body={"message": "no"}), expect=expect).kind == kind
+
+    # A body is excerpted to the log budget the warnings already use.
+    long_body = json.dumps({"message": "x" * 500})
+    denied = outcome(_outcome_resp(403, raw=long_body))
+    assert denied.kind == "repo_denied"
+    assert denied.excerpt == long_body[: github_integration._GITHUB_EXCERPT_MAX]
+    assert len(denied.excerpt) == 300
+
+
+class _UnreadStream(httpx.SyncByteStream):
+    """A response body the client never read, so `.content` raises `ResponseNotRead`."""
+
+    def __iter__(self):
+        return iter(())
+
+
+def test_github_outcome_classifies_a_body_it_cannot_decode():
+    """A hostile body is an excerpt fallback and a kind, never an exception.
+
+    `resp.text` decodes with the charset the response declares, and a server picks that
+    charset: `charset=base64` raises `AssertionError` out of the stdlib codec machinery,
+    `charset=idna` a `UnicodeError`, neither of them an `httpx.HTTPError`. An unread stream
+    adds `httpx.ResponseNotRead`, which httpx derives from `RuntimeError`. All of them
+    arrive after the request `try` block, so the classifier has to absorb them.
+    """
+    outcome = github_integration._github_outcome
+
+    def resp(status: int, *, content: bytes = b"", headers: dict | None = None, unread: bool = False):
+        if unread:
+            return httpx.Response(status, headers=headers or {}, stream=_UnreadStream())
+        return httpx.Response(status, headers=headers or {}, content=content)
+
+    def hostile(status: int, content: bytes, extra: dict | None = None) -> httpx.Response:
+        headers = {"content-type": "application/json; charset=base64", **(extra or {})}
+        return resp(status, content=content, headers=headers)
+
+    # A charset this cannot apply still yields the excerpt the log line wants.
+    text = b'{"message": "Resource not accessible by personal access token"}'
+    denied = outcome(hostile(403, text))
+    assert (denied.kind, denied.status, denied.excerpt) == ("repo_denied", 403, text.decode())
+
+    # ... and so do bytes no declared charset can decode at all, whichever charset claims them.
+    mangled = b"\xff\xfe\x00rate limit"
+    broken_excerpt = mangled.decode("utf-8", errors="replace")
+    for charset in ("utf-8", "idna", "base64"):
+        broken = outcome(resp(403, content=mangled, headers={"content-type": f"application/json; charset={charset}"}))
+        assert (broken.kind, broken.status) == ("repo_denied", 403), charset
+        assert broken.excerpt == broken_excerpt, charset
+
+    # The rate-limit rule is header-deep, so it still wins over an unreadable body.
+    throttled = outcome(hostile(403, mangled, {"x-ratelimit-remaining": "0"}))
+    assert (throttled.kind, throttled.remaining, throttled.excerpt) == ("rate_limited", "0", broken_excerpt)
+
+    # An unread body says nothing: a create filed nothing, a fetch answered nothing, and a
+    # status the caller groups on is still there for the loops to route.
+    for status, expect, kind in (
+        (201, "number", "unusable_body"),
+        (200, "state", "unusable_body"),
+        (201, None, "created"),
+    ):
+        unread = outcome(resp(status, unread=True, headers={"content-type": "application/json"}), expect=expect)
+        assert (unread.kind, unread.status, unread.excerpt) == (kind, status, ""), expect
+
+    # `_rate_limited` reads that same body, so it must classify it rather than raise.
+    assert outcome(resp(403, unread=True)).kind == "repo_denied"
+
+
+def _read_text(response: httpx.Response) -> str:
+    """`resp.text`, behind a call so a test can pin what the plain read itself raises.
+
+    The premises that call it pin `UnicodeError`, not the `UnicodeDecodeError` subclass: a
+    BOM-less UTF-16/UTF-32 stream raises the plain base class on CPython 3.12 (what CI runs)
+    and the subclass on 3.13 (what the local venv has), and the seam has to absorb both.
+    """
+    return response.text
+
+
+def test_github_outcome_classifies_a_body_invalid_for_its_declared_charset():
+    """Bytes invalid for the charset the response declares are a kind, never a raise.
+
+    httpx decodes `resp.text` with `errors="replace"`, so most bad bytes only substitute, but
+    a UTF-16/UTF-32 decoder raises `UnicodeError` anyway when the stream carries no BOM —
+    which is what an intermediary that declares a charset and delivers plain JSON
+    produces. It is raised while `_excerpt` builds the log line, after the request `try`
+    block, so the classifier is the only thing between it and the caller.
+    """
+    outcome = github_integration._github_outcome
+    body = b'{"number": 77, "state": "open", "message": "Resource not accessible"}'
+
+    def declared(status: int, charset: str, extra: dict | None = None) -> httpx.Response:
+        headers = {"content-type": f"application/json; charset={charset}", **(extra or {})}
+        return httpx.Response(status, headers=headers, content=body)
+
+    # The premise: the bytes are readable, the declared charset refuses them. Both of these
+    # are real codecs, so this is a charset the stdlib happily looked up and could not use.
+    for charset in ("utf-16", "utf-32"):
+        with pytest.raises(UnicodeError):
+            _read_text(declared(201, charset))
+
+    # The classifier reads the bytes instead, so the body still parses and the excerpt is
+    # the lossy read a log line wants — for each of the three body shapes the loops ask for.
+    for charset in ("utf-16", "utf-32"):
+        created = outcome(declared(201, charset), expect="number")
+        assert (created.kind, created.status, created.number) == ("created", 201, 77), charset
+        assert created.excerpt == body.decode("utf-8"), charset
+        fetched = outcome(declared(200, charset), expect="state")
+        assert (fetched.kind, fetched.state) == ("ok", "open"), charset
+        denied = outcome(declared(403, charset))
+        assert (denied.kind, denied.status) == ("repo_denied", 403), charset
+        # The rate-limit rule reads the same body, so throttling is still throttling.
+        throttled = outcome(declared(403, charset, {"x-ratelimit-remaining": "0"}))
+        assert (throttled.kind, throttled.remaining) == ("rate_limited", "0"), charset
+
+    # A 2xx whose body this can neither decode nor parse is a kind, not an exception.
+    junk = b"not json at all"
+    for charset in ("utf-16", "utf-32"):
+        unparseable = httpx.Response(
+            201, headers={"content-type": f"application/json; charset={charset}"}, content=junk
+        )
+        with pytest.raises(UnicodeError):
+            _read_text(unparseable)
+        unusable = outcome(unparseable, expect="number")
+        assert (unusable.kind, unusable.number) == ("unusable_body", None), charset
+        assert unusable.excerpt == junk.decode("utf-8"), charset
+
+
+async def _four_interactions(transport):
+    """One of each seam interaction against `transport`, keyed for readable assertions."""
+    async with github_integration._GitHubClient("tok", transport=transport) as client:
+        return {
+            "create": await client.create_issue("acme/app", "title", "body", labels=["flakeradar"]),
+            "comment": await client.comment("acme/app", 77, "note"),
+            "close": await client.close_issue("acme/app", 77, state_reason="completed"),
+            "fetch": await client.fetch_issue("acme/app", 77),
+        }
+
+
+async def test_seam_rate_limit_is_a_rate_limit_for_every_interaction():
+    """The representative case: this 403 stops a batch whichever interaction returned it."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            403,
+            headers={"x-ratelimit-remaining": "0"},
+            json={"message": "You have exceeded a rate limit"},
+        )
+
+    outcomes = await _four_interactions(httpx.MockTransport(handler))
+
+    assert set(outcomes) == {"create", "comment", "close", "fetch"}
+    for name, outcome in outcomes.items():
+        assert (outcome.kind, outcome.status, outcome.remaining) == ("rate_limited", 403, "0"), name
+
+
+async def test_seam_network_failure_is_a_kind_and_never_raises():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("offline", request=request)
+
+    outcomes = await _four_interactions(httpx.MockTransport(handler))
+
+    for name, outcome in outcomes.items():
+        assert outcome.kind == "network", name
+        assert isinstance(outcome.error, httpx.ConnectError), name
+        assert (outcome.status, outcome.excerpt) == (None, ""), name
+
+
+async def test_seam_hostile_body_is_a_kind_for_every_interaction():
+    """Whatever the bytes claim to be, an interaction returns an outcome and not a raise.
+
+    The classifier runs after the request `try` block, so a body whose declared charset the
+    stdlib cannot apply — here `charset=base64` over bytes that are not that either — would
+    otherwise leave the loops with an exception they no longer catch.
+    """
+    raw = b'\xff\xfe\x00{"number": 77, "state": "open"}'
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        status = 200 if request.method == "GET" else 201
+        return httpx.Response(status, headers={"content-type": "application/json; charset=base64"}, content=raw)
+
+    outcomes = await _four_interactions(httpx.MockTransport(handler))
+
+    # Neither body parses, so the create filed nothing it can name and the fetch said nothing.
+    assert (outcomes["create"].kind, outcomes["create"].number) == ("unusable_body", None)
+    assert (outcomes["fetch"].kind, outcomes["fetch"].state) == ("unusable_body", None)
+    assert (outcomes["comment"].kind, outcomes["close"].kind) == ("created", "created")
+    for name, outcome in outcomes.items():
+        assert outcome.status == (200 if name == "fetch" else 201), name  # the loops group on it
+        assert outcome.excerpt == raw.decode("utf-8", errors="replace"), name
+        assert outcome.error is None, name
+
+
+async def test_seam_body_invalid_for_its_declared_charset_is_a_kind_for_every_interaction():
+    """A body invalid for the charset that claims it is an outcome, on all four interactions.
+
+    `resp.text` decodes with `errors="replace"`, so this looks safe until the declared
+    charset is one that must decode the whole stream: UTF-16 and UTF-32 raise
+    `UnicodeError` over a body with no BOM — here, plain JSON, which is exactly what an
+    intermediary that re-declares a charset delivers. The seam classifies after the request
+    `try` block, so a raise here would reach a loop that no longer catches anything.
+    """
+    raw = b'{"number": 77, "state": "open"}'
+
+    def hostile(status: int) -> httpx.Response:
+        return httpx.Response(status, headers={"content-type": "application/json; charset=utf-16"}, content=raw)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return hostile(200 if request.method == "GET" else 201)
+
+    # The premise, on the very bytes this transport answers with.
+    with pytest.raises(UnicodeError):
+        _read_text(hostile(201))
+
+    outcomes = await _four_interactions(httpx.MockTransport(handler))
+
+    # The body is readable bytes, so the parsed fields survive the charset that lies about them.
+    assert (outcomes["create"].kind, outcomes["create"].number) == ("created", 77)
+    assert (outcomes["fetch"].kind, outcomes["fetch"].state) == ("ok", "open")
+    assert (outcomes["comment"].kind, outcomes["close"].kind) == ("created", "created")
+    for name, outcome in outcomes.items():
+        assert outcome.excerpt == raw.decode("utf-8"), name
+        assert outcome.error is None, name
+
+
+async def test_seam_client_sends_the_loops_wire_shape():
+    """The seam owns base_url, headers, timeout and the transport, so the loops can move verbatim."""
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if request.method == "GET":
+            return httpx.Response(200, json={"state": "open"})
+        return httpx.Response(201, json={"number": 77})
+
+    transport = httpx.MockTransport(handler)
+    async with github_integration._GitHubClient("tok", transport=transport) as client:
+        assert client._client.base_url == github_integration.API_BASE
+        assert client._client.timeout == httpx.Timeout(15)
+        create = await client.create_issue("acme/app", "title", "body", labels=["flakeradar"])
+        comment = await client.comment("acme/app", 77, "note")
+        plain_close = await client.close_issue("acme/app", 77)
+        reasoned_close = await client.close_issue("acme/app", 77, state_reason="completed")
+        fetch = await client.fetch_issue("acme/app", 77)
+
+    assert (create.kind, create.number) == ("created", 77)
+    assert comment.kind == "created"
+    assert (plain_close.kind, reasoned_close.kind) == ("created", "created")
+    assert (fetch.kind, fetch.state) == ("ok", "open")
+
+    assert [(r.method, r.url.path) for r in calls] == [
+        ("POST", "/repos/acme/app/issues"),
+        ("POST", "/repos/acme/app/issues/77/comments"),
+        ("PATCH", "/repos/acme/app/issues/77"),
+        ("PATCH", "/repos/acme/app/issues/77"),
+        ("GET", "/repos/acme/app/issues/77"),
+    ]
+    bodies = [json.loads(r.content) for r in calls[:4]]
+    assert bodies[0] == {"title": "title", "body": "body", "labels": ["flakeradar"]}
+    assert bodies[1] == {"body": "note"}
+    assert bodies[2] == {"state": "closed"}  # the post-delete close sends no reason
+    assert bodies[3] == {"state": "closed", "state_reason": "completed"}
+    for r in calls:
+        assert r.headers["Authorization"] == "Bearer tok"
+        assert r.headers["Accept"] == "application/vnd.github+json"
+        assert r.headers["X-GitHub-Api-Version"] == "2022-11-28"
+
+
 async def test_does_not_refile_or_file_below_threshold(db, gh_settings):
     filed = await _flaky_test(db, name="filed", github_issue_number=5)
     proj = await make_project(db, "acme/other")
@@ -531,6 +844,59 @@ async def test_malformed_201_body_never_raises_and_keeps_the_batch_for_tests_and
     assert "acme/a" in warnings[0] and raw[:300] in warnings[0]
 
 
+async def test_filing_never_raises_on_a_body_invalid_for_its_declared_charset(db, gh_settings, caplog):
+    """The filing call classifies an undecodable body instead of failing on it.
+
+    A 201 or a 403 answered with a body whose declared charset the bytes are invalid for —
+    UTF-16 over plain JSON, which is what a proxy that re-declares a charset returns — makes
+    `resp.text` raise `UnicodeError`. The filing loop reads only the outcome the seam
+    classified from those bytes, so it logs the lossy excerpt and keeps its own policy: go
+    on after an unusable 201, skip the Repo after a permission 403.
+    """
+    a = await _flaky_test(db, repo="acme/a", name="a")
+    b1 = await _flaky_test(db, repo="acme/b", project="p1", name="b1")
+    b2 = await _flaky_test(db, repo="acme/b", project="p2", name="b2")
+    c = await _flaky_test(db, repo="acme/c", name="c")
+    junk = b'{"message": "created"}'  # valid JSON, undecodable as the declared UTF-16
+    denied = b'{"message": "Resource not accessible by personal access token"}'
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if request.url.path.startswith("/repos/acme/a/"):
+            return httpx.Response(201, headers={"content-type": "application/json; charset=utf-16"}, content=junk)
+        if request.url.path.startswith("/repos/acme/b/"):
+            return httpx.Response(403, headers={"content-type": "application/json; charset=utf-32"}, content=denied)
+        return httpx.Response(201, json={"number": 93})
+
+    for charset, body in (("utf-16", junk), ("utf-32", denied)):
+        with pytest.raises(UnicodeError):  # the premise, per response
+            _read_text(
+                httpx.Response(201, headers={"content-type": f"application/json; charset={charset}"}, content=body)
+            )
+
+    with caplog.at_level(logging.WARNING, logger="flakeradar.github"):
+        await github_integration.file_issues_for(db, [a.id, b1.id, b2.id, c.id], transport=httpx.MockTransport(handler))
+    # Nothing raised: a's unusable 201 cost one issue, b2 never got tried, c was filed.
+    assert [r.url.path for r in calls] == [
+        "/repos/acme/a/issues",
+        "/repos/acme/b/issues",
+        "/repos/acme/c/issues",
+    ]
+    await db.refresh(a)
+    await db.refresh(b1)
+    await db.refresh(b2)
+    await db.refresh(c)
+    assert a.github_issue_number is None  # a 201 with no number filed nothing to store
+    assert b1.github_issue_number is None and b2.github_issue_number is None
+    assert c.github_issue_number == 93
+    messages = [r.getMessage() for r in caplog.records]
+    unusable = [m for m in messages if "no issue number" in m]
+    assert len(unusable) == 1 and junk.decode() in unusable[0]
+    skips = [m for m in messages if "skipped for repo acme/b" in m]
+    assert len(skips) == 1 and denied.decode() in skips[0] and "403" in skips[0]
+
+
 async def test_network_error_never_raises(db, gh_settings):
     tc = await _flaky_test(db)
 
@@ -540,6 +906,70 @@ async def test_network_error_never_raises(db, gh_settings):
     await github_integration.file_issues_for(db, [tc.id], transport=httpx.MockTransport(boom))
     await db.refresh(tc)
     assert tc.github_issue_number is None
+
+
+async def test_bad_credentials_401_skips_repo_for_rest_of_batch(db, gh_settings, caplog):
+    """A 401 (the token itself is refused) is Repo-scoped for filing, like a 403.
+
+    The seam classifies it apart from a permission 403; the loop's answer is the
+    same skip, so a second candidate in that Repo is never posted to.
+    """
+    a1 = await _flaky_test(db, repo="acme/a", project="p1", name="a1")
+    a2 = await _flaky_test(db, repo="acme/a", project="p2", name="a2")
+    b = await _flaky_test(db, repo="acme/b", name="b")
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if request.url.path.startswith("/repos/acme/a/"):
+            return httpx.Response(401, json={"message": "Bad credentials"})
+        return httpx.Response(201, json={"number": 99})
+
+    with caplog.at_level(logging.WARNING, logger="flakeradar.github"):
+        await github_integration.file_issues_for(db, [a1.id, a2.id, b.id], transport=httpx.MockTransport(handler))
+    assert [r.url.path for r in calls] == ["/repos/acme/a/issues", "/repos/acme/b/issues"]
+    skip_warnings = [r.getMessage() for r in caplog.records if "skipped for repo acme/a" in r.getMessage()]
+    assert len(skip_warnings) == 1
+    assert "401" in skip_warnings[0] and "Bad credentials" in skip_warnings[0]
+    await db.refresh(a1)
+    await db.refresh(a2)
+    await db.refresh(b)
+    assert a1.github_issue_number is None
+    assert a2.github_issue_number is None
+    assert b.github_issue_number == 99
+
+
+async def test_network_error_mid_batch_costs_the_rest_of_the_batch(db, gh_settings, caplog):
+    """A transport error stops the batch where it stands, keeping what it linked.
+
+    Pinned before the seam migration so the kind-based loop cannot turn one dead
+    connection into a per-issue error: the first Test keeps its committed number,
+    the third is never posted to, and the warning is the batch-stop one.
+    """
+    a = await _flaky_test(db, repo="acme/a", project="p1", name="a")
+    b = await _flaky_test(db, repo="acme/b", project="p2", name="b")
+    c = await _flaky_test(db, repo="acme/c", project="p3", name="c")
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if len(calls) == 1:
+            return httpx.Response(201, json={"number": 77})
+        raise httpx.ConnectError("offline")
+
+    with caplog.at_level(logging.WARNING, logger="flakeradar.github"):
+        await github_integration.file_issues_for(db, [a.id, b.id, c.id], transport=httpx.MockTransport(handler))
+    # c is never tried: the error ended the batch, not just this one filing.
+    assert [r.url.path for r in calls] == ["/repos/acme/a/issues", "/repos/acme/b/issues"]
+    await db.refresh(a)
+    await db.refresh(b)
+    await db.refresh(c)
+    assert a.github_issue_number == 77  # committed per issue, so the filing stands
+    assert b.github_issue_number is None
+    assert c.github_issue_number is None
+    warnings = [r.getMessage() for r in caplog.records if "unreachable, skipping test issue filing" in r.getMessage()]
+    assert len(warnings) == 1
+    assert "offline" in warnings[0]
 
 
 async def test_custom_label_is_used(db, gh_settings):

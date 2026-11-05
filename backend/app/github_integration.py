@@ -30,8 +30,9 @@ Error handling: never raises.
   a `retry-after` header, or a body message containing "rate limit") -> stop
   this batch, log a warning.
 - Any other 403 on create (a permission error: a token without access to that
-  Repo, an archived Repo), or 404/410 (issues disabled) -> skip that Repo for
-  the rest of the batch, log one warning per Repo, go on with the other Repos.
+  Repo, an archived Repo), a bad-credentials 401, or 404/410 (issues disabled)
+  -> skip that Repo for the rest of the batch, log one warning per Repo, go on
+  with the other Repos.
 - In the sync (`sync_closed_issues`), a definitive Repo-wide client error
   (a permission 403, bad credentials 401, a gone Repo 410) leaves the Issue
   link as it is, skips that Repo for the rest of the run, and stamps the rows
@@ -62,6 +63,7 @@ Error handling: never raises.
 
 import logging
 from dataclasses import dataclass
+from typing import Literal, Self
 
 import httpx
 from sqlalchemy import select, update
@@ -126,7 +128,10 @@ def _json_object(resp: httpx.Response) -> dict | None:
     """The body parsed as a JSON object, or None when it is not one. Never raises."""
     try:
         payload = resp.json()
-    except ValueError:  # non-JSON body (a proxy error page, an empty response)
+    except (ValueError, httpx.HTTPError, httpx.StreamError):
+        # non-JSON body (a proxy error page, an empty response), or a body that was
+        # never read (`ResponseNotRead`, which httpx derives from `RuntimeError` rather
+        # than `HTTPError`), which is as unusable as an empty one
         return None
     return payload if isinstance(payload, dict) else None
 
@@ -174,6 +179,175 @@ def _rate_limited(resp: httpx.Response) -> bool:
     body = _json_object(resp)
     message = body.get("message", "") if body is not None else ""
     return "rate limit" in str(message).lower()
+
+
+# How much of a response body an outcome keeps — the log budget of every warning
+# line in this module, so an excerpt is always enough to diagnose a failure.
+_GITHUB_EXCERPT_MAX = 300
+
+
+def _excerpt(resp: httpx.Response) -> str:
+    """The start of a response body, decoded without trusting what it says it is.
+
+    Never raises, which `resp.text` alone does: it decodes with the charset the response
+    declares, and a bogus one (`Content-Type: application/json; charset=base64`) makes the
+    stdlib codec machinery raise a TypeError, AssertionError or UnicodeError — none of them
+    an `httpx.HTTPError` — rather than substitute. A real charset over bytes that are
+    invalid for it is the same problem: httpx decodes with `errors="replace"`, but a
+    UTF-16/UTF-32 decoder still raises `UnicodeError` when the stream carries no BOM
+    (`UnicodeDecodeError`, its subclass, on CPython 3.13+), and `_json_object` catches the
+    same class from `json.loads` on an undecodable body. The bytes come first because an
+    unread or consumed stream raises `httpx.ResponseNotRead`, which httpx derives from
+    `RuntimeError`, not `HTTPError`, so it is caught by name.
+    Classification happens after the request `try` block, so any of those would escape the
+    seam, past the loops that no longer catch anything, and the body is only ever wanted for
+    a log line: prefer the declared charset, fall back to the bytes the client
+    content-decoded, and give up to no excerpt at all only when there are none.
+    """
+    try:
+        raw = resp.content  # the bytes as delivered, before any charset is believed
+    except (httpx.HTTPError, httpx.StreamError):  # an unread or consumed stream has no body
+        return ""
+    try:
+        return resp.text[:_GITHUB_EXCERPT_MAX]
+    except (AssertionError, TypeError, ValueError, httpx.HTTPError):  # see the docstring
+        # `UnicodeError` — invalid bytes for the declared charset, whatever subclass a given
+        # CPython raises — is a `ValueError`, so the lossy read of the same bytes covers it,
+        # and every other codec failure.
+        return raw[:_GITHUB_EXCERPT_MAX].decode("utf-8", errors="replace")
+
+
+IssueOutcomeKind = Literal[
+    "ok",  # answered, and the body (if any) says what the caller asked for
+    "created",  # 201 on an interaction that creates something
+    "rate_limited",  # today's `_rate_limited` rule: stop the batch
+    "unauthorized",  # 401: the token itself is the problem
+    "repo_denied",  # a 403 that is not a rate limit: no access to this Repo
+    "not_found",  # 404: issues disabled, or the entity is gone
+    "gone",  # 410: the Repo is gone
+    "other",  # answered with something the caller groups as "a failure, go on"
+    "network",  # no answer at all: an httpx.HTTPError, carried on `error`
+    "unusable_body",  # a 2xx whose body this cannot read
+]
+
+
+@dataclass(frozen=True)
+class GitHubOutcome:
+    """The answer to one GitHub request, classified (see `_github_outcome`)."""
+
+    kind: IssueOutcomeKind
+    status: int | None = None  # the HTTP status, None for the network kind
+    remaining: str | None = None  # `x-ratelimit-remaining`, when the answer carried it
+    excerpt: str = ""  # the first `_GITHUB_EXCERPT_MAX` characters of the body
+    error: httpx.HTTPError | None = None  # the transport exception, for the network kind
+    number: int | None = None  # parsed for a create, from `_issue_number`
+    state: str | None = None  # parsed for an issue fetch, from `_issue_state`
+    state_reason: str | None = None  # ... and `_issue_state_reason`
+
+
+def _github_outcome(resp: httpx.Response, *, expect: Literal["number", "state"] | None = None) -> GitHubOutcome:
+    """Classify an answered request. Never raises: an unreadable body is a kind, not an error.
+
+    The rate-limit kind is exactly `_rate_limited` (checked first), so a batch stops on
+    precisely the responses it stops on today. The rest separates the statuses each loop
+    already groups on — a permission 403, bad credentials 401, disabled 404 and gone 410
+    come apart — and keeps a 2xx whose body cannot be read (`unusable_body`) distinct
+    from a good one, because a 201 without a number filed nothing. `expect` picks which
+    body fields to parse, and therefore which 2xx counts as good: `"number"` for a
+    create, `"state"` for an issue fetch, None for a comment or a close, whose callers
+    group on the status themselves.
+    """
+    status = resp.status_code
+    fields: dict = {
+        "status": status,
+        "remaining": resp.headers.get("x-ratelimit-remaining"),
+        "excerpt": _excerpt(resp),
+    }
+    if expect == "number":
+        fields["number"] = _issue_number(resp)
+    elif expect == "state":
+        fields["state"] = _issue_state(resp)
+        fields["state_reason"] = _issue_state_reason(resp)
+
+    if _rate_limited(resp):
+        kind = "rate_limited"
+    elif status == 401:
+        kind = "unauthorized"
+    elif status == 403:
+        kind = "repo_denied"
+    elif status == 404:
+        kind = "not_found"
+    elif status == 410:
+        kind = "gone"
+    elif 200 <= status < 300:
+        if expect == "number":
+            # A 201 is the only success a filer accepts, and it must carry a number;
+            # any other 2xx is an answer the filer cannot use (as today).
+            if status != 201:
+                kind = "ok"
+            else:
+                kind = "created" if fields.get("number") is not None else "unusable_body"
+        elif expect == "state":
+            if status != 200:
+                kind = "other"
+            else:
+                kind = "ok" if fields.get("state") is not None else "unusable_body"
+        else:
+            kind = "created" if status == 201 else "ok"
+    else:
+        kind = "other"
+    return GitHubOutcome(kind=kind, **fields)
+
+
+class _GitHubClient:
+    """The four GitHub interactions the filer loops make, as classified outcomes.
+
+    Owns what every block in this module used to write out by hand — `base_url=API_BASE`,
+    `_headers`, `timeout=15` and the injected test transport — and turns each answer into
+    a `GitHubOutcome`, including a transport failure (the network kind, never a raise).
+    """
+
+    def __init__(self, token: str, *, transport: httpx.AsyncBaseTransport | None = None) -> None:
+        self._client = httpx.AsyncClient(base_url=API_BASE, headers=_headers(token), timeout=15, transport=transport)
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(self, *exc_info: object) -> None:
+        await self._client.aclose()
+
+    async def create_issue(self, repo: str, title: str, body: str, *, labels: list[str]) -> GitHubOutcome:
+        """POST a new issue in `repo`; the outcome carries the parsed number."""
+        return await self._request(
+            "POST",
+            f"/repos/{repo}/issues",
+            {"title": title, "body": body, "labels": labels},
+            expect="number",
+        )
+
+    async def comment(self, repo: str, number: int, body: str) -> GitHubOutcome:
+        """POST a comment on issue `number`."""
+        return await self._request("POST", f"/repos/{repo}/issues/{number}/comments", {"body": body})
+
+    async def close_issue(self, repo: str, number: int, *, state_reason: str | None = None) -> GitHubOutcome:
+        """PATCH issue `number` to `state: closed`, with a `state_reason` when asked for."""
+        payload: dict = {"state": "closed"}
+        if state_reason is not None:
+            payload["state_reason"] = state_reason
+        return await self._request("PATCH", f"/repos/{repo}/issues/{number}", payload)
+
+    async def fetch_issue(self, repo: str, number: int) -> GitHubOutcome:
+        """GET issue `number`; the outcome carries the parsed state and state reason."""
+        return await self._request("GET", f"/repos/{repo}/issues/{number}", None, expect="state")
+
+    async def _request(
+        self, method: str, url: str, payload: dict | None, *, expect: Literal["number", "state"] | None = None
+    ) -> GitHubOutcome:
+        try:
+            resp = await self._client.request(method, url, json=payload)
+        except httpx.HTTPError as exc:  # unreachable API, timeout, protocol error
+            return GitHubOutcome(kind="network", error=exc)
+        return _github_outcome(resp, expect=expect)
 
 
 _RUN_HINT_TEMPLATES: dict[str, str] = {
@@ -324,6 +498,12 @@ async def _select_candidates(db: AsyncSession, test_case_ids: list[int]) -> list
     return candidates
 
 
+# The outcomes filing treats as Repo-scoped: today's `(403, 404, 410)` skip set plus 401,
+# which the seam classifies on its own. Bad credentials answer for every Repo the same
+# way a permission 403 does, so the loop's response to them is the same skip.
+_FILING_SKIP_REPO_KINDS = frozenset({"unauthorized", "repo_denied", "not_found", "gone"})
+
+
 async def _file_batch(
     db: AsyncSession,
     candidates: list[tuple[Job | TestCase, str, str, str]],
@@ -335,11 +515,12 @@ async def _file_batch(
 
     Each candidate is `(obj, repo, title, body)`; `entity` is the noun ("test"
     or "job") the log lines name. This is the module docstring's filing policy
-    in one place: the client lifecycle, a 201 that stores its number on the
-    entity and commits per issue, a 201 whose body has no number (log, go on),
-    a rate limit (stop this batch), any other 403/404/410 (skip that Repo for
-    the rest of the batch), any other status (log, go on), and a network error
-    (log, never raise).
+    in one place, read off the outcome kinds the seam client returns: a 201 that
+    stores its number on the entity and commits per issue, a 201 whose body has
+    no number (log, go on), a rate limit (stop this batch), a 401/403/404/410
+    (skip that Repo for the rest of the batch), any other status (log, go on),
+    and a network error (log, never raise, and the rest of the batch is not
+    tried).
 
     Returns the ids it linked, so the caller can keep its own hands off a link
     this pass created (see `on_report_processed`).
@@ -348,75 +529,64 @@ async def _file_batch(
     """
     s = get_settings()
     linked: set[int] = set()
-    try:
-        async with httpx.AsyncClient(
-            base_url=API_BASE, headers=_headers(s.github_token), timeout=15, transport=transport
-        ) as client:
-            skipped: set[str] = set()
-            for obj, repo, title, body in candidates:
-                if repo in skipped:
+    async with _GitHubClient(s.github_token, transport=transport) as client:
+        skipped: set[str] = set()
+        for obj, repo, title, body in candidates:
+            if repo in skipped:
+                continue
+            outcome = await client.create_issue(repo, title, body, labels=[s.github_issue_label])
+            if outcome.kind == "created":
+                number = outcome.number
+                obj_id = obj.id  # the object is expired after the savepoint rollback
+                # SAVEPOINT, so a row deleted under us (an admin delete
+                # winning the race) costs only this filing, not the batch.
+                nested = await db.begin_nested()
+                issue_links.store_filed_link(obj, number)  # also marks the link as ours
+                try:
+                    await nested.commit()
+                except StaleDataError:
+                    # The row vanished mid-filing: the number is referenced
+                    # nowhere, so close the issue we just created, best-effort.
+                    await nested.rollback()
+                    await close_issues_for_deleted_repo(repo, [number], transport=transport)
+                    logger.warning(
+                        "%s %s deleted (admin delete) while filing; closed issue %s#%s",
+                        entity.capitalize(),
+                        obj_id,
+                        repo,
+                        number,
+                    )
                     continue
-                resp = await client.post(
-                    f"/repos/{repo}/issues",
-                    json={"title": title, "body": body, "labels": [s.github_issue_label]},
+                await db.commit()
+                linked.add(obj_id)
+                logger.info("Filed issue %s#%s for %s %s", repo, obj.github_issue_number, entity, obj.id)
+            elif outcome.kind == "unusable_body":
+                logger.warning(
+                    "GitHub issue creation in %s returned 201 with no issue number: %s", repo, outcome.excerpt
                 )
-                if resp.status_code == 201:
-                    number = _issue_number(resp)
-                    if number is None:
-                        logger.warning(
-                            "GitHub issue creation in %s returned 201 with no issue number: %s", repo, resp.text[:300]
-                        )
-                    else:
-                        obj_id = obj.id  # the object is expired after the savepoint rollback
-                        # SAVEPOINT, so a row deleted under us (an admin delete
-                        # winning the race) costs only this filing, not the batch.
-                        nested = await db.begin_nested()
-                        issue_links.store_filed_link(obj, number)  # also marks the link as ours
-                        try:
-                            await nested.commit()
-                        except StaleDataError:
-                            # The row vanished mid-filing: the number is referenced
-                            # nowhere, so close the issue we just created, best-effort.
-                            await nested.rollback()
-                            await close_issues_for_deleted_repo(repo, [number], transport=transport)
-                            logger.warning(
-                                "%s %s deleted (admin delete) while filing; closed issue %s#%s",
-                                entity.capitalize(),
-                                obj_id,
-                                repo,
-                                number,
-                            )
-                            continue
-                        await db.commit()
-                        linked.add(obj_id)
-                        logger.info("Filed issue %s#%s for %s %s", repo, obj.github_issue_number, entity, obj.id)
-                elif _rate_limited(resp):
-                    logger.warning(
-                        "GitHub rate limit (remaining=%s); stopping batch",
-                        resp.headers.get("x-ratelimit-remaining"),
-                    )
-                    return linked
-                elif resp.status_code in (403, 404, 410):
-                    # Permission error, or issues disabled on this Repo: it costs
-                    # this Repo only, the rest of the batch goes on.
-                    logger.warning(
-                        "GitHub issue creation skipped for repo %s: %s %s",
-                        repo,
-                        resp.status_code,
-                        resp.text[:300],
-                    )
-                    skipped.add(repo)
-                else:
-                    logger.warning(
-                        "GitHub issue creation failed for %s %s in %s: %s %s",
-                        entity,
-                        obj.id,
-                        repo,
-                        resp.status_code,
-                        resp.text[:300],
-                    )
-    except httpx.HTTPError as exc:
-        logger.warning("GitHub unreachable, skipping %s issue filing: %s", entity, exc)
+            elif outcome.kind == "rate_limited":
+                logger.warning("GitHub rate limit (remaining=%s); stopping batch", outcome.remaining)
+                return linked
+            elif outcome.kind in _FILING_SKIP_REPO_KINDS:
+                # Permission error, or issues disabled on this Repo: it costs
+                # this Repo only, the rest of the batch goes on.
+                logger.warning(
+                    "GitHub issue creation skipped for repo %s: %s %s", repo, outcome.status, outcome.excerpt
+                )
+                skipped.add(repo)
+            elif outcome.kind == "network":
+                # No answer at all: as today, the rest of the batch is not worth trying.
+                logger.warning("GitHub unreachable, skipping %s issue filing: %s", entity, outcome.error)
+                return linked
+            else:
+                logger.warning(
+                    "GitHub issue creation failed for %s %s in %s: %s %s",
+                    entity,
+                    obj.id,
+                    repo,
+                    outcome.status,
+                    outcome.excerpt,
+                )
     return linked
 
 
