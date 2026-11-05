@@ -96,6 +96,21 @@ async fn call_result(app: &Router, tool: &str, arguments: Value) -> Value {
     reply.json().get("result").cloned().unwrap_or(Value::Null)
 }
 
+/// Asserts the status the reference answers a tool whose statement failed.
+///
+/// fastmcp 4.1.6, the version `backend/requirements.txt` pins, carries a tool's
+/// failure inside the JSON-RPC answer and answers HTTP 200: driven over its own
+/// Streamable HTTP app, a tool that raises answers 200, so a failed statement
+/// must never become an HTTP 500.
+fn assert_answered_ok(reply: &Reply) {
+    assert_eq!(
+        reply.status,
+        StatusCode::OK,
+        "the reference answers 200 for a failed statement: {}",
+        reply.text()
+    );
+}
+
 /// Calls one tool and answers what a client reads as its data.
 fn data(result: &Value) -> Value {
     let structured = result
@@ -1450,6 +1465,7 @@ async fn a_broken_database_is_a_protocol_error_rather_than_a_refusal() {
         json!({"name": "list_repos", "arguments": {}}),
     )
     .await;
+    assert_answered_ok(&reply);
     let body = reply.json();
     assert!(
         body.get("result").is_none(),
@@ -1476,6 +1492,7 @@ async fn a_failing_read_of_one_ci_run_is_a_protocol_error() {
         }),
     )
     .await;
+    assert_answered_ok(&reply);
     let body = reply.json();
     assert!(body.get("error").is_some(), "{body}");
 }
@@ -1532,6 +1549,7 @@ async fn a_failing_link_is_a_protocol_error() {
         json!({"name": "link_issue", "arguments": {"number": 7, "test_id": flaky}}),
     )
     .await;
+    assert_answered_ok(&reply);
     let body = reply.json();
     assert!(body.get("error").is_some(), "{body}");
 }

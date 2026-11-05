@@ -1915,6 +1915,168 @@ async fn an_mcp_step_replays_the_recorded_protocol_result() {
     );
 }
 
+/// The app the `mcp` scenario's `tools/call` steps answer on, over a database
+/// holding the rows the scenario's ingest steps queued.
+///
+/// A tool answer is data those rows produced, so a control that tampers one has
+/// to replay the ingests and the drain first — the setup
+/// [`every_enabled_scenario_replays_identically`] does inline for every scenario.
+async fn seeded_mcp_app() -> (TestDb, Router) {
+    let db = TestDb::new().await.expect("a test database is available");
+    let file = scenario("mcp");
+    let settings = settings_for(&file, &db);
+    let app = build_app(AppState::new(
+        db.connection().clone(),
+        Arc::new(settings.clone()),
+    ));
+    // The worker claims nothing until the scenario drains the queue, so the
+    // ingest goldens that record a pending Report still replay.
+    let gate = Arc::new(GatedProcessor::new());
+    let held: Arc<GatedProcessor> = Arc::clone(&gate);
+    let processor: Arc<dyn ReportProcessor> = held;
+    let worker = Arc::new(
+        ReportWorker::new(
+            db.connection().clone(),
+            Arc::new(AdvisoryLock::new(db.url(), DbSettings::default())),
+            processing_of(&settings),
+            WorkerSettings::from_settings(&settings),
+        )
+        .with_processor(processor),
+    );
+    Arc::clone(&worker).start().await;
+    for step in 1..=4 {
+        let recorded = golden("mcp", step);
+        let spec = file
+            .steps
+            .get(step - 1)
+            .unwrap_or_else(|| panic!("mcp has no step {step}"));
+        if spec.get("wait_processed").is_some() {
+            gate.open();
+        }
+        let failures = replay_step(&app, &db, &settings, "mcp", step, spec, &recorded).await;
+        assert!(failures.is_empty(), "mcp step {step}: {failures:?}");
+    }
+    worker.stop().await;
+    (db, app)
+}
+
+/// The recorded `tools/call` answer with one substring of its content text
+/// replaced.
+fn with_tampered_text(recorded: &Value, from: &str, to: &str) -> Value {
+    let mut tampered = recorded.clone();
+    let block = tampered
+        .get_mut("result")
+        .and_then(|result| result.get_mut("content"))
+        .and_then(|content| content.get_mut(0))
+        .and_then(Value::as_object_mut)
+        .expect("a tools/call golden carries its data as a content block");
+    let text = block
+        .get("text")
+        .and_then(Value::as_str)
+        .expect("the block's data is text")
+        .to_owned();
+    assert!(
+        text.contains(from),
+        "{from:?} is not in the recorded answer"
+    );
+    let _ = block.insert("text".to_owned(), json!(text.replace(from, to)));
+    tampered
+}
+
+#[tokio::test]
+async fn a_changed_mcp_tool_answer_fails_the_replay() {
+    // A `tools/call` golden holds what an agent acts on, in the JSON text a
+    // client reads and in the structured copy beside it. The replay must reject
+    // a wrong Test name, score, permalink, Issue number and failure message, so
+    // the recorded answer is proved non-vacuous field by field rather than only
+    // by the `tools/list` control above.
+    let (_db, app) = seeded_mcp_app().await;
+    let file = scenario("mcp");
+    let get_test = file
+        .steps
+        .get(18)
+        .cloned()
+        .expect("the mcp scenario has an eighteenth step");
+    let recorded = golden("mcp", 19);
+    assert_eq!(
+        replay_mcp(&app, "mcp", 19, &get_test, &recorded).await,
+        Vec::<String>::new(),
+        "the recorded get_test answer must replay clean before a control alters it"
+    );
+
+    for (what, from, to) in [
+        (
+            "a Test name",
+            "\"name\":\"test_total\"",
+            "\"name\":\"test_totals\"",
+        ),
+        (
+            "a score",
+            "\"flakiness_score\":0.1667",
+            "\"flakiness_score\":0.1668",
+        ),
+        (
+            "a permalink",
+            "blob/m1/tests/test_cart.py#L12",
+            "blob/m1/tests/test_cart.py#L13",
+        ),
+        (
+            "a failure message",
+            "\"message\":\"assert 1 == 2\"",
+            "\"message\":\"assert 2 == 2\"",
+        ),
+    ] {
+        let tampered = with_tampered_text(&recorded, from, to);
+        let failures = replay_mcp(&app, "mcp", 19, &get_test, &tampered).await;
+        assert_eq!(failures.len(), 1, "{what}: {failures:?}");
+        assert!(
+            failures[0].contains("result.content.0.text"),
+            "{what}: {failures:?}"
+        );
+    }
+
+    // The structured copy of the same data is compared too, so a changed score
+    // fails even when the text a client reads still matches.
+    let mut rescored = recorded.clone();
+    let _ = rescored
+        .get_mut("result")
+        .and_then(|result| result.get_mut("structuredContent"))
+        .and_then(|structured| structured.get_mut("test"))
+        .and_then(Value::as_object_mut)
+        .expect("the recorded answer carries the Test")
+        .insert("flakiness_score".to_owned(), json!(0.1668));
+    let failures = replay_mcp(&app, "mcp", 19, &get_test, &rescored).await;
+    assert_eq!(failures.len(), 1, "{failures:?}");
+    assert!(
+        failures[0].contains("result.structuredContent.test.flakiness_score"),
+        "{failures:?}"
+    );
+
+    // The Issue number a write recorded is part of the answer it returned.
+    let link = file
+        .steps
+        .get(37)
+        .cloned()
+        .expect("the mcp scenario has a thirty-eighth step");
+    let recorded = golden("mcp", 38);
+    assert_eq!(
+        replay_mcp(&app, "mcp", 38, &link, &recorded).await,
+        Vec::<String>::new(),
+        "the recorded link_issue answer must replay clean before a control alters it"
+    );
+    let tampered = with_tampered_text(
+        &recorded,
+        "\"github_issue_number\":31",
+        "\"github_issue_number\":32",
+    );
+    let failures = replay_mcp(&app, "mcp", 38, &link, &tampered).await;
+    assert_eq!(failures.len(), 1, "an Issue number: {failures:?}");
+    assert!(
+        failures[0].contains("result.content.0.text"),
+        "an Issue number: {failures:?}"
+    );
+}
+
 #[tokio::test]
 async fn an_enabled_step_that_answers_something_else_fails_loudly() {
     // The replay loop asserts that every mismatch it collects is empty, so this
