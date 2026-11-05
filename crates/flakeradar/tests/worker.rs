@@ -863,18 +863,16 @@ async fn a_failed_lock_statement_drops_the_session() {
     set_connections_allowed(&db, &database, false).await;
     terminate_lock_session(&db, &database).await;
 
-    session
-        .try_lock()
-        .await
-        .expect_err("a statement on the dead session fails");
+    let failed = session.try_lock().await;
     // The failed statement dropped the session, so ending it needs no statement
     // of its own: a session that was kept would try to unlock over a connection
     // the pool can no longer open, and report that instead of nothing.
-    session
-        .unlock()
-        .await
-        .expect("a dropped session is not unlocked again");
+    let ended = session.unlock().await;
+    // Connections are allowed again before either answer is asserted, so a
+    // failure here cannot leave a database that refuses them.
     set_connections_allowed(&db, &database, true).await;
+    failed.expect_err("a statement on the dead session fails");
+    ended.expect("a dropped session is not unlocked again");
     // The next election opens a fresh session, which wins the lock the server
     // freed with the old one; a reused broken session would fail again.
     assert!(
