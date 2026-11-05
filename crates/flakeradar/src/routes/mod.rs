@@ -9,6 +9,7 @@
 // Rust guideline compliant 2026-07-21
 
 pub mod ops;
+pub mod reads;
 pub mod reports;
 
 use axum::Router;
@@ -26,6 +27,7 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/api/health", get(ops::health))
         .route("/api/health/ready", get(ops::ready))
         .route("/metrics", get(ops::metrics))
-        .merge(reports::router(state));
+        .merge(reports::router(state.clone()))
+        .merge(reads::router(state));
     docs::router(router)
 }

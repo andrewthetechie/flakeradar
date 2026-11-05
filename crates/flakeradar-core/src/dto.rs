@@ -96,6 +96,61 @@ pub mod optional_timestamp {
     }
 }
 
+/// Pydantic's lax boolean, for the values FastAPI accepted from a query or a body.
+///
+/// Pydantic's lax mode takes JSON `true`/`false`, the integers `1`/`0` and the
+/// strings `on`/`off`, `t`/`f`, `true`/`false`, `y`/`n` and `yes`/`no` in any
+/// case. The quarantine route needs the same spellings: `{"quarantined": "yes"}`
+/// validated and answered 404 for a missing Test in the frozen server.
+pub mod lax_bool {
+    use serde::{Deserialize, Deserializer};
+    use serde_json::Value;
+
+    /// Reads a required lax boolean.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the value is not one of the accepted spellings.
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<bool, D::Error> {
+        let value = Value::deserialize(deserializer)?;
+        interpret(&value).ok_or_else(|| serde::de::Error::custom("expected a boolean"))
+    }
+
+    /// Reads an optional lax boolean, where `null` or an absent value is `None`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a present value is not one of the accepted spellings.
+    pub fn optional<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<bool>, D::Error> {
+        match Value::deserialize(deserializer)? {
+            Value::Null => Ok(None),
+            value => interpret(&value)
+                .map(Some)
+                .ok_or_else(|| serde::de::Error::custom("expected a boolean")),
+        }
+    }
+
+    /// The meaning of one JSON value, or `None` when Pydantic would refuse it.
+    fn interpret(value: &Value) -> Option<bool> {
+        match value {
+            Value::Bool(flag) => Some(*flag),
+            Value::Number(number) => match number.as_i64() {
+                Some(0) => Some(false),
+                Some(1) => Some(true),
+                _ => None,
+            },
+            Value::String(text) => match text.to_ascii_lowercase().as_str() {
+                "0" | "off" | "f" | "false" | "n" | "no" => Some(false),
+                "1" | "on" | "t" | "true" | "y" | "yes" => Some(true),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+}
+
 /// One segment of a validation error's location.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(untagged)]
@@ -1182,7 +1237,8 @@ pub struct JobSummaryOut {
 /// A human's quarantine decision.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct QuarantineIn {
-    /// Whether the Test is quarantined.
+    /// Whether the Test is quarantined, in any spelling Pydantic took.
+    #[serde(deserialize_with = "lax_bool::deserialize")]
     pub quarantined: bool,
     /// Why the human quarantined it.
     #[serde(default)]
@@ -1190,6 +1246,54 @@ pub struct QuarantineIn {
     /// How many days the quarantine lasts.
     #[serde(default)]
     pub expires_in_days: Option<i64>,
+}
+
+impl QuarantineIn {
+    /// Checks the rules `schemas.py` put on the body.
+    ///
+    /// # Errors
+    ///
+    /// Returns the issues a 422 carries when a rule fails.
+    pub fn validate(&self) -> Result<(), Vec<ValidationIssue>> {
+        let mut issues = Vec::new();
+        if let Some(reason) = &self.reason
+            && reason.chars().count() > 500
+        {
+            issues.push(ValidationIssue::string_too_long(
+                body_field("reason"),
+                Value::from(reason.clone()),
+                500,
+            ));
+        }
+        if let Some(days) = self.expires_in_days {
+            if days < 1 {
+                issues.push(ValidationIssue::greater_than_equal(
+                    body_field("expires_in_days"),
+                    Value::from(days),
+                    1,
+                ));
+            } else if days > 365 {
+                issues.push(ValidationIssue::less_than_equal(
+                    body_field("expires_in_days"),
+                    Value::from(days),
+                    365,
+                ));
+            }
+        }
+        if issues.is_empty() {
+            Ok(())
+        } else {
+            Err(issues)
+        }
+    }
+}
+
+/// The `loc` of a bad field of the request body.
+fn body_field(field: &str) -> Vec<LocSegment> {
+    vec![
+        LocSegment::Field("body".to_owned()),
+        LocSegment::Field(field.to_owned()),
+    ]
 }
 
 /// One quarantined Test in the quarantine list.

@@ -70,7 +70,7 @@ pub use report_intake::{
 };
 #[doc(inline)]
 pub use reads::{
-    DEFAULT_EXECUTIONS_LIMIT, FAILURES_LIMIT, ListOptions, MAX_EXECUTIONS_LIMIT, NEW_FLAKY_DAYS,
+    DEFAULT_EXECUTIONS_LIMIT, FAILURES_LIMIT, JobListFilters, ListOptions, MAX_EXECUTIONS_LIMIT, NEW_FLAKY_DAYS,
     ReadError, ReadSettings, Scope, SortKey, TestListFilters, ci_run_failures, find_job_ids,
     find_test_ids, get_job, get_test, job_summary, latest_failure, list_jobs, list_repos,
     list_tests, quarantine_list, search_jobs, search_tests, set_quarantine, summary, test_job_links,

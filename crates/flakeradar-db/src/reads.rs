@@ -289,10 +289,8 @@ struct Board<'a> {
     select: &'static str,
     /// The `FROM` clause, joining the entity to its parents.
     from: &'static str,
-    /// The conditions the wrapper already scoped with.
+    /// The conditions the wrapper scoped and filtered with.
     filter: Where,
-    /// The entity's own listing filters, applied by the engine's caller.
-    extra: Where,
     /// The search condition, with `$P` standing for the pattern bind.
     search: &'static str,
     /// The entity's GitHub issue column.
@@ -332,8 +330,6 @@ impl Board<'_> {
     /// rules are stated.
     async fn run(self, db: &impl ConnectionTrait) -> Result<BoardPage, DbError> {
         let mut conditions = self.filter;
-        conditions.conditions.extend(self.extra.conditions);
-        conditions.values.extend(self.extra.values);
 
         let mut joins = String::new();
         if self.flaky_only || self.new_within_days.is_some() {
@@ -406,8 +402,8 @@ const TESTS_FROM: &str = "FROM test_cases t \
      JOIN projects p ON p.id = t.project_id \
      JOIN repos r ON r.id = p.repo_id";
 
-const JOBS_SELECT: &str =
-    "SELECT j.*, p.name AS pipeline_name, p.provider AS provider, r.name AS repo_name";
+const JOBS_SELECT: &str = "SELECT j.*, p.name AS pipeline_name, p.provider AS provider, \
+     p.repo_id AS repo_id, r.name AS repo_name";
 const JOBS_FROM: &str = "FROM jobs j \
      JOIN pipelines p ON p.id = j.pipeline_id \
      JOIN repos r ON r.id = p.repo_id";
@@ -589,33 +585,32 @@ pub async fn list_tests(
     options: &ListOptions,
     settings: &ReadSettings,
 ) -> Result<TestPage, DbError> {
-    let mut requested = Where::default();
-    scope_conditions(scope, "r.name", "p.name", &mut requested);
-    let mut extra = Where::default();
+    let mut filter = Where::default();
+    scope_conditions(scope, "r.name", "p.name", &mut filter);
     if let Some(file) = filters.file.as_deref().filter(|file| !file.is_empty()) {
-        let placeholder = extra.next();
-        extra.raw(format!("t.file ILIKE {placeholder} ESCAPE '\\'"));
-        extra
+        let placeholder = filter.next();
+        filter.raw(format!("t.file ILIKE {placeholder} ESCAPE '\\'"));
+        filter
             .values
             .push(Value::from(format!("%{}%", escape_like(file))));
     }
     if let Some(category) = filters.category {
-        extra.eq(
+        filter.eq(
             "t.failure_category",
             Value::from(category.as_str().to_owned()),
         );
     }
     if let Some(quarantined) = filters.quarantined {
-        extra.eq("t.quarantined", Value::from(quarantined));
+        filter.eq("t.quarantined", Value::from(quarantined));
     }
     if filters.broken {
         if settings.broken_streak > 0 {
-            let placeholder = extra.next();
-            extra.raw(format!("t.fail_streak >= {placeholder}"));
-            extra.values.push(Value::from(settings.broken_streak));
+            let placeholder = filter.next();
+            filter.raw(format!("t.fail_streak >= {placeholder}"));
+            filter.values.push(Value::from(settings.broken_streak));
         } else {
             // Detection disabled: `is_broken` is false for every row, so nothing is broken.
-            extra.raw("FALSE");
+            filter.raw("FALSE");
         }
     }
     let board = Board {
@@ -623,8 +618,7 @@ pub async fn list_tests(
         alias: "t",
         select: TESTS_SELECT,
         from: TESTS_FROM,
-        filter: requested,
-        extra,
+        filter,
         search: TEST_SEARCH,
         issue_column: "t.github_issue_number",
         keeps_stable_rows: filters.quarantined == Some(true) || filters.broken,
@@ -677,21 +671,19 @@ pub async fn list_jobs(
     options: &ListOptions,
     settings: &ReadSettings,
 ) -> Result<JobPage, DbError> {
-    let mut requested = Where::default();
+    let mut filter = Where::default();
     if let Some(repo) = repo {
-        requested.eq("r.name", Value::from(repo.to_owned()));
+        filter.eq("r.name", Value::from(repo.to_owned()));
     }
-    let mut extra = Where::default();
     if let Some(pipeline) = &filters.pipeline {
-        extra.eq("p.name", Value::from(pipeline.clone()));
+        filter.eq("p.name", Value::from(pipeline.clone()));
     }
     let board = Board {
         kind: HistoryKind::Job,
         alias: "j",
         select: JOBS_SELECT,
         from: JOBS_FROM,
-        filter: requested,
-        extra,
+        filter,
         search: JOB_SEARCH,
         issue_column: "j.github_issue_number",
         // ADR 0004: Jobs have no Quarantine, so no Job listing keeps stable rows.
@@ -900,7 +892,7 @@ pub async fn summary(
 /// One Execution in a Test's history, with the Run facts it carries.
 fn execution_out(row: &QueryResult) -> Result<ExecutionOut, DbError> {
     Ok(ExecutionOut {
-        id: id(get(row, "id")?),
+        id: get(row, "id")?,
         status: get(row, "status")?,
         duration: get(row, "duration")?,
         message: get(row, "message")?,
@@ -1304,7 +1296,7 @@ pub async fn get_job(
         let outcome = if status == "failed" {
             if explained.contains(&ci_job_id) {
                 explained_failures += 1;
-                let _ = failed_ci_to_exec.insert(ci_job_id.clone(), id(get(execution, "id")?));
+                let _ = failed_ci_to_exec.insert(ci_job_id.clone(), get::<i64>(execution, "id")?);
                 JobOutcome::Explained
             } else {
                 unexplained += 1;
@@ -1316,7 +1308,7 @@ pub async fn get_job(
             JobOutcome::Skipped
         };
         executions.push(JobExecutionOut {
-            id: id(get(execution, "id")?),
+            id: get(execution, "id")?,
             status,
             outcome,
             commit_sha: get(execution, "commit_sha")?,

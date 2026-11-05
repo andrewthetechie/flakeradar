@@ -313,6 +313,17 @@ impl Default for Settings {
 impl Settings {
     /// The processor's view of these settings, with the system clock.
     ///
+    /// The read layer's view of these settings.
+    #[must_use]
+    pub fn reads(&self) -> flakeradar_db::ReadSettings {
+        flakeradar_db::ReadSettings {
+            flake_threshold: self.flake_threshold,
+            broken_streak: self.broken_streak,
+            score_window: usize::try_from(self.score_window).unwrap_or_default(),
+            clock: std::sync::Arc::new(flakeradar_db::SystemClock),
+        }
+    }
+
     /// The database layer cannot depend on this module, so it takes only the
     /// values the processor reads.
     #[must_use]

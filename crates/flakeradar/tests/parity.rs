@@ -141,11 +141,11 @@ const ENABLED: &[Enabled] = &[
     },
     Enabled {
         name: "default-branch",
-        steps: &[1, 2, 3, 7, 8, 12, 13, 15],
+        steps: &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
     },
     Enabled {
         name: "health",
-        steps: &[1, 2, 3, 5],
+        steps: &[1, 2, 3, 4, 5],
     },
     Enabled {
         name: "ingest-junit",
@@ -156,7 +156,11 @@ const ENABLED: &[Enabled] = &[
     },
     Enabled {
         name: "flaky-tests",
-        steps: &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 48],
+        steps: &[
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
+            25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46,
+            47, 48,
+        ],
     },
     Enabled {
         name: "issue-links",
@@ -164,11 +168,16 @@ const ENABLED: &[Enabled] = &[
     },
     Enabled {
         name: "pipeline-jobs",
-        steps: &[1, 2, 3, 4, 5, 6, 7, 33, 34, 35, 36, 37],
+        steps: &[
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
+            25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37,
+        ],
     },
     Enabled {
         name: "quarantine",
-        steps: &[1, 2],
+        steps: &[
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
+        ],
     },
     Enabled {
         name: "repo-admin",
@@ -205,31 +214,6 @@ const DEFERRED: &[Deferred] = &[
                  the drain they need replay already",
     },
     Deferred {
-        scenario: "default-branch",
-        steps: Some(&[4, 5, 6, 9, 10, 11, 14]),
-        task: 9,
-        reason: "the reads: GET /api/repos, /api/tests and /api/tests/{id}/history. The ingests \
-                 and the dump of the scores they produce replay already",
-    },
-    Deferred {
-        scenario: "flaky-tests",
-        steps: Some(&[
-            13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34,
-            35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47,
-        ]),
-        task: 9,
-        reason: "the reads: GET /api/repos, /api/tests with every filter, sort and page, \
-                 /api/tests/{id}/history and /api/summary. The ingests (task 06), the processing \
-                 that scores them (task 07) and the database dump of the scores (step 48) \
-                 replay already",
-    },
-    Deferred {
-        scenario: "health",
-        steps: Some(&[4]),
-        task: 9,
-        reason: "GET /api/repos is a read API",
-    },
-    Deferred {
         scenario: "issue-links",
         steps: Some(&[
             5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27,
@@ -244,24 +228,6 @@ const DEFERRED: &[Deferred] = &[
         steps: None,
         task: 11,
         reason: "every step is an MCP call: initialize, tools/list and tools/call",
-    },
-    Deferred {
-        scenario: "pipeline-jobs",
-        steps: Some(&[
-            8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29,
-            30, 31, 32,
-        ]),
-        task: 9,
-        reason: "the Job reads: /api/ci-runs/{id}/failures, /api/jobs, /api/jobs/summary and \
-                 /api/jobs/{id}/history (task 09)",
-    },
-    Deferred {
-        scenario: "quarantine",
-        steps: Some(&[3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]),
-        task: 9,
-        reason: "POST /api/tests/{id}/quarantine and GET /api/quarantine (task 09), the Test reads, \
-                 and step 18, the dump of the quarantines they set. The ingest and the drain replay \
-                 already",
     },
     Deferred {
         scenario: "repo-admin",
@@ -303,7 +269,7 @@ const DEFERRED: &[Deferred] = &[
 /// A later task enables steps and lowers this number; the test that reads it
 /// fails both when a step is switched off without a reason and when an enabled
 /// step is left in [`DEFERRED`]. It never goes up.
-const DEFERRED_STEPS: usize = 199;
+const DEFERRED_STEPS: usize = 115;
 
 /// One scenario file.
 #[derive(Debug, Deserialize)]
