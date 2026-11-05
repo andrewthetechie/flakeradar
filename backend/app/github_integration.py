@@ -192,13 +192,16 @@ def _excerpt(resp: httpx.Response) -> str:
     Never raises, which `resp.text` alone does: it decodes with the charset the response
     declares, and a bogus one (`Content-Type: application/json; charset=base64`) makes the
     stdlib codec machinery raise a TypeError, AssertionError or UnicodeError — none of them
-    an `httpx.HTTPError` — rather than substitute. The bytes come first because an unread
-    or consumed stream raises `httpx.ResponseNotRead`, which httpx derives from
-    `RuntimeError`, not `HTTPError`, so it is caught by name. Classification happens after
-    the request `try` block, so any of those would escape the seam, past the loops that no
-    longer catch anything, and the body is only ever wanted for a log line: prefer the
-    declared charset, fall back to the bytes the client content-decoded, and give up to no
-    excerpt at all only when there are none.
+    an `httpx.HTTPError` — rather than substitute. A real charset over bytes that are
+    invalid for it is the same problem: httpx decodes with `errors="replace"`, but a
+    UTF-16/UTF-32 decoder still raises `UnicodeDecodeError` when the stream carries no BOM,
+    and `_json_object` catches the same class from `json.loads` on an undecodable body. The
+    bytes come first because an unread or consumed stream raises `httpx.ResponseNotRead`,
+    which httpx derives from `RuntimeError`, not `HTTPError`, so it is caught by name.
+    Classification happens after the request `try` block, so any of those would escape the
+    seam, past the loops that no longer catch anything, and the body is only ever wanted for
+    a log line: prefer the declared charset, fall back to the bytes the client
+    content-decoded, and give up to no excerpt at all only when there are none.
     """
     try:
         raw = resp.content  # the bytes as delivered, before any charset is believed
@@ -207,6 +210,8 @@ def _excerpt(resp: httpx.Response) -> str:
     try:
         return resp.text[:_GITHUB_EXCERPT_MAX]
     except (AssertionError, TypeError, ValueError, httpx.HTTPError):  # see the docstring
+        # `UnicodeDecodeError` — invalid bytes for the declared charset — is a `ValueError`,
+        # so the lossy read of the same bytes covers it, and every other codec failure.
         return raw[:_GITHUB_EXCERPT_MAX].decode("utf-8", errors="replace")
 
 
