@@ -6,9 +6,9 @@ One row per finding. The owning task closes its rows. **State** is `open`, `fixe
 
 | Id | Must | Finding | Task | State | Commit | Test or evidence |
 |---|---|---|---|---|---|---|
-| S1 / H1 | 1 | Leader tasks die after a leadership drop | 16 | open | | |
-| S5 | 5 | SIGTERM and release wait for the whole sync | 16 | open | | |
-| J3 | | Unbounded GitHub queue | 16 | open | | |
+| S1 / H1 | 1 | Leader tasks die after a leadership drop | 16 | fixed | 4ec494e | `worker::LeaderRun` makes a `CancellationToken` per run and holds it beside the handle, so `start` after any `stop` runs again; both workers use it. `a_stopped_github_task_files_again_after_a_restart`, `a_stopped_webhook_task_delivers_again_after_a_restart`, `leadership_a_failing_processor_drops_files_after_it_returns`, `a_database_that_drops_the_leader_files_the_next_proven_flake` |
+| S5 | 5 | SIGTERM and release wait for the whole sync | 16 | fixed | 4ec494e | `worker::until_stopped` races each call and wait against the run's token; the sync's `GET`, the fixed note's comment, its close, a delivery and a retry wait use it, and `ReportWorker::release` stops the same tasks. `stopping_ends_an_unanswered_sync_get_at_once`, `stopping_ends_an_unanswered_note_post_at_once`, `stopping_ends_an_unanswered_close_at_once`, `stopping_ends_an_unanswered_delivery_at_once`, `stopping_ends_the_wait_before_a_retry_at_once`; the issue-creating `POST` is the one call left to finish, pinned by `stopping_waits_for_a_filing_post_and_keeps_its_link` |
+| J3 | | Unbounded GitHub queue | 16 | fixed | 4ec494e | The GitHub queue is bounded at `github_worker::QUEUE_MAX` (1000, the Notification queue's bound) and drops the oldest outcome with a `tracing::warn!` carrying the running count. `a_full_queue_drops_the_oldest_outcome_and_says_so`. Queued outcomes survive a leadership change, as the reference's do, which `a_database_that_drops_the_leader_files_the_next_proven_flake` also pins |
 | S2 / J1 | 2 | Sync holds row locks across HTTP | 17 | open | | |
 | S4 / A1 | 4 | Sync continues when GitHub is unreachable | 17 | open | | |
 | S6 | | Fixed-note close does not stop on a transport error | 17 | open | | |
