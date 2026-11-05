@@ -37,13 +37,20 @@ use tokio_util::sync::CancellationToken;
 use crate::settings::Settings;
 
 /// The advisory lock every process tries to take to become the processor.
-const TRY_LOCK_SQL: &str = "SELECT pg_try_advisory_lock($1) AS locked";
+///
+/// It answers which backend took the lock in the same statement, because a
+/// session lock belongs to that backend and to nothing else.
+const TRY_LOCK_SQL: &str =
+    "SELECT pg_try_advisory_lock($1) AS locked, pg_backend_pid() AS backend_pid";
 
 /// Releases the session lock the leader holds.
 const UNLOCK_SQL: &str = "SELECT pg_advisory_unlock($1) AS released";
 
-/// The cheapest statement that proves the lock connection still answers.
-const ALIVE_SQL: &str = "SELECT 1 AS alive";
+/// Asks whether the lock connection still answers as the backend that took the lock.
+///
+/// A replacement session answers a statement just as happily as the one the
+/// lock was taken on, so the answer is the backend id rather than `SELECT 1`.
+const ALIVE_SQL: &str = "SELECT pg_backend_pid() = $1 AS same_session";
 
 /// What a [`LeaderTask`] does once it is running.
 pub type StartFuture<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
@@ -181,7 +188,12 @@ pub trait LockSession: fmt::Debug + Send + Sync {
     /// Tries to take the lock, answering whether this session now holds it.
     fn try_lock(&self) -> LockFuture<'_>;
 
-    /// Proves the lock connection still answers, so the lock is still this process's.
+    /// Proves the session that took the lock is still the one answering.
+    ///
+    /// A statement that fails, and one answered by any other backend, both mean
+    /// the lock is gone: the server releases a session lock with the backend
+    /// that held it, and the pool replaces that backend with one that holds
+    /// nothing.
     fn check(&self) -> SessionFuture<'_>;
 
     /// Releases the lock and closes the session. A broken session is reported.
@@ -195,11 +207,23 @@ pub trait LockSession: fmt::Debug + Send + Sync {
 /// and closes it after unlocking. The connection is opened lazily, so a standby
 /// replica that never wins the election only ever holds the standby connection
 /// it needs to try.
+///
+/// The pool still replaces a connection the server closed when it next hands it
+/// out, and the replacement holds no lock, so the session also remembers which
+/// backend took the lock and checks every liveness answer against it.
 #[derive(Debug)]
 pub struct AdvisoryLock {
     url: String,
     settings: DbSettings,
-    connection: tokio::sync::Mutex<Option<DatabaseConnection>>,
+    session: tokio::sync::Mutex<Option<LockedSession>>,
+}
+
+/// One connection of the lock pool, and the backend that took the lock on it.
+#[derive(Debug)]
+struct LockedSession {
+    connection: DatabaseConnection,
+    /// The `pg_backend_pid()` that took the lock; `None` until an election is won.
+    backend_pid: Option<i32>,
 }
 
 impl AdvisoryLock {
@@ -209,40 +233,26 @@ impl AdvisoryLock {
         Self {
             url: url.into(),
             settings,
-            connection: tokio::sync::Mutex::new(None),
+            session: tokio::sync::Mutex::new(None),
         }
     }
 
-    /// The dedicated connection, opened on first use.
+    /// The dedicated session, opened on first use.
     ///
     /// A standby replica that never wins holds the one connection it tried
-    /// with, so the next attempt is a query rather than a new session.
-    async fn session(
+    /// with, so the next attempt is a query rather than a new session. The
+    /// session is taken out of the guard: the caller puts it back only when it
+    /// is still usable, and dropping it is what ends a broken one for good.
+    async fn open(
         &self,
-        guard: &mut tokio::sync::MutexGuard<'_, Option<DatabaseConnection>>,
-    ) -> Result<DatabaseConnection, DbError> {
-        if let Some(connection) = guard.as_ref() {
-            return Ok(connection.clone());
-        }
-        let connection = connect_session(&self.url, self.settings).await?;
-        **guard = Some(connection.clone());
-        Ok(connection)
-    }
-
-    /// One lock statement's answer, dropping the session when the statement fails.
-    async fn query(&self, sql: &str) -> Result<Option<sea_orm::QueryResult>, DbError> {
-        let mut guard = self.connection.lock().await;
-        let connection = self.session(&mut guard).await?;
-        let statement =
-            Statement::from_sql_and_values(DbBackend::Postgres, sql, [WORKER_LOCK_KEY.into()]);
-        match connection.query_one_raw(statement).await {
-            Ok(row) => Ok(row),
-            Err(error) => {
-                // A session the server closed has already lost the lock, so it
-                // must not be reused: dropping the pool ends it for good.
-                *guard = None;
-                Err(DbError::Database(error))
-            }
+        guard: &mut tokio::sync::MutexGuard<'_, Option<LockedSession>>,
+    ) -> Result<LockedSession, DbError> {
+        match guard.take() {
+            Some(session) => Ok(session),
+            None => Ok(LockedSession {
+                connection: connect_session(&self.url, self.settings).await?,
+                backend_pid: None,
+            }),
         }
     }
 }
@@ -250,23 +260,82 @@ impl AdvisoryLock {
 impl LockSession for AdvisoryLock {
     fn try_lock(&self) -> LockFuture<'_> {
         Box::pin(async move {
+            let mut guard = self.session.lock().await;
+            let mut session = self.open(&mut guard).await?;
+            let statement = Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                TRY_LOCK_SQL,
+                [WORKER_LOCK_KEY.into()],
+            );
+            let row = match session.connection.query_one_raw(statement).await {
+                Ok(row) => row,
+                // A session the server closed has already lost the lock, so it
+                // must not be reused: dropping the pool ends it for good.
+                Err(error) => return Err(DbError::Database(error)),
+            };
             // A query with no FROM clause always answers one row; the arm for a
             // missing one is logged in coverage-gaps.md and means "not locked".
-            match self.query(TRY_LOCK_SQL).await? {
-                Some(row) => Ok(row.try_get("", "locked")?),
-                None => Ok(false),
+            let Some(row) = row else {
+                *guard = Some(session);
+                return Ok(false);
+            };
+            let locked: bool = row.try_get("", "locked")?;
+            if locked {
+                // The lock belongs to the backend that answered this statement,
+                // and every later check is compared against it.
+                session.backend_pid = Some(row.try_get("", "backend_pid")?);
             }
+            *guard = Some(session);
+            Ok(locked)
         })
     }
 
     fn check(&self) -> SessionFuture<'_> {
-        Box::pin(async move { self.query(ALIVE_SQL).await.map(|_row| ()) })
+        Box::pin(async move {
+            let mut guard = self.session.lock().await;
+            let Some(session) = guard.take() else {
+                return Err(DbError::LockSessionLost {
+                    detail: "this process holds no lock session".to_owned(),
+                });
+            };
+            let Some(locked) = session.backend_pid else {
+                // The session is still usable, so it stays; it just never won an
+                // election, and no session that did not take the lock leads.
+                *guard = Some(session);
+                return Err(DbError::LockSessionLost {
+                    detail: "no lock was taken on this session".to_owned(),
+                });
+            };
+            let statement =
+                Statement::from_sql_and_values(DbBackend::Postgres, ALIVE_SQL, [locked.into()]);
+            let answer = session.connection.query_one_raw(statement).await;
+            let same_session = match &answer {
+                Ok(Some(row)) => row
+                    .try_get::<bool>("", "same_session")
+                    .is_ok_and(|same| same),
+                // No answer, or a column that is not there, cannot prove the lock.
+                Ok(None) | Err(_) => false,
+            };
+            if same_session {
+                *guard = Some(session);
+                return Ok(());
+            }
+            // The session is over: it died under the lock, or the pool replaced
+            // it with one that holds nothing. Either way it must not be kept.
+            Err(match answer {
+                Err(error) => DbError::Database(error),
+                Ok(_) => DbError::LockSessionLost {
+                    detail: format!(
+                        "the connection no longer answers as backend {locked}, which took the lock"
+                    ),
+                },
+            })
+        })
     }
 
     fn unlock(&self) -> SessionFuture<'_> {
         Box::pin(async move {
-            let mut guard = self.connection.lock().await;
-            let Some(connection) = guard.as_ref() else {
+            let Some(session) = self.session.lock().await.take() else {
                 return Ok(());
             };
             let statement = Statement::from_sql_and_values(
@@ -274,15 +343,14 @@ impl LockSession for AdvisoryLock {
                 UNLOCK_SQL,
                 [WORKER_LOCK_KEY.into()],
             );
-            let answer = connection
+            // Whether the unlock worked or the session was broken, this session
+            // is over; dropping it is what closes it.
+            session
+                .connection
                 .query_one_raw(statement)
                 .await
                 .map(|_row| ())
-                .map_err(DbError::Database);
-            // Whether the unlock worked or the session was broken, this session
-            // is over; dropping the pool is what closes it.
-            *guard = None;
-            answer
+                .map_err(DbError::Database)
         })
     }
 }
@@ -469,9 +537,10 @@ impl ReportWorker {
             {
                 Ok(Some(outcome)) => self.deliver(&outcome).await,
                 Ok(None) => {
-                    // The queue is empty, so prove the lock connection still
-                    // answers: if it died, the lock is already free for another
-                    // process and this one must stop believing it leads.
+                    // The queue is empty, so prove the session that took the lock
+                    // is still the one answering: if it died, the lock is already
+                    // free for another process -- and the pool answers a
+                    // statement from its replacement just the same.
                     if let Err(error) = self.lock.check().await {
                         self.drop_leadership(&error).await;
                         continue;

@@ -10,7 +10,7 @@
 )]
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -261,6 +261,7 @@ struct RecordingTask {
     fails_to_stop: bool,
     fails_to_enqueue: bool,
     probe: Option<Arc<StopProbe>>,
+    gate: Option<Arc<GateWaiter>>,
 }
 
 impl RecordingTask {
@@ -272,7 +273,14 @@ impl RecordingTask {
             fails_to_stop: false,
             fails_to_enqueue: false,
             probe: None,
+            gate: None,
         }
+    }
+
+    /// A task that closes `gate` when it stops.
+    fn closing_gate(mut self, gate: Arc<GateWaiter>) -> Self {
+        self.gate = Some(gate);
+        self
     }
 
     /// A task whose stop fails.
@@ -316,6 +324,9 @@ impl LeaderTask for RecordingTask {
                 .push(format!("{}:stop", self.name));
             if let Some(probe) = &self.probe {
                 probe.record().await;
+            }
+            if let Some(gate) = &self.gate {
+                gate.close();
             }
             if self.fails_to_stop {
                 return Err(anyhow::anyhow!("{} could not stop", self.name));
@@ -605,6 +616,58 @@ impl Waiter for RecordingWaiter {
     }
 }
 
+/// A wait a test closes, so a worker that has lost leadership stays put until
+/// the test has looked and the standby has taken over.
+///
+/// While it is open it waits like [`TokioWaiter`](flakeradar::worker::TokioWaiter);
+/// once closed, a wait returns only when the gate is opened again.
+#[derive(Debug)]
+struct GateWaiter {
+    open: AtomicBool,
+    signal: tokio::sync::Notify,
+}
+
+impl Default for GateWaiter {
+    fn default() -> Self {
+        Self {
+            open: AtomicBool::new(true),
+            signal: tokio::sync::Notify::new(),
+        }
+    }
+}
+
+impl GateWaiter {
+    /// Stops every wait from returning until [`GateWaiter::open`].
+    fn close(&self) {
+        self.open.store(false, Ordering::SeqCst);
+    }
+
+    /// Lets waits return again, including the ones already waiting.
+    fn open(&self) {
+        self.open.store(true, Ordering::SeqCst);
+        self.signal.notify_waiters();
+    }
+}
+
+impl Waiter for GateWaiter {
+    fn wait(&self, delay: Duration) -> WaitFuture<'_> {
+        Box::pin(async move {
+            while !self.open.load(Ordering::SeqCst) {
+                // Registered before the second look, so an open between the load
+                // and the wait cannot be missed.
+                let notified = self.signal.notified();
+                tokio::pin!(notified);
+                notified.as_mut().enable();
+                if self.open.load(Ordering::SeqCst) {
+                    return;
+                }
+                notified.await;
+            }
+            tokio::time::sleep(delay).await;
+        })
+    }
+}
+
 /// A prune that counts its runs and answers what the test scripted.
 #[derive(Debug)]
 struct CountingPruner {
@@ -808,7 +871,7 @@ async fn a_failing_unlock_is_logged_and_the_lock_is_let_go() {
 }
 
 #[tokio::test]
-async fn a_broken_lock_connection_drops_leadership_and_re_elects() {
+async fn an_unreachable_database_drops_leadership_and_re_elects_after_recovery() {
     let db = TestDb::new().await.expect("a test database");
     let counted = Arc::new(CountingLock::new(&db));
     let worker = Arc::new(worker(&db, shared_lock(&counted), fast()));
@@ -816,10 +879,10 @@ async fn a_broken_lock_connection_drops_leadership_and_re_elects() {
     wait_until("the worker leads", || async { worker.is_leader() }).await;
 
     // Kill the session that holds the lock: the server drops the lock with it,
-    // so a replacement leader could take over at any moment.
-    // Refuse new connections before ending the session: the pool replaces a
-    // connection the server closed, and a replacement opened before the refusal
-    // would answer the check and keep the worker leading.
+    // so a replacement leader could take over at any moment. New connections are
+    // refused as well, which stages a database no session can reach: the lock
+    // connection has nowhere left to answer from, which is the failure a server
+    // restart or a network partition gives.
     let database = database_name(&db).await;
     set_connections_allowed(&db, &database, false).await;
     terminate_lock_session(&db, &database).await;
@@ -839,6 +902,139 @@ async fn a_broken_lock_connection_drops_leadership_and_re_elects() {
     .await;
     worker.stop().await;
     assert!(!worker.is_leader());
+    wait_until("the lock is free", || async {
+        lock_is_free(db.url()).await
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_killed_lock_session_hands_leadership_to_the_standby() {
+    // The ordinary failure: the backend holding the lock dies while the server
+    // keeps accepting connections, so the pool opens a replacement session that
+    // holds no lock and answers a statement just the same.
+    let db = TestDb::new().await.expect("a test database");
+    let project = project(&db).await;
+    let first_lock = Arc::new(CountingLock::new(&db));
+    let second_lock = Arc::new(CountingLock::new(&db));
+    // The first worker's waits stop as soon as it loses leadership, so it cannot
+    // win the lock back while the test asserts the hand-over.
+    let gate = Arc::new(GateWaiter::default());
+    let first = Arc::new(
+        worker(&db, shared_lock(&first_lock), fast())
+            .with_waiter(shared_waiter(&gate))
+            .with_leader_task(Arc::new(
+                RecordingTask::new("GitHub", Arc::new(Mutex::new(Vec::new())))
+                    .closing_gate(Arc::clone(&gate)),
+            )),
+    );
+    let second = Arc::new(worker(&db, shared_lock(&second_lock), fast()));
+
+    Arc::clone(&first).start().await;
+    wait_until("the first worker leads", || async { first.is_leader() }).await;
+    Arc::clone(&second).start().await;
+    wait_until("the standby tried the lock", || async {
+        second_lock.try_locks() >= 2
+    })
+    .await;
+    assert!(!second.is_leader(), "only one process may lead");
+
+    // The server still accepts connections while the lock session dies.
+    terminate_lock_session(&db, &database_name(&db).await).await;
+
+    wait_until("the standby takes over", || async { second.is_leader() }).await;
+    assert!(
+        !first.is_leader(),
+        "the worker whose lock session died never keeps leading"
+    );
+
+    // The new leader is a working processor, not just a flag.
+    queue(&db, &project, "a").await;
+    wait_until("the new leader processes the Report", || async {
+        report_statuses(&db).await == ["processed"]
+    })
+    .await;
+
+    // The old leader tries again once its waits return, and finds the lock taken.
+    gate.open();
+    let attempts = first_lock.try_locks();
+    wait_until("the old leader tries the lock again", || async {
+        first_lock.try_locks() > attempts
+    })
+    .await;
+    assert!(
+        !first.is_leader(),
+        "the standby holds the lock, so the old leader stays on standby"
+    );
+
+    first.stop().await;
+    second.stop().await;
+    assert!(!first.is_leader() && !second.is_leader());
+    wait_until("the lock is free", || async {
+        lock_is_free(db.url()).await
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_killed_lock_session_is_never_alive_again() {
+    // The server keeps accepting connections here, so the pool opens a
+    // replacement session for the one killed. That session answers a statement,
+    // but it holds no lock, so the check must never report this process alive.
+    let db = TestDb::new().await.expect("a test database");
+    let session = AdvisoryLock::new(db.url(), DbSettings::default());
+    assert!(
+        session.try_lock().await.expect("the first election"),
+        "the lock is free at the start"
+    );
+    terminate_lock_session(&db, &database_name(&db).await).await;
+
+    session
+        .check()
+        .await
+        .expect_err("the killed session cannot be alive");
+    // The second answer must not come from a replacement session that holds
+    // nothing, and it must not be a fresh election either.
+    session
+        .check()
+        .await
+        .expect_err("a replacement session does not hold the lock");
+    session
+        .unlock()
+        .await
+        .expect("a dropped session is not unlocked again");
+    wait_until("the lock is free", || async {
+        lock_is_free(db.url()).await
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_lock_session_that_never_won_an_election_never_checks_alive() {
+    let db = TestDb::new().await.expect("a test database");
+    // A session that never even tried the lock has nothing to prove.
+    let untried = AdvisoryLock::new(db.url(), DbSettings::default());
+    untried
+        .check()
+        .await
+        .expect_err("a session that never tried the lock cannot be alive");
+    // A session that tried and lost is a standby, and a standby does not lead.
+    let holder = AdvisoryLock::new(db.url(), DbSettings::default());
+    assert!(holder.try_lock().await.expect("the holder's election"));
+    let standby = AdvisoryLock::new(db.url(), DbSettings::default());
+    assert!(
+        !standby.try_lock().await.expect("the standby's election"),
+        "only one session can take the lock"
+    );
+    standby
+        .check()
+        .await
+        .expect_err("a standby session does not lead");
+    standby
+        .unlock()
+        .await
+        .expect("a standby session holds no lock to release");
+    holder.unlock().await.expect("the holder releases the lock");
     wait_until("the lock is free", || async {
         lock_is_free(db.url()).await
     })

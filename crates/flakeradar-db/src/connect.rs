@@ -86,8 +86,11 @@ pub async fn connect(url: &str, settings: DbSettings) -> Result<DatabaseConnecti
 /// connection must stay the same one for as long as the lock is held. A pool of
 /// one guarantees that, and both pool reapers are turned off: an idle or
 /// over-age connection closed behind the lock's back would leave this process
-/// believing it still leads while the next process takes the lock. A dead
-/// connection is therefore reported rather than silently replaced.
+/// believing it still leads while the next process takes the lock. The pool
+/// still replaces a connection the server closed when it next hands it out, and
+/// that replacement holds no lock, so the holder records which backend took the
+/// lock and checks every liveness answer against it; see
+/// `flakeradar::worker::AdvisoryLock`.
 ///
 /// # Errors
 ///

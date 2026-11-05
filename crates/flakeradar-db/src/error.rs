@@ -40,6 +40,17 @@ pub enum DbError {
         /// What the parser rejected.
         detail: String,
     },
+    /// The session that held the processor lock is gone, so this process can no longer lead.
+    ///
+    /// A session lock belongs to the backend that took it. A connection the
+    /// server closed is replaced when its pool next hands it out, and the
+    /// replacement holds no lock, so the processor reports this rather than
+    /// keep leading on a session that no longer holds it.
+    #[error("the processor's lock session is gone: {detail}")]
+    LockSessionLost {
+        /// What the liveness check found instead.
+        detail: String,
+    },
     /// The driver rejected a statement or could not reach the server.
     #[error(transparent)]
     Database(#[from] sea_orm::DbErr),

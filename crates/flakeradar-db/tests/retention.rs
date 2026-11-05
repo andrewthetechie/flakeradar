@@ -992,14 +992,16 @@ async fn run_prune_stops_at_time_budget() {
     assert_eq!(result.executions, 2, "{result:?}");
     assert_eq!(count::<test_executions::Entity>(&db).await, 4);
     // The frozen server's line, budget included: "Retention prune hit its 60s
-    // budget; the rest waits for the next interval".
+    // budget; the rest waits for the next interval". Python prints the budget
+    // as a float ("60.0s") and Rust's Display drops the zero ("60s"), so only
+    // the number's spelling differs, which log format may.
     let budget_stop = format!(
         "Retention prune hit its {}s budget; the rest waits for the next interval",
         settings.time_budget_seconds
     );
     assert!(
         log.lines().contains(&budget_stop),
-        "the budget stop is logged as the reference logs it: {}",
+        "the budget stop is logged with the reference's wording: {}",
         log.lines()
     );
 }
