@@ -1,6 +1,6 @@
 pytest_id,task,status,rust_test,reason
-tests/test_app_startup.py::test_a_built_frontend_is_served_at_the_root,12,pending,,mount_frontend: the embedded frontend arrives in task 12
-tests/test_app_startup.py::test_a_missing_frontend_dist_mounts_nothing,12,pending,,mount_frontend: the embedded frontend arrives in task 12
+tests/test_app_startup.py::test_a_built_frontend_is_served_at_the_root,12,ported,the_root_serves_the_dashboard,
+tests/test_app_startup.py::test_a_missing_frontend_dist_mounts_nothing,12,ported,a_build_with_no_frontend_serves_no_page,
 tests/test_app_startup.py::test_a_real_token_boots_without_the_default_warning,5,ported,flakeradar::server::a_fresh_database_is_migrated_and_the_shell_answers,the server starts and serves with a real token; the default-token warning is check_api_token's
 tests/test_app_startup.py::test_a_real_token_needs_no_opt_in,5,ported,flakeradar::settings::tests::a_real_token_needs_no_opt_in,
 tests/test_app_startup.py::test_get_db_yields_a_live_session,5,ported,flakeradar::ops::ready_reports_the_pending_queue,a handler borrows a live pooled connection; the probe runs two queries per request

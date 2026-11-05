@@ -12,7 +12,6 @@
 // Rust guideline compliant 2026-07-21
 
 use std::borrow::Cow;
-use std::fmt::Write as _;
 use std::sync::Arc;
 
 /// One file served from memory.
@@ -129,6 +128,8 @@ impl AssetSource for Embedded {
 /// every other file's `ETag` alone.
 #[cfg(has_frontend)]
 fn quoted_sha256(hash: [u8; 32]) -> String {
+    use std::fmt::Write as _;
+
     let mut etag = String::with_capacity(hash.len() * 2 + 2);
     etag.push('"');
     for byte in hash {
