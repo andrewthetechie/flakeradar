@@ -204,6 +204,42 @@ async fn terminate_lock_session(db: &TestDb) {
         .expect("the backend is terminated");
 }
 
+/// Refuses, or again allows, new connections to the test's own database.
+///
+/// Ending the session that holds the lock is not enough on its own: the pool
+/// opens a replacement for a connection the server closed, so the next lock
+/// statement can still be answered by a fresh session and the test would race
+/// the pool. With new connections refused, the replacement cannot be opened and
+/// the failure is certain.
+async fn refuse_new_connections(db: &TestDb, refuse: bool) {
+    let row = db
+        .connection()
+        .query_one_raw(Statement::from_string(
+            sea_orm::DbBackend::Postgres,
+            "SELECT current_database() AS name".to_owned(),
+        ))
+        .await
+        .expect("the database name reads")
+        .expect("a database name");
+    let name: String = row.try_get("", "name").expect("a database name");
+    // The server refuses to disallow connections for the database the statement
+    // runs in, so the policy changes from the maintenance database.
+    let admin = connect(db.maintenance_url(), DbSettings::default())
+        .await
+        .expect("the maintenance connection");
+    let allowed = if refuse { "false" } else { "true" };
+    admin
+        .execute_unprepared(&format!(
+            "ALTER DATABASE \"{name}\" ALLOW_CONNECTIONS {allowed}"
+        ))
+        .await
+        .expect("the connection policy changes");
+    admin
+        .close()
+        .await
+        .expect("the maintenance connection closes");
+}
+
 /// A leader task that records every hand-over and can fail on cue.
 #[derive(Debug)]
 struct RecordingTask {
@@ -768,14 +804,21 @@ async fn a_broken_lock_connection_drops_leadership_and_re_elects() {
 
     // Kill the session that holds the lock: the server drops the lock with it,
     // so a replacement leader could take over at any moment.
+    // Refuse new connections before ending the session: the pool replaces a
+    // connection the server closed, and a replacement opened before the refusal
+    // would answer the check and keep the worker leading.
+    refuse_new_connections(&db, true).await;
     terminate_lock_session(&db).await;
 
-    // The next empty-queue check fails, so the worker releases and re-elects on
-    // a fresh session; stopping then still ends with no lock held.
+    // The next empty-queue check cannot be answered, so the worker releases and
+    // re-elects once connections are allowed again; stopping then still ends with
+    // no lock held.
     wait_until("leadership was released after the break", || async {
         counted.unlocks() >= 1
     })
     .await;
+    assert!(!worker.is_leader(), "a broken session never keeps leading");
+    refuse_new_connections(&db, false).await;
     wait_until("the worker re-elects", || async {
         worker.is_leader() && counted.try_locks() >= 2
     })
@@ -799,12 +842,16 @@ async fn a_failed_lock_statement_drops_the_session() {
         session.try_lock().await.expect("the first election"),
         "the lock is free at the start"
     );
+    // Refuse new connections first, so the pool cannot replace the session this
+    // statement is about to run on.
+    refuse_new_connections(&db, true).await;
     terminate_lock_session(&db).await;
 
     session
         .try_lock()
         .await
         .expect_err("a statement on the dead session fails");
+    refuse_new_connections(&db, false).await;
     // The next election opens a fresh session, which wins the lock the server
     // freed with the old one; a reused broken session would fail again.
     assert!(
