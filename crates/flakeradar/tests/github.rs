@@ -681,12 +681,21 @@ async fn mount_state(server: &MockServer, answer: ResponseTemplate) {
 async fn the_sync_rearms_a_link_whose_issue_closed() {
     let db = TestDb::new().await.expect("a test database");
     let test = flaky_test(&db).await;
+    let still_open = flaky_test_in(&db, "acme/keep", "backend", "open").await;
     stamp_link(&db, test, 12, true, false).await;
+    stamp_link(&db, still_open, 22, true, false).await;
     let server = MockServer::start().await;
     mount_state(
         &server,
         ResponseTemplate::new(200)
             .set_body_json(json!({"state": "closed", "state_reason": "completed"})),
+    )
+    .await;
+    mount_issue(
+        &server,
+        "acme/keep",
+        22,
+        ResponseTemplate::new(200).set_body_json(json!({"state": "open"})),
     )
     .await;
 
@@ -698,6 +707,11 @@ async fn the_sync_rearms_a_link_whose_issue_closed() {
     );
     assert_eq!(filed, None);
     assert!(!closed);
+    assert_eq!(
+        test_link(&db, still_open).await.0,
+        Some(22),
+        "an open issue keeps its link"
+    );
 }
 
 #[tokio::test]
@@ -728,6 +742,14 @@ async fn the_sync_clears_the_flag_when_a_declined_issue_reopens() {
     let db = TestDb::new().await.expect("a test database");
     let test = flaky_test(&db).await;
     stamp_link(&db, test, 12, true, true).await;
+    db.connection()
+        .execute_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "UPDATE test_cases SET github_issue_filed = TRUE WHERE id = $1",
+            [Value::from(test)],
+        ))
+        .await
+        .expect("the filed flag writes");
     let server = MockServer::start().await;
     mount_state(
         &server,
@@ -737,8 +759,9 @@ async fn the_sync_clears_the_flag_when_a_declined_issue_reopens() {
     .await;
 
     github::sync_closed_issues(db.connection(), &gh_settings(&[]), &api(&server)).await;
-    let (number, _, _, closed) = test_link(&db, test).await;
+    let (number, filed, _, closed) = test_link(&db, test).await;
     assert_eq!(number, Some(12));
+    assert_eq!(filed, Some(true), "the link is still ours");
     assert!(!closed, "filing is live again");
 }
 
@@ -751,18 +774,31 @@ async fn the_sync_rearms_a_link_whose_issue_is_gone() {
     mount_state(&server, ResponseTemplate::new(404)).await;
 
     github::sync_closed_issues(db.connection(), &gh_settings(&[]), &api(&server)).await;
-    assert_eq!(test_link(&db, test).await.0, None);
+    let (number, filed, checked, closed) = test_link(&db, test).await;
+    assert_eq!(number, None);
+    assert_eq!(filed, None, "the flag resets with the number");
+    assert!(checked, "the row rotates like a checked one");
+    assert!(!closed, "a row with no number keeps no stale flag");
 }
 
 #[tokio::test]
 async fn the_sync_keeps_a_link_on_a_permission_error_and_stamps_it() {
     let db = TestDb::new().await.expect("a test database");
     let test = flaky_test(&db).await;
+    let other = flaky_test_in(&db, "acme/b", "backend", "closed").await;
     stamp_link(&db, test, 12, false, false).await;
+    stamp_link(&db, other, 22, false, false).await;
     let server = MockServer::start().await;
     mount_state(
         &server,
         ResponseTemplate::new(403).set_body_json(json!({"message": "Resource not accessible"})),
+    )
+    .await;
+    mount_issue(
+        &server,
+        "acme/b",
+        22,
+        ResponseTemplate::new(200).set_body_json(json!({"state": "closed"})),
     )
     .await;
 
@@ -774,27 +810,69 @@ async fn the_sync_keeps_a_link_on_a_permission_error_and_stamps_it() {
         "a permission error says nothing about the issue"
     );
     assert!(checked, "but the row was answered for, so it rotates");
+    assert_eq!(
+        test_link(&db, other).await.0,
+        None,
+        "the other Repo still syncs"
+    );
 }
 
 #[tokio::test]
 async fn the_sync_leaves_an_unreadable_body_alone_and_stamps_it() {
     let db = TestDb::new().await.expect("a test database");
-    let test = flaky_test(&db).await;
-    stamp_link(&db, test, 12, false, false).await;
-    let server = MockServer::start().await;
-    mount_state(
-        &server,
-        ResponseTemplate::new(200).set_body_string("not json"),
-    )
-    .await;
+    let test = flaky_test_in(&db, "acme/a", "backend", "a").await;
+    let other = flaky_test_in(&db, "acme/b", "backend", "b").await;
+    for raw in [
+        "",
+        "<html>Gateway</html>",
+        "[1, 2]",
+        "null",
+        r#"{"state": ["closed"]}"#,
+    ] {
+        stamp_link(&db, test, 11, false, false).await;
+        stamp_link(&db, other, 22, false, false).await;
+        let server = MockServer::start().await;
+        mount_issue(
+            &server,
+            "acme/a",
+            11,
+            ResponseTemplate::new(200).set_body_string(raw),
+        )
+        .await;
+        mount_issue(
+            &server,
+            "acme/b",
+            22,
+            ResponseTemplate::new(200).set_body_json(json!({"state": "closed"})),
+        )
+        .await;
 
-    github::sync_closed_issues(db.connection(), &gh_settings(&[]), &api(&server)).await;
-    let (number, _, checked, _) = test_link(&db, test).await;
-    assert_eq!(number, Some(12));
-    assert!(
-        checked,
-        "an unusable answer must not pin the front of the rotation"
-    );
+        let logged = logged_from(github::sync_closed_issues(
+            db.connection(),
+            &gh_settings(&[]),
+            &api(&server),
+        ))
+        .await;
+        assert_eq!(
+            requested_paths(&server).await,
+            vec!["/repos/acme/a/issues/11", "/repos/acme/b/issues/22"],
+            "raw {raw:?}: the batch goes on"
+        );
+        let (number, _, checked, _) = test_link(&db, test).await;
+        assert_eq!(number, Some(11), "raw {raw:?}: the link survives");
+        assert!(checked, "raw {raw:?}: the row rotates");
+        assert_eq!(
+            test_link(&db, other).await.0,
+            None,
+            "raw {raw:?}: the other Repo still re-arms"
+        );
+        let warnings = lines_with(&logged, "unusable");
+        assert_eq!(warnings.len(), 1, "raw {raw:?}: {logged}");
+        assert!(
+            warnings[0].contains("repo=acme/a") && warnings[0].contains("number=11"),
+            "raw {raw:?}: {logged}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -2412,4 +2490,520 @@ async fn only_unexplained_job_failures_meet_the_min_failures_gate() {
         1,
         "two unexplained failures meet the gate"
     );
+}
+
+// --- the sync's rotation and its failure policy ---------------------------
+
+/// Stamps one Job's link columns, as an earlier pass would have.
+async fn stamp_job_link(db: &TestDb, id: i32, number: i32, checked: bool) {
+    db.connection()
+        .execute_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "UPDATE jobs SET github_issue_number = $2, \
+             github_issue_checked_at = CASE WHEN $3 THEN now() ELSE NULL END \
+             WHERE id = $1",
+            [Value::from(id), Value::from(number), Value::from(checked)],
+        ))
+        .await
+        .expect("the stamp writes");
+}
+
+/// Whether one Job's link carries a check stamp.
+async fn job_checked(db: &TestDb, id: i32) -> bool {
+    let row = db
+        .connection()
+        .query_one_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "SELECT github_issue_checked_at IS NOT NULL AS checked FROM jobs WHERE id = $1",
+            [Value::from(id)],
+        ))
+        .await
+        .expect("the row reads")
+        .expect("the Job exists");
+    row.try_get("", "checked").expect("checked")
+}
+
+/// Mounts `GET /repos/{repo}/issues/{number}` answering `answer`.
+async fn mount_issue(server: &MockServer, repo: &str, number: i32, answer: ResponseTemplate) {
+    Mock::given(method("GET"))
+        .and(path(format!("/repos/{repo}/issues/{number}")))
+        .respond_with(answer)
+        .mount(server)
+        .await;
+}
+
+#[tokio::test]
+async fn the_sync_leaves_an_unknown_issue_state_alone() {
+    let db = TestDb::new().await.expect("a test database");
+    let test = flaky_test(&db).await;
+    db.connection()
+        .execute_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "UPDATE test_cases SET github_issue_number = 12, github_issue_filed = TRUE, \
+             github_issue_closed = TRUE WHERE id = $1",
+            [Value::from(test)],
+        ))
+        .await
+        .expect("the flagged link writes");
+    let server = MockServer::start().await;
+    mount_state(
+        &server,
+        ResponseTemplate::new(200)
+            .set_body_json(json!({"state": "archived", "state_reason": "not_planned"})),
+    )
+    .await;
+
+    github::sync_closed_issues(db.connection(), &gh_settings(&[]), &api(&server)).await;
+    let (number, filed, checked, closed) = test_link(&db, test).await;
+    assert_eq!(number, Some(12), "an unknown state says nothing");
+    assert_eq!(filed, Some(true));
+    assert!(closed, "only a reported reopen clears the flag");
+    assert!(checked, "and the row still rotates");
+}
+
+#[tokio::test]
+async fn the_sync_rotates_through_its_links_a_batch_at_a_time() {
+    let db = TestDb::new().await.expect("a test database");
+    let first = flaky_test_in(&db, "acme/app", "p1", "t1").await;
+    let second = flaky_test_in(&db, "acme/app", "p2", "t2").await;
+    let third = flaky_test_in(&db, "acme/app", "p3", "t3").await;
+    stamp_link(&db, first, 11, false, false).await;
+    stamp_link(&db, second, 22, false, false).await;
+    stamp_link(&db, third, 33, false, false).await;
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"state": "open"})))
+        .mount(&server)
+        .await;
+    let settings = gh_settings(&[("FLAKERADAR_GITHUB_SYNC_BATCH", "2")]);
+
+    github::sync_closed_issues(db.connection(), &settings, &api(&server)).await;
+    assert_eq!(
+        requested_paths(&server).await,
+        vec!["/repos/acme/app/issues/11", "/repos/acme/app/issues/22"],
+        "every stamp is NULL, so the two lowest ids go first"
+    );
+    assert_eq!(test_link(&db, first).await.0, Some(11));
+    assert!(
+        test_link(&db, first).await.2,
+        "an open issue is still a check"
+    );
+
+    github::sync_closed_issues(db.connection(), &settings, &api(&server)).await;
+    assert_eq!(
+        requested_paths(&server).await,
+        vec![
+            "/repos/acme/app/issues/11",
+            "/repos/acme/app/issues/22",
+            "/repos/acme/app/issues/33",
+            "/repos/acme/app/issues/11",
+        ],
+        "the never-checked Test reaches the batch next to the oldest stamped one"
+    );
+}
+
+#[tokio::test]
+async fn a_never_checked_link_goes_before_a_stamped_one() {
+    let db = TestDb::new().await.expect("a test database");
+    let first = flaky_test_in(&db, "acme/app", "p1", "t1").await;
+    let second = flaky_test_in(&db, "acme/app", "p2", "t2").await;
+    stamp_link(&db, first, 11, false, false).await;
+    stamp_link(&db, second, 22, false, false).await;
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"state": "open"})))
+        .mount(&server)
+        .await;
+
+    github::sync_closed_issues(db.connection(), &gh_settings(&[]), &api(&server)).await;
+    assert_eq!(
+        requested_paths(&server).await.len(),
+        2,
+        "both carry a stamp now"
+    );
+
+    let fresh = flaky_test_in(&db, "acme/app", "p3", "t3").await;
+    stamp_link(&db, fresh, 33, false, false).await;
+    let settings = gh_settings(&[("FLAKERADAR_GITHUB_SYNC_BATCH", "1")]);
+    github::sync_closed_issues(db.connection(), &settings, &api(&server)).await;
+    assert_eq!(
+        requested_paths(&server).await[2..],
+        ["/repos/acme/app/issues/33"],
+        "the never-checked link goes first and is stamped"
+    );
+    assert!(test_link(&db, fresh).await.2);
+}
+
+#[tokio::test]
+async fn a_sync_rate_limit_stops_the_batch_and_keeps_the_stamps_it_made() {
+    let db = TestDb::new().await.expect("a test database");
+    let first = flaky_test_in(&db, "acme/a", "p1", "a").await;
+    let second = flaky_test_in(&db, "acme/b", "p2", "b").await;
+    stamp_link(&db, first, 1, false, false).await;
+    stamp_link(&db, second, 2, false, false).await;
+
+    // An unreachable GitHub never raises: nothing is stamped, and the batch ends.
+    let offline = Api::new(Secret::new(TOKEN), "http://127.0.0.1:1");
+    github::sync_closed_issues(db.connection(), &gh_settings(&[]), &offline).await;
+    assert!(!test_link(&db, first).await.2);
+
+    let server = MockServer::start().await;
+    mount_issue(
+        &server,
+        "acme/a",
+        1,
+        ResponseTemplate::new(200).set_body_json(json!({"state": "open"})),
+    )
+    .await;
+    mount_issue(
+        &server,
+        "acme/b",
+        2,
+        ResponseTemplate::new(403).insert_header("x-ratelimit-remaining", "0"),
+    )
+    .await;
+    github::sync_closed_issues(db.connection(), &gh_settings(&[]), &api(&server)).await;
+    assert_eq!(
+        requested_paths(&server).await,
+        vec!["/repos/acme/a/issues/1", "/repos/acme/b/issues/2"],
+        "the limit is met on the second request and stops the batch"
+    );
+    assert!(test_link(&db, first).await.2, "the checked stamp commits");
+    assert!(
+        !test_link(&db, second).await.2,
+        "the rate-limited row is never stamped"
+    );
+
+    let second_server = MockServer::start().await;
+    mount_issue(
+        &second_server,
+        "acme/a",
+        1,
+        ResponseTemplate::new(200).set_body_json(json!({"state": "open"})),
+    )
+    .await;
+    mount_issue(
+        &second_server,
+        "acme/b",
+        2,
+        ResponseTemplate::new(200).set_body_json(json!({"state": "open"})),
+    )
+    .await;
+    github::sync_closed_issues(db.connection(), &gh_settings(&[]), &api(&second_server)).await;
+    assert_eq!(
+        requested_paths(&second_server).await,
+        vec!["/repos/acme/b/issues/2", "/repos/acme/a/issues/1"],
+        "rotation continues from the committed stamp"
+    );
+}
+
+#[tokio::test]
+async fn a_permission_403_skips_the_later_rows_of_that_repo() {
+    let db = TestDb::new().await.expect("a test database");
+    let a1 = flaky_test_in(&db, "acme/a", "p1", "a1").await;
+    let a2 = flaky_test_in(&db, "acme/a", "p2", "a2").await;
+    let b = flaky_test_in(&db, "acme/b", "p3", "b").await;
+    stamp_link(&db, a1, 11, false, false).await;
+    stamp_link(&db, a2, 12, false, false).await;
+    stamp_link(&db, b, 22, false, false).await;
+    let server = MockServer::start().await;
+    mount_issue(
+        &server,
+        "acme/a",
+        11,
+        ResponseTemplate::new(403)
+            .set_body_json(json!({"message": "Resource not accessible by personal access token"})),
+    )
+    .await;
+    mount_issue(&server, "acme/a", 12, ResponseTemplate::new(500)).await;
+    mount_issue(
+        &server,
+        "acme/b",
+        22,
+        ResponseTemplate::new(200).set_body_json(json!({"state": "closed"})),
+    )
+    .await;
+
+    github::sync_closed_issues(db.connection(), &gh_settings(&[]), &api(&server)).await;
+    let mut paths = requested_paths(&server).await;
+    paths.sort();
+    assert_eq!(
+        paths,
+        vec!["/repos/acme/a/issues/11", "/repos/acme/b/issues/22"],
+        "the denied Repo is skipped for the rest of the sync"
+    );
+    let (a1_number, _, a1_checked, _) = test_link(&db, a1).await;
+    assert_eq!(a1_number, Some(11), "a permission 403 clears nothing");
+    assert!(a1_checked, "the denied row rotates like a checked one");
+    let (a2_number, _, a2_checked, _) = test_link(&db, a2).await;
+    assert_eq!(a2_number, Some(12));
+    assert!(a2_checked, "the skipped row rotates too");
+    assert_eq!(
+        test_link(&db, b).await.0,
+        None,
+        "the other Repo still syncs"
+    );
+}
+
+#[tokio::test]
+async fn the_sync_rotates_past_a_denied_repo() {
+    let db = TestDb::new().await.expect("a test database");
+    let a1 = flaky_test_in(&db, "acme/a", "p1", "a1").await;
+    let a2 = flaky_test_in(&db, "acme/a", "p2", "a2").await;
+    let b = flaky_test_in(&db, "acme/b", "p3", "b").await;
+    stamp_link(&db, a1, 11, false, false).await;
+    stamp_link(&db, a2, 12, false, false).await;
+    stamp_link(&db, b, 22, false, false).await;
+    let server = MockServer::start().await;
+    mount_issue(
+        &server,
+        "acme/a",
+        11,
+        ResponseTemplate::new(403)
+            .set_body_json(json!({"message": "Resource not accessible by personal access token"})),
+    )
+    .await;
+    mount_issue(&server, "acme/a", 12, ResponseTemplate::new(500)).await;
+    mount_issue(
+        &server,
+        "acme/b",
+        22,
+        ResponseTemplate::new(200).set_body_json(json!({"state": "closed"})),
+    )
+    .await;
+    let settings = gh_settings(&[("FLAKERADAR_GITHUB_SYNC_BATCH", "2")]);
+
+    github::sync_closed_issues(db.connection(), &settings, &api(&server)).await;
+    assert_eq!(
+        requested_paths(&server).await,
+        vec!["/repos/acme/a/issues/11"],
+        "the cap holds the two denied rows and the second gets no GET"
+    );
+
+    github::sync_closed_issues(db.connection(), &settings, &api(&server)).await;
+    assert_eq!(
+        requested_paths(&server).await,
+        vec![
+            "/repos/acme/a/issues/11",
+            "/repos/acme/b/issues/22",
+            "/repos/acme/a/issues/11"
+        ],
+        "the denied rows were stamped, so the other Repo's link sorts first"
+    );
+    assert_eq!(test_link(&db, a1).await.0, Some(11));
+    assert_eq!(test_link(&db, a2).await.0, Some(12));
+    assert_eq!(test_link(&db, b).await.0, None, "rotation reached repo B");
+    assert!(test_link(&db, b).await.2);
+}
+
+#[tokio::test]
+async fn a_sync_definitive_client_error_keeps_the_link_and_skips_the_repo() {
+    for status in [401, 410] {
+        let db = TestDb::new().await.expect("a test database");
+        let a1 = flaky_test_in(&db, "acme/a", "p1", "a1").await;
+        let a2 = flaky_test_in(&db, "acme/a", "p2", "a2").await;
+        let b = flaky_test_in(&db, "acme/b", "p3", "closed").await;
+        stamp_link(&db, a1, 11, false, false).await;
+        stamp_link(&db, a2, 12, false, false).await;
+        stamp_link(&db, b, 22, false, false).await;
+        let server = MockServer::start().await;
+        mount_issue(
+            &server,
+            "acme/a",
+            11,
+            ResponseTemplate::new(status).set_body_json(json!({"message": "no"})),
+        )
+        .await;
+        mount_issue(&server, "acme/a", 12, ResponseTemplate::new(200)).await;
+        mount_issue(
+            &server,
+            "acme/b",
+            22,
+            ResponseTemplate::new(200).set_body_json(json!({"state": "closed"})),
+        )
+        .await;
+
+        github::sync_closed_issues(db.connection(), &gh_settings(&[]), &api(&server)).await;
+        assert_eq!(
+            requested_paths(&server).await,
+            vec!["/repos/acme/a/issues/11", "/repos/acme/b/issues/22"],
+            "status {status}: the Repo is skipped, the other Repo still syncs"
+        );
+        assert_eq!(test_link(&db, a1).await.0, Some(11), "status {status}");
+        assert!(
+            test_link(&db, a1).await.2,
+            "status {status}: the row rotates"
+        );
+        assert_eq!(test_link(&db, a2).await.0, Some(12));
+        assert!(test_link(&db, a2).await.2, "status {status}");
+        assert_eq!(test_link(&db, b).await.0, None, "status {status}");
+    }
+}
+
+#[tokio::test]
+async fn the_sync_rotates_past_an_unreadable_link() {
+    let db = TestDb::new().await.expect("a test database");
+    let bad = flaky_test_in(&db, "acme/a", "p1", "a").await;
+    let second = flaky_test_in(&db, "acme/b", "p2", "b").await;
+    let third = flaky_test_in(&db, "acme/c", "p3", "c").await;
+    stamp_link(&db, bad, 11, false, false).await;
+    stamp_link(&db, second, 22, false, false).await;
+    stamp_link(&db, third, 33, false, false).await;
+    let server = MockServer::start().await;
+    mount_issue(
+        &server,
+        "acme/a",
+        11,
+        ResponseTemplate::new(200).set_body_string("<html>Gateway</html>"),
+    )
+    .await;
+    mount_issue(
+        &server,
+        "acme/b",
+        22,
+        ResponseTemplate::new(200).set_body_json(json!({"state": "open"})),
+    )
+    .await;
+    mount_issue(
+        &server,
+        "acme/c",
+        33,
+        ResponseTemplate::new(200).set_body_json(json!({"state": "open"})),
+    )
+    .await;
+    let settings = gh_settings(&[("FLAKERADAR_GITHUB_SYNC_BATCH", "2")]);
+
+    github::sync_closed_issues(db.connection(), &settings, &api(&server)).await;
+    assert_eq!(
+        requested_paths(&server).await,
+        vec!["/repos/acme/a/issues/11", "/repos/acme/b/issues/22"]
+    );
+    assert_eq!(test_link(&db, bad).await.0, Some(11));
+    assert!(test_link(&db, bad).await.2, "the bad row rotates");
+
+    github::sync_closed_issues(db.connection(), &settings, &api(&server)).await;
+    assert_eq!(
+        requested_paths(&server).await[2..],
+        ["/repos/acme/c/issues/33", "/repos/acme/a/issues/11"],
+        "the never-checked Test is reached instead of queueing behind the bad link"
+    );
+    assert!(test_link(&db, third).await.2);
+}
+
+#[tokio::test]
+async fn a_gone_issue_rearms_its_link_but_any_other_answer_keeps_it() {
+    for entity in ["test", "job"] {
+        let db = TestDb::new().await.expect("a test database");
+        let (id, expected) = if entity == "test" {
+            let id = flaky_test(&db).await;
+            stamp_link(&db, id, 11, false, false).await;
+            (id, 11)
+        } else {
+            let id = flaky_job(&db).await;
+            stamp_job_link(&db, id, 5, false).await;
+            (id, 5)
+        };
+        let route = format!("/repos/acme/app/issues/{expected}");
+
+        let gone = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(route.as_str()))
+            .respond_with(ResponseTemplate::new(404).set_body_json(json!({"message": "Gone"})))
+            .mount(&gone)
+            .await;
+        let logged = logged_from(github::sync_closed_issues(
+            db.connection(),
+            &gh_settings(&[]),
+            &api(&gone),
+        ))
+        .await;
+        assert_eq!(requested_paths(&gone).await, vec![route.clone()]);
+        let only = lines_with(&logged, "issue gone");
+        assert_eq!(only.len(), 1, "{entity}: {logged}");
+        assert!(only[0].contains("repo=acme/app"), "{logged}");
+        assert!(only[0].contains(&format!("number={expected}")), "{logged}");
+        assert!(only[0].contains(entity), "{logged}");
+        if entity == "test" {
+            let (number, _, checked, closed) = test_link(&db, id).await;
+            assert_eq!(number, None, "a gone issue re-arms");
+            assert!(checked);
+            assert!(!closed);
+        } else {
+            assert_eq!(job_link(&db, id).await.0, None);
+            assert!(job_checked(&db, id).await);
+        }
+
+        if entity == "test" {
+            stamp_link(&db, id, 11, false, false).await;
+        } else {
+            stamp_job_link(&db, id, 5, false).await;
+        }
+        let broken = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(route.as_str()))
+            .respond_with(
+                ResponseTemplate::new(500).set_body_json(json!({"message": "Server error"})),
+            )
+            .mount(&broken)
+            .await;
+        let logged = logged_from(github::sync_closed_issues(
+            db.connection(),
+            &gh_settings(&[]),
+            &api(&broken),
+        ))
+        .await;
+        assert_eq!(requested_paths(&broken).await, vec![route]);
+        assert!(
+            lines_with(&logged, "acme/app").is_empty(),
+            "{entity}: an unexpected status is nobody's fault: {logged}"
+        );
+        if entity == "test" {
+            assert_eq!(test_link(&db, id).await.0, Some(expected));
+            assert!(test_link(&db, id).await.2);
+        } else {
+            assert_eq!(job_link(&db, id).await.0, Some(expected));
+            assert!(job_checked(&db, id).await);
+        }
+    }
+}
+
+#[tokio::test]
+async fn the_job_sync_rearms_a_closed_issue_and_the_filer_files_again() {
+    let db = TestDb::new().await.expect("a test database");
+    let job = flaky_job(&db).await;
+    let server = MockServer::start().await;
+    mount_create(
+        &server,
+        ResponseTemplate::new(201).set_body_json(json!({"number": 77})),
+    )
+    .await;
+    github::file_job_issues_for(db.connection(), &[job], &gh_settings(&[]), &api(&server)).await;
+    assert_eq!(job_link(&db, job).await.0, Some(77));
+
+    let sync_server = MockServer::start().await;
+    mount_issue(
+        &sync_server,
+        "acme/app",
+        77,
+        ResponseTemplate::new(200).set_body_json(json!({"state": "closed"})),
+    )
+    .await;
+    github::sync_closed_issues(db.connection(), &gh_settings(&[]), &api(&sync_server)).await;
+    assert_eq!(job_link(&db, job).await.0, None);
+
+    let refile = MockServer::start().await;
+    mount_create(
+        &refile,
+        ResponseTemplate::new(201).set_body_json(json!({"number": 77})),
+    )
+    .await;
+    assert_eq!(
+        github::file_job_issues_for(db.connection(), &[job], &gh_settings(&[]), &api(&refile))
+            .await
+            .len(),
+        1,
+        "the re-armed Job is filed again"
+    );
+    assert_eq!(job_link(&db, job).await.0, Some(77));
+    assert!(!job_checked(&db, job).await, "a new link is checked first");
 }
