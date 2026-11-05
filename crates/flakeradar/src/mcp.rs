@@ -218,18 +218,6 @@ enum ToolFailure {
     Protocol(McpError),
 }
 
-impl From<String> for ToolFailure {
-    fn from(message: String) -> Self {
-        Self::Tool(message)
-    }
-}
-
-impl From<McpError> for ToolFailure {
-    fn from(error: McpError) -> Self {
-        Self::Protocol(error)
-    }
-}
-
 impl From<DbError> for ToolFailure {
     fn from(error: DbError) -> Self {
         Self::Protocol(McpError::internal_error(error.to_string(), None))

@@ -1392,6 +1392,114 @@ async fn link_issue_refuses_a_conflict_unless_it_may_replace() {
 }
 
 #[tokio::test]
+async fn an_unknown_tool_and_an_unreadable_argument_are_protocol_errors() {
+    // A refusal is an `isError` result; a request the server cannot route at all
+    // is a JSON-RPC error, which is what a client's protocol layer sees.
+    let db = TestDb::new().await.expect("a test database is available");
+    let app = mcp_app(&db);
+    let unknown = rpc(
+        &app,
+        "tools/call",
+        Some("no_such_tool"),
+        json!({"name": "no_such_tool", "arguments": {}}),
+    )
+    .await;
+    let body = unknown.json();
+    assert!(
+        body.get("result").is_none(),
+        "an unknown tool answered a result: {body}"
+    );
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("unknown tool 'no_such_tool'"),
+        "{body}"
+    );
+    let unreadable = rpc(
+        &app,
+        "tools/call",
+        Some("top_flaky_tests"),
+        json!({"name": "top_flaky_tests", "arguments": {"repo": "acme/app", "limit": "many"}}),
+    )
+    .await;
+    let body = unreadable.json();
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("invalid arguments"),
+        "{body}"
+    );
+}
+
+#[tokio::test]
+async fn a_broken_database_is_a_protocol_error_rather_than_a_refusal() {
+    // A tool whose statement fails has not refused anything: the server could not
+    // answer, which the client must see as an error rather than as data.
+    let db = TestDb::new().await.expect("a test database is available");
+    let app = mcp_app(&db);
+    let _ = seed(&db).await;
+    sea_orm::ConnectionTrait::execute_unprepared(db.connection(), "DROP TABLE repos CASCADE")
+        .await
+        .expect("the table is dropped");
+    let reply = rpc(
+        &app,
+        "tools/call",
+        Some("list_repos"),
+        json!({"name": "list_repos", "arguments": {}}),
+    )
+    .await;
+    let body = reply.json();
+    assert!(
+        body.get("result").is_none(),
+        "a dropped table answered a result: {body}"
+    );
+    assert!(body.get("error").is_some(), "{body}");
+}
+
+#[tokio::test]
+async fn a_failing_read_of_one_ci_run_is_a_protocol_error() {
+    let db = TestDb::new().await.expect("a test database is available");
+    let app = mcp_app(&db);
+    let _ = seed(&db).await;
+    sea_orm::ConnectionTrait::execute_unprepared(db.connection(), "DROP TABLE test_runs CASCADE")
+        .await
+        .expect("the table is dropped");
+    let reply = rpc(
+        &app,
+        "tools/call",
+        Some("ci_run_failures"),
+        json!({
+            "name": "ci_run_failures",
+            "arguments": {"repo": "andrewthetechie/writers-app", "ci_run_id": "1"},
+        }),
+    )
+    .await;
+    let body = reply.json();
+    assert!(body.get("error").is_some(), "{body}");
+}
+
+#[tokio::test]
+async fn a_failing_link_is_a_protocol_error() {
+    let db = TestDb::new().await.expect("a test database is available");
+    let app = mcp_app(&db);
+    let flaky = seed(&db).await;
+    sea_orm::ConnectionTrait::execute_unprepared(db.connection(), "DROP TABLE test_cases CASCADE")
+        .await
+        .expect("the table is dropped");
+    let reply = rpc(
+        &app,
+        "tools/call",
+        Some("link_issue"),
+        json!({"name": "link_issue", "arguments": {"number": 7, "test_id": flaky}}),
+    )
+    .await;
+    let body = reply.json();
+    assert!(body.get("error").is_some(), "{body}");
+}
+
+#[tokio::test]
 async fn the_transport_answers_over_a_real_socket() {
     // Everything else in this file drives the router with `oneshot`; this binds a
     // port and speaks HTTP to it, so the framing, the headers and the stateless
