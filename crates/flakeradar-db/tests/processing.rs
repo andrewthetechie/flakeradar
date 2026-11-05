@@ -1175,10 +1175,9 @@ async fn a_downward_tier_crossing_is_reported() {
         .await
         .expect("the processor runs")
         .expect("a Report");
-    assert!(
-        middle.tier_changes.is_empty()
-            || middle.tier_changes[0].tier != flakeradar_core::Tier::Flaky
-    );
+    // The score is still flaky, so this Report crosses nothing: a `test.recovered`
+    // here would be a spurious event, not a tier this build may report.
+    assert_eq!(middle.tier_changes, Vec::new());
     queue_with(&db, &project, &make_junit(&[("t", "failed")]), |b| {
         b.commit_sha("d")
     })
@@ -1214,6 +1213,97 @@ async fn staying_flaky_reports_no_second_event() {
         .expect("the processor runs")
         .expect("a Report");
     assert_eq!(outcome.tier_changes, Vec::new());
+}
+
+#[tokio::test]
+async fn touched_tests_are_rescored_in_id_order_not_report_order() {
+    let db = TestDb::new().await.expect("a test database");
+    let project = project(&db, "acme/app", "backend").await;
+    // The first Report gives the three Tests their ids in this order.
+    queue(
+        &db,
+        &project,
+        &make_junit(&[("t1", "passed"), ("t2", "passed"), ("t3", "passed")]),
+    )
+    .await;
+    drain(&db, &settings()).await;
+    let rows = tests(&db).await;
+    let by_name: BTreeMap<&str, i32> = rows
+        .iter()
+        .map(|row| (row.name.as_str(), row.id))
+        .collect();
+    let report_order = vec![by_name["t3"], by_name["t1"], by_name["t2"]];
+    let mut by_id = report_order.clone();
+    by_id.sort_unstable();
+    assert_ne!(
+        report_order, by_id,
+        "the ids must not follow this report's order"
+    );
+
+    // Python rescored `sorted(latest)`, so the touched Tests come back by id, not
+    // in the order this report first named them.
+    queue(
+        &db,
+        &project,
+        &make_junit(&[("t3", "passed"), ("t1", "passed"), ("t2", "passed")]),
+    )
+    .await;
+    let outcome = process_next(db.connection(), &settings())
+        .await
+        .expect("the processor runs")
+        .expect("a Report");
+    assert_eq!(outcome.touched_test_ids, by_id);
+}
+
+#[tokio::test]
+async fn tier_changes_are_emitted_in_id_order() {
+    let db = TestDb::new().await.expect("a test database");
+    let project = project(&db, "acme/app", "backend").await;
+    db.connection()
+        .execute_unprepared("UPDATE repos SET default_branch = 'main'")
+        .await
+        .expect("the Default branch");
+    let first = flakeradar_test_support::make_test_case(&project)
+        .name("a")
+        .build(db.connection())
+        .await
+        .expect("a Test");
+    let second = flakeradar_test_support::make_test_case(&project)
+        .name("b")
+        .build(db.connection())
+        .await
+        .expect("a Test");
+    // A fail then a pass on different commits is a flake, and neither Test's score
+    // has been written yet, so both cross the Flake threshold.
+    for (sha, status) in [("f", "failed"), ("g", "passed")] {
+        let run = flakeradar_test_support::make_run(&project)
+            .commit_sha(sha)
+            .branch("main")
+            .build(db.connection())
+            .await
+            .expect("a Run");
+        for row in [&first, &second] {
+            flakeradar_test_support::make_execution(row, &run)
+                .status(status)
+                .build(db.connection())
+                .await
+                .expect("an Execution");
+        }
+    }
+    // Python read the Tests back through `_rows_by_id`, a dict sorted by id, so the
+    // events go out in id order whatever order the caller lists the ids in.
+    let changes = rescore(
+        db.connection(),
+        &[second.id, first.id],
+        None,
+        &notify_settings(),
+    )
+    .await
+    .expect("the rescore");
+    assert_eq!(
+        changes.iter().map(|change| change.id).collect::<Vec<_>>(),
+        [i64::from(first.id), i64::from(second.id)]
+    );
 }
 
 #[tokio::test]

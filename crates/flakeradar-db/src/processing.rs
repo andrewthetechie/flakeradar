@@ -494,7 +494,11 @@ async fn process_report(
         .await
         .map_err(ProcessError::from)?;
 
-    let touched: Vec<i32> = latest.iter().map(|row| row.id).collect();
+    // Python rescored `sorted(latest)`: the ids are ordered by id, not by where a
+    // Test first appeared in the report, because they set `touched_test_ids` and
+    // the order the Tier changes are emitted in.
+    let mut touched: Vec<i32> = latest.iter().map(|row| row.id).collect();
+    touched.sort_unstable();
     let mut tier_changes = rescore(db, &touched, Some(&day_counts), settings)
         .await
         .map_err(ProcessError::from)?;
@@ -1292,7 +1296,7 @@ async fn test_tier_changes(
         .iter()
         .map(|update| (update.id, update.flakiness_score, *update))
         .collect();
-    let crossed: Vec<TestUpdate> = crossed(&scored, old, threshold)
+    let mut crossed: Vec<TestUpdate> = crossed(&scored, old, threshold)
         .into_iter()
         .filter(|update| {
             tier_for(update.flakiness_score, threshold) == Tier::Flaky
@@ -1302,6 +1306,9 @@ async fn test_tier_changes(
     if crossed.is_empty() {
         return Ok(Vec::new());
     }
+    // Python builds these from `_rows_by_id`, a dict sorted by id, so the events go
+    // out in id order whatever order the caller listed the ids in.
+    crossed.sort_unstable_by_key(|update| update.id);
     let ids: Vec<i32> = crossed.iter().map(|update| update.id).collect();
     let mut named: BTreeMap<i32, (String, String, String, String)> = BTreeMap::new();
     for chunk in chunks(&ids) {
@@ -1577,10 +1584,13 @@ async fn job_tier_changes(
         .iter()
         .map(|update| (update.id, update.flakiness_score, *update))
         .collect();
-    let crossed: Vec<JobUpdate> = crossed(&scored, old, threshold);
+    let mut crossed: Vec<JobUpdate> = crossed(&scored, old, threshold);
     if crossed.is_empty() {
         return Ok(Vec::new());
     }
+    // Python builds these from `_rows_by_id`, a dict sorted by id, so the events go
+    // out in id order whatever order the caller listed the ids in.
+    crossed.sort_unstable_by_key(|update| update.id);
     let ids: Vec<i32> = crossed.iter().map(|update| update.id).collect();
     let mut named: BTreeMap<i32, (String, String, String)> = BTreeMap::new();
     for chunk in chunks(&ids) {
