@@ -1211,6 +1211,39 @@ async fn a_field_the_body_prices_differently_is_still_the_reference_sentence() {
     );
 }
 
+#[test]
+fn the_last_failing_commit_has_no_branch_clause_when_no_branch_was_reported() {
+    let test = TestRow {
+        id: 1,
+        classname: "tests.test_cart".to_owned(),
+        name: "test_total".to_owned(),
+        suite: "backend".to_owned(),
+        file: Some("tests/test_cart.py".to_owned()),
+        line: Some(12),
+        fingerprint: "abc".to_owned(),
+        flakiness_score: 0.5,
+        confirmed_flake_count: 1,
+    };
+    let recent = [RecentExecution {
+        status: "failed".to_owned(),
+        message: "AssertionError".to_owned(),
+        details: None,
+        commit_sha: "abcdef1234567890".to_owned(),
+        branch: String::new(),
+        created_at: chrono::Utc::now(),
+    }];
+    let body =
+        github::test_issue_body(&test, &recent, "acme/app", "backend", "", &gh_settings(&[]));
+    assert!(
+        body.contains("- **Last failing commit:** `abcdef1234567890`\n"),
+        "a run that reported no branch names only the commit: {body}"
+    );
+    assert!(
+        body.contains("https://github.com/acme/app/blob/abcdef1234567890/tests/test_cart.py#L12"),
+        "{body}"
+    );
+}
+
 #[tokio::test]
 async fn the_run_hint_follows_the_file_extension() {
     for (path, expected) in [
@@ -1244,6 +1277,17 @@ async fn the_run_hint_follows_the_file_extension() {
         let hint = github::run_hint(path, "CartTest", "test_total");
         assert_eq!(hint, expected, "{path:?}");
     }
+}
+
+#[test]
+fn an_issue_state_reason_that_is_not_text_reads_as_none() {
+    let answer = github::Answer {
+        status: 200,
+        headers: wiremock::http::HeaderMap::new(),
+        text: json!({"state": "closed", "state_reason": 42}).to_string(),
+    };
+    assert_eq!(answer.state_reason(), None);
+    assert_eq!(answer.issue_state().as_deref(), Some("closed"));
 }
 
 #[test]
@@ -1291,6 +1335,88 @@ async fn a_job_body_without_history_still_carries_the_table_heading() {
     assert!(table.contains("|---|---|---|---|---|---|"), "{body}");
     assert!(!table.contains("| failed |"), "{body}");
     assert!(!table.contains("| passed |"), "{body}");
+}
+
+#[test]
+fn a_job_body_names_every_outcome_runner_and_link_it_has() {
+    use flakeradar_core::{JobExecutionOut, JobHistoryOut, JobOut, JobOutcome, RunnerStatOut};
+
+    /// One Job execution with the fields the body prints.
+    fn execution(outcome: JobOutcome, url: &str, runner_name: &str) -> JobExecutionOut {
+        JobExecutionOut {
+            id: 1,
+            status: "failed".to_owned(),
+            outcome,
+            commit_sha: "a1b2c3d4".to_owned(),
+            branch: "main".to_owned(),
+            ci_run_id: "9".to_owned(),
+            ci_run_attempt: 1,
+            ci_job_id: "unit".to_owned(),
+            url: url.to_owned(),
+            runner_name: runner_name.to_owned(),
+            runner_labels: Vec::new(),
+            started_at: None,
+            completed_at: None,
+            created_at: chrono::Utc::now(),
+            explained_by: Vec::new(),
+            explained_by_jobs: Vec::new(),
+        }
+    }
+
+    let job = JobRow {
+        id: 3,
+        name: "unit".to_owned(),
+        flakiness_score: 0.5,
+        confirmed_flake_count: 1,
+    };
+    let history = JobHistoryOut {
+        job: JobOut {
+            id: 3,
+            repo: "acme/app".to_owned(),
+            provider: "github".to_owned(),
+            pipeline: "ci".to_owned(),
+            name: "unit".to_owned(),
+            flakiness_score: 0.5,
+            tier: flakeradar_core::Tier::Suspect,
+            confirmed_flake_count: 1,
+            clean_streak: 0,
+            trend: None,
+            last_status: "failed".to_owned(),
+            last_seen_at: chrono::Utc::now(),
+            summary: false,
+            github_issue_number: None,
+            github_issue_url: None,
+            github_issue_closed: false,
+        },
+        unexplained_failures: 1,
+        explained_failures: 0,
+        executions: vec![
+            execution(
+                JobOutcome::Skipped,
+                "https://ci.example.com/job/9",
+                "ubuntu-latest",
+            ),
+            execution(JobOutcome::Failed, "https://ci.example.com/job/10", ""),
+        ],
+        runners: vec![RunnerStatOut {
+            labels: vec!["self-hosted".to_owned()],
+            runner_name: Some(String::new()),
+            executions: 2,
+            unexplained_failures: 1,
+        }],
+        score_history: Vec::new(),
+    };
+    let body = github::job_issue_body(&job, "ci", "acme/app", Some(&history), &gh_settings(&[]));
+    assert!(body.contains("| skipped |"), "{body}");
+    assert!(
+        body.contains("[job](https://ci.example.com/job/9)"),
+        "{body}"
+    );
+    assert!(body.contains("| ubuntu-latest |"), "{body}");
+    assert!(
+        body.contains("  - `self-hosted`: 1 unexplained of 2 executions"),
+        "a runner with no name is named by its labels: {body}"
+    );
 }
 
 #[tokio::test]
