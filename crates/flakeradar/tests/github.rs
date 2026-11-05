@@ -200,7 +200,8 @@ async fn no_token_is_a_silent_no_op() {
             .received_requests()
             .await
             .expect("a record")
-            .is_empty()
+            .is_empty(),
+        "the row scores below the gate, so nothing is filed"
     );
 }
 
@@ -548,24 +549,25 @@ async fn a_row_deleted_while_filing_closes_the_issue_it_just_created() {
         .await
         .expect("the vanish trigger installs");
 
-    let filed =
-        github::file_issues_for(db.connection(), &[test], &gh_settings(&[]), &api(&server)).await;
-    assert!(filed.is_empty(), "a vanished row is not a link");
-    let requested: Vec<String> = server
-        .received_requests()
-        .await
-        .expect("the stub records requests")
-        .iter()
-        .map(|request| request.url.path().to_owned())
-        .collect();
-    assert!(
-        requested.contains(&"/repos/acme/app/issues/7/comments".to_owned()),
-        "the new issue is commented on: {requested:?}"
+    let logged = logged_from(async {
+        let filed =
+            github::file_issues_for(db.connection(), &[test], &gh_settings(&[]), &api(&server))
+                .await;
+        assert!(filed.is_empty(), "a vanished row is not a link");
+    })
+    .await;
+    assert_eq!(
+        requested_paths(&server).await,
+        vec![
+            "/repos/acme/app/issues",
+            "/repos/acme/app/issues/7/comments",
+            "/repos/acme/app/issues/7",
+        ],
+        "the new issue is commented on, then closed"
     );
-    assert!(
-        requested.contains(&"/repos/acme/app/issues/7".to_owned()),
-        "and closed: {requested:?}"
-    );
+    let warnings = lines_with(&logged, "closed the new issue");
+    assert_eq!(warnings.len(), 1, "{logged}");
+    assert!(warnings[0].contains('7'), "{logged}");
 }
 
 #[tokio::test]
@@ -625,10 +627,14 @@ async fn a_flaky_job_is_filed_with_its_pipeline_and_unexplained_failures() {
         "{text}"
     );
     assert!(text.contains("- **Unexplained failures:** 1"), "{text}");
+    assert!(text.contains("- **Explained by tests:** 0"), "{text}");
+    assert!(text.contains("- **Job:** `unit`"), "{text}");
     assert!(
         text.contains("| Outcome | Commit | Branch | Attempt | Runner | Job |"),
         "{text}"
     );
+    assert_eq!(job_link(&db, job).await.0, Some(8));
+    assert_eq!(job_link(&db, job).await.1, Some(true));
 }
 
 #[tokio::test]
@@ -1508,14 +1514,13 @@ async fn a_permission_403_costs_only_the_denied_repo() {
     assert_eq!(warnings.len(), 1, "{logged}");
     assert!(warnings[0].contains("acme/a"), "{logged}");
     assert!(warnings[0].contains("403"), "{logged}");
+    let kept: String = body.chars().take(300).collect();
+    let cut: String = body.chars().skip(300).collect();
     assert!(
-        warnings[0].contains(&body[..300]),
+        warnings[0].contains(&kept),
         "only the first 300 characters are logged: {logged}"
     );
-    assert!(
-        !warnings[0].contains(&body[300..]),
-        "the rest is cut: {logged}"
-    );
+    assert!(!warnings[0].contains(&cut), "the rest is cut: {logged}");
 
     let ja1 = flaky_job_in(&db, "acme/a", ".github/workflows/a1.yml", "a1").await;
     let ja2 = flaky_job_in(&db, "acme/a", ".github/workflows/a2.yml", "a2").await;
@@ -1552,7 +1557,8 @@ async fn a_permission_403_costs_only_the_denied_repo() {
     let warnings = lines_with(&logged, "skipped for this Repo");
     assert_eq!(warnings.len(), 1, "{logged}");
     assert!(warnings[0].contains("acme/a") && warnings[0].contains("403"));
-    assert!(!warnings[0].contains(&body[300..]));
+    let cut: String = body.chars().skip(300).collect();
+    assert!(!warnings[0].contains(&cut));
 }
 
 #[tokio::test]
@@ -1692,7 +1698,10 @@ async fn an_unusable_status_costs_one_issue_and_the_batch_goes_on() {
     assert_eq!(failures.len(), 1, "{logged}");
     assert!(failures[0].contains("acme/a") && failures[0].contains("500"));
     assert!(failures[0].contains("server exploded"));
-    assert!(lines_with(&logged, "skipped for this Repo").is_empty());
+    assert!(
+        lines_with(&logged, "skipped for this Repo").is_empty(),
+        "a 500 must not skip the Repo: {logged}"
+    );
 }
 
 #[tokio::test]
@@ -1740,4 +1749,667 @@ async fn a_malformed_201_body_keeps_the_batch_and_stores_nothing() {
         assert!(warnings[0].contains("acme/a"), "{logged}");
         assert!(warnings[0].contains(raw), "{logged}");
     }
+}
+
+#[tokio::test]
+async fn a_file_without_a_line_still_gets_a_permalink() {
+    let db = TestDb::new().await.expect("a test database");
+    let row_id = flaky_test_in(&db, "acme/app", "backend", "t_file").await;
+    db.connection()
+        .execute_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "UPDATE test_cases SET file = 'tests/test_x.py', line = NULL WHERE id = $1",
+            [Value::from(row_id)],
+        ))
+        .await
+        .expect("the location writes");
+    let server = MockServer::start().await;
+    mount_create(
+        &server,
+        ResponseTemplate::new(201).set_body_json(json!({"number": 77})),
+    )
+    .await;
+
+    github::file_issues_for(db.connection(), &[row_id], &gh_settings(&[]), &api(&server)).await;
+    let requests = server.received_requests().await.expect("a record");
+    assert_eq!(requests.len(), 1);
+    let body: Json = serde_json::from_slice(&requests[0].body).expect("the body is JSON");
+    let text = body["body"].as_str().expect("a body");
+    assert!(
+        text.contains("https://github.com/acme/app/blob/abcdef1234567890/tests/test_x.py"),
+        "the permalink is still useful without an anchor: {text}"
+    );
+    assert!(!text.contains("#L"), "{text}");
+    assert!(text.contains("`tests/test_x.py`"), "{text}");
+}
+
+#[tokio::test]
+async fn a_test_with_only_passed_executions_gets_no_failure_evidence() {
+    let db = TestDb::new().await.expect("a test database");
+    let project = make_project()
+        .repo("acme/app")
+        .project("backend")
+        .build(db.connection())
+        .await
+        .expect("the Project inserts");
+    let quiet = make_test_case(&project)
+        .name("t_passed")
+        .classname("tests.test_x")
+        .flakiness_score(0.6)
+        .confirmed_flake_count(1)
+        .file("tests/test_x.py")
+        .line(7)
+        .build(db.connection())
+        .await
+        .expect("the Test inserts");
+    let run = make_run(&project)
+        .commit_sha("deadbeef")
+        .branch("main")
+        .build(db.connection())
+        .await
+        .expect("the Run inserts");
+    make_execution(&quiet, &run)
+        .status("passed")
+        .build(db.connection())
+        .await
+        .expect("the Execution inserts");
+    let server = MockServer::start().await;
+    mount_create(
+        &server,
+        ResponseTemplate::new(201).set_body_json(json!({"number": 77})),
+    )
+    .await;
+
+    github::file_issues_for(
+        db.connection(),
+        &[quiet.id],
+        &gh_settings(&[]),
+        &api(&server),
+    )
+    .await;
+    let requests = server.received_requests().await.expect("a record");
+    assert_eq!(requests.len(), 1);
+    let body: Json = serde_json::from_slice(&requests[0].body).expect("the body is JSON");
+    let text = body["body"].as_str().expect("a body");
+    assert!(!text.contains("Last failing commit"), "{text}");
+    assert!(!text.contains("Permalink"), "{text}");
+    assert!(!text.contains("### Sample failure"), "{text}");
+    assert!(
+        text.contains("### Last 10 executions"),
+        "the body is not empty, it only lacks a failure: {text}"
+    );
+    assert!(text.contains("| passed | `deadbeef` | main |"), "{text}");
+    assert_eq!(test_link(&db, quiet.id).await.0, Some(77));
+}
+
+#[tokio::test]
+async fn two_proven_flakes_meet_the_proven_flake_gate() {
+    let db = TestDb::new().await.expect("a test database");
+    let under = flaky_test_in(&db, "acme/app", "p1", "under").await;
+    db.connection()
+        .execute_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "UPDATE test_cases SET confirmed_flake_count = 1 WHERE id = $1",
+            [Value::from(under)],
+        ))
+        .await
+        .expect("the count writes");
+    let server = MockServer::start().await;
+    mount_create(
+        &server,
+        ResponseTemplate::new(201).set_body_json(json!({"number": 77})),
+    )
+    .await;
+    let settings = gh_settings(&[("FLAKERADAR_GITHUB_ISSUE_MIN_PROVEN_FLAKES", "2")]);
+
+    assert!(
+        github::file_issues_for(db.connection(), &[under], &settings, &api(&server))
+            .await
+            .is_empty(),
+        "one proven flake is under a gate of two"
+    );
+    let over = flaky_test_in(&db, "acme/app", "p2", "over").await;
+    db.connection()
+        .execute_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "UPDATE test_cases SET confirmed_flake_count = 2 WHERE id = $1",
+            [Value::from(over)],
+        ))
+        .await
+        .expect("the count writes");
+    assert_eq!(
+        github::file_issues_for(db.connection(), &[over], &settings, &api(&server))
+            .await
+            .len(),
+        1,
+        "two proven flakes meet it"
+    );
+}
+
+#[tokio::test]
+async fn a_second_failure_meets_the_min_failures_gate() {
+    let db = TestDb::new().await.expect("a test database");
+    let test = flaky_test_in(&db, "acme/app", "backend", "t").await;
+    let server = MockServer::start().await;
+    mount_create(
+        &server,
+        ResponseTemplate::new(201).set_body_json(json!({"number": 77})),
+    )
+    .await;
+    let settings = gh_settings(&[("FLAKERADAR_GITHUB_ISSUE_MIN_FAILURES", "2")]);
+
+    assert!(
+        github::file_issues_for(db.connection(), &[test], &settings, &api(&server))
+            .await
+            .is_empty(),
+        "one failure in the window is under a gate of two"
+    );
+
+    let project = flakeradar_db::entities::projects::Entity::find_by_id(1)
+        .one(db.connection())
+        .await
+        .expect("the Project reads")
+        .expect("the Project exists");
+    let run = make_run(&project)
+        .commit_sha("cafe1234")
+        .branch("main")
+        .build(db.connection())
+        .await
+        .expect("the Run inserts");
+    let row = flakeradar_db::entities::test_cases::Entity::find_by_id(test)
+        .one(db.connection())
+        .await
+        .expect("the Test reads")
+        .expect("the Test exists");
+    make_execution(&row, &run)
+        .status("failed")
+        .details("boom2")
+        .build(db.connection())
+        .await
+        .expect("the Execution inserts");
+
+    assert_eq!(
+        github::file_issues_for(db.connection(), &[test], &settings, &api(&server))
+            .await
+            .len(),
+        1,
+        "a second failure in the window meets the gate"
+    );
+}
+
+#[tokio::test]
+async fn only_the_newest_window_counts_a_failure() {
+    let db = TestDb::new().await.expect("a test database");
+    let project = make_project()
+        .repo("acme/win")
+        .project("p")
+        .build(db.connection())
+        .await
+        .expect("the Project inserts");
+    let old = make_test_case(&project)
+        .name("old_failures")
+        .flakiness_score(0.5)
+        .confirmed_flake_count(0)
+        .build(db.connection())
+        .await
+        .expect("the Test inserts");
+    let new = make_test_case(&project)
+        .name("new_failures")
+        .flakiness_score(0.5)
+        .confirmed_flake_count(0)
+        .build(db.connection())
+        .await
+        .expect("the Test inserts");
+    let run = make_run(&project)
+        .build(db.connection())
+        .await
+        .expect("the Run inserts");
+    let old_statuses = ["failed", "failed", "passed", "passed", "passed"];
+    let new_statuses = ["failed", "passed", "failed", "passed", "failed"];
+    for (old_status, new_status) in old_statuses.into_iter().zip(new_statuses) {
+        make_execution(&old, &run)
+            .status(old_status)
+            .build(db.connection())
+            .await
+            .expect("the Execution inserts");
+        make_execution(&new, &run)
+            .status(new_status)
+            .build(db.connection())
+            .await
+            .expect("the Execution inserts");
+    }
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/repos/acme/win/issues"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({"number": 91})))
+        .mount(&server)
+        .await;
+    let settings = gh_settings(&[
+        ("FLAKERADAR_GITHUB_ISSUE_MIN_FAILURES", "1"),
+        ("FLAKERADAR_SCORE_WINDOW", "3"),
+    ]);
+
+    let filed =
+        github::file_issues_for(db.connection(), &[old.id, new.id], &settings, &api(&server)).await;
+    assert_eq!(
+        filed.into_iter().collect::<Vec<_>>(),
+        vec![new.id],
+        "the failures outside the newest window do not count"
+    );
+    assert_eq!(test_link(&db, old.id).await.0, None);
+    assert_eq!(test_link(&db, new.id).await.0, Some(91));
+}
+
+#[tokio::test]
+async fn a_huge_id_list_stays_under_the_bind_limit() {
+    let db = TestDb::new().await.expect("a test database");
+    let test = flaky_test_in(&db, "acme/app", "backend", "t").await;
+    let server = MockServer::start().await;
+    mount_create(
+        &server,
+        ResponseTemplate::new(201).set_body_json(json!({"number": 77})),
+    )
+    .await;
+    let mut ids = vec![test];
+    ids.extend(10_000_000..10_040_000);
+
+    github::file_issues_for(db.connection(), &ids, &gh_settings(&[]), &api(&server)).await;
+    assert_eq!(
+        requested_paths(&server).await.len(),
+        1,
+        "a huge id list is read in chunks instead of one oversized bind"
+    );
+    assert_eq!(test_link(&db, test).await.0, Some(77));
+}
+
+/// Installs a trigger that makes an `UPDATE` of `table` row `id` affect no row.
+async fn vanish_on_update(db: &TestDb, table: &str, id: i32) {
+    db.connection()
+        .execute_raw(Statement::from_string(
+            DbBackend::Postgres,
+            "CREATE FUNCTION vanish_link() RETURNS trigger AS $$ BEGIN \
+             IF NEW.id = $1 THEN RETURN NULL; END IF; RETURN NEW; END; $$ LANGUAGE plpgsql"
+                .replace("$1", &id.to_string()),
+        ))
+        .await
+        .expect("the vanish function installs");
+    db.connection()
+        .execute_raw(Statement::from_string(
+            DbBackend::Postgres,
+            format!(
+                "CREATE TRIGGER vanish_link BEFORE UPDATE ON {table} \
+                 FOR EACH ROW EXECUTE FUNCTION vanish_link()"
+            ),
+        ))
+        .await
+        .expect("the vanish trigger installs");
+}
+
+#[tokio::test]
+async fn a_row_deleted_while_filing_leaves_the_rest_of_the_batch_filed() {
+    let db = TestDb::new().await.expect("a test database");
+    let a = flaky_test_in(&db, "acme/app", "p1", "a").await;
+    let b = flaky_test_in(&db, "acme/app", "p2", "b").await;
+    vanish_on_update(&db, "test_cases", a).await;
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/repos/acme/app/issues"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({"number": 77})))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    mount_create(
+        &server,
+        ResponseTemplate::new(201).set_body_json(json!({"number": 88})),
+    )
+    .await;
+    Mock::given(method("POST"))
+        .and(path("/repos/acme/app/issues/77/comments"))
+        .respond_with(ResponseTemplate::new(201))
+        .mount(&server)
+        .await;
+    Mock::given(method("PATCH"))
+        .and(path("/repos/acme/app/issues/77"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&server)
+        .await;
+
+    let filed =
+        github::file_issues_for(db.connection(), &[a, b], &gh_settings(&[]), &api(&server)).await;
+    assert_eq!(filed.into_iter().collect::<Vec<_>>(), vec![b]);
+    assert_eq!(
+        requested_paths(&server).await,
+        vec![
+            "/repos/acme/app/issues",
+            "/repos/acme/app/issues/77/comments",
+            "/repos/acme/app/issues/77",
+            "/repos/acme/app/issues",
+        ],
+        "the raced filing costs only itself"
+    );
+    assert_eq!(test_link(&db, a).await.0, None);
+    let (number, is_filed, _, _) = test_link(&db, b).await;
+    assert_eq!(number, Some(88));
+    assert_eq!(is_filed, Some(true));
+}
+
+#[tokio::test]
+async fn the_job_row_deleted_while_filing_closes_the_new_issue() {
+    let db = TestDb::new().await.expect("a test database");
+    let job = flaky_job_in(&db, "acme/app", ".github/workflows/ci.yml", "unit").await;
+    vanish_on_update(&db, "jobs", job).await;
+    let server = MockServer::start().await;
+    mount_create(
+        &server,
+        ResponseTemplate::new(201).set_body_json(json!({"number": 77})),
+    )
+    .await;
+    Mock::given(method("POST"))
+        .and(path("/repos/acme/app/issues/77/comments"))
+        .respond_with(ResponseTemplate::new(201))
+        .mount(&server)
+        .await;
+    Mock::given(method("PATCH"))
+        .and(path("/repos/acme/app/issues/77"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&server)
+        .await;
+
+    let logged = logged_from(async {
+        github::file_job_issues_for(db.connection(), &[job], &gh_settings(&[]), &api(&server))
+            .await;
+    })
+    .await;
+
+    assert_eq!(
+        requested_paths(&server).await,
+        vec![
+            "/repos/acme/app/issues",
+            "/repos/acme/app/issues/77/comments",
+            "/repos/acme/app/issues/77",
+        ]
+    );
+    assert_eq!(job_link(&db, job).await.0, None);
+    let warnings = lines_with(&logged, "closed the new issue");
+    assert_eq!(warnings.len(), 1, "{logged}");
+    assert!(warnings[0].contains("77"), "{logged}");
+}
+
+/// A failing Test uploaded by the same job attempt, so the Job's failure is explained.
+async fn explain_job_execution(db: &TestDb, ci_job_id: &str) {
+    let project = make_project()
+        .repo("acme/app")
+        .project(&format!("explained-{ci_job_id}"))
+        .build(db.connection())
+        .await
+        .expect("the Project inserts");
+    let test = make_test_case(&project)
+        .name(&format!("t-{ci_job_id}"))
+        .flakiness_score(0.0)
+        .confirmed_flake_count(0)
+        .build(db.connection())
+        .await
+        .expect("the Test inserts");
+    let run = make_run(&project)
+        .commit_sha("s")
+        .ci_job_id(ci_job_id)
+        .build(db.connection())
+        .await
+        .expect("the Run inserts");
+    make_execution(&test, &run)
+        .status("failed")
+        .build(db.connection())
+        .await
+        .expect("the Execution inserts");
+}
+
+/// The body of the one issue a job filing posted to `path`.
+async fn only_issue_body(server: &MockServer) -> String {
+    let requests = server.received_requests().await.expect("a record");
+    let request = requests.first().expect("exactly one issue is filed");
+    assert_eq!(requests.len(), 1, "exactly one issue is filed");
+    let body: Json = serde_json::from_slice(&request.body).expect("the body is JSON");
+    body.get("body")
+        .and_then(Json::as_str)
+        .expect("a body")
+        .to_owned()
+}
+
+#[tokio::test]
+async fn a_job_body_lists_its_worst_runner_groups_first() {
+    let db = TestDb::new().await.expect("a test database");
+    let job = flaky_job_in(
+        &db,
+        "acme/app",
+        ".github/workflows/ci.yml",
+        "e2e (ubuntu-latest)",
+    )
+    .await;
+    let pipeline = flakeradar_db::entities::jobs::Entity::find_by_id(job)
+        .one(db.connection())
+        .await
+        .expect("the Job reads")
+        .expect("the Job exists");
+    for _ in 0..2 {
+        make_job_execution(&pipeline)
+            .status("failed")
+            .runner_labels(&["self-hosted", "gpu"])
+            .build(db.connection())
+            .await
+            .expect("the Job execution inserts");
+    }
+    make_job_execution(&pipeline)
+        .status("failed")
+        .runner_labels(&["ubuntu-latest"])
+        .build(db.connection())
+        .await
+        .expect("the Job execution inserts");
+    make_job_execution(&pipeline)
+        .status("passed")
+        .runner_labels(&["windows-latest"])
+        .build(db.connection())
+        .await
+        .expect("the Job execution inserts");
+    let server = MockServer::start().await;
+    mount_create(
+        &server,
+        ResponseTemplate::new(201).set_body_json(json!({"number": 77})),
+    )
+    .await;
+
+    github::file_job_issues_for(db.connection(), &[job], &gh_settings(&[]), &api(&server)).await;
+    let body = only_issue_body(&server).await;
+    assert!(body.contains("**Failures by runner:**"), "{body}");
+    let gpu = "- `gpu, self-hosted`: 2 unexplained of 2 executions";
+    let ubuntu = "- `ubuntu-latest`: 1 unexplained of 1 executions";
+    assert!(body.contains(gpu), "{body}");
+    assert!(body.contains(ubuntu), "{body}");
+    assert!(
+        body.find(gpu) < body.find(ubuntu),
+        "the worst group comes first: {body}"
+    );
+    assert!(
+        !body.contains("windows-latest"),
+        "a group with no unexplained failure is not listed: {body}"
+    );
+}
+
+#[tokio::test]
+async fn a_job_body_caps_the_runner_groups_at_three() {
+    let db = TestDb::new().await.expect("a test database");
+    let job = flaky_job_in(
+        &db,
+        "acme/app",
+        ".github/workflows/many.yml",
+        "many-runners",
+    )
+    .await;
+    let row = flakeradar_db::entities::jobs::Entity::find_by_id(job)
+        .one(db.connection())
+        .await
+        .expect("the Job reads")
+        .expect("the Job exists");
+    for (label, failures) in [("a-lab", 3), ("b-lab", 2), ("c-lab", 1), ("d-lab", 1)] {
+        for _ in 0..failures {
+            make_job_execution(&row)
+                .status("failed")
+                .runner_labels(&[label])
+                .build(db.connection())
+                .await
+                .expect("the Job execution inserts");
+        }
+    }
+    make_job_execution(&row)
+        .status("passed")
+        .runner_labels(&["d-lab"])
+        .build(db.connection())
+        .await
+        .expect("the Job execution inserts");
+    let server = MockServer::start().await;
+    mount_create(
+        &server,
+        ResponseTemplate::new(201).set_body_json(json!({"number": 77})),
+    )
+    .await;
+
+    github::file_job_issues_for(db.connection(), &[job], &gh_settings(&[]), &api(&server)).await;
+    let body = only_issue_body(&server).await;
+    for expected in [
+        "- `a-lab`: 3 unexplained of 3 executions",
+        "- `b-lab`: 2 unexplained of 2 executions",
+        "- `c-lab`: 1 unexplained of 1 executions",
+    ] {
+        assert!(body.contains(expected), "{expected}: {body}");
+    }
+    assert!(!body.contains("d-lab"), "only three groups: {body}");
+}
+
+#[tokio::test]
+async fn a_job_body_omits_the_runner_section_without_an_unexplained_failure() {
+    let db = TestDb::new().await.expect("a test database");
+    let job = flaky_job_in(
+        &db,
+        "acme/app",
+        ".github/workflows/explained.yml",
+        "explained-only",
+    )
+    .await;
+    // The one failed execution the fixture made is explained by a failing Test the
+    // same job attempt uploaded, so the Job has no unexplained failure at all.
+    explain_job_execution(&db, "explained-only").await;
+    let server = MockServer::start().await;
+    mount_create(
+        &server,
+        ResponseTemplate::new(201).set_body_json(json!({"number": 77})),
+    )
+    .await;
+
+    github::file_job_issues_for(db.connection(), &[job], &gh_settings(&[]), &api(&server)).await;
+    let body = only_issue_body(&server).await;
+    assert!(!body.contains("Failures by runner"), "{body}");
+}
+
+#[tokio::test]
+async fn a_job_that_was_reported_is_not_filed_twice() {
+    let db = TestDb::new().await.expect("a test database");
+    let job = flaky_job_in(&db, "acme/app", ".github/workflows/ci.yml", "unit").await;
+    let server = MockServer::start().await;
+    mount_create(
+        &server,
+        ResponseTemplate::new(201).set_body_json(json!({"number": 77})),
+    )
+    .await;
+
+    assert_eq!(
+        github::file_job_issues_for(db.connection(), &[job], &gh_settings(&[]), &api(&server))
+            .await
+            .len(),
+        1
+    );
+    assert!(
+        github::file_job_issues_for(db.connection(), &[job], &gh_settings(&[]), &api(&server))
+            .await
+            .is_empty()
+    );
+    assert_eq!(requested_paths(&server).await.len(), 1);
+}
+
+#[tokio::test]
+async fn a_job_filing_without_a_token_is_silent() {
+    let db = TestDb::new().await.expect("a test database");
+    let job = flaky_job_in(&db, "acme/app", ".github/workflows/ci.yml", "unit").await;
+    let server = MockServer::start().await;
+    let settings = Settings::from_map(&std::collections::BTreeMap::new()).expect("the defaults");
+    let api = Api::new(Secret::new(""), &server.uri());
+
+    assert!(
+        github::file_job_issues_for(db.connection(), &[job], &settings, &api)
+            .await
+            .is_empty()
+    );
+    assert!(
+        requested_paths(&server).await.is_empty(),
+        "no token is a silent no-op"
+    );
+    assert_eq!(job_link(&db, job).await.0, None);
+}
+
+#[tokio::test]
+async fn only_unexplained_job_failures_meet_the_min_failures_gate() {
+    let db = TestDb::new().await.expect("a test database");
+    let all_explained =
+        flaky_job_in(&db, "acme/app", ".github/workflows/a.yml", "all-explained").await;
+    let explained_row = flakeradar_db::entities::jobs::Entity::find_by_id(all_explained)
+        .one(db.connection())
+        .await
+        .expect("the Job reads")
+        .expect("the Job exists");
+    for index in 0..3 {
+        let ci_job_id = format!("ex-{index}");
+        make_job_execution(&explained_row)
+            .status("failed")
+            .ci_job_id(&ci_job_id)
+            .build(db.connection())
+            .await
+            .expect("the Job execution inserts");
+        explain_job_execution(&db, &ci_job_id).await;
+    }
+    let server = MockServer::start().await;
+    mount_create(
+        &server,
+        ResponseTemplate::new(201).set_body_json(json!({"number": 77})),
+    )
+    .await;
+    let settings = gh_settings(&[("FLAKERADAR_GITHUB_ISSUE_MIN_FAILURES", "2")]);
+
+    assert!(
+        github::file_job_issues_for(db.connection(), &[all_explained], &settings, &api(&server))
+            .await
+            .is_empty(),
+        "three explained failures are none of them unexplained"
+    );
+
+    let mixed = flaky_job_in(&db, "acme/app", ".github/workflows/b.yml", "mixed").await;
+    let mixed_row = flakeradar_db::entities::jobs::Entity::find_by_id(mixed)
+        .one(db.connection())
+        .await
+        .expect("the Job reads")
+        .expect("the Job exists");
+    for ci_job_id in ["mix-1", "mix-2", "mix-3"] {
+        make_job_execution(&mixed_row)
+            .status("failed")
+            .ci_job_id(ci_job_id)
+            .build(db.connection())
+            .await
+            .expect("the Job execution inserts");
+    }
+    explain_job_execution(&db, "mix-1").await;
+
+    assert_eq!(
+        github::file_job_issues_for(db.connection(), &[mixed], &settings, &api(&server))
+            .await
+            .len(),
+        1,
+        "two unexplained failures meet the gate"
+    );
 }
