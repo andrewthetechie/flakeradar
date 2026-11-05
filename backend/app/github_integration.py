@@ -30,8 +30,9 @@ Error handling: never raises.
   a `retry-after` header, or a body message containing "rate limit") -> stop
   this batch, log a warning.
 - Any other 403 on create (a permission error: a token without access to that
-  Repo, an archived Repo), or 404/410 (issues disabled) -> skip that Repo for
-  the rest of the batch, log one warning per Repo, go on with the other Repos.
+  Repo, an archived Repo), a bad-credentials 401, or 404/410 (issues disabled)
+  -> skip that Repo for the rest of the batch, log one warning per Repo, go on
+  with the other Repos.
 - In the sync (`sync_closed_issues`), a definitive Repo-wide client error
   (a permission 403, bad credentials 401, a gone Repo 410) leaves the Issue
   link as it is, skips that Repo for the rest of the run, and stamps the rows
@@ -462,6 +463,12 @@ async def _select_candidates(db: AsyncSession, test_case_ids: list[int]) -> list
     return candidates
 
 
+# The outcomes filing treats as Repo-scoped: today's `(403, 404, 410)` skip set plus 401,
+# which the seam classifies on its own. Bad credentials answer for every Repo the same
+# way a permission 403 does, so the loop's response to them is the same skip.
+_FILING_SKIP_REPO_KINDS = frozenset({"unauthorized", "repo_denied", "not_found", "gone"})
+
+
 async def _file_batch(
     db: AsyncSession,
     candidates: list[tuple[Job | TestCase, str, str, str]],
@@ -473,11 +480,12 @@ async def _file_batch(
 
     Each candidate is `(obj, repo, title, body)`; `entity` is the noun ("test"
     or "job") the log lines name. This is the module docstring's filing policy
-    in one place: the client lifecycle, a 201 that stores its number on the
-    entity and commits per issue, a 201 whose body has no number (log, go on),
-    a rate limit (stop this batch), any other 403/404/410 (skip that Repo for
-    the rest of the batch), any other status (log, go on), and a network error
-    (log, never raise).
+    in one place, read off the outcome kinds the seam client returns: a 201 that
+    stores its number on the entity and commits per issue, a 201 whose body has
+    no number (log, go on), a rate limit (stop this batch), a 401/403/404/410
+    (skip that Repo for the rest of the batch), any other status (log, go on),
+    and a network error (log, never raise, and the rest of the batch is not
+    tried).
 
     Returns the ids it linked, so the caller can keep its own hands off a link
     this pass created (see `on_report_processed`).
@@ -486,75 +494,64 @@ async def _file_batch(
     """
     s = get_settings()
     linked: set[int] = set()
-    try:
-        async with httpx.AsyncClient(
-            base_url=API_BASE, headers=_headers(s.github_token), timeout=15, transport=transport
-        ) as client:
-            skipped: set[str] = set()
-            for obj, repo, title, body in candidates:
-                if repo in skipped:
+    async with _GitHubClient(s.github_token, transport=transport) as client:
+        skipped: set[str] = set()
+        for obj, repo, title, body in candidates:
+            if repo in skipped:
+                continue
+            outcome = await client.create_issue(repo, title, body, labels=[s.github_issue_label])
+            if outcome.kind == "created":
+                number = outcome.number
+                obj_id = obj.id  # the object is expired after the savepoint rollback
+                # SAVEPOINT, so a row deleted under us (an admin delete
+                # winning the race) costs only this filing, not the batch.
+                nested = await db.begin_nested()
+                issue_links.store_filed_link(obj, number)  # also marks the link as ours
+                try:
+                    await nested.commit()
+                except StaleDataError:
+                    # The row vanished mid-filing: the number is referenced
+                    # nowhere, so close the issue we just created, best-effort.
+                    await nested.rollback()
+                    await close_issues_for_deleted_repo(repo, [number], transport=transport)
+                    logger.warning(
+                        "%s %s deleted (admin delete) while filing; closed issue %s#%s",
+                        entity.capitalize(),
+                        obj_id,
+                        repo,
+                        number,
+                    )
                     continue
-                resp = await client.post(
-                    f"/repos/{repo}/issues",
-                    json={"title": title, "body": body, "labels": [s.github_issue_label]},
+                await db.commit()
+                linked.add(obj_id)
+                logger.info("Filed issue %s#%s for %s %s", repo, obj.github_issue_number, entity, obj.id)
+            elif outcome.kind == "unusable_body":
+                logger.warning(
+                    "GitHub issue creation in %s returned 201 with no issue number: %s", repo, outcome.excerpt
                 )
-                if resp.status_code == 201:
-                    number = _issue_number(resp)
-                    if number is None:
-                        logger.warning(
-                            "GitHub issue creation in %s returned 201 with no issue number: %s", repo, resp.text[:300]
-                        )
-                    else:
-                        obj_id = obj.id  # the object is expired after the savepoint rollback
-                        # SAVEPOINT, so a row deleted under us (an admin delete
-                        # winning the race) costs only this filing, not the batch.
-                        nested = await db.begin_nested()
-                        issue_links.store_filed_link(obj, number)  # also marks the link as ours
-                        try:
-                            await nested.commit()
-                        except StaleDataError:
-                            # The row vanished mid-filing: the number is referenced
-                            # nowhere, so close the issue we just created, best-effort.
-                            await nested.rollback()
-                            await close_issues_for_deleted_repo(repo, [number], transport=transport)
-                            logger.warning(
-                                "%s %s deleted (admin delete) while filing; closed issue %s#%s",
-                                entity.capitalize(),
-                                obj_id,
-                                repo,
-                                number,
-                            )
-                            continue
-                        await db.commit()
-                        linked.add(obj_id)
-                        logger.info("Filed issue %s#%s for %s %s", repo, obj.github_issue_number, entity, obj.id)
-                elif _rate_limited(resp):
-                    logger.warning(
-                        "GitHub rate limit (remaining=%s); stopping batch",
-                        resp.headers.get("x-ratelimit-remaining"),
-                    )
-                    return linked
-                elif resp.status_code in (403, 404, 410):
-                    # Permission error, or issues disabled on this Repo: it costs
-                    # this Repo only, the rest of the batch goes on.
-                    logger.warning(
-                        "GitHub issue creation skipped for repo %s: %s %s",
-                        repo,
-                        resp.status_code,
-                        resp.text[:300],
-                    )
-                    skipped.add(repo)
-                else:
-                    logger.warning(
-                        "GitHub issue creation failed for %s %s in %s: %s %s",
-                        entity,
-                        obj.id,
-                        repo,
-                        resp.status_code,
-                        resp.text[:300],
-                    )
-    except httpx.HTTPError as exc:
-        logger.warning("GitHub unreachable, skipping %s issue filing: %s", entity, exc)
+            elif outcome.kind == "rate_limited":
+                logger.warning("GitHub rate limit (remaining=%s); stopping batch", outcome.remaining)
+                return linked
+            elif outcome.kind in _FILING_SKIP_REPO_KINDS:
+                # Permission error, or issues disabled on this Repo: it costs
+                # this Repo only, the rest of the batch goes on.
+                logger.warning(
+                    "GitHub issue creation skipped for repo %s: %s %s", repo, outcome.status, outcome.excerpt
+                )
+                skipped.add(repo)
+            elif outcome.kind == "network":
+                # No answer at all: as today, the rest of the batch is not worth trying.
+                logger.warning("GitHub unreachable, skipping %s issue filing: %s", entity, outcome.error)
+                return linked
+            else:
+                logger.warning(
+                    "GitHub issue creation failed for %s %s in %s: %s %s",
+                    entity,
+                    obj.id,
+                    repo,
+                    outcome.status,
+                    outcome.excerpt,
+                )
     return linked
 
 

@@ -681,6 +681,72 @@ async def test_network_error_never_raises(db, gh_settings):
     assert tc.github_issue_number is None
 
 
+async def test_bad_credentials_401_skips_repo_for_rest_of_batch(db, gh_settings, caplog):
+    """A 401 (the token itself is refused) is Repo-scoped for filing, like a 403.
+
+    The seam classifies it apart from a permission 403; the loop's answer is the
+    same skip, so a second candidate in that Repo is never posted to.
+    """
+    a1 = await _flaky_test(db, repo="acme/a", project="p1", name="a1")
+    a2 = await _flaky_test(db, repo="acme/a", project="p2", name="a2")
+    b = await _flaky_test(db, repo="acme/b", name="b")
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if request.url.path.startswith("/repos/acme/a/"):
+            return httpx.Response(401, json={"message": "Bad credentials"})
+        return httpx.Response(201, json={"number": 99})
+
+    with caplog.at_level(logging.WARNING, logger="flakeradar.github"):
+        await github_integration.file_issues_for(db, [a1.id, a2.id, b.id], transport=httpx.MockTransport(handler))
+    assert [r.url.path for r in calls] == ["/repos/acme/a/issues", "/repos/acme/b/issues"]
+    skip_warnings = [r.getMessage() for r in caplog.records if "skipped for repo acme/a" in r.getMessage()]
+    assert len(skip_warnings) == 1
+    assert "401" in skip_warnings[0] and "Bad credentials" in skip_warnings[0]
+    await db.refresh(a1)
+    await db.refresh(a2)
+    await db.refresh(b)
+    assert a1.github_issue_number is None
+    assert a2.github_issue_number is None
+    assert b.github_issue_number == 99
+
+
+async def test_network_error_mid_batch_costs_the_rest_of_the_batch(db, gh_settings, caplog):
+    """A transport error stops the batch where it stands, keeping what it linked.
+
+    Pinned before the seam migration so the kind-based loop cannot turn one dead
+    connection into a per-issue error: the first Test keeps its committed number,
+    the third is never posted to, and the warning is the batch-stop one.
+    """
+    a = await _flaky_test(db, repo="acme/a", project="p1", name="a")
+    b = await _flaky_test(db, repo="acme/b", project="p2", name="b")
+    c = await _flaky_test(db, repo="acme/c", project="p3", name="c")
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if len(calls) == 1:
+            return httpx.Response(201, json={"number": 77})
+        raise httpx.ConnectError("offline")
+
+    with caplog.at_level(logging.WARNING, logger="flakeradar.github"):
+        await github_integration.file_issues_for(
+            db, [a.id, b.id, c.id], transport=httpx.MockTransport(handler)
+        )
+    # c is never tried: the error ended the batch, not just this one filing.
+    assert [r.url.path for r in calls] == ["/repos/acme/a/issues", "/repos/acme/b/issues"]
+    await db.refresh(a)
+    await db.refresh(b)
+    await db.refresh(c)
+    assert a.github_issue_number == 77  # committed per issue, so the filing stands
+    assert b.github_issue_number is None
+    assert c.github_issue_number is None
+    warnings = [r.getMessage() for r in caplog.records if "unreachable, skipping test issue filing" in r.getMessage()]
+    assert len(warnings) == 1
+    assert "offline" in warnings[0]
+
+
 async def test_custom_label_is_used(db, gh_settings):
     gh_settings.github_issue_label = "flaky"
     tc = await _flaky_test(db)
