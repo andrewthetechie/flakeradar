@@ -1116,3 +1116,628 @@ async fn the_filing_gate_reads_the_configured_minimums() {
     let off = FilingGate::from_settings(&gh_settings(&[]));
     assert_eq!(off.fixed_streak, None, "0 disables the fixed-note signal");
 }
+
+// --- the failure policy of a filing batch --------------------------------
+
+/// One flaky Test named `name` in `repo`/`project`, with one failing Execution.
+async fn flaky_test_in(db: &TestDb, repo: &str, project: &str, name: &str) -> i32 {
+    let project = make_project()
+        .repo(repo)
+        .project(project)
+        .build(db.connection())
+        .await
+        .expect("the Project inserts");
+    let test = make_test_case(&project)
+        .name(name)
+        .classname(format!("tests.test_{name}").as_str())
+        .fingerprint(name)
+        .flakiness_score(0.5)
+        .confirmed_flake_count(2)
+        .file("tests/test_cart.py")
+        .line(12)
+        .build(db.connection())
+        .await
+        .expect("the Test inserts");
+    let run = make_run(&project)
+        .commit_sha("abcdef1234567890")
+        .branch("main")
+        .build(db.connection())
+        .await
+        .expect("the Run inserts");
+    make_execution(&test, &run)
+        .status("failed")
+        .message("AssertionError: expected 3")
+        .details("Traceback (most recent call last):\n  ...")
+        .build(db.connection())
+        .await
+        .expect("the Execution inserts");
+    test.id
+}
+
+/// One flaky github-provider Job named `name` in `repo`, under `pipeline`.
+async fn flaky_job_in(db: &TestDb, repo: &str, pipeline: &str, name: &str) -> i32 {
+    let pipeline = make_pipeline()
+        .repo(repo)
+        .provider("github")
+        .name(pipeline)
+        .build(db.connection())
+        .await
+        .expect("the Pipeline inserts");
+    let job = make_job(&pipeline)
+        .name(name)
+        .flakiness_score(0.5)
+        .confirmed_flake_count(1)
+        .build(db.connection())
+        .await
+        .expect("the Job inserts");
+    make_job_execution(&job)
+        .status("failed")
+        .ci_job_id(name)
+        .build(db.connection())
+        .await
+        .expect("the Job execution inserts");
+    job.id
+}
+
+/// The `github_issue_*` columns of one Job.
+async fn job_link(db: &TestDb, id: i32) -> (Option<i32>, Option<bool>) {
+    let row = db
+        .connection()
+        .query_one_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "SELECT github_issue_number, github_issue_filed FROM jobs WHERE id = $1",
+            [Value::from(id)],
+        ))
+        .await
+        .expect("the row reads")
+        .expect("the Job exists");
+    (
+        row.try_get("", "github_issue_number").expect("a number"),
+        row.try_get("", "github_issue_filed").expect("filed"),
+    )
+}
+
+/// Drops one Test's link, as an unlink would.
+async fn unlink_test(db: &TestDb, id: i32) {
+    db.connection()
+        .execute_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "UPDATE test_cases SET github_issue_number = NULL, github_issue_filed = NULL, \
+             github_issue_checked_at = NULL, github_issue_closed = FALSE WHERE id = $1",
+            [Value::from(id)],
+        ))
+        .await
+        .expect("the unlink writes");
+}
+
+/// The log lines `future` writes, with a subscriber installed for this thread.
+async fn logged_from(future: impl Future) -> String {
+    use std::io::Write as _;
+    use std::sync::{Arc, Mutex};
+
+    /// An `io::Write` that appends to the shared buffer.
+    struct Sink(Arc<Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Sink {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let lines = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&lines);
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .with_writer(move || Sink(Arc::clone(&sink)))
+        .finish();
+    let guard = tracing::subscriber::set_default(subscriber);
+    future.await;
+    drop(guard);
+    let text = String::from_utf8_lossy(
+        &lines
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+    )
+    .into_owned();
+    let _ = std::io::stdout().flush();
+    text
+}
+
+/// The lines of `logged` that carry `needle`.
+fn lines_with<'a>(logged: &'a str, needle: &str) -> Vec<&'a str> {
+    logged
+        .lines()
+        .filter(|line| line.contains(needle))
+        .collect()
+}
+
+/// The paths a stub server was asked for, in order.
+async fn requested_paths(server: &MockServer) -> Vec<String> {
+    server
+        .received_requests()
+        .await
+        .expect("the stub records requests")
+        .iter()
+        .map(|request| request.url.path().to_owned())
+        .collect()
+}
+
+#[tokio::test]
+async fn a_rate_limit_classifies_only_throttling() {
+    use reqwest::header::HeaderMap;
+
+    let answer = |status: u16, headers: &[(&str, &str)], text: &str| {
+        let mut map = HeaderMap::new();
+        for (name, value) in headers {
+            map.insert(
+                reqwest::header::HeaderName::from_bytes(name.as_bytes()).expect("a header name"),
+                reqwest::header::HeaderValue::from_str(value).expect("a header value"),
+            );
+        }
+        github::Answer {
+            status,
+            headers: map,
+            text: text.to_owned(),
+        }
+    };
+
+    assert!(answer(429, &[], "").rate_limited());
+    assert!(answer(403, &[("x-ratelimit-remaining", "0")], "{}").rate_limited());
+    assert!(answer(403, &[("retry-after", "60")], "{}").rate_limited());
+    assert!(
+        answer(
+            403,
+            &[],
+            r#"{"message": "You have exceeded a secondary rate limit"}"#
+        )
+        .rate_limited()
+    );
+    assert!(
+        answer(
+            403,
+            &[],
+            r#"{"message": "You have exceeded a Secondary Rate Limit"}"#
+        )
+        .rate_limited()
+    );
+    assert!(
+        !answer(
+            403,
+            &[],
+            r#"{"message": "Resource not accessible by personal access token"}"#
+        )
+        .rate_limited(),
+        "a permission 403 is not throttling"
+    );
+    assert!(!answer(403, &[], "{}").rate_limited());
+    assert!(
+        !answer(403, &[], "<html>Gateway</html>").rate_limited(),
+        "a non-JSON body must not raise"
+    );
+    assert!(!answer(403, &[], "[1, 2]").rate_limited());
+    assert!(!answer(403, &[], "null").rate_limited());
+    assert!(!answer(404, &[], "{}").rate_limited());
+    assert!(!answer(410, &[], "{}").rate_limited());
+    assert!(!answer(201, &[], r#"{"number": 5}"#).rate_limited());
+}
+
+#[tokio::test]
+async fn a_linked_row_and_a_calm_row_are_both_left_alone() {
+    let db = TestDb::new().await.expect("a test database");
+    let filed = flaky_test_in(&db, "acme/app", "p1", "filed").await;
+    stamp_link(&db, filed, 5, false, false).await;
+    let calm = flaky_test_in(&db, "acme/other", "p2", "calm").await;
+    db.connection()
+        .execute_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "UPDATE test_cases SET flakiness_score = 0.1 WHERE id = $1",
+            [Value::from(calm)],
+        ))
+        .await
+        .expect("the score writes");
+    let server = MockServer::start().await;
+
+    let filed_ids = github::file_issues_for(
+        db.connection(),
+        &[filed, calm],
+        &gh_settings(&[]),
+        &api(&server),
+    )
+    .await;
+    assert!(filed_ids.is_empty());
+    assert!(
+        server
+            .received_requests()
+            .await
+            .expect("a record")
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn a_kept_not_planned_link_is_never_refiled() {
+    let db = TestDb::new().await.expect("a test database");
+    let wont_fix = flaky_test_in(&db, "acme/app", "backend", "wont_fix").await;
+    stamp_link(&db, wont_fix, 11, true, true).await;
+    db.connection()
+        .execute_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "UPDATE test_cases SET github_issue_filed = TRUE WHERE id = $1",
+            [Value::from(wont_fix)],
+        ))
+        .await
+        .expect("the flag writes");
+    let server = MockServer::start().await;
+
+    assert!(
+        github::file_issues_for(
+            db.connection(),
+            &[wont_fix],
+            &gh_settings(&[]),
+            &api(&server)
+        )
+        .await
+        .is_empty()
+    );
+    assert!(
+        server
+            .received_requests()
+            .await
+            .expect("a record")
+            .is_empty(),
+        "a kept link is still the dedupe"
+    );
+    let (number, filed, _, closed) = test_link(&db, wont_fix).await;
+    assert_eq!(number, Some(11));
+    assert_eq!(filed, Some(true));
+    assert!(closed);
+}
+
+#[tokio::test]
+async fn a_rate_limit_stops_the_test_and_job_batches() {
+    let db = TestDb::new().await.expect("a test database");
+    let a = flaky_test_in(&db, "acme/a", "p1", "a").await;
+    let b = flaky_test_in(&db, "acme/b", "p2", "b").await;
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(403)
+                .insert_header("x-ratelimit-remaining", "0")
+                .set_body_json(json!({"message": "API rate limit exceeded"})),
+        )
+        .mount(&server)
+        .await;
+
+    github::file_issues_for(db.connection(), &[a, b], &gh_settings(&[]), &api(&server)).await;
+    assert_eq!(requested_paths(&server).await.len(), 1);
+
+    let ja = flaky_job_in(&db, "acme/c", ".github/workflows/a.yml", "a").await;
+    let jb = flaky_job_in(&db, "acme/d", ".github/workflows/b.yml", "b").await;
+    let jobs = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(403)
+                .insert_header("x-ratelimit-remaining", "0")
+                .set_body_json(json!({"message": "API rate limit exceeded"})),
+        )
+        .mount(&jobs)
+        .await;
+
+    github::file_job_issues_for(db.connection(), &[ja, jb], &gh_settings(&[]), &api(&jobs)).await;
+    assert_eq!(requested_paths(&jobs).await.len(), 1);
+}
+
+#[tokio::test]
+async fn a_429_stops_the_test_and_job_batches() {
+    let db = TestDb::new().await.expect("a test database");
+    let ta = flaky_test_in(&db, "acme/a", "p1", "a").await;
+    let tb = flaky_test_in(&db, "acme/b", "p2", "b").await;
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(429))
+        .mount(&server)
+        .await;
+
+    github::file_issues_for(db.connection(), &[ta, tb], &gh_settings(&[]), &api(&server)).await;
+    assert_eq!(requested_paths(&server).await.len(), 1);
+
+    let ja = flaky_job_in(&db, "acme/c", ".github/workflows/a.yml", "a").await;
+    let jb = flaky_job_in(&db, "acme/d", ".github/workflows/b.yml", "b").await;
+    let jobs = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(429))
+        .mount(&jobs)
+        .await;
+
+    github::file_job_issues_for(db.connection(), &[ja, jb], &gh_settings(&[]), &api(&jobs)).await;
+    assert_eq!(requested_paths(&jobs).await.len(), 1);
+}
+
+#[tokio::test]
+async fn a_permission_403_costs_only_the_denied_repo() {
+    let db = TestDb::new().await.expect("a test database");
+    let a1 = flaky_test_in(&db, "acme/a", "p1", "a1").await;
+    let a2 = flaky_test_in(&db, "acme/a", "p2", "a2").await;
+    let b = flaky_test_in(&db, "acme/b", "p3", "b").await;
+    let detail = format!(
+        "Resource not accessible by personal access token{}",
+        "x".repeat(400)
+    );
+    let body = serde_json::to_string(&json!({ "message": detail })).expect("a JSON body");
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/repos/acme/a/issues"))
+        .respond_with(ResponseTemplate::new(403).set_body_string(body.clone()))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/repos/acme/b/issues"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({"number": 88})))
+        .mount(&server)
+        .await;
+
+    let logged = logged_from(async {
+        github::file_issues_for(
+            db.connection(),
+            &[a1, a2, b],
+            &gh_settings(&[]),
+            &api(&server),
+        )
+        .await;
+    })
+    .await;
+
+    assert_eq!(
+        requested_paths(&server).await,
+        vec!["/repos/acme/a/issues", "/repos/acme/b/issues"],
+        "the second Test of the denied Repo is never retried"
+    );
+    assert_eq!(test_link(&db, a1).await.0, None);
+    assert_eq!(test_link(&db, a2).await.0, None);
+    assert_eq!(test_link(&db, b).await.0, Some(88));
+
+    let warnings = lines_with(&logged, "skipped for this Repo");
+    assert_eq!(warnings.len(), 1, "{logged}");
+    assert!(warnings[0].contains("acme/a"), "{logged}");
+    assert!(warnings[0].contains("403"), "{logged}");
+    assert!(
+        warnings[0].contains(&body[..300]),
+        "only the first 300 characters are logged: {logged}"
+    );
+    assert!(
+        !warnings[0].contains(&body[300..]),
+        "the rest is cut: {logged}"
+    );
+
+    let ja1 = flaky_job_in(&db, "acme/a", ".github/workflows/a1.yml", "a1").await;
+    let ja2 = flaky_job_in(&db, "acme/a", ".github/workflows/a2.yml", "a2").await;
+    let jb = flaky_job_in(&db, "acme/b", ".github/workflows/b.yml", "b").await;
+    let jobs = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/repos/acme/a/issues"))
+        .respond_with(ResponseTemplate::new(403).set_body_string(body.clone()))
+        .mount(&jobs)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/repos/acme/b/issues"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({"number": 88})))
+        .mount(&jobs)
+        .await;
+
+    let logged = logged_from(async {
+        github::file_job_issues_for(
+            db.connection(),
+            &[ja1, ja2, jb],
+            &gh_settings(&[]),
+            &api(&jobs),
+        )
+        .await;
+    })
+    .await;
+    assert_eq!(
+        requested_paths(&jobs).await,
+        vec!["/repos/acme/a/issues", "/repos/acme/b/issues"]
+    );
+    assert_eq!(job_link(&db, ja1).await.0, None);
+    assert_eq!(job_link(&db, ja2).await.0, None);
+    assert_eq!(job_link(&db, jb).await.0, Some(88));
+    let warnings = lines_with(&logged, "skipped for this Repo");
+    assert_eq!(warnings.len(), 1, "{logged}");
+    assert!(warnings[0].contains("acme/a") && warnings[0].contains("403"));
+    assert!(!warnings[0].contains(&body[300..]));
+}
+
+#[tokio::test]
+async fn a_repo_whose_issues_are_disabled_is_skipped_for_the_rest_of_the_batch() {
+    let db = TestDb::new().await.expect("a test database");
+    let a1 = flaky_test_in(&db, "acme/a", "p1", "a1").await;
+    let a2 = flaky_test_in(&db, "acme/a", "p2", "a2").await;
+    let b = flaky_test_in(&db, "acme/b", "p3", "b").await;
+    for status in [404, 410] {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/repos/acme/a/issues"))
+            .respond_with(
+                ResponseTemplate::new(status).set_body_json(json!({"message": "Not Found"})),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/repos/acme/b/issues"))
+            .respond_with(ResponseTemplate::new(201).set_body_json(json!({"number": 99})))
+            .mount(&server)
+            .await;
+
+        let logged = logged_from(async {
+            github::file_issues_for(
+                db.connection(),
+                &[a1, a2, b],
+                &gh_settings(&[]),
+                &api(&server),
+            )
+            .await;
+        })
+        .await;
+        assert_eq!(
+            requested_paths(&server).await,
+            vec!["/repos/acme/a/issues", "/repos/acme/b/issues"],
+            "the whole Repo is skipped on {status}"
+        );
+        assert_eq!(test_link(&db, a1).await.0, None);
+        assert_eq!(test_link(&db, a2).await.0, None);
+        assert_eq!(test_link(&db, b).await.0, Some(99));
+        let warnings = lines_with(&logged, "skipped for this Repo");
+        assert_eq!(warnings.len(), 1, "{logged}");
+        assert!(warnings[0].contains(&status.to_string()), "{logged}");
+        unlink_test(&db, b).await;
+
+        let ja1 = flaky_job_in(
+            &db,
+            "acme/a",
+            &format!(".github/workflows/a1-{status}.yml"),
+            "a1",
+        )
+        .await;
+        let ja2 = flaky_job_in(
+            &db,
+            "acme/a",
+            &format!(".github/workflows/a2-{status}.yml"),
+            "a2",
+        )
+        .await;
+        let jb = flaky_job_in(
+            &db,
+            "acme/b",
+            &format!(".github/workflows/b-{status}.yml"),
+            "b",
+        )
+        .await;
+        let jobs = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/repos/acme/a/issues"))
+            .respond_with(
+                ResponseTemplate::new(status).set_body_json(json!({"message": "Not Found"})),
+            )
+            .mount(&jobs)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/repos/acme/b/issues"))
+            .respond_with(ResponseTemplate::new(201).set_body_json(json!({"number": 99})))
+            .mount(&jobs)
+            .await;
+        let logged = logged_from(async {
+            github::file_job_issues_for(
+                db.connection(),
+                &[ja1, ja2, jb],
+                &gh_settings(&[]),
+                &api(&jobs),
+            )
+            .await;
+        })
+        .await;
+        assert_eq!(
+            requested_paths(&jobs).await,
+            vec!["/repos/acme/a/issues", "/repos/acme/b/issues"]
+        );
+        assert_eq!(job_link(&db, ja1).await.0, None);
+        assert_eq!(job_link(&db, ja2).await.0, None);
+        assert_eq!(job_link(&db, jb).await.0, Some(99));
+        assert_eq!(
+            lines_with(&logged, "skipped for this Repo").len(),
+            1,
+            "{logged}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn an_unusable_status_costs_one_issue_and_the_batch_goes_on() {
+    let db = TestDb::new().await.expect("a test database");
+    let a1 = flaky_test_in(&db, "acme/a", "p1", "a1").await;
+    let a2 = flaky_test_in(&db, "acme/a", "p2", "a2").await;
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/repos/acme/a/issues"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({"number": 77})))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/repos/acme/a/issues"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("server exploded"))
+        .mount(&server)
+        .await;
+
+    let logged = logged_from(async {
+        github::file_issues_for(db.connection(), &[a1, a2], &gh_settings(&[]), &api(&server)).await;
+    })
+    .await;
+
+    assert_eq!(
+        requested_paths(&server).await,
+        vec!["/repos/acme/a/issues", "/repos/acme/a/issues"],
+        "a 500 says nothing about the Repo, so the second candidate is still posted"
+    );
+    assert_eq!(test_link(&db, a1).await.0, Some(77));
+    assert_eq!(test_link(&db, a2).await.0, None);
+    let failures = lines_with(&logged, "GitHub issue creation failed");
+    assert_eq!(failures.len(), 1, "{logged}");
+    assert!(failures[0].contains("acme/a") && failures[0].contains("500"));
+    assert!(failures[0].contains("server exploded"));
+    assert!(lines_with(&logged, "skipped for this Repo").is_empty());
+}
+
+#[tokio::test]
+async fn a_malformed_201_body_keeps_the_batch_and_stores_nothing() {
+    let db = TestDb::new().await.expect("a test database");
+    for (index, raw) in [
+        "<html>Bad Gateway</html>",
+        "[1, 2]",
+        "null",
+        r#"{"number": "not-a-number"}"#,
+        "{}",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let a = flaky_test_in(&db, "acme/a", &format!("p{index}a"), "a").await;
+        let b = flaky_test_in(&db, "acme/b", &format!("p{index}b"), "b").await;
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/repos/acme/a/issues"))
+            .respond_with(ResponseTemplate::new(201).set_body_string(raw))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/repos/acme/b/issues"))
+            .respond_with(ResponseTemplate::new(201).set_body_json(json!({"number": 91})))
+            .mount(&server)
+            .await;
+
+        let logged = logged_from(async {
+            github::file_issues_for(db.connection(), &[a, b], &gh_settings(&[]), &api(&server))
+                .await;
+        })
+        .await;
+
+        assert_eq!(
+            requested_paths(&server).await,
+            vec!["/repos/acme/a/issues", "/repos/acme/b/issues"],
+            "{raw}"
+        );
+        assert_eq!(test_link(&db, a).await.0, None, "{raw}");
+        assert_eq!(test_link(&db, b).await.0, Some(91), "{raw}");
+        let warnings = lines_with(&logged, "201 with no issue number");
+        assert_eq!(warnings.len(), 1, "{raw}: {logged}");
+        assert!(warnings[0].contains("acme/a"), "{logged}");
+        assert!(warnings[0].contains(raw), "{logged}");
+    }
+}
