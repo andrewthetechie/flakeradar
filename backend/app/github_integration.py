@@ -61,10 +61,12 @@ Error handling: never raises.
 """
 
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from typing import Any
 
 import httpx
-from sqlalchemy import select, update
+from sqlalchemy import Select, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm.exc import StaleDataError
 
@@ -112,6 +114,42 @@ class _FilingGate:
     def from_settings(cls, s: Settings) -> "_FilingGate":
         streak = s.github_fixed_streak if s.github_fixed_streak > 0 else None
         return cls(s.github_issue_min_score, s.github_issue_min_proven_flakes, s.github_issue_min_failures, streak)
+
+
+FilingRow = tuple[Any, ...]  # the filing select's row: the entity, then the arguments its renderers take
+NoteRow = tuple[Any, str, str | None]  # the note select's row: the entity, its Repo, its default branch
+FilingCounter = Callable[[AsyncSession, list[int], int], Awaitable[dict[int, int]]]
+HookEntry = Callable[..., Awaitable[Any]]  # one public entry point, as `on_report_processed` calls it
+
+
+@dataclass(frozen=True)
+class _FilingTarget:
+    """Everything the shared filing and fixed-note engines need about one fileable entity (issue #127).
+
+    Follows `LeaderboardEntity` (queries.py) and `issue_links.IssueLinkTarget`: pure data plus
+    per-target callables, one instance per target, consumed by the filing and note engines
+    below and by `on_report_processed`. The rules — the four gate signals, the `min_failures`
+    window filter, the note complement and the configured/empty no-ops — all live in those
+    engines; an intended per-target difference is descriptor data (the Job-only provider gate
+    is `github_provider_only`, exactly as on `issue_links.JOB`). The callables exist because
+    the two filing selects genuinely return different row shapes: TEST's gives
+    `(TestCase, repo, project, root)` and JOB's `(Job, pipeline, repo)`; the row after the
+    entity is precisely what that target's renderers take. The note select has one shape for
+    both targets — `(entity, repo, default_branch)` — because `_fixed_comment` is one renderer.
+    """
+
+    entity: str  # the noun `_file_batch` names in its log lines: "test" or "job"
+    model: type  # the linked model: the columns the filing gate filters and orders on
+    filing_select: Callable[[], Select]  # the base select, joined through to its Repo
+    note_select: Callable[[], Select]  # the same join path, in the one note row shape
+    counter: FilingCounter  # failures per row over the newest `score_window` executions
+    repo_name_of: Callable[[FilingRow], str]
+    title_of: Callable[[FilingRow], str]
+    render_body: Callable[..., Awaitable[str]]  # takes `(db, *row)`
+    ids_of: Callable[[ProcessOutcome], list[int]]  # this target's share of a Report outcome
+    file_entry: HookEntry  # this target's public filing entry point
+    note_entry: HookEntry  # this target's public fixed-note entry point
+    github_provider_only: bool = False
 
 
 def _headers(token: str) -> dict[str, str]:
@@ -296,34 +334,6 @@ async def _window_failures(db: AsyncSession, test_case_ids: list[int], window: i
     return counts
 
 
-async def _select_candidates(db: AsyncSession, test_case_ids: list[int]) -> list[tuple[TestCase, str, str, str]]:
-    """Tests that meet the configured filing gate and still have no open issue."""
-    s = get_settings()
-    gate = _FilingGate.from_settings(s)
-    candidates: list[tuple[TestCase, str, str, str]] = []
-    for chunk in chunks(test_case_ids):
-        stmt = (
-            select(TestCase, Repo.name, Project.name, Project.root)
-            .join(Project, TestCase.project_id == Project.id)
-            .join(Repo, Project.repo_id == Repo.id)
-            .where(
-                TestCase.id.in_(chunk),
-                TestCase.flakiness_score >= gate.min_score,
-                TestCase.confirmed_flake_count >= gate.min_proven_flakes,
-                TestCase.github_issue_number.is_(None),
-            )
-        )
-        if gate.fixed_streak is not None:
-            # A row at the fixed-note streak is a fix that holds, not a live flake,
-            # and filing and noting are the two answers to different questions.
-            stmt = stmt.where(TestCase.clean_streak < gate.fixed_streak)
-        candidates += (await db.execute(stmt.order_by(TestCase.id))).all()
-    if gate.min_failures > 0:
-        failures = await _window_failures(db, [r[0].id for r in candidates], s.score_window)
-        candidates = [r for r in candidates if failures.get(r[0].id, 0) >= gate.min_failures]
-    return candidates
-
-
 async def _file_batch(
     db: AsyncSession,
     candidates: list[tuple[Job | TestCase, str, str, str]],
@@ -420,69 +430,6 @@ async def _file_batch(
     return linked
 
 
-async def file_issues_for(
-    db: AsyncSession,
-    test_case_ids: list[int],
-    *,
-    transport: httpx.AsyncBaseTransport | None = None,
-) -> set[int]:
-    """File issues for Tests that now meet the filing gate. Never raises.
-
-    Returns the Test ids it linked; `on_report_processed` uses them to keep the
-    fixed-note step off a link this same Report created.
-
-    `transport` exists for tests (httpx.MockTransport); production passes None.
-    """
-    if not configured() or not test_case_ids:
-        return set()
-    candidates = await _select_candidates(db, test_case_ids)
-    if not candidates:
-        return set()
-    batch = [
-        (
-            tc,
-            repo,
-            f"[FlakeRadar] Flaky test: {tc.classname}::{tc.name}",
-            await _issue_body(db, tc, repo, project, root),
-        )
-        for tc, repo, project, root in candidates
-    ]
-    return await _file_batch(db, batch, entity="test", transport=transport)
-
-
-async def _job_candidates(db: AsyncSession, job_ids: list[int]) -> list[tuple[Job, str, str]]:
-    """github-provider Jobs that meet the gate and still have no open issue.
-
-    Returns [(Job, pipeline_name, repo_name)]. `min_failures`, when configured,
-    requires that many UNEXPLAINED failures in the newest `score_window` Job
-    executions.
-    """
-    s = get_settings()
-    gate = _FilingGate.from_settings(s)
-    candidates: list[tuple[Job, str, str]] = []
-    for chunk in chunks(job_ids):
-        stmt = (
-            select(Job, Pipeline.name, Repo.name)
-            .join(Pipeline, Job.pipeline_id == Pipeline.id)
-            .join(Repo, Pipeline.repo_id == Repo.id)
-            .where(
-                Job.id.in_(chunk),
-                Pipeline.provider == "github",
-                Job.flakiness_score >= gate.min_score,
-                Job.confirmed_flake_count >= gate.min_proven_flakes,
-                Job.github_issue_number.is_(None),
-            )
-        )
-        if gate.fixed_streak is not None:
-            # the same ceiling as the Test select: a fix that holds is not a live flake
-            stmt = stmt.where(Job.clean_streak < gate.fixed_streak)
-        candidates += (await db.execute(stmt.order_by(Job.id))).all()
-    if gate.min_failures > 0:
-        failures = await unexplained_failure_counts(db, [r[0].id for r in candidates], s.score_window)
-        candidates = [r for r in candidates if failures.get(r[0].id, 0) >= gate.min_failures]
-    return candidates
-
-
 async def _job_issue_body(db: AsyncSession, job: Job, pipeline: str, repo: str) -> str:
     """Render a self-contained issue body for a flaky CI Job."""
     s = get_settings()
@@ -529,6 +476,156 @@ async def _job_issue_body(db: AsyncSession, job: Job, pipeline: str, repo: str) 
     return "\n".join(lines)
 
 
+def _test_filing_select() -> Select:
+    """SELECT TestCase, Repo.name, Project.name, Project.root — the Test's filing row."""
+    return (
+        select(TestCase, Repo.name, Project.name, Project.root)
+        .join(Project, TestCase.project_id == Project.id)
+        .join(Repo, Project.repo_id == Repo.id)
+    )
+
+
+def _job_filing_select() -> Select:
+    """SELECT Job, Pipeline.name, Repo.name — the same shape over the Pipeline's path to its Repo."""
+    return (
+        select(Job, Pipeline.name, Repo.name)
+        .join(Pipeline, Job.pipeline_id == Pipeline.id)
+        .join(Repo, Pipeline.repo_id == Repo.id)
+    )
+
+
+def _test_note_select() -> Select:
+    """SELECT TestCase, Repo.name, Repo.default_branch — the note row of a Test's issue."""
+    return (
+        select(TestCase, Repo.name, Repo.default_branch)
+        .join(Project, TestCase.project_id == Project.id)
+        .join(Repo, Project.repo_id == Repo.id)
+    )
+
+
+def _job_note_select() -> Select:
+    """SELECT Job, Repo.name, Repo.default_branch — the same shape over the Pipeline's path to its Repo."""
+    return (
+        select(Job, Repo.name, Repo.default_branch)
+        .join(Pipeline, Job.pipeline_id == Pipeline.id)
+        .join(Repo, Pipeline.repo_id == Repo.id)
+    )
+
+
+TEST = _FilingTarget(
+    entity="test",
+    model=TestCase,
+    filing_select=_test_filing_select,
+    note_select=_test_note_select,
+    counter=_window_failures,
+    repo_name_of=lambda row: row[1],
+    title_of=lambda row: f"[FlakeRadar] Flaky test: {row[0].classname}::{row[0].name}",
+    render_body=_issue_body,
+    ids_of=lambda outcome: outcome.touched_test_ids,
+    # The hook names the public entry points so a test that monkeypatches them still
+    # intercepts; the lambda body resolves the module global at call time.
+    file_entry=lambda db, ids, **kw: file_issues_for(db, ids, **kw),
+    note_entry=lambda db, ids, **kw: note_fixed_issues_for(db, ids, **kw),
+    # Tests reach their Repo through a Project, so they have no CI provider: the Job-only rule
+    # in the gate below is descriptor data, and it is off here.
+    github_provider_only=False,
+)
+
+JOB = _FilingTarget(
+    entity="job",
+    model=Job,
+    filing_select=_job_filing_select,
+    note_select=_job_note_select,
+    counter=unexplained_failure_counts,
+    repo_name_of=lambda row: row[2],
+    title_of=lambda row: f"[FlakeRadar] Flaky CI job: {row[1]} / {row[0].name}",
+    render_body=_job_issue_body,
+    ids_of=lambda outcome: outcome.touched_job_ids,
+    file_entry=lambda db, ids, **kw: file_job_issues_for(db, ids, **kw),
+    note_entry=lambda db, ids, **kw: note_fixed_job_issues_for(db, ids, **kw),
+    # Only a Job whose Pipeline talks to GitHub can hold an Issue link (ADR 0008), so the
+    # gate below adds the provider condition for this target alone.
+    github_provider_only=True,
+)
+
+
+async def _file_candidates(db: AsyncSession, target: _FilingTarget, ids: list[int]) -> list[FilingRow]:
+    """`target`'s rows that meet the configured filing gate and still have no open issue.
+
+    The gate, stated once for both entities (see the module docstring): the score floor,
+    the proven-flake floor, no Issue linked, and — when the fixed-note step is enabled — a
+    Clean streak *below* the fixed-note threshold, because a row at that streak is a fix
+    that holds and not a live flake, and filing and noting are the two answers to different
+    questions. `min_failures`, when configured, additionally requires that many failures of
+    the target's own kind — executions for a Test, UNEXPLAINED failures for a Job — in the
+    newest `score_window` executions.
+    """
+    s = get_settings()
+    gate = _FilingGate.from_settings(s)
+    model = target.model
+    candidates: list[FilingRow] = []
+    for chunk in chunks(ids):
+        stmt = target.filing_select().where(
+            model.id.in_(chunk),
+            model.flakiness_score >= gate.min_score,
+            model.confirmed_flake_count >= gate.min_proven_flakes,
+            model.github_issue_number.is_(None),
+        )
+        if target.github_provider_only:
+            stmt = stmt.where(Pipeline.provider == "github")
+        if gate.fixed_streak is not None:
+            stmt = stmt.where(model.clean_streak < gate.fixed_streak)
+        candidates += (await db.execute(stmt.order_by(model.id))).all()
+    if gate.min_failures > 0:
+        failures = await target.counter(db, [row[0].id for row in candidates], s.score_window)
+        candidates = [row for row in candidates if failures.get(row[0].id, 0) >= gate.min_failures]
+    return candidates
+
+
+async def _file_engine(
+    db: AsyncSession,
+    target: _FilingTarget,
+    ids: list[int],
+    *,
+    transport: httpx.AsyncBaseTransport | None = None,
+) -> set[int]:
+    """File an issue for every one of `ids` that passes `target`'s filing gate. Never raises.
+
+    The no-op checks (no token, nothing touched), the gate, and this target's own title and
+    body, handed to the shared POST engine. Returns the ids it linked, so the caller can keep
+    its own hands off a link this pass created (see `on_report_processed`).
+
+    `transport` exists for tests (httpx.MockTransport); production passes None.
+    """
+    if not configured() or not ids:
+        return set()
+    rows = await _file_candidates(db, target, ids)
+    if not rows:
+        return set()
+    batch = [
+        (row[0], target.repo_name_of(row), target.title_of(row), await target.render_body(db, *row)) for row in rows
+    ]
+    return await _file_batch(db, batch, entity=target.entity, transport=transport)
+
+
+async def file_issues_for(
+    db: AsyncSession,
+    test_case_ids: list[int],
+    *,
+    transport: httpx.AsyncBaseTransport | None = None,
+) -> set[int]:
+    """File issues for Tests that now meet the filing gate. Never raises.
+
+    A thin wrapper over `_file_engine` for TEST; the signature and return schema are unchanged.
+
+    Returns the Test ids it linked; `on_report_processed` uses them to keep the
+    fixed-note step off a link this same Report created.
+
+    `transport` exists for tests (httpx.MockTransport); production passes None.
+    """
+    return await _file_engine(db, TEST, test_case_ids, transport=transport)
+
+
 async def file_job_issues_for(
     db: AsyncSession,
     job_ids: list[int],
@@ -537,25 +634,13 @@ async def file_job_issues_for(
 ) -> set[int]:
     """File issues for github-provider Jobs that now meet the filing gate. Never raises.
 
+    A thin wrapper over `_file_engine` for JOB; the signature and return schema are unchanged.
+
     Returns the Job ids it linked, exactly as `file_issues_for` does for Tests.
 
     `transport` exists for tests (httpx.MockTransport); production passes None.
     """
-    if not configured() or not job_ids:
-        return set()
-    candidates = await _job_candidates(db, job_ids)
-    if not candidates:
-        return set()
-    batch = [
-        (
-            job,
-            repo,
-            f"[FlakeRadar] Flaky CI job: {pipeline} / {job.name}",
-            await _job_issue_body(db, job, pipeline, repo),
-        )
-        for job, pipeline, repo in candidates
-    ]
-    return await _file_batch(db, batch, entity="job", transport=transport)
+    return await _file_engine(db, JOB, job_ids, transport=transport)
 
 
 async def sync_closed_issues(
@@ -793,67 +878,35 @@ def _fixed_comment(obj: Job | TestCase, default_branch: str | None, *, entity: s
     return body
 
 
-async def _fixed_note_test_candidates(
-    db: AsyncSession, test_case_ids: list[int]
-) -> list[tuple[TestCase, str, str | None]]:
-    """Linked Tests at the note threshold whose fix has not been noted yet.
+async def _note_candidates(db: AsyncSession, target: _FilingTarget, ids: list[int]) -> list[NoteRow]:
+    """`target`'s linked rows at the note threshold whose fix has not been noted yet.
 
-    Returns [(test, repo, default_branch)]. A row already stamped with
-    `github_issue_fixed_noted_at` is never noted again, and a link flagged
-    `github_issue_closed` (closed as not planned) is skipped: that issue is
-    already closed, so there is nothing to note or close here.
+    The note complement, stated once for both entities: an Issue is linked, its note has
+    not been stamped (`github_issue_fixed_noted_at` is NULL), the link was not closed as
+    not planned (`github_issue_closed` — that issue is already closed, so there is nothing
+    to note or close here), and the Clean streak is *at or above* the fixed-note threshold.
+    A github Pipeline is additionally required where the target has one (see
+    `github_provider_only` on JOB, ADR 0008). Returns `(entity, repo, default_branch)` rows,
+    the one shape `_fixed_comment` and `_note_batch` consume for either target.
 
-    The streak test is the exact complement of the filing gate's ceiling, so the
-    two steps of one Report pass select disjoint rows: an issue filed by this
-    pass is never the one commented on, and a fix only earns its note from a
-    later Report than the filing.
+    The streak test is the exact complement of the filing gate's ceiling, so the two steps
+    of one Report pass select disjoint rows: an issue filed by this pass is never the one
+    commented on, and a fix only earns its note from a later Report than the filing.
     """
     s = get_settings()
-    candidates: list[tuple[TestCase, str, str | None]] = []
-    for chunk in chunks(test_case_ids):
-        candidates += (
-            await db.execute(
-                select(TestCase, Repo.name, Repo.default_branch)
-                .join(Project, TestCase.project_id == Project.id)
-                .join(Repo, Project.repo_id == Repo.id)
-                .where(
-                    TestCase.id.in_(chunk),
-                    TestCase.github_issue_number.is_not(None),
-                    TestCase.github_issue_fixed_noted_at.is_(None),
-                    TestCase.github_issue_closed.is_(False),
-                    TestCase.clean_streak >= s.github_fixed_streak,
-                )
-                .order_by(TestCase.id)
-            )
-        ).all()
-    return candidates
-
-
-async def _fixed_note_job_candidates(db: AsyncSession, job_ids: list[int]) -> list[tuple[Job, str, str | None]]:
-    """github-provider Jobs at the note threshold whose fix has not been noted yet.
-
-    Returns [(job, repo, default_branch)]; the same rules as the Test select, and
-    only a github Provider has an issue to note.
-    """
-    s = get_settings()
-    candidates: list[tuple[Job, str, str | None]] = []
-    for chunk in chunks(job_ids):
-        candidates += (
-            await db.execute(
-                select(Job, Repo.name, Repo.default_branch)
-                .join(Pipeline, Job.pipeline_id == Pipeline.id)
-                .join(Repo, Pipeline.repo_id == Repo.id)
-                .where(
-                    Job.id.in_(chunk),
-                    Pipeline.provider == "github",
-                    Job.github_issue_number.is_not(None),
-                    Job.github_issue_fixed_noted_at.is_(None),
-                    Job.github_issue_closed.is_(False),
-                    Job.clean_streak >= s.github_fixed_streak,
-                )
-                .order_by(Job.id)
-            )
-        ).all()
+    model = target.model
+    candidates: list[NoteRow] = []
+    for chunk in chunks(ids):
+        stmt = target.note_select().where(
+            model.id.in_(chunk),
+            model.github_issue_number.is_not(None),
+            model.github_issue_fixed_noted_at.is_(None),
+            model.github_issue_closed.is_(False),
+            model.clean_streak >= s.github_fixed_streak,
+        )
+        if target.github_provider_only:
+            stmt = stmt.where(Pipeline.provider == "github")
+        candidates += (await db.execute(stmt.order_by(model.id))).all()
     return candidates
 
 
@@ -992,6 +1045,29 @@ async def _note_batch(
         logger.warning("GitHub unreachable, skipping %s fixed-note comments: %s", entity, exc)
 
 
+async def _note_engine(
+    db: AsyncSession,
+    target: _FilingTarget,
+    ids: list[int],
+    *,
+    transport: httpx.AsyncBaseTransport | None = None,
+) -> None:
+    """Note the fix on the linked issue of every one of `ids` that passes the note complement. Never raises.
+
+    The no-op checks (no token, the fixed-note step switched off by a 0 streak, nothing
+    touched), the shared complement, and the one shared renderer `_fixed_comment`, handed
+    to the shared POST engine. `transport` exists for tests (httpx.MockTransport);
+    production passes None.
+    """
+    if not configured() or get_settings().github_fixed_streak <= 0 or not ids:
+        return
+    rows = await _note_candidates(db, target, ids)
+    if not rows:
+        return
+    batch = [(obj, repo, _fixed_comment(obj, branch, entity=target.entity)) for obj, repo, branch in rows]
+    await _note_batch(db, batch, entity=target.entity, transport=transport)
+
+
 async def note_fixed_issues_for(
     db: AsyncSession,
     test_case_ids: list[int],
@@ -1000,16 +1076,12 @@ async def note_fixed_issues_for(
 ) -> None:
     """Comment once on the linked issue of each Test whose fix appears to hold. Never raises.
 
+    A thin wrapper over `_note_engine` for TEST; the signature is unchanged.
+
     Disabled while `github_fixed_streak` is 0. `transport` exists for tests
     (httpx.MockTransport); production passes None.
     """
-    if not configured() or get_settings().github_fixed_streak <= 0 or not test_case_ids:
-        return
-    candidates = await _fixed_note_test_candidates(db, test_case_ids)
-    if not candidates:
-        return
-    batch = [(tc, repo, _fixed_comment(tc, branch, entity="test")) for tc, repo, branch in candidates]
-    await _note_batch(db, batch, entity="test", transport=transport)
+    await _note_engine(db, TEST, test_case_ids, transport=transport)
 
 
 async def note_fixed_job_issues_for(
@@ -1020,16 +1092,12 @@ async def note_fixed_job_issues_for(
 ) -> None:
     """Comment once on the linked issue of each Job whose fix appears to hold. Never raises.
 
+    A thin wrapper over `_note_engine` for JOB; the signature is unchanged.
+
     Disabled while `github_fixed_streak` is 0. `transport` exists for tests
     (httpx.MockTransport); production passes None.
     """
-    if not configured() or get_settings().github_fixed_streak <= 0 or not job_ids:
-        return
-    candidates = await _fixed_note_job_candidates(db, job_ids)
-    if not candidates:
-        return
-    batch = [(job, repo, _fixed_comment(job, branch, entity="job")) for job, repo, branch in candidates]
-    await _note_batch(db, batch, entity="job", transport=transport)
+    await _note_engine(db, JOB, job_ids, transport=transport)
 
 
 async def on_report_processed(
@@ -1040,14 +1108,14 @@ async def on_report_processed(
 ) -> None:
     """ReportWorker hook: file issues for the Tests and Jobs a processed Report touched.
 
-    Also notes the Tests and Jobs whose Clean streak now proves the fix held. A
-    newly filed Issue is never the one commented on, twice over: the filing gate
-    refuses a row already at the fixed-note streak, so filing and noting select
-    disjoint rows in the first place, and the ids this pass linked are dropped
-    from the note step as well, in case a concurrent Report lifted a fresh link's
-    streak between the two selects. Without that, `github_close_fixed` would close
-    the Issue FlakeRadar just filed and the re-arm would file it again — a
-    file→note→close loop with no new failure (see the module docstring).
+    One pass over the two filing targets, each with its own ids and its own entry points. A
+    newly filed Issue is never the one commented on, twice over: the filing gate refuses a
+    row already at the fixed-note streak, so filing and noting select disjoint rows in the
+    first place, and the ids this pass linked are dropped from that target's note step as
+    well, in case a concurrent Report lifted a fresh link's streak between the two selects.
+    Without that, `github_close_fixed` would close the Issue FlakeRadar just filed and the
+    re-arm would file it again — a file→note→close loop with no new failure (see the module
+    docstring).
 
     `transport` exists for tests (httpx.MockTransport) and for the GitHub task;
     production callers pass None.
@@ -1055,9 +1123,7 @@ async def on_report_processed(
     if outcome.status != REPORT_PROCESSED or not configured():
         return
     async with session_factory() as db:
-        filed = await file_issues_for(db, outcome.touched_test_ids, transport=transport)
-        filed_jobs = await file_job_issues_for(db, outcome.touched_job_ids, transport=transport)
-        note_ids = [i for i in outcome.touched_test_ids if i not in filed]
-        note_job_ids = [i for i in outcome.touched_job_ids if i not in filed_jobs]
-        await note_fixed_issues_for(db, note_ids, transport=transport)
-        await note_fixed_job_issues_for(db, note_job_ids, transport=transport)
+        for target in (TEST, JOB):
+            ids = target.ids_of(outcome)
+            filed = await target.file_entry(db, ids, transport=transport)
+            await target.note_entry(db, [i for i in ids if i not in filed], transport=transport)
