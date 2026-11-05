@@ -91,3 +91,41 @@ the spike proves that a separate `connect(url, settings)` pool holds the lock
 while a second connection cannot take it, and that the lock is free again once
 the holder releases it. `connect` is the seam tasks 08 and 10 take the lock
 through, so a pool of one connection serves as the dedicated session.
+
+## 9. The two rescore window reads keep the measured plan (task 07)
+
+Task 07's "Done when" asks for `EXPLAIN` on the two rescore reads against the
+plans in `docs/perf/20-test-rescore-explain.md` and
+`21-job-rescore-explain.md`: the same indexes, and a per-row `LATERAL ... LIMIT`
+rather than a rank over the whole retained history.
+
+`attribution::test_window_ids_sql` and `attribution::job_window_ids_sql` are the
+committed statements, and `rescore` / `rescore_jobs` send them unchanged. Run
+with `EXPLAIN (ANALYZE, BUFFERS)` through the driver, one chunk of 500 ids and a
+window of 50, against a fixture seeded in the test database (500 Tests x 200
+Runs x 100,000 Test executions, and 100 Jobs x 200 Job executions in one
+Pipeline, `ANALYZE`d):
+
+```
+tests: HashAggregate -> Append -> Nested Loop x2
+         Function Scan on unnest u (500 rows)
+         ->  Limit  (loops=500)                      <- one per id, the lateral
+               ->  Index Only Scan Backward using ix_exec_case_id on test_executions
+                     Index Cond: (test_case_id = u.test_case_id)
+       Execution Time: 46.1 ms, Buffers: shared hit=53120
+
+jobs:  HashAggregate -> Append -> Nested Loop x2
+         Function Scan on unnest u (500 rows)
+         ->  Limit  (loops=500)                      <- one per id, the lateral
+               ->  Index Only Scan Backward using ix_job_exec_job_id on job_executions
+                     Index Cond: (job_id = u.job_id)
+       Execution Time: 5.2 ms, Buffers: shared hit=2768
+```
+
+Both shapes match `docs/perf/`: one `Limit` per id (the lateral arm), an index
+scan on `ix_exec_case_id` / `ix_job_exec_job_id` inside it, and no sort of the
+retained history. The branch-scoped arm adds a join to `test_runs`/`jobs` whose
+rows are memoized per run in the plan, which is the `Nested Loop` under the
+second `Limit`. The figures are from a laptop fixture, not the 2,000,000-row
+seed the perf note measured, so only the shape and the index names are the
+claim; the note's own timings are the performance record.
