@@ -156,12 +156,15 @@ async fn an_api_path_never_reaches_the_assets() {
     // is served: a missing API route is the JSON error its clients read.
     let files: &[(&str, &[u8], &str)] = &[
         ("index.html", PAGE, "\"index-1\""),
+        ("api/index.html", b"page", "\"api-index-1\""),
         ("api/nope", b"page", "\"api-1\""),
         ("mcp/nope", b"page", "\"mcp-1\""),
         ("metrics/nope", b"page", "\"metrics-1\""),
     ];
     let app = app_serving(&db, files);
-    for path in ["/api/nope", "/mcp/nope", "/metrics/nope"] {
+    // `/api` itself is a prefix with nothing after it, and is refused like the
+    // rest: its own `index.html` is not a page anyone asked for.
+    for path in ["/api", "/api/nope", "/mcp/nope", "/metrics/nope"] {
         assert_not_found(&get(&app, path).await, path);
     }
 }
