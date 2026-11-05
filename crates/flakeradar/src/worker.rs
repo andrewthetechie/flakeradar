@@ -503,12 +503,12 @@ impl ReportWorker {
     async fn deliver(&self, outcome: &ProcessOutcome) {
         for task in &self.leader_tasks {
             if let Err(error) = task.enqueue(outcome) {
-                tracing::error!(
-                    "the {} leader task failed to take processed Report {}: {}",
-                    task.name(),
-                    outcome.report_id,
-                    error
+                let name = task.name();
+                let report_id = outcome.report_id;
+                let message = format!(
+                    "the {name} leader task failed to take processed Report {report_id}: {error}"
                 );
+                tracing::error!("{message}");
             }
         }
         if outcome.status == REPORT_PENDING {
@@ -556,11 +556,11 @@ impl ReportWorker {
     async fn release(&self) {
         for task in &self.leader_tasks {
             if let Err(error) = task.stop().await {
-                tracing::error!(
-                    "stopping the {} leader task failed; releasing the lock anyway: {}",
-                    task.name(),
-                    error
+                let name = task.name();
+                let message = format!(
+                    "stopping the {name} leader task failed; releasing the lock anyway: {error}"
                 );
+                tracing::error!("{message}");
             }
         }
         self.leader.store(false, Ordering::SeqCst);

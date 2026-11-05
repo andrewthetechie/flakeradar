@@ -483,10 +483,8 @@ pub fn check_api_token(token: &str, allow_insecure: Option<&str>) -> Result<(), 
         return Ok(());
     }
     if allow_insecure.map(str::trim) == Some("1") {
-        tracing::warn!(
-            token.is_default = true,
-            "FLAKERADAR_API_TOKEN is the default 'changeme' — set a real token."
-        );
+        let message = "FLAKERADAR_API_TOKEN is the default 'changeme' — set a real token.";
+        tracing::warn!(token.is_default = true, "{message}");
         return Ok(());
     }
     Err(SettingsError::InsecureToken)

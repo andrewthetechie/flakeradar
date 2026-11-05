@@ -908,8 +908,10 @@ async fn a_failing_leader_task_stop_is_logged_and_the_lock_released_anyway() {
     let log = CapturedLog::install();
     worker.stop().await;
     assert!(
-        log.lines()
-            .contains("stopping the GitHub leader task failed; releasing the lock anyway"),
+        log.lines().contains(
+            "stopping the GitHub leader task failed; releasing the lock anyway: GitHub could not \
+             stop"
+        ),
         "the failed stop is logged: {}",
         log.lines()
     );
@@ -1009,8 +1011,11 @@ async fn a_failing_hook_does_not_stop_processing() {
     .await;
     worker.stop().await;
     assert!(
-        log.lines().contains("failed to take processed Report"),
-        "a failed hand-over is logged: {}",
+        log.lines().contains(
+            "the hook leader task failed to take processed Report 2: hook could not take the \
+             outcome"
+        ),
+        "a failed hand-over is logged with its Report: {}",
         log.lines()
     );
     let handed = events

@@ -508,15 +508,13 @@ pub async fn run_prune(
             break;
         }
         if monotonic.now() >= deadline {
-            info!(
-                "Retention prune hit its {}s budget; the rest waits for the next interval",
-                retention.time_budget_seconds
-            );
+            let budget = retention.time_budget_seconds;
+            info!("Retention prune hit its {budget}s budget; the rest waits for the next interval");
             break;
         }
     }
     // The frozen server's own summary line, with the counts in the same order.
-    info!(
+    let summary = format!(
         "Pruned {} reports, {} failed reports, {} executions, {} job executions, {} runs, \
          {} score history rows, cleared {} expired quarantines",
         totals.reports,
@@ -527,5 +525,6 @@ pub async fn run_prune(
         totals.score_history(),
         totals.expired_quarantines
     );
+    info!("{summary}");
     Ok(totals)
 }
