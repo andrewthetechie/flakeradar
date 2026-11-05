@@ -55,6 +55,97 @@ const ALIVE_SQL: &str = "SELECT pg_backend_pid() = $1 AS same_session";
 /// What a [`LeaderTask`] does once it is running.
 pub type StartFuture<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
 
+/// One run of a [`LeaderTask`]: the loop's handle and the token that stops it.
+///
+/// A [`CancellationToken`] cannot be reset, so a task that outlived one `stop`
+/// would exit the moment it started again. Every run therefore makes a token of
+/// its own and keeps it beside the handle, which is what lets a re-elected
+/// leader file, notify and sync again. [`LeaderRun::stop`] cancels that token and
+/// waits for the loop, so a task that ends promptly makes release prompt too.
+#[derive(Debug, Default)]
+pub struct LeaderRun {
+    /// The current run, or the last one while its loop is still finishing.
+    running: tokio::sync::Mutex<Option<RunningTask>>,
+}
+
+/// The handle of one run, and the token that only it listens to.
+#[derive(Debug)]
+struct RunningTask {
+    /// The stop signal this run's loop watches.
+    cancel: CancellationToken,
+    /// The spawned loop.
+    handle: JoinHandle<()>,
+}
+
+impl LeaderRun {
+    /// A run that is not going yet.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Starts `run` on a token of its own, unless the last run is still going.
+    ///
+    /// Starting a task that is already running is a no-op, and so is starting one
+    /// whose loop is still finishing its last await.
+    pub async fn start<F, Fut>(&self, run: F)
+    where
+        F: FnOnce(CancellationToken) -> Fut,
+        Fut: Future<Output = ()> + Send + 'static,
+    {
+        let mut running = self.running.lock().await;
+        if running
+            .as_ref()
+            .is_some_and(|task| !task.handle.is_finished())
+        {
+            return;
+        }
+        let cancel = CancellationToken::new();
+        let handle = tokio::spawn(run(cancel.clone()));
+        *running = Some(RunningTask { cancel, handle });
+    }
+
+    /// Cancels the run and waits for it; a task that is not running has nothing to do.
+    ///
+    /// # Errors
+    ///
+    /// Returns why the run's loop ended badly, such as a panic inside it.
+    pub async fn stop(&self) -> anyhow::Result<()> {
+        let running = self.running.lock().await.take();
+        if let Some(task) = running {
+            task.cancel.cancel();
+            task.handle.await?;
+        }
+        Ok(())
+    }
+
+    /// Whether a run is going, for a `Debug` line.
+    #[must_use]
+    pub fn is_running(&self) -> bool {
+        self.running.try_lock().is_ok_and(|running| {
+            running
+                .as_ref()
+                .is_some_and(|task| !task.handle.is_finished())
+        })
+    }
+}
+
+/// Runs `call`, answering `None` when `stop` cancels it first.
+///
+/// A sync's `GET`, a fixed note's comment, a Notification and a wait between
+/// retries all end the moment leadership does, so a stop costs at most the one
+/// request it is not allowed to interrupt. A call this does not wrap runs to its
+/// own timeout.
+pub async fn until_stopped<F>(stop: &CancellationToken, call: F) -> Option<F::Output>
+where
+    F: Future,
+{
+    tokio::select! {
+        () = stop.cancelled() => None,
+        output = call => Some(output),
+    }
+}
+
 /// What a [`LeaderTask`] does to stop; the error says why it could not.
 pub type StopFuture<'a> = Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
 

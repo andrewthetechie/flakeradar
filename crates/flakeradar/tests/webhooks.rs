@@ -9,6 +9,8 @@
     reason = "a test fails loudly when a stub or a delivery does not behave"
 )]
 
+mod common;
+
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -19,6 +21,13 @@ use flakeradar_db::ProcessOutcome;
 use serde_json::{Value, json};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
+
+/// The most `stop` may take while a delivery is in flight.
+///
+/// Far under the five-second delivery timeout and the waits between retries a
+/// task that did not end would sit through, and far over the wake a cancellation
+/// costs, so the bound separates the two without depending on a machine's speed.
+const STOP_BOUND: Duration = Duration::from_secs(2);
 
 /// One Test's crossing of the Flake threshold.
 fn test_change() -> TierChange {
@@ -616,4 +625,93 @@ async fn an_http_date_retry_after_uses_the_default_wait_and_still_retries() {
     LeaderTask::stop(worker.as_ref())
         .await
         .expect("the task stops");
+}
+
+#[tokio::test]
+async fn a_stopped_webhook_task_delivers_again_after_a_restart() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/hook"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&server)
+        .await;
+    let worker = Arc::new(worker(vec![format!("{}/hook", server.uri())]));
+    LeaderTask::start(worker.as_ref()).await;
+    LeaderTask::enqueue(worker.as_ref(), &outcome(vec![test_change()]))
+        .expect("the queue takes it");
+    until_count(&server, 1).await;
+    LeaderTask::stop(worker.as_ref())
+        .await
+        .expect("the task stops");
+
+    // The same worker, re-elected: a fresh term starts a fresh task.
+    LeaderTask::start(worker.as_ref()).await;
+    LeaderTask::enqueue(worker.as_ref(), &outcome(vec![job_change()])).expect("the queue takes it");
+    until_count(&server, 2).await;
+    LeaderTask::stop(worker.as_ref())
+        .await
+        .expect("the task stops");
+}
+
+#[tokio::test]
+async fn stopping_ends_the_wait_before_a_retry_at_once() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/hook"))
+        .respond_with(ResponseTemplate::new(503))
+        .mount(&server)
+        .await;
+    // Waits a task that did not stop would sit through, so the bound below
+    // separates a stop from a wait rather than measuring a machine's speed.
+    let worker = Arc::new(WebhookWorker::with_retry_delays(
+        vec![format!("{}/hook", server.uri())],
+        WebhookFormat::Json,
+        "",
+        [60.0, 60.0],
+    ));
+    LeaderTask::start(worker.as_ref()).await;
+    LeaderTask::enqueue(worker.as_ref(), &outcome(vec![test_change()]))
+        .expect("the queue takes it");
+    until_count(&server, 1).await; // the first attempt answered 503, so the wait began
+    let started = std::time::Instant::now();
+    LeaderTask::stop(worker.as_ref())
+        .await
+        .expect("the task stops");
+    let waited = started.elapsed();
+
+    assert!(
+        waited < STOP_BOUND,
+        "the token ended the wait between retries instead of the wait ending it, \
+         but stop waited {waited:?}"
+    );
+    assert_eq!(
+        recorded(&server).await,
+        1,
+        "a stopped task makes no second attempt"
+    );
+}
+
+#[tokio::test]
+async fn stopping_ends_an_unanswered_delivery_at_once() {
+    let endpoint = common::Unanswered::start().await;
+    let worker = Arc::new(worker(vec![format!("{}/hook", endpoint.base)]));
+    LeaderTask::start(worker.as_ref()).await;
+    LeaderTask::enqueue(worker.as_ref(), &outcome(vec![test_change()]))
+        .expect("the queue takes it");
+    endpoint.arrived().await; // the delivery is in flight
+    let started = std::time::Instant::now();
+    LeaderTask::stop(worker.as_ref())
+        .await
+        .expect("the task stops");
+    let waited = started.elapsed();
+
+    assert!(
+        waited < STOP_BOUND,
+        "the token ended the POST instead of the timeout, but stop waited {waited:?}"
+    );
+    assert_eq!(
+        endpoint.requests(),
+        1,
+        "a stopped delivery is neither retried nor waited out"
+    );
 }

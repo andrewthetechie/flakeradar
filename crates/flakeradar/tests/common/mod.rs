@@ -215,3 +215,104 @@ pub(crate) async fn post(
     )
     .await
 }
+
+/// A loopback endpoint that reads a request and then never answers it.
+///
+/// `wiremock` always finishes a response, so "a call held open with no answer at
+/// all" needs a socket of its own. The request is read first, so the call really
+/// is in flight, and its socket is then kept open until the test ends: nothing
+/// can complete the call except the code under test giving up on it.
+pub(crate) struct Unanswered {
+    /// The URL the endpoint answers nothing on.
+    pub(crate) base: String,
+    /// How many requests arrived and were held.
+    requests: Arc<std::sync::atomic::AtomicUsize>,
+    /// Signalled once per request that arrived and is being held.
+    arrived: tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<()>>,
+    /// The task serving the socket, aborted when the test ends.
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl Unanswered {
+    /// Binds a loopback port and starts holding every request that arrives on it.
+    pub(crate) async fn start() -> Self {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("a loopback port");
+        let base = format!(
+            "http://{}",
+            listener.local_addr().expect("the bound address")
+        );
+        let (arrived, receiver) = tokio::sync::mpsc::unbounded_channel();
+        let requests = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = Arc::clone(&requests);
+        let task = tokio::spawn(async move {
+            // The sockets are held open rather than read: dropping one would end
+            // the request it carries, which is the whole point of this endpoint.
+            #[expect(
+                clippy::collection_is_never_read,
+                reason = "the held sockets keep their requests open and are never read"
+            )]
+            let mut held = Vec::new();
+            while let Ok((mut socket, _)) = listener.accept().await {
+                read_request(&mut socket).await;
+                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let _ = arrived.send(());
+                // Held open, unanswered, until this task is aborted.
+                held.push(socket);
+            }
+        });
+        Self {
+            base,
+            requests,
+            arrived: tokio::sync::Mutex::new(receiver),
+            task,
+        }
+    }
+
+    /// How many requests the endpoint has been asked for.
+    pub(crate) fn requests(&self) -> usize {
+        self.requests.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Waits until one request has arrived and is being held.
+    pub(crate) async fn arrived(&self) {
+        let mut arrived = self.arrived.lock().await;
+        arrived
+            .recv()
+            .await
+            .expect("the endpoint accepted a request");
+    }
+}
+
+impl Drop for Unanswered {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+/// Reads one request's head, and as much of the body as it announced.
+async fn read_request(socket: &mut tokio::net::TcpStream) {
+    use tokio::io::AsyncReadExt as _;
+
+    let mut buffer = [0_u8; 4096];
+    let mut received = Vec::new();
+    loop {
+        let read = match socket.read(&mut buffer).await {
+            Ok(0) | Err(_) => return,
+            Ok(read) => read,
+        };
+        received.extend_from_slice(buffer.get(..read).unwrap_or_default());
+        let text = String::from_utf8_lossy(&received).to_lowercase();
+        if let Some((head, body)) = text.split_once("\r\n\r\n") {
+            let announced = head
+                .lines()
+                .find_map(|line| line.strip_prefix("content-length:"))
+                .and_then(|value| value.trim().parse::<usize>().ok())
+                .unwrap_or(0);
+            if body.len() >= announced {
+                return;
+            }
+        }
+    }
+}

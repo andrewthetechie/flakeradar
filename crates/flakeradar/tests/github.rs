@@ -25,6 +25,7 @@ use sea_orm::ConnectionTrait as _;
 use sea_orm::EntityTrait as _;
 use sea_orm::{DbBackend, Statement, Value};
 use serde_json::{Value as Json, json};
+use tokio_util::sync::CancellationToken;
 use wiremock::matchers::{any, method, path};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
@@ -43,6 +44,11 @@ fn gh_settings(pairs: &[(&str, &str)]) -> Settings {
         .map(|(key, value)| (key.to_owned(), value.to_owned()))
         .collect();
     Settings::from_map(&map).expect("the test's settings are valid")
+}
+
+/// A stop signal that never fires, so a batch runs to its end.
+fn unstopped() -> CancellationToken {
+    CancellationToken::new()
 }
 
 /// A client pointed at the stub server.
@@ -196,7 +202,8 @@ async fn no_token_is_a_silent_no_op() {
     let settings = Settings::from_map(&std::collections::BTreeMap::new()).expect("the defaults");
     let api = Api::new(Secret::new(""), &server.uri());
 
-    let filed = github::file_issues_for(db.connection(), &[test], &settings, &api).await;
+    let filed =
+        github::file_issues_for(db.connection(), &[test], &settings, &api, &unstopped()).await;
     assert!(filed.is_empty());
     assert_eq!(test_link(&db, test).await.0, None);
     assert!(
@@ -221,7 +228,14 @@ async fn a_flaky_test_is_filed_in_its_own_repo_with_its_evidence() {
     .await;
     let settings = gh_settings(&[]);
 
-    let filed = github::file_issues_for(db.connection(), &[test], &settings, &api(&server)).await;
+    let filed = github::file_issues_for(
+        db.connection(),
+        &[test],
+        &settings,
+        &api(&server),
+        &unstopped(),
+    )
+    .await;
     assert_eq!(filed.into_iter().collect::<Vec<_>>(), vec![test]);
     let (number, is_filed, checked, closed) = test_link(&db, test).await;
     assert_eq!(number, Some(7));
@@ -301,7 +315,14 @@ async fn a_test_below_the_score_gate_is_not_filed() {
     .await;
     let settings = gh_settings(&[("FLAKERADAR_GITHUB_ISSUE_MIN_SCORE", "0.9")]);
 
-    let filed = github::file_issues_for(db.connection(), &[test], &settings, &api(&server)).await;
+    let filed = github::file_issues_for(
+        db.connection(),
+        &[test],
+        &settings,
+        &api(&server),
+        &unstopped(),
+    )
+    .await;
     assert!(filed.is_empty());
     assert!(
         server
@@ -325,20 +346,32 @@ async fn the_proven_flake_gate_and_the_failure_gate_each_withhold_a_filing() {
 
     let flakes = gh_settings(&[("FLAKERADAR_GITHUB_ISSUE_MIN_PROVEN_FLAKES", "3")]);
     assert!(
-        github::file_issues_for(db.connection(), &[test], &flakes, &api(&server))
-            .await
-            .is_empty()
+        github::file_issues_for(
+            db.connection(),
+            &[test],
+            &flakes,
+            &api(&server),
+            &unstopped()
+        )
+        .await
+        .is_empty()
     );
     let failures = gh_settings(&[("FLAKERADAR_GITHUB_ISSUE_MIN_FAILURES", "2")]);
     assert!(
-        github::file_issues_for(db.connection(), &[test], &failures, &api(&server))
-            .await
-            .is_empty()
+        github::file_issues_for(
+            db.connection(),
+            &[test],
+            &failures,
+            &api(&server),
+            &unstopped()
+        )
+        .await
+        .is_empty()
     );
     // One failure in the window meets a gate of one.
     let one = gh_settings(&[("FLAKERADAR_GITHUB_ISSUE_MIN_FAILURES", "1")]);
     assert_eq!(
-        github::file_issues_for(db.connection(), &[test], &one, &api(&server))
+        github::file_issues_for(db.connection(), &[test], &one, &api(&server), &unstopped())
             .await
             .len(),
         1
@@ -353,7 +386,14 @@ async fn a_link_a_human_made_is_never_refiled() {
     let server = MockServer::start().await;
     let settings = gh_settings(&[]);
 
-    let filed = github::file_issues_for(db.connection(), &[test], &settings, &api(&server)).await;
+    let filed = github::file_issues_for(
+        db.connection(),
+        &[test],
+        &settings,
+        &api(&server),
+        &unstopped(),
+    )
+    .await;
     assert!(
         filed.is_empty(),
         "a row that carries a number is already linked"
@@ -393,6 +433,7 @@ async fn a_row_at_the_fixed_note_streak_has_no_live_flake_to_file() {
         &[at_streak, below],
         &settings,
         &api(&server),
+        &unstopped(),
     )
     .await;
     assert_eq!(
@@ -441,6 +482,7 @@ async fn a_rate_limit_stops_the_batch_without_storing_anything() {
         &[first, second.id],
         &gh_settings(&[]),
         &api(&server),
+        &unstopped(),
     )
     .await;
     assert!(filed.is_empty());
@@ -487,6 +529,7 @@ async fn a_permission_403_skips_that_repo_and_files_the_other_one() {
         &[denied, allowed.id],
         &gh_settings(&[]),
         &api(&server),
+        &unstopped(),
     )
     .await;
     assert_eq!(filed.into_iter().collect::<Vec<_>>(), vec![allowed.id]);
@@ -526,6 +569,7 @@ async fn a_bad_credentials_401_skips_that_repo_and_files_the_other_one() {
         &[first, second, allowed],
         &gh_settings(&[]),
         &api(&server),
+        &unstopped(),
     )
     .await;
     assert_eq!(filed.into_iter().collect::<Vec<_>>(), vec![allowed]);
@@ -541,9 +585,15 @@ async fn issues_disabled_skips_the_rest_of_that_repo() {
     mount_create(&server, ResponseTemplate::new(410)).await;
 
     assert!(
-        github::file_issues_for(db.connection(), &[test], &gh_settings(&[]), &api(&server))
-            .await
-            .is_empty()
+        github::file_issues_for(
+            db.connection(),
+            &[test],
+            &gh_settings(&[]),
+            &api(&server),
+            &unstopped()
+        )
+        .await
+        .is_empty()
     );
     assert_eq!(test_link(&db, test).await.0, None);
 }
@@ -560,9 +610,15 @@ async fn a_201_without_a_number_never_raises_and_stores_nothing() {
     .await;
 
     assert!(
-        github::file_issues_for(db.connection(), &[test], &gh_settings(&[]), &api(&server))
-            .await
-            .is_empty()
+        github::file_issues_for(
+            db.connection(),
+            &[test],
+            &gh_settings(&[]),
+            &api(&server),
+            &unstopped()
+        )
+        .await
+        .is_empty()
     );
     assert_eq!(test_link(&db, test).await.0, None);
 }
@@ -610,9 +666,14 @@ async fn a_row_deleted_while_filing_closes_the_issue_it_just_created() {
         .expect("the vanish trigger installs");
 
     let logged = logged_from(async {
-        let filed =
-            github::file_issues_for(db.connection(), &[test], &gh_settings(&[]), &api(&server))
-                .await;
+        let filed = github::file_issues_for(
+            db.connection(),
+            &[test],
+            &gh_settings(&[]),
+            &api(&server),
+            &unstopped(),
+        )
+        .await;
         assert!(filed.is_empty(), "a vanished row is not a link");
     })
     .await;
@@ -637,7 +698,14 @@ async fn a_network_error_never_raises() {
     // Nothing listens on this port.
     let api = Api::new(Secret::new(TOKEN), "http://127.0.0.1:1");
 
-    let filed = github::file_issues_for(db.connection(), &[test], &gh_settings(&[]), &api).await;
+    let filed = github::file_issues_for(
+        db.connection(),
+        &[test],
+        &gh_settings(&[]),
+        &api,
+        &unstopped(),
+    )
+    .await;
     assert!(filed.is_empty());
     assert_eq!(test_link(&db, test).await.0, None);
 }
@@ -654,7 +722,14 @@ async fn the_configured_label_is_used() {
     .await;
     let settings = gh_settings(&[("FLAKERADAR_GITHUB_ISSUE_LABEL", "flaky-test")]);
 
-    github::file_issues_for(db.connection(), &[test], &settings, &api(&server)).await;
+    github::file_issues_for(
+        db.connection(),
+        &[test],
+        &settings,
+        &api(&server),
+        &unstopped(),
+    )
+    .await;
     let requests = server.received_requests().await.expect("a record");
     let body: Json = serde_json::from_slice(&requests[0].body).expect("the body is JSON");
     assert_eq!(body["labels"], json!(["flaky-test"]));
@@ -671,9 +746,14 @@ async fn a_flaky_job_is_filed_with_its_pipeline_and_unexplained_failures() {
     )
     .await;
 
-    let filed =
-        github::file_job_issues_for(db.connection(), &[job], &gh_settings(&[]), &api(&server))
-            .await;
+    let filed = github::file_job_issues_for(
+        db.connection(),
+        &[job],
+        &gh_settings(&[]),
+        &api(&server),
+        &unstopped(),
+    )
+    .await;
     assert_eq!(filed.into_iter().collect::<Vec<_>>(), vec![job]);
     let requests = server.received_requests().await.expect("a record");
     let body: Json = serde_json::from_slice(&requests[0].body).expect("the body is JSON");
@@ -715,9 +795,15 @@ async fn a_job_of_another_provider_is_never_filed() {
     let server = MockServer::start().await;
 
     assert!(
-        github::file_job_issues_for(db.connection(), &[job.id], &gh_settings(&[]), &api(&server))
-            .await
-            .is_empty()
+        github::file_job_issues_for(
+            db.connection(),
+            &[job.id],
+            &gh_settings(&[]),
+            &api(&server),
+            &unstopped()
+        )
+        .await
+        .is_empty()
     );
     assert!(
         server
@@ -759,7 +845,13 @@ async fn the_sync_rearms_a_link_whose_issue_closed() {
     )
     .await;
 
-    github::sync_closed_issues(db.connection(), &gh_settings(&[]), &api(&server)).await;
+    github::sync_closed_issues(
+        db.connection(),
+        &gh_settings(&[]),
+        &api(&server),
+        &unstopped(),
+    )
+    .await;
     let (number, filed, _, closed) = test_link(&db, test).await;
     assert_eq!(
         number, None,
@@ -795,7 +887,13 @@ async fn the_sync_keeps_a_link_closed_as_not_planned() {
     )
     .await;
 
-    github::sync_closed_issues(db.connection(), &gh_settings(&[]), &api(&server)).await;
+    github::sync_closed_issues(
+        db.connection(),
+        &gh_settings(&[]),
+        &api(&server),
+        &unstopped(),
+    )
+    .await;
     let (number, filed, checked, closed) = test_link(&db, test).await;
     assert_eq!(
         number,
@@ -828,7 +926,13 @@ async fn the_sync_clears_the_flag_when_a_declined_issue_reopens() {
     )
     .await;
 
-    github::sync_closed_issues(db.connection(), &gh_settings(&[]), &api(&server)).await;
+    github::sync_closed_issues(
+        db.connection(),
+        &gh_settings(&[]),
+        &api(&server),
+        &unstopped(),
+    )
+    .await;
     let (number, filed, _, closed) = test_link(&db, test).await;
     assert_eq!(number, Some(12));
     assert_eq!(filed, Some(true), "the link is still ours");
@@ -843,7 +947,13 @@ async fn the_sync_rearms_a_link_whose_issue_is_gone() {
     let server = MockServer::start().await;
     mount_state(&server, ResponseTemplate::new(404)).await;
 
-    github::sync_closed_issues(db.connection(), &gh_settings(&[]), &api(&server)).await;
+    github::sync_closed_issues(
+        db.connection(),
+        &gh_settings(&[]),
+        &api(&server),
+        &unstopped(),
+    )
+    .await;
     let (number, filed, checked, closed) = test_link(&db, test).await;
     assert_eq!(number, None);
     assert_eq!(filed, None, "the flag resets with the number");
@@ -872,7 +982,13 @@ async fn the_sync_keeps_a_link_on_a_permission_error_and_stamps_it() {
     )
     .await;
 
-    github::sync_closed_issues(db.connection(), &gh_settings(&[]), &api(&server)).await;
+    github::sync_closed_issues(
+        db.connection(),
+        &gh_settings(&[]),
+        &api(&server),
+        &unstopped(),
+    )
+    .await;
     let (number, _, checked, _) = test_link(&db, test).await;
     assert_eq!(
         number,
@@ -921,6 +1037,7 @@ async fn the_sync_leaves_an_unreadable_body_alone_and_stamps_it() {
             db.connection(),
             &gh_settings(&[]),
             &api(&server),
+            &unstopped(),
         ))
         .await;
         assert_eq!(
@@ -957,7 +1074,13 @@ async fn the_sync_stops_on_a_rate_limit_before_stamping_the_row() {
     )
     .await;
 
-    github::sync_closed_issues(db.connection(), &gh_settings(&[]), &api(&server)).await;
+    github::sync_closed_issues(
+        db.connection(),
+        &gh_settings(&[]),
+        &api(&server),
+        &unstopped(),
+    )
+    .await;
     let (number, _, checked, _) = test_link(&db, test).await;
     assert_eq!(number, Some(12));
     assert!(!checked, "a rate-limited row is retried first next run");
@@ -975,6 +1098,7 @@ async fn nothing_configured_syncs_nothing() {
         db.connection(),
         &settings,
         &Api::new(Secret::new(""), &server.uri()),
+        &unstopped(),
     )
     .await;
     assert!(
@@ -1007,7 +1131,14 @@ async fn the_fixed_note_comments_once_with_the_configured_sentence() {
         .await;
 
     let settings = fixed_settings(&[("FLAKERADAR_PUBLIC_URL", "https://flakes.example.com/")]);
-    github::note_fixed_issues_for(db.connection(), &[test], &settings, &api(&server)).await;
+    github::note_fixed_issues_for(
+        db.connection(),
+        &[test],
+        &settings,
+        &api(&server),
+        &unstopped(),
+    )
+    .await;
 
     let requests = server.received_requests().await.expect("a record");
     let body: Json = serde_json::from_slice(&requests[0].body).expect("the body is JSON");
@@ -1020,7 +1151,14 @@ async fn the_fixed_note_comments_once_with_the_configured_sentence() {
     );
 
     // A second pass finds the stamp and posts nothing more.
-    github::note_fixed_issues_for(db.connection(), &[test], &settings, &api(&server)).await;
+    github::note_fixed_issues_for(
+        db.connection(),
+        &[test],
+        &settings,
+        &api(&server),
+        &unstopped(),
+    )
+    .await;
     assert_eq!(server.received_requests().await.expect("a record").len(), 1);
 
     // A failed run reset the Clean streak and the stamp: the fix is noteable again.
@@ -1032,7 +1170,14 @@ async fn the_fixed_note_comments_once_with_the_configured_sentence() {
         ))
         .await
         .expect("the stamp clears");
-    github::note_fixed_issues_for(db.connection(), &[test], &settings, &api(&server)).await;
+    github::note_fixed_issues_for(
+        db.connection(),
+        &[test],
+        &settings,
+        &api(&server),
+        &unstopped(),
+    )
+    .await;
     assert_eq!(server.received_requests().await.expect("a record").len(), 2);
     assert!(noted(&db, "test_cases", test).await);
 }
@@ -1069,6 +1214,7 @@ async fn the_fixed_note_names_the_default_branch_when_it_is_known() {
         &[test],
         &fixed_settings(&[]),
         &api(&server),
+        &unstopped(),
     )
     .await;
     let requests = server.received_requests().await.expect("a record");
@@ -1113,6 +1259,7 @@ async fn the_fixed_note_closes_the_issue_only_when_asked() {
         &[test],
         &fixed_settings(&[]),
         &api(&server),
+        &unstopped(),
     )
     .await;
     assert_eq!(
@@ -1130,7 +1277,14 @@ async fn the_fixed_note_closes_the_issue_only_when_asked() {
         .await
         .expect("the stamp clears");
     let settings = fixed_settings(&[("FLAKERADAR_GITHUB_CLOSE_FIXED", "true")]);
-    github::note_fixed_issues_for(db.connection(), &[test], &settings, &api(&server)).await;
+    github::note_fixed_issues_for(
+        db.connection(),
+        &[test],
+        &settings,
+        &api(&server),
+        &unstopped(),
+    )
+    .await;
     assert_eq!(
         requested_paths(&server).await,
         vec![
@@ -1167,7 +1321,14 @@ async fn the_fixed_note_is_disabled_while_the_streak_is_zero() {
         .expect("the streak writes");
     let server = MockServer::start().await;
 
-    github::note_fixed_issues_for(db.connection(), &[test], &gh_settings(&[]), &api(&server)).await;
+    github::note_fixed_issues_for(
+        db.connection(),
+        &[test],
+        &gh_settings(&[]),
+        &api(&server),
+        &unstopped(),
+    )
+    .await;
     assert!(
         server
             .received_requests()
@@ -1190,7 +1351,14 @@ async fn a_failed_report_is_never_filed_and_a_processed_one_is() {
 
     let mut failed = processed(&[test], &[]);
     failed.status = "failed".to_owned();
-    github::on_report_processed(db.connection(), &failed, &gh_settings(&[]), &api(&server)).await;
+    github::on_report_processed(
+        db.connection(),
+        &failed,
+        &gh_settings(&[]),
+        &api(&server),
+        &unstopped(),
+    )
+    .await;
     assert!(
         server
             .received_requests()
@@ -1204,6 +1372,7 @@ async fn a_failed_report_is_never_filed_and_a_processed_one_is() {
         &processed(&[test], &[]),
         &gh_settings(&[]),
         &api(&server),
+        &unstopped(),
     )
     .await;
     assert_eq!(test_link(&db, test).await.0, Some(7));
@@ -1333,9 +1502,23 @@ async fn a_candidate_read_that_fails_is_logged_and_files_nothing() {
         .expect("the tables are dropped");
     let api = Api::new(Secret::new(TOKEN), "http://127.0.0.1:1");
 
-    let fired = github::file_issues_for(db.connection(), &[test], &gh_settings(&[]), &api).await;
+    let fired = github::file_issues_for(
+        db.connection(),
+        &[test],
+        &gh_settings(&[]),
+        &api,
+        &unstopped(),
+    )
+    .await;
     assert!(fired.is_empty(), "a batch it could not read files nothing");
-    let fired = github::file_job_issues_for(db.connection(), &[job], &gh_settings(&[]), &api).await;
+    let fired = github::file_job_issues_for(
+        db.connection(),
+        &[job],
+        &gh_settings(&[]),
+        &api,
+        &unstopped(),
+    )
+    .await;
     assert!(fired.is_empty());
 }
 
@@ -1354,7 +1537,13 @@ async fn a_sync_whose_rotation_list_cannot_be_read_makes_no_request() {
         .mount(&server)
         .await;
 
-    github::sync_closed_issues(db.connection(), &gh_settings(&[]), &api(&server)).await;
+    github::sync_closed_issues(
+        db.connection(),
+        &gh_settings(&[]),
+        &api(&server),
+        &unstopped(),
+    )
+    .await;
 
     assert!(
         server
@@ -1381,8 +1570,14 @@ async fn a_test_whose_executions_cannot_be_read_is_still_filed_without_them() {
     )
     .await;
 
-    let fired =
-        github::file_issues_for(db.connection(), &[test], &gh_settings(&[]), &api(&server)).await;
+    let fired = github::file_issues_for(
+        db.connection(),
+        &[test],
+        &gh_settings(&[]),
+        &api(&server),
+        &unstopped(),
+    )
+    .await;
 
     assert_eq!(fired.len(), 1, "the Test is filed");
     assert_eq!(test_link(&db, test).await.0, Some(7));
@@ -1813,6 +2008,7 @@ async fn a_linked_row_and_a_calm_row_are_both_left_alone() {
         &[filed, calm],
         &gh_settings(&[]),
         &api(&server),
+        &unstopped(),
     )
     .await;
     assert!(filed_ids.is_empty());
@@ -1845,7 +2041,8 @@ async fn a_kept_not_planned_link_is_never_refiled() {
             db.connection(),
             &[wont_fix],
             &gh_settings(&[]),
-            &api(&server)
+            &api(&server),
+            &unstopped(),
         )
         .await
         .is_empty()
@@ -1879,7 +2076,14 @@ async fn a_rate_limit_stops_the_test_and_job_batches() {
         .mount(&server)
         .await;
 
-    github::file_issues_for(db.connection(), &[a, b], &gh_settings(&[]), &api(&server)).await;
+    github::file_issues_for(
+        db.connection(),
+        &[a, b],
+        &gh_settings(&[]),
+        &api(&server),
+        &unstopped(),
+    )
+    .await;
     assert_eq!(requested_paths(&server).await.len(), 1);
 
     let ja = flaky_job_in(&db, "acme/c", ".github/workflows/a.yml", "a").await;
@@ -1894,7 +2098,14 @@ async fn a_rate_limit_stops_the_test_and_job_batches() {
         .mount(&jobs)
         .await;
 
-    github::file_job_issues_for(db.connection(), &[ja, jb], &gh_settings(&[]), &api(&jobs)).await;
+    github::file_job_issues_for(
+        db.connection(),
+        &[ja, jb],
+        &gh_settings(&[]),
+        &api(&jobs),
+        &unstopped(),
+    )
+    .await;
     assert_eq!(requested_paths(&jobs).await.len(), 1);
 }
 
@@ -1909,7 +2120,14 @@ async fn a_429_stops_the_test_and_job_batches() {
         .mount(&server)
         .await;
 
-    github::file_issues_for(db.connection(), &[ta, tb], &gh_settings(&[]), &api(&server)).await;
+    github::file_issues_for(
+        db.connection(),
+        &[ta, tb],
+        &gh_settings(&[]),
+        &api(&server),
+        &unstopped(),
+    )
+    .await;
     assert_eq!(requested_paths(&server).await.len(), 1);
 
     let ja = flaky_job_in(&db, "acme/c", ".github/workflows/a.yml", "a").await;
@@ -1920,7 +2138,14 @@ async fn a_429_stops_the_test_and_job_batches() {
         .mount(&jobs)
         .await;
 
-    github::file_job_issues_for(db.connection(), &[ja, jb], &gh_settings(&[]), &api(&jobs)).await;
+    github::file_job_issues_for(
+        db.connection(),
+        &[ja, jb],
+        &gh_settings(&[]),
+        &api(&jobs),
+        &unstopped(),
+    )
+    .await;
     assert_eq!(requested_paths(&jobs).await.len(), 1);
 }
 
@@ -1953,6 +2178,7 @@ async fn a_permission_403_costs_only_the_denied_repo() {
             &[a1, a2, b],
             &gh_settings(&[]),
             &api(&server),
+            &unstopped(),
         )
         .await;
     })
@@ -2000,6 +2226,7 @@ async fn a_permission_403_costs_only_the_denied_repo() {
             &[ja1, ja2, jb],
             &gh_settings(&[]),
             &api(&jobs),
+            &unstopped(),
         )
         .await;
     })
@@ -2045,6 +2272,7 @@ async fn a_repo_whose_issues_are_disabled_is_skipped_for_the_rest_of_the_batch()
                 &[a1, a2, b],
                 &gh_settings(&[]),
                 &api(&server),
+                &unstopped(),
             )
             .await;
         })
@@ -2102,6 +2330,7 @@ async fn a_repo_whose_issues_are_disabled_is_skipped_for_the_rest_of_the_batch()
                 &[ja1, ja2, jb],
                 &gh_settings(&[]),
                 &api(&jobs),
+                &unstopped(),
             )
             .await;
         })
@@ -2140,7 +2369,14 @@ async fn an_unusable_status_costs_one_issue_and_the_batch_goes_on() {
         .await;
 
     let logged = logged_from(async {
-        github::file_issues_for(db.connection(), &[a1, a2], &gh_settings(&[]), &api(&server)).await;
+        github::file_issues_for(
+            db.connection(),
+            &[a1, a2],
+            &gh_settings(&[]),
+            &api(&server),
+            &unstopped(),
+        )
+        .await;
     })
     .await;
 
@@ -2189,8 +2425,14 @@ async fn a_malformed_201_body_keeps_the_batch_and_stores_nothing() {
             .await;
 
         let logged = logged_from(async {
-            github::file_issues_for(db.connection(), &[a, b], &gh_settings(&[]), &api(&server))
-                .await;
+            github::file_issues_for(
+                db.connection(),
+                &[a, b],
+                &gh_settings(&[]),
+                &api(&server),
+                &unstopped(),
+            )
+            .await;
         })
         .await;
 
@@ -2227,7 +2469,14 @@ async fn a_file_without_a_line_still_gets_a_permalink() {
     )
     .await;
 
-    github::file_issues_for(db.connection(), &[row_id], &gh_settings(&[]), &api(&server)).await;
+    github::file_issues_for(
+        db.connection(),
+        &[row_id],
+        &gh_settings(&[]),
+        &api(&server),
+        &unstopped(),
+    )
+    .await;
     let requests = server.received_requests().await.expect("a record");
     assert_eq!(requests.len(), 1);
     let body: Json = serde_json::from_slice(&requests[0].body).expect("the body is JSON");
@@ -2282,6 +2531,7 @@ async fn a_test_with_only_passed_executions_gets_no_failure_evidence() {
         &[quiet.id],
         &gh_settings(&[]),
         &api(&server),
+        &unstopped(),
     )
     .await;
     let requests = server.received_requests().await.expect("a record");
@@ -2320,9 +2570,15 @@ async fn two_proven_flakes_meet_the_proven_flake_gate() {
     let settings = gh_settings(&[("FLAKERADAR_GITHUB_ISSUE_MIN_PROVEN_FLAKES", "2")]);
 
     assert!(
-        github::file_issues_for(db.connection(), &[under], &settings, &api(&server))
-            .await
-            .is_empty(),
+        github::file_issues_for(
+            db.connection(),
+            &[under],
+            &settings,
+            &api(&server),
+            &unstopped()
+        )
+        .await
+        .is_empty(),
         "one proven flake is under a gate of two"
     );
     let over = flaky_test_in(&db, "acme/app", "p2", "over").await;
@@ -2335,9 +2591,15 @@ async fn two_proven_flakes_meet_the_proven_flake_gate() {
         .await
         .expect("the count writes");
     assert_eq!(
-        github::file_issues_for(db.connection(), &[over], &settings, &api(&server))
-            .await
-            .len(),
+        github::file_issues_for(
+            db.connection(),
+            &[over],
+            &settings,
+            &api(&server),
+            &unstopped()
+        )
+        .await
+        .len(),
         1,
         "two proven flakes meet it"
     );
@@ -2356,9 +2618,15 @@ async fn a_second_failure_meets_the_min_failures_gate() {
     let settings = gh_settings(&[("FLAKERADAR_GITHUB_ISSUE_MIN_FAILURES", "2")]);
 
     assert!(
-        github::file_issues_for(db.connection(), &[test], &settings, &api(&server))
-            .await
-            .is_empty(),
+        github::file_issues_for(
+            db.connection(),
+            &[test],
+            &settings,
+            &api(&server),
+            &unstopped()
+        )
+        .await
+        .is_empty(),
         "one failure in the window is under a gate of two"
     );
 
@@ -2386,9 +2654,15 @@ async fn a_second_failure_meets_the_min_failures_gate() {
         .expect("the Execution inserts");
 
     assert_eq!(
-        github::file_issues_for(db.connection(), &[test], &settings, &api(&server))
-            .await
-            .len(),
+        github::file_issues_for(
+            db.connection(),
+            &[test],
+            &settings,
+            &api(&server),
+            &unstopped()
+        )
+        .await
+        .len(),
         1,
         "a second failure in the window meets the gate"
     );
@@ -2446,8 +2720,14 @@ async fn only_the_newest_window_counts_a_failure() {
         ("FLAKERADAR_SCORE_WINDOW", "3"),
     ]);
 
-    let filed =
-        github::file_issues_for(db.connection(), &[old.id, new.id], &settings, &api(&server)).await;
+    let filed = github::file_issues_for(
+        db.connection(),
+        &[old.id, new.id],
+        &settings,
+        &api(&server),
+        &unstopped(),
+    )
+    .await;
     assert_eq!(
         filed.into_iter().collect::<Vec<_>>(),
         vec![new.id],
@@ -2470,7 +2750,14 @@ async fn a_huge_id_list_stays_under_the_bind_limit() {
     let mut ids = vec![test];
     ids.extend(10_000_000..10_040_000);
 
-    github::file_issues_for(db.connection(), &ids, &gh_settings(&[]), &api(&server)).await;
+    github::file_issues_for(
+        db.connection(),
+        &ids,
+        &gh_settings(&[]),
+        &api(&server),
+        &unstopped(),
+    )
+    .await;
     assert_eq!(
         requested_paths(&server).await.len(),
         1,
@@ -2531,8 +2818,14 @@ async fn a_row_deleted_while_filing_leaves_the_rest_of_the_batch_filed() {
         .mount(&server)
         .await;
 
-    let filed =
-        github::file_issues_for(db.connection(), &[a, b], &gh_settings(&[]), &api(&server)).await;
+    let filed = github::file_issues_for(
+        db.connection(),
+        &[a, b],
+        &gh_settings(&[]),
+        &api(&server),
+        &unstopped(),
+    )
+    .await;
     assert_eq!(filed.into_iter().collect::<Vec<_>>(), vec![b]);
     assert_eq!(
         requested_paths(&server).await,
@@ -2573,8 +2866,14 @@ async fn the_job_row_deleted_while_filing_closes_the_new_issue() {
         .await;
 
     let logged = logged_from(async {
-        github::file_job_issues_for(db.connection(), &[job], &gh_settings(&[]), &api(&server))
-            .await;
+        github::file_job_issues_for(
+            db.connection(),
+            &[job],
+            &gh_settings(&[]),
+            &api(&server),
+            &unstopped(),
+        )
+        .await;
     })
     .await;
 
@@ -2674,7 +2973,14 @@ async fn a_job_body_lists_its_worst_runner_groups_first() {
     )
     .await;
 
-    github::file_job_issues_for(db.connection(), &[job], &gh_settings(&[]), &api(&server)).await;
+    github::file_job_issues_for(
+        db.connection(),
+        &[job],
+        &gh_settings(&[]),
+        &api(&server),
+        &unstopped(),
+    )
+    .await;
     let body = only_issue_body(&server).await;
     assert!(body.contains("**Failures by runner:**"), "{body}");
     let gpu = "- `gpu, self-hosted`: 2 unexplained of 2 executions";
@@ -2729,7 +3035,14 @@ async fn a_job_body_caps_the_runner_groups_at_three() {
     )
     .await;
 
-    github::file_job_issues_for(db.connection(), &[job], &gh_settings(&[]), &api(&server)).await;
+    github::file_job_issues_for(
+        db.connection(),
+        &[job],
+        &gh_settings(&[]),
+        &api(&server),
+        &unstopped(),
+    )
+    .await;
     let body = only_issue_body(&server).await;
     for expected in [
         "- `a-lab`: 3 unexplained of 3 executions",
@@ -2761,7 +3074,14 @@ async fn a_job_body_omits_the_runner_section_without_an_unexplained_failure() {
     )
     .await;
 
-    github::file_job_issues_for(db.connection(), &[job], &gh_settings(&[]), &api(&server)).await;
+    github::file_job_issues_for(
+        db.connection(),
+        &[job],
+        &gh_settings(&[]),
+        &api(&server),
+        &unstopped(),
+    )
+    .await;
     let body = only_issue_body(&server).await;
     assert!(!body.contains("Failures by runner"), "{body}");
 }
@@ -2778,15 +3098,27 @@ async fn a_job_that_was_reported_is_not_filed_twice() {
     .await;
 
     assert_eq!(
-        github::file_job_issues_for(db.connection(), &[job], &gh_settings(&[]), &api(&server))
-            .await
-            .len(),
+        github::file_job_issues_for(
+            db.connection(),
+            &[job],
+            &gh_settings(&[]),
+            &api(&server),
+            &unstopped()
+        )
+        .await
+        .len(),
         1
     );
     assert!(
-        github::file_job_issues_for(db.connection(), &[job], &gh_settings(&[]), &api(&server))
-            .await
-            .is_empty()
+        github::file_job_issues_for(
+            db.connection(),
+            &[job],
+            &gh_settings(&[]),
+            &api(&server),
+            &unstopped()
+        )
+        .await
+        .is_empty()
     );
     assert_eq!(requested_paths(&server).await.len(), 1);
 }
@@ -2800,7 +3132,7 @@ async fn a_job_filing_without_a_token_is_silent() {
     let api = Api::new(Secret::new(""), &server.uri());
 
     assert!(
-        github::file_job_issues_for(db.connection(), &[job], &settings, &api)
+        github::file_job_issues_for(db.connection(), &[job], &settings, &api, &unstopped())
             .await
             .is_empty()
     );
@@ -2840,9 +3172,15 @@ async fn only_unexplained_job_failures_meet_the_min_failures_gate() {
     let settings = gh_settings(&[("FLAKERADAR_GITHUB_ISSUE_MIN_FAILURES", "2")]);
 
     assert!(
-        github::file_job_issues_for(db.connection(), &[all_explained], &settings, &api(&server))
-            .await
-            .is_empty(),
+        github::file_job_issues_for(
+            db.connection(),
+            &[all_explained],
+            &settings,
+            &api(&server),
+            &unstopped()
+        )
+        .await
+        .is_empty(),
         "three explained failures are none of them unexplained"
     );
 
@@ -2863,9 +3201,15 @@ async fn only_unexplained_job_failures_meet_the_min_failures_gate() {
     explain_job_execution(&db, "mix-1").await;
 
     assert_eq!(
-        github::file_job_issues_for(db.connection(), &[mixed], &settings, &api(&server))
-            .await
-            .len(),
+        github::file_job_issues_for(
+            db.connection(),
+            &[mixed],
+            &settings,
+            &api(&server),
+            &unstopped()
+        )
+        .await
+        .len(),
         1,
         "two unexplained failures meet the gate"
     );
@@ -2932,7 +3276,13 @@ async fn the_sync_leaves_an_unknown_issue_state_alone() {
     )
     .await;
 
-    github::sync_closed_issues(db.connection(), &gh_settings(&[]), &api(&server)).await;
+    github::sync_closed_issues(
+        db.connection(),
+        &gh_settings(&[]),
+        &api(&server),
+        &unstopped(),
+    )
+    .await;
     let (number, filed, checked, closed) = test_link(&db, test).await;
     assert_eq!(number, Some(12), "an unknown state says nothing");
     assert_eq!(filed, Some(true));
@@ -2956,7 +3306,7 @@ async fn the_sync_rotates_through_its_links_a_batch_at_a_time() {
         .await;
     let settings = gh_settings(&[("FLAKERADAR_GITHUB_SYNC_BATCH", "2")]);
 
-    github::sync_closed_issues(db.connection(), &settings, &api(&server)).await;
+    github::sync_closed_issues(db.connection(), &settings, &api(&server), &unstopped()).await;
     assert_eq!(
         requested_paths(&server).await,
         vec!["/repos/acme/app/issues/11", "/repos/acme/app/issues/22"],
@@ -2968,7 +3318,7 @@ async fn the_sync_rotates_through_its_links_a_batch_at_a_time() {
         "an open issue is still a check"
     );
 
-    github::sync_closed_issues(db.connection(), &settings, &api(&server)).await;
+    github::sync_closed_issues(db.connection(), &settings, &api(&server), &unstopped()).await;
     assert_eq!(
         requested_paths(&server).await,
         vec![
@@ -2994,7 +3344,13 @@ async fn a_never_checked_link_goes_before_a_stamped_one() {
         .mount(&server)
         .await;
 
-    github::sync_closed_issues(db.connection(), &gh_settings(&[]), &api(&server)).await;
+    github::sync_closed_issues(
+        db.connection(),
+        &gh_settings(&[]),
+        &api(&server),
+        &unstopped(),
+    )
+    .await;
     assert_eq!(
         requested_paths(&server).await.len(),
         2,
@@ -3004,7 +3360,7 @@ async fn a_never_checked_link_goes_before_a_stamped_one() {
     let fresh = flaky_test_in(&db, "acme/app", "p3", "t3").await;
     stamp_link(&db, fresh, 33, false, false).await;
     let settings = gh_settings(&[("FLAKERADAR_GITHUB_SYNC_BATCH", "1")]);
-    github::sync_closed_issues(db.connection(), &settings, &api(&server)).await;
+    github::sync_closed_issues(db.connection(), &settings, &api(&server), &unstopped()).await;
     assert_eq!(
         requested_paths(&server).await[2..],
         ["/repos/acme/app/issues/33"],
@@ -3023,7 +3379,7 @@ async fn a_sync_rate_limit_stops_the_batch_and_keeps_the_stamps_it_made() {
 
     // An unreachable GitHub never raises: nothing is stamped, and the batch ends.
     let offline = Api::new(Secret::new(TOKEN), "http://127.0.0.1:1");
-    github::sync_closed_issues(db.connection(), &gh_settings(&[]), &offline).await;
+    github::sync_closed_issues(db.connection(), &gh_settings(&[]), &offline, &unstopped()).await;
     assert!(!test_link(&db, first).await.2);
 
     let server = MockServer::start().await;
@@ -3041,7 +3397,13 @@ async fn a_sync_rate_limit_stops_the_batch_and_keeps_the_stamps_it_made() {
         ResponseTemplate::new(403).insert_header("x-ratelimit-remaining", "0"),
     )
     .await;
-    github::sync_closed_issues(db.connection(), &gh_settings(&[]), &api(&server)).await;
+    github::sync_closed_issues(
+        db.connection(),
+        &gh_settings(&[]),
+        &api(&server),
+        &unstopped(),
+    )
+    .await;
     assert_eq!(
         requested_paths(&server).await,
         vec!["/repos/acme/a/issues/1", "/repos/acme/b/issues/2"],
@@ -3068,7 +3430,13 @@ async fn a_sync_rate_limit_stops_the_batch_and_keeps_the_stamps_it_made() {
         ResponseTemplate::new(200).set_body_json(json!({"state": "open"})),
     )
     .await;
-    github::sync_closed_issues(db.connection(), &gh_settings(&[]), &api(&second_server)).await;
+    github::sync_closed_issues(
+        db.connection(),
+        &gh_settings(&[]),
+        &api(&second_server),
+        &unstopped(),
+    )
+    .await;
     assert_eq!(
         requested_paths(&second_server).await,
         vec!["/repos/acme/b/issues/2", "/repos/acme/a/issues/1"],
@@ -3103,7 +3471,13 @@ async fn a_permission_403_skips_the_later_rows_of_that_repo() {
     )
     .await;
 
-    github::sync_closed_issues(db.connection(), &gh_settings(&[]), &api(&server)).await;
+    github::sync_closed_issues(
+        db.connection(),
+        &gh_settings(&[]),
+        &api(&server),
+        &unstopped(),
+    )
+    .await;
     let mut paths = requested_paths(&server).await;
     paths.sort();
     assert_eq!(
@@ -3152,14 +3526,14 @@ async fn the_sync_rotates_past_a_denied_repo() {
     .await;
     let settings = gh_settings(&[("FLAKERADAR_GITHUB_SYNC_BATCH", "2")]);
 
-    github::sync_closed_issues(db.connection(), &settings, &api(&server)).await;
+    github::sync_closed_issues(db.connection(), &settings, &api(&server), &unstopped()).await;
     assert_eq!(
         requested_paths(&server).await,
         vec!["/repos/acme/a/issues/11"],
         "the cap holds the two denied rows and the second gets no GET"
     );
 
-    github::sync_closed_issues(db.connection(), &settings, &api(&server)).await;
+    github::sync_closed_issues(db.connection(), &settings, &api(&server), &unstopped()).await;
     assert_eq!(
         requested_paths(&server).await,
         vec![
@@ -3202,7 +3576,13 @@ async fn a_sync_definitive_client_error_keeps_the_link_and_skips_the_repo() {
         )
         .await;
 
-        github::sync_closed_issues(db.connection(), &gh_settings(&[]), &api(&server)).await;
+        github::sync_closed_issues(
+            db.connection(),
+            &gh_settings(&[]),
+            &api(&server),
+            &unstopped(),
+        )
+        .await;
         assert_eq!(
             requested_paths(&server).await,
             vec!["/repos/acme/a/issues/11", "/repos/acme/b/issues/22"],
@@ -3252,7 +3632,7 @@ async fn the_sync_rotates_past_an_unreadable_link() {
     .await;
     let settings = gh_settings(&[("FLAKERADAR_GITHUB_SYNC_BATCH", "2")]);
 
-    github::sync_closed_issues(db.connection(), &settings, &api(&server)).await;
+    github::sync_closed_issues(db.connection(), &settings, &api(&server), &unstopped()).await;
     assert_eq!(
         requested_paths(&server).await,
         vec!["/repos/acme/a/issues/11", "/repos/acme/b/issues/22"]
@@ -3260,7 +3640,7 @@ async fn the_sync_rotates_past_an_unreadable_link() {
     assert_eq!(test_link(&db, bad).await.0, Some(11));
     assert!(test_link(&db, bad).await.2, "the bad row rotates");
 
-    github::sync_closed_issues(db.connection(), &settings, &api(&server)).await;
+    github::sync_closed_issues(db.connection(), &settings, &api(&server), &unstopped()).await;
     assert_eq!(
         requested_paths(&server).await[2..],
         ["/repos/acme/c/issues/33", "/repos/acme/a/issues/11"],
@@ -3294,6 +3674,7 @@ async fn a_gone_issue_rearms_its_link_but_any_other_answer_keeps_it() {
             db.connection(),
             &gh_settings(&[]),
             &api(&gone),
+            &unstopped(),
         ))
         .await;
         assert_eq!(requested_paths(&gone).await, vec![route.clone()]);
@@ -3329,6 +3710,7 @@ async fn a_gone_issue_rearms_its_link_but_any_other_answer_keeps_it() {
             db.connection(),
             &gh_settings(&[]),
             &api(&broken),
+            &unstopped(),
         ))
         .await;
         assert_eq!(requested_paths(&broken).await, vec![route]);
@@ -3356,7 +3738,14 @@ async fn the_job_sync_rearms_a_closed_issue_and_the_filer_files_again() {
         ResponseTemplate::new(201).set_body_json(json!({"number": 77})),
     )
     .await;
-    github::file_job_issues_for(db.connection(), &[job], &gh_settings(&[]), &api(&server)).await;
+    github::file_job_issues_for(
+        db.connection(),
+        &[job],
+        &gh_settings(&[]),
+        &api(&server),
+        &unstopped(),
+    )
+    .await;
     assert_eq!(job_link(&db, job).await.0, Some(77));
 
     let sync_server = MockServer::start().await;
@@ -3367,7 +3756,13 @@ async fn the_job_sync_rearms_a_closed_issue_and_the_filer_files_again() {
         ResponseTemplate::new(200).set_body_json(json!({"state": "closed"})),
     )
     .await;
-    github::sync_closed_issues(db.connection(), &gh_settings(&[]), &api(&sync_server)).await;
+    github::sync_closed_issues(
+        db.connection(),
+        &gh_settings(&[]),
+        &api(&sync_server),
+        &unstopped(),
+    )
+    .await;
     assert_eq!(job_link(&db, job).await.0, None);
 
     let refile = MockServer::start().await;
@@ -3377,9 +3772,15 @@ async fn the_job_sync_rearms_a_closed_issue_and_the_filer_files_again() {
     )
     .await;
     assert_eq!(
-        github::file_job_issues_for(db.connection(), &[job], &gh_settings(&[]), &api(&refile))
-            .await
-            .len(),
+        github::file_job_issues_for(
+            db.connection(),
+            &[job],
+            &gh_settings(&[]),
+            &api(&refile),
+            &unstopped()
+        )
+        .await
+        .len(),
         1,
         "the re-armed Job is filed again"
     );
@@ -3861,7 +4262,14 @@ async fn a_job_issue_is_noted_and_closed_with_the_same_wording() {
     mount_patch(&server, "acme/app", 77, ResponseTemplate::new(200)).await;
     let settings = fixed_settings(&[("FLAKERADAR_GITHUB_CLOSE_FIXED", "true")]);
 
-    github::note_fixed_job_issues_for(db.connection(), &[job], &settings, &api(&server)).await;
+    github::note_fixed_job_issues_for(
+        db.connection(),
+        &[job],
+        &settings,
+        &api(&server),
+        &unstopped(),
+    )
+    .await;
 
     let requests = server.received_requests().await.expect("a record");
     assert_eq!(
@@ -3907,6 +4315,7 @@ async fn a_note_ignores_a_row_with_no_live_note() {
         &[short, unlinked, declined],
         &fixed_settings(&[]),
         &api(&server),
+        &unstopped(),
     )
     .await;
     assert!(
@@ -3923,7 +4332,14 @@ async fn a_note_ignores_a_row_with_no_live_note() {
     stamp_link(&db, at_streak, 73, true, false).await;
     set_clean_streak(&db, "test_cases", at_streak, 9).await;
     let off = fixed_settings(&[("FLAKERADAR_GITHUB_FIXED_STREAK", "0")]);
-    github::note_fixed_issues_for(db.connection(), &[at_streak], &off, &api(&server)).await;
+    github::note_fixed_issues_for(
+        db.connection(),
+        &[at_streak],
+        &off,
+        &api(&server),
+        &unstopped(),
+    )
+    .await;
     assert!(
         server
             .received_requests()
@@ -3958,6 +4374,7 @@ async fn a_note_skips_a_job_of_another_provider() {
         &[job.id],
         &fixed_settings(&[]),
         &api(&server),
+        &unstopped(),
     )
     .await;
     assert!(
@@ -3992,6 +4409,7 @@ async fn a_note_close_that_fails_keeps_the_stamp() {
         &[test],
         &settings,
         &api(&server),
+        &unstopped(),
     ))
     .await;
     assert_eq!(
@@ -4008,7 +4426,14 @@ async fn a_note_close_that_fails_keeps_the_stamp() {
         "{logged}"
     );
 
-    github::note_fixed_issues_for(db.connection(), &[test], &settings, &api(&server)).await;
+    github::note_fixed_issues_for(
+        db.connection(),
+        &[test],
+        &settings,
+        &api(&server),
+        &unstopped(),
+    )
+    .await;
     assert_eq!(
         requested_paths(&server).await.len(),
         2,
@@ -4041,6 +4466,7 @@ async fn a_note_rate_limit_stops_the_batch() {
             &[first, second],
             &fixed_settings(&[]),
             &api(&server),
+            &unstopped(),
         )
         .await;
         assert_eq!(
@@ -4077,6 +4503,7 @@ async fn a_note_rate_limit_stops_the_batch() {
         &[first, second],
         &settings,
         &api(&server),
+        &unstopped(),
     ))
     .await;
     assert_eq!(
@@ -4121,6 +4548,7 @@ async fn a_note_permission_403_skips_only_that_repo() {
         &[a1, other, a2],
         &fixed_settings(&[]),
         &api(&server),
+        &unstopped(),
     )
     .await;
     assert_eq!(
@@ -4159,6 +4587,7 @@ async fn a_note_permission_403_skips_only_that_repo() {
         &[a, b],
         &settings,
         &api(&server),
+        &unstopped(),
     ))
     .await;
     assert_eq!(
@@ -4192,6 +4621,7 @@ async fn a_note_network_error_is_logged_and_never_raises() {
         &[test],
         &fixed_settings(&[]),
         &api,
+        &unstopped(),
     ))
     .await;
     assert!(!noted(&db, "test_cases", test).await);
@@ -4218,6 +4648,7 @@ async fn a_fixed_note_close_whose_connection_dies_keeps_the_stamp() {
         &[test],
         &settings,
         &api,
+        &unstopped(),
     ))
     .await;
 
@@ -4257,6 +4688,7 @@ async fn an_unusable_note_comment_status_leaves_the_row_unstamped() {
         &[bad, other],
         &fixed_settings(&[]),
         &api(&server),
+        &unstopped(),
     ))
     .await;
     assert_eq!(
@@ -4290,7 +4722,13 @@ async fn a_test_sync_rearms_its_closed_issue_and_the_filer_files_again() {
     )
     .await;
 
-    github::sync_closed_issues(db.connection(), &gh_settings(&[]), &api(&sync_server)).await;
+    github::sync_closed_issues(
+        db.connection(),
+        &gh_settings(&[]),
+        &api(&sync_server),
+        &unstopped(),
+    )
+    .await;
     assert_eq!(
         requested_paths(&sync_server).await,
         vec!["/repos/acme/app/issues/300"]
@@ -4303,8 +4741,14 @@ async fn a_test_sync_rearms_its_closed_issue_and_the_filer_files_again() {
         ResponseTemplate::new(201).set_body_json(json!({"number": 77})),
     )
     .await;
-    let filed =
-        github::file_issues_for(db.connection(), &[test], &gh_settings(&[]), &api(&filing)).await;
+    let filed = github::file_issues_for(
+        db.connection(),
+        &[test],
+        &gh_settings(&[]),
+        &api(&filing),
+        &unstopped(),
+    )
+    .await;
     assert_eq!(filed.into_iter().collect::<Vec<_>>(), vec![test]);
     assert_eq!(test_link(&db, test).await.0, Some(77));
     assert!(!test_link(&db, test).await.2, "a new link is checked first");
@@ -4330,6 +4774,7 @@ async fn a_linked_test_and_a_linked_job_are_never_filed() {
         &[linked, other],
         &gh_settings(&[]),
         &api(&server),
+        &unstopped(),
     )
     .await;
     assert_eq!(filed.into_iter().collect::<Vec<_>>(), vec![other]);
@@ -4340,9 +4785,14 @@ async fn a_linked_test_and_a_linked_job_are_never_filed() {
     );
     assert_eq!(test_link(&db, linked).await.0, Some(300));
 
-    let jobs =
-        github::file_job_issues_for(db.connection(), &[job], &gh_settings(&[]), &api(&server))
-            .await;
+    let jobs = github::file_job_issues_for(
+        db.connection(),
+        &[job],
+        &gh_settings(&[]),
+        &api(&server),
+        &unstopped(),
+    )
+    .await;
     assert!(jobs.is_empty(), "a linked Job is never filed");
     assert!(
         server.received_requests().await.expect("a record").len() == 1,
@@ -4432,9 +4882,9 @@ async fn note_row(
 /// The fixed-note entry point of one entity.
 async fn note_entity(db: &TestDb, entity: &str, ids: &[i32], settings: &Settings, api: &Api) {
     if entity == "test" {
-        github::note_fixed_issues_for(db.connection(), ids, settings, api).await;
+        github::note_fixed_issues_for(db.connection(), ids, settings, api, &unstopped()).await;
     } else {
-        github::note_fixed_job_issues_for(db.connection(), ids, settings, api).await;
+        github::note_fixed_job_issues_for(db.connection(), ids, settings, api, &unstopped()).await;
     }
 }
 
@@ -4573,7 +5023,7 @@ async fn job_link_change_and_unlink_reset_the_check_stamp() {
     )
     .await
     .expect("the link succeeds");
-    github::sync_closed_issues(db.connection(), &settings, &api(&server)).await;
+    github::sync_closed_issues(db.connection(), &settings, &api(&server), &unstopped()).await;
     assert!(
         job_checked(&db, job).await,
         "an open issue is still a check"
@@ -4595,7 +5045,7 @@ async fn job_link_change_and_unlink_reset_the_check_stamp() {
         !job_checked(&db, job).await,
         "a replaced link is checked first"
     );
-    github::sync_closed_issues(db.connection(), &settings, &api(&server)).await;
+    github::sync_closed_issues(db.connection(), &settings, &api(&server), &unstopped()).await;
     assert!(job_checked(&db, job).await, "the new link is checked");
 
     issue_links::unlink_issue(db.connection(), LinkTarget::Job, i64::from(job), &reads)
@@ -4756,7 +5206,14 @@ async fn the_note_step_skips_the_link_this_same_pass_filed() {
             processed(&[], &[obj])
         };
 
-        github::on_report_processed(db.connection(), &outcome, &settings, &api(&server)).await;
+        github::on_report_processed(
+            db.connection(),
+            &outcome,
+            &settings,
+            &api(&server),
+            &unstopped(),
+        )
+        .await;
         assert_eq!(
             requested_calls(&server).await,
             vec![("POST".to_owned(), "/repos/acme/app/issues".to_owned())],
@@ -4805,7 +5262,14 @@ async fn a_processed_report_never_notes_the_issue_it_filed() {
             processed(&[], &[live, fresh, linked])
         };
 
-        github::on_report_processed(db.connection(), &outcome, &settings, &api(&server)).await;
+        github::on_report_processed(
+            db.connection(),
+            &outcome,
+            &settings,
+            &api(&server),
+            &unstopped(),
+        )
+        .await;
         assert_eq!(
             requested_calls(&server).await,
             vec![
@@ -4830,7 +5294,14 @@ async fn a_processed_report_never_notes_the_issue_it_filed() {
         );
         assert!(!noted(&db, table, live).await, "and never noted");
 
-        github::on_report_processed(db.connection(), &outcome, &settings, &api(&server)).await;
+        github::on_report_processed(
+            db.connection(),
+            &outcome,
+            &settings,
+            &api(&server),
+            &unstopped(),
+        )
+        .await;
         assert_eq!(
             requested_calls(&server).await.len(),
             3,
@@ -4880,7 +5351,13 @@ async fn an_unlink_clears_both_halves_and_a_rearm_keeps_its_stamp() {
             .set_body_json(json!({"state": "closed", "state_reason": "completed"})),
     )
     .await;
-    github::sync_closed_issues(db.connection(), &gh_settings(&[]), &api(&server)).await;
+    github::sync_closed_issues(
+        db.connection(),
+        &gh_settings(&[]),
+        &api(&server),
+        &unstopped(),
+    )
+    .await;
     assert_eq!(
         requested_paths(&server).await,
         vec!["/repos/acme/app/issues/22"],
@@ -4914,7 +5391,13 @@ async fn an_unlink_after_a_rearm_clears_the_kept_stamp_on_a_test_and_a_job() {
             ResponseTemplate::new(200).set_body_json(json!({"state": "closed"})),
         )
         .await;
-        github::sync_closed_issues(db.connection(), &gh_settings(&[]), &api(&server)).await;
+        github::sync_closed_issues(
+            db.connection(),
+            &gh_settings(&[]),
+            &api(&server),
+            &unstopped(),
+        )
+        .await;
         assert_eq!(
             requested_paths(&server).await,
             vec![format!("/repos/acme/app/issues/{number}")]
@@ -4956,7 +5439,13 @@ async fn an_unlink_after_a_rearm_clears_the_kept_stamp_on_a_test_and_a_job() {
         );
 
         let before = requested_paths(&server).await.len();
-        github::sync_closed_issues(db.connection(), &gh_settings(&[]), &api(&server)).await;
+        github::sync_closed_issues(
+            db.connection(),
+            &gh_settings(&[]),
+            &api(&server),
+            &unstopped(),
+        )
+        .await;
         assert_eq!(
             requested_paths(&server).await.len(),
             before,
@@ -5015,7 +5504,14 @@ async fn an_unlink_rearms_a_declined_link_and_the_filer_files_it_again() {
         ResponseTemplate::new(201).set_body_json(json!({"number": 77})),
     )
     .await;
-    github::file_issues_for(db.connection(), &[test], &gh_settings(&[]), &api(&filing)).await;
+    github::file_issues_for(
+        db.connection(),
+        &[test],
+        &gh_settings(&[]),
+        &api(&filing),
+        &unstopped(),
+    )
+    .await;
     let (number, _, _, closed) = test_link(&db, test).await;
     assert_eq!(number, Some(77), "the filer files the re-armed Test");
     assert!(!closed, "a fresh link starts unflagged");
@@ -5026,7 +5522,13 @@ async fn an_unlink_rearms_a_declined_link_and_the_filer_files_it_again() {
         ResponseTemplate::new(200).set_body_json(json!({"state": "open"})),
     )
     .await;
-    github::sync_closed_issues(db.connection(), &gh_settings(&[]), &api(&sync)).await;
+    github::sync_closed_issues(
+        db.connection(),
+        &gh_settings(&[]),
+        &api(&sync),
+        &unstopped(),
+    )
+    .await;
     assert_eq!(
         requested_paths(&sync).await,
         vec!["/repos/acme/app/issues/77"],
@@ -5130,7 +5632,13 @@ async fn the_sync_rearm_clears_the_fixed_note_stamp_but_a_declined_link_keeps_it
     )
     .await;
 
-    github::sync_closed_issues(db.connection(), &gh_settings(&[]), &api(&server)).await;
+    github::sync_closed_issues(
+        db.connection(),
+        &gh_settings(&[]),
+        &api(&server),
+        &unstopped(),
+    )
+    .await;
     assert_eq!(
         requested_paths(&server).await,
         vec![

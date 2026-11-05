@@ -10,15 +10,22 @@
     reason = "a test fails loudly when a stub or a task does not behave"
 )]
 
+mod common;
+
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use flakeradar::worker::{AdvisoryLock, LockSession, ReportWorker, WorkerSettings};
+use flakeradar::worker::{
+    AdvisoryLock, LockSession, ProcessFuture, ReportProcessor, ReportWorker, WorkerSettings,
+};
 use flakeradar::{Api, Settings, settings::Secret};
 use flakeradar::{GitHubWorker, LeaderTask};
 use flakeradar_db::entities::{projects, reports};
-use flakeradar_db::{DbSettings, ProcessingSettings, WORKER_LOCK_KEY, connect, connect_session};
+use flakeradar_db::{
+    DbError, DbSettings, ProcessOutcome, ProcessingSettings, WORKER_LOCK_KEY, connect,
+    connect_session,
+};
 use flakeradar_test_support::{
     ScriptedMonotonic, TestDb, make_job, make_junit, make_pipeline, make_project, make_report,
     make_test_case,
@@ -72,9 +79,14 @@ async fn until_count(server: &MockServer, expected: usize) {
 
 /// One flaky Test in `acme/app`.
 async fn flaky_test(db: &TestDb) -> i32 {
+    flaky_test_in(db, "backend").await
+}
+
+/// One flaky Test in `acme/app`, in the Project `project`.
+async fn flaky_test_in(db: &TestDb, project: &str) -> i32 {
     let project = make_project()
         .repo("acme/app")
-        .project("backend")
+        .project(project)
         .build(db.connection())
         .await
         .expect("the Project inserts");
@@ -105,8 +117,8 @@ async fn flaky_job(db: &TestDb) -> i32 {
 }
 
 /// A processed Report outcome for `tests`.
-fn processed(tests: &[i32]) -> flakeradar_db::ProcessOutcome {
-    flakeradar_db::ProcessOutcome {
+fn processed(tests: &[i32]) -> ProcessOutcome {
+    ProcessOutcome {
         report_id: 1,
         status: "processed".to_owned(),
         run_id: Some(1),
@@ -481,8 +493,13 @@ async fn release_lock(session: DatabaseConnection) {
 
 /// A linked Test in `acme/app` at issue `number`, so a sync has work to do.
 async fn linked_test(db: &TestDb, number: i32) -> i32 {
+    linked_test_in(db, "acme/app", number).await
+}
+
+/// A linked Test in the Repo `repo` at issue `number`, so a sync has work to do.
+async fn linked_test_in(db: &TestDb, repo: &str, number: i32) -> i32 {
     let project = make_project()
-        .repo("acme/app")
+        .repo(repo)
         .project("linked")
         .build(db.connection())
         .await
@@ -499,8 +516,13 @@ async fn linked_test(db: &TestDb, number: i32) -> i32 {
 
 /// A linked Test at the fixed-note threshold, so the note step has work to do.
 async fn noteable_test(db: &TestDb, number: i32, streak: i32) -> i32 {
+    noteable_test_in(db, "acme/app", number, streak).await
+}
+
+/// The same, in the Repo `repo`.
+async fn noteable_test_in(db: &TestDb, repo: &str, number: i32, streak: i32) -> i32 {
     let project = make_project()
-        .repo("acme/app")
+        .repo(repo)
         .project("noteable")
         .build(db.connection())
         .await
@@ -522,6 +544,33 @@ fn note_settings() -> Settings {
     map.insert("FLAKERADAR_GITHUB_TOKEN".to_owned(), TOKEN.to_owned());
     map.insert("FLAKERADAR_GITHUB_FIXED_STREAK".to_owned(), "3".to_owned());
     Settings::from_map(&map).expect("the test's settings are valid")
+}
+
+/// The settings a fixed-note run uses when it also closes the issue.
+fn closing_settings() -> Settings {
+    let mut map = std::collections::BTreeMap::new();
+    map.insert("FLAKERADAR_GITHUB_TOKEN".to_owned(), TOKEN.to_owned());
+    map.insert("FLAKERADAR_GITHUB_FIXED_STREAK".to_owned(), "3".to_owned());
+    map.insert(
+        "FLAKERADAR_GITHUB_CLOSE_FIXED".to_owned(),
+        "true".to_owned(),
+    );
+    Settings::from_map(&map).expect("the test's settings are valid")
+}
+
+/// Whether GitHub is recorded as having closed one Test's issue.
+async fn closed(db: &TestDb, id: i32) -> bool {
+    let row = db
+        .connection()
+        .query_one_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "SELECT github_issue_closed AS closed FROM test_cases WHERE id = $1",
+            [Value::from(id)],
+        ))
+        .await
+        .expect("the row reads")
+        .expect("the Test exists");
+    row.try_get("", "closed").expect("a flag")
 }
 
 /// The stored issue number of one Test.
@@ -1128,4 +1177,449 @@ async fn a_standby_leads_only_after_the_former_github_task_stops() {
         lock_is_free(db.url()).await
     })
     .await;
+}
+
+// --- the lifecycle a leadership change puts a task through ------------------
+
+/// The most `stop` may take while a call is in flight.
+///
+/// Far under the fifteen-second request timeout a call it cannot end would wait
+/// out, and far over the wake a cancellation costs, so the bound separates the
+/// two without depending on a machine's speed.
+const STOP_BOUND: Duration = Duration::from_secs(2);
+
+/// A processor that fails once, then hands over `outcome` and idles.
+///
+/// The failure is what the loop treats as a lost leader: it drops leadership,
+/// stops its leader tasks and takes the lock again on its next attempt.
+#[derive(Debug)]
+struct FailsOnce {
+    calls: AtomicUsize,
+    outcome: ProcessOutcome,
+}
+
+impl FailsOnce {
+    /// A processor that drops leadership before its first outcome.
+    fn new(outcome: ProcessOutcome) -> Self {
+        Self {
+            calls: AtomicUsize::new(0),
+            outcome,
+        }
+    }
+}
+
+impl ReportProcessor for FailsOnce {
+    fn process_next(
+        &self,
+        _pool: DatabaseConnection,
+        _settings: ProcessingSettings,
+    ) -> ProcessFuture<'static> {
+        let call = self.calls.fetch_add(1, Ordering::SeqCst);
+        let outcome = self.outcome.clone();
+        Box::pin(async move {
+            match call {
+                0 => Err(DbError::LockSessionLost {
+                    detail: "the test staged a database error".to_owned(),
+                }),
+                1 => Ok(Some(outcome)),
+                _ => Ok(None),
+            }
+        })
+    }
+}
+
+#[tokio::test]
+async fn a_stopped_github_task_files_again_after_a_restart() {
+    let db = TestDb::new().await.expect("a test database");
+    let first = flaky_test(&db).await;
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/repos/acme/app/issues"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({"number": 7})))
+        .mount(&server)
+        .await;
+    mount_open_issue(&server, 7).await;
+    let worker = Arc::new(GitHubWorker::new(
+        db.connection().clone(),
+        Arc::new(settings()),
+        Api::new(Secret::new(TOKEN), &server.uri()),
+        Duration::from_secs(3600),
+    ));
+
+    LeaderTask::start(worker.as_ref()).await;
+    LeaderTask::enqueue(worker.as_ref(), &processed(&[first]))
+        .expect("the queue takes the outcome");
+    wait_until("the first term files", || async {
+        stored_number(&db, first).await == Some(7)
+    })
+    .await;
+    LeaderTask::stop(worker.as_ref())
+        .await
+        .expect("the task stops");
+
+    // The same worker, re-elected: a fresh term starts a fresh task.
+    let second = flaky_test_in(&db, "second").await;
+    LeaderTask::start(worker.as_ref()).await;
+    LeaderTask::enqueue(worker.as_ref(), &processed(&[second]))
+        .expect("the queue takes the outcome");
+    wait_until("the second term files", || async {
+        stored_number(&db, second).await == Some(7)
+    })
+    .await;
+    LeaderTask::stop(worker.as_ref())
+        .await
+        .expect("the task stops");
+}
+
+#[tokio::test]
+async fn leadership_a_failing_processor_drops_files_after_it_returns() {
+    let db = TestDb::new().await.expect("a test database");
+    let test = flaky_test(&db).await;
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/repos/acme/app/issues"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({"number": 7})))
+        .mount(&server)
+        .await;
+    let github = Arc::new(GitHubWorker::new(
+        db.connection().clone(),
+        Arc::new(settings()),
+        Api::new(Secret::new(TOKEN), &server.uri()),
+        Duration::from_secs(3600),
+    ));
+    let leader: Arc<dyn LeaderTask> = Arc::clone(&github) as Arc<dyn LeaderTask>;
+    let worker = Arc::new(
+        ReportWorker::new(
+            db.connection().clone(),
+            Arc::new(AdvisoryLock::new(db.url(), DbSettings::default())),
+            ProcessingSettings::default(),
+            worker_settings(),
+        )
+        .with_leader_task(leader)
+        .with_processor(Arc::new(FailsOnce::new(processed(&[test])))),
+    );
+
+    Arc::clone(&worker).start().await;
+    // The first claim drops leadership; the report the second claim hands over is
+    // the new Proven flake, and it is filed only if the task started again.
+    wait_until("the issue is filed after leadership returns", || async {
+        stored_number(&db, test).await == Some(7)
+    })
+    .await;
+    assert!(
+        worker.is_leader(),
+        "the process leads again by the time its task files"
+    );
+    worker.stop().await;
+    assert_eq!(stored_number(&db, test).await, Some(7));
+}
+
+/// A processor that hands over what the test queued, and idles otherwise.
+#[derive(Debug, Default)]
+struct HandsOver {
+    next: Mutex<Option<ProcessOutcome>>,
+}
+
+impl HandsOver {
+    /// Hands `outcome` over on the next claim the leader makes.
+    fn hand_over(&self, outcome: ProcessOutcome) {
+        *self.next.lock().unwrap_or_else(PoisonError::into_inner) = Some(outcome);
+    }
+}
+
+impl ReportProcessor for HandsOver {
+    fn process_next(
+        &self,
+        _pool: DatabaseConnection,
+        _settings: ProcessingSettings,
+    ) -> ProcessFuture<'static> {
+        let handed = self
+            .next
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        Box::pin(async move { Ok(handed) })
+    }
+}
+
+#[tokio::test]
+async fn a_database_that_drops_the_leader_files_the_next_proven_flake() {
+    let db = TestDb::new().await.expect("a test database");
+    let first = flaky_test(&db).await;
+    let second = flaky_test_in(&db, "second").await;
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/repos/acme/app/issues"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({"number": 7})))
+        .mount(&server)
+        .await;
+    mount_open_issue(&server, 7).await;
+    let github = Arc::new(GitHubWorker::new(
+        db.connection().clone(),
+        Arc::new(settings()),
+        Api::new(Secret::new(TOKEN), &server.uri()),
+        Duration::from_secs(3600),
+    ));
+    let processor = Arc::new(HandsOver::default());
+    let leader: Arc<dyn LeaderTask> = Arc::clone(&github) as Arc<dyn LeaderTask>;
+    let report_processor: Arc<dyn ReportProcessor> =
+        Arc::clone(&processor) as Arc<dyn ReportProcessor>;
+    let worker = Arc::new(
+        ReportWorker::new(
+            db.connection().clone(),
+            Arc::new(AdvisoryLock::new(db.url(), DbSettings::default())),
+            ProcessingSettings::default(),
+            worker_settings(),
+        )
+        .with_leader_task(leader)
+        .with_processor(report_processor),
+    );
+
+    Arc::clone(&worker).start().await;
+    wait_until("the worker leads", || async { worker.is_leader() }).await;
+    processor.hand_over(processed(&[first]));
+    wait_until("the first Proven flake is filed", || async {
+        stored_number(&db, first).await == Some(7)
+    })
+    .await;
+
+    // A Postgres restart kills every session the leader held, the one carrying the
+    // processor lock above all. That loss is what a stopped server delivers, and the
+    // claim queued below is granted the instant the holder's session dies, so the
+    // lock is out of the worker's hands while it notices — which is the state a
+    // restart leaves it in until it asks the new server for the lock again.
+    let database = database_name(&db).await;
+    let claim = LockClaim::queue(&db).await;
+    let holder = lock_holder(&db, &database).await;
+    assert!(
+        end_session(&db, holder).await,
+        "the session that held the processor lock was still there to end"
+    );
+    let claim = claim.granted().await;
+    wait_until("leadership is released", || async { !worker.is_leader() }).await;
+
+    // The queue outlives the leadership, as the reference's does: the outcome the
+    // next leader claims is filed even though it was handed over by nobody.
+    processor.hand_over(processed(&[second]));
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(
+        stored_number(&db, second).await,
+        None,
+        "no task is running while the worker stands by, so nothing is filed"
+    );
+
+    release_lock(claim).await;
+    wait_until("the new Proven flake is filed", || async {
+        stored_number(&db, second).await == Some(7)
+    })
+    .await;
+    worker.stop().await;
+    assert_eq!(stored_number(&db, second).await, Some(7));
+}
+
+#[tokio::test]
+async fn a_full_queue_drops_the_oldest_outcome_and_says_so() {
+    let db = TestDb::new().await.expect("a test database");
+    let test = flaky_test(&db).await;
+    let worker = Arc::new(GitHubWorker::new(
+        db.connection().clone(),
+        Arc::new(settings()),
+        Api::new(Secret::new(TOKEN), "http://127.0.0.1:1"),
+        Duration::from_secs(3600),
+    ));
+
+    // No task drains the queue, so every outcome past the bound is one too many.
+    let over = 3;
+    let logged = logged_while(async {
+        for _ in 0..flakeradar::github_worker::QUEUE_MAX + over {
+            LeaderTask::enqueue(worker.as_ref(), &processed(&[test]))
+                .expect("the queue takes the outcome");
+        }
+    })
+    .await;
+
+    assert_eq!(
+        worker.queued(),
+        flakeradar::github_worker::QUEUE_MAX,
+        "the queue holds no more than its bound"
+    );
+    assert_eq!(
+        worker.dropped(),
+        over,
+        "every outcome past the bound is dropped"
+    );
+    assert!(
+        logged.contains("GitHub queue full"),
+        "the drops are logged: {logged}"
+    );
+}
+
+#[tokio::test]
+async fn stopping_ends_an_unanswered_sync_get_at_once() {
+    let db = TestDb::new().await.expect("a test database");
+    let linked = linked_test(&db, 12).await;
+    // A second linked row in another Repo: a batch that was not stopped moves on
+    // to it after the first GET gave up, so the request count is a second fact
+    // about the stop, independent of how long anything took.
+    let other = linked_test_in(&db, "other/app", 13).await;
+    let endpoint = common::Unanswered::start().await;
+    let worker = GitHubWorker::new(
+        db.connection().clone(),
+        Arc::new(settings()),
+        Api::new(Secret::new(TOKEN), &endpoint.base),
+        Duration::from_secs(3600),
+    );
+
+    LeaderTask::start(&worker).await;
+    endpoint.arrived().await; // the start-up sync's first GET is in flight
+    let started = std::time::Instant::now();
+    LeaderTask::stop(&worker).await.expect("the task stops");
+    let waited = started.elapsed();
+
+    assert!(
+        waited < STOP_BOUND,
+        "the token ended the GET instead of the request timeout, but stop waited {waited:?}"
+    );
+    assert_eq!(
+        endpoint.requests(),
+        1,
+        "the sync ended at the stop signal instead of timing out the GET and moving on"
+    );
+    assert_eq!(
+        stored_number(&db, linked).await,
+        Some(12),
+        "the link stands"
+    );
+    assert_eq!(stored_number(&db, other).await, Some(13), "the link stands");
+}
+
+#[tokio::test]
+async fn stopping_ends_an_unanswered_note_post_at_once() {
+    let db = TestDb::new().await.expect("a test database");
+    let endpoint = common::Unanswered::start().await;
+    let worker = GitHubWorker::new(
+        db.connection().clone(),
+        Arc::new(note_settings()),
+        Api::new(Secret::new(TOKEN), &endpoint.base),
+        // A long interval keeps the start-up sync out of the way, and the sync
+        // finds no linked row to check anyway.
+        Duration::from_secs(3600),
+    );
+    LeaderTask::start(&worker).await;
+    // The row is linked after the start-up sync has found nothing to check, so the
+    // first request that goes out is the fixed note's own comment.
+    let test = noteable_test(&db, 77, 3).await;
+    LeaderTask::enqueue(&worker, &processed(&[test])).expect("the queue takes the outcome");
+    endpoint.arrived().await; // the comment POST is in flight
+    let started = std::time::Instant::now();
+    LeaderTask::stop(&worker).await.expect("the task stops");
+    let waited = started.elapsed();
+
+    assert!(
+        waited < STOP_BOUND,
+        "the token ended the comment POST instead of the request timeout, but stop waited {waited:?}"
+    );
+    assert!(
+        !noted(&db, test).await,
+        "an unposted comment stamps nothing"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 3)]
+async fn stopping_waits_for_a_filing_post_and_keeps_its_link() {
+    let db = TestDb::new().await.expect("a test database");
+    let test = flaky_test(&db).await;
+    // A second candidate the batch must not reach: the stop lands between the two.
+    let next = flaky_test_in(&db, "next").await;
+    let (arrived, arrived_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/repos/acme/app/issues"))
+        .respond_with(GatedAnswer::new(arrived, release_rx, 201, 77))
+        .mount(&server)
+        .await;
+    let worker = Arc::new(GitHubWorker::new(
+        db.connection().clone(),
+        Arc::new(settings()),
+        Api::new(Secret::new(TOKEN), &server.uri()),
+        Duration::from_secs(3600),
+    ));
+
+    LeaderTask::start(worker.as_ref()).await;
+    LeaderTask::enqueue(worker.as_ref(), &processed(&[test, next]))
+        .expect("the queue takes the outcome");
+    arrived_rx.await.expect("the issue POST is in flight");
+
+    let stopping = {
+        let worker = Arc::clone(&worker);
+        tokio::spawn(async move { LeaderTask::stop(worker.as_ref()).await })
+    };
+    release_tx.send(()).expect("the stub is released");
+    stopping
+        .await
+        .expect("the stop finishes")
+        .expect("the task stops");
+
+    // Cancelling the POST would strand an issue no row ever points at, so the POST
+    // runs through storing its link, and only then does the batch stop.
+    assert_eq!(
+        stored_number(&db, test).await,
+        Some(77),
+        "the link of the in-flight POST was stored before the task stopped"
+    );
+    assert_eq!(
+        stored_number(&db, next).await,
+        None,
+        "the batch stopped after the POST it could not interrupt"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 3)]
+async fn stopping_ends_an_unanswered_close_at_once() {
+    let db = TestDb::new().await.expect("a test database");
+    let test = noteable_test(&db, 77, 3).await;
+    let (arrived, arrived_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let server = MockServer::start().await;
+    mount_open_issue(&server, 77).await;
+    Mock::given(method("POST"))
+        .and(path("/repos/acme/app/issues/77/comments"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({"number": 99})))
+        .mount(&server)
+        .await;
+    Mock::given(method("PATCH"))
+        .and(path("/repos/acme/app/issues/77"))
+        .respond_with(GatedAnswer::new(arrived, release_rx, 200, 77))
+        .mount(&server)
+        .await;
+    let worker = Arc::new(GitHubWorker::new(
+        db.connection().clone(),
+        Arc::new(closing_settings()),
+        Api::new(Secret::new(TOKEN), &server.uri()),
+        Duration::from_secs(3600),
+    ));
+
+    LeaderTask::start(worker.as_ref()).await;
+    LeaderTask::enqueue(worker.as_ref(), &processed(&[test])).expect("the queue takes the outcome");
+    arrived_rx.await.expect("the close PATCH is in flight");
+    let started = std::time::Instant::now();
+    LeaderTask::stop(worker.as_ref())
+        .await
+        .expect("the task stops");
+    let waited = started.elapsed();
+    release_tx.send(()).expect("the stub is released");
+
+    assert!(
+        waited < STOP_BOUND,
+        "the token ended the close instead of the request timeout, but stop waited {waited:?}"
+    );
+    assert!(
+        noted(&db, test).await,
+        "the comment that did post is still stamped"
+    );
+    assert!(
+        !closed(&db, test).await,
+        "a close GitHub never answered closed nothing"
+    );
 }

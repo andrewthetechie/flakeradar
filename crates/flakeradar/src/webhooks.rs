@@ -8,6 +8,9 @@
 //! This task never logs a Webhook URL: the URL is the credential, so a log line
 //! names an endpoint's host only, and a `reqwest` error has its URL removed
 //! before it is logged.
+//!
+//! A delivery and the wait before a retry end the moment leadership does, so a
+//! leader that drops never waits out an endpoint's timeout.
 
 // Rust guideline compliant 2026-07-21
 
@@ -17,10 +20,9 @@ use std::time::Duration;
 
 use flakeradar_core::{TierChange, WebhookFormat, render};
 use flakeradar_db::ProcessOutcome;
-use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use crate::worker::{LeaderTask, StartFuture, StopFuture};
+use crate::worker::{LeaderRun, LeaderTask, StartFuture, StopFuture, until_stopped};
 
 /// The delays before the second and third Notification attempts, in seconds.
 pub const RETRY_DELAYS: [f64; 2] = [0.5, 1.0];
@@ -88,8 +90,12 @@ impl WebhookShared {
 
     /// The task's loop: take a batch, deliver it to every endpoint.
     async fn run(self: &Arc<Self>, cancel: &CancellationToken) {
-        self.run_with(cancel, |shared, url, batch| async move {
-            shared.post(&url, &batch).await;
+        let stop = cancel.clone();
+        self.run_with(cancel, move |shared, url, batch| {
+            let stop = stop.clone();
+            async move {
+                shared.post(&url, &batch, &stop).await;
+            }
         })
         .await;
     }
@@ -132,18 +138,23 @@ impl WebhookShared {
     }
 
     /// Posts one batch to one endpoint, with the retry policy of ADR 0009.
-    async fn post(self: &Arc<Self>, url: &str, batch: &[TierChange]) {
+    ///
+    /// The POST and the wait before a retry both end when `stop` fires: an
+    /// endpoint that never answers costs the leader no more than the cancellation.
+    async fn post(self: &Arc<Self>, url: &str, batch: &[TierChange], stop: &CancellationToken) {
         let body = render(batch, self.format, &self.public_url);
         let label = Self::endpoint(url);
         for attempt in 0..ATTEMPTS {
             let mut delay = self.retry_delays.get(attempt).copied().unwrap_or_default();
-            let answer = self
-                .client
-                .post(url)
-                .json(&body)
-                .send()
-                .await
-                .map_err(|error| error.without_url().to_string());
+            let answer = until_stopped(stop, self.client.post(url).json(&body).send()).await;
+            let Some(answer) = answer else {
+                tracing::info!(
+                    endpoint = %label,
+                    "the Notification task stopped with a delivery in flight"
+                );
+                return;
+            };
+            let answer = answer.map_err(|error| error.without_url().to_string());
             match answer {
                 Err(error) => {
                     tracing::warn!(
@@ -185,8 +196,12 @@ impl WebhookShared {
                 }
             }
             if attempt + 1 < ATTEMPTS {
-                tokio::time::sleep(Duration::try_from_secs_f64(delay.max(0.0)).unwrap_or_default())
-                    .await;
+                let wait = tokio::time::sleep(
+                    Duration::try_from_secs_f64(delay.max(0.0)).unwrap_or_default(),
+                );
+                if until_stopped(stop, wait).await.is_none() {
+                    return;
+                }
             }
         }
     }
@@ -204,14 +219,14 @@ fn retry_after_seconds(headers: &reqwest::header::HeaderMap) -> Option<f64> {
 /// The leader-only Notification task: posts a Report's Tier changes to every endpoint.
 pub struct WebhookWorker {
     shared: Arc<WebhookShared>,
-    cancel: CancellationToken,
-    task: tokio::sync::Mutex<Option<JoinHandle<()>>>,
+    run: LeaderRun,
 }
 
 impl std::fmt::Debug for WebhookWorker {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WebhookWorker")
             .field("shared", &self.shared)
+            .field("running", &self.run.is_running())
             .finish_non_exhaustive()
     }
 }
@@ -246,8 +261,7 @@ impl WebhookWorker {
                 dropped: Mutex::new(0),
                 notify: tokio::sync::Notify::new(),
             }),
-            cancel: CancellationToken::new(),
-            task: tokio::sync::Mutex::new(None),
+            run: LeaderRun::new(),
         }
     }
 
@@ -277,25 +291,15 @@ impl LeaderTask for WebhookWorker {
 
     fn start(&self) -> StartFuture<'_> {
         Box::pin(async move {
-            let mut task = self.task.lock().await;
-            if task.as_ref().is_some_and(|handle| !handle.is_finished()) {
-                return;
-            }
             let shared = Arc::clone(&self.shared);
-            let cancel = self.cancel.clone();
-            *task = Some(tokio::spawn(async move { shared.run(&cancel).await }));
+            self.run
+                .start(move |cancel| async move { shared.run(&cancel).await })
+                .await;
         })
     }
 
     fn stop(&self) -> StopFuture<'_> {
-        Box::pin(async move {
-            self.cancel.cancel();
-            let handle = self.task.lock().await.take();
-            if let Some(handle) = handle {
-                handle.await?;
-            }
-            Ok(())
-        })
+        Box::pin(async move { self.run.stop().await })
     }
 
     fn enqueue(&self, outcome: &ProcessOutcome) -> anyhow::Result<()> {
@@ -315,6 +319,7 @@ mod tests {
     use super::{WebhookShared, WebhookWorker, retry_after_seconds};
     use flakeradar_core::{Kind, Tier, TierChange, WebhookFormat};
     use reqwest::header::{HeaderMap, HeaderValue};
+    use tokio_util::sync::CancellationToken;
 
     /// A header map carrying one `retry-after` spelling.
     fn retry_after(value: &str) -> HeaderMap {
@@ -393,7 +398,7 @@ mod tests {
             "",
         ));
         let shared = Arc::clone(&worker.shared);
-        let cancel = worker.cancel.clone();
+        let cancel = CancellationToken::new();
         let attempts = Arc::new(AtomicUsize::new(0));
         let delivered = Arc::new(Mutex::new(Vec::<i64>::new()));
 

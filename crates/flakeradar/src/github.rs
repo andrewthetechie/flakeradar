@@ -37,6 +37,13 @@
 //! - An unreadable body is logged and the row is stamped, so an unusable link
 //!   keeps rotating instead of pinning the front of the queue.
 //!
+//! **Stopping: every batch respects the leader's stop signal.** A sync's `GET`,
+//! a fixed note's comment and its close end as soon as the signal fires, so a
+//! leader that drops costs at most one request. The `POST` that creates an issue
+//! is the exception: it runs on through storing its link, and the batch stops
+//! after it, because a POST cancelled between creating the issue and storing its
+//! number strands an issue and files a duplicate on the next Report.
+//!
 //! Nothing here ever logs the token: the credential lives in [`Secret`] and the
 //! request carries it in a header only. `reqwest` errors have their URL removed
 //! before they reach a log line, for the reason the Webhook sender does.
@@ -62,8 +69,10 @@ use sea_orm::{
     TransactionTrait, TryGetable,
 };
 use serde_json::{Value, json};
+use tokio_util::sync::CancellationToken;
 
 use crate::settings::{Secret, Settings};
+use crate::worker::until_stopped;
 
 /// The GitHub REST base URL production talks to.
 pub const API_BASE: &str = "https://api.github.com";
@@ -1017,6 +1026,7 @@ pub async fn file_issues_for(
     test_ids: &[i32],
     settings: &Settings,
     api: &Api,
+    stop: &CancellationToken,
 ) -> BTreeSet<i32> {
     if !api.configured() || test_ids.is_empty() {
         return BTreeSet::new();
@@ -1057,7 +1067,7 @@ pub async fn file_issues_for(
             body,
         });
     }
-    file_batch(db, batch, "test", settings, api).await
+    file_batch(db, batch, "test", settings, api, stop).await
 }
 
 /// Files issues for github-provider Jobs that now meet the filing gate. Never raises.
@@ -1066,6 +1076,7 @@ pub async fn file_job_issues_for(
     job_ids: &[i32],
     settings: &Settings,
     api: &Api,
+    stop: &CancellationToken,
 ) -> BTreeSet<i32> {
     if !api.configured() || job_ids.is_empty() {
         return BTreeSet::new();
@@ -1107,7 +1118,7 @@ pub async fn file_job_issues_for(
             body,
         });
     }
-    file_batch(db, batch, "job", settings, api).await
+    file_batch(db, batch, "job", settings, api, stop).await
 }
 
 /// One rendered issue to file.
@@ -1121,16 +1132,24 @@ struct FileRequest {
 }
 
 /// Files one batch of rendered issues, whichever entity they describe.
+///
+/// A filing `POST` is never interrupted, because its issue would be stranded; the
+/// batch stops before the next one once `stop` fires.
 async fn file_batch(
     db: &(impl ConnectionTrait + TransactionTrait),
     batch: Vec<FileRequest>,
     entity: &str,
     settings: &Settings,
     api: &Api,
+    stop: &CancellationToken,
 ) -> BTreeSet<i32> {
     let mut linked = BTreeSet::new();
     let mut skipped: BTreeSet<String> = BTreeSet::new();
     for request in batch {
+        if stop.is_cancelled() {
+            tracing::info!(entity, "stopping the issue-filing batch: leadership ended");
+            break;
+        }
         if skipped.contains(&request.repo) {
             continue;
         }
@@ -1265,6 +1284,7 @@ pub async fn sync_closed_issues(
     db: &(impl ConnectionTrait + TransactionTrait),
     settings: &Settings,
     api: &Api,
+    stop: &CancellationToken,
 ) {
     if !api.configured() {
         return;
@@ -1304,7 +1324,18 @@ pub async fn sync_closed_issues(
             }
             continue;
         }
-        if !clear_if_closed(&transaction, target, &row, settings, api, &mut skipped, now).await {
+        if !clear_if_closed(
+            &transaction,
+            target,
+            &row,
+            settings,
+            api,
+            &mut skipped,
+            now,
+            stop,
+        )
+        .await
+        {
             break;
         }
     }
@@ -1315,9 +1346,13 @@ pub async fn sync_closed_issues(
 
 /// Checks one issue and clears its number when it is closed or gone.
 ///
-/// Returns `false` on a rate limit, when the batch must stop. Every row that got
-/// an answer is stamped, so an unusable link keeps rotating instead of pinning
-/// the front of the queue.
+/// Returns `false` on a rate limit or a stop, when the batch must end. Every row
+/// that got an answer is stamped, so an unusable link keeps rotating instead of
+/// pinning the front of the queue.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one call site, and the row, the batch state and the stop signal are all read in place"
+)]
 async fn clear_if_closed(
     db: &impl ConnectionTrait,
     target: LinkTarget,
@@ -1326,8 +1361,13 @@ async fn clear_if_closed(
     api: &Api,
     skipped: &mut BTreeSet<String>,
     now: DateTime<Utc>,
+    stop: &CancellationToken,
 ) -> bool {
-    let answer = match api.get_issue(&row.repo, row.number).await {
+    let Some(answer) = until_stopped(stop, api.get_issue(&row.repo, row.number)).await else {
+        tracing::info!("stopping the GitHub issue-state sync: leadership ended");
+        return false;
+    };
+    let answer = match answer {
         Ok(answer) => answer,
         Err(error) => {
             tracing::warn!(error = %error, "GitHub unreachable, skipping issue-state sync");
@@ -1600,13 +1640,14 @@ pub async fn note_fixed_issues_for(
     test_ids: &[i32],
     settings: &Settings,
     api: &Api,
+    stop: &CancellationToken,
 ) {
     if !api.configured() || settings.github_fixed_streak <= 0 || test_ids.is_empty() {
         return;
     }
     match note_test_candidates(db, test_ids, settings).await {
         Ok(candidates) if !candidates.is_empty() => {
-            note_batch(db, candidates, "test", settings, api).await;
+            note_batch(db, candidates, "test", settings, api, stop).await;
         }
         Ok(_) => {}
         Err(error) => {
@@ -1621,13 +1662,14 @@ pub async fn note_fixed_job_issues_for(
     job_ids: &[i32],
     settings: &Settings,
     api: &Api,
+    stop: &CancellationToken,
 ) {
     if !api.configured() || settings.github_fixed_streak <= 0 || job_ids.is_empty() {
         return;
     }
     match note_job_candidates(db, job_ids, settings).await {
         Ok(candidates) if !candidates.is_empty() => {
-            note_batch(db, candidates, "job", settings, api).await;
+            note_batch(db, candidates, "job", settings, api, stop).await;
         }
         Ok(_) => {}
         Err(error) => {
@@ -1637,12 +1679,16 @@ pub async fn note_fixed_job_issues_for(
 }
 
 /// Notes (and maybe closes) one batch of fixed issues, whichever entity they describe.
+///
+/// The comment ends when `stop` fires: a comment that never posted stamps
+/// nothing, so the row is still noteable on the next Report.
 async fn note_batch(
     db: &(impl ConnectionTrait + TransactionTrait),
     rows: Vec<NoteCandidate>,
     entity: &str,
     settings: &Settings,
     api: &Api,
+    stop: &CancellationToken,
 ) {
     let mut skipped: BTreeSet<String> = BTreeSet::new();
     for row in rows {
@@ -1657,9 +1703,14 @@ async fn note_batch(
             row.default_branch.as_deref(),
             &settings.public_url,
         );
-        let answer = match api.comment(&row.repo, row.number, &body).await {
-            Ok(answer) => answer,
-            Err(error) => {
+        let answer = until_stopped(stop, api.comment(&row.repo, row.number, &body)).await;
+        let answer = match answer {
+            None => {
+                tracing::info!(entity, "stopping the fixed-note batch: leadership ended");
+                return;
+            }
+            Some(Ok(answer)) => answer,
+            Some(Err(error)) => {
                 tracing::warn!(error = %error, entity, "GitHub unreachable, skipping fixed-note comments");
                 return;
             }
@@ -1695,7 +1746,7 @@ async fn note_batch(
                     "noted that the fix appears to hold"
                 );
                 if settings.github_close_fixed
-                    && close_note(db, &row, entity, settings, api, &mut skipped).await
+                    && close_note(db, &row, entity, settings, api, &mut skipped, stop).await
                 {
                     return;
                 }
@@ -1761,14 +1812,21 @@ async fn close_note(
     settings: &Settings,
     api: &Api,
     skipped: &mut BTreeSet<String>,
+    stop: &CancellationToken,
 ) -> bool {
     let _ = (db, settings);
-    let answer = match api
-        .close_issue(&row.repo, row.number, Some("completed"))
-        .await
-    {
-        Ok(answer) => answer,
-        Err(error) => {
+    let answer = until_stopped(
+        stop,
+        api.close_issue(&row.repo, row.number, Some("completed")),
+    )
+    .await;
+    let answer = match answer {
+        None => {
+            tracing::info!(entity, "stopping the fixed-close batch: leadership ended");
+            return true;
+        }
+        Some(Ok(answer)) => answer,
+        Some(Err(error)) => {
             tracing::warn!(error = %error, entity, "GitHub unreachable, skipping the close");
             return false;
         }
@@ -1820,12 +1878,13 @@ pub async fn on_report_processed(
     outcome: &ProcessOutcome,
     settings: &Settings,
     api: &Api,
+    stop: &CancellationToken,
 ) {
     if outcome.status != REPORT_PROCESSED || !api.configured() {
         return;
     }
-    let filed = file_issues_for(db, &outcome.touched_test_ids, settings, api).await;
-    let filed_jobs = file_job_issues_for(db, &outcome.touched_job_ids, settings, api).await;
+    let filed = file_issues_for(db, &outcome.touched_test_ids, settings, api, stop).await;
+    let filed_jobs = file_job_issues_for(db, &outcome.touched_job_ids, settings, api, stop).await;
     let note_ids: Vec<i32> = outcome
         .touched_test_ids
         .iter()
@@ -1838,6 +1897,6 @@ pub async fn on_report_processed(
         .copied()
         .filter(|id| !filed_jobs.contains(id))
         .collect();
-    note_fixed_issues_for(db, &note_ids, settings, api).await;
-    note_fixed_job_issues_for(db, &note_job_ids, settings, api).await;
+    note_fixed_issues_for(db, &note_ids, settings, api, stop).await;
+    note_fixed_job_issues_for(db, &note_job_ids, settings, api, stop).await;
 }

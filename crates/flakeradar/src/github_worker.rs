@@ -7,7 +7,15 @@
 //!
 //! Queue contents live in this process only: if it dies, outcomes that were
 //! queued but not filed are lost, which is accepted because the next Report that
-//! touches the Test or Job files it.
+//! touches the Test or Job files it. The queue is bounded, so a GitHub outage
+//! cannot grow it without limit: past the bound the oldest outcome is dropped,
+//! logged, and the stalest news loses, as the Notification queue does.
+//!
+//! The task stops when leadership does. A sync's `GET` and the fixed note's
+//! comment end at once, because neither can be interrupted without costing more
+//! than a retry; an issue-creating `POST` runs on through storing its link and
+//! the batch stops after it, because cancelling it mid-flight would strand an
+//! issue and file a duplicate on the next Report.
 
 // Rust guideline compliant 2026-07-21
 
@@ -17,12 +25,17 @@ use std::time::Duration;
 
 use flakeradar_db::{ProcessOutcome, SharedMonotonic, SystemMonotonic};
 use sea_orm::DatabaseConnection;
-use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::github::Api;
 use crate::settings::Settings;
-use crate::worker::{LeaderTask, StartFuture, StopFuture};
+use crate::worker::{LeaderRun, LeaderTask, StartFuture, StopFuture};
+
+/// How many outcomes the queue holds before it drops the oldest.
+///
+/// The same bound as the Notification queue: a GitHub outage is measured in
+/// Reports, and a queue this deep already outlasts the outage that filled it.
+pub const QUEUE_MAX: usize = 1000;
 
 /// A mutex whose poisoning is recovered from, because a task that panicked
 /// elsewhere must not stop the leader from working.
@@ -37,6 +50,7 @@ struct GitHubShared {
     api: Api,
     sync_interval: Duration,
     queue: Mutex<VecDeque<ProcessOutcome>>,
+    dropped: Mutex<usize>,
     notify: tokio::sync::Notify,
     last_sync: Mutex<Option<f64>>,
     monotonic: SharedMonotonic,
@@ -60,15 +74,33 @@ impl GitHubShared {
         (elapsed < interval).then_some(interval - elapsed)
     }
 
+    /// Queues one outcome, dropping the oldest when the queue is full.
+    fn push(&self, outcome: ProcessOutcome) {
+        let mut queue = guard(&self.queue);
+        if queue.len() >= QUEUE_MAX {
+            queue.pop_front();
+            let dropped = {
+                let mut dropped = guard(&self.dropped);
+                *dropped += 1;
+                *dropped
+            };
+            tracing::warn!(dropped, "GitHub queue full; dropped the oldest outcome");
+        }
+        queue.push_back(outcome);
+        drop(queue);
+        self.notify.notify_one();
+    }
+
     /// Files issues for one outcome's touched Tests and Jobs.
-    async fn file(&self, outcome: ProcessOutcome) {
-        crate::github::on_report_processed(&self.pool, &outcome, &self.settings, &self.api).await;
+    async fn file(&self, outcome: ProcessOutcome, stop: &CancellationToken) {
+        crate::github::on_report_processed(&self.pool, &outcome, &self.settings, &self.api, stop)
+            .await;
     }
 
     /// Re-arms the links whose issue GitHub reports closed.
-    async fn sync(&self) {
+    async fn sync(&self, stop: &CancellationToken) {
         *guard(&self.last_sync) = Some(self.monotonic.now());
-        crate::github::sync_closed_issues(&self.pool, &self.settings, &self.api).await;
+        crate::github::sync_closed_issues(&self.pool, &self.settings, &self.api, stop).await;
     }
 
     /// Takes the next queued outcome, waiting at most `seconds`.
@@ -98,10 +130,10 @@ impl GitHubShared {
     async fn run(&self, cancel: &CancellationToken) {
         while !cancel.is_cancelled() {
             match self.seconds_until_sync() {
-                None => self.sync().await,
+                None => self.sync(cancel).await,
                 Some(seconds) => {
                     if let Some(outcome) = self.next_outcome(seconds, cancel).await {
-                        self.file(outcome).await;
+                        self.file(outcome, cancel).await;
                     }
                 }
             }
@@ -116,18 +148,14 @@ impl GitHubShared {
 /// first time at start-up.
 pub struct GitHubWorker {
     shared: Arc<GitHubShared>,
-    cancel: CancellationToken,
-    task: tokio::sync::Mutex<Option<JoinHandle<()>>>,
+    run: LeaderRun,
 }
 
 impl std::fmt::Debug for GitHubWorker {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("GitHubWorker")
             .field("shared", &self.shared)
-            .field(
-                "running",
-                &self.task.try_lock().is_ok_and(|task| task.is_some()),
-            )
+            .field("running", &self.run.is_running())
             .finish_non_exhaustive()
     }
 }
@@ -148,12 +176,12 @@ impl GitHubWorker {
                 api,
                 sync_interval,
                 queue: Mutex::new(VecDeque::new()),
+                dropped: Mutex::new(0),
                 notify: tokio::sync::Notify::new(),
                 last_sync: Mutex::new(None),
                 monotonic: Arc::new(SystemMonotonic::new()),
             }),
-            cancel: CancellationToken::new(),
-            task: tokio::sync::Mutex::new(None),
+            run: LeaderRun::new(),
         }
     }
 
@@ -165,6 +193,18 @@ impl GitHubWorker {
         }
         self
     }
+
+    /// How many outcomes are waiting to be filed, for a test.
+    #[must_use]
+    pub fn queued(&self) -> usize {
+        guard(&self.shared.queue).len()
+    }
+
+    /// How many outcomes the queue has dropped, for a test.
+    #[must_use]
+    pub fn dropped(&self) -> usize {
+        *guard(&self.shared.dropped)
+    }
 }
 
 impl LeaderTask for GitHubWorker {
@@ -174,30 +214,19 @@ impl LeaderTask for GitHubWorker {
 
     fn start(&self) -> StartFuture<'_> {
         Box::pin(async move {
-            let mut task = self.task.lock().await;
-            if task.as_ref().is_some_and(|handle| !handle.is_finished()) {
-                return;
-            }
             let shared = Arc::clone(&self.shared);
-            let cancel = self.cancel.clone();
-            *task = Some(tokio::spawn(async move { shared.run(&cancel).await }));
+            self.run
+                .start(move |cancel| async move { shared.run(&cancel).await })
+                .await;
         })
     }
 
     fn stop(&self) -> StopFuture<'_> {
-        Box::pin(async move {
-            self.cancel.cancel();
-            let handle = self.task.lock().await.take();
-            if let Some(handle) = handle {
-                handle.await?;
-            }
-            Ok(())
-        })
+        Box::pin(async move { self.run.stop().await })
     }
 
     fn enqueue(&self, outcome: &ProcessOutcome) -> anyhow::Result<()> {
-        guard(&self.shared.queue).push_back(outcome.clone());
-        self.shared.notify.notify_one();
+        self.shared.push(outcome.clone());
         Ok(())
     }
 }

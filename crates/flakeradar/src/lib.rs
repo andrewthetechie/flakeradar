@@ -71,6 +71,7 @@ pub use telemetry::init_tracing;
 pub use webhooks::WebhookWorker;
 #[doc(inline)]
 pub use worker::{
-    AdvisoryLock, DatabaseProcessor, LeaderTask, LockSession, Pruner, ReportProcessor,
+    AdvisoryLock, DatabaseProcessor, LeaderRun, LeaderTask, LockSession, Pruner, ReportProcessor,
     ReportWorker, RetentionPrune, StartFuture, StopFuture, TokioWaiter, Waiter, WorkerSettings,
+    until_stopped,
 };

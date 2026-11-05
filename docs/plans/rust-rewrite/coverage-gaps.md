@@ -43,7 +43,7 @@ Task 14 works through this list and closes what it can. Task 15 files a follow-o
 | 07 | `crates/flakeradar-db/src/processing.rs` | `job_tier_changes` | unreached arm (branch) | The same `continue` for a Job, with the same reason | — |
 | 07 | `crates/flakeradar-db/src/attribution.rs` | `get` | unreached arm | The `.map_err` for a driver error on a column read, the same shape as `processing.rs`'s `get` | — |
 | 07 | `crates/flakeradar-db/src/score_history.rs` | `get` | unreached arm | The `.map_err` for a driver error on a column read, the same shape again | — |
-| 08 | `crates/flakeradar/src/worker.rs` | `AdvisoryLock::try_lock`, `AdvisoryLock::check` | unreached arm | The `None` for a lock query that answered no row, and for a liveness query that answered no row. `SELECT pg_try_advisory_lock($1) AS locked, pg_backend_pid() AS backend_pid` and `SELECT pg_backend_pid() = $1 AS same_session` have no `FROM` clause, so PostgreSQL always answers exactly one row; the arms mean "not locked" and "cannot prove the lock" rather than a panic, for a driver that ever answers none. They are the file's only missed lines (279-280) and its only missed branch | — |
+| 08 | `crates/flakeradar/src/worker.rs` | `AdvisoryLock::try_lock`, `AdvisoryLock::check` | unreached arm | The `None` for a lock query that answered no row, and for a liveness query that answered no row. `SELECT pg_try_advisory_lock($1) AS locked, pg_backend_pid() AS backend_pid` and `SELECT pg_backend_pid() = $1 AS same_session` have no `FROM` clause, so PostgreSQL always answers exactly one row; the arms mean "not locked" and "cannot prove the lock" rather than a panic, for a driver that ever answers none. They are the file's only missed lines (370-371 after task 16 moved them) and its only missed branch | — |
 | 05 | `crates/flakeradar/tests/app.rs` | test helper `SharedWriter`'s `flush` | test-only arm | The same reason as `settings.rs`'s `Sink::flush` below: `tracing_subscriber`'s fmt layer writes each event to a fresh writer from `MakeWriter` and never flushes it, so the body cannot run. `io::Write` requires the method. The `SharedWriter`'s other lines are covered by every log assertion in this file | — |
 | 08 | `crates/flakeradar/src/settings.rs` | test helper `captured_log`'s `Sink::flush` | test-only arm | `tracing_subscriber`'s fmt layer writes each event to a fresh writer from `MakeWriter` and never flushes it, so the trait method's body cannot run; it exists because `io::Write` requires it. The `Sink`'s other lines are covered by `the_default_token_is_allowed_when_explicitly_opted_in` | — |
 | 08 | `crates/flakeradar/tests/worker.rs` | test helper `SharedWriter`'s `flush` | test-only arm | The same reason as `settings.rs`'s `Sink::flush` above: the fmt layer never flushes a `MakeWriter`'s writer, so the body cannot run. `io::Write` requires the method. The `SharedWriter`'s other lines are covered by every log assertion in this file | — |
@@ -78,7 +78,7 @@ Task 14 works through this list and closes what it can. Task 15 files a follow-o
 | 10 | `crates/flakeradar/src/github.rs` | `note_fixed_issues_for`, `note_fixed_job_issues_for` | unreached arms | The two candidate reads and the stamp write failing (1612, 1633, 1681-1682). Each read is one statement over a table the fixture has just written, so only a schema change fails it | — |
 | 10 | `crates/flakeradar/src/github.rs` | every `tracing::…!` event | measurement artifact | The field-argument lines of the events in this file (1155-1157, 1167-1170, 1176-1180, 1185-1186, 1192-1195, 1202-1206, 1346-1349, 1357-1360, 1368-1372, 1381-1386, 1406-1410, 1441-1444, 1451-1452, 1462-1466, 1474-1477, 1484-1487, 1497-1501, 1690-1694, 1704-1705, 1711-1714, 1721-1725, 1737-1747, 1777-1780, 1786-1789, 1794-1796, 1800-1804). `tracing` evaluates them lazily inside the macro, so `llvm-cov` counts them zero although the event fires; every event's statement line is covered, and the log-capture tests in `tests/github.rs` pin the message text | — |
 | 10 | `crates/flakeradar/src/github_worker.rs` | `with_monotonic` | unreachable arm | The `None` of `Arc::get_mut`: `with_monotonic` takes `self` and nothing clones a `GitHubWorker`, so the worker holds the only reference to its shared state and the arm cannot be taken | — |
-| 10 | `crates/flakeradar/src/webhooks.rs` | `post` | measurement artifact | The field-argument lines of its three `tracing` events, for the reason the `github.rs` row gives: the warnings fire (the retry tests count them) and the argument lines still report zero | — |
+| 10 | `crates/flakeradar/src/webhooks.rs` | `post` | measurement artifact | The field-argument lines of its `tracing` events (`152-153`, `161-165`, `172-174`, `180`, `182`, `187`, `189-191` after task 16 added the stop event), for the reason the `github.rs` row gives: the events fire (the retry and stop tests count them) and the argument lines still report zero | — |
 | 10 | `crates/flakeradar/src/webhooks.rs` | test `a_delivery_that_raises_is_logged_and_the_task_keeps_serving` | test-only arm | Its `Sink::flush` body, which `tracing_subscriber`'s fmt layer never calls (it writes to a fresh writer from `MakeWriter`); `io::Write` requires the method. Same reason as the `settings.rs` sink row | — |
 | 10 | `crates/flakeradar-core/src/notify.rs` | test `a_json_event_omits_the_url_without_a_public_url` | test-only arm | The `return` of its `let Some(payload) = … else`, which cannot be reached because the line above asserts the list holds exactly one event | — |
 | 11 | `crates/flakeradar/src/mcp.rs` | `serialize_failure`, and `call_tool`'s arm for it | unreached arms | The error arm of `serde_json::to_value` and `to_string` for the answers this file builds. Every field of every answer is a `String`, an integer, a `bool`, an `Option`, or an `f64` from a `double` column, and `serde_json` writes a non-finite float as `null` instead of failing — measured: `a_non_finite_score_is_answered_as_null_not_as_a_failure` stores a `'NaN'` score and the tool answers a well-formed list whose `flakiness_score` fields are `null`. No value this file serializes can therefore fail, so the arm needs a `Serialize` impl that errors, which none of the DTOs has. `ToolFailure::Protocol` is now produced by that arm alone, so `call_tool`'s `return Err(error)` for it cannot run either | — |
@@ -127,3 +127,20 @@ Python service does not lower a floor: the Rust totals are what the gate reads.
 
 The 78 rows above are unchanged and each one has a draft issue in
 `coverage-follow-ups.md`, which the user files after this PR merges.
+
+## Task 16: no new row, and the files it touched
+
+Measured with the command and configuration tasks 14 and 15 used
+(`cargo +nightly-2026-10-25 llvm-cov nextest --branch --all-features --profile ci` with
+`FLAKERADAR_TEST_DATABASE_URL` set): **lines 96.74%** (14403, 470 missed) and **branches 94.24%**
+(1146, 66 missed), regions 92.54% and functions 96.06%. `coverage-floor.json` stays
+`{"lines": 96, "branches": 94}` and the gate passes at them.
+
+Task 16 adds no row. `LeaderRun` and `until_stopped` in `worker.rs` are covered both ways — a run
+started, stopped and started again; a call and a wait each ended by the token and each left to
+finish — and so are the four stop arms in `github.rs` (`file_batch`, `clear_if_closed`,
+`note_batch`, `close_note`), the stop arm in `webhooks.rs`'s `post`, and the queue's drop in
+`github_worker.rs`. The only misses left in those files are the rows above: `worker.rs`'s two
+`None` arms (row 08, whose line numbers moved to 370-371), `github_worker.rs`'s `Arc::get_mut`
+(row 10), `webhooks.rs`'s `post` field-argument lines and its test sink's `flush` (rows 10), and
+`github.rs`'s own artifact and schema-change rows (row 10).

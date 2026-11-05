@@ -6,7 +6,9 @@
 
 #![expect(
     clippy::expect_used,
-    reason = "a test fails loudly when the worker does not lead, process or release"
+    clippy::panic,
+    reason = "a test fails loudly when the worker does not lead, process or release, \
+              and one stages a leader task whose loop panics"
 )]
 
 use std::collections::VecDeque;
@@ -16,8 +18,9 @@ use std::time::Duration;
 
 use chrono::{DateTime, FixedOffset};
 use flakeradar::worker::{
-    AdvisoryLock, LockFuture, LockSession, ProcessFuture, PruneFuture, Pruner, ReportProcessor,
-    ReportWorker, SessionFuture, StartFuture, StopFuture, WaitFuture, Waiter, WorkerSettings,
+    AdvisoryLock, LeaderRun, LockFuture, LockSession, ProcessFuture, PruneFuture, Pruner,
+    ReportProcessor, ReportWorker, SessionFuture, StartFuture, StopFuture, WaitFuture, Waiter,
+    WorkerSettings,
 };
 use flakeradar::{LeaderTask, WebhookWorker};
 use flakeradar_core::{TierChange, WebhookFormat};
@@ -1525,4 +1528,22 @@ async fn a_tier_change_reaches_the_webhook_task() {
         lock_is_free(db.url()).await,
         "the Notification task stopped before the lock was released"
     );
+}
+
+#[tokio::test]
+async fn a_run_whose_loop_panicked_is_reported_when_it_is_stopped() {
+    let run = LeaderRun::new();
+    run.start(|stop| async move {
+        stop.cancelled().await;
+        panic!("the test's loop panicked on purpose");
+    })
+    .await;
+    assert!(run.is_running(), "the run is going until it is stopped");
+
+    let answer = run.stop().await;
+    assert!(
+        answer.is_err(),
+        "the panic is reported rather than hidden: {answer:?}"
+    );
+    assert!(!run.is_running(), "a stopped run is not going");
 }

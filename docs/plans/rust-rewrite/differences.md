@@ -93,3 +93,13 @@ replay itself: `every_scenario_replays_identically` compares every step against 
 An allowance that covers nothing is no longer detected: task 14 measured the used set by replaying
 with a log of every allowance that let a mismatch through, and repeating that measurement by hand
 is the cost of adding one.
+
+## Added by the review fixes (tasks 16–31)
+
+Each row here cites `00-fixes-context.md`, whose table the owner approved by commissioning the
+plan, or the finding `review-135/ledger.md` names.
+
+| Task | Area | Python | Rust | Why |
+|---|---|---|---|---|
+| 16 | The GitHub queue's bound | `GitHubWorker._queue` is an unbounded `asyncio.Queue`, so a GitHub outage grows it without limit | Holds at most `QUEUE_MAX` outcomes (1000, the Notification queue's bound) and drops the oldest when full, logging each drop with the running count | `J3` in `review-135/ledger.md`: an unbounded queue behind a task that could die was both a leak and, after `S1`, unbounded in practice. The bound is the Notification queue's, for the same reason (the stalest news loses), and the drop is logged, which Python's GitHub queue never needed to do |
+| 16 | What a leadership change does to a GitHub call in flight | `asyncio.Task.cancel()` raises at the next `await`, so the issue-creating `POST` can be abandoned between creating the issue and storing its number, and the reference then files a duplicate on a later Report | A sync's `GET`, a fixed note's comment and its close end at once; the `POST` that creates an issue runs on through storing its link, and the batch stops after it | The stop must reach in-flight work, and every call but one can be abandoned for the cost of a retry. The filing `POST` is the exception: cancelling it strands an issue no row points at and files a duplicate next time, which is the one outcome `ReportWorker::release`'s ordering exists to prevent. Stop latency is at most the one request's timeout (`github::TIMEOUT_SECONDS`), and nothing a client sends or receives changes |
