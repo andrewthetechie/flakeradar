@@ -24,41 +24,33 @@ touches the entity re-files it if it still meets the gate) — unless it was
 closed as ``not_planned``, which keeps the number and flags the row, so nothing
 is filed again until a person unlinks it.
 
-Error handling: never raises.
-- No token configured            -> silent no-op (self-host without GitHub).
-- Rate limit on create (429, or a 403 that is one: `x-ratelimit-remaining: 0`,
-  a `retry-after` header, or a body message containing "rate limit") -> stop
-  this batch, log a warning.
-- Any other 403 on create (a permission error: a token without access to that
-  Repo, an archived Repo), a bad-credentials 401, or 404/410 (issues disabled)
-  -> skip that Repo for the rest of the batch, log one warning per Repo, go on
-  with the other Repos.
-- In the sync (`sync_closed_issues`), a definitive Repo-wide client error
-  (a permission 403, bad credentials 401, a gone Repo 410) leaves the Issue
-  link as it is, skips that Repo for the rest of the run, and stamps the rows
-  of that Repo so they rotate; 404 still re-arms.
-- After an admin delete (`close_issues_for_deleted_repo`), any failure but a
-  rate limit costs only that one Issue: the other numbers of the deleted scope
-  are still commented on and closed.
-- An admin delete that commits between a filing POST and the filer's commit
-  (a StaleDataError on the vanished row) costs only that filing: the
-  just-created issue is commented on and closed best-effort, and the rest of
-  the batch goes on.
-- The fixed-note step (`note_fixed_issues_for`, after filing) follows the same
-  policy for the comment POST and the optional close PATCH. It stamps
-  `github_issue_fixed_noted_at` the moment the comment lands, so a later close
-  failure never causes a second comment on the same fix, and it stamps
-  conditionally — only while the row is still at the streak and on the Issue the
-  comment was posted to — so a failure the processor handled mid-POST keeps the
-  note re-armed. The stamp is reset to NULL when the Clean streak collapses
-  (`processing.rescore`/`rescore_jobs`) and by every write of the link (here in
-  the re-arm, and in `issue_links`), so a re-armed link can be noted again.
-- A response body FlakeRadar cannot use (a 201 without an issue number, a
-  sync 200 that is not a JSON object with a `state`) -> log a warning, go on;
-  no issue number is stored and no link is cleared (the sync still stamps the
-  row's check time, so an unreadable link keeps rotating instead of pinning
-  the front of the queue).
-- Any other failure (network) -> log, go on.
+Error handling: never raises. Every request answers as a `GitHubOutcome`, and the kinds
+are classified once, next to the seam (`_github_outcome`); each loop only decides what to
+do with each of them, and anything its bullets do not name just logs and goes on.
+- No token configured -> silent no-op (self-host without GitHub).
+- Filing (`_file_batch`) -> a rate limit stops the batch, the kinds in
+  `_FILING_SKIP_REPO_KINDS` skip that Repo for the rest of it, and any other failure
+  costs that one issue.
+- The sync (`sync_closed_issues`) -> a rate limit or no answer at all stops the run, the
+  kinds in `_SYNC_SKIP_REPO_KINDS` skip a Repo, every answered row is stamped
+  `github_issue_checked_at` — so a link whose answer stays unusable keeps rotating
+  instead of pinning the front of the queue — and `not_found` re-arms.
+- The fixed note (`note_fixed_issues_for`, after filing) -> filing's stop/skip data with
+  `_NOTE_SKIP_REPO_KINDS`, plus `github_issue_fixed_noted_at` stamped the moment the
+  comment lands: that is what keeps it exactly one comment per fix, close failure or not.
+  The stamp is conditional — only while the row is still at the streak and on the Issue
+  the comment was posted to — so a failure the processor handled mid-POST keeps the note
+  re-armed, and it is reset to NULL when the Clean streak collapses
+  (`processing.rescore`/`rescore_jobs`) and by every write of the link (here in the
+  re-arm, and in `issue_links`), so a re-armed link can be noted again.
+- After an admin delete (`close_issues_for_deleted_repo`) -> only a rate limit stops the
+  batch: any other failure costs that one number, and the other numbers of the deleted
+  scope are still commented on and closed. No kind skips a Repo here.
+- An admin delete that commits between a filing POST and the filer's commit (a
+  StaleDataError on the vanished row) costs only that filing: the just-created issue is
+  commented on and closed best-effort, and the rest of the batch goes on.
+- `unusable_body` -> log a warning, go on; no issue number is stored and no link is
+  cleared.
 """
 
 import logging
@@ -503,6 +495,23 @@ async def _select_candidates(db: AsyncSession, test_case_ids: list[int]) -> list
 # way a permission 403 does, so the loop's response to them is the same skip.
 _FILING_SKIP_REPO_KINDS = frozenset({"unauthorized", "repo_denied", "not_found", "gone"})
 
+# The outcomes the fixed-note loop treats as Repo-scoped: exactly today's `(403, 404, 410)`
+# skip set. Unlike filing, a bad-credentials 401 is *not* Repo-wide here — it is a per-item
+# failure that logs the "comment failed"/"close failed" warning and goes on — so this set
+# deliberately leaves "unauthorized" out, and `_FILING_SKIP_REPO_KINDS` must not be reused.
+_NOTE_SKIP_REPO_KINDS = frozenset({"repo_denied", "not_found", "gone"})
+
+# The outcomes the issue-state sync treats as Repo-scoped: exactly today's `(401, 403, 410)`
+# skip set. 404 is deliberately NOT in it — unlike filing and noting, a 404 answer here
+# means the Issue itself is gone, which re-arms the link rather than skipping the Repo.
+_SYNC_SKIP_REPO_KINDS = frozenset({"unauthorized", "repo_denied", "gone"})
+
+# The outcomes the post-delete close reads as "this Issue is already gone": it costs that
+# one number, and the next is still tried. This loop has no Repo-skip set at all: it works
+# through one Repo's numbers, so skipping the Repo would end the batch, which is exactly
+# the policy filing has and this one does not.
+_ALREADY_GONE_KINDS = frozenset({"not_found", "gone"})
+
 
 async def _file_batch(
     db: AsyncSession,
@@ -757,23 +766,18 @@ async def sync_closed_issues(
             return
         rows = [(tc, repo, "test") for tc, repo in test_rows] + [(job, repo, "job") for job, repo in job_rows]
         skipped: set[str] = set()
-        try:
-            async with httpx.AsyncClient(
-                base_url=API_BASE, headers=_headers(get_settings().github_token), timeout=15, transport=transport
-            ) as client:
-                for obj, repo, entity in rows:
-                    if repo in skipped:
-                        obj.github_issue_checked_at = utcnow()  # unreadable repo this run; rotate it like a checked row
-                        continue
-                    if not await _clear_if_closed(client, obj, repo, entity, skipped):
-                        break
-        except httpx.HTTPError as exc:
-            logger.warning("GitHub unreachable, skipping issue-state sync: %s", exc)
+        async with _GitHubClient(get_settings().github_token, transport=transport) as client:
+            for obj, repo, entity in rows:
+                if repo in skipped:
+                    obj.github_issue_checked_at = utcnow()  # unreadable repo this run; rotate it like a checked row
+                    continue
+                if not await _clear_if_closed(client, obj, repo, entity, skipped):
+                    break
         await db.commit()  # keeps whatever was cleared before a stop or a network error
 
 
 async def _clear_if_closed(
-    client: httpx.AsyncClient, obj: Job | TestCase, repo: str, entity: str, skipped: set[str]
+    client: _GitHubClient, obj: Job | TestCase, repo: str, entity: str, skipped: set[str]
 ) -> bool:
     """Check one issue; clear its number on the ORM object when closed/gone.
 
@@ -791,9 +795,9 @@ async def _clear_if_closed(
     Issue filed after the re-arm would never get one. The kept `not_planned` link keeps
     its stamp, because it is the same Issue with the same comment on it.
 
-    Returns False on a rate limit, when the batch must stop; a definitive
-    Repo-wide client error (a permission 403, bad credentials 401, a gone
-    Repo 410) adds `repo` to `skipped` and leaves the link as it is.
+    Returns False on a rate limit or a network error, when the batch must stop; a
+    definitive Repo-wide client error (a permission 403, bad credentials 401, a
+    gone Repo 410) adds `repo` to `skipped` and leaves the link as it is.
 
     Every row this got an answer for is stamped with `utcnow()` — open,
     closed, gone, a Repo-wide client error, an unexpected status, and even a
@@ -805,36 +809,43 @@ async def _clear_if_closed(
     set. Only a rate-limit stop and a transport error leave a row unstamped,
     so those are retried first.
     """
-    resp = await client.get(f"/repos/{repo}/issues/{obj.github_issue_number}")
-    if _rate_limited(resp):
+    outcome = await client.fetch_issue(repo, obj.github_issue_number)
+    if outcome.kind == "rate_limited":
         logger.warning("GitHub rate limit in sync; stopping")
+        return False
+    if outcome.kind == "network":
+        # No answer at all: as with a rate limit, this row goes unstamped and the
+        # caller stops the run, committing whatever earlier rows it already stamped.
+        logger.warning("GitHub unreachable, skipping issue-state sync: %s", outcome.error)
         return False
     # The request was answered, whatever it said: this row has been checked.
     obj.github_issue_checked_at = utcnow()
-    if resp.status_code in (401, 403, 410):
+    if outcome.kind in _SYNC_SKIP_REPO_KINDS:
         # Definitive, Repo-wide client error (bad credentials, a permission
         # error, a gone Repo): this Repo's links stay as they are; skip it for
         # the rest of the sync and go on with the other Repos.
-        logger.warning(
-            "GitHub issue-state sync skipped for repo %s: %s %s",
-            repo,
-            resp.status_code,
-            resp.text[:300],
-        )
+        logger.warning("GitHub issue-state sync skipped for repo %s: %s %s", repo, outcome.status, outcome.excerpt)
         skipped.add(repo)
-        return True
-    if resp.status_code == 200:
-        state = _issue_state(resp)
-        if state is None:
-            # An unreadable body says nothing about the issue: leave the link alone.
-            logger.warning(
-                "GitHub issue-state sync got an unusable 200 body for %s#%s: %s",
-                repo,
-                obj.github_issue_number,
-                resp.text[:300],
-            )
-        elif state == "closed":
-            reason = _issue_state_reason(resp)
+    elif outcome.kind == "not_found":
+        # Issue deleted or token can no longer see it — do not hold dedup forever.
+        logger.info("Issue gone %s#%s; re-arming %s %s", repo, obj.github_issue_number, entity, obj.id)
+        obj.github_issue_number = None
+        obj.github_issue_filed = None
+        obj.github_issue_closed = False
+        obj.github_issue_fixed_noted_at = None  # the Issue filed next has not been noted
+    elif outcome.kind == "unusable_body":
+        # An unreadable body says nothing about the issue: leave the link alone.
+        logger.warning(
+            "GitHub issue-state sync got an unusable 200 body for %s#%s: %s",
+            repo,
+            obj.github_issue_number,
+            outcome.excerpt,
+        )
+    elif outcome.kind == "ok":
+        # Only a 200 whose body carried a state classifies ok.
+        state = outcome.state
+        if state == "closed":
+            reason = outcome.state_reason
             if reason == "not_planned":
                 # Known, accepted, will not fix: keep the link so the filer (which skips
                 # any row that carries a number) never files this again, and say so.
@@ -862,13 +873,8 @@ async def _clear_if_closed(
         elif state == "open":
             # Possibly reopened after a close as not planned: filing is live again.
             obj.github_issue_closed = False
-    elif resp.status_code == 404:
-        # Issue deleted or token can no longer see it — do not hold dedup forever.
-        logger.info("Issue gone %s#%s; re-arming %s %s", repo, obj.github_issue_number, entity, obj.id)
-        obj.github_issue_number = None
-        obj.github_issue_filed = None
-        obj.github_issue_closed = False
-        obj.github_issue_fixed_noted_at = None  # the Issue filed next has not been noted
+    # Any other answer ("other": a 500, a non-200 2xx) has no branch, as today: the
+    # link stays and the row is stamped above, so it keeps its place in the rotation.
     return True
 
 
@@ -897,49 +903,39 @@ async def close_issues_for_deleted_repo(
     """
     if not configured() or not numbers:
         return
-    try:
-        async with httpx.AsyncClient(
-            base_url=API_BASE, headers=_headers(get_settings().github_token), timeout=15, transport=transport
-        ) as client:
-            for number in numbers:
-                try:
-                    resp = await client.post(f"/repos/{repo}/issues/{number}/comments", json={"body": _CLOSE_COMMENT})
-                    if _rate_limited(resp):
-                        logger.warning(
-                            "GitHub rate limit (remaining=%s); stopping the post-delete close batch",
-                            resp.headers.get("x-ratelimit-remaining"),
-                        )
-                        return
-                    if resp.status_code in (404, 410):
-                        logger.info("Issue %s#%s already gone after an admin delete", repo, number)
-                        continue
-                    if resp.status_code != 201:
-                        logger.warning(
-                            "GitHub comment on %s#%s failed: %s %s", repo, number, resp.status_code, resp.text[:300]
-                        )
-                        continue
-                    resp = await client.patch(f"/repos/{repo}/issues/{number}", json={"state": "closed"})
-                    if _rate_limited(resp):
-                        logger.warning(
-                            "GitHub rate limit (remaining=%s) on %s#%s; stopping the batch",
-                            resp.headers.get("x-ratelimit-remaining"),
-                            repo,
-                            number,
-                        )
-                        return
-                    if resp.status_code in (404, 410):
-                        logger.info("Issue %s#%s already gone after an admin delete", repo, number)
-                    elif resp.status_code == 200:
-                        logger.info("Closed issue %s#%s after an admin delete", repo, number)
-                    else:
-                        logger.warning(
-                            "GitHub close of %s#%s failed: %s %s", repo, number, resp.status_code, resp.text[:300]
-                        )
-                except httpx.HTTPError as exc:
-                    # A transport failure on one number must not lose the others.
-                    logger.warning("GitHub post-delete close skipped for issue %s#%s: %s", repo, number, exc)
-    except httpx.HTTPError as exc:
-        logger.warning("GitHub unreachable, skipping post-delete issue close: %s", exc)
+    async with _GitHubClient(get_settings().github_token, transport=transport) as client:
+        for number in numbers:
+            outcome = await client.comment(repo, number, _CLOSE_COMMENT)
+            if outcome.kind == "rate_limited":
+                logger.warning(
+                    "GitHub rate limit (remaining=%s); stopping the post-delete close batch", outcome.remaining
+                )
+                return
+            if outcome.kind in _ALREADY_GONE_KINDS:
+                logger.info("Issue %s#%s already gone after an admin delete", repo, number)
+                continue
+            if outcome.kind == "network":
+                # A transport failure on one number must not lose the others.
+                logger.warning("GitHub post-delete close skipped for issue %s#%s: %s", repo, number, outcome.error)
+                continue
+            if outcome.kind != "created":
+                logger.warning("GitHub comment on %s#%s failed: %s %s", repo, number, outcome.status, outcome.excerpt)
+                continue
+            close = await client.close_issue(repo, number)
+            if close.kind == "rate_limited":
+                logger.warning(
+                    "GitHub rate limit (remaining=%s) on %s#%s; stopping the batch", close.remaining, repo, number
+                )
+                return
+            if close.kind == "network":
+                logger.warning("GitHub post-delete close skipped for issue %s#%s: %s", repo, number, close.error)
+                continue
+            if close.kind in _ALREADY_GONE_KINDS:
+                logger.info("Issue %s#%s already gone after an admin delete", repo, number)
+            elif close.kind == "ok" and close.status == 200:
+                logger.info("Closed issue %s#%s after an admin delete", repo, number)
+            else:
+                logger.warning("GitHub close of %s#%s failed: %s %s", repo, number, close.status, close.excerpt)
 
 
 def _fixed_comment(obj: Job | TestCase, default_branch: str | None, *, entity: str) -> str:
@@ -1095,71 +1091,60 @@ async def _note_batch(
     so the stamp lands only while the row is still noteable (see `_stamp_note`).
     """
     s = get_settings()
-    try:
-        async with httpx.AsyncClient(
-            base_url=API_BASE, headers=_headers(s.github_token), timeout=15, transport=transport
-        ) as client:
-            skipped: set[str] = set()
-            for obj, repo, body in rows:
-                if repo in skipped:
-                    continue
-                number = obj.github_issue_number
-                resp = await client.post(f"/repos/{repo}/issues/{number}/comments", json={"body": body})
-                if resp.status_code == 201:
-                    obj_id = obj.id  # the object is refreshed (or left alone) by the stamp write
-                    if not await _stamp_note(db, obj, repo, number, entity=entity, threshold=s.github_fixed_streak):
-                        continue  # the row stopped being noteable mid-POST: no stamp, and no close
-                    await db.commit()
-                    logger.info("Noted the fix appears to hold on issue %s#%s for %s %s", repo, number, entity, obj_id)
-                    if s.github_close_fixed:
-                        close = await client.patch(
-                            f"/repos/{repo}/issues/{number}",
-                            json={"state": "closed", "state_reason": "completed"},
+    async with _GitHubClient(s.github_token, transport=transport) as client:
+        skipped: set[str] = set()
+        for obj, repo, body in rows:
+            if repo in skipped:
+                continue
+            number = obj.github_issue_number
+            outcome = await client.comment(repo, number, body)
+            if outcome.kind == "created":
+                obj_id = obj.id  # the object is refreshed (or left alone) by the stamp write
+                if not await _stamp_note(db, obj, repo, number, entity=entity, threshold=s.github_fixed_streak):
+                    continue  # the row stopped being noteable mid-POST: no stamp, and no close
+                await db.commit()
+                logger.info("Noted the fix appears to hold on issue %s#%s for %s %s", repo, number, entity, obj_id)
+                if s.github_close_fixed:
+                    close = await client.close_issue(repo, number, state_reason="completed")
+                    if close.kind == "rate_limited":
+                        logger.warning(
+                            "GitHub rate limit (remaining=%s) closing issue %s#%s; stopping the batch",
+                            close.remaining,
+                            repo,
+                            number,
                         )
-                        if _rate_limited(close):
-                            logger.warning(
-                                "GitHub rate limit (remaining=%s) closing issue %s#%s; stopping the batch",
-                                close.headers.get("x-ratelimit-remaining"),
-                                repo,
-                                number,
-                            )
-                            return
-                        if close.status_code in (403, 404, 410):
-                            logger.warning(
-                                "GitHub issue close skipped for repo %s: %s %s",
-                                repo,
-                                close.status_code,
-                                close.text[:300],
-                            )
-                            skipped.add(repo)
-                        elif close.status_code == 200:
-                            logger.info("Closed issue %s#%s after noting the fix", repo, number)
-                        else:
-                            logger.warning(
-                                "GitHub close of %s#%s failed: %s %s", repo, number, close.status_code, close.text[:300]
-                            )
-                elif _rate_limited(resp):
-                    logger.warning(
-                        "GitHub rate limit (remaining=%s); stopping the note batch",
-                        resp.headers.get("x-ratelimit-remaining"),
-                    )
-                    return
-                elif resp.status_code in (403, 404, 410):
-                    logger.warning(
-                        "GitHub fixed-note skipped for repo %s: %s %s", repo, resp.status_code, resp.text[:300]
-                    )
-                    skipped.add(repo)
-                else:
-                    logger.warning(
-                        "GitHub fixed-note comment failed for %s %s in %s: %s %s",
-                        entity,
-                        obj.id,
-                        repo,
-                        resp.status_code,
-                        resp.text[:300],
-                    )
-    except httpx.HTTPError as exc:
-        logger.warning("GitHub unreachable, skipping %s fixed-note comments: %s", entity, exc)
+                        return
+                    if close.kind in _NOTE_SKIP_REPO_KINDS:
+                        logger.warning(
+                            "GitHub issue close skipped for repo %s: %s %s", repo, close.status, close.excerpt
+                        )
+                        skipped.add(repo)
+                    elif close.kind == "ok" and close.status == 200:
+                        logger.info("Closed issue %s#%s after noting the fix", repo, number)
+                    elif close.kind == "network":
+                        logger.warning("GitHub unreachable, skipping %s fixed-note comments: %s", entity, close.error)
+                        return
+                    else:
+                        logger.warning("GitHub close of %s#%s failed: %s %s", repo, number, close.status, close.excerpt)
+            elif outcome.kind == "rate_limited":
+                logger.warning("GitHub rate limit (remaining=%s); stopping the note batch", outcome.remaining)
+                return
+            elif outcome.kind in _NOTE_SKIP_REPO_KINDS:
+                logger.warning("GitHub fixed-note skipped for repo %s: %s %s", repo, outcome.status, outcome.excerpt)
+                skipped.add(repo)
+            elif outcome.kind == "network":
+                # No answer at all: as today, the rest of the batch is not worth trying.
+                logger.warning("GitHub unreachable, skipping %s fixed-note comments: %s", entity, outcome.error)
+                return
+            else:
+                logger.warning(
+                    "GitHub fixed-note comment failed for %s %s in %s: %s %s",
+                    entity,
+                    obj.id,
+                    repo,
+                    outcome.status,
+                    outcome.excerpt,
+                )
 
 
 async def note_fixed_issues_for(

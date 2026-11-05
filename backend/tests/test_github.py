@@ -2112,6 +2112,33 @@ async def test_admin_delete_close_close_patch_failure_is_a_warning(gh_settings, 
     ]
 
 
+async def test_admin_delete_close_patch_network_error_skips_only_that_issue(gh_settings, caplog):
+    """No answer on the close PATCH costs that one number; the next is still closed.
+
+    The comment already landed, so the failure is not retryable as a comment; the
+    loop just logs it and goes on to the other numbers of the deleted scope.
+    """
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if request.method == "PATCH" and request.url.path.endswith("/123"):
+            raise httpx.ConnectError("offline", request=request)
+        return httpx.Response(201 if request.method == "POST" else 200, json={"number": 77})
+
+    with caplog.at_level(logging.WARNING, logger="flakeradar.github"):
+        await github_integration.close_issues_for_deleted_repo(
+            "acme/app", [123, 456], transport=httpx.MockTransport(handler)
+        )
+    assert [r.url.path for r in calls] == [
+        "/repos/acme/app/issues/123/comments",
+        "/repos/acme/app/issues/123",
+        "/repos/acme/app/issues/456/comments",
+        "/repos/acme/app/issues/456",
+    ]
+    assert any("post-delete close skipped for issue acme/app#123" in r.getMessage() for r in caplog.records)
+
+
 async def test_job_link_change_and_unlink_reset_the_check_stamp(db, gh_settings, session_factory):
     gh_settings.github_sync_batch = 2
     job = await _flaky_job(db)
@@ -2460,6 +2487,38 @@ async def test_fixed_note_close_permission_403_skips_repo(db, fixed_settings, en
         await db.refresh(obj)
         assert obj.github_issue_fixed_noted_at is not None
     assert any("issue close skipped for repo acme/a" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.parametrize("entity", ["test", "job"])
+async def test_fixed_note_network_error_on_the_close_stops_the_batch(db, fixed_settings, entity, caplog):
+    """An unreachable GitHub on the close PATCH stops the batch, with the stamp kept.
+
+    The comment landed and was stamped before the close, so this row keeps its one
+    comment per fix; the remaining rows go unanswered, exactly as on a failed POST.
+    """
+    fixed_settings.github_close_fixed = True
+    note = _note_entry(entity)
+    a = await _note_row(db, entity, "a", repo="acme/a", github_issue_number=71, clean_streak=5)
+    b = await _note_row(db, entity, "b", repo="acme/b", github_issue_number=72, clean_streak=5)
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if request.method == "PATCH":
+            raise httpx.ConnectError("GitHub is down", request=request)
+        return httpx.Response(201, json={"number": 99})
+
+    with caplog.at_level(logging.WARNING, logger="flakeradar.github"):
+        await note(db, [a.id, b.id], transport=httpx.MockTransport(handler))
+    assert [(r.method, r.url.path) for r in calls] == [
+        ("POST", "/repos/acme/a/issues/71/comments"),
+        ("PATCH", "/repos/acme/a/issues/71"),
+    ]
+    await db.refresh(a)
+    await db.refresh(b)
+    assert a.github_issue_fixed_noted_at is not None  # the comment landed: one comment per fix
+    assert b.github_issue_fixed_noted_at is None  # the batch stopped at the unreachable close
+    assert any("unreachable, skipping" in r.getMessage() for r in caplog.records)
 
 
 @pytest.mark.parametrize("entity", ["test", "job"])
