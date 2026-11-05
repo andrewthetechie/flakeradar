@@ -1541,3 +1541,36 @@ async fn the_quarantine_route_needs_the_token_and_nothing_else() {
     assert_eq!(reply.status, 200);
     assert_eq!(reply.json(), json!([]));
 }
+
+#[tokio::test]
+async fn a_scope_that_fails_its_length_rule_is_a_422() {
+    let db = TestDb::new().await.expect("a test database");
+    let app = token_app(&db);
+    let long_repo = "a".repeat(256);
+    for path in [
+        format!("/api/summary?repo={long_repo}"),
+        format!("/api/tests?repo={long_repo}"),
+        format!("/api/quarantine?repo={long_repo}"),
+    ] {
+        let reply =
+            request_with_headers(&app, axum::http::Method::GET, &path, &[("X-API-Key", AUTH)])
+                .await;
+        assert_eq!(reply.status, 422, "{path}");
+        assert_eq!(reply.json()["detail"][0]["loc"], json!(["query", "repo"]));
+    }
+    let long_project = "b".repeat(101);
+    let reply = get(
+        &app,
+        &format!("/api/summary?repo=acme/app&project={long_project}"),
+    )
+    .await;
+    assert_eq!(reply.status, 422);
+    assert_eq!(
+        reply.json()["detail"][0]["loc"],
+        json!(["query", "project"])
+    );
+    let long_file = "c".repeat(1025);
+    let reply = get(&app, &format!("/api/tests?file={long_file}")).await;
+    assert_eq!(reply.status, 422);
+    assert_eq!(reply.json()["detail"][0]["loc"], json!(["query", "file"]));
+}

@@ -18,10 +18,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use chrono::{DateTime, Duration, FixedOffset, NaiveDate, Utc};
 use flakeradar_core::{
     CiRunFailedJobOut, CiRunFailuresOut, CiRunTestFailureOut, ExecutionOut, ExplainingTestOut,
-    FailureCategory, FailedJobOutcome, HistoryOut, JobExecutionOut, JobHistoryOut, JobOut,
-    JobOutcome, JobPage, JobSummaryOut, LocationOut, QuarantineItem, ReportCountsOut, RepoOut,
-    RunnerStatOut, ScorePointOut, SummaryOut, TestJobLinkOut, TestOut, TestPage, Trend, escape_like,
-    is_broken, issue_url, permalink, repo_path, tier_for, trend_for,
+    FailedJobOutcome, FailureCategory, HistoryOut, JobExecutionOut, JobHistoryOut, JobOut,
+    JobOutcome, JobPage, JobSummaryOut, LocationOut, QuarantineItem, RepoOut, ReportCountsOut,
+    RunnerStatOut, ScorePointOut, SummaryOut, TestJobLinkOut, TestOut, TestPage, Trend,
+    escape_like, is_broken, issue_url, permalink, repo_path, tier_for, trend_for,
 };
 use sea_orm::{ConnectionTrait, DbBackend, DbErr, QueryResult, Statement, TryGetable, Value};
 use serde_json::Value as JsonValue;
@@ -127,9 +127,10 @@ impl Scope {
 }
 
 /// The sort orders both leaderboards share.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SortKey {
     /// Worst score first.
+    #[default]
     Score,
     /// Most recent first.
     LastSeen,
@@ -163,12 +164,6 @@ pub enum ReadError {
     /// The Repo, CI run or attempt is unknown; the text is the 404 detail.
     #[error("{0}")]
     NotFound(String),
-}
-
-impl From<DbErr> for ReadError {
-    fn from(error: DbErr) -> Self {
-        Self::Database(DbError::Database(error))
-    }
 }
 
 /// Reads one column of a raw row.
@@ -266,10 +261,7 @@ fn timestamp(row: &QueryResult, column: &str) -> Result<DateTime<Utc>, DbError> 
 }
 
 /// An optional timestamp column read as UTC.
-fn optional_timestamp(
-    row: &QueryResult,
-    column: &str,
-) -> Result<Option<DateTime<Utc>>, DbError> {
+fn optional_timestamp(row: &QueryResult, column: &str) -> Result<Option<DateTime<Utc>>, DbError> {
     let value: Option<DateTime<FixedOffset>> = get(row, column)?;
     Ok(value.map(|value| value.with_timezone(&Utc)))
 }
@@ -455,9 +447,10 @@ fn test_out(
     let issue_number: Option<i32> = get(row, "github_issue_number")?;
     let issue_number = issue_number.map(id);
     let fail_streak = i64::from(get::<i32>(row, "fail_streak")?);
+    let source_url = issue_url(&repo, issue_number);
     Ok(TestOut {
         id: id(get(row, "id")?),
-        repo: repo.clone(),
+        repo,
         project: get(row, "project_name")?,
         fingerprint: get(row, "fingerprint")?,
         suite: get(row, "suite")?,
@@ -480,17 +473,13 @@ fn test_out(
         quarantine_reason: get(row, "quarantine_reason")?,
         quarantine_expires_at: optional_timestamp(row, "quarantine_expires_at")?,
         github_issue_number: issue_number,
-        github_issue_url: issue_url(&repo, issue_number),
+        github_issue_url: source_url,
         github_issue_closed: get(row, "github_issue_closed")?,
     })
 }
 
 /// Reads one Job row into its response shape.
-fn job_out(
-    row: &QueryResult,
-    threshold: f64,
-    trend: Option<Trend>,
-) -> Result<JobOut, DbError> {
+fn job_out(row: &QueryResult, threshold: f64, trend: Option<Trend>) -> Result<JobOut, DbError> {
     let score: f64 = get(row, "flakiness_score")?;
     let repo: String = get(row, "repo_name")?;
     let provider: String = get(row, "provider")?;
@@ -499,7 +488,7 @@ fn job_out(
     let github_issue_url = job_issue_url(&repo, &provider, issue_number);
     Ok(JobOut {
         id: id(get(row, "id")?),
-        repo: repo.clone(),
+        repo,
         provider,
         pipeline: get(row, "pipeline_name")?,
         name: get(row, "name")?,
@@ -565,12 +554,6 @@ pub struct ListOptions {
     pub has_issue: Option<bool>,
     /// The window, in days, of the "became flaky recently" filter.
     pub new_within_days: Option<i64>,
-}
-
-impl Default for SortKey {
-    fn default() -> Self {
-        Self::Score
-    }
 }
 
 /// The Tests leaderboard.
@@ -643,12 +626,12 @@ pub async fn list_tests(
     let mut items = Vec::with_capacity(page.rows.len());
     for row in &page.rows {
         let test_id: i32 = get(row, "id")?;
-        let score: f64 = get(row, "flakiness_score")?;
+        let row_score: f64 = get(row, "flakiness_score")?;
         items.push(test_out(
             row,
             settings.flake_threshold,
             settings.broken_streak,
-            trend_for(score, past.get(&test_id).copied()),
+            trend_for(row_score, past.get(&test_id).copied()),
         )?);
     }
     Ok(TestPage {
@@ -764,6 +747,30 @@ pub async fn summary(
     settings: &ReadSettings,
 ) -> Result<SummaryOut, DbError> {
     let threshold = settings.flake_threshold;
+    let today = settings.today();
+    let counts = test_counts(db, scope, threshold).await?;
+    let new_flaky = new_flaky_count(db, scope, threshold, today).await?;
+    let (executions_30d, failures_30d) = window_sums(db, scope, today).await?;
+    Ok(SummaryOut {
+        total_tests: counts.0,
+        flaky_tests: counts.1,
+        suspect_tests: counts.2,
+        confirmed_flaky_tests: counts.3,
+        new_flaky_7d: new_flaky,
+        total_runs: counts.4,
+        executions_30d,
+        failures_30d,
+        flake_threshold: threshold,
+        category_counts: category_counts(db, scope).await?,
+    })
+}
+
+/// The five dashboard tile counts and the Run count, in one statement.
+async fn test_counts(
+    db: &impl ConnectionTrait,
+    scope: &Scope,
+    threshold: f64,
+) -> Result<(i64, i64, i64, i64, i64), DbError> {
     // `$1` is the threshold everywhere; the Runs subquery and the scope follow.
     let (runs_conditions, runs_values) = scope_filters(scope, "trr.name", "tp.name", 2);
     let runs_sql = format!(
@@ -792,28 +799,37 @@ pub async fn summary(
             "the summary query returned no row".to_owned(),
         ))
     })?;
-    let total: i64 = get(&row, "total")?;
-    let flaky: i64 = get(&row, "flaky")?;
-    let suspect: i64 = get(&row, "suspect")?;
-    let confirmed: i64 = get(&row, "confirmed")?;
-    let total_runs: i64 = get(&row, "total_runs")?;
+    Ok((
+        get(&row, "total")?,
+        get(&row, "flaky")?,
+        get(&row, "suspect")?,
+        get(&row, "confirmed")?,
+        get(&row, "total_runs")?,
+    ))
+}
 
-    let today = settings.today();
+/// How many Tests in scope became flaky inside [`NEW_FLAKY_DAYS`].
+async fn new_flaky_count(
+    db: &impl ConnectionTrait,
+    scope: &Scope,
+    threshold: f64,
+    today: NaiveDate,
+) -> Result<i64, DbError> {
     let cutoff = today - Duration::days(NEW_FLAKY_DAYS);
     // The lateral subquery's cut-off is a literal day, so the binds stay simple.
     let old_point = score_history::newest_history_before(HistoryKind::Test, "t")
         .replace("$1::DATE", &format!("DATE '{}'", cutoff.format("%Y-%m-%d")));
     let (new_conditions, new_values) = scope_filters(scope, "r.name", "p.name", 2);
-    let mut new_sql = format!(
+    let mut new_where = new_conditions;
+    new_where.push("(past.score IS NULL OR past.score < $1)".to_owned());
+    let new_sql = format!(
         "SELECT count(*) FILTER (WHERE t.flakiness_score >= $1) AS new_flaky \
            FROM test_cases t \
            JOIN projects p ON p.id = t.project_id \
            JOIN repos r ON r.id = p.repo_id \
-           LEFT JOIN LATERAL ({old_point}) AS past ON true"
+           LEFT JOIN LATERAL ({old_point}) AS past ON true{}",
+        where_suffix(&new_where)
     );
-    let mut new_where = new_conditions;
-    new_where.push("(past.score IS NULL OR past.score < $1)".to_owned());
-    new_sql.push_str(&where_suffix(&new_where));
     let mut new_binds = vec![Value::from(threshold)];
     new_binds.extend(new_values);
     let row = one(db, new_sql, new_binds).await?.ok_or_else(|| {
@@ -821,9 +837,16 @@ pub async fn summary(
             "the new-flaky query returned no row".to_owned(),
         ))
     })?;
-    let new_flaky: i64 = get(&row, "new_flaky")?;
+    get(&row, "new_flaky")
+}
 
-    let window_cutoff = today - Duration::days(SUMMARY_WINDOW_DAYS);
+/// The Executions and failures of the last [`SUMMARY_WINDOW_DAYS`] in scope.
+async fn window_sums(
+    db: &impl ConnectionTrait,
+    scope: &Scope,
+    today: NaiveDate,
+) -> Result<(i64, i64), DbError> {
+    let cutoff = today - Duration::days(SUMMARY_WINDOW_DAYS);
     let (sum_conditions, sum_values) = scope_filters(scope, "r.name", "p.name", 2);
     let mut sum_where = vec!["h.day > $1".to_owned()];
     sum_where.extend(sum_conditions);
@@ -836,16 +859,21 @@ pub async fn summary(
            JOIN repos r ON r.id = p.repo_id{}",
         where_suffix(&sum_where)
     );
-    let mut sum_binds = vec![Value::from(window_cutoff)];
+    let mut sum_binds = vec![Value::from(cutoff)];
     sum_binds.extend(sum_values);
     let row = one(db, sums_sql, sum_binds).await?.ok_or_else(|| {
         DbError::Database(DbErr::RecordNotFound(
             "the thirty-day sums query returned no row".to_owned(),
         ))
     })?;
-    let executions_30d: i64 = get(&row, "executions")?;
-    let failures_30d: i64 = get(&row, "failures")?;
+    Ok((get(&row, "executions")?, get(&row, "failures")?))
+}
 
+/// Failing Executions per Failure category, for the flaky Tests in scope.
+async fn category_counts(
+    db: &impl ConnectionTrait,
+    scope: &Scope,
+) -> Result<BTreeMap<String, i64>, DbError> {
     let (category_conditions, category_values) = scope_filters(scope, "r.name", "p.name", 1);
     let mut category_where = vec![
         "t.flakiness_score > 0".to_owned(),
@@ -870,23 +898,10 @@ pub async fn summary(
             .iter()
             .any(|known| known.as_str() == category)
         {
-            let count: i64 = get(&row, "count")?;
-            let _ = category_counts.insert(category, count);
+            let _ = category_counts.insert(category, get(&row, "count")?);
         }
     }
-
-    Ok(SummaryOut {
-        total_tests: total,
-        flaky_tests: flaky,
-        suspect_tests: suspect,
-        confirmed_flaky_tests: confirmed,
-        new_flaky_7d: new_flaky,
-        total_runs,
-        executions_30d,
-        failures_30d,
-        flake_threshold: threshold,
-        category_counts,
-    })
+    Ok(category_counts)
 }
 
 /// One Execution in a Test's history, with the Run facts it carries.
@@ -934,21 +949,13 @@ pub async fn get_test(
     settings: &ReadSettings,
     executions_limit: i64,
 ) -> Result<Option<HistoryOut>, DbError> {
-    let sql = format!(
-        "{TESTS_SELECT}, p.root AS project_root {TESTS_FROM} WHERE t.id = $1"
-    );
+    let sql = format!("{TESTS_SELECT}, p.root AS project_root {TESTS_FROM} WHERE t.id = $1");
     let Some(row) = one(db, sql, vec![Value::from(test_id)]).await? else {
         return Ok(None);
     };
     let stored_id: i32 = get(&row, "id")?;
     let today = settings.today();
-    let past = score_history::past_scores(
-        db,
-        HistoryKind::Test,
-        &[stored_id],
-        today,
-    )
-    .await?;
+    let past = score_history::past_scores(db, HistoryKind::Test, &[stored_id], today).await?;
     let score: f64 = get(&row, "flakiness_score")?;
     let test = test_out(
         &row,
@@ -957,8 +964,10 @@ pub async fn get_test(
         trend_for(score, past.get(&stored_id).copied()),
     )?;
 
-    let exec_sql = format!("{EXECUTION_WITH_RUN} \
-         WHERE e.test_case_id = $1 ORDER BY e.id DESC LIMIT $2");
+    let exec_sql = format!(
+        "{EXECUTION_WITH_RUN} \
+         WHERE e.test_case_id = $1 ORDER BY e.id DESC LIMIT $2"
+    );
     let execution_rows = rows(
         db,
         exec_sql,
@@ -1122,7 +1131,10 @@ pub async fn quarantine_list(
     for row in rows(
         db,
         sql.to_owned(),
-        vec![Value::from(repo.to_owned()), Value::from(project.to_owned())],
+        vec![
+            Value::from(repo.to_owned()),
+            Value::from(project.to_owned()),
+        ],
     )
     .await?
     {
@@ -1193,12 +1205,12 @@ pub async fn search_tests(
     let mut found = Vec::with_capacity(rows.len());
     for row in &rows {
         let test_id: i32 = get(row, "id")?;
-        let score: f64 = get(row, "flakiness_score")?;
+        let row_score: f64 = get(row, "flakiness_score")?;
         found.push(test_out(
             row,
             settings.flake_threshold,
             settings.broken_streak,
-            trend_for(score, past.get(&test_id).copied()),
+            trend_for(row_score, past.get(&test_id).copied()),
         )?);
     }
     Ok(found)
@@ -1286,11 +1298,52 @@ pub async fn get_job(
     let explained = explained_ci_job_ids(db, repo_id, &ci_job_ids).await?;
     let runners = runner_stats(db, stored_id, settings.score_window).await?;
 
+    let mut histories = job_executions_out(&exec_rows, &explained)?;
+    if !histories.failed_ci_to_exec.is_empty() {
+        let mut by_exec = explaining_tests(db, repo_id, &histories.failed_ci_to_exec).await?;
+        for execution in &mut histories.executions {
+            if let Some(found) = by_exec.remove(&execution.id) {
+                execution.explained_by = found;
+            }
+        }
+    }
+    if summary_job {
+        attach_explaining_siblings(db, repo_id, &mut histories.executions).await?;
+    }
+
+    let history = score_history::window_rows(db, HistoryKind::Job, stored_id, today).await?;
+    Ok(Some(JobHistoryOut {
+        job,
+        unexplained_failures: histories.unexplained,
+        explained_failures: histories.explained,
+        executions: histories.executions,
+        runners,
+        score_history: history.iter().map(score_point).collect(),
+    }))
+}
+
+/// The mapped Job executions, the failure counts and the explained map.
+struct JobExecutions {
+    /// The executions, newest first.
+    executions: Vec<JobExecutionOut>,
+    /// Failures nothing explained.
+    unexplained: i64,
+    /// Failures a failing Test or a failed sibling explained.
+    explained: i64,
+    /// Each explained `ci_job_id` and the execution it belongs to.
+    failed_ci_to_exec: BTreeMap<String, i64>,
+}
+
+/// Maps the stored Job executions, labelling each failure's outcome.
+fn job_executions_out(
+    exec_rows: &[QueryResult],
+    explained: &BTreeSet<String>,
+) -> Result<JobExecutions, DbError> {
     let mut failed_ci_to_exec: BTreeMap<String, i64> = BTreeMap::new();
     let mut executions = Vec::with_capacity(exec_rows.len());
     let mut unexplained: i64 = 0;
     let mut explained_failures: i64 = 0;
-    for execution in &exec_rows {
+    for execution in exec_rows {
         let status: String = get(execution, "status")?;
         let ci_job_id: String = get(execution, "ci_job_id")?;
         let outcome = if status == "failed" {
@@ -1326,51 +1379,44 @@ pub async fn get_job(
             explained_by_jobs: Vec::new(),
         });
     }
-
-    if !failed_ci_to_exec.is_empty() {
-        let mut by_exec = explaining_tests(db, repo_id, &failed_ci_to_exec).await?;
-        for execution in &mut executions {
-            if let Some(found) = by_exec.remove(&execution.id) {
-                execution.explained_by = found;
-            }
-        }
-    }
-
-    if summary_job {
-        let pairs: Vec<(String, i32)> = executions
-            .iter()
-            .filter(|execution| {
-                execution.outcome == JobOutcome::Explained && execution.status == "failed"
-            })
-            .map(|execution| {
-                (
-                    execution.ci_run_id.clone(),
-                    i32::try_from(execution.ci_run_attempt).unwrap_or(i32::MAX),
-                )
-            })
-            .collect();
-        let by_pair = summary_explaining_siblings(db, repo_id, &pairs).await?;
-        for execution in &mut executions {
-            if execution.outcome == JobOutcome::Explained
-                && let Some(siblings) = by_pair.get(&(
-                    execution.ci_run_id.clone(),
-                    i32::try_from(execution.ci_run_attempt).unwrap_or(i32::MAX),
-                ))
-            {
-                execution.explained_by_jobs = siblings.clone();
-            }
-        }
-    }
-
-    let history = score_history::window_rows(db, HistoryKind::Job, stored_id, today).await?;
-    Ok(Some(JobHistoryOut {
-        job,
-        unexplained_failures: unexplained,
-        explained_failures,
+    Ok(JobExecutions {
         executions,
-        runners,
-        score_history: history.iter().map(score_point).collect(),
-    }))
+        unexplained,
+        explained: explained_failures,
+        failed_ci_to_exec,
+    })
+}
+
+/// Lists the sibling Jobs that explain a Summary Job's failed executions.
+async fn attach_explaining_siblings(
+    db: &impl ConnectionTrait,
+    repo_id: i32,
+    executions: &mut [JobExecutionOut],
+) -> Result<(), DbError> {
+    let pairs: Vec<(String, i32)> = executions
+        .iter()
+        .filter(|execution| {
+            execution.outcome == JobOutcome::Explained && execution.status == "failed"
+        })
+        .map(|execution| {
+            (
+                execution.ci_run_id.clone(),
+                i32::try_from(execution.ci_run_attempt).unwrap_or(i32::MAX),
+            )
+        })
+        .collect();
+    let by_pair = summary_explaining_siblings(db, repo_id, &pairs).await?;
+    for execution in executions {
+        if execution.outcome == JobOutcome::Explained
+            && let Some(siblings) = by_pair.get(&(
+                execution.ci_run_id.clone(),
+                i32::try_from(execution.ci_run_attempt).unwrap_or(i32::MAX),
+            ))
+        {
+            execution.explained_by_jobs.clone_from(siblings);
+        }
+    }
+    Ok(())
 }
 
 /// The `runner_labels` column as the sorted, deduplicated label set.
@@ -1488,10 +1534,7 @@ pub async fn runner_stats(
             let counts = name_counts.entry(runner_name.clone()).or_default();
             counts[0] += 1;
             counts[1] += unexplained;
-            name_labels
-                .entry(runner_name)
-                .or_default()
-                .extend(labels);
+            name_labels.entry(runner_name).or_default().extend(labels);
         }
     }
     let mut stats: Vec<RunnerStat> = Vec::new();
@@ -1518,7 +1561,16 @@ pub async fn runner_stats(
         });
     }
     stats.sort_by(|left, right| {
+        // Counts of Executions are far below 2^52, so the cast below is exact.
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "unexplained and executions are Execution counts, far below 2^52"
+        )]
         let left_rate = left.unexplained as f64 / left.executions as f64;
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "unexplained and executions are Execution counts, far below 2^52"
+        )]
         let right_rate = right.unexplained as f64 / right.executions as f64;
         left_rate
             .partial_cmp(&right_rate)
@@ -1527,9 +1579,9 @@ pub async fn runner_stats(
             .then_with(|| left.labels.cmp(&right.labels))
             .then_with(|| {
                 left.name
-                    .clone()
+                    .as_deref()
                     .unwrap_or_default()
-                    .cmp(&right.name.clone().unwrap_or_default())
+                    .cmp(right.name.as_deref().unwrap_or_default())
             })
             .reverse()
     });
@@ -1652,11 +1704,7 @@ pub async fn job_summary(
 }
 
 /// A Repo's conditions for one statement, with placeholders from `start`.
-fn repo_filters(
-    repo: Option<&str>,
-    repo_column: &str,
-    start: usize,
-) -> (Vec<String>, Vec<Value>) {
+fn repo_filters(repo: Option<&str>, repo_column: &str, start: usize) -> (Vec<String>, Vec<Value>) {
     match repo {
         Some(repo) => (
             vec![format!("{repo_column} = ${start}")],
@@ -1697,11 +1745,11 @@ pub async fn search_jobs(
     let mut found = Vec::with_capacity(rows.len());
     for row in &rows {
         let job_id: i32 = get(row, "id")?;
-        let score: f64 = get(row, "flakiness_score")?;
+        let row_score: f64 = get(row, "flakiness_score")?;
         found.push(job_out(
             row,
             settings.flake_threshold,
-            trend_for(score, past.get(&job_id).copied()),
+            trend_for(row_score, past.get(&job_id).copied()),
         )?);
     }
     Ok(found)
@@ -1718,10 +1766,7 @@ pub async fn find_job_ids(
     name: &str,
     pipeline: Option<&str>,
 ) -> Result<Vec<i64>, DbError> {
-    let mut conditions = vec![
-        "r.name = $1".to_owned(),
-        "j.name = $2".to_owned(),
-    ];
+    let mut conditions = vec!["r.name = $1".to_owned(), "j.name = $2".to_owned()];
     let mut values = vec![Value::from(repo.to_owned()), Value::from(name.to_owned())];
     if let Some(pipeline) = pipeline {
         conditions.push(format!("p.name = ${}", values.len() + 1));
@@ -1790,16 +1835,8 @@ pub async fn ci_run_failures(
             wanted
         }
     };
-    let (failures, total) = ci_run_test_failures(
-        db,
-        repo_id,
-        &repo_name,
-        ci_run_id,
-        attempt,
-        settings,
-        limit,
-    )
-    .await?;
+    let (failures, total) =
+        ci_run_test_failures(db, repo_id, &repo_name, ci_run_id, attempt, settings, limit).await?;
     let failed_jobs =
         ci_run_failed_jobs(db, repo_id, ci_run_id, attempt, &repo_name, settings).await?;
     Ok(CiRunFailuresOut {
@@ -1896,11 +1933,10 @@ async fn ci_run_test_failures(
     settings: &ReadSettings,
     limit: i64,
 ) -> Result<(Vec<CiRunTestFailureOut>, i64), DbError> {
-    let values = vec![
+    let mut values = vec![
         Value::from(repo_id),
         Value::from(ci_run_id.to_owned()),
         Value::from(attempt),
-        Value::from(limit),
     ];
     let total_sql = "SELECT count(*) AS total FROM ( \
          SELECT e.test_case_id, e.test_run_id \
@@ -1911,21 +1947,18 @@ async fn ci_run_test_failures(
             AND coalesce(tr.ci_run_attempt, 1) = $3 \
             AND e.status IN ('failed', 'error') \
           GROUP BY e.test_case_id, e.test_run_id) AS pairs";
-    let count = one(
-        db,
-        total_sql.to_owned(),
-        values[..3].to_vec(),
-    )
-    .await?
-    .ok_or_else(|| {
-        DbError::Database(DbErr::RecordNotFound(
-            "the CI run failure count returned no row".to_owned(),
-        ))
-    })?;
+    let count = one(db, total_sql.to_owned(), values.clone())
+        .await?
+        .ok_or_else(|| {
+            DbError::Database(DbErr::RecordNotFound(
+                "the CI run failure count returned no row".to_owned(),
+            ))
+        })?;
     let total: i64 = get(&count, "total")?;
     if total == 0 {
         return Ok((Vec::new(), 0));
     }
+    values.push(Value::from(limit));
     let page_sql = "SELECT t.*, t.id AS test_id, p.name AS project_name, \
             tr.id AS run_id, tr.ci_job_id AS ci_job_id \
        FROM ( \
@@ -1951,6 +1984,21 @@ async fn ci_run_test_failures(
         .iter()
         .map(|row| get::<i32>(row, "test_id"))
         .collect::<Result<_, _>>()?;
+    let by_pair = pair_executions(db, vec![int_array(&run_ids), int_array(&test_ids)]).await?;
+    let mut failures = Vec::with_capacity(page.len());
+    for row in &page {
+        if let Some(failure) = ci_run_failure_item(row, repo_name, &by_pair, settings)? {
+            failures.push(failure);
+        }
+    }
+    Ok((failures, total))
+}
+
+/// The Executions of each failing (Test, Run) pair, ordered by attempt then id.
+async fn pair_executions(
+    db: &impl ConnectionTrait,
+    values: Vec<Value>,
+) -> Result<BTreeMap<(i32, i32), Vec<PairExecution>>, DbError> {
     let exec_sql = "SELECT e.test_case_id, e.test_run_id, e.status, \
             e.failure_category, e.message \
        FROM test_executions e \
@@ -1958,70 +2006,73 @@ async fn ci_run_test_failures(
         AND e.test_case_id = ANY($2::INTEGER[]) \
       ORDER BY e.attempt, e.id";
     let mut by_pair: BTreeMap<(i32, i32), Vec<PairExecution>> = BTreeMap::new();
-    for row in rows(
-        db,
-        exec_sql.to_owned(),
-        vec![int_array(&run_ids), int_array(&test_ids)],
-    )
-    .await?
-    {
-        let key = (get::<i32>(&row, "test_case_id")?, get::<i32>(&row, "test_run_id")?);
+    for row in rows(db, exec_sql.to_owned(), values).await? {
+        let key = (
+            get::<i32>(&row, "test_case_id")?,
+            get::<i32>(&row, "test_run_id")?,
+        );
         by_pair.entry(key).or_default().push(PairExecution {
             status: get(&row, "status")?,
             failure_category: get(&row, "failure_category")?,
             message: get(&row, "message")?,
         });
     }
-    let mut failures = Vec::with_capacity(page.len());
-    for row in &page {
-        let test_id: i32 = get(row, "test_id")?;
-        let run_id: i32 = get(row, "run_id")?;
-        let executions = by_pair.get(&(test_id, run_id)).cloned().unwrap_or_default();
-        let Some(last) = executions.last() else {
-            // The pair was failing when it was counted, so it has at least one
-            // Execution; a row deleted between the two reads is left out.
-            continue;
-        };
-        let failing: Vec<&PairExecution> = executions
-            .iter()
-            .filter(|execution| matches!(execution.status.as_str(), "failed" | "error"))
-            .collect();
-        let Some(last_failing) = failing.last() else {
-            continue;
-        };
-        let score: f64 = get(row, "flakiness_score")?;
-        let issue_number: Option<i32> = get(row, "github_issue_number")?;
-        let issue_number = issue_number.map(id);
-        let fail_streak = i64::from(get::<i32>(row, "fail_streak")?);
-        failures.push(CiRunTestFailureOut {
-            test_id: id(test_id),
-            project: get(row, "project_name")?,
-            suite: get(row, "suite")?,
-            classname: get(row, "classname")?,
-            name: get(row, "name")?,
-            run_id: id(run_id),
-            ci_job_id: get(row, "ci_job_id")?,
-            status: last.status.clone(),
-            failed_attempts: i64::try_from(failing.len()).unwrap_or(i64::MAX),
-            failure_category: last_failing.failure_category.clone(),
-            message: last_failing
-                .message
-                .chars()
-                .take(CI_RUN_MESSAGE_MAX)
-                .collect(),
-            tier: tier_for(score, settings.flake_threshold),
-            flakiness_score: score,
-            confirmed_flake_count: i64::from(get::<i32>(row, "confirmed_flake_count")?),
-            clean_streak: i64::from(get::<i32>(row, "clean_streak")?),
-            fail_streak,
-            broken: is_broken(fail_streak, settings.broken_streak),
-            quarantined: get(row, "quarantined")?,
-            github_issue_number: issue_number,
-            github_issue_url: issue_url(repo_name, issue_number),
-            github_issue_closed: get(row, "github_issue_closed")?,
-        });
-    }
-    Ok((failures, total))
+    Ok(by_pair)
+}
+
+/// One failing pair as the listing serializes it.
+fn ci_run_failure_item(
+    row: &QueryResult,
+    repo_name: &str,
+    by_pair: &BTreeMap<(i32, i32), Vec<PairExecution>>,
+    settings: &ReadSettings,
+) -> Result<Option<CiRunTestFailureOut>, DbError> {
+    let test_id: i32 = get(row, "test_id")?;
+    let run_id: i32 = get(row, "run_id")?;
+    let executions = by_pair.get(&(test_id, run_id)).cloned().unwrap_or_default();
+    let Some(last) = executions.last() else {
+        // The pair was failing when it was counted, so it has at least one
+        // Execution; a row deleted between the two reads is left out.
+        return Ok(None);
+    };
+    let failing: Vec<&PairExecution> = executions
+        .iter()
+        .filter(|execution| matches!(execution.status.as_str(), "failed" | "error"))
+        .collect();
+    let Some(last_failing) = failing.last() else {
+        return Ok(None);
+    };
+    let score: f64 = get(row, "flakiness_score")?;
+    let issue_number: Option<i32> = get(row, "github_issue_number")?;
+    let issue_number = issue_number.map(id);
+    let fail_streak = i64::from(get::<i32>(row, "fail_streak")?);
+    Ok(Some(CiRunTestFailureOut {
+        test_id: id(test_id),
+        project: get(row, "project_name")?,
+        suite: get(row, "suite")?,
+        classname: get(row, "classname")?,
+        name: get(row, "name")?,
+        run_id: id(run_id),
+        ci_job_id: get(row, "ci_job_id")?,
+        status: last.status.clone(),
+        failed_attempts: i64::try_from(failing.len()).unwrap_or(i64::MAX),
+        failure_category: last_failing.failure_category.clone(),
+        message: last_failing
+            .message
+            .chars()
+            .take(CI_RUN_MESSAGE_MAX)
+            .collect(),
+        tier: tier_for(score, settings.flake_threshold),
+        flakiness_score: score,
+        confirmed_flake_count: i64::from(get::<i32>(row, "confirmed_flake_count")?),
+        clean_streak: i64::from(get::<i32>(row, "clean_streak")?),
+        fail_streak,
+        broken: is_broken(fail_streak, settings.broken_streak),
+        quarantined: get(row, "quarantined")?,
+        github_issue_number: issue_number,
+        github_issue_url: issue_url(repo_name, issue_number),
+        github_issue_closed: get(row, "github_issue_closed")?,
+    }))
 }
 
 /// The failed Job executions of one CI run attempt, each explained or unexplained.
@@ -2089,4 +2140,107 @@ async fn ci_run_failed_jobs(
         });
     }
     Ok(failed)
+}
+
+#[cfg(test)]
+mod tests {
+    //! The small helpers' own rules, without a database.
+
+    #![expect(
+        clippy::expect_used,
+        reason = "a helper test fails loudly when a scope or a conversion is wrong"
+    )]
+
+    use super::{
+        HistoryKind, NEW_FLAKY_DAYS, ReadError, ReadSettings, SortKey, Where, newest_history_join,
+        repo_filters, scope_conditions, scope_filters, where_suffix,
+    };
+
+    #[test]
+    fn sort_keys_parse_their_spellings() {
+        assert_eq!(SortKey::parse("score"), Some(SortKey::Score));
+        assert_eq!(SortKey::parse("last_seen"), Some(SortKey::LastSeen));
+        assert_eq!(SortKey::parse("proven"), Some(SortKey::Proven));
+        assert_eq!(SortKey::parse("name"), None);
+        assert_eq!(SortKey::default(), SortKey::Score);
+    }
+
+    #[test]
+    fn the_where_suffix_is_empty_without_conditions() {
+        let filter = Where::default();
+        assert_eq!(filter.suffix(), "");
+        assert_eq!(where_suffix(&[]), "");
+    }
+
+    #[test]
+    fn the_where_suffix_joins_every_condition() {
+        let mut filter = Where::default();
+        filter.eq("r.name", sea_orm::Value::from("acme/app"));
+        filter.raw("t.flakiness_score > 0");
+        assert_eq!(
+            filter.suffix(),
+            " WHERE r.name = $1 AND t.flakiness_score > 0"
+        );
+    }
+
+    #[test]
+    fn a_scope_and_a_repo_filter_bind_in_order() {
+        let scope = super::Scope::new(Some("acme/app".to_owned()), Some("backend".to_owned()))
+            .expect("a scope");
+        let mut filter = Where::default();
+        scope_conditions(&scope, "r.name", "p.name", &mut filter);
+        assert_eq!(filter.suffix(), " WHERE r.name = $1 AND p.name = $2");
+        assert_eq!(filter.values.len(), 2);
+
+        let (conditions, values) = scope_filters(&scope, "r.name", "p.name", 3);
+        assert_eq!(conditions, ["r.name = $3", "p.name = $4"]);
+        assert_eq!(values.len(), 2);
+        let (conditions, values) = repo_filters(Some("acme/app"), "r.name", 1);
+        assert_eq!(conditions, ["r.name = $1"]);
+        assert_eq!(values.len(), 1);
+        let (conditions, values) = repo_filters(None, "r.name", 1);
+        assert_eq!(conditions, Vec::<String>::new());
+        assert_eq!(values, Vec::<sea_orm::Value>::new());
+    }
+
+    #[test]
+    fn a_scope_without_a_repo_refuses_a_project() {
+        let error = super::Scope::new(None, Some("backend".to_owned()))
+            .expect_err("a Project without a Repo is refused");
+        assert_eq!(error, "project filter requires repo");
+    }
+
+    #[test]
+    fn the_new_flaky_window_reads_a_literal_day() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 1, 20).expect("a day");
+        let join = newest_history_join(
+            HistoryKind::Test,
+            "t",
+            today - chrono::Duration::days(NEW_FLAKY_DAYS),
+        );
+        assert!(join.contains("DATE '2026-01-13'"), "{join}");
+        assert!(join.contains("h.test_case_id = t.id"), "{join}");
+    }
+
+    #[test]
+    fn read_settings_describe_themselves_without_the_clock() {
+        let settings = ReadSettings::default();
+        let described = format!("{settings:?}");
+        assert!(described.contains("flake_threshold"));
+        assert!(described.contains("broken_streak"));
+        assert!(described.contains("score_window"));
+        assert!(!described.contains("clock"));
+    }
+
+    #[test]
+    fn a_read_error_prints_its_detail() {
+        let error = ReadError::from(super::DbError::Database(sea_orm::DbErr::RecordNotFound(
+            "a missing row".to_owned(),
+        )));
+        assert!(error.to_string().contains("a missing row"));
+        assert_eq!(
+            ReadError::NotFound("Repo not found".to_owned()).to_string(),
+            "Repo not found"
+        );
+    }
 }

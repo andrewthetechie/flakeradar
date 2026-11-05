@@ -1155,3 +1155,16 @@ async fn an_empty_ci_run_id_answers_the_404_body() {
     assert_eq!(reply.status, 404);
     assert_eq!(reply.json(), json!({"detail": "Not Found"}));
 }
+
+#[tokio::test]
+async fn a_ci_run_id_over_two_hundred_and_fifty_five_characters_is_a_422() {
+    let db = TestDb::new().await.expect("a test database");
+    let long = "r".repeat(256);
+    let reply = get(&app(&db, &[]), &url(&long, "acme/app", "")).await;
+    assert_eq!(reply.status, 422);
+    assert_eq!(reply.json()["detail"][0]["type"], "string_too_long");
+    assert_eq!(
+        reply.json()["detail"][0]["loc"],
+        json!(["path", "ci_run_id"])
+    );
+}

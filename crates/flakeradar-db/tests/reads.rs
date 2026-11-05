@@ -629,3 +629,73 @@ async fn a_job_execution_fixture_needs_a_job() {
         .await
         .expect("the execution");
 }
+
+#[tokio::test]
+async fn a_skipped_job_execution_has_the_skipped_outcome() {
+    let db = TestDb::new().await.expect("a test database");
+    let pipeline = make_pipeline()
+        .build(db.connection())
+        .await
+        .expect("pipeline");
+    let job = make_job(&pipeline)
+        .build(db.connection())
+        .await
+        .expect("job");
+    make_job_execution(&job)
+        .status("skipped")
+        .ci_job_id("J-S")
+        .build(db.connection())
+        .await
+        .expect("the skipped execution");
+    let history = flakeradar_db::get_job(db.connection(), i64::from(job.id), &settings(), 60)
+        .await
+        .expect("the history")
+        .expect("a Job");
+    assert_eq!(
+        history.executions[0].outcome,
+        flakeradar_core::JobOutcome::Skipped
+    );
+}
+
+#[tokio::test]
+async fn runner_statistics_break_ties_by_labels_then_name() {
+    let db = TestDb::new().await.expect("a test database");
+    let pipeline = make_pipeline()
+        .build(db.connection())
+        .await
+        .expect("pipeline");
+    let job = make_job(&pipeline)
+        .build(db.connection())
+        .await
+        .expect("job");
+    // Two label sets with the same rate and count, so the label set orders them;
+    // the gamma set also has a repeated runner name, so the name orders those two.
+    for index in 0..2 {
+        make_job_execution(&job)
+            .status("failed")
+            .ci_job_id(&format!("B{index}"))
+            .runner_labels(&["beta"])
+            .build(db.connection())
+            .await
+            .expect("a beta failure");
+        make_job_execution(&job)
+            .status("failed")
+            .ci_job_id(&format!("G{index}"))
+            .runner_name("runner-z")
+            .runner_labels(&["gamma"])
+            .build(db.connection())
+            .await
+            .expect("a gamma failure");
+    }
+    let stats = flakeradar_db::reads::runner_stats(db.connection(), job.id, 50)
+        .await
+        .expect("the statistics");
+    assert_eq!(stats.len(), 3);
+    // Worst rate first, then the execution count, then the label set, then the name.
+    assert_eq!(stats[0].labels, ["gamma"]);
+    assert_eq!(stats[0].runner_name.as_deref(), Some("runner-z"));
+    assert_eq!(stats[1].labels, ["gamma"]);
+    assert_eq!(stats[1].runner_name, None);
+    assert_eq!(stats[2].labels, ["beta"]);
+    assert_eq!(stats[2].runner_name, None);
+}

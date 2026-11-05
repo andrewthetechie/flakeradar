@@ -1220,3 +1220,19 @@ async fn the_job_summary_lists_pipelines_in_scope() {
         .json();
     assert_eq!(empty["pipelines"], json!([]));
 }
+
+#[tokio::test]
+async fn a_pipeline_name_over_its_length_rule_is_a_422() {
+    let db = TestDb::new().await.expect("a test database");
+    let long_pipeline = "p".repeat(513);
+    let reply = get(
+        &app(&db, &[]),
+        &format!("/api/jobs?repo=acme/app&pipeline={long_pipeline}"),
+    )
+    .await;
+    assert_eq!(reply.status, 422);
+    assert_eq!(
+        reply.json()["detail"][0]["loc"],
+        json!(["query", "pipeline"])
+    );
+}
