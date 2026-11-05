@@ -29,8 +29,8 @@ use axum::body::Body;
 use axum::http::{HeaderMap, Method, Request, StatusCode};
 use axum::routing::get;
 use flakeradar::{AppState, Settings, build_app};
-use flakeradar_db::WORKER_LOCK_KEY;
 use flakeradar_db::entities::repos;
+use flakeradar_db::{WORKER_LOCK_KEY, process_next};
 use flakeradar_test_support::TestDb;
 use sea_orm::{
     ConnectionTrait, DbBackend, EntityTrait, JsonValue, Statement, TransactionTrait as _,
@@ -124,11 +124,14 @@ const ENABLED: &[Enabled] = &[
     },
     Enabled {
         name: "ingest-junit",
-        steps: &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14],
+        steps: &[
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
+            25, 26, 27,
+        ],
     },
     Enabled {
         name: "pipeline-jobs",
-        steps: &[33, 34, 35, 36],
+        steps: &[1, 2, 3, 4, 5, 6, 7, 33, 34, 35, 36, 37],
     },
     Enabled {
         name: "trailing-slash",
@@ -181,14 +184,6 @@ const DEFERRED: &[Deferred] = &[
         reason: "GET /api/repos is a read API",
     },
     Deferred {
-        scenario: "ingest-junit",
-        steps: Some(&[15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27]),
-        task: 8,
-        reason: "the steps after `wait_processed` read the state the Report processor produces \
-                 (task 08): the queue drains, and the list, detail, retry and delete answers \
-                 carry the counts, the Run link and the processed_at that only processing sets",
-    },
-    Deferred {
         scenario: "issue-links",
         steps: None,
         task: 10,
@@ -204,13 +199,12 @@ const DEFERRED: &[Deferred] = &[
     Deferred {
         scenario: "pipeline-jobs",
         steps: Some(&[
-            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
-            25, 26, 27, 28, 29, 30, 31, 32, 37,
+            8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29,
+            30, 31, 32,
         ]),
         task: 9,
-        reason: "the pipeline Reports the scenario queues have to be processed (task 08) before \
-                 the Job reads, /api/ci-runs/{id}/failures and the database dump can answer \
-                 (task 09)",
+        reason: "the Job reads: /api/ci-runs/{id}/failures, /api/jobs, /api/jobs/summary and \
+                 /api/jobs/{id}/history (task 09)",
     },
     Deferred {
         scenario: "quarantine",
@@ -259,7 +253,7 @@ const DEFERRED: &[Deferred] = &[
 /// A later task enables steps and lowers this number; the test that reads it
 /// fails both when a step is switched off without a reason and when an enabled
 /// step is left in [`DEFERRED`]. It never goes up.
-const DEFERRED_STEPS: usize = 257;
+const DEFERRED_STEPS: usize = 236;
 
 /// One scenario file.
 #[derive(Debug, Deserialize)]
@@ -313,9 +307,10 @@ async fn every_enabled_scenario_replays_identically() {
         // so `processor_leader` was true. The Rust worker arrives in task 08;
         // until then the replay holds the lock the worker will hold.
         let leader = processor_lock(&db).await;
+        let settings = settings_for(&scenario);
         let app = build_app(AppState::new(
             db.connection().clone(),
-            std::sync::Arc::new(settings_for(&scenario)),
+            std::sync::Arc::new(settings.clone()),
         ));
         for step in enabled.steps {
             let recorded = golden(enabled.name, *step);
@@ -323,7 +318,9 @@ async fn every_enabled_scenario_replays_identically() {
                 .steps
                 .get(step - 1)
                 .unwrap_or_else(|| panic!("{} has no step {step}", enabled.name));
-            failures.extend(replay_step(&app, &db, enabled.name, *step, spec, &recorded).await);
+            failures.extend(
+                replay_step(&app, &db, &settings, enabled.name, *step, spec, &recorded).await,
+            );
         }
         release_processor_lock(&db, leader).await;
     }
@@ -380,6 +377,7 @@ fn settings_for(scenario: &ScenarioFile) -> Settings {
 async fn replay_step(
     app: &Router,
     db: &TestDb,
+    settings: &Settings,
     scenario: &str,
     step: usize,
     spec: &Value,
@@ -394,10 +392,10 @@ async fn replay_step(
             .cloned()
             .unwrap_or_default();
         let dump = dump_db(db, &tables).await;
-        compare_body(scenario, step, recorded, &dump, "application/json")
+        compare_recorded(scenario, step, recorded, &dump)
     } else if spec.get("wait_processed").is_some() {
-        let drained = wait_processed(app).await;
-        compare_body(scenario, step, recorded, &drained, "application/json")
+        let drained = wait_processed(app, db, settings).await;
+        compare_recorded(scenario, step, recorded, &drained)
     } else {
         // The MCP replay needs the MCP server, which lands in task 11; a scenario
         // that reaches this arm must not be in ENABLED.
@@ -640,6 +638,28 @@ fn decode_body(bytes: &[u8], content_type: Option<&str>) -> Value {
     } else {
         Value::String(String::from_utf8_lossy(bytes).into_owned())
     }
+}
+
+/// Every difference between a recorded payload and the answer.
+///
+/// The `dump_db` and `wait_processed` goldens hold their payload at the top
+/// level beside `step`, not inside an HTTP `body` with a `status`, so the
+/// comparison is the body comparison with `step` removed.
+fn compare_recorded(scenario: &str, step: usize, recorded: &Value, actual: &Value) -> Mismatches {
+    let mut expected = recorded.clone();
+    if let Some(object) = expected.as_object_mut() {
+        object.remove("step");
+    }
+    let allowances = allowances(scenario, step);
+    let context = Comparison {
+        scenario,
+        step,
+        content_type: "application/json",
+        allowances: &allowances,
+    };
+    let mut failures = Vec::new();
+    compare_value(&context, "body", &expected, actual, &mut failures);
+    failures
 }
 
 /// Every difference between the recorded body and the answer.
@@ -949,11 +969,31 @@ fn is_digits(text: &str, width: usize) -> bool {
     text.len() == width && text.chars().all(|c| c.is_ascii_digit())
 }
 
-/// Polls `GET /api/reports/summary` until the queue is drained.
+/// Settings at the frozen server's defaults, for a harness test with no scenario.
+fn test_settings() -> Settings {
+    Settings::from_map(&BTreeMap::new()).expect("the default settings are valid")
+}
+
+/// Drains the queue with `process_next`, then polls `GET /api/reports/summary`
+/// until it reports nothing pending.
+async fn wait_processed(app: &Router, db: &TestDb, settings: &Settings) -> Value {
+    // The worker that drains the queue on its own lands in task 08, so until then
+    // the replay is the worker: it processes the oldest pending Report each turn,
+    // exactly as `process_next` is meant to be driven.
+    let processing = settings.processing();
+    while process_next(db.connection(), &processing)
+        .await
+        .expect("the processor runs")
+        .is_some()
+    {}
+    wait_for_drain(app).await
+}
+
+/// Polls `GET /api/reports/summary` until nothing is pending.
 ///
 /// This is the only waiting a scenario does; the interval and the deadline are
 /// constants so a replay fails rather than hangs.
-async fn wait_processed(app: &Router) -> Value {
+async fn wait_for_drain(app: &Router) -> Value {
     let deadline = tokio::time::Instant::now() + WAIT_PROCESSED_DEADLINE;
     loop {
         let request = Request::builder()
@@ -1212,9 +1252,10 @@ fn summary_app(body: Value) -> Router {
 
 #[tokio::test]
 async fn a_wait_processed_step_answers_a_drained_queue() {
+    let db = TestDb::new().await.expect("a test database is available");
     let app = summary_app(json!({"pending": 0, "failed": 0}));
     assert_eq!(
-        wait_processed(&app).await,
+        wait_processed(&app, &db, &test_settings()).await,
         json!({"processed": true, "reports": {"pending": 0, "failed": 0}})
     );
 }
@@ -1225,7 +1266,7 @@ async fn a_wait_processed_step_gives_up_on_a_queue_that_never_drains() {
     // step must report the queue rather than hang the replay.
     let app = summary_app(json!({"pending": 2, "failed": 1}));
     assert_eq!(
-        wait_processed(&app).await,
+        wait_for_drain(&app).await,
         json!({"processed": false, "reports": {"pending": 2, "failed": 1}})
     );
 }
@@ -1237,6 +1278,7 @@ async fn an_mcp_step_says_the_mcp_task_replays_it() {
     let failures = replay_step(
         &app,
         &db,
+        &test_settings(),
         "mcp",
         1,
         &json!({"mcp": {"call": "tools/list"}}),
