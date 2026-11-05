@@ -731,9 +731,7 @@ async def test_network_error_mid_batch_costs_the_rest_of_the_batch(db, gh_settin
         raise httpx.ConnectError("offline")
 
     with caplog.at_level(logging.WARNING, logger="flakeradar.github"):
-        await github_integration.file_issues_for(
-            db, [a.id, b.id, c.id], transport=httpx.MockTransport(handler)
-        )
+        await github_integration.file_issues_for(db, [a.id, b.id, c.id], transport=httpx.MockTransport(handler))
     # c is never tried: the error ended the batch, not just this one filing.
     assert [r.url.path for r in calls] == ["/repos/acme/a/issues", "/repos/acme/b/issues"]
     await db.refresh(a)
