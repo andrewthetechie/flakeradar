@@ -551,20 +551,27 @@ async def test_custom_label_is_used(db, gh_settings):
     assert body["labels"] == ["flaky"]
 
 
-async def test_min_proven_flakes_gate(db, gh_settings):
+# --- the filing gate: one scenario per signal, for a Test and for a Job ------
+#
+# The shape the fixed-note suite below uses (`_note_entry`/`_note_row`, and `_file_entry` from
+# the filing-and-noting section): one `entity` parameter picks the row builder AND this
+# target's public filing entry point, so a gate signal that only worked for one target cannot
+# pass unnoticed. `_note_row` gives a Job its Pipeline and a Test its Project, both in the
+# same Repo, so what a case answers on is the signal in its name and nothing else.
+
+
+@pytest.mark.parametrize("entity", ["test", "job"])
+async def test_min_proven_flakes_gate(db, gh_settings, entity):
+    """The Proven-flake floor, over each target's own `confirmed_flake_count` column."""
     gh_settings.github_issue_min_proven_flakes = 2
-    # Only one proven flake -> not filed.
-    tc = await _flaky_test(db, name="under", project="p1", confirmed_flake_count=1)
-    await db.commit()
+    under = await _note_row(db, entity, "under", confirmed_flake_count=1)  # one proven flake
+    at = await _note_row(db, entity, "at", confirmed_flake_count=2)  # two -> at the floor
     calls, transport = _recorder()
-    await github_integration.file_issues_for(db, [tc.id], transport=transport)
-    assert calls == []
-    # Two proven flakes -> filed.
-    tc2 = await _flaky_test(db, name="over", project="p2", confirmed_flake_count=2)
-    await db.commit()
-    calls, transport = _recorder()
-    await github_integration.file_issues_for(db, [tc2.id], transport=transport)
-    assert len(calls) == 1
+    filed = await _file_entry(entity)(db, [under.id, at.id], transport=transport)
+    assert filed == {at.id}  # `>=` the floor files, below it nothing is asked for
+    assert [(r.method, r.url.path) for r in calls] == [("POST", "/repos/acme/app/issues")]
+    await db.refresh(under)
+    assert under.github_issue_number is None
 
 
 async def _add_failure(db, tc, sha="cafe1234"):
@@ -574,19 +581,34 @@ async def _add_failure(db, tc, sha="cafe1234"):
     await db.commit()
 
 
-async def test_min_failures_gate(db, gh_settings):
+@pytest.mark.parametrize("entity", ["test", "job"])
+async def test_min_failures_gate_counts_each_targets_own_counter(db, gh_settings, entity):
+    """The `min_failures` window is measured by the target's OWN counter, for both sides.
+
+    The asymmetry inside the shared path is the descriptor's `counter` field: a Test counts
+    every failing Execution in its newest window, while a Job counts only the failures no
+    Test execution explains — a Test has no explanation concept, so the Job's three
+    explained failures below are the counterpart of the Test's one seeded failing run.
+    """
     gh_settings.github_issue_min_failures = 2
-    tc = await _flaky_test(db, name="t", failure_details="boom")  # one failure in window
-    await db.commit()
+    file_entry = _file_entry(entity)
+    obj = await _note_row(db, entity, "gate")  # a Test starts with one failing Execution
+    if entity == "job":
+        for i in range(3):  # three failures, every one explained -> its counter sees none
+            await _job_exec(db, obj, f"ex-{i}", explained=True)
     calls, transport = _recorder()
-    await github_integration.file_issues_for(db, [tc.id], transport=transport)
+    await file_entry(db, [obj.id], transport=transport)
     assert calls == []
 
-    # Add a second failing execution so the window has two failures.
-    await _add_failure(db, tc)
+    # One more failure that its own counter cannot explain away: the floor is reached.
+    if entity == "job":
+        await _job_exec(db, obj, "un-1")
+        await _job_exec(db, obj, "un-2")
+    else:
+        await _add_failure(db, obj)
     calls, transport = _recorder()
-    await github_integration.file_issues_for(db, [tc.id], transport=transport)
-    assert len(calls) == 1
+    assert await file_entry(db, [obj.id], transport=transport) == {obj.id}
+    assert [(r.method, r.url.path) for r in calls] == [("POST", "/repos/acme/app/issues")]
 
 
 async def test_window_failures_counts_only_the_newest_window(db):
@@ -608,13 +630,84 @@ async def test_window_failures_counts_only_the_newest_window(db):
     assert counts.get(tc_old.id, 0) == 0
 
 
-async def test_score_gate_from_issue_min_score(db, gh_settings):
+@pytest.mark.parametrize("entity", ["test", "job"])
+async def test_score_gate_from_issue_min_score(db, gh_settings, entity):
+    """The Score floor is `github_issue_min_score`, not `flake_threshold`: one floor, both rows."""
     gh_settings.github_issue_min_score = 0.9
-    tc = await _flaky_test(db, name="t", flakiness_score=0.6)
-    await db.commit()
+    below = await _note_row(db, entity, "below", flakiness_score=0.6)
+    at = await _note_row(db, entity, "at", flakiness_score=0.9)  # `>=` the floor files
     calls, transport = _recorder()
-    await github_integration.file_issues_for(db, [tc.id], transport=transport)
-    assert calls == []
+    assert await _file_entry(entity)(db, [below.id, at.id], transport=transport) == {at.id}
+    assert [(r.method, r.url.path) for r in calls] == [("POST", "/repos/acme/app/issues")]
+
+
+@pytest.mark.parametrize("entity", ["test", "job"])
+async def test_no_issue_linked_gate_skips_a_row_that_already_has_one(db, gh_settings, entity):
+    """`github_issue_number IS NULL` is the dedupe for a Test and for a Job alike.
+
+    Whatever wrote the number, the gate reads one column; the fresh sibling in another Repo
+    still files, and the refused row keeps its link (see `test_linked_job_is_not_filed` for the
+    same refusal when `issue_links` wrote the number).
+    """
+    linked = await _note_row(db, entity, "linked", github_issue_number=300)
+    fresh = await _note_row(db, entity, "fresh", repo="acme/other")
+    calls, transport = _recorder()
+    assert await _file_entry(entity)(db, [linked.id, fresh.id], transport=transport) == {fresh.id}
+    assert [(r.method, r.url.path) for r in calls] == [("POST", "/repos/acme/other/issues")]
+    await db.refresh(linked)
+    assert linked.github_issue_number == 300  # the gate leaves the link it refused alone
+
+
+@pytest.mark.parametrize("entity", ["test", "job"])
+async def test_github_provider_gate_is_job_only_descriptor_data(db, gh_settings, entity):
+    """ADR 0008 as descriptor data: a Job needs a GitHub Pipeline, a Test has no Provider to check.
+
+    Both Providers sit in one Repo, so the answer cannot turn on the Repo: the provider
+    condition rides the Job's own Pipeline join, which the Test select does not have — that is
+    what `github_provider_only` (on, then off) says to the one gate.
+    """
+    github_job = await _flaky_job(db, name="gh", pipeline=".github/workflows/ci.yml")
+    gitlab_job = await _flaky_job(db, provider="gitlab", name="gl", pipeline=".gitlab/ci.yml")
+    tc = await _flaky_test(db, project="gh", name="t")
+    await _job_exec(db, github_job, "1")
+    await _job_exec(db, gitlab_job, "2")
+    ids, expected = ([tc.id], {tc.id}) if entity == "test" else ([github_job.id, gitlab_job.id], {github_job.id})
+    calls, transport = _recorder()
+    assert await _file_entry(entity)(db, ids, transport=transport) == expected
+    assert [(r.method, r.url.path) for r in calls] == [("POST", "/repos/acme/app/issues")]
+    await db.refresh(gitlab_job)
+    assert gitlab_job.github_issue_number is None  # the gitlab Job is refused, not skipped by luck
+
+
+async def test_a_test_and_a_job_at_the_same_score_file_one_issue_each(db, gh_settings):
+    """The pair the whole gate is for: one Report, two targets, the same score.
+
+    The gate is one place, so a Test and a Job that answer it alike each get exactly one
+    Issue — only the rendering differs (`title_of`), never the decision. A row whose Clean
+    streak has reached the fixed-note threshold is filed by neither: filing and noting are the
+    two answers to different questions (see `test_filing_gate_skips_rows_at_the_fixed_note_streak`).
+    """
+    gh_settings.github_fixed_streak = 5
+    live_test = await _note_row(db, "test", "live")  # score 0.6 for both sides
+    live_job = await _note_row(db, "job", "live")
+    at_streak_test = await _note_row(db, "test", "fixed", clean_streak=5)
+    at_streak_job = await _note_row(db, "job", "fixed", clean_streak=5)
+    calls, transport = _recorder(number=101)
+
+    filed_tests = await github_integration.file_issues_for(db, [live_test.id, at_streak_test.id], transport=transport)
+    assert filed_tests == {live_test.id}
+    filed_jobs = await github_integration.file_job_issues_for(db, [live_job.id, at_streak_job.id], transport=transport)
+    assert filed_jobs == {live_job.id}
+    assert [(r.method, r.url.path) for r in calls] == [("POST", "/repos/acme/app/issues")] * 2
+    bodies = [json.loads(r.content) for r in calls]
+    assert [b["title"] for b in bodies] == [
+        "[FlakeRadar] Flaky test: tests.test_mod::live",
+        "[FlakeRadar] Flaky CI job: .github/workflows/live.yml / live",
+    ]  # the Test's own title template, then the Job's
+    assert [b["labels"] for b in bodies] == [["flakeradar"], ["flakeradar"]]
+    for obj, filed_by in ((live_test, 101), (live_job, 101), (at_streak_test, None), (at_streak_job, None)):
+        await db.refresh(obj)
+        assert obj.github_issue_number == filed_by  # the at-streak rows have no Issue to comment on
 
 
 async def test_sync_rearms_closed_issue_only(db, gh_settings, session_factory):
@@ -1289,33 +1382,6 @@ async def test_job_does_not_refile(db, gh_settings):
     calls, transport = _recorder()
     await github_integration.file_job_issues_for(db, [job.id], transport=transport)
     assert calls == []
-
-
-async def test_gitlab_job_is_not_filed(db, gh_settings):
-    job = await _flaky_job(db, provider="gitlab")
-    await _job_exec(db, job, "1")
-    calls, transport = _recorder()
-    await github_integration.file_job_issues_for(db, [job.id], transport=transport)
-    assert calls == []
-
-
-async def test_job_unexplained_failure_gate(db, gh_settings):
-    gh_settings.github_issue_min_failures = 2
-    # Three failures, all explained -> not filed.
-    all_explained = await _flaky_job(db, name="all-explained", pipeline=".github/workflows/a.yml")
-    for i in range(3):
-        await _job_exec(db, all_explained, f"ex-{i}", explained=True)
-    calls, transport = _recorder()
-    await github_integration.file_job_issues_for(db, [all_explained.id], transport=transport)
-    assert calls == []
-    # Two unexplained (plus one explained) -> filed.
-    mixed = await _flaky_job(db, name="mixed", pipeline=".github/workflows/b.yml")
-    await _job_exec(db, mixed, "mix-1", explained=True)
-    await _job_exec(db, mixed, "mix-2")
-    await _job_exec(db, mixed, "mix-3")
-    calls, transport = _recorder()
-    await github_integration.file_job_issues_for(db, [mixed.id], transport=transport)
-    assert len(calls) == 1
 
 
 async def test_job_sync_rearms_closed_issue_and_refiles(db, gh_settings, session_factory):
