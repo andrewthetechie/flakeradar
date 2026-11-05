@@ -311,6 +311,22 @@ impl Default for Settings {
 }
 
 impl Settings {
+    /// The processor's view of these settings, with the system clock.
+    ///
+    /// The database layer cannot depend on this module, so it takes only the
+    /// values the processor reads.
+    #[must_use]
+    pub fn processing(&self) -> flakeradar_db::ProcessingSettings {
+        flakeradar_db::ProcessingSettings {
+            score_window: usize::try_from(self.score_window).unwrap_or_default(),
+            score_decay: self.score_decay,
+            broken_streak: self.broken_streak,
+            flake_threshold: self.flake_threshold,
+            max_report_retries: i32::try_from(self.max_report_retries).unwrap_or(i32::MAX),
+            clock: std::sync::Arc::new(flakeradar_db::SystemClock),
+        }
+    }
+
     /// Reads the settings, overlaid on the defaults.
     ///
     /// `values` holds `FLAKERADAR_*` variables only; anything else is ignored,

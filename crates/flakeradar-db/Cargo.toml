@@ -10,6 +10,7 @@ publish = false
 workspace = true
 
 [dependencies]
+chrono = { workspace = true, features = ["clock", "std"] }
 flakeradar-core = { path = "../flakeradar-core" }
 sea-orm = { workspace = true, features = [
   "macros",
@@ -24,9 +25,9 @@ sea-orm-migration = { workspace = true, features = [
 ] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+tokio = { workspace = true, features = ["rt"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
-chrono = { workspace = true, features = ["clock", "std"] }
 flakeradar-test-support = { path = "../flakeradar-test-support" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

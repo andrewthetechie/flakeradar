@@ -130,6 +130,8 @@ pub struct TestCaseBuilder {
     suite: String,
     fingerprint: Option<String>,
     flakiness_score: f64,
+    clean_streak: i32,
+    github_issue_fixed_noted_at: Option<DateTimeWithTimeZone>,
     github_issue_number: Option<i32>,
 }
 
@@ -143,6 +145,8 @@ pub fn make_test_case(project: &projects::Model) -> TestCaseBuilder {
         suite: "unit".to_owned(),
         fingerprint: None,
         flakiness_score: 0.0,
+        clean_streak: 0,
+        github_issue_fixed_noted_at: None,
         github_issue_number: None,
     }
 }
@@ -183,6 +187,20 @@ impl TestCaseBuilder {
         self
     }
 
+    /// Sets the Test's Clean streak.
+    #[must_use]
+    pub fn clean_streak(mut self, clean_streak: i32) -> Self {
+        self.clean_streak = clean_streak;
+        self
+    }
+
+    /// Sets when FlakeRadar noted that the Test's fix appears to hold.
+    #[must_use]
+    pub fn github_issue_fixed_noted_at(mut self, at: DateTimeWithTimeZone) -> Self {
+        self.github_issue_fixed_noted_at = Some(at);
+        self
+    }
+
     /// Links the Test to a GitHub issue number.
     #[must_use]
     pub fn github_issue_number(mut self, number: i32) -> Self {
@@ -210,7 +228,7 @@ impl TestCaseBuilder {
                 flakiness_score: Set(self.flakiness_score),
                 confirmed_flake_count: Set(0),
                 failure_category: Set(None),
-                clean_streak: Set(0),
+                clean_streak: Set(self.clean_streak),
                 fail_streak: Set(0),
                 last_status: Set("passed".to_owned()),
                 last_seen_at: Set(now()),
@@ -222,7 +240,7 @@ impl TestCaseBuilder {
                 github_issue_filed: Set(None),
                 github_issue_checked_at: Set(None),
                 github_issue_closed: Set(false),
-                github_issue_fixed_noted_at: Set(None),
+                github_issue_fixed_noted_at: Set(self.github_issue_fixed_noted_at),
                 ..Default::default()
             },
         )
@@ -515,6 +533,8 @@ pub struct JobBuilder {
     name: String,
     summary: bool,
     flakiness_score: f64,
+    clean_streak: i32,
+    github_issue_fixed_noted_at: Option<DateTimeWithTimeZone>,
     github_issue_number: Option<i32>,
 }
 
@@ -526,6 +546,8 @@ pub fn make_job(pipeline: &pipelines::Model) -> JobBuilder {
         name: "test".to_owned(),
         summary: false,
         flakiness_score: 0.0,
+        clean_streak: 0,
+        github_issue_fixed_noted_at: None,
         github_issue_number: None,
     }
 }
@@ -542,6 +564,20 @@ impl JobBuilder {
     #[must_use]
     pub fn flakiness_score(mut self, score: f64) -> Self {
         self.flakiness_score = score;
+        self
+    }
+
+    /// Sets the Job's Clean streak.
+    #[must_use]
+    pub fn clean_streak(mut self, clean_streak: i32) -> Self {
+        self.clean_streak = clean_streak;
+        self
+    }
+
+    /// Sets when FlakeRadar noted that the Job's fix appears to hold.
+    #[must_use]
+    pub fn github_issue_fixed_noted_at(mut self, at: DateTimeWithTimeZone) -> Self {
+        self.github_issue_fixed_noted_at = Some(at);
         self
     }
 
@@ -573,14 +609,14 @@ impl JobBuilder {
                 summary: Set(self.summary),
                 flakiness_score: Set(self.flakiness_score),
                 confirmed_flake_count: Set(0),
-                clean_streak: Set(0),
+                clean_streak: Set(self.clean_streak),
                 last_status: Set("passed".to_owned()),
                 last_seen_at: Set(now()),
                 github_issue_number: Set(self.github_issue_number),
                 github_issue_filed: Set(None),
                 github_issue_checked_at: Set(None),
                 github_issue_closed: Set(false),
-                github_issue_fixed_noted_at: Set(None),
+                github_issue_fixed_noted_at: Set(self.github_issue_fixed_noted_at),
                 created_at: Set(now()),
                 ..Default::default()
             },
@@ -812,6 +848,11 @@ pub struct ReportBuilder {
     retry_count: i32,
     processed_at: Option<DateTime<FixedOffset>>,
     kind: String,
+    root: Option<String>,
+    default_branch: Option<String>,
+    ci_job_id: Option<String>,
+    pipeline: Option<String>,
+    line_base: Option<i32>,
 }
 
 /// Builds a pending JUnit Report of `acme/app`'s `default` Project at `sha1`.
@@ -830,6 +871,11 @@ pub fn make_report(project: &projects::Model, repo_id: i32) -> ReportBuilder {
         retry_count: 0,
         processed_at: None,
         kind: "junit".to_owned(),
+        root: None,
+        default_branch: None,
+        ci_job_id: None,
+        pipeline: None,
+        line_base: None,
     }
 }
 
@@ -898,6 +944,41 @@ impl ReportBuilder {
         self
     }
 
+    /// Sets the Project root the upload named.
+    #[must_use]
+    pub fn root(mut self, root: &str) -> Self {
+        self.root = Some(root.to_owned());
+        self
+    }
+
+    /// Sets the Repo's Default branch the upload named.
+    #[must_use]
+    pub fn default_branch(mut self, default_branch: &str) -> Self {
+        self.default_branch = Some(default_branch.to_owned());
+        self
+    }
+
+    /// Sets the CI Job id the Report came from.
+    #[must_use]
+    pub fn ci_job_id(mut self, ci_job_id: &str) -> Self {
+        self.ci_job_id = Some(ci_job_id.to_owned());
+        self
+    }
+
+    /// Sets the Pipeline the Report came from.
+    #[must_use]
+    pub fn pipeline(mut self, pipeline: &str) -> Self {
+        self.pipeline = Some(pipeline.to_owned());
+        self
+    }
+
+    /// Sets the base the runner used for line numbers.
+    #[must_use]
+    pub fn line_base(mut self, line_base: i32) -> Self {
+        self.line_base = Some(line_base);
+        self
+    }
+
     /// Sets when processing finished.
     #[must_use]
     pub fn processed_at(mut self, processed_at: DateTime<FixedOffset>) -> Self {
@@ -922,12 +1003,12 @@ impl ReportBuilder {
                 commit_sha: Set(self.commit_sha),
                 branch: Set(self.branch),
                 ci_run_id: Set(self.ci_run_id),
-                ci_job_id: Set(None),
+                ci_job_id: Set(self.ci_job_id),
                 ci_run_attempt: Set(self.ci_run_attempt),
-                pipeline: Set(None),
-                default_branch: Set(None),
-                line_base: Set(None),
-                root: Set(None),
+                pipeline: Set(self.pipeline),
+                default_branch: Set(self.default_branch),
+                line_base: Set(self.line_base),
+                root: Set(self.root),
                 status: Set(self.status),
                 error: Set(self.error),
                 counts: Set(None),

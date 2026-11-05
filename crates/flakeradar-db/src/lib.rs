@@ -12,12 +12,16 @@
 
 // Rust guideline compliant 2026-07-21
 
+pub mod attribution;
+pub mod clock;
 mod batching;
 mod connect;
 mod error;
 mod identity;
 mod migration;
+pub mod processing;
 mod report_intake;
+pub mod score_history;
 
 /// The `SeaORM` entities, generated from the baseline schema by `sea-orm-cli`.
 ///
@@ -33,7 +37,13 @@ mod report_intake;
 pub mod entities;
 
 #[doc(inline)]
+pub use attribution::{
+    SIBLING_MAX, explained_ci_job_ids, summary_explaining_siblings, unexplained_failure_counts,
+};
+#[doc(inline)]
 pub use batching::{CHUNK, chunks};
+#[doc(inline)]
+pub use clock::{Clock, FixedClock, SharedClock, SystemClock};
 #[doc(inline)]
 pub use connect::{DbSettings, connect};
 #[doc(inline)]
@@ -42,6 +52,16 @@ pub use error::DbError;
 pub use identity::{get_or_create_project, get_or_create_repo};
 #[doc(inline)]
 pub use migration::{BASELINE_SQL, Migrator, run_migrations, split_statements};
+#[doc(inline)]
+pub use processing::{
+    ERROR_MAX, ProcessError, ProcessOutcome, ProcessingSettings, claim_next_report, process_next,
+    rescore, rescore_jobs,
+};
+#[doc(inline)]
+pub use score_history::{
+    HISTORY_DAYS, HistoryKind, HistoryUpdate, ScoreHistoryRow, newest_history_before, past_scores,
+    window_rows, write_today_history,
+};
 #[doc(inline)]
 pub use report_intake::{
     NewJunitReport, NewPipelineReport, REPORT_FAILED, REPORT_KIND_JUNIT, REPORT_KIND_PIPELINE,
