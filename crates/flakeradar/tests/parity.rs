@@ -130,6 +130,12 @@ struct Deferred {
 /// `issue-links`, `quarantine` and `repo-admin`, whose own steps need the task 09
 /// and task 10 routes; each of those scenarios' dump stays deferred, because it
 /// records what those routes wrote.
+///
+/// Task 09 adds every read step left: `flaky-tests` 13-48, `pipeline-jobs` 8-32,
+/// `default-branch` 4-6 and 9-11, 14, `health` 4, `quarantine` 3-18, and
+/// validation 1-3 and 8-19, the read APIs' own 422, 404 and lax-bool answers.
+/// Validation 20-21 stay deferred with the issue routes, and every scenario dump
+/// the quarantine and issue routes write stays deferred too.
 const ENABLED: &[Enabled] = &[
     Enabled {
         name: "auth",
@@ -189,7 +195,10 @@ const ENABLED: &[Enabled] = &[
     },
     Enabled {
         name: "validation",
-        steps: &[4, 5, 6, 7, 22, 23, 24, 25, 26, 27],
+        steps: &[
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 22, 23, 24, 25, 26,
+            27,
+        ],
     },
 ];
 
@@ -251,16 +260,10 @@ const DEFERRED: &[Deferred] = &[
     },
     Deferred {
         scenario: "validation",
-        steps: Some(&[
-            1, 2, 3, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
-        ]),
+        steps: Some(&[20, 21]),
         task: 10,
-        reason: "the 422 shapes of the read APIs (task 09) and of the quarantine and issue routes \
-                 (task 09 and task 10). Step 17 is not a 422: Python's lax bool takes \
-                 {\"quarantined\": \"yes\"} as true, so the quarantine route looked up a \
-                 missing Test and answered 404 {\"detail\": \"Test not found\"} (golden 17). \
-                 Whichever task lands that route must take Pydantic's bool spellings and \
-                 reproduce the 404, never a 422",
+        reason: "the 422 shapes of `PUT /api/tests/{id}/issue`: a `number` that is not an \
+                 integer, and a body that is not a JSON object",
     },
 ];
 
@@ -269,7 +272,7 @@ const DEFERRED: &[Deferred] = &[
 /// A later task enables steps and lowers this number; the test that reads it
 /// fails both when a step is switched off without a reason and when an enabled
 /// step is left in [`DEFERRED`]. It never goes up.
-const DEFERRED_STEPS: usize = 115;
+const DEFERRED_STEPS: usize = 100;
 
 /// One scenario file.
 #[derive(Debug, Deserialize)]

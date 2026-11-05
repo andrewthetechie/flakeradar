@@ -1334,6 +1334,31 @@ async fn quarantine_takes_pydantics_lax_boolean_and_404s_a_missing_test() {
 }
 
 #[tokio::test]
+async fn a_quarantine_body_that_fails_while_it_is_read_answers_the_500() {
+    // A client that goes away mid-body is not a size problem, so the extractor's
+    // body-read arm answers the same 500 every other route gives it.
+    let db = TestDb::new().await.expect("a test database");
+    let app = token_app(&db);
+    let stream = futures_util::stream::iter(vec![
+        Ok(axum::body::Bytes::from_static(b"{\"quarantined\":")),
+        Err(std::io::Error::other("the client went away")),
+    ]);
+    let request = axum::http::Request::builder()
+        .method(axum::http::Method::POST)
+        .uri("/api/tests/9999/quarantine")
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from_stream(stream))
+        .expect("the fixture request builds");
+    let reply = common::send(&app, request).await;
+    assert_eq!(reply.status, 500);
+    assert!(
+        reply.text().contains("Reading the request body failed"),
+        "{}",
+        reply.text()
+    );
+}
+
+#[tokio::test]
 async fn the_quarantine_list_rejects_unusable_names() {
     let db = TestDb::new().await.expect("a test database");
     let app = token_app(&db);
