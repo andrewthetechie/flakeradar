@@ -1708,8 +1708,10 @@ async fn note_batch(
                     entity_id = row.entity_id,
                     "noted that the fix appears to hold"
                 );
-                if settings.github_close_fixed {
-                    close_note(db, &row, entity, settings, api, &mut skipped).await;
+                if settings.github_close_fixed
+                    && close_note(db, &row, entity, settings, api, &mut skipped).await
+                {
+                    return;
                 }
             }
             _ if answer.rate_limited() => {
@@ -1743,6 +1745,9 @@ async fn note_batch(
 }
 
 /// Closes the issue a fix was noted on, when the configuration asks for it.
+///
+/// Returns `true` when GitHub is throttling, which stops the whole batch rather
+/// than only this issue, the same way the close of a deleted Repo's issues does.
 async fn close_note(
     db: &impl ConnectionTrait,
     row: &NoteCandidate,
@@ -1750,7 +1755,7 @@ async fn close_note(
     settings: &Settings,
     api: &Api,
     skipped: &mut BTreeSet<String>,
-) {
+) -> bool {
     let _ = (db, settings);
     let answer = match api
         .close_issue(&row.repo, row.number, Some("completed"))
@@ -1759,7 +1764,7 @@ async fn close_note(
         Ok(answer) => answer,
         Err(error) => {
             tracing::warn!(error = %error, entity, "GitHub unreachable, skipping the close");
-            return;
+            return false;
         }
     };
     if answer.rate_limited() {
@@ -1769,7 +1774,7 @@ async fn close_note(
             number = row.number,
             "GitHub rate limit; stopping the fixed-close batch"
         );
-        return;
+        return true;
     }
     if matches!(answer.status, 403 | 404 | 410) {
         tracing::warn!(
@@ -1794,6 +1799,7 @@ async fn close_note(
             "GitHub close after noting the fix failed"
         );
     }
+    false
 }
 
 /// The `ReportWorker` hook: file issues for the Tests and Jobs a Report touched.

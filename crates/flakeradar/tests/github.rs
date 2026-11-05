@@ -719,6 +719,14 @@ async fn the_sync_keeps_a_link_closed_as_not_planned() {
     let db = TestDb::new().await.expect("a test database");
     let test = flaky_test(&db).await;
     stamp_link(&db, test, 12, true, false).await;
+    db.connection()
+        .execute_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "UPDATE test_cases SET github_issue_filed = TRUE WHERE id = $1",
+            [Value::from(test)],
+        ))
+        .await
+        .expect("the filed flag writes");
     let server = MockServer::start().await;
     mount_state(
         &server,
@@ -728,12 +736,14 @@ async fn the_sync_keeps_a_link_closed_as_not_planned() {
     .await;
 
     github::sync_closed_issues(db.connection(), &gh_settings(&[]), &api(&server)).await;
-    let (number, _, _, closed) = test_link(&db, test).await;
+    let (number, filed, checked, closed) = test_link(&db, test).await;
     assert_eq!(
         number,
         Some(12),
         "the team declined this flake; nothing is filed again"
     );
+    assert_eq!(filed, Some(true), "the link is still ours");
+    assert!(checked, "and the link stays in the sync rotation");
     assert!(closed, "and the row records why");
 }
 
@@ -933,7 +943,6 @@ async fn the_fixed_note_comments_once_with_the_configured_sentence() {
     Mock::given(method("POST"))
         .and(path("/repos/acme/app/issues/12/comments"))
         .respond_with(ResponseTemplate::new(201))
-        .expect(1)
         .mount(&server)
         .await;
 
@@ -953,6 +962,19 @@ async fn the_fixed_note_comments_once_with_the_configured_sentence() {
     // A second pass finds the stamp and posts nothing more.
     github::note_fixed_issues_for(db.connection(), &[test], &settings, &api(&server)).await;
     assert_eq!(server.received_requests().await.expect("a record").len(), 1);
+
+    // A failed run reset the Clean streak and the stamp: the fix is noteable again.
+    db.connection()
+        .execute_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "UPDATE test_cases SET github_issue_fixed_noted_at = NULL WHERE id = $1",
+            [Value::from(test)],
+        ))
+        .await
+        .expect("the stamp clears");
+    github::note_fixed_issues_for(db.connection(), &[test], &settings, &api(&server)).await;
+    assert_eq!(server.received_requests().await.expect("a record").len(), 2);
+    assert!(noted(&db, "test_cases", test).await);
 }
 
 #[tokio::test]
@@ -1022,12 +1044,41 @@ async fn the_fixed_note_closes_the_issue_only_when_asked() {
     Mock::given(method("PATCH"))
         .and(path("/repos/acme/app/issues/12"))
         .respond_with(ResponseTemplate::new(200))
-        .expect(1)
         .mount(&server)
         .await;
 
+    // CLOSE_FIXED off: a comment alone.
+    github::note_fixed_issues_for(
+        db.connection(),
+        &[test],
+        &fixed_settings(&[]),
+        &api(&server),
+    )
+    .await;
+    assert_eq!(
+        requested_paths(&server).await,
+        vec!["/repos/acme/app/issues/12/comments"]
+    );
+
+    // On, with the stamp cleared: that comment, then the close PATCH.
+    db.connection()
+        .execute_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "UPDATE test_cases SET github_issue_fixed_noted_at = NULL WHERE id = $1",
+            [Value::from(test)],
+        ))
+        .await
+        .expect("the stamp clears");
     let settings = fixed_settings(&[("FLAKERADAR_GITHUB_CLOSE_FIXED", "true")]);
     github::note_fixed_issues_for(db.connection(), &[test], &settings, &api(&server)).await;
+    assert_eq!(
+        requested_paths(&server).await,
+        vec![
+            "/repos/acme/app/issues/12/comments",
+            "/repos/acme/app/issues/12/comments",
+            "/repos/acme/app/issues/12"
+        ]
+    );
 
     let requests = server.received_requests().await.expect("a record");
     let close = requests
@@ -3254,4 +3305,478 @@ async fn a_rate_limit_on_either_post_delete_request_stops_the_batch() {
         !lines_with(&logged, "stopping the post-delete close batch").is_empty(),
         "{logged}"
     );
+}
+
+// --- the fixed-note batch's failure policy -------------------------------
+
+/// Sets one Test's or Job's Clean streak.
+async fn set_clean_streak(db: &TestDb, table: &str, id: i32, streak: i32) {
+    db.connection()
+        .execute_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            format!("UPDATE {table} SET clean_streak = $2 WHERE id = $1"),
+            [Value::from(id), Value::from(streak)],
+        ))
+        .await
+        .expect("the streak writes");
+}
+
+/// Whether one Test or Job carries the fixed-note stamp.
+async fn noted(db: &TestDb, table: &str, id: i32) -> bool {
+    let row = db
+        .connection()
+        .query_one_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            format!(
+                "SELECT github_issue_fixed_noted_at IS NOT NULL AS noted FROM {table} WHERE id = $1"
+            ),
+            [Value::from(id)],
+        ))
+        .await
+        .expect("the row reads")
+        .expect("the row exists");
+    row.try_get("", "noted").expect("noted")
+}
+
+/// Mounts the comment endpoint of issue `number`.
+async fn mount_comment(server: &MockServer, repo: &str, number: i32, answer: ResponseTemplate) {
+    Mock::given(method("POST"))
+        .and(path(format!("/repos/{repo}/issues/{number}/comments")))
+        .respond_with(answer)
+        .mount(server)
+        .await;
+}
+
+/// Mounts the close endpoint of issue `number`.
+async fn mount_patch(server: &MockServer, repo: &str, number: i32, answer: ResponseTemplate) {
+    Mock::given(method("PATCH"))
+        .and(path(format!("/repos/{repo}/issues/{number}")))
+        .respond_with(answer)
+        .mount(server)
+        .await;
+}
+
+#[tokio::test]
+async fn a_job_issue_is_noted_and_closed_with_the_same_wording() {
+    let db = TestDb::new().await.expect("a test database");
+    let job = flaky_job(&db).await;
+    stamp_job_link(&db, job, 77, true).await;
+    set_clean_streak(&db, "jobs", job, 3).await;
+    let server = MockServer::start().await;
+    mount_comment(&server, "acme/app", 77, ResponseTemplate::new(201)).await;
+    mount_patch(&server, "acme/app", 77, ResponseTemplate::new(200)).await;
+    let settings = fixed_settings(&[("FLAKERADAR_GITHUB_CLOSE_FIXED", "true")]);
+
+    github::note_fixed_job_issues_for(db.connection(), &[job], &settings, &api(&server)).await;
+
+    let requests = server.received_requests().await.expect("a record");
+    assert_eq!(
+        requested_paths(&server).await,
+        vec![
+            "/repos/acme/app/issues/77/comments",
+            "/repos/acme/app/issues/77"
+        ]
+    );
+    let body: Json = serde_json::from_slice(&requests[0].body).expect("the body is JSON");
+    assert_eq!(
+        body["body"],
+        json!(
+            "FlakeRadar: 3 passing runs since the last failure (score now 0.50). \
+             The fix appears to hold."
+        ),
+        "a Job's note says exactly what a Test's does"
+    );
+    let close: Json = serde_json::from_slice(&requests[1].body).expect("the body is JSON");
+    assert_eq!(
+        close,
+        json!({"state": "closed", "state_reason": "completed"})
+    );
+    assert!(noted(&db, "jobs", job).await);
+    assert_eq!(job_link(&db, job).await.0, Some(77));
+}
+
+#[tokio::test]
+async fn a_note_ignores_a_row_with_no_live_note() {
+    let db = TestDb::new().await.expect("a test database");
+    let short = flaky_test_in(&db, "acme/app", "short", "short").await;
+    stamp_link(&db, short, 71, true, false).await;
+    set_clean_streak(&db, "test_cases", short, 2).await;
+    let unlinked = flaky_test_in(&db, "acme/app", "unlinked", "unlinked").await;
+    set_clean_streak(&db, "test_cases", unlinked, 9).await;
+    let declined = flaky_test_in(&db, "acme/app", "declined", "declined").await;
+    stamp_link(&db, declined, 72, true, true).await;
+    set_clean_streak(&db, "test_cases", declined, 9).await;
+    let server = MockServer::start().await;
+
+    github::note_fixed_issues_for(
+        db.connection(),
+        &[short, unlinked, declined],
+        &fixed_settings(&[]),
+        &api(&server),
+    )
+    .await;
+    assert!(
+        server
+            .received_requests()
+            .await
+            .expect("a record")
+            .is_empty(),
+        "below the streak, unlinked and declined are all silent"
+    );
+    assert!(!noted(&db, "test_cases", declined).await);
+
+    let at_streak = flaky_test_in(&db, "acme/app", "streak", "streak").await;
+    stamp_link(&db, at_streak, 73, true, false).await;
+    set_clean_streak(&db, "test_cases", at_streak, 9).await;
+    let off = fixed_settings(&[("FLAKERADAR_GITHUB_FIXED_STREAK", "0")]);
+    github::note_fixed_issues_for(db.connection(), &[at_streak], &off, &api(&server)).await;
+    assert!(
+        server
+            .received_requests()
+            .await
+            .expect("a record")
+            .is_empty(),
+        "0 ships the feature disabled"
+    );
+}
+
+#[tokio::test]
+async fn a_note_skips_a_job_of_another_provider() {
+    let db = TestDb::new().await.expect("a test database");
+    let pipeline = make_pipeline()
+        .repo("acme/app")
+        .provider("gitlab")
+        .build(db.connection())
+        .await
+        .expect("the Pipeline inserts");
+    let job = make_job(&pipeline)
+        .name("unit")
+        .flakiness_score(0.5)
+        .build(db.connection())
+        .await
+        .expect("the Job inserts");
+    stamp_job_link(&db, job.id, 77, true).await;
+    set_clean_streak(&db, "jobs", job.id, 3).await;
+    let server = MockServer::start().await;
+
+    github::note_fixed_job_issues_for(
+        db.connection(),
+        &[job.id],
+        &fixed_settings(&[]),
+        &api(&server),
+    )
+    .await;
+    assert!(
+        server
+            .received_requests()
+            .await
+            .expect("a record")
+            .is_empty(),
+        "only a github Pipeline has an issue to note"
+    );
+}
+
+#[tokio::test]
+async fn a_note_close_that_fails_keeps_the_stamp() {
+    let db = TestDb::new().await.expect("a test database");
+    let test = flaky_test_in(&db, "acme/app", "linked", "linked").await;
+    stamp_link(&db, test, 77, true, false).await;
+    set_clean_streak(&db, "test_cases", test, 3).await;
+    let server = MockServer::start().await;
+    mount_comment(&server, "acme/app", 77, ResponseTemplate::new(201)).await;
+    mount_patch(
+        &server,
+        "acme/app",
+        77,
+        ResponseTemplate::new(500).set_body_string("boom"),
+    )
+    .await;
+    let settings = fixed_settings(&[("FLAKERADAR_GITHUB_CLOSE_FIXED", "true")]);
+
+    let logged = logged_from(github::note_fixed_issues_for(
+        db.connection(),
+        &[test],
+        &settings,
+        &api(&server),
+    ))
+    .await;
+    assert_eq!(
+        requested_paths(&server).await,
+        vec![
+            "/repos/acme/app/issues/77/comments",
+            "/repos/acme/app/issues/77"
+        ]
+    );
+    assert!(noted(&db, "test_cases", test).await);
+    assert_eq!(
+        lines_with(&logged, "close after noting the fix failed").len(),
+        1,
+        "{logged}"
+    );
+
+    github::note_fixed_issues_for(db.connection(), &[test], &settings, &api(&server)).await;
+    assert_eq!(
+        requested_paths(&server).await.len(),
+        2,
+        "a failed close must not buy a second comment"
+    );
+}
+
+#[tokio::test]
+async fn a_note_rate_limit_stops_the_batch() {
+    for (status, headers) in [(429, None), (403, Some(("x-ratelimit-remaining", "0")))] {
+        let db = TestDb::new().await.expect("a test database");
+        let first = flaky_test_in(&db, "acme/a", "a", "a").await;
+        let second = flaky_test_in(&db, "acme/b", "b", "b").await;
+        stamp_link(&db, first, 71, true, false).await;
+        stamp_link(&db, second, 72, true, false).await;
+        set_clean_streak(&db, "test_cases", first, 3).await;
+        set_clean_streak(&db, "test_cases", second, 3).await;
+        let server = MockServer::start().await;
+        let mut answer = ResponseTemplate::new(status);
+        if let Some((name, value)) = headers {
+            answer = answer.insert_header(name, value);
+        }
+        Mock::given(method("POST"))
+            .respond_with(answer)
+            .mount(&server)
+            .await;
+
+        github::note_fixed_issues_for(
+            db.connection(),
+            &[first, second],
+            &fixed_settings(&[]),
+            &api(&server),
+        )
+        .await;
+        assert_eq!(
+            requested_paths(&server).await,
+            vec!["/repos/acme/a/issues/71/comments"],
+            "status {status}: the batch stops after the first request"
+        );
+        assert!(
+            !noted(&db, "test_cases", second).await,
+            "status {status}: the second Repo is never touched"
+        );
+    }
+
+    // A throttled close PATCH stops it too, after the comment landed.
+    let db = TestDb::new().await.expect("a test database");
+    let first = flaky_test_in(&db, "acme/a", "a", "a").await;
+    let second = flaky_test_in(&db, "acme/b", "b", "b").await;
+    stamp_link(&db, first, 71, true, false).await;
+    stamp_link(&db, second, 72, true, false).await;
+    set_clean_streak(&db, "test_cases", first, 3).await;
+    set_clean_streak(&db, "test_cases", second, 3).await;
+    let server = MockServer::start().await;
+    mount_comment(&server, "acme/a", 71, ResponseTemplate::new(201)).await;
+    mount_patch(
+        &server,
+        "acme/a",
+        71,
+        ResponseTemplate::new(429).insert_header("x-ratelimit-remaining", "0"),
+    )
+    .await;
+    let settings = fixed_settings(&[("FLAKERADAR_GITHUB_CLOSE_FIXED", "true")]);
+    let logged = logged_from(github::note_fixed_issues_for(
+        db.connection(),
+        &[first, second],
+        &settings,
+        &api(&server),
+    ))
+    .await;
+    assert_eq!(
+        requested_paths(&server).await,
+        vec![
+            "/repos/acme/a/issues/71/comments",
+            "/repos/acme/a/issues/71"
+        ],
+        "{logged}"
+    );
+    assert!(noted(&db, "test_cases", first).await, "the comment landed");
+    assert!(!noted(&db, "test_cases", second).await);
+}
+
+#[tokio::test]
+async fn a_note_permission_403_skips_only_that_repo() {
+    let db = TestDb::new().await.expect("a test database");
+    let a1 = flaky_test_in(&db, "acme/a", "a1", "a1").await;
+    let a2 = flaky_test_in(&db, "acme/a", "a2", "a2").await;
+    let other = flaky_test_in(&db, "acme/b", "b", "b").await;
+    stamp_link(&db, a1, 71, true, false).await;
+    stamp_link(&db, a2, 73, true, false).await;
+    stamp_link(&db, other, 72, true, false).await;
+    for id in [a1, a2, other] {
+        set_clean_streak(&db, "test_cases", id, 3).await;
+    }
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/repos/acme/a/issues/71/comments"))
+        .respond_with(
+            ResponseTemplate::new(403).set_body_json(
+                json!({"message": "Resource not accessible by personal access token"}),
+            ),
+        )
+        .mount(&server)
+        .await;
+    mount_comment(&server, "acme/b", 72, ResponseTemplate::new(201)).await;
+    mount_comment(&server, "acme/a", 73, ResponseTemplate::new(201)).await;
+
+    github::note_fixed_issues_for(
+        db.connection(),
+        &[a1, other, a2],
+        &fixed_settings(&[]),
+        &api(&server),
+    )
+    .await;
+    assert_eq!(
+        requested_paths(&server).await,
+        vec![
+            "/repos/acme/a/issues/71/comments",
+            "/repos/acme/b/issues/72/comments",
+        ],
+        "the whole Repo is skipped for the rest of the batch"
+    );
+    assert!(noted(&db, "test_cases", other).await);
+    assert!(!noted(&db, "test_cases", a2).await);
+
+    // A permission 403 on the close costs that Repo's later closes, not the notes.
+    let db = TestDb::new().await.expect("a test database");
+    let a = flaky_test_in(&db, "acme/a", "a", "a").await;
+    let b = flaky_test_in(&db, "acme/b", "b", "b").await;
+    stamp_link(&db, a, 71, true, false).await;
+    stamp_link(&db, b, 72, true, false).await;
+    set_clean_streak(&db, "test_cases", a, 3).await;
+    set_clean_streak(&db, "test_cases", b, 3).await;
+    let server = MockServer::start().await;
+    mount_comment(&server, "acme/a", 71, ResponseTemplate::new(201)).await;
+    mount_comment(&server, "acme/b", 72, ResponseTemplate::new(201)).await;
+    mount_patch(
+        &server,
+        "acme/a",
+        71,
+        ResponseTemplate::new(403).set_body_json(json!({"message": "Resource not accessible"})),
+    )
+    .await;
+    mount_patch(&server, "acme/b", 72, ResponseTemplate::new(200)).await;
+    let settings = fixed_settings(&[("FLAKERADAR_GITHUB_CLOSE_FIXED", "true")]);
+    let logged = logged_from(github::note_fixed_issues_for(
+        db.connection(),
+        &[a, b],
+        &settings,
+        &api(&server),
+    ))
+    .await;
+    assert_eq!(
+        requested_paths(&server).await,
+        vec![
+            "/repos/acme/a/issues/71/comments",
+            "/repos/acme/a/issues/71",
+            "/repos/acme/b/issues/72/comments",
+            "/repos/acme/b/issues/72",
+        ]
+    );
+    assert!(noted(&db, "test_cases", a).await);
+    assert!(noted(&db, "test_cases", b).await);
+    assert!(
+        lines_with(&logged, "issue close skipped for this Repo").len() == 1,
+        "{logged}"
+    );
+}
+
+#[tokio::test]
+async fn a_note_network_error_is_logged_and_never_raises() {
+    let db = TestDb::new().await.expect("a test database");
+    let test = flaky_test_in(&db, "acme/app", "linked", "linked").await;
+    stamp_link(&db, test, 77, true, false).await;
+    set_clean_streak(&db, "test_cases", test, 3).await;
+    // Nothing listens on this port.
+    let api = Api::new(Secret::new(TOKEN), "http://127.0.0.1:1");
+
+    let logged = logged_from(github::note_fixed_issues_for(
+        db.connection(),
+        &[test],
+        &fixed_settings(&[]),
+        &api,
+    ))
+    .await;
+    assert!(!noted(&db, "test_cases", test).await);
+    assert_eq!(
+        lines_with(&logged, "unreachable, skipping fixed-note comments").len(),
+        1,
+        "{logged}"
+    );
+}
+
+#[tokio::test]
+async fn an_unusable_note_comment_status_leaves_the_row_unstamped() {
+    let db = TestDb::new().await.expect("a test database");
+    let bad = flaky_test_in(&db, "acme/a", "bad", "bad").await;
+    let other = flaky_test_in(&db, "acme/b", "ok", "ok").await;
+    stamp_link(&db, bad, 71, true, false).await;
+    stamp_link(&db, other, 72, true, false).await;
+    set_clean_streak(&db, "test_cases", bad, 3).await;
+    set_clean_streak(&db, "test_cases", other, 3).await;
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("nope"))
+        .mount(&server)
+        .await;
+
+    let logged = logged_from(github::note_fixed_issues_for(
+        db.connection(),
+        &[bad, other],
+        &fixed_settings(&[]),
+        &api(&server),
+    ))
+    .await;
+    assert_eq!(
+        requested_paths(&server).await,
+        vec![
+            "/repos/acme/a/issues/71/comments",
+            "/repos/acme/b/issues/72/comments",
+        ],
+        "a 500 is nobody's Repo-wide fault"
+    );
+    assert!(!noted(&db, "test_cases", bad).await);
+    assert!(!noted(&db, "test_cases", other).await);
+    assert_eq!(
+        lines_with(&logged, "fixed-note comment failed").len(),
+        2,
+        "{logged}"
+    );
+}
+
+#[tokio::test]
+async fn a_test_sync_rearms_its_closed_issue_and_the_filer_files_again() {
+    let db = TestDb::new().await.expect("a test database");
+    let test = flaky_test(&db).await;
+    stamp_link(&db, test, 300, true, false).await;
+    let sync_server = MockServer::start().await;
+    mount_issue(
+        &sync_server,
+        "acme/app",
+        300,
+        ResponseTemplate::new(200).set_body_json(json!({"state": "closed"})),
+    )
+    .await;
+
+    github::sync_closed_issues(db.connection(), &gh_settings(&[]), &api(&sync_server)).await;
+    assert_eq!(
+        requested_paths(&sync_server).await,
+        vec!["/repos/acme/app/issues/300"]
+    );
+    assert_eq!(test_link(&db, test).await.0, None);
+
+    let filing = MockServer::start().await;
+    mount_create(
+        &filing,
+        ResponseTemplate::new(201).set_body_json(json!({"number": 77})),
+    )
+    .await;
+    let filed =
+        github::file_issues_for(db.connection(), &[test], &gh_settings(&[]), &api(&filing)).await;
+    assert_eq!(filed.into_iter().collect::<Vec<_>>(), vec![test]);
+    assert_eq!(test_link(&db, test).await.0, Some(77));
+    assert!(!test_link(&db, test).await.2, "a new link is checked first");
 }
