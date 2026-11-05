@@ -27,12 +27,14 @@ pub mod docs;
 pub mod error;
 pub mod extract;
 pub mod github;
+pub mod github_worker;
 pub mod middleware;
 pub mod multipart;
 pub mod routes;
 pub mod server;
 pub mod settings;
 mod telemetry;
+pub mod webhooks;
 pub mod worker;
 
 #[doc(inline)]
