@@ -427,6 +427,8 @@ mod tests {
     use flakeradar_core::LocSegment;
     use serde_json::Value;
 
+    use flakeradar_core::dto::lax_bool;
+
     use super::{
         INTEGER_TYPES, is_integer_failure, is_json_content_type, json_error_position, kind_for,
         kind_for_type_name, missing_field, path_issue,
@@ -447,6 +449,8 @@ mod tests {
 
     #[test]
     fn a_serde_message_maps_to_pydantics_kind() {
+        assert_eq!(kind_for(lax_bool::WRONG_TYPE_MESSAGE), "bool_type");
+        assert_eq!(kind_for(lax_bool::UNPARSABLE_MESSAGE), "bool_parsing");
         assert_eq!(
             kind_for("invalid type: string, expected a boolean"),
             "bool_parsing"

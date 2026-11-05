@@ -567,12 +567,19 @@ fn a_lax_boolean_takes_exactly_the_values_pydantic_reads() {
 fn a_refused_lax_boolean_carries_pydantics_kind_and_wording() {
     let wrong_type = lax_bool::WRONG_TYPE_MESSAGE;
     let unparsable = lax_bool::UNPARSABLE_MESSAGE;
-    let refused: [(&str, Value, &str); 14] = [
+    let refused: [(&str, Value, &str); 18] = [
         ("1.5", json!(1.5), wrong_type),
+        ("-1.5", json!(-1.5), wrong_type),
         ("a fraction near one", json!(1.000_000_000_1), wrong_type),
+        ("a tiny fraction", json!(1e-20), wrong_type),
         (
             "a whole float past the integer range",
             json!(1e20),
+            wrong_type,
+        ),
+        (
+            "a whole float below the integer range",
+            json!(-1e20),
             wrong_type,
         ),
         ("null", json!(null), wrong_type),
@@ -585,6 +592,7 @@ fn a_refused_lax_boolean_carries_pydantics_kind_and_wording() {
         ),
         ("2", json!(2), unparsable),
         ("2.0", json!(2.0), unparsable),
+        ("-2.0", json!(-2.0), unparsable),
         ("-1", json!(-1), unparsable),
         ("an empty string", json!(""), unparsable),
         ("maybe", json!("maybe"), unparsable),
