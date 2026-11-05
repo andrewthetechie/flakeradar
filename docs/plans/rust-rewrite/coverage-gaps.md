@@ -111,3 +111,19 @@ One measurement caveat, and it is why the figures come from the URL-set configur
 `FLAKERADAR_TEST_DATABASE_URL` unset the suite starts its own containers, so that file's Docker path
 is covered too and the same tree reports 97.15% of lines and 94.91% of branches. Both figures are
 honest; the floor follows the lower one, which is the one CI reaches.
+
+## Task 15: the rows this task leaves, and the drafts it filed
+
+Re-measured after the Python deletion, with the same command and the same
+configuration task 14 used (`cargo +nightly-2026-10-25 llvm-cov nextest --branch
+--all-features --profile ci` against a PostgreSQL service, `FLAKERADAR_TEST_DATABASE_URL`
+set): **lines 96.73%** (13853/14321) and **branches 94.21%** (1074/1140), regions
+92.53% (15278/16511), functions 96.03% (1644/1712) — the same figures task 14
+recorded, because deleting Python changes no Rust line.
+
+`coverage-floor.json` therefore stays `{"lines": 96, "branches": 94}`, both
+rounded down from those totals and both above the {95, 80} minimum. Deleting the
+Python service does not lower a floor: the Rust totals are what the gate reads.
+
+The 78 rows above are unchanged and each one has a draft issue in
+`coverage-follow-ups.md`, which the user files after this PR merges.

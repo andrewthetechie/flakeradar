@@ -83,3 +83,13 @@ golden at all (`grep` over `tests/parity/golden` finds no `Invalid multipart dat
 `ci_run_attempt`, no `redoc`, no `Missing session ID`, no `etag` and no asset path); and the
 Report `error` text never appears in a dump, because the only three dumps that carry `reports`
 rows (`ingest-junit/27`, `pipeline-jobs/37`, `repo-admin/15`) hold `null` in its `error` column.
+
+**Task 15 removes the automation, not the record.** `record.py` and the Python server it drove are
+deleted with `backend/`, so the two checks that reconciled an allowance with this file — an
+allowance naming a row that is not text here, and an allowance naming a golden or a field that does
+not exist — no longer run, and the `parity-goldens` CI job went with them. What still runs is the
+replay itself: `every_scenario_replays_identically` compares every step against its golden, and
+`every_scenario_step_has_a_golden_and_no_golden_is_orphaned` fails on a golden that no step names.
+An allowance that covers nothing is no longer detected: task 14 measured the used set by replaying
+with a log of every allowance that let a mismatch through, and repeating that measurement by hand
+is the cost of adding one.
