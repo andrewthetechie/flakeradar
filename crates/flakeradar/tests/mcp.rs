@@ -98,10 +98,10 @@ async fn call_result(app: &Router, tool: &str, arguments: Value) -> Value {
 
 /// Asserts the status the reference answers a tool whose statement failed.
 ///
-/// fastmcp 4.1.6, the version `backend/requirements.txt` pins, carries a tool's
-/// failure inside the JSON-RPC answer and answers HTTP 200: driven over its own
-/// Streamable HTTP app, a tool that raises answers 200, so a failed statement
-/// must never become an HTTP 500.
+/// fastmcp 4.1.6, the version the 1.x `backend/requirements.txt` pinned (deleted
+/// at cutover), carries a tool's failure inside the JSON-RPC answer and answers
+/// HTTP 200: driven over its own Streamable HTTP app, a tool that raises answers
+/// 200, so a failed statement must never become an HTTP 500.
 fn assert_answered_ok(reply: &Reply) {
     assert_eq!(
         reply.status,
