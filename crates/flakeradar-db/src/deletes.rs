@@ -98,7 +98,7 @@ pub async fn delete_repo(
     let deleted = repo_counts(&transaction, repo_id).await?;
     let (numbers, filed) = repo_issue_numbers(&transaction, repo_id).await?;
     delete_row(&transaction, "repos", repo_id).await?;
-    transaction.commit().await?;
+    transaction.commit().await.map_err(commit_failure)?;
     Ok(Some(DeletedRepo {
         out: RepoDeleteOut {
             repo: repo_name,
@@ -148,7 +148,7 @@ pub async fn delete_project(
     let deleted = project_counts(&transaction, project_id).await?;
     let (numbers, filed) = project_issue_numbers(&transaction, project_id).await?;
     delete_row(&transaction, "projects", project_id).await?;
-    transaction.commit().await?;
+    transaction.commit().await.map_err(commit_failure)?;
     Ok(ProjectDelete::Deleted(Box::new(DeletedProject {
         out: ProjectDeleteOut {
             repo: repo_name,
@@ -158,6 +158,18 @@ pub async fn delete_project(
         },
         filed,
     })))
+}
+
+/// Closes the transaction, reporting a lock cycle as a deadlock.
+///
+/// PostgreSQL can abort the commit itself when the DELETE waited on the
+/// processor until that transaction ended, so the same retryable answer applies.
+fn commit_failure(error: DbErr) -> DeleteError {
+    if is_deadlock(&error) {
+        DeleteError::Deadlock
+    } else {
+        DeleteError::Database(DbError::Database(error))
+    }
 }
 
 /// Deletes one row by id, reporting a lock cycle as a deadlock.
