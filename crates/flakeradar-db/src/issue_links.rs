@@ -159,7 +159,7 @@ fn check_link(
     url: Option<&str>,
     replace: bool,
 ) -> Result<(), IssueLinkError> {
-    if number < 1 || number > MAX_ISSUE_NUMBER {
+    if !(1..=MAX_ISSUE_NUMBER).contains(&number) {
         return Err(IssueLinkError::NotLinkable(format!(
             "number must be between 1 and {MAX_ISSUE_NUMBER}"
         )));
@@ -220,7 +220,7 @@ fn out_for(
 
 /// Applies the written link to the response shape, as the reference's ORM object did.
 fn patched_out(mut out: LinkedOut, repo: &str, number: Option<i32>, closed: bool) -> LinkedOut {
-    let number = number.map(|number| i64::from(number));
+    let number = number.map(i64::from);
     match &mut out {
         LinkedOut::Test(test) => {
             test.github_issue_number = number;
@@ -320,10 +320,7 @@ pub async fn link_issue(
     }
     let stored = if current.number == Some(stored_number(number)) {
         // The same number keeps its check stamp: it was just checked.
-        LinkState {
-            number: current.number,
-            ..current
-        }
+        current
     } else {
         // A new link is checked first, is FlakeRadar's own for a moment, points
         // at an open issue, and has never been noted.

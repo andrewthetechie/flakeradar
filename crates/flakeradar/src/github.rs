@@ -44,6 +44,7 @@
 
 use std::collections::BTreeSet;
 use std::fmt;
+use std::fmt::Write as _;
 
 use chrono::{DateTime, Utc};
 use flakeradar_core::{JobExecutionOut, JobHistoryOut, MAX_ISSUE_NUMBER, repo_path};
@@ -115,7 +116,7 @@ pub fn run_hint(path: Option<&str>, classname: &str, name: &str) -> String {
         Some((_, extension)) => extension.to_lowercase(),
         None => String::new(),
     };
-    let hint = match extension.as_str() {
+    match extension.as_str() {
         "py" => format!("pytest {path}::{name}"),
         "js" | "jsx" | "mjs" | "cjs" | "ts" | "tsx" => {
             format!("npx vitest run {path} -t \"{name}\"")
@@ -123,13 +124,8 @@ pub fn run_hint(path: Option<&str>, classname: &str, name: &str) -> String {
         "go" => format!("go test ./... -run {name}"),
         "java" | "kt" => format!("mvn test -Dtest={classname}#{name}"),
         "rb" => format!("bundle exec rspec {path} -e \"{name}\""),
-        _ => {
-            return format!(
-                "# Re-run `{classname}::{name}` via your project's test runner ({path})."
-            );
-        }
-    };
-    hint
+        _ => format!("# Re-run `{classname}::{name}` via your project's test runner ({path})."),
+    }
 }
 
 /// The comment that says the fix appears to hold (issue #33).
@@ -308,9 +304,8 @@ pub struct Api {
 }
 
 impl fmt::Debug for Api {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("Api")
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Api")
             .field("base", &self.base)
             .field("token", &self.token)
             .finish_non_exhaustive()
@@ -576,6 +571,33 @@ fn short_sha(sha: &str) -> String {
     sha.chars().take(10).collect()
 }
 
+/// The newest failing Execution of a Test, as an issue body reports it.
+#[derive(Debug, Clone)]
+struct NewestFailure {
+    /// The commit the failing Run ran.
+    commit_sha: String,
+    /// The branch that commit is on.
+    branch: String,
+    /// The Failure details when there are any, otherwise the Failure message.
+    sample: String,
+}
+
+/// The newest failing Execution among `recent`, or `None` when none failed.
+fn newest_failure(recent: &[RecentExecution]) -> Option<NewestFailure> {
+    let execution = recent
+        .iter()
+        .find(|execution| is_failing(&execution.status))?;
+    Some(NewestFailure {
+        commit_sha: execution.commit_sha.clone(),
+        branch: execution.branch.clone(),
+        sample: execution
+            .details
+            .clone()
+            .filter(|details| !details.is_empty())
+            .unwrap_or_else(|| execution.message.clone()),
+    })
+}
+
 /// Renders a self-contained issue body an engineer or agent can act on.
 #[must_use]
 pub fn test_issue_body(
@@ -594,41 +616,24 @@ pub fn test_issue_body(
         String::new(),
         format!("- **Repo / project:** `{repo}` / `{project}`"),
     ];
-    let path = match &test.file {
-        Some(file) => Some(repo_path(root, file)),
-        None => None,
-    };
+    let path = test.file.as_ref().map(|file| repo_path(root, file));
     let location = match (&path, test.line) {
         (Some(path), Some(line)) => format!("`{path}` line {line}"),
         (Some(path), None) => format!("`{path}`"),
         (None, _) => "(not reported by the test runner)".to_owned(),
     };
     lines.push(format!("- **Location:** {location}"));
-    let mut last_fail_sha: Option<String> = None;
-    let mut last_fail_branch = String::new();
-    let mut sample_failure = String::new();
-    for execution in recent {
-        if is_failing(&execution.status) {
-            if last_fail_sha.is_none() {
-                last_fail_sha = Some(execution.commit_sha.clone());
-                last_fail_branch = execution.branch.clone();
-            }
-            if sample_failure.is_empty() {
-                sample_failure = execution
-                    .details
-                    .clone()
-                    .filter(|details| !details.is_empty())
-                    .unwrap_or_else(|| execution.message.clone());
-            }
-        }
-    }
+    let failing = newest_failure(recent);
+    let last_fail_sha = failing.as_ref().map(|failure| failure.commit_sha.clone());
+    let last_fail_branch = failing.as_ref().map(|failure| failure.branch.clone());
+    let sample_failure = failing.map(|failure| failure.sample).unwrap_or_default();
     let permalink = match (&path, &last_fail_sha) {
         (Some(path), Some(sha)) => {
             let mut permalink = format!("https://github.com/{repo}/blob/{sha}/{path}");
             if let Some(line) = test.line
                 && line >= 1
             {
-                permalink.push_str(&format!("#L{line}"));
+                let _ = write!(permalink, "#L{line}");
             }
             Some(permalink)
         }
@@ -658,10 +663,9 @@ pub fn test_issue_body(
         test.classname
     ));
     if let Some(sha) = &last_fail_sha {
-        let branch = if last_fail_branch.is_empty() {
-            String::new()
-        } else {
-            format!(" on branch `{last_fail_branch}`")
+        let branch = match last_fail_branch.as_deref() {
+            Some(branch) if !branch.is_empty() => format!(" on branch `{branch}`"),
+            _ => String::new(),
         };
         lines.push(format!("- **Last failing commit:** `{sha}`{branch}"));
     }
@@ -684,15 +688,7 @@ pub fn test_issue_body(
         "| Status | Commit | Branch | When (UTC) |".to_owned(),
         "|---|---|---|---|".to_owned(),
     ]);
-    for execution in recent {
-        lines.push(format!(
-            "| {} | `{}` | {} | {} |",
-            execution.status,
-            short_sha(&execution.commit_sha),
-            execution.branch,
-            execution.created_at.format("%Y-%m-%d %H:%M")
-        ));
-    }
+    lines.extend(execution_table(recent));
     if !sample_failure.is_empty() {
         let sample: String = sample_failure.chars().take(SAMPLE_FAILURE_MAX).collect();
         lines.extend([
@@ -709,6 +705,22 @@ pub fn test_issue_body(
         format!("_Fingerprint: `{}`_", test.fingerprint),
     ]);
     lines.join("\n")
+}
+
+/// The Test body's table: one row per recent Execution, newest first.
+fn execution_table(recent: &[RecentExecution]) -> Vec<String> {
+    recent
+        .iter()
+        .map(|execution| {
+            format!(
+                "| {} | `{}` | {} | {} |",
+                execution.status,
+                short_sha(&execution.commit_sha),
+                execution.branch,
+                execution.created_at.format("%Y-%m-%d %H:%M")
+            )
+        })
+        .collect()
 }
 
 /// Renders a self-contained issue body for a flaky CI Job.
@@ -921,7 +933,12 @@ async fn test_candidates(
             .iter()
             .map(|candidate| candidate.test.id)
             .collect();
-        let failures = window_failures(db, &ids, settings.score_window.max(1) as usize).await?;
+        let failures = window_failures(
+            db,
+            &ids,
+            usize::try_from(settings.score_window.max(1)).unwrap_or(usize::MAX),
+        )
+        .await?;
         candidates.retain(|candidate| {
             failures
                 .get(&candidate.test.id)
@@ -975,8 +992,12 @@ async fn job_candidates(
             .iter()
             .map(|candidate| candidate.job.id)
             .collect();
-        let failures =
-            unexplained_failure_counts(db, &ids, settings.score_window.max(1) as usize).await?;
+        let failures = unexplained_failure_counts(
+            db,
+            &ids,
+            usize::try_from(settings.score_window.max(1)).unwrap_or(usize::MAX),
+        )
+        .await?;
         candidates.retain(|candidate| {
             failures
                 .get(&candidate.job.id)
@@ -1584,11 +1605,11 @@ pub async fn note_fixed_issues_for(
     }
     match note_test_candidates(db, test_ids, settings).await {
         Ok(candidates) if !candidates.is_empty() => {
-            note_batch(db, candidates, "test", settings, api).await
+            note_batch(db, candidates, "test", settings, api).await;
         }
         Ok(_) => {}
         Err(error) => {
-            tracing::warn!(error = %error, "GitHub fixed-note could not read its candidates")
+            tracing::warn!(error = %error, "GitHub fixed-note could not read its candidates");
         }
     }
 }
@@ -1605,11 +1626,11 @@ pub async fn note_fixed_job_issues_for(
     }
     match note_job_candidates(db, job_ids, settings).await {
         Ok(candidates) if !candidates.is_empty() => {
-            note_batch(db, candidates, "job", settings, api).await
+            note_batch(db, candidates, "job", settings, api).await;
         }
         Ok(_) => {}
         Err(error) => {
-            tracing::warn!(error = %error, "GitHub fixed-note could not read its candidates")
+            tracing::warn!(error = %error, "GitHub fixed-note could not read its candidates");
         }
     }
 }
@@ -1775,7 +1796,7 @@ async fn close_note(
     }
 }
 
-/// The ReportWorker hook: file issues for the Tests and Jobs a Report touched.
+/// The `ReportWorker` hook: file issues for the Tests and Jobs a Report touched.
 ///
 /// Also notes the rows whose Clean streak now proves the fix held. A newly filed
 /// Issue is never the one commented on: the gate refuses a row already at the

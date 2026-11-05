@@ -43,9 +43,8 @@ struct GitHubShared {
 }
 
 impl std::fmt::Debug for GitHubShared {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("GitHubShared")
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GitHubShared")
             .field("sync_interval", &self.sync_interval)
             .field("api", &self.api)
             .finish_non_exhaustive()
@@ -83,7 +82,8 @@ impl GitHubShared {
             // The notification future is created before the queue is read, so an
             // enqueue between the two cannot be missed.
             let notified = self.notify.notified();
-            if let Some(outcome) = guard(&self.queue).pop_front() {
+            let queued = guard(&self.queue).pop_front();
+            if let Some(outcome) = queued {
                 return Some(outcome);
             }
             tokio::select! {
@@ -121,15 +121,14 @@ pub struct GitHubWorker {
 }
 
 impl std::fmt::Debug for GitHubWorker {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("GitHubWorker")
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GitHubWorker")
             .field("shared", &self.shared)
             .field(
                 "running",
                 &self.task.try_lock().is_ok_and(|task| task.is_some()),
             )
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 

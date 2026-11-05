@@ -180,9 +180,8 @@ async fn delete_row(
 
 /// SQLSTATEs an admin retry can resolve: deadlock detected, serialization failure.
 fn is_deadlock(error: &DbErr) -> bool {
-    let runtime = match error {
-        DbErr::Conn(error) | DbErr::Exec(error) | DbErr::Query(error) => error,
-        _ => return false,
+    let (DbErr::Conn(runtime) | DbErr::Exec(runtime) | DbErr::Query(runtime)) = error else {
+        return false;
     };
     let RuntimeErr::SqlxError(error) = runtime else {
         return false;

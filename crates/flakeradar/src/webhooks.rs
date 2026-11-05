@@ -59,9 +59,8 @@ struct WebhookShared {
 }
 
 impl std::fmt::Debug for WebhookShared {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("WebhookShared")
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WebhookShared")
             .field("endpoints", &self.urls.len())
             .field("format", &self.format)
             .finish_non_exhaustive()
@@ -109,7 +108,7 @@ impl WebhookShared {
     }
 
     /// The host an endpoint belongs to. Never log the URL itself: it is a credential.
-    fn endpoint(&self, url: &str) -> String {
+    fn endpoint(url: &str) -> String {
         reqwest::Url::parse(url)
             .ok()
             .and_then(|parsed| parsed.host_str().map(str::to_owned))
@@ -119,7 +118,7 @@ impl WebhookShared {
     /// Posts one batch to one endpoint, with the retry policy of ADR 0009.
     async fn post(self: &Arc<Self>, url: &str, batch: &[TierChange]) {
         let body = render(batch, self.format, &self.public_url);
-        let label = self.endpoint(url);
+        let label = Self::endpoint(url);
         for attempt in 0..ATTEMPTS {
             let mut delay = RETRY_DELAYS.get(attempt).copied().unwrap_or_default();
             let answer = self
@@ -194,9 +193,8 @@ pub struct WebhookWorker {
 }
 
 impl std::fmt::Debug for WebhookWorker {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("WebhookWorker")
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WebhookWorker")
             .field("shared", &self.shared)
             .finish_non_exhaustive()
     }

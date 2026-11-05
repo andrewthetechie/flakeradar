@@ -142,13 +142,13 @@ where
 {
     type Rejection = ApiError;
 
-    async fn from_request(request: Request, state: &S) -> Result<Self, Self::Rejection> {
-        let content_type = request
+    async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
+        let content_type = req
             .headers()
             .get(header::CONTENT_TYPE)
             .and_then(|value| value.to_str().ok())
             .map(str::to_owned);
-        let bytes = axum::body::Bytes::from_request(request, state)
+        let bytes = axum::body::Bytes::from_request(req, state)
             .await
             .map_err(|rejection| body_error(&rejection))?;
         let payload: IssueLinkIn = parse_json(&bytes, content_type.as_deref())?;
