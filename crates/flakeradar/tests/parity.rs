@@ -128,22 +128,25 @@ struct Deferred {
 /// 14 are the reads, which change no state, so the dump is the same one the
 /// recorder took. It also adds the ingests and the drain of `consumers`,
 /// `issue-links`, `quarantine` and `repo-admin`, whose own steps need the task 09
-/// and task 10 routes; each of those scenarios' dump stays deferred, because it
-/// records what those routes wrote.
+/// and task 10 routes. The dumps of `issue-links` and `repo-admin` stay deferred,
+/// because they record what the task 10 issue and repo routes wrote.
 ///
 /// Task 09 adds every read step left: `flaky-tests` 13-48, `pipeline-jobs` 8-32,
-/// `default-branch` 4-6 and 9-11, 14, `health` 4, `quarantine` 3-18, and
-/// validation 1-3 and 8-19, the read APIs' own 422, 404 and lax-bool answers.
-/// Validation 20-21 stay deferred with the issue routes, and every scenario dump
-/// the quarantine and issue routes write stays deferred too.
+/// `default-branch` 4-6 and 9-11, 14, `health` 4, `quarantine` 3-18,
+/// `auth` 6 and 13, `consumers` 6-9, and validation 1-3 and 8-19, the read APIs'
+/// own 422, 404 and lax-bool answers. `quarantine` step 18 is the dump of
+/// `test_cases` after the route cleared a stale reason and expiry, so it proves
+/// that clearing rather than recording a task 10 write. Validation 20-21 stay
+/// deferred with the issue routes, and the `consumers` dump stays deferred with
+/// the issue links steps 10-12 set.
 const ENABLED: &[Enabled] = &[
     Enabled {
         name: "auth",
-        steps: &[1, 2, 3, 4, 5],
+        steps: &[1, 2, 3, 4, 5, 6, 13],
     },
     Enabled {
         name: "consumers",
-        steps: &[1, 2, 3, 4, 5],
+        steps: &[1, 2, 3, 4, 5, 6, 7, 8, 9],
     },
     Enabled {
         name: "default-branch",
@@ -209,18 +212,20 @@ const ENABLED: &[Enabled] = &[
 const DEFERRED: &[Deferred] = &[
     Deferred {
         scenario: "auth",
-        steps: Some(&[6, 7, 8, 9, 10, 11, 12, 13]),
+        steps: Some(&[7, 8, 9, 10, 11, 12]),
         task: 10,
-        reason: "every remaining step needs a route that checks the token: GET /api/quarantine \
-                 and /api/tests (task 09), and the issue, repo and project routes (task 10)",
+        reason: "every remaining step is a token-checked write that task 10 lands: PUT and DELETE \
+                 /api/tests/{id}/issue and /api/jobs/{id}/issue, and DELETE /api/repos/... and its \
+                 project",
     },
     Deferred {
         scenario: "consumers",
-        steps: Some(&[6, 7, 8, 9, 10, 11, 12, 13]),
+        steps: Some(&[10, 11, 12, 13]),
         task: 10,
-        reason: "the writers-app reads: /api/ci-runs/{id}/failures and /api/tests (task 09), and \
-                 the issue links the actions set, which step 13 dumps (task 10). The ingests and \
-                 the drain they need replay already",
+        reason: "the issue links the actions set (PUT /api/jobs/{id}/issue and \
+                 PUT /api/tests/{id}/issue, task 10), step 12, the same CI-run failures read with \
+                 those links in it, and step 13, the dump of what they wrote. The writes the \
+                 writers-app actions make and the reads they depend on replay already",
     },
     Deferred {
         scenario: "issue-links",
@@ -228,9 +233,9 @@ const DEFERRED: &[Deferred] = &[
             5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27,
         ]),
         task: 10,
-        reason: "PUT and DELETE /api/tests/{id}/issue and /api/jobs/{id}/issue (task 10), the Test \
-                 and Job reads (task 09), and step 27, the dump of the issue links they set. The \
-                 ingests and the drain replay already",
+        reason: "PUT and DELETE /api/tests/{id}/issue and /api/jobs/{id}/issue (task 10), steps 7 \
+                 and 20, the Test and Job reads of the links those steps set, and step 27, the dump \
+                 of the links they set. The ingests and the drain replay already",
     },
     Deferred {
         scenario: "mcp",
@@ -272,7 +277,7 @@ const DEFERRED: &[Deferred] = &[
 /// A later task enables steps and lowers this number; the test that reads it
 /// fails both when a step is switched off without a reason and when an enabled
 /// step is left in [`DEFERRED`]. It never goes up.
-const DEFERRED_STEPS: usize = 100;
+const DEFERRED_STEPS: usize = 94;
 
 /// One scenario file.
 #[derive(Debug, Deserialize)]
