@@ -25,8 +25,9 @@
 //!
 //! - No token configured: a silent no-op.
 //! - A rate limit on create: stop this batch and log a warning.
-//! - Any other 403, or a 404/410 (issues disabled): skip that Repo for the rest
-//!   of the batch.
+//! - A 401 (bad credentials), any other 403, or a 404/410 (issues disabled): skip
+//!   that Repo for the rest of the batch. The token is refused for every Repo, so
+//!   a second candidate in that Repo is never posted to.
 //! - In the sync, a definitive Repo-wide client error (403, 401, 410) leaves the
 //!   link as it is, skips that Repo, and stamps its rows so they rotate; 404
 //!   still re-arms.
@@ -1187,7 +1188,7 @@ async fn file_batch(
                 );
                 return linked;
             }
-            _ if matches!(answer.status, 403 | 404 | 410) => {
+            _ if matches!(answer.status, 401 | 403 | 404 | 410) => {
                 tracing::warn!(
                     repo = %request.repo,
                     status = answer.status,

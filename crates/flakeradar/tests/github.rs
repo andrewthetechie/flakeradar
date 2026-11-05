@@ -493,6 +493,46 @@ async fn a_permission_403_skips_that_repo_and_files_the_other_one() {
     assert_eq!(test_link(&db, denied).await.0, None);
 }
 
+/// A bad-credentials 401 is Repo-scoped for filing, like a permission 403.
+///
+/// The reference learned this after the Rust port's branch point (the classified
+/// client seam, `backend` #130/#131): the token is refused for every Repo the same
+/// way, so a second candidate in that Repo is never posted to.
+#[tokio::test]
+async fn a_bad_credentials_401_skips_that_repo_and_files_the_other_one() {
+    let db = TestDb::new().await.expect("a test database");
+    let first = flaky_test_in(&db, "acme/app", "p1", "a1").await;
+    let second = flaky_test_in(&db, "acme/app", "p2", "a2").await;
+    let allowed = flaky_test_in(&db, "other/repo", "default", "b").await;
+    let server = MockServer::start().await;
+    // Exactly one POST to the refused Repo: the second candidate is skipped, not
+    // tried and failed again.
+    Mock::given(method("POST"))
+        .and(path("/repos/acme/app/issues"))
+        .respond_with(
+            ResponseTemplate::new(401).set_body_json(json!({"message": "Bad credentials"})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/repos/other/repo/issues"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({"number": 9})))
+        .mount(&server)
+        .await;
+
+    let filed = github::file_issues_for(
+        db.connection(),
+        &[first, second, allowed],
+        &gh_settings(&[]),
+        &api(&server),
+    )
+    .await;
+    assert_eq!(filed.into_iter().collect::<Vec<_>>(), vec![allowed]);
+    assert_eq!(test_link(&db, first).await.0, None);
+    assert_eq!(test_link(&db, second).await.0, None);
+}
+
 #[tokio::test]
 async fn issues_disabled_skips_the_rest_of_that_repo() {
     let db = TestDb::new().await.expect("a test database");
