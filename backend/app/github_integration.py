@@ -128,9 +128,10 @@ def _json_object(resp: httpx.Response) -> dict | None:
     """The body parsed as a JSON object, or None when it is not one. Never raises."""
     try:
         payload = resp.json()
-    except (ValueError, httpx.HTTPError):
+    except (ValueError, httpx.HTTPError, httpx.StreamError):
         # non-JSON body (a proxy error page, an empty response), or a body that was
-        # never read (`ResponseNotRead`), which is as unusable as an empty one
+        # never read (`ResponseNotRead`, which httpx derives from `RuntimeError` rather
+        # than `HTTPError`), which is as unusable as an empty one
         return None
     return payload if isinstance(payload, dict) else None
 
@@ -189,23 +190,24 @@ def _excerpt(resp: httpx.Response) -> str:
     """The start of a response body, decoded without trusting what it says it is.
 
     Never raises, which `resp.text` alone does: it decodes with the charset the response
-    declares, and a bogus one (`Content-Type: application/json; charset=rot13`) makes the
+    declares, and a bogus one (`Content-Type: application/json; charset=base64`) makes the
     stdlib codec machinery raise a TypeError, AssertionError or UnicodeError — none of them
-    an `httpx.HTTPError` — rather than substitute. An unread stream adds
-    `httpx.ResponseNotRead`. Classification happens after the request `try` block, so any
-    of those would escape the seam, past the loops that no longer catch anything, and the
-    body is only ever wanted for a log line: fall back to the bytes the client already
-    content-decoded, then to no excerpt at all.
+    an `httpx.HTTPError` — rather than substitute. The bytes come first because an unread
+    or consumed stream raises `httpx.ResponseNotRead`, which httpx derives from
+    `RuntimeError`, not `HTTPError`, so it is caught by name. Classification happens after
+    the request `try` block, so any of those would escape the seam, past the loops that no
+    longer catch anything, and the body is only ever wanted for a log line: prefer the
+    declared charset, fall back to the bytes the client content-decoded, and give up to no
+    excerpt at all only when there are none.
     """
+    try:
+        raw = resp.content  # the bytes as delivered, before any charset is believed
+    except (httpx.HTTPError, httpx.StreamError):  # an unread or consumed stream has no body
+        return ""
     try:
         return resp.text[:_GITHUB_EXCERPT_MAX]
     except (AssertionError, TypeError, ValueError, httpx.HTTPError):  # see the docstring
-        pass
-    try:
-        raw = resp.content
-    except httpx.HTTPError:  # an unread stream simply has no body to excerpt
-        return ""
-    return raw[:_GITHUB_EXCERPT_MAX].decode("utf-8", errors="replace")
+        return raw[:_GITHUB_EXCERPT_MAX].decode("utf-8", errors="replace")
 
 
 IssueOutcomeKind = Literal[

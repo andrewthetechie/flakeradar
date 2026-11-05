@@ -315,6 +315,64 @@ def test_github_outcome_classifies_the_table():
     assert len(denied.excerpt) == 300
 
 
+class _UnreadStream(httpx.SyncByteStream):
+    """A response body the client never read, so `.content` raises `ResponseNotRead`."""
+
+    def __iter__(self):
+        return iter(())
+
+
+def test_github_outcome_classifies_a_body_it_cannot_decode():
+    """A hostile body is an excerpt fallback and a kind, never an exception.
+
+    `resp.text` decodes with the charset the response declares, and a server picks that
+    charset: `charset=base64` raises `AssertionError` out of the stdlib codec machinery,
+    `charset=idna` a `UnicodeError`, neither of them an `httpx.HTTPError`. An unread stream
+    adds `httpx.ResponseNotRead`, which httpx derives from `RuntimeError`. All of them
+    arrive after the request `try` block, so the classifier has to absorb them.
+    """
+    outcome = github_integration._github_outcome
+
+    def resp(status: int, *, content: bytes = b"", headers: dict | None = None, unread: bool = False):
+        if unread:
+            return httpx.Response(status, headers=headers or {}, stream=_UnreadStream())
+        return httpx.Response(status, headers=headers or {}, content=content)
+
+    def hostile(status: int, content: bytes, extra: dict | None = None) -> httpx.Response:
+        headers = {"content-type": "application/json; charset=base64", **(extra or {})}
+        return resp(status, content=content, headers=headers)
+
+    # A charset this cannot apply still yields the excerpt the log line wants.
+    text = b'{"message": "Resource not accessible by personal access token"}'
+    denied = outcome(hostile(403, text))
+    assert (denied.kind, denied.status, denied.excerpt) == ("repo_denied", 403, text.decode())
+
+    # ... and so do bytes no declared charset can decode at all, whichever charset claims them.
+    mangled = b"\xff\xfe\x00rate limit"
+    broken_excerpt = mangled.decode("utf-8", errors="replace")
+    for charset in ("utf-8", "idna", "base64"):
+        broken = outcome(resp(403, content=mangled, headers={"content-type": f"application/json; charset={charset}"}))
+        assert (broken.kind, broken.status) == ("repo_denied", 403), charset
+        assert broken.excerpt == broken_excerpt, charset
+
+    # The rate-limit rule is header-deep, so it still wins over an unreadable body.
+    throttled = outcome(hostile(403, mangled, {"x-ratelimit-remaining": "0"}))
+    assert (throttled.kind, throttled.remaining, throttled.excerpt) == ("rate_limited", "0", broken_excerpt)
+
+    # An unread body says nothing: a create filed nothing, a fetch answered nothing, and a
+    # status the caller groups on is still there for the loops to route.
+    for status, expect, kind in (
+        (201, "number", "unusable_body"),
+        (200, "state", "unusable_body"),
+        (201, None, "created"),
+    ):
+        unread = outcome(resp(status, unread=True, headers={"content-type": "application/json"}), expect=expect)
+        assert (unread.kind, unread.status, unread.excerpt) == (kind, status, ""), expect
+
+    # `_rate_limited` reads that same body, so it must classify it rather than raise.
+    assert outcome(resp(403, unread=True)).kind == "repo_denied"
+
+
 async def _four_interactions(transport):
     """One of each seam interaction against `transport`, keyed for readable assertions."""
     async with github_integration._GitHubClient("tok", transport=transport) as client:
@@ -353,6 +411,31 @@ async def test_seam_network_failure_is_a_kind_and_never_raises():
         assert outcome.kind == "network", name
         assert isinstance(outcome.error, httpx.ConnectError), name
         assert (outcome.status, outcome.excerpt) == (None, ""), name
+
+
+async def test_seam_hostile_body_is_a_kind_for_every_interaction():
+    """Whatever the bytes claim to be, an interaction returns an outcome and not a raise.
+
+    The classifier runs after the request `try` block, so a body whose declared charset the
+    stdlib cannot apply — here `charset=base64` over bytes that are not that either — would
+    otherwise leave the loops with an exception they no longer catch.
+    """
+    raw = b'\xff\xfe\x00{"number": 77, "state": "open"}'
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        status = 200 if request.method == "GET" else 201
+        return httpx.Response(status, headers={"content-type": "application/json; charset=base64"}, content=raw)
+
+    outcomes = await _four_interactions(httpx.MockTransport(handler))
+
+    # Neither body parses, so the create filed nothing it can name and the fetch said nothing.
+    assert (outcomes["create"].kind, outcomes["create"].number) == ("unusable_body", None)
+    assert (outcomes["fetch"].kind, outcomes["fetch"].state) == ("unusable_body", None)
+    assert (outcomes["comment"].kind, outcomes["close"].kind) == ("created", "created")
+    for name, outcome in outcomes.items():
+        assert outcome.status == (200 if name == "fetch" else 201), name  # the loops group on it
+        assert outcome.excerpt == raw.decode("utf-8", errors="replace"), name
+        assert outcome.error is None, name
 
 
 async def test_seam_client_sends_the_loops_wire_shape():
