@@ -942,6 +942,12 @@ async fn a_killed_lock_session_hands_leadership_to_the_standby() {
     // The server still accepts connections while the lock session dies.
     terminate_lock_session(&db, &database_name(&db).await).await;
 
+    // The leader that lost its session drops leadership first; only then is the
+    // lock free for the standby, so the two never lead at the same time.
+    wait_until("the killed leader drops leadership", || async {
+        !first.is_leader()
+    })
+    .await;
     wait_until("the standby takes over", || async { second.is_leader() }).await;
     assert!(
         !first.is_leader(),
@@ -978,9 +984,10 @@ async fn a_killed_lock_session_hands_leadership_to_the_standby() {
 
 #[tokio::test]
 async fn a_killed_lock_session_is_never_alive_again() {
-    // The server keeps accepting connections here, so the pool opens a
-    // replacement session for the one killed. That session answers a statement,
-    // but it holds no lock, so the check must never report this process alive.
+    // The server keeps accepting connections here, so after the first statement
+    // finds the session dead the pool opens a replacement for it. That
+    // replacement answers a statement, but it holds no lock, so the check must
+    // never report this process alive.
     let db = TestDb::new().await.expect("a test database");
     let session = AdvisoryLock::new(db.url(), DbSettings::default());
     assert!(
@@ -993,8 +1000,8 @@ async fn a_killed_lock_session_is_never_alive_again() {
         .check()
         .await
         .expect_err("the killed session cannot be alive");
-    // The second answer must not come from a replacement session that holds
-    // nothing, and it must not be a fresh election either.
+    // This answer comes from the replacement, which is not the backend that took
+    // the lock: the comparison with the recorded backend is what catches it.
     session
         .check()
         .await

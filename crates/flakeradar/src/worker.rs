@@ -320,16 +320,24 @@ impl LockSession for AdvisoryLock {
                 *guard = Some(session);
                 return Ok(());
             }
-            // The session is over: it died under the lock, or the pool replaced
-            // it with one that holds nothing. Either way it must not be kept.
-            Err(match answer {
-                Err(error) => DbError::Database(error),
-                Ok(_) => DbError::LockSessionLost {
+            match answer {
+                // The statement failed, so the lock is lost either way. The pool
+                // is not what broke: sqlx replaces a connection the server
+                // closed, and it is that replacement's answer to the next check
+                // which names the backend that no longer holds the lock.
+                Err(error) => {
+                    *guard = Some(session);
+                    Err(DbError::Database(error))
+                }
+                // A statement that answered as another backend is a replacement
+                // the pool opened over a session the server had already closed.
+                // It holds nothing, so the session is dropped rather than kept.
+                Ok(_) => Err(DbError::LockSessionLost {
                     detail: format!(
                         "the connection no longer answers as backend {locked}, which took the lock"
                     ),
-                },
-            })
+                }),
+            }
         })
     }
 
