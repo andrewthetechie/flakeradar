@@ -61,10 +61,12 @@ Error handling: never raises.
 """
 
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from typing import Any
 
 import httpx
-from sqlalchemy import select, update
+from sqlalchemy import Select, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm.exc import StaleDataError
 
@@ -112,6 +114,34 @@ class _FilingGate:
     def from_settings(cls, s: Settings) -> "_FilingGate":
         streak = s.github_fixed_streak if s.github_fixed_streak > 0 else None
         return cls(s.github_issue_min_score, s.github_issue_min_proven_flakes, s.github_issue_min_failures, streak)
+
+
+FilingRow = tuple[Any, ...]  # the filing select's row: the entity, then the arguments its renderers take
+FilingCounter = Callable[[AsyncSession, list[int], int], Awaitable[dict[int, int]]]
+
+
+@dataclass(frozen=True)
+class _FilingTarget:
+    """Everything the shared filing engine needs to know about one fileable entity (issue #127).
+
+    Follows `LeaderboardEntity` (queries.py) and `issue_links.IssueLinkTarget`: pure data plus
+    per-target callables, one instance per target, consumed by the filing engines below. The
+    rules — the four gate signals, the `min_failures` window filter and the configured/empty
+    no-op — all live in those engines; an intended per-target difference is descriptor data
+    (the Job-only provider gate is `github_provider_only`, exactly as on `issue_links.JOB`).
+    The callables exist because the two filing selects genuinely return different row shapes:
+    TEST's gives `(TestCase, repo, project, root)` and JOB's `(Job, pipeline, repo)`; the row
+    after the entity is precisely what that target's renderers take.
+    """
+
+    entity: str  # the noun `_file_batch` names in its log lines: "test" or "job"
+    model: type  # the linked model: the columns the filing gate filters and orders on
+    filing_select: Callable[[], Select]  # the base select, joined through to its Repo
+    counter: FilingCounter  # failures per row over the newest `score_window` executions
+    repo_name_of: Callable[[FilingRow], str]
+    title_of: Callable[[FilingRow], str]
+    render_body: Callable[..., Awaitable[str]]  # takes `(db, *row)`
+    github_provider_only: bool = False
 
 
 def _headers(token: str) -> dict[str, str]:
@@ -296,34 +326,6 @@ async def _window_failures(db: AsyncSession, test_case_ids: list[int], window: i
     return counts
 
 
-async def _select_candidates(db: AsyncSession, test_case_ids: list[int]) -> list[tuple[TestCase, str, str, str]]:
-    """Tests that meet the configured filing gate and still have no open issue."""
-    s = get_settings()
-    gate = _FilingGate.from_settings(s)
-    candidates: list[tuple[TestCase, str, str, str]] = []
-    for chunk in chunks(test_case_ids):
-        stmt = (
-            select(TestCase, Repo.name, Project.name, Project.root)
-            .join(Project, TestCase.project_id == Project.id)
-            .join(Repo, Project.repo_id == Repo.id)
-            .where(
-                TestCase.id.in_(chunk),
-                TestCase.flakiness_score >= gate.min_score,
-                TestCase.confirmed_flake_count >= gate.min_proven_flakes,
-                TestCase.github_issue_number.is_(None),
-            )
-        )
-        if gate.fixed_streak is not None:
-            # A row at the fixed-note streak is a fix that holds, not a live flake,
-            # and filing and noting are the two answers to different questions.
-            stmt = stmt.where(TestCase.clean_streak < gate.fixed_streak)
-        candidates += (await db.execute(stmt.order_by(TestCase.id))).all()
-    if gate.min_failures > 0:
-        failures = await _window_failures(db, [r[0].id for r in candidates], s.score_window)
-        candidates = [r for r in candidates if failures.get(r[0].id, 0) >= gate.min_failures]
-    return candidates
-
-
 async def _file_batch(
     db: AsyncSession,
     candidates: list[tuple[Job | TestCase, str, str, str]],
@@ -420,69 +422,6 @@ async def _file_batch(
     return linked
 
 
-async def file_issues_for(
-    db: AsyncSession,
-    test_case_ids: list[int],
-    *,
-    transport: httpx.AsyncBaseTransport | None = None,
-) -> set[int]:
-    """File issues for Tests that now meet the filing gate. Never raises.
-
-    Returns the Test ids it linked; `on_report_processed` uses them to keep the
-    fixed-note step off a link this same Report created.
-
-    `transport` exists for tests (httpx.MockTransport); production passes None.
-    """
-    if not configured() or not test_case_ids:
-        return set()
-    candidates = await _select_candidates(db, test_case_ids)
-    if not candidates:
-        return set()
-    batch = [
-        (
-            tc,
-            repo,
-            f"[FlakeRadar] Flaky test: {tc.classname}::{tc.name}",
-            await _issue_body(db, tc, repo, project, root),
-        )
-        for tc, repo, project, root in candidates
-    ]
-    return await _file_batch(db, batch, entity="test", transport=transport)
-
-
-async def _job_candidates(db: AsyncSession, job_ids: list[int]) -> list[tuple[Job, str, str]]:
-    """github-provider Jobs that meet the gate and still have no open issue.
-
-    Returns [(Job, pipeline_name, repo_name)]. `min_failures`, when configured,
-    requires that many UNEXPLAINED failures in the newest `score_window` Job
-    executions.
-    """
-    s = get_settings()
-    gate = _FilingGate.from_settings(s)
-    candidates: list[tuple[Job, str, str]] = []
-    for chunk in chunks(job_ids):
-        stmt = (
-            select(Job, Pipeline.name, Repo.name)
-            .join(Pipeline, Job.pipeline_id == Pipeline.id)
-            .join(Repo, Pipeline.repo_id == Repo.id)
-            .where(
-                Job.id.in_(chunk),
-                Pipeline.provider == "github",
-                Job.flakiness_score >= gate.min_score,
-                Job.confirmed_flake_count >= gate.min_proven_flakes,
-                Job.github_issue_number.is_(None),
-            )
-        )
-        if gate.fixed_streak is not None:
-            # the same ceiling as the Test select: a fix that holds is not a live flake
-            stmt = stmt.where(Job.clean_streak < gate.fixed_streak)
-        candidates += (await db.execute(stmt.order_by(Job.id))).all()
-    if gate.min_failures > 0:
-        failures = await unexplained_failure_counts(db, [r[0].id for r in candidates], s.score_window)
-        candidates = [r for r in candidates if failures.get(r[0].id, 0) >= gate.min_failures]
-    return candidates
-
-
 async def _job_issue_body(db: AsyncSession, job: Job, pipeline: str, repo: str) -> str:
     """Render a self-contained issue body for a flaky CI Job."""
     s = get_settings()
@@ -529,6 +468,128 @@ async def _job_issue_body(db: AsyncSession, job: Job, pipeline: str, repo: str) 
     return "\n".join(lines)
 
 
+def _test_filing_select() -> Select:
+    """SELECT TestCase, Repo.name, Project.name, Project.root — the Test's filing row."""
+    return (
+        select(TestCase, Repo.name, Project.name, Project.root)
+        .join(Project, TestCase.project_id == Project.id)
+        .join(Repo, Project.repo_id == Repo.id)
+    )
+
+
+def _job_filing_select() -> Select:
+    """SELECT Job, Pipeline.name, Repo.name — the same shape over the Pipeline's path to its Repo."""
+    return (
+        select(Job, Pipeline.name, Repo.name)
+        .join(Pipeline, Job.pipeline_id == Pipeline.id)
+        .join(Repo, Pipeline.repo_id == Repo.id)
+    )
+
+
+TEST = _FilingTarget(
+    entity="test",
+    model=TestCase,
+    filing_select=_test_filing_select,
+    counter=_window_failures,
+    repo_name_of=lambda row: row[1],
+    title_of=lambda row: f"[FlakeRadar] Flaky test: {row[0].classname}::{row[0].name}",
+    render_body=_issue_body,
+    # Tests reach their Repo through a Project, so they have no CI provider: the Job-only rule
+    # in the gate below is descriptor data, and it is off here.
+    github_provider_only=False,
+)
+
+JOB = _FilingTarget(
+    entity="job",
+    model=Job,
+    filing_select=_job_filing_select,
+    counter=unexplained_failure_counts,
+    repo_name_of=lambda row: row[2],
+    title_of=lambda row: f"[FlakeRadar] Flaky CI job: {row[1]} / {row[0].name}",
+    render_body=_job_issue_body,
+    # Only a Job whose Pipeline talks to GitHub can hold an Issue link (ADR 0008), so the
+    # gate below adds the provider condition for this target alone.
+    github_provider_only=True,
+)
+
+
+async def _file_candidates(db: AsyncSession, target: _FilingTarget, ids: list[int]) -> list[FilingRow]:
+    """`target`'s rows that meet the configured filing gate and still have no open issue.
+
+    The gate, stated once for both entities (see the module docstring): the score floor,
+    the proven-flake floor, no Issue linked, and — when the fixed-note step is enabled — a
+    Clean streak *below* the fixed-note threshold, because a row at that streak is a fix
+    that holds and not a live flake, and filing and noting are the two answers to different
+    questions. `min_failures`, when configured, additionally requires that many failures of
+    the target's own kind — executions for a Test, UNEXPLAINED failures for a Job — in the
+    newest `score_window` executions.
+    """
+    s = get_settings()
+    gate = _FilingGate.from_settings(s)
+    model = target.model
+    candidates: list[FilingRow] = []
+    for chunk in chunks(ids):
+        stmt = target.filing_select().where(
+            model.id.in_(chunk),
+            model.flakiness_score >= gate.min_score,
+            model.confirmed_flake_count >= gate.min_proven_flakes,
+            model.github_issue_number.is_(None),
+        )
+        if target.github_provider_only:
+            stmt = stmt.where(Pipeline.provider == "github")
+        if gate.fixed_streak is not None:
+            stmt = stmt.where(model.clean_streak < gate.fixed_streak)
+        candidates += (await db.execute(stmt.order_by(model.id))).all()
+    if gate.min_failures > 0:
+        failures = await target.counter(db, [row[0].id for row in candidates], s.score_window)
+        candidates = [row for row in candidates if failures.get(row[0].id, 0) >= gate.min_failures]
+    return candidates
+
+
+async def _file_engine(
+    db: AsyncSession,
+    target: _FilingTarget,
+    ids: list[int],
+    *,
+    transport: httpx.AsyncBaseTransport | None = None,
+) -> set[int]:
+    """File an issue for every one of `ids` that passes `target`'s filing gate. Never raises.
+
+    The no-op checks (no token, nothing touched), the gate, and this target's own title and
+    body, handed to the shared POST engine. Returns the ids it linked, so the caller can keep
+    its own hands off a link this pass created (see `on_report_processed`).
+
+    `transport` exists for tests (httpx.MockTransport); production passes None.
+    """
+    if not configured() or not ids:
+        return set()
+    rows = await _file_candidates(db, target, ids)
+    if not rows:
+        return set()
+    batch = [
+        (row[0], target.repo_name_of(row), target.title_of(row), await target.render_body(db, *row)) for row in rows
+    ]
+    return await _file_batch(db, batch, entity=target.entity, transport=transport)
+
+
+async def file_issues_for(
+    db: AsyncSession,
+    test_case_ids: list[int],
+    *,
+    transport: httpx.AsyncBaseTransport | None = None,
+) -> set[int]:
+    """File issues for Tests that now meet the filing gate. Never raises.
+
+    A thin wrapper over `_file_engine` for TEST; the signature and return schema are unchanged.
+
+    Returns the Test ids it linked; `on_report_processed` uses them to keep the
+    fixed-note step off a link this same Report created.
+
+    `transport` exists for tests (httpx.MockTransport); production passes None.
+    """
+    return await _file_engine(db, TEST, test_case_ids, transport=transport)
+
+
 async def file_job_issues_for(
     db: AsyncSession,
     job_ids: list[int],
@@ -537,25 +598,13 @@ async def file_job_issues_for(
 ) -> set[int]:
     """File issues for github-provider Jobs that now meet the filing gate. Never raises.
 
+    A thin wrapper over `_file_engine` for JOB; the signature and return schema are unchanged.
+
     Returns the Job ids it linked, exactly as `file_issues_for` does for Tests.
 
     `transport` exists for tests (httpx.MockTransport); production passes None.
     """
-    if not configured() or not job_ids:
-        return set()
-    candidates = await _job_candidates(db, job_ids)
-    if not candidates:
-        return set()
-    batch = [
-        (
-            job,
-            repo,
-            f"[FlakeRadar] Flaky CI job: {pipeline} / {job.name}",
-            await _job_issue_body(db, job, pipeline, repo),
-        )
-        for job, pipeline, repo in candidates
-    ]
-    return await _file_batch(db, batch, entity="job", transport=transport)
+    return await _file_engine(db, JOB, job_ids, transport=transport)
 
 
 async def sync_closed_issues(
