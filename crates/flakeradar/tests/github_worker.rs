@@ -221,6 +221,28 @@ async fn an_outcome_with_no_touched_ids_files_nothing() {
 }
 
 #[tokio::test]
+async fn the_task_names_itself_and_its_debug_line_carries_no_token() {
+    let db = TestDb::new().await.expect("a test database");
+    let worker = GitHubWorker::new(
+        db.connection().clone(),
+        Arc::new(settings()),
+        Api::new(Secret::new(TOKEN), "http://127.0.0.1:1"),
+        Duration::from_secs(3600),
+    );
+    assert_eq!(LeaderTask::name(&worker), "GitHub");
+    let debug = format!("{worker:?}");
+    assert!(debug.contains("GitHubWorker"), "{debug}");
+    assert!(
+        debug.contains("sync_interval"),
+        "the shared state's interval is formatted: {debug}"
+    );
+    assert!(
+        !debug.contains(TOKEN),
+        "the Debug line names no token: {debug}"
+    );
+}
+
+#[tokio::test]
 async fn stopping_a_task_that_never_started_is_fine() {
     let db = TestDb::new().await.expect("a test database");
     let worker = GitHubWorker::new(

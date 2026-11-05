@@ -1233,6 +1233,10 @@ async fn the_run_hint_follows_the_file_extension() {
             "# Re-run `CartTest::test_total` via your project's test runner (cart_test.rs).",
         ),
         (
+            Some("Makefile"),
+            "# Re-run `CartTest::test_total` via your project's test runner (Makefile).",
+        ),
+        (
             None,
             "# Re-run `CartTest::test_total` via your project's test runner (no file path reported).",
         ),
@@ -1240,6 +1244,27 @@ async fn the_run_hint_follows_the_file_extension() {
         let hint = github::run_hint(path, "CartTest", "test_total");
         assert_eq!(hint, expected, "{path:?}");
     }
+}
+
+#[test]
+fn the_fixed_comment_links_a_job_to_the_job_view() {
+    let comment = github::fixed_comment("job", 7, 3, 0.5, None, "https://flakes.example.com/");
+    assert_eq!(
+        comment,
+        "FlakeRadar: 3 passing runs since the last failure (score now 0.50). \
+         The fix appears to hold.\n\nhttps://flakes.example.com/?view=jobs&job=7"
+    );
+}
+
+#[test]
+fn an_api_never_prints_its_token() {
+    let api = Api::new(Secret::new(TOKEN), "https://api.github.com");
+    let debug = format!("{api:?}");
+    assert!(debug.contains("https://api.github.com"), "{debug}");
+    assert!(
+        !debug.contains(TOKEN),
+        "the Debug line redacts the token: {debug}"
+    );
 }
 
 #[tokio::test]

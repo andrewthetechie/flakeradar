@@ -361,3 +361,47 @@ async fn one_many(
     }
     Ok(Some(numbers))
 }
+
+#[cfg(test)]
+mod tests {
+    #![expect(
+        clippy::expect_used,
+        reason = "a test fails loudly when a fixture or a statement does not work"
+    )]
+
+    use sea_orm::sqlx::error::Error as SqlxError;
+    use sea_orm::{DbErr, RuntimeErr};
+
+    use super::{DeleteError, is_deadlock, one_many};
+    use crate::error::DbError;
+
+    /// A driver error that carries no SQL state at all.
+    fn without_a_sql_state() -> DbErr {
+        DbErr::Query(RuntimeErr::Internal("the driver gave up".to_owned()))
+    }
+
+    #[test]
+    fn only_a_wrapped_sql_state_is_a_deadlock() {
+        assert!(!is_deadlock(&DbErr::RecordNotFound(
+            "no such row".to_owned()
+        )));
+        assert!(!is_deadlock(&without_a_sql_state()));
+        assert!(!is_deadlock(&DbErr::Query(RuntimeErr::SqlxError(
+            SqlxError::RowNotFound.into()
+        ))));
+        assert!(!is_deadlock(&DbErr::Custom(
+            "not a driver error".to_owned()
+        )));
+    }
+
+    #[tokio::test]
+    async fn a_statement_that_fails_is_a_database_error() {
+        let db = flakeradar_test_support::TestDb::new()
+            .await
+            .expect("a test database");
+        let error = one_many(db.connection(), "SELECT not_a_column", 1)
+            .await
+            .expect_err("the statement cannot run");
+        assert!(matches!(error, DeleteError::Database(DbError::Database(_))));
+    }
+}
