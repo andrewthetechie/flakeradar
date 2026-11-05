@@ -551,6 +551,7 @@ mod tests {
     //! Settings parsing needs no server, so it is checked here.
 
     use std::collections::BTreeMap;
+    use std::sync::{Arc, Mutex};
 
     use super::{
         DEFAULT_DATABASE_URL, DEFAULT_HOST, DEFAULT_INSECURE_TOKEN, DEFAULT_PORT, Secret, Settings,
@@ -563,6 +564,40 @@ mod tests {
             .iter()
             .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
             .collect()
+    }
+
+    /// The log lines `body` writes, captured from a subscriber installed for it.
+    fn captured_log(body: impl FnOnce()) -> String {
+        /// An `io::Write` that appends to the shared buffer.
+        struct Sink(Arc<Mutex<Vec<u8>>>);
+
+        impl std::io::Write for Sink {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0
+                    .lock()
+                    .map_err(|_error| std::io::Error::other("the log sink is poisoned"))?
+                    .extend_from_slice(buf);
+                Ok(buf.len())
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let lines = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&lines);
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_writer(move || Sink(Arc::clone(&sink)))
+            .finish();
+        let guard = tracing::subscriber::set_default(subscriber);
+        body();
+        drop(guard);
+        let buffer = lines
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        String::from_utf8_lossy(&buffer).into_owned()
     }
 
     #[test]
@@ -833,8 +868,16 @@ mod tests {
 
     #[test]
     fn the_default_token_is_allowed_when_explicitly_opted_in() {
-        check_api_token(DEFAULT_INSECURE_TOKEN, Some(" 1 "))
-            .expect("the opt-in allows the default");
+        let logged = captured_log(|| {
+            check_api_token(DEFAULT_INSECURE_TOKEN, Some(" 1 "))
+                .expect("the opt-in allows the default");
+        });
+        // The frozen server warned that the instance is open to anyone who
+        // reaches it, which is the only notice an operator gets.
+        assert!(
+            logged.contains("FLAKERADAR_API_TOKEN is the default 'changeme'"),
+            "the opt-in warns about the default token: {logged}"
+        );
     }
 
     #[test]

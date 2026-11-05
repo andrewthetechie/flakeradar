@@ -175,6 +175,35 @@ async fn lock_is_free(url: &str) -> bool {
     free
 }
 
+/// Ends the session holding the processor lock, as a server restart does.
+///
+/// The lock is session-scoped, so the server frees it the moment the session
+/// dies; a replacement leader could take it at any moment after this.
+async fn terminate_lock_session(db: &TestDb) {
+    let statement = Statement::from_sql_and_values(
+        sea_orm::DbBackend::Postgres,
+        "SELECT pid FROM pg_locks WHERE locktype = 'advisory' AND classid = 0 \
+           AND objid::bigint = $1 \
+           AND database = (SELECT oid FROM pg_database WHERE datname = current_database())",
+        [WORKER_LOCK_KEY.into()],
+    );
+    let row = db
+        .connection()
+        .query_one_raw(statement)
+        .await
+        .expect("the lock query runs")
+        .expect("the lock is held");
+    let pid: i32 = row.try_get("", "pid").expect("a backend id");
+    db.connection()
+        .execute_raw(Statement::from_sql_and_values(
+            sea_orm::DbBackend::Postgres,
+            "SELECT pg_terminate_backend($1)",
+            [pid.into()],
+        ))
+        .await
+        .expect("the backend is terminated");
+}
+
 /// A leader task that records every hand-over and can fail on cue.
 #[derive(Debug)]
 struct RecordingTask {
@@ -739,28 +768,7 @@ async fn a_broken_lock_connection_drops_leadership_and_re_elects() {
 
     // Kill the session that holds the lock: the server drops the lock with it,
     // so a replacement leader could take over at any moment.
-    let statement = Statement::from_sql_and_values(
-        sea_orm::DbBackend::Postgres,
-        "SELECT pid FROM pg_locks WHERE locktype = 'advisory' AND classid = 0 \
-           AND objid::bigint = $1 \
-           AND database = (SELECT oid FROM pg_database WHERE datname = current_database())",
-        [WORKER_LOCK_KEY.into()],
-    );
-    let row = db
-        .connection()
-        .query_one_raw(statement)
-        .await
-        .expect("the lock query runs")
-        .expect("the lock is held");
-    let pid: i32 = row.try_get("", "pid").expect("a backend id");
-    db.connection()
-        .execute_raw(Statement::from_sql_and_values(
-            sea_orm::DbBackend::Postgres,
-            "SELECT pg_terminate_backend($1)",
-            [pid.into()],
-        ))
-        .await
-        .expect("the backend is terminated");
+    terminate_lock_session(&db).await;
 
     // The next empty-queue check fails, so the worker releases and re-elects on
     // a fresh session; stopping then still ends with no lock held.
@@ -774,6 +782,36 @@ async fn a_broken_lock_connection_drops_leadership_and_re_elects() {
     .await;
     worker.stop().await;
     assert!(!worker.is_leader());
+    wait_until("the lock is free", || async {
+        lock_is_free(db.url()).await
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_failed_lock_statement_drops_the_session() {
+    // A session the server closed has already lost the lock, so a failed lock
+    // statement must end that session: a worker that kept using it would go on
+    // believing it leads on a connection that no longer holds the lock.
+    let db = TestDb::new().await.expect("a test database");
+    let session = AdvisoryLock::new(db.url(), DbSettings::default());
+    assert!(
+        session.try_lock().await.expect("the first election"),
+        "the lock is free at the start"
+    );
+    terminate_lock_session(&db).await;
+
+    session
+        .try_lock()
+        .await
+        .expect_err("a statement on the dead session fails");
+    // The next election opens a fresh session, which wins the lock the server
+    // freed with the old one; a reused broken session would fail again.
+    assert!(
+        session.try_lock().await.expect("the re-election"),
+        "the session was replaced"
+    );
+    session.unlock().await.expect("the lock is released");
     wait_until("the lock is free", || async {
         lock_is_free(db.url()).await
     })
@@ -887,6 +925,39 @@ async fn a_failing_leader_task_stop_is_logged_and_the_lock_released_anyway() {
         recorded.contains(&"Notification:stop".to_owned()),
         "{recorded:?}"
     );
+    wait_until("the lock is free despite the failed stop", || async {
+        lock_is_free(db.url()).await
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_failing_notification_stop_is_logged_and_the_lock_released_anyway() {
+    // The Notification task is the second one to stop, so a failure there must
+    // not keep the lock either: a process that no longer processes must not hold it.
+    let db = TestDb::new().await.expect("a test database");
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let github = Arc::new(RecordingTask::new("GitHub", Arc::clone(&events)));
+    let notification =
+        Arc::new(RecordingTask::new("Notification", Arc::clone(&events)).failing_to_stop());
+    let worker = Arc::new(
+        worker(&db, lock(&db), fast())
+            .with_leader_task(github)
+            .with_leader_task(notification),
+    );
+    Arc::clone(&worker).start().await;
+    wait_until("the worker leads", || async { worker.is_leader() }).await;
+
+    let log = CapturedLog::install();
+    worker.stop().await;
+    assert!(
+        log.lines()
+            .contains("stopping the Notification leader task failed; releasing the lock anyway"),
+        "the failed stop is logged: {}",
+        log.lines()
+    );
+
+    assert!(!worker.is_leader());
     wait_until("the lock is free despite the failed stop", || async {
         lock_is_free(db.url()).await
     })
