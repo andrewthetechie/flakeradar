@@ -374,7 +374,12 @@ def test_github_outcome_classifies_a_body_it_cannot_decode():
 
 
 def _read_text(response: httpx.Response) -> str:
-    """`resp.text`, behind a call so a test can pin what the plain read itself raises."""
+    """`resp.text`, behind a call so a test can pin what the plain read itself raises.
+
+    The premises that call it pin `UnicodeError`, not the `UnicodeDecodeError` subclass: a
+    BOM-less UTF-16/UTF-32 stream raises the plain base class on CPython 3.12 (what CI runs)
+    and the subclass on 3.13 (what the local venv has), and the seam has to absorb both.
+    """
     return response.text
 
 
@@ -382,8 +387,8 @@ def test_github_outcome_classifies_a_body_invalid_for_its_declared_charset():
     """Bytes invalid for the charset the response declares are a kind, never a raise.
 
     httpx decodes `resp.text` with `errors="replace"`, so most bad bytes only substitute, but
-    a UTF-16/UTF-32 decoder raises `UnicodeDecodeError` anyway when the stream carries no
-    BOM — which is what an intermediary that declares a charset and delivers plain JSON
+    a UTF-16/UTF-32 decoder raises `UnicodeError` anyway when the stream carries no BOM —
+    which is what an intermediary that declares a charset and delivers plain JSON
     produces. It is raised while `_excerpt` builds the log line, after the request `try`
     block, so the classifier is the only thing between it and the caller.
     """
@@ -397,7 +402,7 @@ def test_github_outcome_classifies_a_body_invalid_for_its_declared_charset():
     # The premise: the bytes are readable, the declared charset refuses them. Both of these
     # are real codecs, so this is a charset the stdlib happily looked up and could not use.
     for charset in ("utf-16", "utf-32"):
-        with pytest.raises(UnicodeDecodeError):
+        with pytest.raises(UnicodeError):
             _read_text(declared(201, charset))
 
     # The classifier reads the bytes instead, so the body still parses and the excerpt is
@@ -420,7 +425,7 @@ def test_github_outcome_classifies_a_body_invalid_for_its_declared_charset():
         unparseable = httpx.Response(
             201, headers={"content-type": f"application/json; charset={charset}"}, content=junk
         )
-        with pytest.raises(UnicodeDecodeError):
+        with pytest.raises(UnicodeError):
             _read_text(unparseable)
         unusable = outcome(unparseable, expect="number")
         assert (unusable.kind, unusable.number) == ("unusable_body", None), charset
@@ -497,7 +502,7 @@ async def test_seam_body_invalid_for_its_declared_charset_is_a_kind_for_every_in
 
     `resp.text` decodes with `errors="replace"`, so this looks safe until the declared
     charset is one that must decode the whole stream: UTF-16 and UTF-32 raise
-    `UnicodeDecodeError` over a body with no BOM — here, plain JSON, which is exactly what an
+    `UnicodeError` over a body with no BOM — here, plain JSON, which is exactly what an
     intermediary that re-declares a charset delivers. The seam classifies after the request
     `try` block, so a raise here would reach a loop that no longer catches anything.
     """
@@ -510,7 +515,7 @@ async def test_seam_body_invalid_for_its_declared_charset_is_a_kind_for_every_in
         return hostile(200 if request.method == "GET" else 201)
 
     # The premise, on the very bytes this transport answers with.
-    with pytest.raises(UnicodeDecodeError):
+    with pytest.raises(UnicodeError):
         _read_text(hostile(201))
 
     outcomes = await _four_interactions(httpx.MockTransport(handler))
@@ -844,7 +849,7 @@ async def test_filing_never_raises_on_a_body_invalid_for_its_declared_charset(db
 
     A 201 or a 403 answered with a body whose declared charset the bytes are invalid for —
     UTF-16 over plain JSON, which is what a proxy that re-declares a charset returns — makes
-    `resp.text` raise `UnicodeDecodeError`. The filing loop reads only the outcome the seam
+    `resp.text` raise `UnicodeError`. The filing loop reads only the outcome the seam
     classified from those bytes, so it logs the lossy excerpt and keeps its own policy: go
     on after an unusable 201, skip the Repo after a permission 403.
     """
@@ -865,7 +870,7 @@ async def test_filing_never_raises_on_a_body_invalid_for_its_declared_charset(db
         return httpx.Response(201, json={"number": 93})
 
     for charset, body in (("utf-16", junk), ("utf-32", denied)):
-        with pytest.raises(UnicodeDecodeError):  # the premise, per response
+        with pytest.raises(UnicodeError):  # the premise, per response
             _read_text(
                 httpx.Response(201, headers={"content-type": f"application/json; charset={charset}"}, content=body)
             )
