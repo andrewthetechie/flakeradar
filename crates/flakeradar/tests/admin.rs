@@ -747,6 +747,29 @@ async fn a_delete_that_did_not_happen_closes_nothing() {
 }
 
 #[tokio::test]
+async fn a_project_delete_refuses_a_name_the_identity_rules_refuse() {
+    let db = TestDb::new().await.expect("a test database");
+    make_project()
+        .repo("acme/app")
+        .project("backend")
+        .build(db.connection())
+        .await
+        .expect("the Project inserts");
+    let app = app_without_github(&db);
+
+    let refused = delete(&app, "/api/repos/acme/app%20name/projects/backend").await;
+    assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(
+        refused.json()["detail"]
+            .as_str()
+            .expect("a detail string")
+            .contains("app name"),
+        "{refused:?}"
+    );
+    assert_eq!(count(&db, "repos", None).await, 1, "nothing was deleted");
+}
+
+#[tokio::test]
 async fn the_admin_routes_need_the_token() {
     let db = TestDb::new().await.expect("a test database");
     let project = make_project()
