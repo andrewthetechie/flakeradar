@@ -218,11 +218,6 @@ def _test_update_row(tc_id: int, window: RescoreWindow, settings: Settings) -> d
         "clean_streak": streak,
         "fail_streak": scoring.branch_scoped_fail_streak(window.execs, window.default_branch),
     }
-    if streak == 0:
-        # Issue #33: the Test failed again, so the "the fix appears to hold" note is stale
-        # and the next clean streak must be able to post it again. Any other streak leaves
-        # the key out of the bulk update, which is what preserves an existing stamp.
-        values["github_issue_fixed_noted_at"] = None
     return values
 
 
@@ -276,10 +271,10 @@ class RescoreTarget:
 
     Follows `LeaderboardEntity` (queries.py): pure data plus per-entity callables, one instance per
     entity, consumed by the engine. Nothing in here may encode a shared rule — the Settings read,
-    the old-score read, the chunked bulk update and the Score-history write all live in
-    `_rescore_engine` only, and an intended per-entity difference (the Test's failure category,
-    Fail streak and broken filter, the Job's Pipeline and absent Project, the history owner column)
-    is descriptor data, as it is on TEST and JOB.
+    the old-score read, the issue #33 stamp reset at Clean streak 0, the chunked bulk update and
+    the Score-history write all live in `_rescore_engine` only, and an intended per-entity
+    difference (the Test's failure category, Fail streak and broken filter, the Job's Pipeline
+    and absent Project, the history owner column) is descriptor data, as it is on TEST and JOB.
     `fetch` returns one entry per id, an empty `RescoreWindow` for a row with no Executions, which
     is what lets the engine read the update rows in the order the bulk update relies on.
     """
@@ -314,7 +309,8 @@ async def _rescore_engine(
 
     The sequence every rescore shares, stated once: read Settings, fetch each row's windowed
     Executions, build one update row per id in the given order (the bulk update relies on that
-    order), read the scores the UPDATE is about to replace, snapshot the Tier changes it causes,
+    order), reset the issue #33 fixed-note stamp on every row whose Clean streak came out 0,
+    read the scores the UPDATE is about to replace, snapshot the Tier changes it causes,
     apply the chunked bulk update, and upsert today's Score history. `day_counts` maps an id to
     (executions, failures) added today, so the same rescore writes that day's history row.
 
@@ -325,6 +321,13 @@ async def _rescore_engine(
     settings = get_settings()
     windows = await target.fetch(db, ids, settings)
     updates = [target.update_row(row_id, windows[row_id], settings) for row_id in ids]
+    # Issue #33, stated once for every target: a row whose Clean streak came out 0 failed again,
+    # so the "the fix appears to hold" note is stale and the next clean streak must be able to
+    # post it again. Any other streak leaves the key out of the bulk update, which is what
+    # preserves an existing stamp.
+    for row in updates:
+        if row["clean_streak"] == 0:
+            row["github_issue_fixed_noted_at"] = None
     changes = await target.tier_snapshot(db, updates, await _old_scores(db, target.model, ids), settings)
     for chunk in chunks(updates):
         await db.execute(update(target.model), chunk)
@@ -485,11 +488,6 @@ def _job_update_row(job_id: int, window: RescoreWindow, settings: Settings) -> d
         "confirmed_flake_count": confirmed,
         "clean_streak": streak,
     }
-    if streak == 0:
-        # Issue #33: the Job failed again, so the "the fix appears to hold" note is stale — the
-        # same reset `_test_update_row` states for Tests. Any other streak leaves the key out of
-        # the bulk update, which is what preserves an existing stamp.
-        values["github_issue_fixed_noted_at"] = None
     return values
 
 
