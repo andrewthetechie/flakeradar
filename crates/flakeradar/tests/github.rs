@@ -1279,6 +1279,72 @@ async fn the_run_hint_follows_the_file_extension() {
     }
 }
 
+#[tokio::test]
+async fn a_candidate_read_that_fails_is_logged_and_files_nothing() {
+    let db = TestDb::new().await.expect("a test database");
+    let test = flaky_test(&db).await;
+    let job = flaky_job(&db).await;
+    db.connection()
+        .execute_unprepared("DROP TABLE test_cases, jobs CASCADE")
+        .await
+        .expect("the tables are dropped");
+    let api = Api::new(Secret::new(TOKEN), "http://127.0.0.1:1");
+
+    let fired = github::file_issues_for(db.connection(), &[test], &gh_settings(&[]), &api).await;
+    assert!(fired.is_empty(), "a batch it could not read files nothing");
+    let fired = github::file_job_issues_for(db.connection(), &[job], &gh_settings(&[]), &api).await;
+    assert!(fired.is_empty());
+}
+
+#[tokio::test]
+async fn a_sync_whose_rotation_list_cannot_be_read_makes_no_request() {
+    let db = TestDb::new().await.expect("a test database");
+    let test = flaky_test(&db).await;
+    stamp_link(&db, test, 12, false, false).await;
+    db.connection()
+        .execute_unprepared("DROP TABLE test_cases CASCADE")
+        .await
+        .expect("the table is dropped");
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&server)
+        .await;
+
+    github::sync_closed_issues(db.connection(), &gh_settings(&[]), &api(&server)).await;
+
+    assert!(
+        server
+            .received_requests()
+            .await
+            .expect("a record")
+            .is_empty(),
+        "a rotation list it could not read sends nothing"
+    );
+}
+
+#[tokio::test]
+async fn a_test_whose_executions_cannot_be_read_is_still_filed_without_them() {
+    let db = TestDb::new().await.expect("a test database");
+    let test = flaky_test(&db).await;
+    db.connection()
+        .execute_unprepared("DROP TABLE test_executions CASCADE")
+        .await
+        .expect("the table is dropped");
+    let server = MockServer::start().await;
+    mount_create(
+        &server,
+        ResponseTemplate::new(201).set_body_json(json!({"number": 7})),
+    )
+    .await;
+
+    let fired =
+        github::file_issues_for(db.connection(), &[test], &gh_settings(&[]), &api(&server)).await;
+
+    assert_eq!(fired.len(), 1, "the Test is filed");
+    assert_eq!(test_link(&db, test).await.0, Some(7));
+}
+
 #[test]
 fn an_issue_state_reason_that_is_not_text_reads_as_none() {
     let answer = github::Answer {
