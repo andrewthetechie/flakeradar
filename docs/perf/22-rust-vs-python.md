@@ -67,27 +67,52 @@ election every 5 seconds. A 200-Test Report was queued, then the leader was kill
 
 ### Two instances, one database
 
-Both instances answered `/api/health/ready` with `processor_leader: true`, which is the
-reference's meaning of the field: *a* process in this database holds the lock, not *this* one.
-The lock itself was held once (one row in `pg_locks`, the standby retrying), and the SIGKILL
-above shows the hand-over keeps exactly one leader. That is the same meaning the parity
-`health` goldens record.
+Re-run on 2026-11-05 against `target/debug/flakeradar` built from `dddbf2f`: two instances
+(`:8321`, `:8322`) on one fresh database, and 20 Reports of 25 Tests each ingested alternately
+through both.
 
-### PostgreSQL stopped during reads
+- Exactly **one** `pg_locks` row for the advisory key `726300002`.
+- Both instances answered `/api/health/ready` with `processor_leader: true`, which is the
+  reference's meaning of the field: *a* process in this database holds the lock, not *this* one.
+  The standby retried every 5 seconds throughout.
+- **No duplicate Runs:** 20 accepted Reports, 20 `reports` rows, all `processed`, and exactly
+  **20** `test_runs` rows, with no `(project_id, commit_sha, ci_run_id)` group holding two. 25
+  `test_cases` rows for 25 distinct fingerprints, and 500 `test_executions` rows with no
+  duplicate `(test_case_id, test_run_id, attempt)`.
 
-PostgreSQL was stopped with `docker stop` while the server kept running, a read was issued, then
-PostgreSQL was started again.
+UNVERIFIED: the "no duplicate **issues**" half of that check. Issue filing posts to the GitHub
+API at a fixed base URL, so a duplicate issue can only be observed against a real GitHub App
+installation and token, and the binary reaches no stub. What is measured is the mechanism that
+would prevent one — a single leader, each Report claimed once, no duplicate Run — and the
+single-filer rules themselves are pinned by `crates/flakeradar/tests/` (`issue_links`,
+`github_worker`, `notify`).
 
-- Python answered `500 Internal Server Error` in **7 ms** (asyncpg fails the pooled connection at
-  once).
-- Rust answered `500 Internal Server Error` in **30.0 s** before this task's fix, because SQLx's
-  default `acquire_timeout` is 30 s and it retries the connection inside that window. That is a
-  hang in practice.
-- The fix: `flakeradar-db/src/connect.rs` now sets `acquire_timeout` to **5 s**
-  (`a_pool_waits_five_seconds_for_a_connection_and_no_longer`). Measured after the fix: the same
-  read answered `500 Internal Server Error` in **5.0 s**.
-- Neither implementation needed a restart: both answered `/api/health/ready` with
-  `database: true` once PostgreSQL was back, and the Rust one processed the next Report.
+### PostgreSQL stopped during ingest
+
+The check `14-convergence.md` asks for is a restart **while Reports are being ingested**, not
+while the server is idle. Re-run on 2026-11-05 against the same debug binary, one instance on
+`:8324`, a fresh database on a `postgres:17-alpine` container at `127.0.0.1:55499`:
+
+- 100 Reports of 25 Tests each were accepted (202), then `docker stop` ran while the worker was
+  draining them. The outage lasted **20.2 s**.
+- Three `GET /api/reports/summary` calls during the outage each answered
+  **`500 Internal Server Error` in 5.004 s**, and a `POST /api/ingest` during it answered
+  **500 in 5.005 s** with the reference's plain-text `Internal Server Error` body. Nothing hung:
+  every answer is bounded by the 5 s `acquire_timeout` in `flakeradar-db/src/connect.rs`
+  (`a_pool_waits_five_seconds_for_a_connection_and_no_longer`), and the server logged
+  `Failed to acquire connection from pool: Connection pool timed out`.
+- PostgreSQL came back at 20.4 s, and 2.0 s later `GET /api/reports/summary` answered
+  `pending: 0`. `/api/health/ready` then answered `database: true` and
+  `processor_leader: true`, from the **same process** (pid 50920 before and after): no restart.
+- All **100** Reports reached `processed`, and `test_runs` holds exactly 100 rows with no
+  duplicate `(project_id, commit_sha, ci_run_id)` group, so the claim the worker lost with its
+  connection did not become a second Run.
+
+Latency against the reference, measured on the earlier run of this check: Python (asyncpg)
+answered `500 Internal Server Error` in **7 ms** (it fails the pooled connection at once), and
+Rust answered in **30.0 s** before the `acquire_timeout` fix, because SQLx's default is 30 s and
+it retries the connection inside that window. That is a hang in practice, and 5 s is what the
+fix bought.
 
 The status, the body and the recovery match the reference. The latency of the error does not:
 Python's 7 ms is a property of asyncpg's pool, and matching it would mean disabling SQLx's
@@ -96,6 +121,8 @@ bounded and recorded rather than a hang.
 
 ## What is not measured here
 
+- Duplicate **issues** across two instances, which needs a real GitHub API; see "Two instances,
+  one database".
 - Release-build numbers. The Rust figures come from a debug build, the conservative direction.
 - The 2M-row plans of `docs/perf/20` and `21`: those sections were re-measured on a 100,000-row
   seed, with the smaller data stated there alongside the machine.

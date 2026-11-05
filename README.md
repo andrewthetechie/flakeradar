@@ -356,8 +356,11 @@ ready-made reporter for it — a standard-library script that lists the jobs of
 `CI_PIPELINE_ID` and posts them as one Pipeline report — and
 [`samples/gitlab/gitlab-ci.yml`](samples/gitlab/gitlab-ci.yml) shows the `.post`
 job that runs it plus the JUnit upload snippet. The status mapping is covered by
-[`backend/tests/test_gitlab_reporter.py`](backend/tests/test_gitlab_reporter.py),
-which validates the built payload against the real ingest schema.
+[`samples/gitlab/test_report_pipeline.py`](samples/gitlab/test_report_pipeline.py),
+which builds the reporter's payload and POSTs it to a running FlakeRadar's
+`/api/ingest/pipeline`, expecting 202: the endpoint's own validation is the
+contract, so the sample proves a payload the server accepts. It needs a server
+(`FLAKERADAR_URL`, `FLAKERADAR_TOKEN`) and pytest, and runs in CI's `samples` job.
 
 A retried GitLab job is a **new job id in the same Pipeline**, not a new CI run
 attempt, so `ci_run_attempt` stays `1` and the reporter sends both tries. FlakeRadar
