@@ -1481,6 +1481,43 @@ async fn a_failing_read_of_one_ci_run_is_a_protocol_error() {
 }
 
 #[tokio::test]
+async fn a_non_finite_score_is_answered_as_null_not_as_a_failure() {
+    // `flakiness_score` is a `double`, so a NaN score is storable even though
+    // nothing this server writes makes one. `serde_json` serializes a
+    // non-finite float as `null` rather than failing, so the answer is still a
+    // well-formed result a client can read, and no answer this file builds can
+    // reach its "does not serialize" arm.
+    let db = TestDb::new().await.expect("a test database is available");
+    let app = mcp_app(&db);
+    let _ = seed(&db).await;
+    sea_orm::ConnectionTrait::execute_unprepared(
+        db.connection(),
+        "UPDATE test_cases SET flakiness_score = 'NaN'",
+    )
+    .await
+    .expect("the NaN score is written");
+    let reply = rpc(
+        &app,
+        "tools/call",
+        Some("top_flaky_tests"),
+        json!({
+            "name": "top_flaky_tests",
+            "arguments": {"repo": "andrewthetechie/writers-app"},
+        }),
+    )
+    .await;
+    let body = reply.json();
+    assert!(body.get("error").is_none(), "{body}");
+    let tests = body["result"]["structuredContent"]["result"]
+        .as_array()
+        .expect("the answer is a list");
+    assert_eq!(tests.len(), 4, "{body}");
+    for test in tests {
+        assert_eq!(test["flakiness_score"], Value::Null, "{test}");
+    }
+}
+
+#[tokio::test]
 async fn a_failing_link_is_a_protocol_error() {
     let db = TestDb::new().await.expect("a test database is available");
     let app = mcp_app(&db);
