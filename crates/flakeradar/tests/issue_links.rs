@@ -882,3 +882,47 @@ async fn the_link_engine_refuses_with_its_status_and_links() {
     };
     assert_eq!(out.github_issue_number, Some(11));
 }
+
+#[tokio::test]
+async fn a_failed_link_query_answers_the_plain_text_500() {
+    let db = TestDb::new().await.expect("a test database");
+    db.connection()
+        .execute_unprepared("DROP TABLE test_cases CASCADE")
+        .await
+        .expect("the table is dropped");
+    let reply = put(
+        &app(&db, &[("FLAKERADAR_API_TOKEN", TOKEN)]),
+        "/api/tests/1/issue",
+        &json!({"number": 3}),
+    )
+    .await;
+    assert_eq!(reply.status, 500);
+    assert_eq!(reply.text(), "Internal Server Error");
+    assert_eq!(
+        reply.header("content-type").as_deref(),
+        Some("text/plain; charset=utf-8")
+    );
+}
+
+#[tokio::test]
+async fn a_link_body_that_fails_while_it_is_read_is_a_500() {
+    let db = TestDb::new().await.expect("a test database");
+    let stream = futures_util::stream::iter(vec![
+        Ok(axum::body::Bytes::from_static(b"{\"number\":")),
+        Err(std::io::Error::other("the client went away")),
+    ]);
+    let request = axum::http::Request::builder()
+        .method(Method::PUT)
+        .uri("/api/tests/1/issue")
+        .header("X-API-Key", TOKEN)
+        .header("Content-Type", "application/json")
+        .body(axum::body::Body::from_stream(stream))
+        .expect("the fixture request builds");
+    let reply = send(&app(&db, &[("FLAKERADAR_API_TOKEN", TOKEN)]), request).await;
+    assert_eq!(reply.status, 500);
+    assert!(
+        reply.text().contains("Reading the request body failed"),
+        "{}",
+        reply.text()
+    );
+}
