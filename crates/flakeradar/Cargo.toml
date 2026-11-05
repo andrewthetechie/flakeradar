@@ -17,6 +17,7 @@ dotenvy.workspace = true
 flakeradar-core = { path = "../flakeradar-core" }
 flakeradar-db = { path = "../flakeradar-db" }
 form_urlencoded.workspace = true
+reqwest = { workspace = true, features = ["json", "rustls"] }
 sea-orm.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
@@ -35,6 +36,6 @@ utoipa-redoc.workspace = true
 chrono = { workspace = true, features = ["clock", "std"] }
 flakeradar-test-support = { path = "../flakeradar-test-support" }
 futures-util = { version = "0.3", default-features = false }
-reqwest = { workspace = true, features = ["json"] }
 tokio = { workspace = true, features = ["io-util", "test-util", "time"] }
 tower = { workspace = true, features = ["util"] }
+wiremock.workspace = true

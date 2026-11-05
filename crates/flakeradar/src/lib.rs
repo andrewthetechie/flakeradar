@@ -26,6 +26,7 @@ pub mod app;
 pub mod docs;
 pub mod error;
 pub mod extract;
+pub mod github;
 pub mod middleware;
 pub mod multipart;
 pub mod routes;
