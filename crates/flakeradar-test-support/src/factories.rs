@@ -681,13 +681,6 @@ impl JobBuilder {
         self
     }
 
-    /// Sets when the Job last ran.
-    #[must_use]
-    pub fn last_seen_at(mut self, at: DateTimeWithTimeZone) -> Self {
-        self.last_seen_at = Some(at);
-        self
-    }
-
     /// Sets when FlakeRadar noted that the Job's fix appears to hold.
     #[must_use]
     pub fn github_issue_fixed_noted_at(mut self, at: DateTimeWithTimeZone) -> Self {
@@ -918,13 +911,6 @@ pub fn make_test_score(
 }
 
 impl TestScoreBuilder {
-    /// Sets the Proven flake count the day closed with.
-    #[must_use]
-    pub fn confirmed_flake_count(mut self, count: i32) -> Self {
-        self.confirmed_flake_count = count;
-        self
-    }
-
     /// Sets how many Executions ran that day.
     #[must_use]
     pub fn executions(mut self, executions: i32) -> Self {

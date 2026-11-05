@@ -121,9 +121,7 @@ pub mod lax_bool {
     /// # Errors
     ///
     /// Returns an error when a present value is not one of the accepted spellings.
-    pub fn optional<'de, D: Deserializer<'de>>(
-        deserializer: D,
-    ) -> Result<Option<bool>, D::Error> {
+    pub fn optional<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<bool>, D::Error> {
         match Value::deserialize(deserializer)? {
             Value::Null => Ok(None),
             value => interpret(&value)

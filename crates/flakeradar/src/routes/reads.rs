@@ -20,7 +20,7 @@ use flakeradar_core::{
     normalize_project, normalize_repo,
 };
 use flakeradar_db::{
-    DbError, DEFAULT_EXECUTIONS_LIMIT, FAILURES_LIMIT, JobListFilters, ListOptions,
+    DEFAULT_EXECUTIONS_LIMIT, DbError, FAILURES_LIMIT, JobListFilters, ListOptions,
     MAX_EXECUTIONS_LIMIT, ReadError, ReadSettings, Scope, SortKey, TestListFilters,
     ci_run_failures, get_job, get_test, job_summary, list_jobs, list_repos, list_tests,
     quarantine_list, set_quarantine, summary,
@@ -119,7 +119,7 @@ fn read_settings(state: &AppState) -> ReadSettings {
 }
 
 /// A 422 from an identity rule, as `{"detail": "<message>"}`.
-fn identity_error(error: flakeradar_core::IdentityError) -> ApiError {
+fn identity_error(error: &flakeradar_core::IdentityError) -> ApiError {
     ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, error.to_string())
 }
 
@@ -168,11 +168,7 @@ fn check_le(value: Option<i64>, max: i64, field: &str, issues: &mut Vec<Validati
 }
 
 /// The paging range both leaderboards share.
-fn validate_paging(
-    page: Option<i64>,
-    page_size: Option<i64>,
-    issues: &mut Vec<ValidationIssue>,
-) {
+fn validate_paging(page: Option<i64>, page_size: Option<i64>, issues: &mut Vec<ValidationIssue>) {
     check_ge(page, 1, "page", issues);
     check_ge(page_size, 1, "page_size", issues);
     check_le(page_size, 100, "page_size", issues);
@@ -257,11 +253,11 @@ impl Validate for ScopeQuery {
 /// Builds the Scope a query names, normalizing both names.
 fn scope_of(repo: Option<String>, project: Option<String>) -> ReadResult<Scope> {
     let repo = match repo {
-        Some(raw) => Some(normalize_repo(&raw).map_err(identity_error)?),
+        Some(raw) => Some(normalize_repo(&raw).map_err(|error| identity_error(&error))?),
         None => None,
     };
     let project = match project {
-        Some(raw) => Some(normalize_project(Some(&raw)).map_err(identity_error)?),
+        Some(raw) => Some(normalize_project(Some(&raw)).map_err(|error| identity_error(&error))?),
         None => None,
     };
     Scope::new(repo, project).map_err(|detail| detail_error(detail).into())
@@ -343,14 +339,11 @@ impl TestsQuery {
     fn parts(&self) -> (TestListFilters, ListOptions) {
         let filters = TestListFilters {
             file: self.file.clone(),
-            category: self
-                .category
-                .as_deref()
-                .and_then(|name| {
-                    FailureCategory::ALL
-                        .into_iter()
-                        .find(|category| category.as_str() == name)
-                }),
+            category: self.category.as_deref().and_then(|name| {
+                FailureCategory::ALL
+                    .into_iter()
+                    .find(|category| category.as_str() == name)
+            }),
             quarantined: self.quarantined,
             broken: self.broken.unwrap_or(false),
         };
@@ -586,7 +579,14 @@ pub async fn tests(
     let scope = scope_of(query.repo.clone(), query.project.clone())?;
     let (filters, options) = query.parts();
     Ok(Json(
-        list_tests(state.pool(), &scope, &filters, &options, &read_settings(&state)).await?,
+        list_tests(
+            state.pool(),
+            &scope,
+            &filters,
+            &options,
+            &read_settings(&state),
+        )
+        .await?,
     ))
 }
 
@@ -710,8 +710,9 @@ pub async fn quarantine(
     State(state): State<AppState>,
     ApiQuery(query): ApiQuery<QuarantineQuery>,
 ) -> ReadResult<Json<Vec<QuarantineItem>>> {
-    let repo = normalize_repo(&query.repo).map_err(identity_error)?;
-    let project = normalize_project(query.project.as_deref()).map_err(identity_error)?;
+    let repo = normalize_repo(&query.repo).map_err(|error| identity_error(&error))?;
+    let project =
+        normalize_project(query.project.as_deref()).map_err(|error| identity_error(&error))?;
     Ok(Json(quarantine_list(state.pool(), &repo, &project).await?))
 }
 
@@ -742,7 +743,7 @@ pub async fn jobs(
     ApiQuery(query): ApiQuery<JobsQuery>,
 ) -> ReadResult<Json<JobPage>> {
     let repo = match &query.repo {
-        Some(raw) => Some(normalize_repo(raw).map_err(identity_error)?),
+        Some(raw) => Some(normalize_repo(raw).map_err(|error| identity_error(&error))?),
         None => None,
     };
     let options = ListOptions {
@@ -791,7 +792,7 @@ pub async fn jobs_summary(
     ApiQuery(query): ApiQuery<ScopeQuery>,
 ) -> ReadResult<Json<JobSummaryOut>> {
     let repo = match query.repo {
-        Some(raw) => Some(normalize_repo(&raw).map_err(identity_error)?),
+        Some(raw) => Some(normalize_repo(&raw).map_err(|error| identity_error(&error))?),
         None => None,
     };
     Ok(Json(
@@ -881,7 +882,7 @@ pub async fn ci_run(
     if !issues.is_empty() {
         return Err(ApiError::unprocessable(issues).into());
     }
-    let repo = normalize_repo(&query.repo).map_err(identity_error)?;
+    let repo = normalize_repo(&query.repo).map_err(|error| identity_error(&error))?;
     Ok(Json(
         ci_run_failures(
             state.pool(),

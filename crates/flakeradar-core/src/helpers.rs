@@ -163,7 +163,8 @@ mod tests {
     fn broken_needs_a_threshold_and_enough_failures() {
         assert!(is_broken(5, 5));
         assert!(!is_broken(4, 5));
-        assert!(!is_broken(50, 0));
+        assert!(!is_broken(0, 5));
+        assert!(!is_broken(99, 0));
     }
 
     #[test]

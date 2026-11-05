@@ -17,6 +17,7 @@ use common::{app, get, request_with_headers};
 use flakeradar_test_support::{
     TestDb, make_execution, make_project, make_run, make_test_case, make_test_score,
 };
+use sea_orm::ConnectionTrait as _;
 use sea_orm::entity::prelude::DateTimeWithTimeZone;
 use serde_json::{Value, json};
 
@@ -1573,4 +1574,22 @@ async fn a_scope_that_fails_its_length_rule_is_a_422() {
     let reply = get(&app, &format!("/api/tests?file={long_file}")).await;
     assert_eq!(reply.status, 422);
     assert_eq!(reply.json()["detail"][0]["loc"], json!(["query", "file"]));
+}
+
+#[tokio::test]
+async fn a_failed_read_query_answers_the_plain_text_500() {
+    let db = TestDb::new().await.expect("a test database");
+    db.connection()
+        .execute_unprepared("DROP TABLE test_cases CASCADE")
+        .await
+        .expect("the table is dropped");
+    let reply = get(&app(&db, &[]), "/api/tests").await;
+    assert_eq!(reply.status, 500);
+    assert_eq!(reply.text(), "Internal Server Error");
+    assert_eq!(
+        reply.header("content-type").as_deref(),
+        Some("text/plain; charset=utf-8")
+    );
+    let missing = get(&app(&db, &[]), "/api/tests/1/history").await;
+    assert_eq!(missing.status, 500);
 }

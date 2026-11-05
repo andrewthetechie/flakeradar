@@ -62,18 +62,19 @@ pub use processing::{
     job_history, process_next, rescore, rescore_jobs,
 };
 #[doc(inline)]
+pub use reads::{
+    DEFAULT_EXECUTIONS_LIMIT, FAILURES_LIMIT, JobListFilters, ListOptions, MAX_EXECUTIONS_LIMIT,
+    NEW_FLAKY_DAYS, ReadError, ReadSettings, Scope, SortKey, TestListFilters, ci_run_failures,
+    find_job_ids, find_test_ids, get_job, get_test, job_summary, latest_failure, list_jobs,
+    list_repos, list_tests, quarantine_list, search_jobs, search_tests, set_quarantine, summary,
+    test_job_links,
+};
+#[doc(inline)]
 pub use report_intake::{
     NewJunitReport, NewPipelineReport, REPORT_FAILED, REPORT_KIND_JUNIT, REPORT_KIND_PIPELINE,
     REPORT_PENDING, REPORT_PROCESSED, REPORT_STATUSES, complete_report, fail_report,
     find_junit_duplicate, requeue_report, retry_failed_report, stored_attempt, stored_junit_body,
     stored_pipeline_payload,
-};
-#[doc(inline)]
-pub use reads::{
-    DEFAULT_EXECUTIONS_LIMIT, FAILURES_LIMIT, JobListFilters, ListOptions, MAX_EXECUTIONS_LIMIT, NEW_FLAKY_DAYS,
-    ReadError, ReadSettings, Scope, SortKey, TestListFilters, ci_run_failures, find_job_ids,
-    find_test_ids, get_job, get_test, job_summary, latest_failure, list_jobs, list_repos,
-    list_tests, quarantine_list, search_jobs, search_tests, set_quarantine, summary, test_job_links,
 };
 #[doc(inline)]
 pub use retention::{PruneResult, RetentionSettings, prune, run_prune};
