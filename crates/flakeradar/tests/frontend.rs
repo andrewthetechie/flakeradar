@@ -242,8 +242,14 @@ async fn a_path_that_climbs_out_of_the_root_is_refused() {
         "/assets/../index.html",
         "/assets/%2e%2e/index.html",
         "/assets/%2E%2E/index.html",
+        // Encoded twice. One decode leaves `%2e%2e` as literal text, which names
+        // no file; a second decode would turn it back into `..` and escape, so
+        // this pins the single decode the route performs.
+        "/assets/%252e%252e/index.html",
         "/..%2findex.html",
+        "/..%252findex.html",
         "/%2e%2e/%2e%2e/etc/passwd",
+        "/%252e%252e/%252e%252e/etc/passwd",
         "/assets/..%5cindex.html",
         "/assets/%5c..%5cindex.html",
         "/a%00.html",
