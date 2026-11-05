@@ -28,6 +28,7 @@ pub mod error;
 pub mod extract;
 pub mod github;
 pub mod github_worker;
+pub mod mcp;
 pub mod middleware;
 pub mod multipart;
 pub mod routes;
@@ -47,6 +48,8 @@ pub use extract::{ApiJson, ApiPath, ApiQuery, Validate, body_loc, query_loc};
 pub use github::{Answer, Api, FilingGate, JobRow, RecentExecution, TestRow};
 #[doc(inline)]
 pub use github_worker::GitHubWorker;
+#[doc(inline)]
+pub use mcp::{INSTRUCTIONS, McpServer};
 #[doc(inline)]
 pub use multipart::file_field;
 #[doc(inline)]

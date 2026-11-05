@@ -58,7 +58,7 @@ pub async fn require_token(
 /// `secrets.compare_digest` gave away either: a token of the wrong length is
 /// rejected, and the bytes of a token of the right length are compared without
 /// an early exit.
-fn constant_time_eq(presented: &[u8], expected: &[u8]) -> bool {
+pub(crate) fn constant_time_eq(presented: &[u8], expected: &[u8]) -> bool {
     if presented.len() != expected.len() {
         return false;
     }

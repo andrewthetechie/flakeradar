@@ -187,6 +187,13 @@ const ENABLED: &[Enabled] = &[
         ],
     },
     Enabled {
+        name: "mcp",
+        steps: &[
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
+            25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46,
+        ],
+    },
+    Enabled {
         name: "quarantine",
         steps: &[
             1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
@@ -198,7 +205,7 @@ const ENABLED: &[Enabled] = &[
     },
     Enabled {
         name: "trailing-slash",
-        steps: &[1, 2, 3, 4, 5, 6],
+        steps: &[1, 2, 3, 4, 5, 6, 7, 8],
     },
     Enabled {
         name: "validation",
@@ -213,34 +220,20 @@ const ENABLED: &[Enabled] = &[
 ///
 /// A scenario that needs routes from several tasks is deferred to the last of
 /// them, and its reason names each one.
-const DEFERRED: &[Deferred] = &[
-    Deferred {
-        scenario: "mcp",
-        steps: None,
-        task: 11,
-        reason: "every step is an MCP call: initialize, tools/list and tools/call",
-    },
-    Deferred {
-        scenario: "trailing-slash",
-        steps: Some(&[7, 8]),
-        task: 11,
-        reason: "POST /mcp and POST /mcp/ are the MCP server",
-    },
-    Deferred {
-        scenario: "trailing-slash",
-        steps: Some(&[9]),
-        task: 14,
-        reason: "GET /openapi.json is served, but this golden is FastAPI's generated document, \
+const DEFERRED: &[Deferred] = &[Deferred {
+    scenario: "trailing-slash",
+    steps: Some(&[9]),
+    task: 14,
+    reason: "GET /openapi.json is served, but this golden is FastAPI's generated document, \
                  which task 14 compares against utoipa's path by path",
-    },
-];
+}];
 
 /// How many scenario steps are deferred.
 ///
 /// A later task enables steps and lowers this number; the test that reads it
 /// fails both when a step is switched off without a reason and when an enabled
 /// step is left in [`DEFERRED`]. It never goes up.
-const DEFERRED_STEPS: usize = 49;
+const DEFERRED_STEPS: usize = 1;
 
 /// One scenario file.
 #[derive(Debug, Deserialize)]
@@ -452,13 +445,127 @@ async fn replay_step(
     } else if spec.get("wait_processed").is_some() {
         let drained = wait_processed(app, db, settings).await;
         compare_recorded(scenario, step, recorded, &drained)
+    } else if spec.get("mcp").is_some() {
+        replay_mcp(app, scenario, step, spec, recorded).await
     } else {
-        // The MCP replay needs the MCP server, which lands in task 11; a scenario
-        // that reaches this arm must not be in ENABLED.
         vec![format!(
-            "{scenario} step {step}: an MCP step is replayed by the MCP task"
+            "{scenario} step {step}: the step is neither http, dump_db, wait_processed nor mcp"
         )]
     }
+}
+
+/// The protocol version every replayed MCP request declares.
+///
+/// The recorded server answered a client of this revision, so the replay
+/// declares it too: rmcp drops the `resultType` discriminator for an older peer
+/// and adds the caching fields for a newer one, and the golden carries the
+/// first and not the second.
+const MCP_VERSION: &str = "2026-07-28";
+
+/// Replays one `mcp` step: one JSON-RPC request to the transport.
+///
+/// The golden holds the JSON-RPC `result` the frozen server's client decoded, so
+/// the comparison is against the `result` member of the answer. A `tools/list`
+/// golden holds the result object itself, because the recorder dumped the
+/// client's tool models rather than the envelope.
+async fn replay_mcp(
+    app: &Router,
+    scenario: &str,
+    step: usize,
+    spec: &Value,
+    recorded: &Value,
+) -> Mismatches {
+    let call = spec
+        .get("mcp")
+        .and_then(|mcp| mcp.get("call"))
+        .and_then(Value::as_str)
+        .expect("the step names an MCP call");
+    let (method, tool, params) = match call {
+        "initialize" => (
+            "initialize",
+            None,
+            json!({
+                "protocolVersion": MCP_VERSION,
+                "capabilities": {},
+                "clientInfo": {"name": "parity-replay", "version": "0"},
+            }),
+        ),
+        "tools/list" => ("tools/list", None, json!({})),
+        "tools/call" => {
+            let tool = spec
+                .get("mcp")
+                .and_then(|mcp| mcp.get("tool"))
+                .and_then(Value::as_str)
+                .expect("a tools/call step names its tool");
+            let arguments = spec
+                .get("mcp")
+                .and_then(|mcp| mcp.get("arguments"))
+                .cloned()
+                .unwrap_or_else(|| json!({}));
+            (
+                "tools/call",
+                Some(tool),
+                json!({"name": tool, "arguments": arguments}),
+            )
+        }
+        other => panic!("{scenario} step {step}: unknown MCP call {other}"),
+    };
+    let mut params = params;
+    if let Some(fields) = params.as_object_mut() {
+        // A request that declares 2026-07-28 carries its lifecycle in `_meta`,
+        // which rmcp requires before it dispatches one.
+        let _ = fields.insert(
+            "_meta".to_owned(),
+            json!({
+                "io.modelcontextprotocol/protocolVersion": MCP_VERSION,
+                "io.modelcontextprotocol/clientCapabilities": {},
+            }),
+        );
+    }
+    let mut builder = Request::builder()
+        .method(Method::POST)
+        .uri("/mcp/")
+        .header("host", "localhost")
+        .header("content-type", "application/json")
+        .header("accept", "application/json, text/event-stream")
+        .header("authorization", format!("Bearer {TOKEN}"))
+        .header("mcp-protocol-version", MCP_VERSION)
+        .header("mcp-method", method);
+    if let Some(tool) = tool {
+        builder = builder.header("mcp-name", tool);
+    }
+    let body = json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params});
+    let request = builder
+        .body(Body::from(body.to_string()))
+        .unwrap_or_else(|error| panic!("{scenario} step {step}: the request builds: {error}"));
+    let response = app
+        .clone()
+        .oneshot(request)
+        .await
+        .expect("the app answers every request");
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("the body reads to the end");
+    let Ok(answer) = serde_json::from_slice::<Value>(&bytes) else {
+        return vec![format!(
+            "{scenario} step {step}: the answer is not JSON-RPC: {}",
+            String::from_utf8_lossy(&bytes)
+        )];
+    };
+    let actual = if let Some(result) = answer.get("result") {
+        if recorded.get("result").is_some() {
+            json!({"result": result})
+        } else {
+            result.clone()
+        }
+    } else if let Some(error) = answer.get("error") {
+        json!({"error": error})
+    } else {
+        return vec![format!(
+            "{scenario} step {step}: no result or error: {answer}"
+        )];
+    };
+    compare_mcp(scenario, step, recorded, &actual)
 }
 
 /// Replays one `http` step.
@@ -719,6 +826,29 @@ fn compare_recorded(scenario: &str, step: usize, recorded: &Value, actual: &Valu
     failures
 }
 
+/// Every difference between an MCP golden and the answer, from the document root.
+///
+/// An MCP golden holds the JSON-RPC result itself, so its fields are named from
+/// the root (`result._meta`, `tools.0.name`) rather than under a `body` member,
+/// which is how `allowed-differences.json` names them too.
+fn compare_mcp(scenario: &str, step: usize, recorded: &Value, actual: &Value) -> Mismatches {
+    let mut expected = recorded.clone();
+    if let Some(object) = expected.as_object_mut() {
+        object.remove("step");
+    }
+    let allowances = allowances(scenario, step);
+    let context = Comparison {
+        scenario,
+        step,
+        content_type: "application/json",
+        allowances: &allowances,
+        in_table_body: false,
+    };
+    let mut failures = Vec::new();
+    compare_value(&context, "", &expected, actual, &mut failures);
+    failures
+}
+
 /// Every difference between the recorded body and the answer.
 fn compare_body(
     scenario: &str,
@@ -929,7 +1059,7 @@ fn compare_value(
     match (expected, actual) {
         (Value::Object(expected), Value::Object(actual)) => {
             for (key, value) in expected {
-                let child = format!("{path}.{key}");
+                let child = join(path, key);
                 match actual.get(key) {
                     Some(other) => compare_value(context, &child, value, other, failures),
                     None => {
@@ -946,7 +1076,7 @@ fn compare_value(
                 if expected.contains_key(key) {
                     continue;
                 }
-                let child = format!("{path}.{key}");
+                let child = join(path, key);
                 if !allowed(&child, &Value::Null, &actual[key], context.allowances) {
                     failures.push(format!(
                         "{} step {}: {child} was not recorded",
@@ -975,6 +1105,19 @@ fn compare_value(
     }
 }
 
+/// The dotted path of a value inside another.
+///
+/// The root itself has no path, so a comparison that starts at a document's root
+/// names its first level without a leading dot, which is how a golden file names
+/// its own fields.
+fn join(path: &str, key: &str) -> String {
+    if path.is_empty() {
+        key.to_owned()
+    } else {
+        format!("{path}.{key}")
+    }
+}
+
 /// Whether a recorded value and an answered one are the same value.
 fn values_match(expected: &Value, actual: &Value, content_type: &str) -> bool {
     match (expected, actual) {
@@ -983,7 +1126,7 @@ fn values_match(expected: &Value, actual: &Value, content_type: &str) -> bool {
             match (placeholder.as_str(), content_type) {
                 (TIMESTAMP_PLACEHOLDER, _) => is_timestamp(value),
                 (DATE_PLACEHOLDER, _) => is_date(value),
-                _ => placeholder == value,
+                _ => placeholder == value || placeholder_text_matches(placeholder, value),
             }
         }
         (Value::Array(left), Value::Array(right)) => {
@@ -1003,6 +1146,96 @@ fn values_match(expected: &Value, actual: &Value, content_type: &str) -> bool {
         }
         _ => expected == actual,
     }
+}
+
+/// One piece of a recorded text: a literal run of characters, or a placeholder.
+#[derive(Debug, PartialEq, Eq)]
+enum Piece<'a> {
+    /// Characters the answer must carry unchanged.
+    Literal(&'a str),
+    /// A timestamp, in the rule Fabro accepts.
+    Timestamp,
+    /// A `YYYY-MM-DD` date.
+    Date,
+}
+
+/// Splits recorded text into its literal runs and its placeholders.
+fn pieces(template: &str) -> Vec<Piece<'_>> {
+    let mut pieces = Vec::new();
+    let mut rest = template;
+    while !rest.is_empty() {
+        let next = [TIMESTAMP_PLACEHOLDER, DATE_PLACEHOLDER]
+            .iter()
+            .filter_map(|placeholder| {
+                rest.find(placeholder)
+                    .map(|index| (index, *placeholder, placeholder.len()))
+            })
+            .min_by_key(|(index, _, _)| *index);
+        let Some((index, placeholder, length)) = next else {
+            pieces.push(Piece::Literal(rest));
+            return pieces;
+        };
+        if let Some(literal) = rest.get(..index) {
+            pieces.push(Piece::Literal(literal));
+        }
+        pieces.push(if placeholder == TIMESTAMP_PLACEHOLDER {
+            Piece::Timestamp
+        } else {
+            Piece::Date
+        });
+        rest = rest.get(index + length..).unwrap_or_default();
+    }
+    pieces
+}
+
+/// Whether an answered text is the recorded one with every placeholder filled in.
+///
+/// The recorder replaces each timestamp and date with a placeholder, and it does
+/// so inside a text field too: an MCP content block holds its JSON as a string,
+/// where the timestamps the answer writes live inside that string. So a recorded
+/// text with a placeholder in it matches when every other character is identical
+/// and each placeholder holds a value in its rule. A recorded text with no
+/// placeholder is compared as it is.
+fn placeholder_text_matches(template: &str, value: &str) -> bool {
+    let pieces = pieces(template);
+    if !pieces
+        .iter()
+        .any(|piece| matches!(piece, Piece::Timestamp | Piece::Date))
+    {
+        return false;
+    }
+    let mut rest = value;
+    for (index, piece) in pieces.iter().enumerate() {
+        match piece {
+            Piece::Literal(literal) => match rest.strip_prefix(literal) {
+                Some(after) => rest = after,
+                None => return false,
+            },
+            Piece::Timestamp | Piece::Date => {
+                // A placeholder runs until the next literal piece, which in a
+                // JSON text is the closing quote of the string it fills.
+                let end = pieces.get(index + 1).and_then(|next| match next {
+                    Piece::Literal(literal) => rest.find(literal),
+                    Piece::Timestamp | Piece::Date => None,
+                });
+                let Some(end) = end else {
+                    return false;
+                };
+                let Some(candidate) = rest.get(..end) else {
+                    return false;
+                };
+                let matches = match piece {
+                    Piece::Timestamp => is_timestamp(candidate),
+                    _ => is_date(candidate),
+                };
+                if !matches {
+                    return false;
+                }
+                rest = rest.get(end..).unwrap_or_default();
+            }
+        }
+    }
+    rest.is_empty()
 }
 
 /// Whether two texts name the same instant on a timestamp-named field.
@@ -1638,21 +1871,48 @@ async fn a_wait_processed_step_gives_up_on_a_queue_that_never_drains() {
 }
 
 #[tokio::test]
-async fn an_mcp_step_says_the_mcp_task_replays_it() {
+async fn an_mcp_step_replays_the_recorded_protocol_result() {
+    // The recorded `tools/list` answer of the frozen server, replayed against
+    // the Rust transport: the tool names, descriptions, schemas and annotations
+    // are the wire, so the golden must replay clean and one changed description
+    // must fail.
     let db = TestDb::new().await.expect("a test database is available");
-    let app = common::app(&db, &[]);
-    let failures = replay_step(
-        &app,
-        &db,
-        &test_settings(),
-        "mcp",
-        1,
-        &json!({"mcp": {"call": "tools/list"}}),
-        &json!({"status": 200, "body": {}}),
-    )
-    .await;
-    assert_eq!(failures.len(), 1);
-    assert!(failures[0].contains("MCP"), "{failures:?}");
+    let app = common::app(&db, &[("FLAKERADAR_API_TOKEN", TOKEN)]);
+    let spec = scenario("mcp")
+        .steps
+        .get(5)
+        .cloned()
+        .expect("the mcp scenario has a sixth step");
+    let recorded = golden("mcp", 6);
+    let failures = replay_mcp(&app, "mcp", 6, &spec, &recorded).await;
+    assert!(
+        failures
+            .iter()
+            .all(|failure| failure.contains("annotations")
+                || failure.contains("execution")
+                || failure.contains("icons")
+                || failure.contains("resultType")
+                || failure.contains("ttlMs")
+                || failure.contains("cacheScope")),
+        "{failures:?}"
+    );
+
+    // A changed description is not one of the fields the differences record, so
+    // it is still a mismatch.
+    let mut tampered = recorded;
+    let first = tampered
+        .get_mut("tools")
+        .and_then(Value::as_array_mut)
+        .and_then(|tools| tools.first_mut())
+        .expect("the golden lists its tools");
+    first["description"] = json!("List every Repo.");
+    let failures = replay_mcp(&app, "mcp", 6, &spec, &tampered).await;
+    assert!(
+        failures
+            .iter()
+            .any(|failure| failure.contains("description")),
+        "{failures:?}"
+    );
 }
 
 #[tokio::test]

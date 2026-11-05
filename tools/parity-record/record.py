@@ -657,6 +657,10 @@ def check_allowed_differences(files: dict[Path, str]) -> None:
     An allowance that points at a renamed golden, or a differences.md row
     rewritten without its allowance, is how this mechanism rots, so the recorder
     checks both directions it can see.
+
+    One exception: an allowance that names a Rust value and no Python value
+    records a field the answer *adds*, which the golden cannot carry. Every other
+    allowance must name a field the golden has.
     """
     allowed = json.loads(ALLOWED_FILE.read_text(encoding="utf-8"))
     differences = DIFFERENCES_FILE.read_text(encoding="utf-8")
@@ -670,18 +674,21 @@ def check_allowed_differences(files: dict[Path, str]) -> None:
                 problems.append(f"{entry['id']}: {allowance['file']} is not a recorded golden")
                 continue
             node = json.loads(content)
+            missing = False
             for part in allowance["field"].split("."):
                 if isinstance(node, list):
                     index = int(part) if part.isdigit() else -1
                     if not 0 <= index < len(node):
-                        problems.append(f"{entry['id']}: {allowance['file']} has no field {allowance['field']}")
+                        missing = True
                         break
                     node = node[index]
                 elif isinstance(node, dict) and part in node:
                     node = node[part]
                 else:
-                    problems.append(f"{entry['id']}: {allowance['file']} has no field {allowance['field']}")
+                    missing = True
                     break
+            if missing and not ("rustValue" in allowance and "pythonValue" not in allowance):
+                problems.append(f"{entry['id']}: {allowance['file']} has no field {allowance['field']}")
     if problems:
         die("allowed-differences.json is stale:\n  " + "\n  ".join(problems))
 

@@ -18,7 +18,7 @@ use axum::Router;
 use axum::routing::get;
 
 use crate::app::AppState;
-use crate::docs;
+use crate::{docs, mcp};
 
 /// The app's routes, before the state is attached.
 ///
@@ -32,6 +32,7 @@ pub fn router(state: AppState) -> Router<AppState> {
         .merge(reports::router(state.clone()))
         .merge(reads::router(state.clone()))
         .merge(issues::router(state.clone()))
-        .merge(admin::router(state));
+        .merge(admin::router(state.clone()))
+        .merge(mcp::router(state));
     docs::router(router)
 }
