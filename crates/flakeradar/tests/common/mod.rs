@@ -43,7 +43,9 @@ pub(crate) fn app(db: &TestDb, pairs: &[(&str, &str)]) -> Router {
 
 /// The app over `db`, with `settings`.
 pub(crate) fn app_with(db: &TestDb, settings: Settings) -> Router {
-    build_app(AppState::new(db.connection().clone(), Arc::new(settings)))
+    build_app(
+        AppState::new(db.connection().clone(), Arc::new(settings)).expect("the app state builds"),
+    )
 }
 
 /// A stand-in for the embedded frontend: the files, bodies and `ETag`s a test hands it.
@@ -99,6 +101,7 @@ pub(crate) fn app_serving(
     files: &[(&'static str, &'static [u8], &'static str)],
 ) -> Router {
     let state = AppState::new(db.connection().clone(), Arc::new(settings(&[])))
+        .expect("the app state builds")
         .with_assets(Arc::new(MemoryAssets::new(files)));
     build_app(state)
 }

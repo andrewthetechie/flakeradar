@@ -1485,11 +1485,14 @@ async fn a_tier_change_reaches_the_webhook_task() {
         .respond_with(ResponseTemplate::new(200))
         .mount(&server)
         .await;
-    let webhook = Arc::new(WebhookWorker::new(
-        vec![format!("{}/hook", server.uri())],
-        WebhookFormat::Json,
-        "",
-    ));
+    let webhook = Arc::new(
+        WebhookWorker::new(
+            vec![format!("{}/hook", server.uri())],
+            WebhookFormat::Json,
+            "",
+        )
+        .expect("the HTTP client builds"),
+    );
     let processing = ProcessingSettings {
         flake_threshold: 0.05,
         score_decay: 0.0,

@@ -9,8 +9,9 @@
 //!
 //! - `github_issue_min_score`: the Flakiness score.
 //! - `github_issue_min_proven_flakes`: the Proven flake count.
-//! - `github_issue_min_failures`: failures in the recent window (for a Job,
-//!   unexplained failures only, because explained failures are the Tests').
+//! - `github_issue_min_failures`: failures in the newest `score_window`
+//!   Executions of any branch (for a Job, unexplained failures only, because
+//!   explained failures are the Tests').
 //! - `github_fixed_streak`, when it is set: a Clean streak *below* the fixed-note
 //!   threshold. A row at that streak has no live flake to file.
 //!
@@ -38,6 +39,8 @@
 //! - After an admin delete, any failure but a rate limit costs that one issue.
 //! - A row deleted between a filing POST and the filer's commit costs that
 //!   filing: the new issue is commented on and closed best effort.
+//! - A store that fails after a filing POST is not a deleted row: the issue stays
+//!   open, the failure is logged with its Repo and number, and the batch stops.
 //! - An unreadable body is logged and the row is stamped, so an unusable link
 //!   keeps rotating instead of pinning the front of the queue.
 //!
@@ -65,9 +68,10 @@ use std::fmt;
 use std::fmt::Write as _;
 use std::ops::ControlFlow;
 
+use anyhow::Context as _;
 use chrono::{DateTime, Utc};
 use flakeradar_core::{JobExecutionOut, JobHistoryOut, MAX_ISSUE_NUMBER, repo_path};
-use flakeradar_db::attribution::{int_array, test_window_ids_sql};
+use flakeradar_db::attribution::{int_array, test_window_ids_overall_sql};
 use flakeradar_db::issue_links::{self, LinkTarget};
 use flakeradar_db::{
     DbError, ProcessOutcome, REPORT_PROCESSED, chunks, get_job, unexplained_failure_counts,
@@ -428,6 +432,8 @@ pub enum BatchStop {
     Unreachable,
     /// The leader lost leadership, so the batch gave up.
     Stopped,
+    /// A filed issue's number could not be stored, so the batch ended with it open.
+    StoreFailed,
 }
 
 /// What one batch did, as a value a caller can assert on.
@@ -542,22 +548,31 @@ impl fmt::Debug for Api {
 
 impl Api {
     /// A client over `base`, presenting `token`.
-    #[must_use]
-    pub fn new(token: Secret, base: &str) -> Self {
-        Self {
-            client: Client::builder()
-                .timeout(std::time::Duration::from_secs(TIMEOUT_SECONDS))
-                .user_agent(format!("flakeradar/{}", env!("CARGO_PKG_VERSION")))
-                .build()
-                .unwrap_or_default(),
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the client cannot be built, which is the TLS backend
+    /// failing to initialize. A client without the timeout would break this
+    /// module's error policy, so none is used.
+    pub fn new(token: Secret, base: &str) -> anyhow::Result<Self> {
+        let client = Client::builder()
+            .timeout(std::time::Duration::from_secs(TIMEOUT_SECONDS))
+            .user_agent(format!("flakeradar/{}", env!("CARGO_PKG_VERSION")))
+            .build()
+            .context("building the GitHub HTTP client")?;
+        Ok(Self {
+            client,
             base: base.trim_end_matches('/').to_owned(),
             token,
-        }
+        })
     }
 
     /// A client against the production REST API.
-    #[must_use]
-    pub fn production(token: Secret) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the client cannot be built; see [`Api::new`].
+    pub fn production(token: Secret) -> anyhow::Result<Self> {
         Self::new(token, API_BASE)
     }
 
@@ -806,23 +821,40 @@ struct NewestFailure {
     commit_sha: String,
     /// The branch that commit is on.
     branch: String,
-    /// The Failure details when there are any, otherwise the Failure message.
+    /// The first non-empty Failure details or message among the failing Executions.
     sample: String,
 }
 
 /// The newest failing Execution among `recent`, or `None` when none failed.
+///
+/// The commit is the newest failing one, while the sample is the first failing
+/// Execution that has any text, which is what the reference's loop over every
+/// failing row leaves behind: a bare `<failure/>` on the newest commit must not
+/// hide the traceback of an older one.
 fn newest_failure(recent: &[RecentExecution]) -> Option<NewestFailure> {
-    let execution = recent
+    let mut newest: Option<&RecentExecution> = None;
+    let mut sample: Option<&str> = None;
+    for execution in recent
         .iter()
-        .find(|execution| is_failing(&execution.status))?;
+        .filter(|execution| is_failing(&execution.status))
+    {
+        newest.get_or_insert(execution);
+        if sample.is_none() {
+            let text = execution
+                .details
+                .as_deref()
+                .filter(|details| !details.is_empty())
+                .unwrap_or(&execution.message);
+            if !text.is_empty() {
+                sample = Some(text);
+            }
+        }
+    }
+    let newest = newest?;
     Some(NewestFailure {
-        commit_sha: execution.commit_sha.clone(),
-        branch: execution.branch.clone(),
-        sample: execution
-            .details
-            .clone()
-            .filter(|details| !details.is_empty())
-            .unwrap_or_else(|| execution.message.clone()),
+        commit_sha: newest.commit_sha.clone(),
+        branch: newest.branch.clone(),
+        sample: sample.unwrap_or_default().to_owned(),
     })
 }
 
@@ -1071,6 +1103,10 @@ fn outcome_word(execution: &JobExecutionOut) -> &'static str {
 }
 
 /// The failed/error Executions per Test over its newest `window` Executions.
+///
+/// The window is the overall one, with no Default-branch arm: the reference's
+/// `_window_failures` passes no `include_default_branch`, so older Default-branch
+/// failures that the newest `window` Executions no longer reach do not count.
 async fn window_failures(
     db: &impl ConnectionTrait,
     test_ids: &[i32],
@@ -1081,15 +1117,10 @@ async fn window_failures(
         let sql = format!(
             "SELECT e.test_case_id, e.status FROM test_executions e \
              WHERE e.id IN (SELECT w.id FROM ({}) AS w)",
-            test_window_ids_sql()
+            test_window_ids_overall_sql()
         );
         let window = i64::try_from(window).unwrap_or(i64::MAX);
-        let values = vec![
-            int_array(chunk),
-            QueryValue::from(window),
-            int_array(chunk),
-            QueryValue::from(window),
-        ];
+        let values = vec![int_array(chunk), QueryValue::from(window)];
         for row in rows(db, sql, values).await? {
             let status: String = get(&row, "status")?;
             if is_failing(&status) {
@@ -1313,15 +1344,25 @@ pub async fn file_job_issues_for(
     }
     let mut batch = Vec::new();
     for candidate in candidates {
-        let history = get_job(
+        let history = match get_job(
             db,
             i64::from(candidate.job.id),
             &settings.reads(),
             i64::try_from(BODY_EXECUTIONS).unwrap_or(10),
         )
         .await
-        .ok()
-        .flatten();
+        {
+            Ok(history) => history,
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    repo = %candidate.repo,
+                    entity_id = candidate.job.id,
+                    "GitHub issue filing could not read a Job's Executions"
+                );
+                None
+            }
+        };
         let title = job_title(&candidate.pipeline, &candidate.job.name);
         let body = job_issue_body(
             &candidate.job,
@@ -1396,34 +1437,11 @@ async fn file_batch(
         let verdict = answer.classify(Success::Created);
         match action(Operation::File, verdict) {
             Action::Use => {
-                if let Some(number) = answer.issue_number() {
-                    if !commit_filed_link(db, &request, number).await {
-                        // The row vanished mid-filing: the number is referenced
-                        // nowhere, so close the issue just created, best effort.
-                        let _ = close_issues_for_deleted_repo(&request.repo, &[number], api).await;
-                        tracing::warn!(
-                            entity,
-                            entity_id = request.entity_id,
-                            repo = %request.repo,
-                            number,
-                            "row deleted (admin delete) while filing; closed the new issue"
-                        );
-                        continue;
-                    }
-                    report.linked.insert(request.entity_id);
-                    tracing::info!(
-                        repo = %request.repo,
-                        number,
-                        entity,
-                        entity_id = request.entity_id,
-                        "filed a GitHub issue"
-                    );
-                } else {
-                    tracing::warn!(
-                        repo = %request.repo,
-                        body = %answer.short_text(),
-                        "GitHub issue creation returned 201 with no issue number"
-                    );
+                if let ControlFlow::Break(stop) =
+                    record_filed(db, &request, &answer, entity, api, &mut report).await
+                {
+                    report.stopped = Some(stop);
+                    break;
                 }
             }
             Action::Stop => {
@@ -1458,22 +1476,92 @@ async fn file_batch(
     report
 }
 
-/// Stores the number GitHub just created, answering whether the row was still there.
+/// What storing one filed issue's number found.
+#[derive(Debug)]
+enum FiledLink {
+    /// The number is stored on the row.
+    Stored,
+    /// The row was deleted between the filing `POST` and this store.
+    RowGone,
+    /// The store failed, so the row may still be there and the issue is live.
+    StoreFailed(DbError),
+}
+
+/// Records one filed issue's outcome, answering where the batch goes next.
+///
+/// A store that fails is not a deleted row: the issue stays open, and the batch
+/// ends. Only a vanished row closes the issue just created.
+async fn record_filed(
+    db: &(impl ConnectionTrait + TransactionTrait),
+    request: &FileRequest,
+    answer: &Answer,
+    entity: &str,
+    api: &Api,
+    report: &mut BatchReport,
+) -> ControlFlow<BatchStop> {
+    let Some(number) = answer.issue_number() else {
+        tracing::warn!(
+            repo = %request.repo,
+            body = %answer.short_text(),
+            "GitHub issue creation returned 201 with no issue number"
+        );
+        return ControlFlow::Continue(());
+    };
+    match commit_filed_link(db, request, number).await {
+        FiledLink::Stored => {
+            report.linked.insert(request.entity_id);
+            tracing::info!(
+                repo = %request.repo,
+                number,
+                entity,
+                entity_id = request.entity_id,
+                "filed a GitHub issue"
+            );
+        }
+        FiledLink::RowGone => {
+            // The row vanished mid-filing: the number is referenced nowhere, so
+            // close the issue just created, best effort.
+            let _ = close_issues_for_deleted_repo(&request.repo, &[number], api).await;
+            tracing::warn!(
+                entity,
+                entity_id = request.entity_id,
+                repo = %request.repo,
+                number,
+                "row deleted (admin delete) while filing; closed the new issue"
+            );
+        }
+        FiledLink::StoreFailed(error) => {
+            // The reference lets this error propagate: the issue just created stays
+            // open, and the batch ends here.
+            tracing::error!(
+                error = %error,
+                entity,
+                entity_id = request.entity_id,
+                repo = %request.repo,
+                number,
+                "GitHub filing could not store its link; the issue stays open and the \
+                 batch stops"
+            );
+            return ControlFlow::Break(BatchStop::StoreFailed);
+        }
+    }
+    ControlFlow::Continue(())
+}
+
+/// Stores the number GitHub just created, reporting what became of the row.
 ///
 /// A savepoint, so a row deleted under us by an admin delete costs only this
 /// filing rather than the rest of the batch; a vanished row is an `UPDATE` with
-/// no affected row.
+/// no affected row. A failed store is neither: the row may still exist, so the
+/// caller must not treat it as gone.
 async fn commit_filed_link(
     db: &(impl ConnectionTrait + TransactionTrait),
     request: &FileRequest,
     number: i32,
-) -> bool {
+) -> FiledLink {
     let savepoint = match db.begin().await {
         Ok(savepoint) => savepoint,
-        Err(error) => {
-            tracing::warn!(error = %error, "GitHub filing could not open a savepoint");
-            return false;
-        }
+        Err(error) => return FiledLink::StoreFailed(DbError::Database(error)),
     };
     let stored = issue_links::store_filed_link(
         &savepoint,
@@ -1484,22 +1572,21 @@ async fn commit_filed_link(
     .await;
     // A vanished row is an UPDATE that affected no row: the admin delete won the
     // race, so the number is referenced nowhere and the new issue is stranded.
-    let exists = match stored {
-        Ok(affected) => affected > 0,
+    let affected = match stored {
+        Ok(affected) => affected,
         Err(error) => {
-            tracing::warn!(error = %error, "GitHub filing could not store its link");
-            false
+            let _ = savepoint.rollback().await;
+            return FiledLink::StoreFailed(error);
         }
     };
-    if !exists {
+    if affected == 0 {
         let _ = savepoint.rollback().await;
-        return false;
+        return FiledLink::RowGone;
     }
     if let Err(error) = savepoint.commit().await {
-        tracing::warn!(error = %error, "GitHub filing could not commit its link");
-        return false;
+        return FiledLink::StoreFailed(DbError::Database(error));
     }
-    true
+    FiledLink::Stored
 }
 
 /// Re-arms deduplication for Tests and Jobs whose GitHub issue has been closed.

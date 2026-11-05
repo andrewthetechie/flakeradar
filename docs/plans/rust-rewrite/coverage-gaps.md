@@ -72,7 +72,12 @@ Task 14 works through this list and closes what it can. Task 15 files a follow-o
 | 10 | `crates/flakeradar/src/routes/issues.rs` | `IssueRouteError::into_response` | unreachable arm | `StatusCode::from_u16(error.status()).unwrap_or(StatusCode::UNPROCESSABLE_ENTITY)`: `IssueLinkError::status` answers 404, 409 or 422 only, so the fallback cannot be taken (line 78 is covered; the unreachable part is the closure's body) | — |
 | 10 | `crates/flakeradar/src/routes/admin.rs` | `From<DbError>`, `From<DbErr> for AdminRouteError` | dead conversion | No caller: every delete fails with `DeleteError`, which has its own conversion (covered by the deadlock and 503 tests), and the extractors answer themselves | — |
 | 10 | `crates/flakeradar/src/github.rs` | `get` | unreached arm | The `.map_err` on a column read. Every column is named by the statement that selected it, so only a schema change fails it; the same shape as task 07's `processing.rs` row | — |
-| 10 | `crates/flakeradar/src/github.rs` | `commit_filed_link` | unreached arms | The savepoint's start, its link `UPDATE` and its commit each failing (1474-1475, 1490-1491, 1499-1500). Each needs the driver to fail between statements of a filing that is already in progress | — |
+| 10 | `crates/flakeradar/src/github.rs` | `commit_filed_link` | unreached arms | The savepoint's start (1563) and its commit (1586) failing, each needing the driver to fail between statements of a filing that is already in progress. Task 18 covered the third arm this row used to name, the link `UPDATE` itself failing: `a_store_failure_leaves_the_issue_open_and_stops_the_batch` raises from a `BEFORE UPDATE` trigger | — |
+| 18 | `crates/flakeradar/src/github.rs` | `Api::new`, `Api::production` | unreachable arm | The error the client builder answers, which is the TLS backend failing to initialize. No test can make a healthy backend fail, so the `?` that carries it never runs; the success path is taken by every GitHub test, and the constructor is what turns the failure into an error instead of a client without its timeout | — |
+| 18 | `crates/flakeradar/src/webhooks.rs` | `WebhookWorker::new`, `with_retry_delays` | unreachable arm | The same builder failure on the Notification client, for the reason the `Api::new` row gives | — |
+| 18 | `crates/flakeradar/src/app.rs` | `AppState::new` | unreachable arm | The `?` that carries `Api::production`'s failure, which the two rows above make unreachable in a test | — |
+| 18 | `crates/flakeradar/src/server.rs` | `Server::start`, `webhook_task` | unreachable arm | The two `?`s that carry those constructor errors out of the lifespan. Same reason; every other line of both functions is covered by `tests/server.rs` and the `webhook_task` unit test | — |
+| 18 | `crates/flakeradar/tests/ops.rs` | test helper `logged_from`'s `Sink` | test-only arm | Its `flush` body, for the reason the `tests/app.rs` sink row gives: `tracing_subscriber`'s fmt layer never flushes a writer from `MakeWriter`. The helper's other lines are covered by `metrics_logs_the_error_it_answers_503_for` | — |
 | 10 | `crates/flakeradar/src/github.rs` | `sync_closed_issues`, `record_check` | unreached arm | The write of one row's check failing (1669), which needs the driver to fail on the statement that follows the `GET`. A dropped table reaches the rotation-list read (`a_sync_whose_rotation_list_cannot_be_read_makes_no_request`). Task 17 removed the transaction this row used to name: the sync now reads its list and writes each row with no statement open across a `GET`, so the four per-row writes this list used to name separately (a stamp, a kept `not_planned` link, a re-arm and a cleared flag) are one statement, `issue_links::record_check`, reached through this one call | — |
 | 10 | `crates/flakeradar/src/github.rs` | `stamp_note` | unreached arm | The fixed-note stamp write failing (2020-2021), which needs the driver to fail on the `UPDATE` that follows the comment `POST`. The two candidate reads this row used to name are covered now: `a_candidate_read_that_fails_logs_and_reports_an_empty_batch` drops the tables and asserts both note entry points answer an empty `BatchReport`, since task 17 made that path return the batch rather than only logging | — |
 | 10 | `crates/flakeradar/src/github.rs` | every `tracing::…!` event | measurement artifact | The field-argument and message lines of the events in `BatchReport::log`, `file_batch`, `clear_if_closed`, `sync_decision`, `close_issues_for_deleted_repo`, `note_batch`, `stamp_note`, `log_note_stamp_failure` and `close_note`. `tracing` evaluates them lazily inside the macro, so `llvm-cov` counts them zero although the event fires; every event's statement line is covered, and the log-capture tests in `tests/github.rs` pin the message text. The numbers are not listed because every rewrite of this file moves them | — |
@@ -143,3 +148,18 @@ finish — and so are the four stop arms in `github.rs` (`file_batch`, `clear_if
 `None` arms (row 08, whose line numbers moved to 370-371), `github_worker.rs`'s `Arc::get_mut`
 (row 10), `webhooks.rs`'s `post` field-argument lines and its test sink's `flush` (rows 10), and
 `github.rs`'s own artifact and schema-change rows (row 10).
+
+## Task 18: no new line uncovered, five unreachable client-build arms
+
+Measured with `cargo +nightly-2026-10-25 llvm-cov nextest --branch --all-features --profile ci`:
+**lines 97.17%** (14067 of 14477) and **branches 95.38%** (1074 of 1126), regions 93.01% and
+functions 96.60%. `coverage-floor.json` stays `{"lines": 96, "branches": 94}` and the gate passes
+at them.
+
+Every line this task adds is covered except the two `commit_filed_link` arms row 10 already names,
+and a new test covers the third arm that row used to include. The four files whose constructors
+now return the client-build error (`github.rs`, `webhooks.rs`, `app.rs`, `server.rs`) add five
+rows above: none of those arms can run in a test because a working TLS backend is what a test
+process has. The `github.rs` field-argument artifact row also covers the three events this task
+added or moved (`record_filed`'s three outcomes and `file_job_issues_for`'s unreadable-history
+warning), all of which a log-capture test proves fires.

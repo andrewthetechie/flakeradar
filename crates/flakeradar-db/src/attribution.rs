@@ -65,6 +65,19 @@ pub fn test_window_ids_sql() -> &'static str {
      ) AS w"
 }
 
+/// The newest `window` Test-execution ids per Test, any branch: the first arm of
+/// [`test_window_ids_sql`] alone. Binds `$1` ids and `$2` window.
+#[must_use]
+pub fn test_window_ids_overall_sql() -> &'static str {
+    "SELECT u.test_case_id, l.id \
+       FROM unnest($1::INTEGER[]) AS u(test_case_id) \
+       JOIN LATERAL ( \
+         SELECT e.id FROM test_executions e \
+          WHERE e.test_case_id = u.test_case_id \
+          ORDER BY e.id DESC LIMIT $2::INTEGER \
+       ) AS l ON true"
+}
+
 /// The newest `window` Job-execution ids per Job, the Job twin of
 /// [`test_window_ids_sql`] and the statement measured in
 /// `docs/perf/21-job-rescore-explain.md`. Binds are the same four.

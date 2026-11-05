@@ -53,7 +53,7 @@ fn unstopped() -> CancellationToken {
 
 /// A client pointed at the stub server.
 fn api(server: &MockServer) -> Api {
-    Api::new(Secret::new(TOKEN), &server.uri())
+    Api::new(Secret::new(TOKEN), &server.uri()).expect("the HTTP client builds")
 }
 
 /// The settings a fixed-note test runs with.
@@ -200,7 +200,7 @@ async fn no_token_is_a_silent_no_op() {
     let test = flaky_test(&db).await;
     let server = MockServer::start().await;
     let settings = Settings::from_map(&std::collections::BTreeMap::new()).expect("the defaults");
-    let api = Api::new(Secret::new(""), &server.uri());
+    let api = Api::new(Secret::new(""), &server.uri()).expect("the HTTP client builds");
 
     let filed =
         github::file_issues_for(db.connection(), &[test], &settings, &api, &unstopped()).await;
@@ -700,11 +700,73 @@ async fn a_row_deleted_while_filing_closes_the_issue_it_just_created() {
 }
 
 #[tokio::test]
+async fn a_store_failure_leaves_the_issue_open_and_stops_the_batch() {
+    let db = TestDb::new().await.expect("a test database");
+    let first = flaky_test_in(&db, "acme/app", "p1", "one").await;
+    let second = flaky_test_in(&db, "acme/app", "p2", "two").await;
+    let server = MockServer::start().await;
+    mount_create(
+        &server,
+        ResponseTemplate::new(201).set_body_json(json!({"number": 7})),
+    )
+    .await;
+    // The store itself fails: a trigger that raises is what a broken write does, and
+    // a savepoint cannot save a statement the server refuses.
+    db.connection()
+        .execute_raw(Statement::from_string(
+            DbBackend::Postgres,
+            "CREATE FUNCTION fail_link() RETURNS trigger AS $$ BEGIN \
+             RAISE EXCEPTION 'the link store is broken'; END; $$ LANGUAGE plpgsql"
+                .to_owned(),
+        ))
+        .await
+        .expect("the failing trigger installs");
+    db.connection()
+        .execute_raw(Statement::from_string(
+            DbBackend::Postgres,
+            "CREATE TRIGGER fail_link BEFORE UPDATE ON test_cases \
+             FOR EACH ROW EXECUTE FUNCTION fail_link()"
+                .to_owned(),
+        ))
+        .await
+        .expect("the failing trigger installs");
+
+    let logged = logged_from(async {
+        let filed = github::file_issues_for(
+            db.connection(),
+            &[first, second],
+            &gh_settings(&[]),
+            &api(&server),
+            &unstopped(),
+        )
+        .await;
+        assert!(filed.linked.is_empty(), "a failed store links nothing");
+        assert_eq!(
+            filed.stopped,
+            Some(github::BatchStop::StoreFailed),
+            "the batch reports why it ended"
+        );
+    })
+    .await;
+    assert_eq!(
+        requested_paths(&server).await,
+        vec!["/repos/acme/app/issues"],
+        "the issue that was created stays open: no comment and no close"
+    );
+    assert_eq!(test_link(&db, first).await.0, None);
+    assert_eq!(test_link(&db, second).await.0, None);
+    let errors = lines_with(&logged, "could not store its link");
+    assert_eq!(errors.len(), 1, "{logged}");
+    assert!(errors[0].contains("acme/app"), "{logged}");
+    assert!(errors[0].contains('7'), "{logged}");
+}
+
+#[tokio::test]
 async fn a_network_error_never_raises() {
     let db = TestDb::new().await.expect("a test database");
     let test = flaky_test(&db).await;
     // Nothing listens on this port.
-    let api = Api::new(Secret::new(TOKEN), "http://127.0.0.1:1");
+    let api = Api::new(Secret::new(TOKEN), "http://127.0.0.1:1").expect("the HTTP client builds");
 
     let filed = github::file_issues_for(
         db.connection(),
@@ -1111,7 +1173,7 @@ async fn nothing_configured_syncs_nothing() {
     github::sync_closed_issues(
         db.connection(),
         &settings,
-        &Api::new(Secret::new(""), &server.uri()),
+        &Api::new(Secret::new(""), &server.uri()).expect("the HTTP client builds"),
         &unstopped(),
     )
     .await;
@@ -1470,6 +1532,100 @@ fn the_last_failing_commit_has_no_branch_clause_when_no_branch_was_reported() {
     );
 }
 
+/// The reference's body for `S7`'s input, generated from `_issue_body` at 86c98804.
+///
+/// The input is a `<failure message="boom older">` with details, then a bare
+/// `<failure/>` on the next commit, then a pass on that same commit. The newest
+/// failing row carries no text, so the sample comes from the older one.
+const S7_BODY: &str = "FlakeRadar detected a flaky test: `tests.test_cart::test_total`
+
+- **Repo / project:** `acme/app` / `backend`
+- **Location:** `backend/tests/test_cart.py` line 12
+- **Permalink (last failing commit):** https://github.com/acme/app/blob/s2/backend/tests/test_cart.py#L12
+- **Flakiness score:** 0.50 (filed at ≥ 0.30)
+- **Proven flakes (same commit failed *and* passed):** 2
+- **Suite / classname:** `unit` / `tests.test_cart`
+- **Last failing commit:** `s2` on branch `main`
+
+FlakeRadar flags this test because it reports nondeterministic results (a failure gives way to a
+pass on identical code). To reproduce it locally:
+
+```
+pytest backend/tests/test_cart.py::test_total
+```
+
+Then look in the traceback below for a shared resource the test depends on: timing, execution
+order, shared/global state, or the network. Re-run the test several times to confirm.
+
+### Last 10 executions
+
+| Status | Commit | Branch | When (UTC) |
+|---|---|---|---|
+| passed | `s2` | main | 2026-03-04 05:23 |
+| failed | `s2` | main | 2026-03-04 05:22 |
+| failed | `s1` | main | 2026-03-04 05:11 |
+
+### Sample failure
+
+```
+older details
+```
+
+_Fingerprint: `abc123`_";
+
+#[test]
+fn the_body_matches_the_reference_byte_for_byte() {
+    let test = TestRow {
+        id: 1,
+        classname: "tests.test_cart".to_owned(),
+        name: "test_total".to_owned(),
+        suite: "unit".to_owned(),
+        file: Some("tests/test_cart.py".to_owned()),
+        line: Some(12),
+        fingerprint: "abc123".to_owned(),
+        flakiness_score: 0.5,
+        confirmed_flake_count: 2,
+    };
+    let at = |minute| {
+        chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2026, 3, 4, 5, minute, 0).unwrap()
+    };
+    let recent = [
+        RecentExecution {
+            status: "passed".to_owned(),
+            message: String::new(),
+            details: Some(String::new()),
+            commit_sha: "s2".to_owned(),
+            branch: "main".to_owned(),
+            created_at: at(23),
+        },
+        RecentExecution {
+            status: "failed".to_owned(),
+            message: String::new(),
+            details: Some(String::new()),
+            commit_sha: "s2".to_owned(),
+            branch: "main".to_owned(),
+            created_at: at(22),
+        },
+        RecentExecution {
+            status: "failed".to_owned(),
+            message: "boom older".to_owned(),
+            details: Some("older details".to_owned()),
+            commit_sha: "s1".to_owned(),
+            branch: "main".to_owned(),
+            created_at: at(11),
+        },
+    ];
+    let body = github::test_issue_body(
+        &test,
+        &recent,
+        "acme/app",
+        "backend",
+        "backend",
+        &gh_settings(&[]),
+    );
+    assert_eq!(body, S7_BODY);
+}
+
 #[tokio::test]
 async fn the_run_hint_follows_the_file_extension() {
     for (path, expected) in [
@@ -1514,7 +1670,7 @@ async fn a_candidate_read_that_fails_logs_and_reports_an_empty_batch() {
         .execute_unprepared("DROP TABLE test_cases, jobs CASCADE")
         .await
         .expect("the tables are dropped");
-    let api = Api::new(Secret::new(TOKEN), "http://127.0.0.1:1");
+    let api = Api::new(Secret::new(TOKEN), "http://127.0.0.1:1").expect("the HTTP client builds");
 
     let fired = github::file_issues_for(
         db.connection(),
@@ -1635,7 +1791,8 @@ fn the_fixed_comment_links_a_job_to_the_job_view() {
 
 #[test]
 fn an_api_never_prints_its_token() {
-    let api = Api::new(Secret::new(TOKEN), "https://api.github.com");
+    let api =
+        Api::new(Secret::new(TOKEN), "https://api.github.com").expect("the HTTP client builds");
     let debug = format!("{api:?}");
     assert!(debug.contains("https://api.github.com"), "{debug}");
     assert!(
@@ -1651,7 +1808,7 @@ async fn a_token_the_header_cannot_carry_goes_out_with_no_credentials() {
     mount_close(&server, 123, 200, true).await;
     // A newline cannot be part of a header value, so `Bearer <token>` is no
     // header at all: the request still goes out, carrying no credentials.
-    let api = Api::new(Secret::new("tok\nen"), &server.uri());
+    let api = Api::new(Secret::new("tok\nen"), &server.uri()).expect("the HTTP client builds");
 
     let logged = logged_from(github::close_issues_for_deleted_repo(
         "acme/app",
@@ -2934,6 +3091,131 @@ async fn only_the_newest_window_counts_a_failure() {
 }
 
 #[tokio::test]
+async fn the_failure_gate_counts_the_overall_window_only() {
+    let db = TestDb::new().await.expect("a test database");
+    let project = make_project()
+        .repo("acme/app")
+        .project("p")
+        .build(db.connection())
+        .await
+        .expect("the Project inserts");
+    // A known Default branch, so a union with the Default-branch window would add
+    // rows the overall window does not hold.
+    db.connection()
+        .execute_raw(Statement::from_string(
+            DbBackend::Postgres,
+            "UPDATE repos SET default_branch = 'main' WHERE name = 'acme/app'".to_owned(),
+        ))
+        .await
+        .expect("the Default branch writes");
+    let test = make_test_case(&project)
+        .name("old_main_failures")
+        .flakiness_score(0.5)
+        .confirmed_flake_count(0)
+        .build(db.connection())
+        .await
+        .expect("the Test inserts");
+    let main = make_run(&project)
+        .commit_sha("main1")
+        .branch("main")
+        .build(db.connection())
+        .await
+        .expect("the Run inserts");
+    // Five older failures on the Default branch, all outside the newest five.
+    for _ in 0..5 {
+        make_execution(&test, &main)
+            .status("failed")
+            .details("boom")
+            .build(db.connection())
+            .await
+            .expect("the Execution inserts");
+    }
+    let feature = make_run(&project)
+        .commit_sha("feat1")
+        .branch("feat")
+        .build(db.connection())
+        .await
+        .expect("the Run inserts");
+    // The newest five executions hold one failure and four passes, on a feature
+    // branch: the reference counts this window alone, so the gate of two is missed.
+    for status in ["failed", "passed", "passed", "passed", "passed"] {
+        make_execution(&test, &feature)
+            .status(status)
+            .build(db.connection())
+            .await
+            .expect("the Execution inserts");
+    }
+    let server = MockServer::start().await;
+    mount_create(
+        &server,
+        ResponseTemplate::new(201).set_body_json(json!({"number": 91})),
+    )
+    .await;
+    let settings = gh_settings(&[
+        ("FLAKERADAR_GITHUB_ISSUE_MIN_FAILURES", "2"),
+        ("FLAKERADAR_SCORE_WINDOW", "5"),
+    ]);
+
+    let filed = github::file_issues_for(
+        db.connection(),
+        &[test.id],
+        &settings,
+        &api(&server),
+        &unstopped(),
+    )
+    .await;
+    assert!(
+        filed.linked.is_empty(),
+        "one failure in the overall window is under a gate of two"
+    );
+    assert!(
+        requested_paths(&server).await.is_empty(),
+        "no issue is filed for a Test the reference gate refuses"
+    );
+}
+
+#[tokio::test]
+async fn a_job_history_that_cannot_be_read_is_logged_and_the_issue_still_files() {
+    let db = TestDb::new().await.expect("a test database");
+    let job = flaky_job(&db).await;
+    let server = MockServer::start().await;
+    mount_create(
+        &server,
+        ResponseTemplate::new(201).set_body_json(json!({"number": 8})),
+    )
+    .await;
+    // The Job's evidence cannot be read, so the body is filed without it.
+    db.connection()
+        .execute_unprepared("DROP TABLE job_executions CASCADE")
+        .await
+        .expect("the Job executions table is dropped");
+
+    let logged = logged_from(async {
+        let filed = github::file_job_issues_for(
+            db.connection(),
+            &[job],
+            &gh_settings(&[]),
+            &api(&server),
+            &unstopped(),
+        )
+        .await;
+        assert_eq!(
+            filed.linked.into_iter().collect::<Vec<_>>(),
+            vec![job],
+            "a Job it could not read the evidence for is still filed"
+        );
+    })
+    .await;
+    let warnings = lines_with(&logged, "could not read a Job's Executions");
+    assert_eq!(warnings.len(), 1, "the dropped error is logged: {logged}");
+    assert!(warnings[0].contains("acme/app"), "{logged}");
+    assert!(
+        warnings[0].contains(&format!("entity_id={job}")),
+        "{logged}"
+    );
+}
+
+#[tokio::test]
 async fn a_huge_id_list_stays_under_the_bind_limit() {
     let db = TestDb::new().await.expect("a test database");
     let test = flaky_test_in(&db, "acme/app", "backend", "t").await;
@@ -3327,7 +3609,7 @@ async fn a_job_filing_without_a_token_is_silent() {
     let job = flaky_job_in(&db, "acme/app", ".github/workflows/ci.yml", "unit").await;
     let server = MockServer::start().await;
     let settings = Settings::from_map(&std::collections::BTreeMap::new()).expect("the defaults");
-    let api = Api::new(Secret::new(""), &server.uri());
+    let api = Api::new(Secret::new(""), &server.uri()).expect("the HTTP client builds");
 
     assert!(
         github::file_job_issues_for(db.connection(), &[job], &settings, &api, &unstopped())
@@ -3583,7 +3865,7 @@ async fn a_sync_stops_at_a_transport_error_with_one_request() {
     let report = github::sync_closed_issues(
         db.connection(),
         &gh_settings(&[]),
-        &Api::new(Secret::new(TOKEN), &loopback.base),
+        &Api::new(Secret::new(TOKEN), &loopback.base).expect("the HTTP client builds"),
         &unstopped(),
     )
     .await;
@@ -4133,7 +4415,7 @@ async fn deleting_a_repo_comments_then_closes_each_issue() {
     github::close_issues_for_deleted_repo(
         "acme/app",
         &[123],
-        &Api::new(Secret::new(""), &empty.uri()),
+        &Api::new(Secret::new(""), &empty.uri()).expect("the HTTP client builds"),
     )
     .await;
     assert!(
@@ -4235,7 +4517,7 @@ async fn a_failed_post_delete_request_costs_only_that_issue() {
 #[tokio::test]
 async fn the_post_delete_close_never_raises_when_github_is_unreachable() {
     // Nothing listens on this port.
-    let api = Api::new(Secret::new(TOKEN), "http://127.0.0.1:1");
+    let api = Api::new(Secret::new(TOKEN), "http://127.0.0.1:1").expect("the HTTP client builds");
     let logged = logged_from(github::close_issues_for_deleted_repo(
         "acme/app",
         &[123],
@@ -4497,7 +4779,7 @@ async fn a_body_that_dies_after_the_status_line_is_a_transport_error() {
     // the answer is unusable: the step must fail rather than read a short text
     // and report what it guessed from it.
     let loopback = Loopback::answering(TRUNCATED.to_owned()).await;
-    let api = Api::new(Secret::new(TOKEN), &loopback.base);
+    let api = Api::new(Secret::new(TOKEN), &loopback.base).expect("the HTTP client builds");
 
     let logged = logged_from(github::close_issues_for_deleted_repo(
         "acme/app",
@@ -4531,7 +4813,7 @@ async fn a_post_delete_close_whose_connection_dies_costs_that_issue() {
     // The comment lands, then the close's connection is dropped before it
     // answers: that one issue is lost and the batch goes on.
     let loopback = Loopback::answering(CREATED.to_owned()).await;
-    let api = Api::new(Secret::new(TOKEN), &loopback.base);
+    let api = Api::new(Secret::new(TOKEN), &loopback.base).expect("the HTTP client builds");
 
     let logged = logged_from(github::close_issues_for_deleted_repo(
         "acme/app",
@@ -4968,7 +5250,7 @@ async fn a_note_network_error_is_logged_and_never_raises() {
     stamp_link(&db, test, 77, true, false).await;
     set_clean_streak(&db, "test_cases", test, 3).await;
     // Nothing listens on this port.
-    let api = Api::new(Secret::new(TOKEN), "http://127.0.0.1:1");
+    let api = Api::new(Secret::new(TOKEN), "http://127.0.0.1:1").expect("the HTTP client builds");
 
     let logged = logged_from(github::note_fixed_issues_for(
         db.connection(),
@@ -5004,7 +5286,7 @@ async fn a_transport_error_on_a_fixed_note_close_ends_the_batch() {
         db.connection(),
         &[first, second],
         &settings,
-        &Api::new(Secret::new(TOKEN), &loopback.base),
+        &Api::new(Secret::new(TOKEN), &loopback.base).expect("the HTTP client builds"),
         &unstopped(),
     )
     .await;
@@ -5037,7 +5319,7 @@ async fn a_fixed_note_close_whose_connection_dies_keeps_the_stamp() {
     set_clean_streak(&db, "test_cases", test, 3).await;
     // The comment lands, then the close's connection is dropped before it answers.
     let loopback = Loopback::answering(CREATED.to_owned()).await;
-    let api = Api::new(Secret::new(TOKEN), &loopback.base);
+    let api = Api::new(Secret::new(TOKEN), &loopback.base).expect("the HTTP client builds");
     let settings = fixed_settings(&[("FLAKERADAR_GITHUB_CLOSE_FIXED", "true")]);
 
     let logged = logged_from(github::note_fixed_issues_for(

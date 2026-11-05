@@ -219,13 +219,16 @@ fn out_for(
 }
 
 /// Applies the written link to the response shape, as the reference's ORM object did.
-fn patched_out(mut out: LinkedOut, repo: &str, number: Option<i32>, closed: bool) -> LinkedOut {
-    let number = number.map(i64::from);
+///
+/// Every field comes from the state this call wrote, so a re-link of the same
+/// number answers the `github_issue_closed` the row still holds.
+fn patched_out(mut out: LinkedOut, repo: &str, state: LinkState) -> LinkedOut {
+    let number = state.number.map(i64::from);
     match &mut out {
         LinkedOut::Test(test) => {
             test.github_issue_number = number;
             test.github_issue_url = issue_url(repo, number);
-            test.github_issue_closed = closed;
+            test.github_issue_closed = state.closed;
         }
         LinkedOut::Job(job) => {
             job.github_issue_number = number;
@@ -234,7 +237,7 @@ fn patched_out(mut out: LinkedOut, repo: &str, number: Option<i32>, closed: bool
             } else {
                 None
             };
-            job.github_issue_closed = closed;
+            job.github_issue_closed = state.closed;
         }
     }
     out
@@ -341,12 +344,7 @@ pub async fn link_issue(
         previous = ?current.number,
         "linked a GitHub issue"
     );
-    Ok(patched_out(
-        out_for(target, &row, settings)?,
-        &repo,
-        stored.number,
-        false,
-    ))
+    Ok(patched_out(out_for(target, &row, settings)?, &repo, stored))
 }
 
 /// Removes one Test's or Job's link: the one unlink engine.
@@ -376,18 +374,13 @@ pub async fn unlink_issue(
     let previous = link_state(&row)?.number;
     // Both halves go unconditionally: with no number there is nothing for the
     // rotation to look up, so a stamp left behind only misleads.
-    write_link(
-        &transaction,
-        target,
-        target_id,
-        LinkState {
-            number: None,
-            checked_at: None,
-            closed: false,
-            fixed_noted_at: None,
-        },
-    )
-    .await?;
+    let cleared = LinkState {
+        number: None,
+        checked_at: None,
+        closed: false,
+        fixed_noted_at: None,
+    };
+    write_link(&transaction, target, target_id, cleared).await?;
     transaction.commit().await?;
     if let Some(previous) = previous {
         tracing::info!(
@@ -401,8 +394,7 @@ pub async fn unlink_issue(
     Ok(patched_out(
         out_for(target, &row, settings)?,
         &repo,
-        None,
-        false,
+        cleared,
     ))
 }
 

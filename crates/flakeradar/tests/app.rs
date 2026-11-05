@@ -96,7 +96,8 @@ async fn a_route_that_needs_the_token_refuses_a_missing_or_wrong_one() {
     let state = AppState::new(
         db.connection().clone(),
         std::sync::Arc::new(settings(&[("FLAKERADAR_API_TOKEN", "right-token")])),
-    );
+    )
+    .expect("the app state builds");
     let app = axum::Router::new()
         .route("/guarded", axum::routing::get(|| async { "opened" }))
         .route_layer(axum::middleware::from_fn_with_state(
@@ -240,7 +241,8 @@ async fn the_json_body_limit_is_twenty_megabytes() {
     let state = AppState::new(
         db.connection().clone(),
         std::sync::Arc::new(settings.clone()),
-    );
+    )
+    .expect("the app state builds");
     let app = flakeradar::with_common_layers(
         axum::Router::new().route(
             "/echo",
@@ -273,7 +275,8 @@ async fn the_app_is_built_over_the_state_it_is_given() {
     let state = AppState::new(
         db.connection().clone(),
         std::sync::Arc::new(settings(&[("FLAKERADAR_API_TOKEN", "t")])),
-    );
+    )
+    .expect("the app state builds");
     let app = build_app(state);
     let reply = get(&app, "/api/health").await;
     assert_eq!(reply.status, StatusCode::OK);

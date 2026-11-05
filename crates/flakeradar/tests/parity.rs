@@ -245,10 +245,10 @@ async fn every_scenario_replays_identically() {
         let name = scenario.name.clone();
         let db = TestDb::new().await.expect("a test database is available");
         let settings = settings_for(&scenario, &db);
-        let app = build_app(AppState::new(
-            db.connection().clone(),
-            Arc::new(settings.clone()),
-        ));
+        let app = build_app(
+            AppState::new(db.connection().clone(), Arc::new(settings.clone()))
+                .expect("the app state builds"),
+        );
         // The recorded goldens came from a process that ran its Report
         // processor, so the replay runs the real worker over the same database.
         let gate = Arc::new(GatedProcessor::new());
@@ -2088,10 +2088,10 @@ async fn seeded_mcp_app() -> (TestDb, Router) {
     let db = TestDb::new().await.expect("a test database is available");
     let file = scenario("mcp");
     let settings = settings_for(&file, &db);
-    let app = build_app(AppState::new(
-        db.connection().clone(),
-        Arc::new(settings.clone()),
-    ));
+    let app = build_app(
+        AppState::new(db.connection().clone(), Arc::new(settings.clone()))
+            .expect("the app state builds"),
+    );
     // The worker claims nothing until the scenario drains the queue, so the
     // ingest goldens that record a pending Report still replay.
     let gate = Arc::new(GatedProcessor::new());

@@ -38,14 +38,21 @@ const GITHUB_TOKEN: &str = "ghs_super_secret_token";
 /// An app whose GitHub client talks to `base`.
 fn app_with_github(db: &TestDb, base: &str) -> Router {
     let settings = settings(&[("FLAKERADAR_API_TOKEN", TOKEN)]);
-    let api = Api::new(flakeradar::settings::Secret::new(GITHUB_TOKEN), base);
-    build_app(AppState::new(db.connection().clone(), Arc::new(settings)).with_github(api))
+    let api = Api::new(flakeradar::settings::Secret::new(GITHUB_TOKEN), base)
+        .expect("the HTTP client builds");
+    build_app(
+        AppState::new(db.connection().clone(), Arc::new(settings))
+            .expect("the app state builds")
+            .with_github(api),
+    )
 }
 
 /// An app whose GitHub client is configured but points nowhere reachable.
 fn app_without_github(db: &TestDb) -> Router {
     let settings = settings(&[("FLAKERADAR_API_TOKEN", TOKEN)]);
-    build_app(AppState::new(db.connection().clone(), Arc::new(settings)))
+    build_app(
+        AppState::new(db.connection().clone(), Arc::new(settings)).expect("the app state builds"),
+    )
 }
 
 /// Sends one authorized `DELETE`.

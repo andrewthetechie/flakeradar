@@ -95,10 +95,10 @@ async fn seed_pending_reports(db: &DatabaseConnection, count: usize) -> projects
 async fn closed_app() -> Router {
     let db = TestDb::new().await.expect("a test database is available");
     let pool = db.connection().clone();
-    let app = build_app(AppState::new(
-        pool.clone(),
-        std::sync::Arc::new(common::settings(&[])),
-    ));
+    let app = build_app(
+        AppState::new(pool.clone(), std::sync::Arc::new(common::settings(&[])))
+            .expect("the app state builds"),
+    );
     pool.close().await.expect("the pool closes");
     app
 }
@@ -440,4 +440,70 @@ async fn metrics_reports_a_missing_database_with_an_empty_body() {
         reply.header("content-type").as_deref(),
         Some("text/plain; version=0.0.4; charset=utf-8")
     );
+}
+
+#[tokio::test]
+async fn metrics_logs_the_error_it_answers_503_for() {
+    // The scrape answers an empty 503, which alone cannot be told from a quiet
+    // failure; the error behind it names the table that could not be read.
+    let db = TestDb::new().await.expect("a test database is available");
+    db.connection()
+        .execute_raw(Statement::from_string(
+            DbBackend::Postgres,
+            "DROP TABLE reports".to_owned(),
+        ))
+        .await
+        .expect("the reports table is dropped");
+    let app = app_for(&db);
+
+    let logged = logged_from(async {
+        let reply: Reply = get(&app, "/metrics").await;
+        assert_eq!(reply.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(reply.text(), "");
+    })
+    .await;
+    let warnings: Vec<&str> = logged
+        .lines()
+        .filter(|line| line.contains("metrics scrape failed"))
+        .collect();
+    assert_eq!(warnings.len(), 1, "{logged}");
+    assert!(warnings[0].contains("reports"), "{logged}");
+}
+
+/// Runs `future` with a log sink installed and answers everything it logged.
+async fn logged_from(future: impl Future) -> String {
+    use std::sync::{Arc, Mutex};
+
+    /// An `io::Write` that appends to the shared buffer.
+    struct Sink(Arc<Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Sink {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let lines = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&lines);
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .with_writer(move || Sink(Arc::clone(&sink)))
+        .finish();
+    let guard = tracing::subscriber::set_default(subscriber);
+    future.await;
+    drop(guard);
+    String::from_utf8_lossy(
+        &lines
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+    )
+    .into_owned()
 }

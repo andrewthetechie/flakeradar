@@ -18,6 +18,7 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
+use anyhow::Context as _;
 use flakeradar_core::{TierChange, WebhookFormat, render};
 use flakeradar_db::ProcessOutcome;
 use tokio_util::sync::CancellationToken;
@@ -233,36 +234,46 @@ impl std::fmt::Debug for WebhookWorker {
 
 impl WebhookWorker {
     /// A task that posts to `urls` in `format`.
-    #[must_use]
-    pub fn new(urls: Vec<String>, format: WebhookFormat, public_url: &str) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the HTTP client cannot be built, which is the TLS
+    /// backend failing to initialize; a client without the timeout would break
+    /// this module's error policy, so none is used.
+    pub fn new(urls: Vec<String>, format: WebhookFormat, public_url: &str) -> anyhow::Result<Self> {
         Self::with_retry_delays(urls, format, public_url, RETRY_DELAYS)
     }
 
     /// The same task, waiting `retry_delays` before its second and third attempt.
-    #[must_use]
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the HTTP client cannot be built; see
+    /// [`WebhookWorker::new`].
     pub fn with_retry_delays(
         urls: Vec<String>,
         format: WebhookFormat,
         public_url: &str,
         retry_delays: [f64; 2],
-    ) -> Self {
-        Self {
+    ) -> anyhow::Result<Self> {
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(WEBHOOK_TIMEOUT_SECONDS))
+            .user_agent(format!("flakeradar/{}", env!("CARGO_PKG_VERSION")))
+            .build()
+            .context("building the Webhook HTTP client")?;
+        Ok(Self {
             shared: Arc::new(WebhookShared {
                 urls,
                 format,
                 public_url: public_url.to_owned(),
                 retry_delays,
-                client: reqwest::Client::builder()
-                    .timeout(Duration::from_secs(WEBHOOK_TIMEOUT_SECONDS))
-                    .user_agent(format!("flakeradar/{}", env!("CARGO_PKG_VERSION")))
-                    .build()
-                    .unwrap_or_default(),
+                client,
                 queue: Mutex::new(VecDeque::new()),
                 dropped: Mutex::new(0),
                 notify: tokio::sync::Notify::new(),
             }),
             run: LeaderRun::new(),
-        }
+        })
     }
 
     /// The home of the batches queued and dropped so far, for a test.
@@ -392,11 +403,14 @@ mod tests {
             }
         }
 
-        let worker = Arc::new(WebhookWorker::new(
-            vec!["http://127.0.0.1:1/hook".to_owned()],
-            WebhookFormat::Json,
-            "",
-        ));
+        let worker = Arc::new(
+            WebhookWorker::new(
+                vec!["http://127.0.0.1:1/hook".to_owned()],
+                WebhookFormat::Json,
+                "",
+            )
+            .expect("the HTTP client builds"),
+        );
         let shared = Arc::clone(&worker.shared);
         let cancel = CancellationToken::new();
         let attempts = Arc::new(AtomicUsize::new(0));

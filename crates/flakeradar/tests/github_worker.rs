@@ -145,7 +145,7 @@ async fn a_queued_outcome_is_filed_in_the_background() {
     let worker = GitHubWorker::new(
         db.connection().clone(),
         Arc::new(settings()),
-        Api::new(Secret::new(TOKEN), &server.uri()),
+        Api::new(Secret::new(TOKEN), &server.uri()).expect("the HTTP client builds"),
         Duration::from_secs(3600),
     );
     LeaderTask::start(&worker).await;
@@ -200,7 +200,7 @@ async fn the_first_sync_runs_at_start_and_the_next_one_on_the_interval() {
     let worker = GitHubWorker::new(
         db.connection().clone(),
         Arc::new(settings()),
-        Api::new(Secret::new(TOKEN), &server.uri()),
+        Api::new(Secret::new(TOKEN), &server.uri()).expect("the HTTP client builds"),
         Duration::from_millis(60),
     )
     .with_monotonic(monotonic);
@@ -217,7 +217,7 @@ async fn an_outcome_with_no_touched_ids_files_nothing() {
     let worker = GitHubWorker::new(
         db.connection().clone(),
         Arc::new(settings()),
-        Api::new(Secret::new(TOKEN), &server.uri()),
+        Api::new(Secret::new(TOKEN), &server.uri()).expect("the HTTP client builds"),
         // A long interval keeps the start-up sync out of the way, and the sync
         // finds no linked row to check anyway.
         Duration::from_secs(3600),
@@ -241,7 +241,7 @@ async fn the_task_names_itself_and_its_debug_line_carries_no_token() {
     let worker = GitHubWorker::new(
         db.connection().clone(),
         Arc::new(settings()),
-        Api::new(Secret::new(TOKEN), "http://127.0.0.1:1"),
+        Api::new(Secret::new(TOKEN), "http://127.0.0.1:1").expect("the HTTP client builds"),
         Duration::from_secs(3600),
     );
     assert_eq!(LeaderTask::name(&worker), "GitHub");
@@ -263,7 +263,7 @@ async fn stopping_a_task_that_never_started_is_fine() {
     let worker = GitHubWorker::new(
         db.connection().clone(),
         Arc::new(settings()),
-        Api::new(Secret::new(TOKEN), "http://127.0.0.1:1"),
+        Api::new(Secret::new(TOKEN), "http://127.0.0.1:1").expect("the HTTP client builds"),
         Duration::from_secs(3600),
     );
     LeaderTask::stop(&worker).await.expect("nothing to stop");
@@ -288,7 +288,7 @@ async fn a_failing_github_call_never_stops_the_task() {
     let worker = GitHubWorker::new(
         db.connection().clone(),
         Arc::new(settings()),
-        Api::new(Secret::new(TOKEN), &server.uri()),
+        Api::new(Secret::new(TOKEN), &server.uri()).expect("the HTTP client builds"),
         Duration::from_secs(3600),
     );
     let test = flaky_test(&db).await;
@@ -781,7 +781,7 @@ async fn a_failing_filing_is_logged_and_the_next_outcome_still_files() {
     let worker = GitHubWorker::new(
         db.connection().clone(),
         Arc::new(settings()),
-        Api::new(Secret::new(TOKEN), &server.uri()),
+        Api::new(Secret::new(TOKEN), &server.uri()).expect("the HTTP client builds"),
         Duration::from_secs(3600),
     );
 
@@ -830,7 +830,7 @@ async fn the_fixed_note_runs_in_the_background_for_touched_ids() {
     let worker = GitHubWorker::new(
         db.connection().clone(),
         Arc::new(note_settings()),
-        Api::new(Secret::new(TOKEN), &server.uri()),
+        Api::new(Secret::new(TOKEN), &server.uri()).expect("the HTTP client builds"),
         Duration::from_secs(3600),
     );
 
@@ -861,7 +861,7 @@ async fn the_github_task_starts_and_stops_with_leadership() {
     let github = Arc::new(GitHubWorker::new(
         db.connection().clone(),
         Arc::new(settings()),
-        Api::new(Secret::new(TOKEN), &server.uri()),
+        Api::new(Secret::new(TOKEN), &server.uri()).expect("the HTTP client builds"),
         Duration::from_secs(3600),
     ));
     let worker = leader_worker(&db, Arc::clone(&github));
@@ -894,7 +894,7 @@ async fn a_lost_lock_connection_stops_the_github_task() {
     let github = Arc::new(GitHubWorker::new(
         db.connection().clone(),
         Arc::new(settings()),
-        Api::new(Secret::new(TOKEN), &server.uri()),
+        Api::new(Secret::new(TOKEN), &server.uri()).expect("the HTTP client builds"),
         Duration::from_secs(3600),
     ));
     let worker = leader_worker(&db, Arc::clone(&github));
@@ -945,7 +945,7 @@ async fn stopping_the_task_ends_its_work() {
     let worker = GitHubWorker::new(
         db.connection().clone(),
         Arc::new(settings()),
-        Api::new(Secret::new(TOKEN), &server.uri()),
+        Api::new(Secret::new(TOKEN), &server.uri()).expect("the HTTP client builds"),
         Duration::from_secs(3600),
     );
 
@@ -975,7 +975,7 @@ async fn a_queued_outcome_files_through_the_workers_api_for_tests_and_jobs() {
     let worker = GitHubWorker::new(
         db.connection().clone(),
         Arc::new(settings()),
-        Api::new(Secret::new(TOKEN), &server.uri()),
+        Api::new(Secret::new(TOKEN), &server.uri()).expect("the HTTP client builds"),
         Duration::from_secs(3600),
     );
     let mut outcome = processed(&[test]);
@@ -1018,7 +1018,7 @@ async fn a_slow_github_call_does_not_block_processing() {
     let github = Arc::new(GitHubWorker::new(
         db.connection().clone(),
         Arc::new(settings()),
-        Api::new(Secret::new(TOKEN), &server.uri()),
+        Api::new(Secret::new(TOKEN), &server.uri()).expect("the HTTP client builds"),
         Duration::from_secs(3600),
     ));
     let worker = leader_worker(&db, Arc::clone(&github));
@@ -1053,7 +1053,7 @@ async fn a_sync_that_cannot_answer_is_retried_on_the_next_interval() {
     let worker = GitHubWorker::new(
         db.connection().clone(),
         Arc::new(settings()),
-        Api::new(Secret::new(TOKEN), &server.uri()),
+        Api::new(Secret::new(TOKEN), &server.uri()).expect("the HTTP client builds"),
         Duration::from_millis(60),
     )
     .with_monotonic(monotonic);
@@ -1093,7 +1093,7 @@ async fn the_github_task_ends_before_the_lock_is_released() {
     let github = Arc::new(GitHubWorker::new(
         db.connection().clone(),
         Arc::new(settings()),
-        Api::new(Secret::new(TOKEN), &server.uri()),
+        Api::new(Secret::new(TOKEN), &server.uri()).expect("the HTTP client builds"),
         Duration::from_secs(3600),
     ));
     let worker = leader_worker(&db, Arc::clone(&github));
@@ -1143,14 +1143,14 @@ async fn a_standby_leads_only_after_the_former_github_task_stops() {
     let former_github = Arc::new(GitHubWorker::new(
         db.connection().clone(),
         Arc::new(settings()),
-        Api::new(Secret::new(TOKEN), &former_server.uri()),
+        Api::new(Secret::new(TOKEN), &former_server.uri()).expect("the HTTP client builds"),
         Duration::from_secs(3600),
     ));
     let former = leader_worker(&db, Arc::clone(&former_github));
     let successor_github = Arc::new(GitHubWorker::new(
         db.connection().clone(),
         Arc::new(settings()),
-        Api::new(Secret::new(TOKEN), &successor_server.uri()),
+        Api::new(Secret::new(TOKEN), &successor_server.uri()).expect("the HTTP client builds"),
         Duration::from_secs(3600),
     ));
     let standby = leader_worker(&db, successor_github);
@@ -1262,7 +1262,7 @@ async fn a_stopped_github_task_files_again_after_a_restart() {
     let worker = Arc::new(GitHubWorker::new(
         db.connection().clone(),
         Arc::new(settings()),
-        Api::new(Secret::new(TOKEN), &server.uri()),
+        Api::new(Secret::new(TOKEN), &server.uri()).expect("the HTTP client builds"),
         Duration::from_secs(3600),
     ));
 
@@ -1304,7 +1304,7 @@ async fn leadership_a_failing_processor_drops_files_after_it_returns() {
     let github = Arc::new(GitHubWorker::new(
         db.connection().clone(),
         Arc::new(settings()),
-        Api::new(Secret::new(TOKEN), &server.uri()),
+        Api::new(Secret::new(TOKEN), &server.uri()).expect("the HTTP client builds"),
         Duration::from_secs(3600),
     ));
     let leader: Arc<dyn LeaderTask> = Arc::clone(&github) as Arc<dyn LeaderTask>;
@@ -1377,7 +1377,7 @@ async fn a_database_that_drops_the_leader_files_the_next_proven_flake() {
     let github = Arc::new(GitHubWorker::new(
         db.connection().clone(),
         Arc::new(settings()),
-        Api::new(Secret::new(TOKEN), &server.uri()),
+        Api::new(Secret::new(TOKEN), &server.uri()).expect("the HTTP client builds"),
         Duration::from_secs(3600),
     ));
     let processor = Arc::new(HandsOver::default());
@@ -1444,7 +1444,7 @@ async fn a_full_queue_drops_the_oldest_outcome_and_says_so() {
     let worker = Arc::new(GitHubWorker::new(
         db.connection().clone(),
         Arc::new(settings()),
-        Api::new(Secret::new(TOKEN), "http://127.0.0.1:1"),
+        Api::new(Secret::new(TOKEN), "http://127.0.0.1:1").expect("the HTTP client builds"),
         Duration::from_secs(3600),
     ));
 
@@ -1486,7 +1486,7 @@ async fn stopping_ends_an_unanswered_sync_get_at_once() {
     let worker = GitHubWorker::new(
         db.connection().clone(),
         Arc::new(settings()),
-        Api::new(Secret::new(TOKEN), &endpoint.base),
+        Api::new(Secret::new(TOKEN), &endpoint.base).expect("the HTTP client builds"),
         Duration::from_secs(3600),
     );
 
@@ -1520,7 +1520,7 @@ async fn stopping_ends_an_unanswered_note_post_at_once() {
     let worker = GitHubWorker::new(
         db.connection().clone(),
         Arc::new(note_settings()),
-        Api::new(Secret::new(TOKEN), &endpoint.base),
+        Api::new(Secret::new(TOKEN), &endpoint.base).expect("the HTTP client builds"),
         // A long interval keeps the start-up sync out of the way, and the sync
         // finds no linked row to check anyway.
         Duration::from_secs(3600),
@@ -1562,7 +1562,7 @@ async fn stopping_waits_for_a_filing_post_and_keeps_its_link() {
     let worker = Arc::new(GitHubWorker::new(
         db.connection().clone(),
         Arc::new(settings()),
-        Api::new(Secret::new(TOKEN), &server.uri()),
+        Api::new(Secret::new(TOKEN), &server.uri()).expect("the HTTP client builds"),
         Duration::from_secs(3600),
     ));
 
@@ -1616,7 +1616,7 @@ async fn stopping_ends_an_unanswered_close_at_once() {
     let worker = Arc::new(GitHubWorker::new(
         db.connection().clone(),
         Arc::new(closing_settings()),
-        Api::new(Secret::new(TOKEN), &server.uri()),
+        Api::new(Secret::new(TOKEN), &server.uri()).expect("the HTTP client builds"),
         Duration::from_secs(3600),
     ));
 
@@ -1665,7 +1665,7 @@ async fn a_sync_holds_no_row_lock_across_its_get() {
     let worker = GitHubWorker::new(
         db.connection().clone(),
         Arc::new(settings()),
-        Api::new(Secret::new(TOKEN), &server.uri()),
+        Api::new(Secret::new(TOKEN), &server.uri()).expect("the HTTP client builds"),
         Duration::from_secs(3600),
     );
 

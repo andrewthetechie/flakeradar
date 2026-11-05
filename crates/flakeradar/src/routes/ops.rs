@@ -154,12 +154,17 @@ pub async fn metrics(State(state): State<AppState>) -> Response {
             render(&snapshot),
         )
             .into_response(),
-        Err(_) => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            [(header::CONTENT_TYPE, PROMETHEUS_MEDIA_TYPE)],
-            String::new(),
-        )
-            .into_response(),
+        Err(error) => {
+            // The empty body keeps a scrape failing rather than reporting zeros, and
+            // the error is the only thing that says why the scrape failed.
+            tracing::warn!(error = %error, "the metrics scrape failed; answering 503");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                [(header::CONTENT_TYPE, PROMETHEUS_MEDIA_TYPE)],
+                String::new(),
+            )
+                .into_response()
+        }
     }
 }
 

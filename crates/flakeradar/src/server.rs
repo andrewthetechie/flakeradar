@@ -40,16 +40,16 @@ pub struct Server {
 ///
 /// No URLs means no task at all, not an idle one: the reference's lifespan built
 /// `WebhookWorker` only when `parse_urls` answered a non-empty list.
-fn webhook_task(settings: &Settings) -> Option<Arc<WebhookWorker>> {
+fn webhook_task(settings: &Settings) -> anyhow::Result<Option<Arc<WebhookWorker>>> {
     let urls = flakeradar_core::parse_urls(settings.webhook_urls.expose());
     if urls.is_empty() {
-        None
+        Ok(None)
     } else {
-        Some(Arc::new(WebhookWorker::new(
+        Ok(Some(Arc::new(WebhookWorker::new(
             urls,
             settings.webhook_format,
             &settings.public_url,
-        )))
+        )?)))
     }
 }
 
@@ -63,8 +63,9 @@ impl Server {
     /// # Errors
     ///
     /// Returns an error when the database URL is not PostgreSQL, the server
-    /// cannot be reached, the migration is refused or fails, or the address
-    /// cannot be bound. Each carries the setting or address it failed on.
+    /// cannot be reached, the migration is refused or fails, an HTTP client
+    /// cannot be built, or the address cannot be bound. Each carries the setting
+    /// or address it failed on.
     pub async fn start(settings: Settings) -> anyhow::Result<Self> {
         let pool = flakeradar_db::connect(&settings.database_url, settings.database_settings()?)
             .await
@@ -73,7 +74,7 @@ impl Server {
             .await
             .context("migrating the database")?;
         let app = build_app(
-            AppState::new(pool.clone(), Arc::new(settings.clone()))
+            AppState::new(pool.clone(), Arc::new(settings.clone()))?
                 .with_assets(crate::assets::embedded()),
         );
         let requested = format!("{}:{}", settings.host, settings.port);
@@ -105,12 +106,12 @@ impl Server {
         let github: Arc<dyn LeaderTask> = Arc::new(GitHubWorker::new(
             pool.clone(),
             Arc::new(settings.clone()),
-            Api::production(settings.github_token.clone()),
+            Api::production(settings.github_token.clone())?,
             std::time::Duration::try_from_secs_f64(settings.prune_interval_seconds)
                 .unwrap_or_default(),
         ));
         worker = worker.with_leader_task(github);
-        if let Some(webhook) = webhook_task(&settings) {
+        if let Some(webhook) = webhook_task(&settings)? {
             worker = worker.with_leader_task(webhook);
         }
         let worker = Arc::new(worker);
@@ -180,14 +181,17 @@ mod tests {
     #[test]
     fn the_lifespan_builds_a_webhook_worker_only_when_urls_are_set() {
         assert!(
-            webhook_task(&settings(&[("FLAKERADAR_API_TOKEN", "real-token")])).is_none(),
+            webhook_task(&settings(&[("FLAKERADAR_API_TOKEN", "real-token")]))
+                .expect("no URLs is not a failure")
+                .is_none(),
             "no URLs means no Notification task at all"
         );
         let task = webhook_task(&settings(&[
             ("FLAKERADAR_API_TOKEN", "real-token"),
             ("FLAKERADAR_WEBHOOK_URLS", " https://hooks.example.com/a , "),
         ]))
-        .expect("a configured endpoint builds the task");
+        .expect("a configured endpoint builds the task")
+        .expect("the task is there");
         assert_eq!(task.urls(), vec!["https://hooks.example.com/a"]);
     }
 }

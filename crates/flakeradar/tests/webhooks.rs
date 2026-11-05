@@ -80,7 +80,7 @@ fn outcome(changes: Vec<TierChange>) -> ProcessOutcome {
 
 /// A worker over `urls` in the JSON format.
 fn worker(urls: Vec<String>) -> WebhookWorker {
-    WebhookWorker::new(urls, WebhookFormat::Json, "")
+    WebhookWorker::new(urls, WebhookFormat::Json, "").expect("the HTTP client builds")
 }
 
 /// How many requests the stub has recorded.
@@ -267,12 +267,15 @@ async fn a_client_error_is_permanent_and_is_not_retried() {
             .respond_with(ResponseTemplate::new(status))
             .mount(&server)
             .await;
-        let worker = Arc::new(WebhookWorker::with_retry_delays(
-            vec![format!("{}/hook", server.uri())],
-            WebhookFormat::Json,
-            "",
-            [0.0, 0.0],
-        ));
+        let worker = Arc::new(
+            WebhookWorker::with_retry_delays(
+                vec![format!("{}/hook", server.uri())],
+                WebhookFormat::Json,
+                "",
+                [0.0, 0.0],
+            )
+            .expect("the HTTP client builds"),
+        );
         LeaderTask::start(worker.as_ref()).await;
         LeaderTask::enqueue(worker.as_ref(), &outcome(vec![test_change()]))
             .expect("the queue takes it");
@@ -358,12 +361,15 @@ async fn three_attempts_then_the_task_keeps_serving() {
 async fn an_unreachable_endpoint_is_tried_three_times_and_the_task_keeps_serving() {
     // Nothing is listening on this port: every attempt fails to connect.
     let (guard, lines) = captured();
-    let worker = Arc::new(WebhookWorker::with_retry_delays(
-        vec!["http://127.0.0.1:1/hook".to_owned()],
-        WebhookFormat::Json,
-        "",
-        [0.0, 0.0],
-    ));
+    let worker = Arc::new(
+        WebhookWorker::with_retry_delays(
+            vec!["http://127.0.0.1:1/hook".to_owned()],
+            WebhookFormat::Json,
+            "",
+            [0.0, 0.0],
+        )
+        .expect("the HTTP client builds"),
+    );
     LeaderTask::start(worker.as_ref()).await;
     LeaderTask::enqueue(worker.as_ref(), &outcome(vec![test_change()]))
         .expect("the queue takes it");
@@ -389,12 +395,15 @@ async fn an_endpoint_that_is_not_a_url_is_retried_and_never_logged() {
     const SECRET: &str = "SECRETTOKEN";
 
     let (guard, lines) = captured();
-    let worker = Arc::new(WebhookWorker::with_retry_delays(
-        vec![format!("not a url/{SECRET}")],
-        WebhookFormat::Json,
-        "",
-        [0.0, 0.0],
-    ));
+    let worker = Arc::new(
+        WebhookWorker::with_retry_delays(
+            vec![format!("not a url/{SECRET}")],
+            WebhookFormat::Json,
+            "",
+            [0.0, 0.0],
+        )
+        .expect("the HTTP client builds"),
+    );
     LeaderTask::start(worker.as_ref()).await;
     LeaderTask::enqueue(worker.as_ref(), &outcome(vec![test_change()]))
         .expect("the queue takes it");
@@ -525,11 +534,14 @@ async fn a_slack_payload_is_one_text_with_a_line_per_event() {
         .respond_with(ResponseTemplate::new(200))
         .mount(&server)
         .await;
-    let worker = Arc::new(WebhookWorker::new(
-        vec![format!("{}/hook", server.uri())],
-        WebhookFormat::Slack,
-        "",
-    ));
+    let worker = Arc::new(
+        WebhookWorker::new(
+            vec![format!("{}/hook", server.uri())],
+            WebhookFormat::Slack,
+            "",
+        )
+        .expect("the HTTP client builds"),
+    );
     LeaderTask::start(worker.as_ref()).await;
     LeaderTask::enqueue(worker.as_ref(), &outcome(vec![test_change(), job_change()]))
         .expect("the queue takes it");
@@ -663,12 +675,15 @@ async fn stopping_ends_the_wait_before_a_retry_at_once() {
         .await;
     // Waits a task that did not stop would sit through, so the bound below
     // separates a stop from a wait rather than measuring a machine's speed.
-    let worker = Arc::new(WebhookWorker::with_retry_delays(
-        vec![format!("{}/hook", server.uri())],
-        WebhookFormat::Json,
-        "",
-        [60.0, 60.0],
-    ));
+    let worker = Arc::new(
+        WebhookWorker::with_retry_delays(
+            vec![format!("{}/hook", server.uri())],
+            WebhookFormat::Json,
+            "",
+            [60.0, 60.0],
+        )
+        .expect("the HTTP client builds"),
+    );
     LeaderTask::start(worker.as_ref()).await;
     LeaderTask::enqueue(worker.as_ref(), &outcome(vec![test_change()]))
         .expect("the queue takes it");

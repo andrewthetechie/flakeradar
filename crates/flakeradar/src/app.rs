@@ -66,15 +66,19 @@ impl AppState {
     /// different base URL calls [`AppState::with_github`]. Nothing is served
     /// from memory until [`AppState::with_assets`] names a source, which is how
     /// [`crate::Server`] hands the state the frontend it was built with.
-    #[must_use]
-    pub fn new(pool: DatabaseConnection, settings: Arc<Settings>) -> Self {
-        let github = Api::production(settings.github_token.clone());
-        Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the GitHub client cannot be built; see
+    /// [`Api::new`].
+    pub fn new(pool: DatabaseConnection, settings: Arc<Settings>) -> anyhow::Result<Self> {
+        let github = Api::production(settings.github_token.clone())?;
+        Ok(Self {
             pool,
             settings,
             github,
             assets: Arc::new(NoAssets),
-        }
+        })
     }
 
     /// The GitHub client every outward call goes through.

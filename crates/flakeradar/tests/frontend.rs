@@ -302,6 +302,7 @@ async fn the_embedded_frontend_is_in_the_binary() {
 
     let db = TestDb::new().await.expect("a test database is available");
     let state = AppState::new(db.connection().clone(), Arc::new(common::settings(&[])))
+        .expect("the app state builds")
         .with_assets(embedded());
     let app = build_app(state);
     let reply = get(&app, "/").await;

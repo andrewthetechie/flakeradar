@@ -1317,6 +1317,29 @@ async fn link_and_unlink_a_test_issue() {
 }
 
 #[tokio::test]
+async fn re_linking_a_declined_issue_reports_the_stored_closed_flag() {
+    // The sync kept the link and flagged the row because GitHub reported the issue
+    // closed as not planned; the tool must answer that flag, not a hard-coded false.
+    let db = TestDb::new().await.expect("a test database is available");
+    let app = mcp_app(&db);
+    let flaky = seed(&db).await;
+    let linked = call(&app, "link_issue", json!({"number": 31, "test_id": flaky})).await;
+    assert_eq!(linked["github_issue_closed"], false);
+    sea_orm::ConnectionTrait::execute_unprepared(
+        db.connection(),
+        "UPDATE test_cases SET github_issue_closed = TRUE",
+    )
+    .await
+    .expect("the declined flag writes");
+
+    let relinked = call(&app, "link_issue", json!({"number": 31, "test_id": flaky})).await;
+    assert_eq!(
+        relinked["github_issue_closed"], true,
+        "the tool reports the stored flag"
+    );
+}
+
+#[tokio::test]
 async fn link_and_unlink_a_job_issue() {
     let db = TestDb::new().await.expect("a test database is available");
     let app = mcp_app(&db);

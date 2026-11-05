@@ -216,6 +216,46 @@ async fn the_same_number_twice_keeps_the_check_stamp() {
 }
 
 #[tokio::test]
+async fn re_linking_a_declined_issue_reports_the_stored_closed_flag() {
+    // GitHub reported the issue closed as not planned, so the link was kept and the
+    // row flagged: a second link of the same number must answer that flag, not a
+    // hard-coded false, or a client is told the filer will speak again.
+    let db = TestDb::new().await.expect("a test database");
+    let test = one_test(&db).await;
+    let app = app(&db, &[("FLAKERADAR_API_TOKEN", TOKEN)]);
+    put(
+        &app,
+        &format!("/api/tests/{}/issue", test.id),
+        &json!({"number": 12}),
+    )
+    .await;
+    db.connection()
+        .execute_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "UPDATE test_cases SET github_issue_checked_at = now(), github_issue_closed = TRUE \
+             WHERE id = $1",
+            [test.id.into()],
+        ))
+        .await
+        .expect("the declined flag writes");
+
+    let reply = put(
+        &app,
+        &format!("/api/tests/{}/issue", test.id),
+        &json!({"number": 12}),
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::OK);
+    assert_eq!(
+        reply.json()["github_issue_closed"],
+        json!(true),
+        "the answer reports the stored flag"
+    );
+    let (_, _, _, closed, _) = test_link(&db, test.id).await;
+    assert!(closed, "the stored flag is untouched by the re-link");
+}
+
+#[tokio::test]
 async fn a_different_number_without_replace_is_a_conflict() {
     let db = TestDb::new().await.expect("a test database");
     let test = one_test(&db).await;
