@@ -1419,14 +1419,17 @@ async fn job_history(
         branches.entry(*id).or_insert(None);
     }
     for chunk in chunks(job_ids) {
+        // The table names are written out: `job_execution_explained_sql` reads
+        // `job_executions`, `jobs` and `pipelines` by name, as Python's query did.
         let sql = format!(
-            "SELECT e.job_id, e.commit_sha, e.branch, e.status, ({}) AS explained, ro.default_branch \
-               FROM job_executions e \
-               JOIN jobs j ON j.id = e.job_id \
-               JOIN pipelines p ON p.id = j.pipeline_id \
-               JOIN repos ro ON ro.id = p.repo_id \
-              WHERE e.id IN (SELECT w.id FROM ({}) AS w) \
-              ORDER BY e.job_id, e.id DESC",
+            "SELECT job_executions.job_id, job_executions.commit_sha, job_executions.branch, \
+                    job_executions.status, ({}) AS explained, repos.default_branch \
+               FROM job_executions \
+               JOIN jobs ON jobs.id = job_executions.job_id \
+               JOIN pipelines ON pipelines.id = jobs.pipeline_id \
+               JOIN repos ON repos.id = pipelines.repo_id \
+              WHERE job_executions.id IN (SELECT w.id FROM ({}) AS w) \
+              ORDER BY job_executions.job_id, job_executions.id DESC",
             job_execution_explained_sql(),
             job_window_ids_sql()
         );
