@@ -3698,6 +3698,78 @@ async fn only_unexplained_job_failures_meet_the_min_failures_gate() {
     );
 }
 
+#[tokio::test]
+async fn the_job_failure_gate_counts_the_overall_window_only() {
+    let db = TestDb::new().await.expect("a test database");
+    let pipeline = make_pipeline()
+        .repo("acme/app")
+        .provider("github")
+        .build(db.connection())
+        .await
+        .expect("the Pipeline inserts");
+    // A known Default branch, so a union with the Default-branch window would add
+    // rows the overall window does not hold.
+    db.connection()
+        .execute_raw(Statement::from_string(
+            DbBackend::Postgres,
+            "UPDATE repos SET default_branch = 'main' WHERE name = 'acme/app'".to_owned(),
+        ))
+        .await
+        .expect("the Default branch writes");
+    let job = make_job(&pipeline)
+        .name("old_main_failures")
+        .flakiness_score(0.5)
+        .confirmed_flake_count(0)
+        .build(db.connection())
+        .await
+        .expect("the Job inserts");
+    // Five older unexplained failures on the Default branch, outside the newest five.
+    for _ in 0..5 {
+        make_job_execution(&job)
+            .status("failed")
+            .branch("main")
+            .build(db.connection())
+            .await
+            .expect("the Job execution inserts");
+    }
+    // The newest five hold one failure and four passes, on a feature branch.
+    for status in ["failed", "passed", "passed", "passed", "passed"] {
+        make_job_execution(&job)
+            .status(status)
+            .branch("feat")
+            .build(db.connection())
+            .await
+            .expect("the Job execution inserts");
+    }
+    let server = MockServer::start().await;
+    mount_create(
+        &server,
+        ResponseTemplate::new(201).set_body_json(json!({"number": 91})),
+    )
+    .await;
+    let settings = gh_settings(&[
+        ("FLAKERADAR_GITHUB_ISSUE_MIN_FAILURES", "2"),
+        ("FLAKERADAR_SCORE_WINDOW", "5"),
+    ]);
+
+    let filed = github::file_job_issues_for(
+        db.connection(),
+        &[job.id],
+        &settings,
+        &api(&server),
+        &unstopped(),
+    )
+    .await;
+    assert!(
+        filed.linked.is_empty(),
+        "one unexplained failure in the overall window is under a gate of two"
+    );
+    assert!(
+        requested_paths(&server).await.is_empty(),
+        "no issue is filed for a Job the reference gate refuses"
+    );
+}
+
 // --- the sync's rotation and its failure policy ---------------------------
 
 /// Stamps one Job's link columns, as an earlier pass would have.
