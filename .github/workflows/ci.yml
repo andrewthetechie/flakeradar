@@ -636,15 +636,18 @@ jobs:
           curl -fsS http://127.0.0.1:8000/api/health/ready
 
       # Three commits, each with a pass and a fail for the same Test: this is
-      # the Proven flake the summary action should recognise. The metadata comes
-      # from the runner, which these steps set per upload.
+      # the Proven flake the summary action should recognise. The upload's
+      # metadata is set with the action's own `FR_*` overrides rather than with
+      # `GITHUB_*`: the runner refuses to overwrite a default `GITHUB_*` variable,
+      # so seeding through those left every upload on the real run's id and SHA
+      # and the summary's `12345` had nothing to read.
       - name: Seed commit aaa111
         uses: ./actions/report
         env:
-          GITHUB_SHA: aaa111
-          GITHUB_REF_NAME: main
-          GITHUB_RUN_ID: "1001"
-          GITHUB_RUN_ATTEMPT: "1"
+          FR_SHA: aaa111
+          FR_BRANCH: main
+          FR_RUN_ID: "1001"
+          FR_ATTEMPT: "1"
         with:
           url: http://127.0.0.1:8000
           token: flakeradar-test-token
@@ -656,10 +659,10 @@ jobs:
       - name: Seed commit bbb222
         uses: ./actions/report
         env:
-          GITHUB_SHA: bbb222
-          GITHUB_REF_NAME: main
-          GITHUB_RUN_ID: "1002"
-          GITHUB_RUN_ATTEMPT: "1"
+          FR_SHA: bbb222
+          FR_BRANCH: main
+          FR_RUN_ID: "1002"
+          FR_ATTEMPT: "1"
         with:
           url: http://127.0.0.1:8000
           token: flakeradar-test-token
@@ -671,10 +674,10 @@ jobs:
       - name: Seed commit ccc333
         uses: ./actions/report
         env:
-          GITHUB_SHA: ccc333
-          GITHUB_REF_NAME: main
-          GITHUB_RUN_ID: "1003"
-          GITHUB_RUN_ATTEMPT: "1"
+          FR_SHA: ccc333
+          FR_BRANCH: main
+          FR_RUN_ID: "1003"
+          FR_ATTEMPT: "1"
         with:
           url: http://127.0.0.1:8000
           token: flakeradar-test-token
@@ -688,10 +691,10 @@ jobs:
       - name: Seed the fixture CI run (12345)
         uses: ./actions/report
         env:
-          GITHUB_SHA: ccc333
-          GITHUB_REF_NAME: main
-          GITHUB_RUN_ID: "12345"
-          GITHUB_RUN_ATTEMPT: "1"
+          FR_SHA: ccc333
+          FR_BRANCH: main
+          FR_RUN_ID: "12345"
+          FR_ATTEMPT: "1"
         with:
           url: http://127.0.0.1:8000
           token: flakeradar-test-token

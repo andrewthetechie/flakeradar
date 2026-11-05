@@ -239,7 +239,10 @@ test("the CLI passes once every landed task owns no rows", () => {
 });
 
 test("the CLI fails when a landed task still has pending rows", () => {
-  const run = runChecker(["--upto", "99"]);
+  // A fixture, not the committed manifest: task 14 settled every row, so no
+  // landed task has a pending one left to point this at.
+  const { root } = fixtureRoot({ manifest: `${HEADER}\npkg::test_one,2,pending,,\n` });
+  const run = runChecker(["--upto", "2"], { root });
   assert.equal(run.status, 1);
   assert.match(run.stderr, /Test manifest check FAILED:/);
   assert.match(run.stderr, /has landed but this row is still pending/);
