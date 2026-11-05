@@ -573,7 +573,7 @@ mod tests {
             fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
                 self.0
                     .lock()
-                    .map_err(|_error| std::io::Error::other("the log sink is poisoned"))?
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .extend_from_slice(buf);
                 Ok(buf.len())
             }

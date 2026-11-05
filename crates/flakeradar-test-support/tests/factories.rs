@@ -145,6 +145,40 @@ async fn a_test_builder_keeps_a_fingerprint_it_was_given() {
 }
 
 #[tokio::test]
+async fn a_quarantine_field_alone_marks_the_test_quarantined() {
+    let db = TestDb::new().await.expect("a migrated test database");
+    let project = make_project()
+        .build(db.connection())
+        .await
+        .expect("a Project");
+    // Any one of the three quarantine columns implies the quarantine, so a
+    // fixture can set a reason or an expiry without repeating the flag.
+    let reasoned = make_test_case(&project)
+        .name("reasoned")
+        .quarantine_reason("flaky on main")
+        .build(db.connection())
+        .await
+        .expect("a Test");
+    assert!(reasoned.quarantined);
+    assert_eq!(reasoned.quarantine_reason.as_deref(), Some("flaky on main"));
+    assert_eq!(reasoned.quarantined_at, None);
+
+    let expiring = make_test_case(&project)
+        .name("expiring")
+        .quarantine_expires_at(
+            Utc.with_ymd_and_hms(2026, 1, 2, 3, 4, 5)
+                .single()
+                .expect("a fixed time")
+                .fixed_offset(),
+        )
+        .build(db.connection())
+        .await
+        .expect("a Test");
+    assert!(expiring.quarantined);
+    assert!(expiring.quarantine_expires_at.is_some());
+}
+
+#[tokio::test]
 async fn a_run_has_pythons_defaults_and_stores_what_it_is_given() {
     let db = TestDb::new().await.expect("a migrated test database");
     let project = make_project()
@@ -271,12 +305,22 @@ async fn a_pipeline_and_its_job_have_pythons_defaults() {
         .name("e2e")
         .summary(true)
         .github_issue_number(456)
+        .github_issue_fixed_noted_at(
+            Utc.with_ymd_and_hms(2026, 1, 2, 3, 4, 5)
+                .single()
+                .expect("a fixed time")
+                .fixed_offset(),
+        )
         .build(db.connection())
         .await
         .expect("a Job");
     assert_eq!(named.name, "e2e");
     assert!(named.summary);
     assert_eq!(named.github_issue_number, Some(456));
+    assert_eq!(
+        named.github_issue_fixed_noted_at.map(|at| at.to_string()),
+        Some("2026-01-02 03:04:05 +00:00".to_owned())
+    );
 }
 
 #[tokio::test]
