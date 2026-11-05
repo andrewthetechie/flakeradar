@@ -854,8 +854,9 @@ impl Comparison<'_> {
 ///
 /// JSON compares by value with numbers compared numerically, `"<timestamp>"` and
 /// `"<date>"` match anything in the timestamp and date rules, and an allowance
-/// covers exactly the field it names. A table `body` column holds its document in
-/// hex, so the document is compared field by field rather than as one string.
+/// covers exactly the field it names. A dumped table's `body` column holds its
+/// document in hex, so that column's document is compared field by field rather
+/// than as one string.
 fn compare_value(
     context: &Comparison<'_>,
     path: &str,
@@ -863,7 +864,9 @@ fn compare_value(
     actual: &Value,
     failures: &mut Mismatches,
 ) {
-    if let (Some(recorded), Some(answered)) = (table_body(expected), table_body(actual)) {
+    if names_a_dumped_column(path)
+        && let (Some(recorded), Some(answered)) = (table_body(expected), table_body(actual))
+    {
         let inside = context.inside_table_body();
         compare_value(&inside, path, &recorded, &answered, failures);
         return;
@@ -968,6 +971,24 @@ fn same_instant(path: &str, expected: &Value, actual: &Value) -> bool {
         return false;
     };
     expected == actual
+}
+
+/// Whether `path` names a column of a dumped table: `body.tables.<table>.<row>.<column>`.
+///
+/// Only a `dump_db` step has that shape, so the hex decoding below reaches the
+/// dump's table rows and nothing else: a `\x`-prefixed string anywhere in an HTTP
+/// response, or nested deeper inside a dumped document, keeps comparing as text.
+fn names_a_dumped_column(path: &str) -> bool {
+    let Some(rest) = path.strip_prefix("body.tables.") else {
+        return false;
+    };
+    let mut parts = rest.split('.');
+    let (Some(_table), Some(row), Some(_column), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return false;
+    };
+    !row.is_empty() && row.chars().all(|digit| digit.is_ascii_digit())
 }
 
 /// The JSON document a hex-encoded table `body` column holds, when it holds one.
@@ -1419,6 +1440,38 @@ mod tests {
         let failures = compare_body("pipeline-jobs", 37, &golden, &tampered, "application/json");
         assert_eq!(failures.len(), 1, "{failures:?}");
         assert!(failures[0].contains("reports.1.body"), "{failures:?}");
+    }
+
+    #[test]
+    fn hex_is_decoded_in_a_dumped_table_column_and_nowhere_else() {
+        // One document with the recorded `+00:00` on each side would differ only in
+        // its spelling, so inside a dumped table column the instant rule covers it.
+        let recorded = reports_table(&json!({"created_at": "2026-10-20T09:00:00+00:00"}));
+        let answered = reports_table(&json!({"created_at": "2026-10-20T09:00:00.000000Z"}));
+        assert_eq!(
+            compare_body(
+                "s",
+                1,
+                &recorded_dump(&recorded),
+                &answered,
+                "application/json"
+            ),
+            Vec::<String>::new()
+        );
+
+        // The same two hex strings in an HTTP response body keep comparing as the
+        // text they are: the decoding reaches dumped table columns only.
+        let column = |dump: &serde_json::Value| dump["tables"]["reports"][0]["body"].clone();
+        let golden = recorded_dump(&json!({"rows": [{"body": column(&recorded)}]}));
+        let failures = compare_body(
+            "s",
+            1,
+            &golden,
+            &json!({"rows": [{"body": column(&answered)}]}),
+            "application/json",
+        );
+        assert_eq!(failures.len(), 1, "{failures:?}");
+        assert!(failures[0].contains("rows.0.body"), "{failures:?}");
     }
 
     #[test]
