@@ -186,7 +186,7 @@ tests/test_github_worker.py::test_losing_the_connection_stops_the_github_task,10
 tests/test_github_worker.py::test_outcome_files_through_the_worker_transport,10,ported,a_queued_outcome_files_through_the_workers_api_for_tests_and_jobs,
 tests/test_github_worker.py::test_stop_cancels_the_task,10,ported,stopping_the_task_ends_its_work,
 tests/test_github_worker.py::test_stop_without_start_returns,10,ported,stopping_a_task_that_never_started_is_fine,
-tests/test_github_worker.py::test_sync_failure_is_logged_and_retried,10,ported,a_sync_that_cannot_answer_is_retried_on_the_next_interval,
+tests/test_github_worker.py::test_sync_failure_is_logged_and_retried,10,ported,a_sync_that_cannot_answer_is_retried_on_the_next_interval,"no log is asserted: the reference logs 'GitHub issue-state sync failed; will retry next interval' because its whole sync raises, while Rust's `sync_closed_issues` never raises (github.rs logs each failure itself and a 500 answers without a log, as the reference's own `_clear_if_closed` does). The Rust test asserts the part that is not about logging: a sync that got a 500 is retried at the next interval and the link stands"
 tests/test_github_worker.py::test_sync_runs_on_start_and_on_interval,10,ported,the_first_sync_runs_at_start_and_the_next_one_on_the_interval,
 tests/test_github_worker.py::test_the_github_task_ends_before_the_lock_is_released,10,ported,the_github_task_ends_before_the_lock_is_released,
 tests/test_github_worker.py::test_the_replacement_leader_waits_for_the_former_github_task,10,ported,a_standby_leads_only_after_the_former_github_task_stops,
@@ -551,7 +551,7 @@ tests/test_webhook_worker.py::test_a_rate_limit_waits_as_long_as_retry_after_say
 tests/test_webhook_worker.py::test_a_retry_after_date_is_ignored_and_the_default_wait_used,10,ported,flakeradar::webhooks::an_http_date_retry_after_uses_the_default_wait_and_still_retries,
 tests/test_webhook_worker.py::test_a_webhook_url_is_never_logged,10,ported,flakeradar::webhooks::a_webhook_url_is_never_logged_at_any_level,
 tests/test_webhook_worker.py::test_an_outcome_without_events_posts_nothing,10,ported,flakeradar::webhooks::an_outcome_without_a_tier_change_posts_nothing,
-tests/test_webhook_worker.py::test_an_unreachable_endpoint_never_raises,10,ported,flakeradar::webhooks::an_unreachable_endpoint_never_raises_and_never_stops_the_task,
+tests/test_webhook_worker.py::test_an_unreachable_endpoint_never_raises,10,ported,flakeradar::webhooks::an_unreachable_endpoint_is_tried_three_times_and_the_task_keeps_serving,
 tests/test_webhook_worker.py::test_drops_the_oldest_batch_when_the_queue_is_full,10,ported,flakeradar::webhooks::a_full_queue_drops_the_oldest_batch_and_delivers_the_newest,
 tests/test_webhook_worker.py::test_enqueue_posts_one_request_per_report,10,ported,flakeradar::webhooks::one_request_per_report_carries_every_event_of_it,
 tests/test_webhook_worker.py::test_fans_out_to_every_endpoint_independently,10,ported,flakeradar::webhooks::every_endpoint_gets_the_batch_on_its_own_terms,
