@@ -62,6 +62,7 @@ Error handling: never raises.
 
 import logging
 from dataclasses import dataclass
+from typing import Literal, Self
 
 import httpx
 from sqlalchemy import select, update
@@ -174,6 +175,143 @@ def _rate_limited(resp: httpx.Response) -> bool:
     body = _json_object(resp)
     message = body.get("message", "") if body is not None else ""
     return "rate limit" in str(message).lower()
+
+
+# How much of a response body an outcome keeps — the log budget of every warning
+# line in this module, so an excerpt is always enough to diagnose a failure.
+_GITHUB_EXCERPT_MAX = 300
+
+IssueOutcomeKind = Literal[
+    "ok",  # answered, and the body (if any) says what the caller asked for
+    "created",  # 201 on an interaction that creates something
+    "rate_limited",  # today's `_rate_limited` rule: stop the batch
+    "unauthorized",  # 401: the token itself is the problem
+    "repo_denied",  # a 403 that is not a rate limit: no access to this Repo
+    "not_found",  # 404: issues disabled, or the entity is gone
+    "gone",  # 410: the Repo is gone
+    "other",  # answered with something the caller groups as "a failure, go on"
+    "network",  # no answer at all: an httpx.HTTPError, carried on `error`
+    "unusable_body",  # a 2xx whose body this cannot read
+]
+
+
+@dataclass(frozen=True)
+class GitHubOutcome:
+    """The answer to one GitHub request, classified (see `_github_outcome`)."""
+
+    kind: IssueOutcomeKind
+    status: int | None = None  # the HTTP status, None for the network kind
+    remaining: str | None = None  # `x-ratelimit-remaining`, when the answer carried it
+    excerpt: str = ""  # the first `_GITHUB_EXCERPT_MAX` characters of the body
+    error: httpx.HTTPError | None = None  # the transport exception, for the network kind
+    number: int | None = None  # parsed for a create, from `_issue_number`
+    state: str | None = None  # parsed for an issue fetch, from `_issue_state`
+    state_reason: str | None = None  # ... and `_issue_state_reason`
+
+
+def _github_outcome(resp: httpx.Response, *, expect: Literal["number", "state"] | None = None) -> GitHubOutcome:
+    """Classify an answered request. Never raises: an unreadable body is a kind, not an error.
+
+    The rate-limit kind is exactly `_rate_limited` (checked first), so a batch stops on
+    precisely the responses it stops on today. The rest separates the statuses each loop
+    already groups on — a permission 403, bad credentials 401, disabled 404 and gone 410
+    come apart — and keeps a 2xx whose body cannot be read (`unusable_body`) distinct
+    from a good one, because a 201 without a number filed nothing. `expect` picks which
+    body fields to parse, and therefore which 2xx counts as good: `"number"` for a
+    create, `"state"` for an issue fetch, None for a comment or a close, whose callers
+    group on the status themselves.
+    """
+    status = resp.status_code
+    fields: dict = {
+        "status": status,
+        "remaining": resp.headers.get("x-ratelimit-remaining"),
+        "excerpt": resp.text[:_GITHUB_EXCERPT_MAX],
+    }
+    if expect == "number":
+        fields["number"] = _issue_number(resp)
+    elif expect == "state":
+        fields["state"] = _issue_state(resp)
+        fields["state_reason"] = _issue_state_reason(resp)
+
+    if _rate_limited(resp):
+        kind = "rate_limited"
+    elif status == 401:
+        kind = "unauthorized"
+    elif status == 403:
+        kind = "repo_denied"
+    elif status == 404:
+        kind = "not_found"
+    elif status == 410:
+        kind = "gone"
+    elif 200 <= status < 300:
+        if expect == "number":
+            # A 201 is the only success a filer accepts, and it must carry a number;
+            # any other 2xx is an answer the filer cannot use (as today).
+            if status != 201:
+                kind = "ok"
+            else:
+                kind = "created" if fields.get("number") is not None else "unusable_body"
+        elif expect == "state":
+            if status != 200:
+                kind = "other"
+            else:
+                kind = "ok" if fields.get("state") is not None else "unusable_body"
+        else:
+            kind = "created" if status == 201 else "ok"
+    else:
+        kind = "other"
+    return GitHubOutcome(kind=kind, **fields)
+
+
+class _GitHubClient:
+    """The four GitHub interactions the filer loops make, as classified outcomes.
+
+    Owns what every block in this module used to write out by hand — `base_url=API_BASE`,
+    `_headers`, `timeout=15` and the injected test transport — and turns each answer into
+    a `GitHubOutcome`, including a transport failure (the network kind, never a raise).
+    """
+
+    def __init__(self, token: str, *, transport: httpx.AsyncBaseTransport | None = None) -> None:
+        self._client = httpx.AsyncClient(base_url=API_BASE, headers=_headers(token), timeout=15, transport=transport)
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(self, *exc_info: object) -> None:
+        await self._client.aclose()
+
+    async def create_issue(self, repo: str, title: str, body: str, *, labels: list[str]) -> GitHubOutcome:
+        """POST a new issue in `repo`; the outcome carries the parsed number."""
+        return await self._request(
+            "POST",
+            f"/repos/{repo}/issues",
+            {"title": title, "body": body, "labels": labels},
+            expect="number",
+        )
+
+    async def comment(self, repo: str, number: int, body: str) -> GitHubOutcome:
+        """POST a comment on issue `number`."""
+        return await self._request("POST", f"/repos/{repo}/issues/{number}/comments", {"body": body})
+
+    async def close_issue(self, repo: str, number: int, *, state_reason: str | None = None) -> GitHubOutcome:
+        """PATCH issue `number` to `state: closed`, with a `state_reason` when asked for."""
+        payload: dict = {"state": "closed"}
+        if state_reason is not None:
+            payload["state_reason"] = state_reason
+        return await self._request("PATCH", f"/repos/{repo}/issues/{number}", payload)
+
+    async def fetch_issue(self, repo: str, number: int) -> GitHubOutcome:
+        """GET issue `number`; the outcome carries the parsed state and state reason."""
+        return await self._request("GET", f"/repos/{repo}/issues/{number}", None, expect="state")
+
+    async def _request(
+        self, method: str, url: str, payload: dict | None, *, expect: Literal["number", "state"] | None = None
+    ) -> GitHubOutcome:
+        try:
+            resp = await self._client.request(method, url, json=payload)
+        except httpx.HTTPError as exc:  # unreachable API, timeout, protocol error
+            return GitHubOutcome(kind="network", error=exc)
+        return _github_outcome(resp, expect=expect)
 
 
 _RUN_HINT_TEMPLATES: dict[str, str] = {

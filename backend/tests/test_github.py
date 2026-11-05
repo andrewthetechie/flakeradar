@@ -259,6 +259,145 @@ def test_rate_limited_classifies_only_throttling():
     assert not rl(resp(201, body={"number": 5}))
 
 
+def _outcome_resp(status, *, headers=None, body=None, raw=None):
+    """A plain answered response — all the seam classifier needs."""
+    if raw is not None:
+        return httpx.Response(status, headers=headers or {}, text=raw)
+    return httpx.Response(status, headers=headers or {}, json=body if body is not None else {})
+
+
+def test_github_outcome_classifies_the_table():
+    """Every kind, straight from a plain response: no client, no transport, no raise."""
+    outcome = github_integration._github_outcome
+
+    created = outcome(_outcome_resp(201, body={"number": 77}, headers={"x-ratelimit-remaining": "99"}), expect="number")
+    assert (created.kind, created.status, created.remaining, created.number) == ("created", 201, "99", 77)
+
+    # A 201 whose body carries no number filed nothing.
+    for bodyless in (_outcome_resp(201), _outcome_resp(201, raw="<html>proxy</html>")):
+        unusable = outcome(bodyless, expect="number")
+        assert unusable.kind == "unusable_body" and unusable.number is None
+    # A 200 from a create is not a create, whatever it says.
+    assert outcome(_outcome_resp(200, body={"number": 77}), expect="number").kind == "ok"
+
+    # A fetch parses the state, and an answer without one says nothing.
+    fetched = outcome(_outcome_resp(200, body={"state": "closed", "state_reason": "not_planned"}), expect="state")
+    assert (fetched.kind, fetched.state, fetched.state_reason) == ("ok", "closed", "not_planned")
+    assert outcome(_outcome_resp(200, body={"number": 5}), expect="state").kind == "unusable_body"
+    assert outcome(_outcome_resp(201, body={"state": "open"}), expect="state").kind == "other"
+
+    # A comment or a close carries no body the caller reads, so it groups on status.
+    assert outcome(_outcome_resp(201, body={"html_url": "u"})).kind == "created"
+    assert outcome(_outcome_resp(200, body={"state": "closed"})).kind == "ok"
+    assert outcome(_outcome_resp(204)).kind == "ok"
+
+    # Throttling wins over every other reading, for each of the three body shapes;
+    # the remaining statuses of the loops' grouping come apart.
+    for expect in (None, "number", "state"):
+        assert outcome(_outcome_resp(429, headers={"retry-after": "60"}), expect=expect).kind == "rate_limited"
+        limited = outcome(_outcome_resp(403, headers={"x-ratelimit-remaining": "0"}), expect=expect)
+        assert (limited.kind, limited.status, limited.remaining) == ("rate_limited", 403, "0")
+        for status, kind in (
+            (401, "unauthorized"),
+            (403, "repo_denied"),  # a 403 that is not throttling
+            (404, "not_found"),
+            (410, "gone"),
+            (301, "other"),
+            (500, "other"),
+        ):
+            assert outcome(_outcome_resp(status, body={"message": "no"}), expect=expect).kind == kind
+
+    # A body is excerpted to the log budget the warnings already use.
+    long_body = json.dumps({"message": "x" * 500})
+    denied = outcome(_outcome_resp(403, raw=long_body))
+    assert denied.kind == "repo_denied"
+    assert denied.excerpt == long_body[: github_integration._GITHUB_EXCERPT_MAX]
+    assert len(denied.excerpt) == 300
+
+
+async def _four_interactions(transport):
+    """One of each seam interaction against `transport`, keyed for readable assertions."""
+    async with github_integration._GitHubClient("tok", transport=transport) as client:
+        return {
+            "create": await client.create_issue("acme/app", "title", "body", labels=["flakeradar"]),
+            "comment": await client.comment("acme/app", 77, "note"),
+            "close": await client.close_issue("acme/app", 77, state_reason="completed"),
+            "fetch": await client.fetch_issue("acme/app", 77),
+        }
+
+
+async def test_seam_rate_limit_is_a_rate_limit_for_every_interaction():
+    """The representative case: this 403 stops a batch whichever interaction returned it."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            403,
+            headers={"x-ratelimit-remaining": "0"},
+            json={"message": "You have exceeded a rate limit"},
+        )
+
+    outcomes = await _four_interactions(httpx.MockTransport(handler))
+
+    assert set(outcomes) == {"create", "comment", "close", "fetch"}
+    for name, outcome in outcomes.items():
+        assert (outcome.kind, outcome.status, outcome.remaining) == ("rate_limited", 403, "0"), name
+
+
+async def test_seam_network_failure_is_a_kind_and_never_raises():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("offline", request=request)
+
+    outcomes = await _four_interactions(httpx.MockTransport(handler))
+
+    for name, outcome in outcomes.items():
+        assert outcome.kind == "network", name
+        assert isinstance(outcome.error, httpx.ConnectError), name
+        assert (outcome.status, outcome.excerpt) == (None, ""), name
+
+
+async def test_seam_client_sends_the_loops_wire_shape():
+    """The seam owns base_url, headers, timeout and the transport, so the loops can move verbatim."""
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if request.method == "GET":
+            return httpx.Response(200, json={"state": "open"})
+        return httpx.Response(201, json={"number": 77})
+
+    transport = httpx.MockTransport(handler)
+    async with github_integration._GitHubClient("tok", transport=transport) as client:
+        assert client._client.base_url == github_integration.API_BASE
+        assert client._client.timeout == httpx.Timeout(15)
+        create = await client.create_issue("acme/app", "title", "body", labels=["flakeradar"])
+        comment = await client.comment("acme/app", 77, "note")
+        plain_close = await client.close_issue("acme/app", 77)
+        reasoned_close = await client.close_issue("acme/app", 77, state_reason="completed")
+        fetch = await client.fetch_issue("acme/app", 77)
+
+    assert (create.kind, create.number) == ("created", 77)
+    assert comment.kind == "created"
+    assert (plain_close.kind, reasoned_close.kind) == ("created", "created")
+    assert (fetch.kind, fetch.state) == ("ok", "open")
+
+    assert [(r.method, r.url.path) for r in calls] == [
+        ("POST", "/repos/acme/app/issues"),
+        ("POST", "/repos/acme/app/issues/77/comments"),
+        ("PATCH", "/repos/acme/app/issues/77"),
+        ("PATCH", "/repos/acme/app/issues/77"),
+        ("GET", "/repos/acme/app/issues/77"),
+    ]
+    bodies = [json.loads(r.content) for r in calls[:4]]
+    assert bodies[0] == {"title": "title", "body": "body", "labels": ["flakeradar"]}
+    assert bodies[1] == {"body": "note"}
+    assert bodies[2] == {"state": "closed"}  # the post-delete close sends no reason
+    assert bodies[3] == {"state": "closed", "state_reason": "completed"}
+    for r in calls:
+        assert r.headers["Authorization"] == "Bearer tok"
+        assert r.headers["Accept"] == "application/vnd.github+json"
+        assert r.headers["X-GitHub-Api-Version"] == "2022-11-28"
+
+
 async def test_does_not_refile_or_file_below_threshold(db, gh_settings):
     filed = await _flaky_test(db, name="filed", github_issue_number=5)
     proj = await make_project(db, "acme/other")
