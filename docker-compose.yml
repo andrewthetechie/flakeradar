@@ -17,12 +17,13 @@ services:
   flakeradar:
     build:
       context: .
-      dockerfile: backend/Dockerfile
+      dockerfile: Dockerfile
     ports:
       - "127.0.0.1:8000:8000"
     env_file: .env
     environment:
-      FLAKERADAR_DATABASE_URL: postgresql+asyncpg://flakeradar:${POSTGRES_PASSWORD:-flakeradar}@db:5432/flakeradar
+      # SQLx reads `postgresql://`; the Python server needed `postgresql+asyncpg://`.
+      FLAKERADAR_DATABASE_URL: postgresql://flakeradar:${POSTGRES_PASSWORD:-flakeradar}@db:5432/flakeradar
     depends_on:
       db:
         condition: service_healthy

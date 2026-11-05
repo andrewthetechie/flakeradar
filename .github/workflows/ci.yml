@@ -559,3 +559,190 @@ jobs:
           grep -Fq "[test_new_failure](https://flakeradar.example.com?repo=andrewthetechie%2Fflakeradar&test=" summary.md
           grep -Fq "| stable (0) | 0 | no |" summary.md
           echo "::notice::Summary action output verified: one known-flaky and one new failure rendered."
+
+  # Paths the five-target matrix depends on. The matrix is the slowest thing CI
+  # runs, so a PR that touches none of these does not pay for it; every push to
+  # the rewrite branch and to main builds it regardless (see the `if` on the
+  # matrix). `dorny/paths-filter` is what writers-app uses for the same reason.
+  changes:
+    name: Changed paths
+    runs-on: ubuntu-24.04
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      relevant: ${{ steps.filter.outputs.relevant }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Filter
+        id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            relevant:
+              - 'crates/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'rust-toolchain.toml'
+              - 'clippy.toml'
+              - '.cargo/**'
+              - '.config/**'
+              - 'frontend/**'
+              - 'scripts/**'
+              - 'tests/parity/**'
+              - 'actions/**'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/release.yml'
+              - 'Dockerfile'
+
+  # Built once and handed to every matrix leg: the binary embeds `frontend/dist`,
+  # and building a Vite project five times would dominate the matrix.
+  frontend-dist:
+    name: Frontend build
+    needs: changes
+    if: >-
+      always() && (github.event_name != 'pull_request' ||
+      needs.changes.outputs.relevant == 'true')
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Upload dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist
+          if-no-files-found: error
+          retention-days: 7
+
+  # A real binary for each target, run against a real database: the smoke test
+  # starts it, uploads a Report, waits for the processor and checks every surface
+  # the binary carries. Building natively on each runner means no cross toolchain
+  # and no emulation.
+  targets:
+    name: Target (${{ matrix.target }})
+    needs: [changes, frontend-dist]
+    if: >-
+      always() && (github.event_name != 'pull_request' ||
+      needs.changes.outputs.relevant == 'true') &&
+      needs.frontend-dist.result == 'success'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-24.04
+            rustflags: "-D warnings"
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-24.04-arm
+            rustflags: "-D warnings"
+          - target: x86_64-apple-darwin
+            os: macos-15-intel
+            rustflags: "-D warnings"
+          - target: aarch64-apple-darwin
+            os: macos-15
+            rustflags: "-D warnings"
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            # Static CRT, so the binary needs no Visual C++ redistributable.
+            rustflags: "-D warnings -C target-feature=+crt-static"
+    runs-on: ${{ matrix.os }}
+    env:
+      RUSTFLAGS: ${{ matrix.rustflags }}
+      FLAKERADAR_TEST_DATABASE_URL: postgresql://flakeradar:flakeradar@localhost:5432/flakeradar
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download the built frontend
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist
+
+      - name: Add the target
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Install musl tools
+        if: contains(matrix.target, 'linux-musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Point the C compiler at musl
+        # `ring` and `mimalloc` build C, and the host gcc produces glibc objects
+        # that do not link into a musl binary. `musl-gcc` and `ar` come with
+        # musl-tools; `cc` reads the per-target variables.
+        if: contains(matrix.target, 'linux-musl')
+        run: |
+          target_lower=$(printf '%s' "${{ matrix.target }}" | tr 'a-z-' 'a-z_')
+          echo "CC_${target_lower}=musl-gcc" >> "$GITHUB_ENV"
+          echo "AR_${target_lower}=ar" >> "$GITHUB_ENV"
+          target_upper=$(printf '%s' "${{ matrix.target }}" | tr 'a-z-' 'A-Z_')
+          echo "CARGO_TARGET_${target_upper}_LINKER=musl-gcc" >> "$GITHUB_ENV"
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "cargo-target-${{ matrix.target }}"
+          key: ${{ matrix.target }}
+
+      - name: Test the core crate
+        run: cargo test -p flakeradar-core
+
+      - name: Build the binary
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Check the Linux binary is static
+        if: contains(matrix.target, 'linux-musl')
+        run: |
+          binary="target/${{ matrix.target }}/release/flakeradar"
+          file "$binary"
+          file "$binary" | grep -q "statically linked" || {
+            echo "::error::$binary is not statically linked"; exit 1;
+          }
+          ldd "$binary" 2>&1 | grep -q "not a dynamic executable" || {
+            echo "::error::$binary has dynamic dependencies"; exit 1;
+          }
+
+      - name: Set up PostgreSQL
+        uses: ikalnytskyi/action-setup-postgres@v8
+        with:
+          username: flakeradar
+          password: flakeradar
+          database: flakeradar
+          port: 5432
+          postgres-version: "17"
+
+      - name: Smoke test the binary
+        shell: bash
+        run: |
+          binary="target/${{ matrix.target }}/release/flakeradar"
+          [ -f "$binary" ] || binary="$binary.exe"
+          scripts/smoke.sh "$binary" "$FLAKERADAR_TEST_DATABASE_URL"
+
+      - name: Upload the binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: flakeradar-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/flakeradar
+          if-no-files-found: error
+          retention-days: 7

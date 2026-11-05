@@ -1,0 +1,229 @@
+name: Release
+
+# A `v*` tag builds, tests and publishes the five binaries. A manual run builds
+# and tests them without publishing, which is how a release is rehearsed.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+# One release at a time, and never two writers on the same tag: the asset upload
+# below is resumable, and two runs racing it would both see an asset missing.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # Warnings are errors, exactly as in CI.
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  validate:
+    name: Validate the version
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Read the tag's version
+        id: version
+        # A tag is `vMAJOR.MINOR.PATCH`; a manual run has no tag, so it takes the
+        # workspace version and publishes nothing.
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            version="${GITHUB_REF_NAME#v}"
+            case "$version" in
+              [0-9]*.[0-9]*.[0-9]*) ;;
+              *) echo "::error::${GITHUB_REF_NAME} is not vMAJOR.MINOR.PATCH"; exit 1 ;;
+            esac
+          else
+            version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "releasing $version" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Test the version script
+        run: node --test scripts/version.test.mjs
+
+      - name: Check every version-bearing file
+        run: node scripts/version.mjs check "${{ steps.version.outputs.version }}"
+
+  build:
+    name: Target (${{ matrix.target }})
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-24.04
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-24.04-arm
+          - target: x86_64-apple-darwin
+            os: macos-15-intel
+          - target: aarch64-apple-darwin
+            os: macos-15
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
+    env:
+      FLAKERADAR_TEST_DATABASE_URL: postgresql://flakeradar:flakeradar@localhost:5432/flakeradar
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build the dashboard
+        working-directory: frontend
+        run: npm ci && npm run build
+
+      - name: Add the target
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Install musl tools
+        if: contains(matrix.target, 'linux-musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Point the C compiler at musl
+        if: contains(matrix.target, 'linux-musl')
+        run: |
+          target_lower=$(printf '%s' "${{ matrix.target }}" | tr 'a-z-' 'a-z_')
+          echo "CC_${target_lower}=musl-gcc" >> "$GITHUB_ENV"
+          echo "AR_${target_lower}=ar" >> "$GITHUB_ENV"
+          target_upper=$(printf '%s' "${{ matrix.target }}" | tr 'a-z-' 'A-Z_')
+          echo "CARGO_TARGET_${target_upper}_LINKER=musl-gcc" >> "$GITHUB_ENV"
+
+      - name: Build the binary
+        # A Windows release binary must not need the Visual C++ redistributable,
+        # so the CRT is linked in.
+        run: cargo build --release --locked --target ${{ matrix.target }}
+        env:
+          RUSTFLAGS: >-
+            -D warnings ${{ matrix.target == 'x86_64-pc-windows-msvc' &&
+            '-C target-feature=+crt-static' || '' }}
+
+      - name: Test the core crate
+        run: cargo test -p flakeradar-core
+
+      - name: Set up PostgreSQL
+        uses: ikalnytskyi/action-setup-postgres@v8
+        with:
+          username: flakeradar
+          password: flakeradar
+          database: flakeradar
+          port: 5432
+          postgres-version: "17"
+
+      - name: Smoke test the binary
+        shell: bash
+        run: |
+          binary="target/${{ matrix.target }}/release/flakeradar"
+          [ -f "$binary" ] || binary="$binary.exe"
+          scripts/smoke.sh "$binary" "$FLAKERADAR_TEST_DATABASE_URL"
+
+      - name: Package the binary
+        shell: bash
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+          TARGET: ${{ matrix.target }}
+        # Linux and macOS get a tar.gz, Windows a zip. Both carry LICENSE and
+        # NOTICE, which the licenses of the dependencies require. Everything is
+        # staged in one directory first, because bsdtar cannot append to a
+        # compressed archive.
+        run: |
+          set -euo pipefail
+          staging="package"
+          mkdir -p "$staging"
+          cp LICENSE NOTICE "$staging/"
+          if [ -f "target/$TARGET/release/flakeradar.exe" ]; then
+            cp "target/$TARGET/release/flakeradar.exe" "$staging/"
+            archive="flakeradar-$VERSION-$TARGET.zip"
+            ( cd "$staging" && 7z a "$GITHUB_WORKSPACE/$archive" . >/dev/null )
+          else
+            cp "target/$TARGET/release/flakeradar" "$staging/"
+            archive="flakeradar-$VERSION-$TARGET.tar.gz"
+            tar -czf "$archive" -C "$staging" LICENSE NOTICE flakeradar
+          fi
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$archive" > "$archive.sha256"
+          else
+            shasum -a 256 "$archive" > "$archive.sha256"
+          fi
+          ls -l "$archive" "$archive.sha256"
+
+      - name: Attest the archive's provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: flakeradar-${{ needs.validate.outputs.version }}-${{ matrix.target }}.*
+
+      - name: Upload the archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: flakeradar-${{ matrix.target }}
+          path: flakeradar-${{ needs.validate.outputs.version }}-${{ matrix.target }}.*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish the release
+    needs: [validate, build]
+    # A manual run rehearses the build and publishes nothing.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download every archive
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create the release if it is missing
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.validate.outputs.version }}
+        # Resume-safe: a rerun of a half-finished release finds the release and
+        # uploads only what is absent.
+        run: |
+          gh release view "v$VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+            gh release create "v$VERSION" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "v$VERSION" \
+              --generate-notes
+
+      - name: Upload the assets that are absent
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.validate.outputs.version }}
+        # Never `--clobber`: an asset that is already published is left alone, so
+        # a rerun cannot replace a published binary with a new build of it.
+        run: |
+          set -euo pipefail
+          present="$(gh release view "v$VERSION" --repo "$GITHUB_REPOSITORY" --json assets \
+            --jq '.assets[].name')"
+          for asset in dist/*; do
+            name="$(basename "$asset")"
+            if printf '%s\n' "$present" | grep -Fxq "$name"; then
+              echo "::notice::$name is already published; leaving it alone"
+              continue
+            fi
+            gh release upload "v$VERSION" "$asset" --repo "$GITHUB_REPOSITORY"
+          done
