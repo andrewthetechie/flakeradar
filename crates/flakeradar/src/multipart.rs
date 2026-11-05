@@ -30,27 +30,20 @@ const CLOSING: &[u8] = b"--";
 ///
 /// `content_type` is the request's `Content-Type`, whose `boundary` parameter
 /// separates the parts. Anything this cannot read — a missing or empty boundary,
-/// a body that does not open with its delimiter, an unterminated part, a body
-/// with no such file field — reads as `None`.
+/// a preamble the reference parser refuses, an unterminated part, a body with no
+/// such file field — reads as `None`.
 ///
 /// A part's data may hold anything, the boundary bytes included: only a CRLF
 /// followed by the delimiter and then a CRLF or the closing dashes ends a part,
 /// so the reference parser keeps scanning past bytes that merely look like one.
-/// When the field arrives more than once, the last part that carries it wins,
-/// because that is the value Starlette's form answered.
+/// When the field arrives more than once, the last part that carries it decides,
+/// whatever its kind, because that is the value Starlette's form answered: a
+/// later plain form value leaves no upload at all.
 #[must_use]
 pub fn file_field<'a>(body: &'a [u8], content_type: &str, field: &str) -> Option<&'a [u8]> {
     let boundary = boundary_of(content_type)?;
     let framing = Framing::new(boundary.as_bytes());
-    // The reference parser expects the form to open with its delimiter and
-    // refuses a preamble, so a body with something in front of it carries no
-    // field. A single leading CRLF is the one thing it skips.
-    let opening = if body.starts_with(CRLF) {
-        CRLF.len()
-    } else {
-        0
-    };
-    let mut delimiter_at = framing.opening(body, opening)?;
+    let mut delimiter_at = framing.opening(body)?;
     let mut found = None;
     loop {
         let data_at = delimiter_at.checked_add(framing.delimiter.len())?;
@@ -65,7 +58,13 @@ pub fn file_field<'a>(body: &'a [u8], content_type: &str, field: &str) -> Option
         let Some(part_end) = framing.next_end(body, part_start) else {
             return found;
         };
-        found = part_file(body.get(part_start..part_end)?, field).or(found);
+        match part_field(body.get(part_start..part_end)?, field) {
+            // A part that names no field, or whose headers cannot be read,
+            // leaves the field where the parts before it put it.
+            None | Some(FieldPart::Other) => {}
+            Some(FieldPart::Value) => found = None,
+            Some(FieldPart::File(bytes)) => found = Some(bytes),
+        }
         delimiter_at = part_end.checked_add(CRLF.len())?;
     }
 }
@@ -91,8 +90,23 @@ fn boundary_of(content_type: &str) -> Option<&str> {
     None
 }
 
-/// The payload of `field` when this part is that field sent as a file.
-fn part_file<'a>(part: &'a [u8], field: &str) -> Option<&'a [u8]> {
+/// How one part sends the field the form is read for.
+#[derive(Debug, Clone, Copy)]
+enum FieldPart<'a> {
+    /// A part that names some other field, so it decides nothing here.
+    Other,
+    /// The field sent as a plain form value, which carries no upload.
+    Value,
+    /// The field sent as a file, and the bytes it carried.
+    File(&'a [u8]),
+}
+
+/// How this part sends `field`, when its headers say anything this can read.
+///
+/// `None` when the part's headers cannot be read at all: the reference parser
+/// answers such a part with an error, or drops it, and either way the field
+/// keeps what the parts before it gave.
+fn part_field<'a>(part: &'a [u8], field: &str) -> Option<FieldPart<'a>> {
     let header_end = find(part, HEADER_END)?;
     let headers = part.get(..header_end)?;
     let payload = part.get(header_end + HEADER_END.len()..)?;
@@ -110,7 +124,13 @@ fn part_file<'a>(part: &'a [u8], field: &str) -> Option<&'a [u8]> {
             filename = has_filename;
         }
     }
-    (named && filename).then_some(payload)
+    Some(if !named {
+        FieldPart::Other
+    } else if filename {
+        FieldPart::File(payload)
+    } else {
+        FieldPart::Value
+    })
 }
 
 /// The `name` parameter of a `Content-Disposition` value, and whether it also
@@ -195,7 +215,27 @@ impl Framing {
     }
 
     /// Where the body's opening delimiter starts, when it opens with one.
-    fn opening(&self, body: &[u8], at: usize) -> Option<usize> {
+    ///
+    /// The reference parser skips any run of leading CR and LF, then looks for
+    /// the next `-` and expects the delimiter there; a body whose first byte is
+    /// neither is an error. So `"\n--b…"` and `"\r\n\r\n--b…"` are forms, and
+    /// so is `"\r\nwords--b…"`, which it reads by jumping to that `-`. A body
+    /// that leads nowhere carries no field.
+    fn opening(&self, body: &[u8]) -> Option<usize> {
+        let skipped = body
+            .iter()
+            .position(|byte| *byte != b'\r' && *byte != b'\n')
+            .unwrap_or(body.len());
+        let rest = body.get(skipped..)?;
+        if rest.starts_with(&self.delimiter) {
+            return Some(skipped);
+        }
+        // Only a CR or LF it skipped makes the reference parser look past what
+        // follows it, and there it wants the next `-` to open the delimiter.
+        if skipped == 0 {
+            return None;
+        }
+        let at = skipped.checked_add(rest.iter().position(|byte| *byte == b'-')?)?;
         body.get(at..)?.starts_with(&self.delimiter).then_some(at)
     }
 
@@ -534,6 +574,15 @@ mod tests {
             ),
             None
         );
+        // A part that closed but never ended its headers carries no field.
+        assert_eq!(
+            file_field(
+                b"--b\r\nContent-Disposition: form-data; name=\"report\"; filename=\"r.xml\"\r\n--b--\r\n",
+                "multipart/form-data; boundary=b",
+                REPORT_FIELD
+            ),
+            None
+        );
         // The delimiter's own bytes run on into something that is no delimiter.
         assert_eq!(
             file_field(b"--bX\r\n", "multipart/form-data; boundary=b", REPORT_FIELD),
@@ -556,29 +605,64 @@ mod tests {
 
     #[test]
     fn a_preamble_is_not_a_form() {
-        // python-multipart expects the body to open with its delimiter and
-        // refuses a preamble: Starlette's `request.form()` raises
-        // MultiPartException, which FastAPI answers with 400. The route reads
-        // that as an empty upload, so a preamble hides the field.
+        // The reference parser takes CR, LF or the delimiter as the first byte
+        // and nothing else: a preamble that starts with any other byte is an
+        // error, which Starlette's `request.form()` raises as MultiPartException
+        // and FastAPI answers with 400. The route reads that as an empty upload.
         let boundary = "b";
-        let mut body = b"preamble in front of the form\r\n".to_vec();
-        body.extend_from_slice(&form(
-            boundary,
-            &[file_part(boundary, REPORT_FIELD, b"<x/>")],
-        ));
+        let framed = form(boundary, &[file_part(boundary, REPORT_FIELD, b"<x/>")]);
+        for preamble in [&b"preamble in front of the form\r\n"[..], b" ", b"x\r\n"] {
+            let mut body = preamble.to_vec();
+            body.extend_from_slice(&framed);
+            assert_eq!(
+                file_field(&body, "multipart/form-data; boundary=b", REPORT_FIELD),
+                None,
+                "{preamble:?} in front of the form"
+            );
+        }
+    }
+
+    #[test]
+    fn a_preamble_of_leading_newlines_is_skipped() {
+        // python-multipart skips any run of leading CR and LF before the
+        // delimiter, so a form behind one still carries its field.
+        let boundary = "b";
+        let framed = form(boundary, &[file_part(boundary, REPORT_FIELD, b"<x/>")]);
+        for preamble in [&b"\n"[..], b"\r\n", b"\r\n\r\n"] {
+            let mut body = preamble.to_vec();
+            body.extend_from_slice(&framed);
+            assert_eq!(
+                file_field(&body, "multipart/form-data; boundary=b", REPORT_FIELD),
+                Some(&b"<x/>"[..]),
+                "{preamble:?} in front of the form"
+            );
+        }
+    }
+
+    #[test]
+    fn a_skipped_newline_lets_the_parser_look_past_what_follows_it() {
+        // After a leading CR or LF the reference parser searches for the next
+        // `-` instead of reading the bytes between them, so words there still
+        // leave a form it accepts.
+        let boundary = "b";
+        let framed = form(boundary, &[file_part(boundary, REPORT_FIELD, b"<x/>")]);
+        let mut body = b"\r\nwords\r\n".to_vec();
+        body.extend_from_slice(&framed);
+        assert_eq!(
+            file_field(&body, "multipart/form-data; boundary=b", REPORT_FIELD),
+            Some(&b"<x/>"[..])
+        );
+        // A `-` that opens no delimiter is where that search stops, and a body
+        // with no `-` after its newlines carries no field either.
+        let mut body = b"\r\n-junk".to_vec();
+        body.extend_from_slice(&framed);
         assert_eq!(
             file_field(&body, "multipart/form-data; boundary=b", REPORT_FIELD),
             None
         );
-        // A single leading CRLF is the one preamble the reference parser skips.
-        let mut body = b"\r\n".to_vec();
-        body.extend_from_slice(&form(
-            boundary,
-            &[file_part(boundary, REPORT_FIELD, b"<x/>")],
-        ));
         assert_eq!(
-            file_field(&body, "multipart/form-data; boundary=b", REPORT_FIELD),
-            Some(&b"<x/>"[..])
+            file_field(b"\r\njunk", "multipart/form-data; boundary=b", REPORT_FIELD),
+            None
         );
     }
 
@@ -647,11 +731,13 @@ mod tests {
     }
 
     #[test]
-    fn the_last_report_part_wins() {
+    fn the_last_report_part_wins_whatever_its_kind() {
         // Starlette's form answers the last value a name carried, so a
-        // duplicated field is the later upload.
+        // duplicated field is the later part. A plain value is answered as a
+        // string rather than an upload, which leaves the route with nothing to
+        // read: the 400 the frozen server gave, not the earlier file.
         let boundary = "b";
-        let body = form(
+        let two_files = form(
             boundary,
             &[
                 file_part(boundary, REPORT_FIELD, b"<first/>"),
@@ -659,7 +745,55 @@ mod tests {
             ],
         );
         assert_eq!(
-            file_field(&body, "multipart/form-data; boundary=b", REPORT_FIELD),
+            file_field(&two_files, "multipart/form-data; boundary=b", REPORT_FIELD),
+            Some(&b"<second/>"[..])
+        );
+        let file_then_text = form(
+            boundary,
+            &[
+                file_part(boundary, REPORT_FIELD, b"<first/>"),
+                value_part(boundary, REPORT_FIELD, b"<second/>"),
+            ],
+        );
+        assert_eq!(
+            file_field(
+                &file_then_text,
+                "multipart/form-data; boundary=b",
+                REPORT_FIELD
+            ),
+            None
+        );
+        let text_then_file = form(
+            boundary,
+            &[
+                value_part(boundary, REPORT_FIELD, b"<first/>"),
+                file_part(boundary, REPORT_FIELD, b"<second/>"),
+            ],
+        );
+        assert_eq!(
+            file_field(
+                &text_then_file,
+                "multipart/form-data; boundary=b",
+                REPORT_FIELD
+            ),
+            Some(&b"<second/>"[..])
+        );
+        // A part under another name decides nothing at all, here and anywhere.
+        let file_then_other = form(
+            boundary,
+            &[
+                value_part(boundary, REPORT_FIELD, b"<first/>"),
+                value_part(boundary, "note", b"hello"),
+                file_part(boundary, REPORT_FIELD, b"<second/>"),
+                file_part(boundary, "note", b"r.xml"),
+            ],
+        );
+        assert_eq!(
+            file_field(
+                &file_then_other,
+                "multipart/form-data; boundary=b",
+                REPORT_FIELD
+            ),
             Some(&b"<second/>"[..])
         );
     }
