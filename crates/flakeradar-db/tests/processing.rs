@@ -1975,7 +1975,10 @@ async fn a_report_that_changes_the_default_branch_drops_its_own_crossings() {
         if status == "passed" {
             // The flip on `feat` is a crossing while `feat` is not the Default branch.
             assert_eq!(
-                outcome.tier_changes.first().map(|change| change.event()),
+                outcome
+                    .tier_changes
+                    .first()
+                    .map(flakeradar_core::TierChange::event),
                 Some("test.flaky".to_owned())
             );
         }
@@ -2028,4 +2031,101 @@ async fn a_default_branch_change_silences_a_linked_junit_reports_job_crossings()
     // branch change keeps the crossing silent.
     assert_eq!(stored.flakiness_score, 0.0);
     assert_eq!(outcome.tier_changes, Vec::new());
+}
+
+#[test]
+fn the_processing_settings_debug_names_its_fields() {
+    // The Debug form is what a log line carries, so it must name every field and
+    // never the clock it holds.
+    let text = format!("{:?}", settings());
+    for field in [
+        "score_window",
+        "score_decay",
+        "broken_streak",
+        "flake_threshold",
+        "max_report_retries",
+    ] {
+        assert!(text.contains(field), "{text}");
+    }
+    assert!(!text.contains("FixedClock"), "{text}");
+}
+
+#[tokio::test]
+async fn a_report_counts_error_and_skipped_executions() {
+    let db = TestDb::new().await.expect("a test database");
+    let project = project(&db, "acme/app", "backend").await;
+    let body = b"<testsuite name=\"unit\">\
+        <testcase classname=\"c\" name=\"boom\"><error message=\"kaboom\"/></testcase>\
+        <testcase classname=\"c\" name=\"later\"><skipped message=\"not today\"/></testcase></testsuite>";
+    queue(&db, &project, body).await;
+    let outcome = process_next(db.connection(), &settings())
+        .await
+        .expect("the processor runs")
+        .expect("a Report");
+    assert_eq!(
+        outcome.counts,
+        Some(serde_json::json!({
+            "passed": 0, "failed": 0, "error": 1, "skipped": 1, "retried": 0
+        }))
+    );
+}
+
+#[tokio::test]
+async fn a_line_too_large_for_its_column_fails_the_report() {
+    // `line` is an `integer` column, so a runner's larger number cannot be stored.
+    let db = TestDb::new().await.expect("a test database");
+    let project = project(&db, "acme/app", "backend").await;
+    let body = b"<testsuite name=\"unit\">\
+        <testcase classname=\"c\" name=\"t\" file=\"tests/a.py\" line=\"9999999999\"/></testsuite>";
+    queue(&db, &project, body).await;
+    let outcome = process_next(db.connection(), &settings())
+        .await
+        .expect("the processor runs")
+        .expect("a Report");
+    assert_eq!(outcome.status, "failed");
+    assert!(
+        outcome
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("line 9999999999 is out of range")),
+        "{:?}",
+        outcome.error
+    );
+}
+
+#[tokio::test]
+async fn the_last_occurrence_of_a_test_keeps_its_location() {
+    let db = TestDb::new().await.expect("a test database");
+    let project = project(&db, "acme/app", "backend").await;
+    let body = b"<testsuite name=\"unit\">\
+        <testcase classname=\"tests.test_mod\" name=\"t\" file=\"old.py\" line=\"3\">\
+        <failure message=\"x\"/></testcase>\
+        <testcase classname=\"tests.test_mod\" name=\"t\" file=\"new.py\" line=\"7\"/></testsuite>";
+    queue(&db, &project, body).await;
+    drain(&db, &settings()).await;
+    let row = test(&db).await;
+    assert_eq!(
+        (row.last_status.as_str(), row.file.as_deref(), row.line),
+        ("passed", Some("new.py"), Some(7))
+    );
+}
+
+#[tokio::test]
+async fn a_skipped_job_counts_as_skipped() {
+    let db = TestDb::new().await.expect("a test database");
+    let project = project(&db, "acme/app", "backend").await;
+    let report = payload(vec![
+        job_in("1", "lint", JobStatus::Skipped),
+        job_in("2", "gate", JobStatus::Passed),
+    ]);
+    queue_pipeline(&db, &project, &report).await;
+    let outcome = process_next(db.connection(), &settings())
+        .await
+        .expect("the processor runs")
+        .expect("a Report");
+    let counts = outcome.counts.expect("counts");
+    assert_eq!(
+        (counts["skipped"].as_i64(), counts["passed"].as_i64()),
+        (Some(1), Some(1))
+    );
 }

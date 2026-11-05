@@ -16,8 +16,9 @@ use chrono::{DateTime, FixedOffset};
 use flakeradar_core::{JobResultIn, JobStatus, PipelineReportIn, pipeline_body};
 use flakeradar_db::entities::{job_executions, jobs, projects, repos, test_runs};
 use flakeradar_db::{
-    FixedClock, ProcessingSettings, explained_ci_job_ids, get_or_create_project, job_history,
-    process_next, rescore_jobs, unexplained_failure_counts,
+    FixedClock, ProcessingSettings, SIBLING_MAX, explained_ci_job_ids, get_or_create_project,
+    job_history, process_next, rescore_jobs, summary_explaining_siblings,
+    unexplained_failure_counts,
 };
 use flakeradar_test_support::{
     TestDb, make_execution, make_job, make_job_execution, make_junit, make_pipeline, make_report,
@@ -918,5 +919,132 @@ async fn a_job_execution_with_an_unknown_status_refuses_to_score() {
         error
             .to_string()
             .contains("unknown Execution status mystery")
+    );
+}
+
+#[tokio::test]
+async fn summary_explaining_siblings_lists_the_failed_jobs_of_each_pair() {
+    // The read API lists the Jobs behind a Summary Job's explanation, so the query
+    // is checked here: one pair, a second attempt, an empty run ID, a passed
+    // execution, a Summary Job and another Repo must all be left out or kept apart.
+    let db = TestDb::new().await.expect("a test database");
+    let pipeline = make_pipeline()
+        .build(db.connection())
+        .await
+        .expect("a Pipeline");
+    let lint = make_job(&pipeline)
+        .name("lint")
+        .build(db.connection())
+        .await
+        .expect("a Job");
+    let gate = make_job(&pipeline)
+        .name("gate")
+        .summary(true)
+        .build(db.connection())
+        .await
+        .expect("a Summary Job");
+    for (job, status, run_id, attempt) in [
+        (&lint, "failed", "7", 1),
+        (&lint, "passed", "7", 1),
+        (&gate, "failed", "7", 1),
+        (&lint, "failed", "7", 2),
+        (&lint, "failed", "8", 1),
+    ] {
+        make_job_execution(job)
+            .status(status)
+            .ci_run_id(run_id)
+            .ci_run_attempt(attempt)
+            .build(db.connection())
+            .await
+            .expect("a Job execution");
+    }
+    let other = make_pipeline()
+        .repo("other/app")
+        .build(db.connection())
+        .await
+        .expect("a Pipeline in another Repo");
+    let foreign = make_job(&other)
+        .name("lint")
+        .build(db.connection())
+        .await
+        .expect("a Job");
+    make_job_execution(&foreign)
+        .status("failed")
+        .ci_run_id("7")
+        .ci_run_attempt(1)
+        .build(db.connection())
+        .await
+        .expect("a Job execution");
+    let repo = repos::Entity::find()
+        .one(db.connection())
+        .await
+        .expect("the Repo")
+        .expect("the Repo exists");
+
+    let empty = summary_explaining_siblings(db.connection(), repo.id, &[(String::new(), 1)])
+        .await
+        .expect("the sibling query runs");
+    assert!(empty.is_empty(), "an empty ci_run_id explains nothing");
+
+    let explained = summary_explaining_siblings(
+        db.connection(),
+        repo.id,
+        &[
+            ("7".to_owned(), 1),
+            ("8".to_owned(), 1),
+            ("7".to_owned(), 1),
+        ],
+    )
+    .await
+    .expect("the sibling query runs");
+    let siblings = explained
+        .get(&("7".to_owned(), 1))
+        .expect("the pair with a failure");
+    assert_eq!(
+        siblings
+            .iter()
+            .map(|sibling| (sibling.name.as_str(), sibling.pipeline.as_str()))
+            .collect::<Vec<_>>(),
+        [("lint", ".github/workflows/ci.yml")]
+    );
+    assert_eq!(
+        explained.get(&("8".to_owned(), 1)).map(Vec::len),
+        Some(1),
+        "a pair of its own keeps its own failures"
+    );
+    assert_eq!(explained.len(), 2);
+}
+
+#[tokio::test]
+async fn summary_explaining_siblings_lists_at_most_the_cap_per_pair() {
+    let db = TestDb::new().await.expect("a test database");
+    let pipeline = make_pipeline()
+        .build(db.connection())
+        .await
+        .expect("a Pipeline");
+    let lint = make_job(&pipeline)
+        .build(db.connection())
+        .await
+        .expect("a Job");
+    for _ in 0..=SIBLING_MAX {
+        make_job_execution(&lint)
+            .status("failed")
+            .ci_run_id("7")
+            .ci_run_attempt(1)
+            .build(db.connection())
+            .await
+            .expect("a Job execution");
+    }
+    let repo = repos::Entity::find()
+        .one(db.connection())
+        .await
+        .expect("the Repo")
+        .expect("the Repo exists");
+    let explained = summary_explaining_siblings(db.connection(), repo.id, &[("7".to_owned(), 1)])
+        .await
+        .expect("the sibling query runs");
+    assert_eq!(
+        explained.get(&("7".to_owned(), 1)).map(Vec::len),
+        Some(SIBLING_MAX)
     );
 }

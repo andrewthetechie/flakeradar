@@ -1746,3 +1746,66 @@ async fn rescore_repo(
     }
     Ok((test_ids, job_ids))
 }
+
+#[cfg(test)]
+mod tests {
+    //! Error classification needs driver failures no statement of ours raises, so
+    //! the arms are checked against the errors a driver reports.
+
+    use std::io;
+    use std::sync::Arc;
+
+    use sea_orm::DbErr;
+    use sea_orm::error::{ConnAcquireErr, RuntimeErr};
+    use sea_orm::sqlx::error::Error as SqlxError;
+
+    use super::{ProcessError, transient_db_error};
+    use crate::DbError;
+
+    /// A statement failure, wrapped the way the driver returns one.
+    fn driver(error: SqlxError) -> DbErr {
+        DbErr::Exec(RuntimeErr::SqlxError(Arc::new(error)))
+    }
+
+    #[test]
+    fn a_transient_failure_is_the_connection_and_the_sqlstates_python_retried() {
+        assert!(transient_db_error(&DbErr::ConnectionAcquire(
+            ConnAcquireErr::Timeout
+        )));
+        assert!(transient_db_error(&DbErr::ConnectionAcquire(
+            ConnAcquireErr::ConnectionClosed
+        )));
+        assert!(transient_db_error(&driver(SqlxError::PoolTimedOut)));
+        assert!(transient_db_error(&driver(SqlxError::PoolClosed)));
+        assert!(transient_db_error(&driver(SqlxError::Io(
+            io::Error::other("connection reset")
+        ))));
+    }
+
+    #[test]
+    fn every_other_failure_is_permanent() {
+        assert!(!transient_db_error(&DbErr::RecordNotFound(
+            "Report".to_owned()
+        )));
+        assert!(!transient_db_error(&DbErr::Exec(RuntimeErr::Internal(
+            "boom".to_owned()
+        ))));
+        assert!(!transient_db_error(&driver(SqlxError::Configuration(
+            "no such DSN".to_owned().into()
+        ))));
+        assert!(!transient_db_error(&driver(SqlxError::Protocol(
+            "57014: statement timeout".to_owned()
+        ))));
+    }
+
+    #[test]
+    fn a_failure_outside_the_database_is_a_permanent_data_error() {
+        let error = ProcessError::from(DbError::NotPostgres);
+        assert!(!error.transient);
+        assert!(
+            error.message.starts_with("DataError: "),
+            "{}",
+            error.message
+        );
+    }
+}
