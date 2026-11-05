@@ -98,13 +98,39 @@ pub mod optional_timestamp {
 
 /// Pydantic's lax boolean, for the values FastAPI accepted from a query or a body.
 ///
-/// Pydantic's lax mode takes JSON `true`/`false`, the integers `1`/`0` and the
-/// strings `on`/`off`, `t`/`f`, `true`/`false`, `y`/`n` and `yes`/`no` in any
-/// case. The quarantine route needs the same spellings: `{"quarantined": "yes"}`
-/// validated and answered 404 for a missing Test in the frozen server.
+/// Pydantic 2's lax mode takes JSON `true`/`false`, the numbers `1`/`0` (as
+/// integers or as the floats `1.0`/`0.0`) and the strings `on`/`off`, `t`/`f`,
+/// `true`/`false`, `y`/`n` and `yes`/`no` in any case. It refuses everything
+/// else with one of two kinds: `bool_type` for a value of another JSON type, and
+/// `bool_parsing` for a number or string of the right type it could not read.
+/// The quarantine route needs both, because `{"quarantined": "yes"}` validated
+/// and answered 404 for a missing Test in the frozen server, while
+/// `{"quarantined": []}` was a 422 of the type kind.
 pub mod lax_bool {
     use serde::{Deserialize, Deserializer};
-    use serde_json::Value;
+    use serde_json::{Number, Value};
+
+    /// Pydantic's message for a value it could not read, which the request
+    /// extractors report as `bool_parsing`.
+    pub const UNPARSABLE_MESSAGE: &str =
+        "Input should be a valid boolean, unable to interpret input";
+
+    /// Pydantic's message for a value of another JSON type, which the request
+    /// extractors report as `bool_type`.
+    pub const WRONG_TYPE_MESSAGE: &str = "Input should be a valid boolean";
+
+    /// The float Pydantic reads as `false`.
+    const ZERO: f64 = 0.0;
+
+    /// The float Pydantic reads as `true`.
+    const ONE: f64 = 1.0;
+
+    /// The lower bound, exclusive, of the range Pydantic's float-to-integer
+    /// conversion accepts: `i64::MIN` as a `f64`.
+    const INTEGER_FLOOR: f64 = -9.223_372_036_854_776e18;
+
+    /// The upper bound, exclusive, of that range: `i64::MAX` plus one as a `f64`.
+    const INTEGER_CEILING: f64 = 9.223_372_036_854_776e18;
 
     /// Reads a required lax boolean.
     ///
@@ -112,8 +138,7 @@ pub mod lax_bool {
     ///
     /// Returns an error when the value is not one of the accepted spellings.
     pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<bool, D::Error> {
-        let value = Value::deserialize(deserializer)?;
-        interpret(&value).ok_or_else(|| serde::de::Error::custom("expected a boolean"))
+        interpret(&Value::deserialize(deserializer)?).map_err(refusal)
     }
 
     /// Reads an optional lax boolean, where `null` or an absent value is `None`.
@@ -124,27 +149,77 @@ pub mod lax_bool {
     pub fn optional<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<bool>, D::Error> {
         match Value::deserialize(deserializer)? {
             Value::Null => Ok(None),
-            value => interpret(&value)
-                .map(Some)
-                .ok_or_else(|| serde::de::Error::custom("expected a boolean")),
+            value => interpret(&value).map(Some).map_err(refusal),
         }
     }
 
-    /// The meaning of one JSON value, or `None` when Pydantic would refuse it.
-    fn interpret(value: &Value) -> Option<bool> {
+    /// The `serde` error a refused value becomes, carrying Pydantic's message so
+    /// the request extractors report Pydantic's kind.
+    fn refusal<E: serde::de::Error>(refusal: Refusal) -> E {
+        match refusal {
+            Refusal::WrongType => E::custom(WRONG_TYPE_MESSAGE),
+            Refusal::Unparsable => E::custom(UNPARSABLE_MESSAGE),
+        }
+    }
+
+    /// Why Pydantic refused a value, which is also the error kind it reported.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Refusal {
+        /// A value of another JSON type: Pydantic's `bool_type`.
+        WrongType,
+        /// A number or string Pydantic could not read: `bool_parsing`.
+        Unparsable,
+    }
+
+    /// What Pydantic's lax mode made of one JSON value.
+    fn interpret(value: &Value) -> Result<bool, Refusal> {
         match value {
-            Value::Bool(flag) => Some(*flag),
-            Value::Number(number) => match number.as_i64() {
-                Some(0) => Some(false),
-                Some(1) => Some(true),
-                _ => None,
-            },
+            Value::Bool(flag) => Ok(*flag),
+            Value::Number(number) => interpret_number(number),
             Value::String(text) => match text.to_ascii_lowercase().as_str() {
-                "0" | "off" | "f" | "false" | "n" | "no" => Some(false),
-                "1" | "on" | "t" | "true" | "y" | "yes" => Some(true),
-                _ => None,
+                "0" | "off" | "f" | "false" | "n" | "no" => Ok(false),
+                "1" | "on" | "t" | "true" | "y" | "yes" => Ok(true),
+                _ => Err(Refusal::Unparsable),
             },
-            _ => None,
+            _ => Err(Refusal::WrongType),
+        }
+    }
+
+    /// What Pydantic made of one JSON number.
+    ///
+    /// A whole number goes through Pydantic's integer path, which reads `0` and
+    /// `1` and refuses the rest as unparsable. A float reads `0.0` and `1.0`, and
+    /// takes the integer path when it is whole and fits the conversion Pydantic
+    /// makes, so `2.0` is unparsable; every other float, including `1.5`, `NaN`
+    /// and an infinity, is a value of the wrong type.
+    #[expect(
+        clippy::float_cmp_const,
+        reason = "Pydantic reads exactly these floats as booleans: a tolerance would accept a \
+                  value Pydantic refuses"
+    )]
+    fn interpret_number(number: &Number) -> Result<bool, Refusal> {
+        if let Some(integer) = number.as_i64() {
+            return match integer {
+                0 => Ok(false),
+                1 => Ok(true),
+                _ => Err(Refusal::Unparsable),
+            };
+        }
+        if number.as_u64().is_some() {
+            // A whole number past `i64::MAX` fits no integer Pydantic reads.
+            return Err(Refusal::WrongType);
+        }
+        let Some(float) = number.as_f64() else {
+            return Err(Refusal::WrongType);
+        };
+        if float == ZERO {
+            Ok(false)
+        } else if float == ONE {
+            Ok(true)
+        } else if float.fract() == ZERO && float > INTEGER_FLOOR && float < INTEGER_CEILING {
+            Err(Refusal::Unparsable)
+        } else {
+            Err(Refusal::WrongType)
         }
     }
 }

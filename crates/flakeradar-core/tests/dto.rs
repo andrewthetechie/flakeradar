@@ -12,10 +12,12 @@
 )]
 
 use chrono::{DateTime, NaiveDate, TimeZone as _, Utc};
+use flakeradar_core::dto::lax_bool;
 use flakeradar_core::{
     IssueLinkIn, JobResultIn, LocSegment, PipelineReportIn, QuarantineIn, ReportOut, ScorePointOut,
     TestOut, Tier, Trend, ValidationIssue,
 };
+use serde::Deserialize;
 use serde_json::{Value, json};
 
 /// A Timestamp at a known instant.
@@ -487,6 +489,129 @@ fn a_quarantine_body_keeps_the_optional_fields_when_present() {
         (explicit_nulls.reason, explicit_nulls.expires_in_days),
         (None, None)
     );
+}
+
+/// A body whose one field is read as a required lax boolean.
+#[derive(Debug, Deserialize)]
+struct LaxFlag {
+    /// The boolean under test.
+    #[serde(deserialize_with = "lax_bool::deserialize")]
+    flag: bool,
+}
+
+/// A body whose one field is read as an optional lax boolean.
+#[derive(Debug, Deserialize)]
+struct OptionalLaxFlag {
+    /// The boolean under test, absent or `null` when the body gives neither.
+    #[serde(default, deserialize_with = "lax_bool::optional")]
+    flag: Option<bool>,
+}
+
+/// Reads `value` as a required lax boolean.
+fn read(value: &Value) -> Result<bool, serde_json::Error> {
+    serde_json::from_value::<LaxFlag>(json!({ "flag": value })).map(|body| body.flag)
+}
+
+#[test]
+fn a_lax_boolean_takes_exactly_the_values_pydantic_reads() {
+    // The rows are Pydantic 2.14.2's own answers for a `bool` field, checked
+    // against `backend/.venv`: `1.0` and `0.0` are booleans (the Rust port used
+    // to refuse them), and a value of another JSON type is `bool_type` where a
+    // number or string of the right type it cannot read is `bool_parsing`.
+    let accepted: [(&str, Value, bool); 8] = [
+        ("true", json!(true), true),
+        ("false", json!(false), false),
+        ("1", json!(1), true),
+        ("0", json!(0), false),
+        ("1.0", json!(1.0), true),
+        ("0.0", json!(0.0), false),
+        ("the JSON string \"1\"", json!("1"), true),
+        ("the JSON string \"0\"", json!("0"), false),
+    ];
+    for (label, value, expected) in accepted {
+        match read(&value) {
+            Ok(flag) => assert_eq!(flag, expected, "{label}"),
+            Err(error) => panic!("{label} was refused: {error}"),
+        }
+    }
+    // `-0.0` is the same float as `0.0`, and Pydantic reads it as `false`.
+    match read(&json!(-0.0)) {
+        Ok(flag) => assert!(!flag, "-0.0"),
+        Err(error) => panic!("-0.0 was refused: {error}"),
+    }
+    // Every spelling of the word set is accepted in any case.
+    let spellings: [(&str, bool); 10] = [
+        ("true", true),
+        ("false", false),
+        ("yes", true),
+        ("no", false),
+        ("on", true),
+        ("off", false),
+        ("t", true),
+        ("f", false),
+        ("y", true),
+        ("n", false),
+    ];
+    for (text, expected) in spellings {
+        for spelling in [text.to_lowercase(), text.to_uppercase()] {
+            let value = Value::from(spelling.clone());
+            match read(&value) {
+                Ok(flag) => assert_eq!(flag, expected, "{spelling}"),
+                Err(error) => panic!("{spelling} was refused: {error}"),
+            }
+        }
+    }
+}
+
+#[test]
+fn a_refused_lax_boolean_carries_pydantics_kind_and_wording() {
+    let wrong_type = lax_bool::WRONG_TYPE_MESSAGE;
+    let unparsable = lax_bool::UNPARSABLE_MESSAGE;
+    let refused: [(&str, Value, &str); 14] = [
+        ("1.5", json!(1.5), wrong_type),
+        ("a fraction near one", json!(1.000_000_000_1), wrong_type),
+        (
+            "a whole float past the integer range",
+            json!(1e20),
+            wrong_type,
+        ),
+        ("null", json!(null), wrong_type),
+        ("an array", json!([]), wrong_type),
+        ("an object", json!({}), wrong_type),
+        (
+            "a number past i64",
+            json!(18_446_744_073_709_551_615_u64),
+            wrong_type,
+        ),
+        ("2", json!(2), unparsable),
+        ("2.0", json!(2.0), unparsable),
+        ("-1", json!(-1), unparsable),
+        ("an empty string", json!(""), unparsable),
+        ("maybe", json!("maybe"), unparsable),
+        ("a float spelled as a string", json!("1.0"), unparsable),
+        ("a padded true", json!("  true  "), unparsable),
+    ];
+    for (label, value, expected) in refused {
+        match read(&value) {
+            Err(error) => assert_eq!(error.to_string(), expected, "{label}"),
+            Ok(flag) => panic!("{label} was read as {flag}"),
+        }
+    }
+}
+
+#[test]
+fn an_optional_lax_boolean_reads_null_and_absence_as_none() {
+    for body in [json!({}), json!({"flag": null})] {
+        let parsed: OptionalLaxFlag =
+            serde_json::from_value(body).expect("an absent or null flag deserializes");
+        assert_eq!(parsed.flag, None);
+    }
+    let present: OptionalLaxFlag =
+        serde_json::from_value(json!({"flag": "yes"})).expect("a lax spelling deserializes");
+    assert_eq!(present.flag, Some(true));
+    let refused = serde_json::from_value::<OptionalLaxFlag>(json!({"flag": []}))
+        .expect_err("an array is not a boolean");
+    assert_eq!(refused.to_string(), lax_bool::WRONG_TYPE_MESSAGE);
 }
 
 #[test]

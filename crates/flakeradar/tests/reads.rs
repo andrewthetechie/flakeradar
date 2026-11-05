@@ -1280,7 +1280,26 @@ async fn quarantine_toggles_and_lists_one_project() {
 async fn quarantine_takes_pydantics_lax_boolean_and_404s_a_missing_test() {
     let db = TestDb::new().await.expect("a test database");
     let app = token_app(&db);
-    for spelling in ["yes", "on", "1", "TRUE", "true"] {
+    for spelling in [
+        json!("yes"),
+        json!("on"),
+        json!("1"),
+        json!("TRUE"),
+        json!("true"),
+        json!("no"),
+        json!("off"),
+        json!("0"),
+        json!("FALSE"),
+        json!(1),
+        json!(0),
+        json!(true),
+        json!(false),
+        // Pydantic reads the floats `1.0` and `0.0` as booleans, so the route
+        // validated the body and answered for the missing Test rather than 422.
+        json!(1.0),
+        json!(0.0),
+        json!(-0.0),
+    ] {
         let reply = post(
             &app,
             "/api/tests/9999/quarantine",
@@ -1291,7 +1310,20 @@ async fn quarantine_takes_pydantics_lax_boolean_and_404s_a_missing_test() {
         assert_eq!(reply.status, 404, "{spelling}");
         assert_eq!(reply.json(), json!({"detail": "Test not found"}));
     }
-    for spelling in ["no", "off", "0", "FALSE"] {
+    // A spelling Pydantic refused is still a 422, not a silent coercion, and the
+    // kind is the one Pydantic gave: a value of another JSON type is `bool_type`,
+    // a number or string of the right type it could not read is `bool_parsing`.
+    let refused: [(&str, Value, &str); 8] = [
+        ("1.5", json!(1.5), "bool_type"),
+        ("null", json!(null), "bool_type"),
+        ("an array", json!([]), "bool_type"),
+        ("an object", json!({}), "bool_type"),
+        ("maybe", json!("maybe"), "bool_parsing"),
+        ("an empty string", json!(""), "bool_parsing"),
+        ("2", json!(2), "bool_parsing"),
+        ("2.0", json!(2.0), "bool_parsing"),
+    ];
+    for (label, spelling, kind) in refused {
         let reply = post(
             &app,
             "/api/tests/9999/quarantine",
@@ -1299,39 +1331,12 @@ async fn quarantine_takes_pydantics_lax_boolean_and_404s_a_missing_test() {
             json!({"quarantined": spelling}).to_string(),
         )
         .await;
-        assert_eq!(reply.status, 404, "{spelling}");
-    }
-    for spelling in [json!(1), json!(0), json!(true), json!(false)] {
-        let reply = post(
-            &app,
-            "/api/tests/9999/quarantine",
-            &[],
-            json!({"quarantined": spelling}).to_string(),
-        )
-        .await;
-        assert_eq!(reply.status, 404, "{spelling}");
-    }
-    // A spelling Pydantic refused is still a 422, not a silent coercion.
-    for spelling in [
-        json!("maybe"),
-        json!(2),
-        json!(1.5),
-        json!(null),
-        json!([]),
-        json!({}),
-    ] {
-        let reply = post(
-            &app,
-            "/api/tests/9999/quarantine",
-            &[],
-            json!({"quarantined": spelling}).to_string(),
-        )
-        .await;
-        assert_eq!(reply.status, 422, "{spelling}");
-        assert_eq!(reply.json()["detail"][0]["type"], "bool_parsing");
+        assert_eq!(reply.status, 422, "{label}");
+        assert_eq!(reply.json()["detail"][0]["type"], kind, "{label}");
         assert_eq!(
             reply.json()["detail"][0]["loc"],
-            json!(["body", "quarantined"])
+            json!(["body", "quarantined"]),
+            "{label}"
         );
     }
     // A missing Test is not reached with no body at all.

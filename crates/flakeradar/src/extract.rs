@@ -19,6 +19,7 @@ use axum::body::Bytes;
 use axum::extract::{FromRequest, FromRequestParts, Path, Request};
 use axum::http::request::Parts;
 use axum::http::{StatusCode, header};
+use flakeradar_core::dto::lax_bool;
 use flakeradar_core::{LocSegment, ValidationIssue};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -266,6 +267,12 @@ fn issue_for(scope: &str, path: &ErrorPath, message: &str) -> ValidationIssue {
 /// read from that sentence. Each mapping is pinned by a test, and an unfamiliar
 /// message falls back to `value_error` rather than guessing a narrower kind.
 fn kind_for(message: &str) -> &'static str {
+    if message == lax_bool::UNPARSABLE_MESSAGE {
+        return "bool_parsing";
+    }
+    if message == lax_bool::WRONG_TYPE_MESSAGE {
+        return "bool_type";
+    }
     let lowered = message.to_lowercase();
     if lowered.contains("expected a boolean") || lowered.contains("was not `true` or `false`") {
         "bool_parsing"
