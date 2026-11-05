@@ -28,6 +28,7 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{HeaderMap, Method, Request, StatusCode};
 use axum::routing::get;
+use chrono::DateTime;
 use flakeradar::{AppState, Settings, build_app};
 use flakeradar_db::entities::repos;
 use flakeradar_db::{WORKER_LOCK_KEY, process_next};
@@ -656,6 +657,7 @@ fn compare_recorded(scenario: &str, step: usize, recorded: &Value, actual: &Valu
         step,
         content_type: "application/json",
         allowances: &allowances,
+        in_table_body: false,
     };
     let mut failures = Vec::new();
     compare_value(&context, "body", &expected, actual, &mut failures);
@@ -681,6 +683,7 @@ fn compare_body(
         step,
         content_type,
         allowances: &allowances,
+        in_table_body: false,
     };
     let mut failures = Vec::new();
     if status == 422 && is_framework_422(&expected) {
@@ -830,13 +833,29 @@ struct Comparison<'a> {
     content_type: &'a str,
     /// The allowances that cover this step's golden.
     allowances: &'a [AllowedField],
+    /// Whether these values were decoded from a hex-encoded table `body` column.
+    in_table_body: bool,
+}
+
+impl Comparison<'_> {
+    /// The same comparison, one level inside a decoded table `body`.
+    fn inside_table_body(&self) -> Comparison<'_> {
+        Comparison {
+            scenario: self.scenario,
+            step: self.step,
+            content_type: self.content_type,
+            allowances: self.allowances,
+            in_table_body: true,
+        }
+    }
 }
 
 /// Compares one value, reporting every difference by its dotted path.
 ///
 /// JSON compares by value with numbers compared numerically, `"<timestamp>"` and
 /// `"<date>"` match anything in the timestamp and date rules, and an allowance
-/// covers exactly the field it names.
+/// covers exactly the field it names. A table `body` column holds its document in
+/// hex, so the document is compared field by field rather than as one string.
 fn compare_value(
     context: &Comparison<'_>,
     path: &str,
@@ -844,6 +863,11 @@ fn compare_value(
     actual: &Value,
     failures: &mut Mismatches,
 ) {
+    if let (Some(recorded), Some(answered)) = (table_body(expected), table_body(actual)) {
+        let inside = context.inside_table_body();
+        compare_value(&inside, path, &recorded, &answered, failures);
+        return;
+    }
     match (expected, actual) {
         (Value::Object(expected), Value::Object(actual)) => {
             for (key, value) in expected {
@@ -880,6 +904,7 @@ fn compare_value(
         }
         _ => {
             if values_match(expected, actual, context.content_type)
+                || (context.in_table_body && same_instant(path, expected, actual))
                 || allowed(path, expected, actual, context.allowances)
             {
                 return;
@@ -920,6 +945,55 @@ fn values_match(expected: &Value, actual: &Value, content_type: &str) -> bool {
         }
         _ => expected == actual,
     }
+}
+
+/// Whether two texts name the same instant on a timestamp-named field.
+///
+/// `differences.md` lets a stored timestamp omit a zero fraction and carry either
+/// `Z` or `+00:00`, so a `*_at` field inside a table `body` compares by the
+/// instant it names. Every other field, and every other difference in that
+/// instant, is a mismatch.
+fn same_instant(path: &str, expected: &Value, actual: &Value) -> bool {
+    let key = path.rsplit_once('.').map_or(path, |(_, key)| key);
+    if !key.ends_with("_at") {
+        return false;
+    }
+    let (Some(expected), Some(actual)) = (expected.as_str(), actual.as_str()) else {
+        return false;
+    };
+    let (Ok(expected), Ok(actual)) = (
+        DateTime::parse_from_rfc3339(expected),
+        DateTime::parse_from_rfc3339(actual),
+    ) else {
+        return false;
+    };
+    expected == actual
+}
+
+/// The JSON document a hex-encoded table `body` column holds, when it holds one.
+///
+/// PostgreSQL renders a `bytea` column as `\x` and its bytes in hex, so a dump of
+/// `reports` carries the queued upload inside a string. A body that is not JSON,
+/// such as the JUnit upload, decodes to none and compares as the text it is.
+fn table_body(value: &Value) -> Option<Value> {
+    let text = value.as_str()?.strip_prefix("\\x")?;
+    let bytes = unhex(text)?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+/// The bytes a string of hex digit pairs names, or none when it is not one.
+fn unhex(text: &str) -> Option<Vec<u8>> {
+    if !text.len().is_multiple_of(2) {
+        return None;
+    }
+    let mut bytes = Vec::with_capacity(text.len() / 2);
+    let mut digits = text.bytes();
+    while let (Some(high), Some(low)) = (digits.next(), digits.next()) {
+        let high = char::from(high).to_digit(16)?;
+        let low = char::from(low).to_digit(16)?;
+        bytes.push(u8::try_from(high * 16 + low).ok()?);
+    }
+    Some(bytes)
 }
 
 /// The placeholder a recorded timestamp is replaced with.
@@ -1211,6 +1285,188 @@ mod tests {
                 }),
             }]
         ));
+    }
+
+    /// The `\x` hex PostgreSQL renders a `bytea` value as.
+    fn hex(bytes: &[u8]) -> String {
+        let mut text = String::from("\\x");
+        for byte in bytes {
+            for half in [byte >> 4, byte & 0x0f] {
+                text.push(char::from_digit(u32::from(half), 16).unwrap_or('0'));
+            }
+        }
+        text
+    }
+
+    /// The hex a table `body` column holds `document` as.
+    fn stored(document: &serde_json::Value) -> serde_json::Value {
+        serde_json::Value::String(hex(&serde_json::to_vec(document).expect("a document")))
+    }
+
+    /// The dump a `reports` table holding one Report with `document` answers.
+    fn reports_table(document: &serde_json::Value) -> serde_json::Value {
+        json!({"tables": {"reports": [{"id": 1, "status": "pending", "body": stored(document)}]}})
+    }
+
+    /// A recorded golden around the document a dump answers.
+    fn recorded_dump(answered: &serde_json::Value) -> serde_json::Value {
+        json!({"status": 200, "body": answered})
+    }
+
+    /// Replaces the recorder's placeholders with the values they stand for.
+    fn resolve_placeholders(value: &mut serde_json::Value) {
+        if let serde_json::Value::String(text) = value {
+            let replacement = match text.as_str() {
+                super::TIMESTAMP_PLACEHOLDER => Some(json!("2026-10-20T09:00:00.000000Z")),
+                super::DATE_PLACEHOLDER => Some(json!("2026-10-20")),
+                _ => None,
+            };
+            if let Some(replacement) = replacement {
+                *value = replacement;
+            }
+            return;
+        }
+        if let Some(fields) = value.as_object_mut() {
+            for field in fields.values_mut() {
+                resolve_placeholders(field);
+            }
+            return;
+        }
+        if let Some(items) = value.as_array_mut() {
+            for item in items {
+                resolve_placeholders(item);
+            }
+        }
+    }
+
+    /// Rewrites every `*_at` text to six fractional digits and a `Z`, as Rust does.
+    fn rust_timestamp_spelling(value: &mut serde_json::Value) {
+        if let Some(fields) = value.as_object_mut() {
+            for (key, field) in fields {
+                let respelled = field
+                    .as_str()
+                    .filter(|_| key.ends_with("_at"))
+                    .map(|text| text.replace("+00:00", ".000000Z"));
+                match respelled {
+                    Some(text) => *field = json!(text),
+                    None => rust_timestamp_spelling(field),
+                }
+            }
+            return;
+        }
+        if let Some(items) = value.as_array_mut() {
+            for item in items {
+                rust_timestamp_spelling(item);
+            }
+        }
+    }
+
+    #[test]
+    fn a_table_body_compares_field_by_field_on_the_real_dump() {
+        // The `reports` dump of a step this harness records. Rust writes the
+        // fraction Python omits, which `differences.md` allows on a timestamp and on
+        // nothing else, so the queued document is compared rather than its hex.
+        let recorded = super::golden("pipeline-jobs", 37);
+        let tables = recorded
+            .get("tables")
+            .cloned()
+            .expect("the golden dumps the tables");
+        let mut answered = json!({"tables": tables});
+        resolve_placeholders(&mut answered);
+        let golden = recorded_dump(&answered);
+        for row in answered
+            .get_mut("tables")
+            .and_then(|tables| tables.get_mut("reports"))
+            .and_then(serde_json::Value::as_array_mut)
+            .expect("the dump lists reports")
+        {
+            // The second Report is the JUnit upload, which is not JSON and keeps
+            // its text; every other one is a Pipeline payload, which Rust stores
+            // with the timestamp spelling it writes.
+            let Some(mut document) = super::table_body(&row["body"]) else {
+                continue;
+            };
+            rust_timestamp_spelling(&mut document);
+            row["body"] = stored(&document);
+        }
+        assert_eq!(
+            compare_body("pipeline-jobs", 37, &golden, &answered, "application/json"),
+            Vec::<String>::new()
+        );
+
+        // A materially different value inside that same body is still a failure:
+        // the allowance covers the instant, not the document.
+        let mut tampered = answered.clone();
+        let mut document = super::table_body(&tampered["tables"]["reports"][0]["body"])
+            .expect("a queued upload is JSON");
+        document["commit_sha"] = json!("not-c1");
+        tampered["tables"]["reports"][0]["body"] = stored(&document);
+        let failures = compare_body("pipeline-jobs", 37, &golden, &tampered, "application/json");
+        assert_eq!(failures.len(), 1, "{failures:?}");
+        assert!(failures[0].contains("commit_sha"), "{failures:?}");
+
+        // The step's JUnit upload is not JSON: it decodes to none and compares as
+        // the text it is, so one changed character is still a failure.
+        let mut tampered = answered;
+        let upload = tampered["tables"]["reports"][1]["body"]
+            .as_str()
+            .and_then(|text| text.strip_prefix("\\x"))
+            .and_then(super::unhex)
+            .and_then(|bytes| String::from_utf8(bytes).ok())
+            .expect("the second upload is JUnit XML in hex")
+            .replacen("<testsuite", "<testsuitE", 1);
+        tampered["tables"]["reports"][1]["body"] = json!(hex(upload.as_bytes()));
+        let failures = compare_body("pipeline-jobs", 37, &golden, &tampered, "application/json");
+        assert_eq!(failures.len(), 1, "{failures:?}");
+        assert!(failures[0].contains("reports.1.body"), "{failures:?}");
+    }
+
+    #[test]
+    fn a_changed_instant_in_a_table_body_is_still_a_failure() {
+        let recorded =
+            json!({"jobs": [{"started_at": "2026-10-20T09:00:00+00:00", "status": "failed"}]});
+        let golden = recorded_dump(&reports_table(&recorded));
+        let answered =
+            json!({"jobs": [{"started_at": "2026-10-20T09:00:00.000000Z", "status": "failed"}]});
+        assert_eq!(
+            compare_body(
+                "s",
+                1,
+                &golden,
+                &reports_table(&answered),
+                "application/json"
+            ),
+            Vec::<String>::new()
+        );
+
+        // The same field a second later is a different instant, not a difference in
+        // spelling, so the rule does not cover it.
+        let later =
+            json!({"jobs": [{"started_at": "2026-10-20T09:00:01.000000Z", "status": "failed"}]});
+        let failures = compare_body("s", 1, &golden, &reports_table(&later), "application/json");
+        assert_eq!(failures.len(), 1, "{failures:?}");
+        assert!(failures[0].contains("started_at"), "{failures:?}");
+
+        // A changed status in the same document is still a mismatch.
+        let broken =
+            json!({"jobs": [{"started_at": "2026-10-20T09:00:00.000000Z", "status": "passed"}]});
+        let failures = compare_body("s", 1, &golden, &reports_table(&broken), "application/json");
+        assert_eq!(failures.len(), 1, "{failures:?}");
+        assert!(failures[0].contains("status"), "{failures:?}");
+
+        // The rule reaches `*_at` fields only: the same two spellings on a field
+        // that is not a timestamp are a difference.
+        let labelled = json!({"jobs": [{"started_at": "2026-10-20T09:00:00+00:00", "note": "2026-10-20T09:00:00+00:00"}]});
+        let relabelled = json!({"jobs": [{"started_at": "2026-10-20T09:00:00.000000Z", "note": "2026-10-20T09:00:00.000000Z"}]});
+        let failures = compare_body(
+            "s",
+            1,
+            &recorded_dump(&reports_table(&labelled)),
+            &reports_table(&relabelled),
+            "application/json",
+        );
+        assert_eq!(failures.len(), 1, "{failures:?}");
+        assert!(failures[0].contains("note"), "{failures:?}");
     }
 }
 
