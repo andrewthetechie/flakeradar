@@ -451,6 +451,7 @@ where
     path = "/api/ingest",
     tag = "reports",
     params(
+        ("x-api-key" = Option<String>, Header, description = "The shared token this instance requires"),
         ("repo" = String, Query, description = "The Repo's owner/name"),
         ("project" = Option<String>, Query, description = "The Project's name; default when omitted"),
         ("root" = Option<String>, Query, description = "The Project root, repo-relative"),
@@ -669,6 +670,7 @@ fn blank_to_none(value: Option<String>) -> Option<String> {
     post,
     path = "/api/ingest/pipeline",
     tag = "reports",
+    params(("x-api-key" = Option<String>, Header, description = "The shared token this instance requires")),
     request_body = PipelineReportIn,
     responses(
         (status = 202, body = IngestAccepted),
@@ -823,7 +825,10 @@ pub async fn get_report(
     post,
     path = "/api/reports/{report_id}/retry",
     tag = "reports",
-    params(("report_id" = i64, Path, description = "The Report's id")),
+    params(
+        ("x-api-key" = Option<String>, Header, description = "The shared token this instance requires"),
+        ("report_id" = i64, Path, description = "The Report's id")
+    ),
     responses(
         (status = 200, body = ReportOut),
         (status = 404, description = "Report not found"),
@@ -866,7 +871,10 @@ pub async fn retry_report(
     delete,
     path = "/api/reports/{report_id}",
     tag = "reports",
-    params(("report_id" = i64, Path, description = "The Report's id")),
+    params(
+        ("x-api-key" = Option<String>, Header, description = "The shared token this instance requires"),
+        ("report_id" = i64, Path, description = "The Report's id")
+    ),
     responses(
         (status = 204, description = "The Report is gone"),
         (status = 404, description = "Report not found"),

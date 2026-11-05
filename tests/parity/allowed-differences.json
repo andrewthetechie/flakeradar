@@ -1209,5 +1209,19 @@
         "rustValue": null
       }
     ]
+  },
+  {
+    "id": "openapi-document",
+    "differenceRow": "The `/openapi.json` document",
+    "reason": "The reference's document is FastAPI's, generated from its own routes and Pydantic models; this port's is utoipa's, generated from the `#[utoipa::path]` annotations. Descriptions, summaries, operation ids, schema spelling and the framework's own 422 components differ by construction, so the two documents cannot agree field for field. What both promise a client, and what this allowance compares, is the contract: the same paths, the same methods on each path, the same parameters on each operation, the same field names in every response schema, and the same schema name on every 2xx body. Every difference is reported by its path or schema. It covers `body` of this one golden and nothing else.",
+    "allows": [
+      {
+        "file": "golden/trailing-slash/09.json",
+        "field": "body",
+        "contract": {
+          "kind": "openapi"
+        }
+      }
+    ]
   }
 ]

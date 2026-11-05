@@ -168,6 +168,7 @@ where
     path = "/api/tests/{test_id}/issue",
     tag = "issues",
     params(
+        ("x-api-key" = Option<String>, Header, description = "The shared token this instance requires"),
         ("test_id" = i64, Path, description = "The Test's id"),
         ("replace" = Option<bool>, Query, description = "Replace a different linked issue")
     ),
@@ -213,7 +214,9 @@ pub async fn link_test(
     delete,
     path = "/api/tests/{test_id}/issue",
     tag = "issues",
-    params(("test_id" = i64, Path, description = "The Test's id")),
+    params((
+        "x-api-key" = Option<String>, Header, description = "The shared token this instance requires"
+    ), ("test_id" = i64, Path, description = "The Test's id")),
     responses(
         (status = 200, body = TestOut),
         (status = 404, description = "Test not found")
@@ -250,6 +253,7 @@ pub async fn unlink_test(
     path = "/api/jobs/{job_id}/issue",
     tag = "issues",
     params(
+        ("x-api-key" = Option<String>, Header, description = "The shared token this instance requires"),
         ("job_id" = i64, Path, description = "The Job's id"),
         ("replace" = Option<bool>, Query, description = "Replace a different linked issue")
     ),
@@ -295,7 +299,9 @@ pub async fn link_job(
     delete,
     path = "/api/jobs/{job_id}/issue",
     tag = "issues",
-    params(("job_id" = i64, Path, description = "The Job's id")),
+    params((
+        "x-api-key" = Option<String>, Header, description = "The shared token this instance requires"
+    ), ("job_id" = i64, Path, description = "The Job's id")),
     responses(
         (status = 200, body = JobOut),
         (status = 404, description = "Job not found")

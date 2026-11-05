@@ -5,11 +5,11 @@
 //! scenario; this harness sends the same requests to
 //! [`flakeradar::build_app`] on a database of its own and compares the answers.
 //!
-//! [`ENABLED`] names the steps this build replays, and [`DEFERRED`] names every
-//! other step with the task whose routes make it replayable. The two lists are a
-//! partition of the fixtures, which [`tests`] proves: a step can be neither
-//! silently skipped nor replayed before it can pass. Enabling a step means
-//! removing it from [`DEFERRED`] and lowering [`DEFERRED_STEPS`].
+//! Every scenario in `tests/parity/scenarios/` runs every step: there is no list
+//! of enabled steps to fall behind and no way to switch a scenario off. A new
+//! scenario file is replayed by [`every_scenario_replays_identically`] without
+//! being registered anywhere, and a step without a golden fails the test that
+//! checks the fixtures before any server is started.
 
 #![expect(
     clippy::expect_used,
@@ -95,156 +95,6 @@ const LEADERSHIP_DEADLINE: Duration = Duration::from_secs(30);
 
 /// How often a replay asks its worker whether it leads.
 const LEADERSHIP_INTERVAL: Duration = Duration::from_millis(20);
-
-/// One scenario the replay runs, and the steps of it this build answers.
-struct Enabled {
-    /// The scenario's name, which is also its directory under `golden/`.
-    name: &'static str,
-    /// The steps to replay, numbered from 1 as the goldens are.
-    steps: &'static [usize],
-}
-
-/// One scenario, or some steps of it, whose routes have not all landed yet.
-struct Deferred {
-    /// The scenario's name, which is also its directory under `golden/`.
-    scenario: &'static str,
-    /// The steps that cannot run yet, or `None` for every step of the scenario.
-    steps: Option<&'static [usize]>,
-    /// The task in `docs/plans/rust-rewrite/` whose routes make them replayable.
-    task: u8,
-    /// What those routes are, so the reason names the work rather than a task id.
-    reason: &'static str,
-}
-
-/// The steps this build replays.
-///
-/// The health and metrics steps are task 05's own routes. The trailing-slash
-/// steps 1-6 are the fallback's 307, which answers whether or not the target
-/// route exists, exactly as Starlette's `redirect_slashes` did. Validation step
-/// 7 is a path no route matches, so it is task 05's 404 body too.
-///
-/// Task 06 adds every ingest and Report step that needs no processing: the
-/// ingest refusals and the two queued uploads of `ingest-junit`, the Report
-/// summary poll, the 401s the token check answers on the ingest and Report write
-/// routes, the ingest validation shapes, and the Pipeline payload refusals.
-///
-/// Task 07 adds `flaky-tests` steps 1-12, its ingests and the `wait_processed`
-/// that drains them, and step 48, the dump of the Tests, Runs, Executions and
-/// Score history those Reports score. Step 48 is the only end-to-end comparison
-/// of the Flakiness scores, Clean streaks, Proven flakes and history rows this
-/// harness makes, so it is worthwhile on its own account.
-///
-/// Task 08 adds `default-branch` steps 1-3, 7, 8, 12, 13 and 15: the ingests and
-/// the `wait_processed` that drains them through the real worker, and the dump of
-/// the Tests and Executions the Default-branch rule scores. Steps 4-6 and 9-11,
-/// 14 are the reads, which change no state, so the dump is the same one the
-/// recorder took. It also adds the ingests and the drain of `consumers`,
-/// `issue-links`, `quarantine` and `repo-admin`, whose own steps need the task 09
-/// and task 10 routes. The dumps of `issue-links` and `repo-admin` stay deferred,
-/// because they record what the task 10 issue and repo routes wrote.
-///
-/// Task 09 adds every read step left: `flaky-tests` 13-48, `pipeline-jobs` 8-32,
-/// `default-branch` 4-6 and 9-11, 14, `health` 4, `quarantine` 3-18,
-/// `auth` 6 and 13, `consumers` 6-9, and validation 1-3 and 8-19, the read APIs'
-/// own 422, 404 and lax-bool answers. `quarantine` step 18 is the dump of
-/// `test_cases` after the route cleared a stale reason and expiry, so it proves
-/// that clearing rather than recording a task 10 write. Validation 20-21 stay
-/// deferred with the issue routes, and the `consumers` dump stays deferred with
-/// the issue links steps 10-12 set.
-const ENABLED: &[Enabled] = &[
-    Enabled {
-        name: "auth",
-        steps: &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13],
-    },
-    Enabled {
-        name: "consumers",
-        steps: &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13],
-    },
-    Enabled {
-        name: "default-branch",
-        steps: &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
-    },
-    Enabled {
-        name: "health",
-        steps: &[1, 2, 3, 4, 5],
-    },
-    Enabled {
-        name: "ingest-junit",
-        steps: &[
-            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
-            25, 26, 27,
-        ],
-    },
-    Enabled {
-        name: "flaky-tests",
-        steps: &[
-            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
-            25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46,
-            47, 48,
-        ],
-    },
-    Enabled {
-        name: "issue-links",
-        steps: &[
-            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
-            25, 26, 27,
-        ],
-    },
-    Enabled {
-        name: "pipeline-jobs",
-        steps: &[
-            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
-            25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37,
-        ],
-    },
-    Enabled {
-        name: "mcp",
-        steps: &[
-            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
-            25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46,
-        ],
-    },
-    Enabled {
-        name: "quarantine",
-        steps: &[
-            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
-        ],
-    },
-    Enabled {
-        name: "repo-admin",
-        steps: &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
-    },
-    Enabled {
-        name: "trailing-slash",
-        steps: &[1, 2, 3, 4, 5, 6, 7, 8],
-    },
-    Enabled {
-        name: "validation",
-        steps: &[
-            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
-            25, 26, 27,
-        ],
-    },
-];
-
-/// Every step this build cannot replay, and the task that unblocks it.
-///
-/// A scenario that needs routes from several tasks is deferred to the last of
-/// them, and its reason names each one.
-const DEFERRED: &[Deferred] = &[Deferred {
-    scenario: "trailing-slash",
-    steps: Some(&[9]),
-    task: 14,
-    reason: "GET /openapi.json is served, but this golden is FastAPI's generated document, \
-                 which task 14 compares against utoipa's path by path",
-}];
-
-/// How many scenario steps are deferred.
-///
-/// A later task enables steps and lowers this number; the test that reads it
-/// fails both when a step is switched off without a reason and when an enabled
-/// step is left in [`DEFERRED`]. It never goes up.
-const DEFERRED_STEPS: usize = 1;
 
 /// One scenario file.
 #[derive(Debug, Deserialize)]
@@ -387,11 +237,10 @@ impl ReportProcessor for GatedProcessor {
 }
 
 #[tokio::test]
-async fn every_enabled_scenario_replays_identically() {
+async fn every_scenario_replays_identically() {
     let mut failures: Mismatches = Vec::new();
-    for enabled in ENABLED {
-        let scenario = scenario(enabled.name);
-        assert_eq!(scenario.name, enabled.name);
+    for scenario in scenario_files() {
+        let name = scenario.name.clone();
         let db = TestDb::new().await.expect("a test database is available");
         let settings = settings_for(&scenario, &db);
         let app = build_app(AppState::new(
@@ -414,18 +263,13 @@ async fn every_enabled_scenario_replays_identically() {
         );
         Arc::clone(&worker).start().await;
         wait_for_leadership(&worker).await;
-        for step in enabled.steps {
-            let recorded = golden(enabled.name, *step);
-            let spec = scenario
-                .steps
-                .get(step - 1)
-                .unwrap_or_else(|| panic!("{} has no step {step}", enabled.name));
+        for (index, spec) in scenario.steps.iter().enumerate() {
+            let step = index + 1;
+            let recorded = golden(&name, step);
             if spec.get("wait_processed").is_some() {
                 gate.open();
             }
-            failures.extend(
-                replay_step(&app, &db, &settings, enabled.name, *step, spec, &recorded).await,
-            );
+            failures.extend(replay_step(&app, &db, &settings, &name, step, spec, &recorded).await);
         }
         worker.stop().await;
     }
@@ -987,6 +831,22 @@ struct AllowedField {
     /// A pattern the Rust value must match, such as a prefix.
     #[serde(rename = "match")]
     matching: Option<MatchRule>,
+    /// A contract the field carries, which is compared by its promises rather
+    /// than by value.
+    contract: Option<ContractRule>,
+}
+
+/// A contract a field is compared by instead of value for value.
+///
+/// The only kind is `openapi`: `/openapi.json` is generated by two different
+/// frameworks, so the documents cannot agree byte for byte, and the promise both
+/// sides make is the one this comparison checks — the same paths and methods,
+/// the same parameters, and the same response field names. The reason is in
+/// `differences.md`.
+#[derive(Debug, Deserialize)]
+struct ContractRule {
+    /// Which contract: `openapi` is the only kind.
+    kind: String,
 }
 
 /// A pattern an allowed Rust value must match.
@@ -1038,6 +898,259 @@ fn allowed(path: &str, expected: &Value, actual: &Value, allowances: &[AllowedFi
     })
 }
 
+/// The contract an allowance pins `path` to, if one does.
+fn contract_for<'a>(path: &str, allowances: &'a [AllowedField]) -> Option<&'a str> {
+    allowances
+        .iter()
+        .filter(|allowance| allowance.field == path)
+        .find_map(|allowance| allowance.contract.as_ref())
+        .map(|rule| rule.kind.as_str())
+}
+
+/// The component schemas whose names the two frameworks spell differently.
+///
+/// Every other schema must exist under the same name and declare the same field
+/// names. FastAPI's two validation schemas are its framework's own: the reference
+/// documents its 422 as `HTTPValidationError` wrapping `ValidationError`, while
+/// this port documents the status with a description and keeps the same five
+/// issue fields in `ValidationIssue`. The 422 replay steps compare the wire
+/// bodies of both, and `differences.md` records the difference.
+const OPENAPI_SCHEMA_ALIASES: &[(&str, &str)] = &[("ValidationError", "ValidationIssue")];
+
+/// The schemas only the reference's document has.
+const OPENAPI_SCHEMA_ONLY_ON_THE_REFERENCE: &[&str] = &["HTTPValidationError"];
+
+/// Compares an OpenAPI document against the recorded one, by its promises.
+///
+/// The two documents come from different frameworks, so their descriptions,
+/// summaries, operation ids, schema spellings and framework components differ by
+/// construction. What both must agree on is what a client reads: the same paths,
+/// the same methods, the same parameters, and the same field names in every
+/// response schema. Every difference is reported by the path or schema it is in.
+fn compare_openapi(scenario: &str, step: usize, expected: &Value, actual: &Value) -> Mismatches {
+    let mut failures = Mismatches::new();
+    let describe = |message: String| format!("{scenario} step {step}: {message}");
+    let (Some(recorded), Some(answered)) = (
+        expected.get("paths").and_then(Value::as_object),
+        actual.get("paths").and_then(Value::as_object),
+    ) else {
+        return vec![format!(
+            "{scenario} step {step}: the document has no paths object on one side"
+        )];
+    };
+    compare_openapi_paths(recorded, answered, &describe, &mut failures);
+    compare_openapi_schemas(expected, actual, &describe, &mut failures);
+    compare_openapi_bodies(recorded, answered, &describe, &mut failures);
+    failures
+}
+
+/// Compares the paths, the methods on each path, and each operation's parameters.
+fn compare_openapi_paths(
+    recorded: &Map<String, Value>,
+    answered: &Map<String, Value>,
+    describe: &dyn Fn(String) -> String,
+    failures: &mut Mismatches,
+) {
+    for path in recorded.keys() {
+        if !answered.contains_key(path) {
+            failures.push(describe(format!("the openapi path {path} is missing")));
+        }
+    }
+    for path in answered.keys() {
+        if !recorded.contains_key(path) {
+            failures.push(describe(format!(
+                "the openapi path {path} was not recorded"
+            )));
+        }
+    }
+    for (path, recorded) in recorded {
+        let (Some(answered), Some(recorded)) = (
+            answered.get(path).and_then(Value::as_object),
+            recorded.as_object(),
+        ) else {
+            continue;
+        };
+        for method in recorded.keys() {
+            match answered.get(method) {
+                Some(operation) => compare_operation(
+                    &recorded[method],
+                    operation,
+                    &format!("{method} {path}"),
+                    describe,
+                    failures,
+                ),
+                None => failures.push(describe(format!(
+                    "the openapi method {method} {path} is missing"
+                ))),
+            }
+        }
+        for method in answered.keys() {
+            if !recorded.contains_key(method) {
+                failures.push(describe(format!(
+                    "the openapi method {method} {path} was not recorded"
+                )));
+            }
+        }
+    }
+}
+
+/// The field names a component schema declares, sorted.
+fn schema_fields(schema: &Value) -> Vec<String> {
+    let mut names: Vec<String> = schema
+        .get("properties")
+        .and_then(Value::as_object)
+        .map(|properties| properties.keys().cloned().collect())
+        .unwrap_or_default();
+    names.sort();
+    names
+}
+
+/// Compares the field names of every component schema the reference declares.
+fn compare_openapi_schemas(
+    expected: &Value,
+    actual: &Value,
+    describe: &dyn Fn(String) -> String,
+    failures: &mut Mismatches,
+) {
+    let schemas = |document: &Value| {
+        document
+            .get("components")
+            .and_then(|components| components.get("schemas"))
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default()
+    };
+    let (recorded_schemas, answered_schemas) = (schemas(expected), schemas(actual));
+    if recorded_schemas.is_empty() || answered_schemas.is_empty() {
+        failures.push(describe(
+            "the document has no component schemas on one side".to_owned(),
+        ));
+        return;
+    }
+    for (name, schema) in &recorded_schemas {
+        if OPENAPI_SCHEMA_ONLY_ON_THE_REFERENCE.contains(&name.as_str()) {
+            continue;
+        }
+        let answered_name = OPENAPI_SCHEMA_ALIASES
+            .iter()
+            .find_map(|(reference, port)| (*reference == name).then_some(*port))
+            .unwrap_or(name.as_str());
+        let Some(answered) = answered_schemas.get(answered_name) else {
+            failures.push(describe(format!(
+                "the openapi schema {answered_name} is missing"
+            )));
+            continue;
+        };
+        let (recorded_fields, answered_fields) = (schema_fields(schema), schema_fields(answered));
+        if recorded_fields != answered_fields {
+            failures.push(describe(format!(
+                "the openapi schema {answered_name} declares {answered_fields:?} where {name} \
+                 declares {recorded_fields:?}"
+            )));
+        } else if answered_name != name && answered_schemas.contains_key(name.as_str()) {
+            // The alias must be a rename and nothing else: the fields are equal
+            // by the comparison above, and the reference spelling must not also
+            // be present, or a client reading it would see a second shape.
+            failures.push(describe(format!(
+                "the openapi schema {name} and its port {answered_name} both exist"
+            )));
+        }
+    }
+}
+
+/// Compares the schema every 2xx answer's body references.
+fn compare_openapi_bodies(
+    recorded: &Map<String, Value>,
+    answered: &Map<String, Value>,
+    describe: &dyn Fn(String) -> String,
+    failures: &mut Mismatches,
+) {
+    for (path, recorded) in recorded {
+        let (Some(recorded), Some(answered)) = (
+            recorded.as_object(),
+            answered.get(path).and_then(Value::as_object),
+        ) else {
+            continue;
+        };
+        for (method, operation) in recorded {
+            let Some(answered_operation) = answered.get(method) else {
+                continue;
+            };
+            for (status, response) in operation
+                .get("responses")
+                .and_then(Value::as_object)
+                .into_iter()
+                .flatten()
+            {
+                if !status.starts_with('2') {
+                    continue;
+                }
+                let Some(recorded_ref) = response_ref(response) else {
+                    continue;
+                };
+                let answered_ref = answered_operation
+                    .get("responses")
+                    .and_then(|responses| responses.get(status))
+                    .and_then(response_ref);
+                if answered_ref.as_deref() != Some(recorded_ref.as_str()) {
+                    failures.push(describe(format!(
+                        "the {status} body of {method} {path} references {answered_ref:?} where it \
+                         references {recorded_ref}"
+                    )));
+                }
+            }
+        }
+    }
+}
+
+/// Compares one operation's parameters and reports every difference.
+///
+/// A parameter is its place and its name: the reference's `x-api-key` header is
+/// documented beside the query and path parameters, and either side naming an
+/// extra or a missing one is a difference a client would trip over.
+fn compare_operation(
+    recorded: &Value,
+    answered: &Value,
+    operation: &str,
+    describe: &dyn Fn(String) -> String,
+    failures: &mut Mismatches,
+) {
+    let parameters = |operation: &Value| -> Vec<String> {
+        let mut names: Vec<String> = operation
+            .get("parameters")
+            .and_then(Value::as_array)
+            .map(|list| {
+                list.iter()
+                    .filter_map(|parameter| {
+                        let place = parameter.get("in").and_then(Value::as_str)?;
+                        let name = parameter.get("name").and_then(Value::as_str)?;
+                        Some(format!("{place} {name}"))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        names.sort();
+        names.dedup();
+        names
+    };
+    let (recorded, answered) = (parameters(recorded), parameters(answered));
+    if recorded != answered {
+        failures.push(describe(format!(
+            "{operation} takes {answered:?} where it takes {recorded:?}"
+        )));
+    }
+}
+
+/// The component schema a response's JSON body references, if it references one.
+fn response_ref(response: &Value) -> Option<String> {
+    let schema = response
+        .get("content")?
+        .get("application/json")?
+        .get("schema")?;
+    let reference = schema.get("$ref")?.as_str()?;
+    reference.rsplit('/').next().map(str::to_owned)
+}
+
 /// What one comparison carries besides its two values.
 struct Comparison<'a> {
     /// The scenario being replayed.
@@ -1079,6 +1192,21 @@ fn compare_value(
     actual: &Value,
     failures: &mut Mismatches,
 ) {
+    if let Some(contract) = contract_for(path, context.allowances) {
+        match contract {
+            "openapi" => failures.extend(compare_openapi(
+                context.scenario,
+                context.step,
+                expected,
+                actual,
+            )),
+            other => failures.push(format!(
+                "{} step {}: {path} is pinned to the unknown contract {other}",
+                context.scenario, context.step
+            )),
+        }
+        return;
+    }
     if names_a_dumped_column(path)
         && let (Some(recorded), Some(answered)) = (table_body(expected), table_body(actual))
     {
@@ -1561,6 +1689,7 @@ mod tests {
             python_value: Some(json!("Internal Server Error")),
             rust_value: Some(json!("A typed error")),
             matching: None,
+            contract: None,
         };
         let recorded = json!({"status": 400, "body": {"detail": "Internal Server Error"}});
         let actual = json!({"detail": "A typed error"});
@@ -1592,6 +1721,7 @@ mod tests {
                 kind: "prefix".to_owned(),
                 value: "Not a valid JUnit XML report: ".to_owned(),
             }),
+            contract: None,
         };
         assert!(super::allowed(
             "body.detail",
@@ -1612,6 +1742,7 @@ mod tests {
                     kind: "unknown".to_owned(),
                     value: String::new(),
                 }),
+                contract: None,
             }]
         ));
     }
@@ -2135,6 +2266,9 @@ async fn an_enabled_step_that_answers_something_else_fails_loudly() {
     assert!(failures[0].contains("status"), "{failures:?}");
 }
 
+/// The golden directory that holds the JUnit parser's corpus, not a scenario.
+const JUNIT_GOLDEN_DIRECTORY: &str = "junit";
+
 /// Every scenario on disk, ordered by name.
 fn scenario_files() -> Vec<ScenarioFile> {
     let directory = parity_root().join("scenarios");
@@ -2155,56 +2289,14 @@ fn scenario_files() -> Vec<ScenarioFile> {
     scenarios
 }
 
-/// The steps of `name` that [`ENABLED`] replays.
-fn enabled_steps(name: &str) -> Vec<usize> {
-    ENABLED
-        .iter()
-        .filter(|enabled| enabled.name == name)
-        .flat_map(|enabled| enabled.steps.iter().copied())
-        .collect()
-}
-
-/// The steps of `name` that [`DEFERRED`] covers, given the scenario's length.
-///
-/// `None` defers every step, which is how a scenario no route of this build can
-/// serve is written down without repeating its step count.
-fn deferred_steps(name: &str, total: usize) -> Vec<usize> {
-    DEFERRED
-        .iter()
-        .filter(|entry| entry.scenario == name)
-        .flat_map(|entry| match entry.steps {
-            Some(steps) => steps.to_vec(),
-            None => (1..=total).collect(),
-        })
-        .collect()
-}
-
 #[test]
-fn the_enabled_and_deferred_lists_partition_every_scenario_step() {
+fn every_scenario_step_has_a_golden_and_no_golden_is_orphaned() {
     let scenarios = scenario_files();
     assert!(!scenarios.is_empty(), "the fixtures are committed");
+    let mut named: Vec<&str> = Vec::new();
     for scenario in &scenarios {
-        let total = scenario.steps.len();
-        let replayed = enabled_steps(&scenario.name);
-        let deferred = deferred_steps(&scenario.name, total);
-        let mut covered = replayed.clone();
-        covered.extend(deferred.iter().copied());
-        covered.sort_unstable();
-        let mut unique = covered.clone();
-        unique.dedup();
-        assert_eq!(
-            unique, covered,
-            "{}: a step is both enabled and deferred",
-            scenario.name
-        );
-        let expected: Vec<usize> = (1..=total).collect();
-        assert_eq!(
-            covered, expected,
-            "{}: every step is either enabled or deferred with a reason",
-            scenario.name
-        );
-        // A step without a golden would be replayed against nothing.
-        for step in covered {
+        assert!(!scenario.steps.is_empty(), "{} has no steps", scenario.name);
+        for step in 1..=scenario.steps.len() {
             let path = parity_root()
                 .join("golden")
                 .join(&scenario.name)
@@ -2215,47 +2307,100 @@ fn the_enabled_and_deferred_lists_partition_every_scenario_step() {
                 scenario.name
             );
         }
+        named.push(&scenario.name);
     }
-    for enabled in ENABLED {
+    // A golden directory no scenario names would never be replayed, which is
+    // how a scenario silently stops being covered. `golden/junit` is the JUnit
+    // parser's corpus, which has no scenario and is replayed by
+    // `flakeradar-core`'s own test.
+    for entry in std::fs::read_dir(parity_root().join("golden")).expect("the goldens are readable")
+    {
+        let path = entry.expect("a directory entry").path();
+        if !path.is_dir() {
+            continue;
+        }
+        let directory = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("a golden directory has a name");
+        if directory == JUNIT_GOLDEN_DIRECTORY {
+            continue;
+        }
         assert!(
-            scenarios
-                .iter()
-                .any(|scenario| scenario.name == enabled.name),
-            "{} is not a scenario",
-            enabled.name
+            named.contains(&directory),
+            "the golden directory {directory} is not a scenario"
         );
     }
 }
 
+/// The reference's `/openapi.json`, as the replay compares it.
+fn recorded_openapi() -> Value {
+    golden("trailing-slash", 9)
+        .get("body")
+        .cloned()
+        .expect("the openapi golden carries a body")
+}
+
 #[test]
-fn the_deferred_list_only_shrinks_and_names_a_later_task() {
-    let scenarios = scenario_files();
-    let mut deferred = 0;
-    for scenario in &scenarios {
-        deferred += deferred_steps(&scenario.name, scenario.steps.len()).len();
-    }
-    for entry in DEFERRED {
-        assert!(
-            scenarios
-                .iter()
-                .any(|scenario| scenario.name == entry.scenario),
-            "{} is not a scenario",
-            entry.scenario
-        );
-        // Task 05 is the one this list was written in; anything deferred belongs
-        // to a task after it.
-        assert!(entry.task > 5, "{} is not a later task", entry.task);
-        assert!(
-            !entry.reason.trim().is_empty(),
-            "{} step {:?} has no reason",
-            entry.scenario,
-            entry.steps
-        );
-    }
-    // Lower this when you enable steps, and never raise it: the number is what
-    // stops a scenario from being switched off to make the replay pass.
+fn the_served_openapi_document_keeps_the_reference_contract() {
+    let actual =
+        serde_json::to_value(flakeradar::docs::document()).expect("the document serializes");
     assert_eq!(
-        deferred, DEFERRED_STEPS,
-        "the deferred step count changed; lower DEFERRED_STEPS when you enable steps"
+        compare_openapi("trailing-slash", 9, &recorded_openapi(), &actual),
+        Vec::<String>::new()
     );
+}
+
+#[test]
+fn a_missing_path_method_parameter_or_field_fails_the_openapi_contract() {
+    let recorded = recorded_openapi();
+    let actual =
+        serde_json::to_value(flakeradar::docs::document()).expect("the document serializes");
+    assert_eq!(
+        compare_openapi("trailing-slash", 9, &recorded, &actual),
+        Vec::<String>::new()
+    );
+
+    let mut missing_path = actual.clone();
+    missing_path["paths"]
+        .as_object_mut()
+        .expect("the document has paths")
+        .remove("/api/jobs");
+    let failures = compare_openapi("trailing-slash", 9, &recorded, &missing_path);
+    assert_eq!(failures.len(), 1, "{failures:?}");
+    assert!(failures[0].contains("/api/jobs"), "{failures:?}");
+
+    let mut missing_method = actual.clone();
+    missing_method["paths"]["/api/reports/{report_id}"]
+        .as_object_mut()
+        .expect("the path has methods")
+        .remove("delete");
+    let failures = compare_openapi("trailing-slash", 9, &recorded, &missing_method);
+    assert_eq!(failures.len(), 1, "{failures:?}");
+    assert!(failures[0].contains("delete"), "{failures:?}");
+
+    let mut missing_parameter = actual.clone();
+    missing_parameter["paths"]["/api/tests"]["get"]["parameters"]
+        .as_array_mut()
+        .expect("the operation has parameters")
+        .pop();
+    let failures = compare_openapi("trailing-slash", 9, &recorded, &missing_parameter);
+    assert_eq!(failures.len(), 1, "{failures:?}");
+    assert!(failures[0].contains("/api/tests"), "{failures:?}");
+
+    let mut missing_field = actual.clone();
+    missing_field["components"]["schemas"]["TestOut"]["properties"]
+        .as_object_mut()
+        .expect("the schema has properties")
+        .remove("quarantined");
+    let failures = compare_openapi("trailing-slash", 9, &recorded, &missing_field);
+    assert_eq!(failures.len(), 1, "{failures:?}");
+    assert!(failures[0].contains("quarantined"), "{failures:?}");
+
+    let mut renamed_body = actual;
+    renamed_body["paths"]["/api/jobs"]["get"]["responses"]["200"]["content"]["application/json"]
+        ["schema"]["$ref"] = json!("#/components/schemas/JobPages");
+    let failures = compare_openapi("trailing-slash", 9, &recorded, &renamed_body);
+    assert_eq!(failures.len(), 1, "{failures:?}");
+    assert!(failures[0].contains("JobPages"), "{failures:?}");
 }

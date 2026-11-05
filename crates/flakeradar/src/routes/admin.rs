@@ -138,6 +138,7 @@ fn identity_error(error: &flakeradar_core::IdentityError) -> ApiError {
     path = "/api/repos/{owner}/{name}",
     tag = "admin",
     params(
+        ("x-api-key" = Option<String>, Header, description = "The shared token this instance requires"),
         ("owner" = String, Path, description = "The Repo's owner"),
         ("name" = String, Path, description = "The Repo's name")
     ),
@@ -178,6 +179,7 @@ pub async fn delete_repo(
     path = "/api/repos/{owner}/{name}/projects/{project}",
     tag = "admin",
     params(
+        ("x-api-key" = Option<String>, Header, description = "The shared token this instance requires"),
         ("owner" = String, Path, description = "The Repo's owner"),
         ("name" = String, Path, description = "The Repo's name"),
         ("project" = String, Path, description = "The Project's name")

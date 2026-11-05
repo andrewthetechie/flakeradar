@@ -14,8 +14,12 @@ use axum::http::header;
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
 use flakeradar_core::{
-    IngestAccepted, JobResultIn, JobStatus, LocSegment, PipelineReportIn, ReadinessOut, ReportOut,
-    ReportSummaryOut, ValidationIssue,
+    CiRunFailedJobOut, CiRunFailuresOut, CiRunTestFailureOut, DeletedCountsOut, ExecutionOut,
+    ExplainingJobOut, ExplainingTestOut, HistoryOut, IngestAccepted, IssueLinkIn, JobExecutionOut,
+    JobHistoryOut, JobOut, JobPage, JobResultIn, JobStatus, JobSummaryOut, LocSegment, LocationOut,
+    PipelineReportIn, ProjectDeleteOut, ProjectOut, QuarantineIn, QuarantineItem, ReadinessOut,
+    RepoDeleteOut, RepoOut, ReportCountsOut, ReportOut, ReportSummaryOut, RunnerStatOut,
+    ScorePointOut, SummaryOut, TestJobLinkOut, TestOut, TestPage, ValidationIssue,
 };
 use utoipa::OpenApi;
 use utoipa::openapi::OpenApi as OpenApiDocument;
@@ -23,7 +27,7 @@ use utoipa_redoc::Redoc;
 
 use crate::app::AppState;
 use crate::routes::ops::{self, HealthOut};
-use crate::routes::reports;
+use crate::routes::{admin, issues, reads, reports};
 
 /// Where the browser bundle is served from, under `/docs`.
 pub const REDOC_SCRIPT_PATH: &str = "/docs/redoc.standalone.js";
@@ -48,7 +52,23 @@ pub const REDOC_SCRIPT: &[u8] = include_bytes!("../assets/redoc.standalone.js");
         reports::list_reports,
         reports::get_report,
         reports::retry_report,
-        reports::delete_report
+        reports::delete_report,
+        reads::repos,
+        reads::tests,
+        reads::test_summary,
+        reads::test_history,
+        reads::quarantine_test,
+        reads::quarantine,
+        reads::jobs,
+        reads::jobs_summary,
+        reads::job_history,
+        reads::ci_run,
+        issues::link_test,
+        issues::unlink_test,
+        issues::link_job,
+        issues::unlink_job,
+        admin::delete_repo,
+        admin::delete_project
     ),
     components(schemas(
         HealthOut,
@@ -58,9 +78,37 @@ pub const REDOC_SCRIPT: &[u8] = include_bytes!("../assets/redoc.standalone.js");
         IngestAccepted,
         ReportOut,
         ReportSummaryOut,
+        ReportCountsOut,
         PipelineReportIn,
         JobResultIn,
-        JobStatus
+        JobStatus,
+        ProjectOut,
+        RepoOut,
+        DeletedCountsOut,
+        RepoDeleteOut,
+        ProjectDeleteOut,
+        TestOut,
+        TestPage,
+        LocationOut,
+        TestJobLinkOut,
+        SummaryOut,
+        ExecutionOut,
+        ScorePointOut,
+        HistoryOut,
+        JobOut,
+        JobPage,
+        ExplainingTestOut,
+        ExplainingJobOut,
+        JobExecutionOut,
+        RunnerStatOut,
+        JobHistoryOut,
+        JobSummaryOut,
+        QuarantineIn,
+        QuarantineItem,
+        CiRunTestFailureOut,
+        CiRunFailedJobOut,
+        CiRunFailuresOut,
+        IssueLinkIn
     ))
 )]
 pub struct ApiDoc;

@@ -701,6 +701,7 @@ pub async fn quarantine_test(
     path = "/api/quarantine",
     tag = "reads",
     params(
+        ("x-api-key" = Option<String>, Header, description = "The shared token this instance requires"),
         ("repo" = String, Query, description = "The Repo's owner/name"),
         ("project" = Option<String>, Query, description = "The Project's name; default when omitted")
     ),
