@@ -85,6 +85,17 @@ const WAIT_PROCESSED_DEADLINE: Duration = Duration::from_secs(60);
 /// How often `wait_processed` asks whether the queue is drained.
 const WAIT_PROCESSED_INTERVAL: Duration = Duration::from_millis(50);
 
+/// How long a replay waits for its worker to take the processor lock.
+///
+/// The recorder's server held the lock before it recorded, so the `/ready` and
+/// `/metrics` goldens report a leader. A worker elects itself on its first loop
+/// iteration, after `start` has returned, so an instrumented build can answer a
+/// probe before the election; this is the bound on waiting for it.
+const LEADERSHIP_DEADLINE: Duration = Duration::from_secs(30);
+
+/// How often a replay asks its worker whether it leads.
+const LEADERSHIP_INTERVAL: Duration = Duration::from_millis(20);
+
 /// One scenario the replay runs, and the steps of it this build answers.
 struct Enabled {
     /// The scenario's name, which is also its directory under `golden/`.
@@ -340,6 +351,24 @@ impl GatedProcessor {
     }
 }
 
+/// Waits until the replay's worker holds the processor lock.
+///
+/// `ReportWorker::start` returns before the election, which the worker runs on
+/// its first loop iteration, so a replay that asked `/api/health/ready` straight
+/// away could see `processor_leader: false` where every golden that records it
+/// says `true`. The wait is bounded, and a worker that never takes the lock is
+/// named here rather than surfacing as a mismatch in the probe's body.
+async fn wait_for_leadership(worker: &ReportWorker) {
+    let deadline = tokio::time::Instant::now() + LEADERSHIP_DEADLINE;
+    while !worker.is_leader() && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(LEADERSHIP_INTERVAL).await;
+    }
+    assert!(
+        worker.is_leader(),
+        "the replay's worker never took the processor lock in {LEADERSHIP_DEADLINE:?}"
+    );
+}
+
 impl ReportProcessor for GatedProcessor {
     fn process_next(
         &self,
@@ -384,6 +413,7 @@ async fn every_enabled_scenario_replays_identically() {
             .with_processor(Arc::clone(&processor)),
         );
         Arc::clone(&worker).start().await;
+        wait_for_leadership(&worker).await;
         for step in enabled.steps {
             let recorded = golden(enabled.name, *step);
             let spec = scenario
