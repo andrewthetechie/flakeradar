@@ -130,7 +130,14 @@ pub struct TestCaseBuilder {
     suite: String,
     fingerprint: Option<String>,
     flakiness_score: f64,
+    confirmed_flake_count: i32,
     clean_streak: i32,
+    fail_streak: i32,
+    file: Option<String>,
+    line: Option<i32>,
+    failure_category: Option<String>,
+    quarantined: bool,
+    last_seen_at: Option<DateTimeWithTimeZone>,
     github_issue_fixed_noted_at: Option<DateTimeWithTimeZone>,
     github_issue_number: Option<i32>,
     quarantined_at: Option<DateTimeWithTimeZone>,
@@ -148,7 +155,14 @@ pub fn make_test_case(project: &projects::Model) -> TestCaseBuilder {
         suite: "unit".to_owned(),
         fingerprint: None,
         flakiness_score: 0.0,
+        confirmed_flake_count: 0,
         clean_streak: 0,
+        fail_streak: 0,
+        file: None,
+        line: None,
+        failure_category: None,
+        quarantined: false,
+        last_seen_at: None,
         github_issue_fixed_noted_at: None,
         github_issue_number: None,
         quarantined_at: None,
@@ -200,6 +214,55 @@ impl TestCaseBuilder {
         self
     }
 
+    /// Sets when the Test last ran.
+    #[must_use]
+    pub fn last_seen_at(mut self, at: DateTimeWithTimeZone) -> Self {
+        self.last_seen_at = Some(at);
+        self
+    }
+
+    /// Sets the Test's Proven flake count.
+    #[must_use]
+    pub fn confirmed_flake_count(mut self, count: i32) -> Self {
+        self.confirmed_flake_count = count;
+        self
+    }
+
+    /// Sets the Test's Fail streak.
+    #[must_use]
+    pub fn fail_streak(mut self, fail_streak: i32) -> Self {
+        self.fail_streak = fail_streak;
+        self
+    }
+
+    /// Sets the file the runner reported the Test in.
+    #[must_use]
+    pub fn file(mut self, file: &str) -> Self {
+        self.file = Some(file.to_owned());
+        self
+    }
+
+    /// Sets the line the runner reported the Test on.
+    #[must_use]
+    pub fn line(mut self, line: i32) -> Self {
+        self.line = Some(line);
+        self
+    }
+
+    /// Sets the Test's Failure category.
+    #[must_use]
+    pub fn failure_category(mut self, category: &str) -> Self {
+        self.failure_category = Some(category.to_owned());
+        self
+    }
+
+    /// Quarantines the Test without a reason or an expiry.
+    #[must_use]
+    pub fn quarantined(mut self) -> Self {
+        self.quarantined = true;
+        self
+    }
+
     /// Sets when FlakeRadar noted that the Test's fix appears to hold.
     #[must_use]
     pub fn github_issue_fixed_noted_at(mut self, at: DateTimeWithTimeZone) -> Self {
@@ -241,7 +304,8 @@ impl TestCaseBuilder {
     ///
     /// Returns [`TestError::Database`] when the insert violates a constraint.
     pub async fn build(self, db: &impl ConnectionTrait) -> Result<test_cases::Model, TestError> {
-        let quarantined = self.quarantined_at.is_some()
+        let quarantined = self.quarantined
+            || self.quarantined_at.is_some()
             || self.quarantine_reason.is_some()
             || self.quarantine_expires_at.is_some();
         let fingerprint = self
@@ -256,12 +320,14 @@ impl TestCaseBuilder {
                 classname: Set(self.classname),
                 name: Set(self.name),
                 flakiness_score: Set(self.flakiness_score),
-                confirmed_flake_count: Set(0),
-                failure_category: Set(None),
+                confirmed_flake_count: Set(self.confirmed_flake_count),
+                failure_category: Set(self.failure_category),
                 clean_streak: Set(self.clean_streak),
-                fail_streak: Set(0),
+                fail_streak: Set(self.fail_streak),
+                file: Set(self.file),
+                line: Set(self.line),
                 last_status: Set("passed".to_owned()),
-                last_seen_at: Set(now()),
+                last_seen_at: Set(self.last_seen_at.unwrap_or_else(now)),
                 quarantined: Set(quarantined),
                 quarantined_at: Set(self.quarantined_at),
                 quarantine_reason: Set(self.quarantine_reason),
@@ -563,7 +629,9 @@ pub struct JobBuilder {
     name: String,
     summary: bool,
     flakiness_score: f64,
+    confirmed_flake_count: i32,
     clean_streak: i32,
+    last_seen_at: Option<DateTimeWithTimeZone>,
     github_issue_fixed_noted_at: Option<DateTimeWithTimeZone>,
     github_issue_number: Option<i32>,
 }
@@ -576,7 +644,9 @@ pub fn make_job(pipeline: &pipelines::Model) -> JobBuilder {
         name: "test".to_owned(),
         summary: false,
         flakiness_score: 0.0,
+        confirmed_flake_count: 0,
         clean_streak: 0,
+        last_seen_at: None,
         github_issue_fixed_noted_at: None,
         github_issue_number: None,
     }
@@ -597,10 +667,24 @@ impl JobBuilder {
         self
     }
 
+    /// Sets the Job's Proven flake count.
+    #[must_use]
+    pub fn confirmed_flake_count(mut self, count: i32) -> Self {
+        self.confirmed_flake_count = count;
+        self
+    }
+
     /// Sets the Job's Clean streak.
     #[must_use]
     pub fn clean_streak(mut self, clean_streak: i32) -> Self {
         self.clean_streak = clean_streak;
+        self
+    }
+
+    /// Sets when the Job last ran.
+    #[must_use]
+    pub fn last_seen_at(mut self, at: DateTimeWithTimeZone) -> Self {
+        self.last_seen_at = Some(at);
         self
     }
 
@@ -638,10 +722,10 @@ impl JobBuilder {
                 name: Set(self.name),
                 summary: Set(self.summary),
                 flakiness_score: Set(self.flakiness_score),
-                confirmed_flake_count: Set(0),
+                confirmed_flake_count: Set(self.confirmed_flake_count),
                 clean_streak: Set(self.clean_streak),
                 last_status: Set("passed".to_owned()),
-                last_seen_at: Set(now()),
+                last_seen_at: Set(self.last_seen_at.unwrap_or_else(now)),
                 github_issue_number: Set(self.github_issue_number),
                 github_issue_filed: Set(None),
                 github_issue_checked_at: Set(None),
@@ -665,6 +749,9 @@ pub struct JobExecutionBuilder {
     branch: String,
     ci_run_id: String,
     ci_run_attempt: i32,
+    url: String,
+    runner_name: String,
+    runner_labels: Vec<String>,
     created_at: Option<DateTimeWithTimeZone>,
 }
 
@@ -680,6 +767,9 @@ pub fn make_job_execution(job: &jobs::Model) -> JobExecutionBuilder {
         branch: "main".to_owned(),
         ci_run_id: "1".to_owned(),
         ci_run_attempt: 1,
+        url: String::new(),
+        runner_name: String::new(),
+        runner_labels: Vec::new(),
         created_at: None,
     }
 }
@@ -727,6 +817,27 @@ impl JobExecutionBuilder {
         self
     }
 
+    /// Sets the Job execution's CI url.
+    #[must_use]
+    pub fn url(mut self, url: &str) -> Self {
+        url.clone_into(&mut self.url);
+        self
+    }
+
+    /// Sets the runner's name.
+    #[must_use]
+    pub fn runner_name(mut self, runner_name: &str) -> Self {
+        runner_name.clone_into(&mut self.runner_name);
+        self
+    }
+
+    /// Sets the runner's labels.
+    #[must_use]
+    pub fn runner_labels(mut self, labels: &[&str]) -> Self {
+        self.runner_labels = labels.iter().map(|label| (*label).to_owned()).collect();
+        self
+    }
+
     /// Sets when the Job execution was recorded.
     #[must_use]
     pub fn created_at(mut self, created_at: DateTime<FixedOffset>) -> Self {
@@ -760,9 +871,14 @@ impl JobExecutionBuilder {
                 commit_sha: Set(self.commit_sha),
                 branch: Set(self.branch),
                 status: Set(self.status),
-                url: Set(String::new()),
-                runner_name: Set(String::new()),
-                runner_labels: Set(JsonValue::Array(Vec::new())),
+                url: Set(self.url),
+                runner_name: Set(self.runner_name),
+                runner_labels: Set(JsonValue::Array(
+                    self.runner_labels
+                        .into_iter()
+                        .map(JsonValue::from)
+                        .collect(),
+                )),
                 started_at: Set(None),
                 completed_at: Set(None),
                 created_at: Set(self.created_at.unwrap_or_else(now)),
@@ -779,6 +895,9 @@ pub struct TestScoreBuilder {
     test_case_id: i32,
     day: NaiveDate,
     flakiness_score: f64,
+    confirmed_flake_count: i32,
+    executions: i32,
+    failures: i32,
 }
 
 /// Builds a Score history row for `test_case` on `day`.
@@ -792,10 +911,34 @@ pub fn make_test_score(
         test_case_id: test_case.id,
         day,
         flakiness_score,
+        confirmed_flake_count: 0,
+        executions: 0,
+        failures: 0,
     }
 }
 
 impl TestScoreBuilder {
+    /// Sets the Proven flake count the day closed with.
+    #[must_use]
+    pub fn confirmed_flake_count(mut self, count: i32) -> Self {
+        self.confirmed_flake_count = count;
+        self
+    }
+
+    /// Sets how many Executions ran that day.
+    #[must_use]
+    pub fn executions(mut self, executions: i32) -> Self {
+        self.executions = executions;
+        self
+    }
+
+    /// Sets how many Executions failed that day.
+    #[must_use]
+    pub fn failures(mut self, failures: i32) -> Self {
+        self.failures = failures;
+        self
+    }
+
     /// Inserts the Score history row.
     ///
     /// # Errors
@@ -811,9 +954,9 @@ impl TestScoreBuilder {
                 test_case_id: Set(self.test_case_id),
                 day: Set(self.day),
                 flakiness_score: Set(self.flakiness_score),
-                confirmed_flake_count: Set(0),
-                executions: Set(0),
-                failures: Set(0),
+                confirmed_flake_count: Set(self.confirmed_flake_count),
+                executions: Set(self.executions),
+                failures: Set(self.failures),
             },
         )
         .await
@@ -826,6 +969,9 @@ pub struct JobScoreBuilder {
     job_id: i32,
     day: NaiveDate,
     flakiness_score: f64,
+    confirmed_flake_count: i32,
+    executions: i32,
+    failures: i32,
 }
 
 /// Builds a Score history row for `job` on `day`.
@@ -835,10 +981,27 @@ pub fn make_job_score(job: &jobs::Model, day: NaiveDate, flakiness_score: f64) -
         job_id: job.id,
         day,
         flakiness_score,
+        confirmed_flake_count: 0,
+        executions: 0,
+        failures: 0,
     }
 }
 
 impl JobScoreBuilder {
+    /// Sets how many Job executions ran that day.
+    #[must_use]
+    pub fn executions(mut self, executions: i32) -> Self {
+        self.executions = executions;
+        self
+    }
+
+    /// Sets how many Job executions failed that day.
+    #[must_use]
+    pub fn failures(mut self, failures: i32) -> Self {
+        self.failures = failures;
+        self
+    }
+
     /// Inserts the Score history row.
     ///
     /// # Errors
@@ -854,9 +1017,9 @@ impl JobScoreBuilder {
                 job_id: Set(self.job_id),
                 day: Set(self.day),
                 flakiness_score: Set(self.flakiness_score),
-                confirmed_flake_count: Set(0),
-                executions: Set(0),
-                failures: Set(0),
+                confirmed_flake_count: Set(self.confirmed_flake_count),
+                executions: Set(self.executions),
+                failures: Set(self.failures),
             },
         )
         .await
