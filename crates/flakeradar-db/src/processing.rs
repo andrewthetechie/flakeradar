@@ -1404,14 +1404,28 @@ async fn write_test_updates(
     Ok(())
 }
 
+/// One Job's scoring input: its newest-first history and its Repo's Default branch.
+#[derive(Debug, Clone, Default)]
+pub struct JobHistory {
+    /// The Default branch of the Job's Repo, or `None` while it is unknown.
+    pub default_branch: Option<String>,
+    /// Executions as `(commit_sha, branch, status)`, newest first, with explained
+    /// failures already turned into `skipped` so they never break a streak.
+    pub executions: Vec<(String, String, ExecutionStatus)>,
+}
+
 /// Newest-first Job-execution history for each Job, plus its Repo's Default branch.
 ///
 /// Explained failed executions become `skipped`, so they never break a streak.
-async fn job_history(
+///
+/// # Errors
+///
+/// Returns [`DbError::Database`] when a read fails.
+pub async fn job_history(
     db: &impl ConnectionTrait,
     job_ids: &[i32],
     settings: &ProcessingSettings,
-) -> Result<BTreeMap<i32, (Option<String>, Vec<(String, String, ExecutionStatus)>)>, DbError> {
+) -> Result<BTreeMap<i32, JobHistory>, DbError> {
     let mut history: BTreeMap<i32, Vec<(String, String, ExecutionStatus)>> = BTreeMap::new();
     let mut branches: BTreeMap<i32, Option<String>> = BTreeMap::new();
     for id in job_ids {
@@ -1456,7 +1470,15 @@ async fn job_history(
     }
     Ok(history
         .into_iter()
-        .map(|(id, execs)| (id, (branches.get(&id).cloned().flatten(), execs)))
+        .map(|(id, executions)| {
+            (
+                id,
+                JobHistory {
+                    default_branch: branches.get(&id).cloned().flatten(),
+                    executions,
+                },
+            )
+        })
         .collect())
 }
 
@@ -1474,8 +1496,10 @@ pub async fn rescore_jobs(
     let history = job_history(db, job_ids, settings).await?;
     let mut updates = Vec::with_capacity(job_ids.len());
     for id in job_ids {
-        let (branch, executions) = history.get(id).cloned().unwrap_or_default();
-        let history_refs: Vec<(&str, &str, ExecutionStatus)> = executions
+        let entry = history.get(id).cloned().unwrap_or_default();
+        let branch = entry.default_branch;
+        let history_refs: Vec<(&str, &str, ExecutionStatus)> = entry
+            .executions
             .iter()
             .map(|(sha, branch, status)| (sha.as_str(), branch.as_str(), *status))
             .collect();

@@ -127,6 +127,45 @@ async fn drain(db: &TestDb, settings: &ProcessingSettings) -> Vec<flakeradar_db:
     outcomes
 }
 
+/// Makes every new Run fail with SQLSTATE 57014 (`statement_timeout`), which is
+/// transient, so the processor's retry path runs.
+async fn fail_test_run_inserts(db: &TestDb) {
+    db.connection()
+        .execute_unprepared("CREATE FUNCTION boom() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'timeout' USING ERRCODE = '57014'; END $$")
+        .await
+        .expect("the trigger function");
+    db.connection()
+        .execute_unprepared("CREATE TRIGGER boom_insert BEFORE INSERT ON test_runs FOR EACH ROW EXECUTE FUNCTION boom()")
+        .await
+        .expect("the trigger");
+}
+
+/// Applies the manual-retry transition to the stored Report, as the route does.
+async fn apply_manual_retry(db: &TestDb, id: i32) -> reports::Model {
+    let mut stored = reports::Entity::find_by_id(id)
+        .one(db.connection())
+        .await
+        .expect("the Report")
+        .expect("the Report exists");
+    flakeradar_db::retry_failed_report(&mut stored);
+    reports::Entity::update(reports::ActiveModel {
+        id: sea_orm::Set(stored.id),
+        retry_count: sea_orm::Set(stored.retry_count),
+        status: sea_orm::Set(stored.status.clone()),
+        error: sea_orm::Set(stored.error.clone()),
+        processed_at: sea_orm::Set(stored.processed_at),
+        ..Default::default()
+    })
+    .exec(db.connection())
+    .await
+    .expect("the retried Report");
+    reports::Entity::find_by_id(id)
+        .one(db.connection())
+        .await
+        .expect("the Report")
+        .expect("the Report exists")
+}
+
 /// Every Test, ordered by name.
 async fn tests(db: &TestDb) -> Vec<test_cases::Model> {
     test_cases::Entity::find()
@@ -512,15 +551,7 @@ async fn a_bad_report_fails_and_the_queue_moves_on() {
 async fn a_transient_failure_is_retried_then_capped() {
     let db = TestDb::new().await.expect("a test database");
     let project = project(&db, "acme/app", "backend").await;
-    // A statement timeout is SQLSTATE 57014, which is transient.
-    db.connection()
-        .execute_unprepared("CREATE FUNCTION boom() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'timeout' USING ERRCODE = '57014'; END $$")
-        .await
-        .expect("the trigger function");
-    db.connection()
-        .execute_unprepared("CREATE TRIGGER boom_insert BEFORE INSERT ON test_runs FOR EACH ROW EXECUTE FUNCTION boom()")
-        .await
-        .expect("the trigger");
+    fail_test_run_inserts(&db).await;
     let report = queue(&db, &project, &make_junit(&[("t", "passed")])).await;
     let settings = settings_with(|settings| settings.max_report_retries = 3);
     for expected in [1, 2, 3] {
@@ -583,6 +614,96 @@ async fn a_permanent_error_fails_without_spending_the_retry_budget() {
         .expect("the Report")
         .expect("the Report exists");
     assert_eq!((stored.status.as_str(), stored.retry_count), ("failed", 0));
+}
+
+#[tokio::test]
+async fn both_retry_kinds_reset_the_queue_fields() {
+    let db = TestDb::new().await.expect("a test database");
+    let project = project(&db, "acme/app", "backend").await;
+    let body = make_junit(&[("t", "failed")]);
+    let manual = make_report(&project, project.repo_id)
+        .body(&body)
+        .commit_sha("manual")
+        .status("failed")
+        .error("ParseError: boom")
+        .processed_at(at())
+        .retry_count(5)
+        .build(db.connection())
+        .await
+        .expect("a failed Report");
+    let transient = queue_with(&db, &project, &body, |builder| {
+        builder.commit_sha("transient")
+    })
+    .await;
+    fail_test_run_inserts(&db).await;
+    let settings = settings_with(|settings| settings.max_report_retries = 3);
+
+    // The transient kind first: the manual retry would leave its row pending, and
+    // the processor claims the oldest pending Report.
+    let outcome = process_next(db.connection(), &settings)
+        .await
+        .expect("the processor runs")
+        .expect("a Report");
+    assert_eq!(
+        (outcome.report_id, outcome.status.as_str()),
+        (transient.id, "pending")
+    );
+    assert_eq!(outcome.retry_count, 1);
+    let manual = apply_manual_retry(&db, manual.id).await;
+    let transient = reports::Entity::find_by_id(transient.id)
+        .one(db.connection())
+        .await
+        .expect("the Report")
+        .expect("the Report exists");
+
+    // Back in the queue, both rows look the same.
+    assert_eq!(
+        (manual.status.as_str(), transient.status.as_str()),
+        ("pending", "pending")
+    );
+    assert_eq!((manual.processed_at, transient.processed_at), (None, None));
+    // `error` and `retry_count` are the fields the two kinds differ on: a transient
+    // retry spends one automatic retry, a manual one resets the budget to 0.
+    assert_eq!(manual.error, None);
+    assert!(transient.error.is_some());
+    assert_eq!(transient.error, outcome.error);
+    assert_eq!((manual.retry_count, transient.retry_count), (0, 1));
+}
+
+#[tokio::test]
+async fn a_manual_retry_gives_a_fresh_budget() {
+    // After the reset the budget is really usable: the next transient failure retries.
+    let db = TestDb::new().await.expect("a test database");
+    let project = project(&db, "acme/app", "backend").await;
+    let manual = make_report(&project, project.repo_id)
+        .body(&make_junit(&[("t", "passed")]))
+        .commit_sha("refill")
+        .status("failed")
+        .error("OperationalError: connection reset")
+        .processed_at(at())
+        .retry_count(5)
+        .build(db.connection())
+        .await
+        .expect("a failed Report");
+    fail_test_run_inserts(&db).await;
+    let settings = settings_with(|settings| settings.max_report_retries = 3);
+
+    let retried = apply_manual_retry(&db, manual.id).await;
+    assert_eq!(
+        (retried.status.as_str(), retried.retry_count, retried.error),
+        ("pending", 0, None)
+    );
+    let outcome = process_next(db.connection(), &settings)
+        .await
+        .expect("the processor runs")
+        .expect("a Report");
+    assert_eq!(outcome.status, "pending");
+    let stored = reports::Entity::find_by_id(manual.id)
+        .one(db.connection())
+        .await
+        .expect("the Report")
+        .expect("the Report exists");
+    assert_eq!((stored.status.as_str(), stored.retry_count), ("pending", 1));
 }
 
 #[tokio::test]

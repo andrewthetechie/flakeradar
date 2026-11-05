@@ -54,8 +54,8 @@ pub use identity::{get_or_create_project, get_or_create_repo};
 pub use migration::{BASELINE_SQL, Migrator, run_migrations, split_statements};
 #[doc(inline)]
 pub use processing::{
-    ERROR_MAX, ProcessError, ProcessOutcome, ProcessingSettings, claim_next_report, process_next,
-    rescore, rescore_jobs,
+    ERROR_MAX, JobHistory, ProcessError, ProcessOutcome, ProcessingSettings, claim_next_report,
+    job_history, process_next, rescore, rescore_jobs,
 };
 #[doc(inline)]
 pub use report_intake::{
