@@ -548,6 +548,31 @@ async fn the_summaries_read_score_history_and_never_the_execution_tables() {
         .expect_err("a renamed table makes the detail read fail");
 }
 
+#[tokio::test]
+async fn a_summary_ignores_a_category_the_enum_does_not_know() {
+    // `failure_category` is free text in the baseline schema, so a row can hold a
+    // word the five Failure categories do not name; it counts under none of them.
+    let db = TestDb::new().await.expect("a test database");
+    let project = make_project()
+        .repo("acme/app")
+        .build(db.connection())
+        .await
+        .expect("the project");
+    make_test_case(&project)
+        .name("unknown_category")
+        .flakiness_score(0.6)
+        .failure_category("bogus")
+        .build(db.connection())
+        .await
+        .expect("the test");
+    let counted = summary(db.connection(), &Scope::default(), &settings())
+        .await
+        .expect("the summary");
+    assert_eq!(counted.total_tests, 1);
+    assert_eq!(counted.category_counts.len(), 5);
+    assert_eq!(counted.category_counts.values().copied().sum::<i64>(), 0);
+}
+
 /// One Test's detail page needs its Project, and an unknown id has none.
 #[tokio::test]
 async fn an_unknown_test_has_no_detail() {
