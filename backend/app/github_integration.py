@@ -919,9 +919,7 @@ async def close_issues_for_deleted_repo(
                 logger.warning("GitHub post-delete close skipped for issue %s#%s: %s", repo, number, outcome.error)
                 continue
             if outcome.kind != "created":
-                logger.warning(
-                    "GitHub comment on %s#%s failed: %s %s", repo, number, outcome.status, outcome.excerpt
-                )
+                logger.warning("GitHub comment on %s#%s failed: %s %s", repo, number, outcome.status, outcome.excerpt)
                 continue
             close = await client.close_issue(repo, number)
             if close.kind == "rate_limited":
