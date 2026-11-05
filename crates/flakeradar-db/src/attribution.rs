@@ -324,7 +324,7 @@ pub async fn unexplained_failure_counts(
             "SELECT job_executions.job_id FROM job_executions \
                JOIN jobs ON jobs.id = job_executions.job_id \
                JOIN pipelines ON pipelines.id = jobs.pipeline_id \
-              WHERE job_executions.id IN ({}) \
+              WHERE job_executions.id IN (SELECT w.id FROM ({}) AS w) \
                 AND job_executions.status = 'failed' \
                 AND NOT ({})",
             job_window_ids_overall_sql(),

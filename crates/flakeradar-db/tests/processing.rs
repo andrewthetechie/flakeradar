@@ -6,7 +6,6 @@
 
 #![expect(
     clippy::expect_used,
-    clippy::panic,
     reason = "a test fails loudly when the processor misbehaves"
 )]
 
@@ -14,17 +13,13 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use chrono::{DateTime, FixedOffset};
-use flakeradar_core::{
-    JobResultIn, JobStatus, PipelineReportIn, pipeline_body,
-    tier_for,
-};
+use flakeradar_core::{JobResultIn, JobStatus, PipelineReportIn, pipeline_body, tier_for};
 use flakeradar_db::entities::{
     job_executions, job_score_history, jobs, pipelines, projects, reports, repos, test_cases,
     test_executions, test_runs, test_score_history,
 };
 use flakeradar_db::{
-    FixedClock, ProcessingSettings, claim_next_report, get_or_create_project, process_next,
-    rescore,
+    FixedClock, ProcessingSettings, claim_next_report, get_or_create_project, process_next, rescore,
 };
 use flakeradar_test_support::{TestDb, make_junit, make_report};
 use sea_orm::{
@@ -73,7 +68,9 @@ async fn queue_with(
     db: &TestDb,
     project: &projects::Model,
     body: &[u8],
-    change: impl FnOnce(flakeradar_test_support::ReportBuilder) -> flakeradar_test_support::ReportBuilder,
+    change: impl FnOnce(
+        flakeradar_test_support::ReportBuilder,
+    ) -> flakeradar_test_support::ReportBuilder,
 ) -> reports::Model {
     change(make_report(project, project.repo_id).body(body))
         .build(db.connection())
@@ -82,7 +79,11 @@ async fn queue_with(
 }
 
 /// Queues a Pipeline Report.
-async fn queue_pipeline(db: &TestDb, project: &projects::Model, payload: &PipelineReportIn) -> reports::Model {
+async fn queue_pipeline(
+    db: &TestDb,
+    project: &projects::Model,
+    payload: &PipelineReportIn,
+) -> reports::Model {
     make_report(project, project.repo_id)
         .kind("pipeline")
         .body(&pipeline_body(payload))
@@ -188,9 +189,12 @@ async fn an_empty_queue_returns_none() {
 async fn a_report_becomes_a_run_with_its_counts() {
     let db = TestDb::new().await.expect("a test database");
     let project = project(&db, "acme/app", "backend").await;
-    let report = queue_with(&db, &project, &make_junit(&[("t1", "passed"), ("t2", "failed")]), |builder| {
-        builder.commit_sha("abc").branch("feat").ci_run_id("9-1")
-    })
+    let report = queue_with(
+        &db,
+        &project,
+        &make_junit(&[("t1", "passed"), ("t2", "failed")]),
+        |builder| builder.commit_sha("abc").branch("feat").ci_run_id("9-1"),
+    )
     .await;
     let outcome = process_next(db.connection(), &settings())
         .await
@@ -219,10 +223,19 @@ async fn a_report_becomes_a_run_with_its_counts() {
         .await
         .expect("the Run")
         .expect("one Run");
-    assert_eq!((run.commit_sha.as_str(), run.branch.as_str(), run.ci_run_id.as_str()), ("abc", "feat", "9-1"));
+    assert_eq!(
+        (
+            run.commit_sha.as_str(),
+            run.branch.as_str(),
+            run.ci_run_id.as_str()
+        ),
+        ("abc", "feat", "9-1")
+    );
     let rows = tests(&db).await;
     assert_eq!(
-        rows.iter().map(|row| (row.name.as_str(), row.last_status.as_str())).collect::<Vec<_>>(),
+        rows.iter()
+            .map(|row| (row.name.as_str(), row.last_status.as_str()))
+            .collect::<Vec<_>>(),
         [("t1", "passed"), ("t2", "failed")]
     );
     let mut ids: Vec<i32> = rows.iter().map(|row| row.id).collect();
@@ -242,8 +255,14 @@ async fn a_report_becomes_a_run_with_its_counts() {
 async fn a_same_sha_retry_is_a_proven_flake() {
     let db = TestDb::new().await.expect("a test database");
     let project = project(&db, "acme/app", "backend").await;
-    queue_with(&db, &project, &make_junit(&[("t_flaky", "failed")]), |b| b.commit_sha("dead")).await;
-    queue_with(&db, &project, &make_junit(&[("t_flaky", "passed")]), |b| b.commit_sha("dead")).await;
+    queue_with(&db, &project, &make_junit(&[("t_flaky", "failed")]), |b| {
+        b.commit_sha("dead")
+    })
+    .await;
+    queue_with(&db, &project, &make_junit(&[("t_flaky", "passed")]), |b| {
+        b.commit_sha("dead")
+    })
+    .await;
     drain(&db, &settings()).await;
     let row = test(&db).await;
     assert_eq!(row.confirmed_flake_count, 1);
@@ -322,14 +341,16 @@ async fn a_flaky_retry_is_a_proven_flake_from_one_report() {
         .map(|row| (row.status, row.attempt))
         .collect();
     assert_eq!(rows, [("failed".to_owned(), 0), ("passed".to_owned(), 1)]);
-    assert!(test_executions::Entity::find()
-        .filter(test_executions::Column::TestCaseId.eq(flaky.id))
-        .order_by_asc(test_executions::Column::Id)
-        .all(db.connection())
-        .await
-        .expect("the Executions")[0]
-        .failure_category
-        .is_some());
+    assert!(
+        test_executions::Entity::find()
+            .filter(test_executions::Column::TestCaseId.eq(flaky.id))
+            .order_by_asc(test_executions::Column::Id)
+            .all(db.connection())
+            .await
+            .expect("the Executions")[0]
+            .failure_category
+            .is_some()
+    );
 }
 
 #[tokio::test]
@@ -379,11 +400,17 @@ async fn the_location_is_the_latest_but_is_never_erased() {
     queue(&db, &project, no_location).await;
     drain(&db, &settings()).await;
     let row = test(&db).await;
-    assert_eq!((row.file.as_deref(), row.line), (Some("tests/a.py"), Some(3)));
+    assert_eq!(
+        (row.file.as_deref(), row.line),
+        (Some("tests/a.py"), Some(3))
+    );
     queue(&db, &project, moved).await;
     drain(&db, &settings()).await;
     let row = test(&db).await;
-    assert_eq!((row.file.as_deref(), row.line), (Some("tests/b.py"), Some(9)));
+    assert_eq!(
+        (row.file.as_deref(), row.line),
+        (Some("tests/b.py"), Some(9))
+    );
 }
 
 #[tokio::test]
@@ -394,14 +421,20 @@ async fn line_base_zero_stores_a_one_based_location() {
     queue_with(&db, &project, body, |b| b.line_base(0)).await;
     drain(&db, &settings()).await;
     let row = test(&db).await;
-    assert_eq!((row.file.as_deref(), row.line), (Some("tests/a.py"), Some(12)));
+    assert_eq!(
+        (row.file.as_deref(), row.line),
+        (Some("tests/a.py"), Some(12))
+    );
 }
 
 #[tokio::test]
 async fn the_root_is_set_only_when_sent() {
     let db = TestDb::new().await.expect("a test database");
     let project = project(&db, "acme/app", "backend").await;
-    queue_with(&db, &project, &make_junit(&[("t", "passed")]), |b| b.root("server")).await;
+    queue_with(&db, &project, &make_junit(&[("t", "passed")]), |b| {
+        b.root("server")
+    })
+    .await;
     drain(&db, &settings()).await;
     queue(&db, &project, &make_junit(&[("t", "passed")])).await;
     drain(&db, &settings()).await;
@@ -425,12 +458,20 @@ async fn a_bad_report_fails_and_the_queue_moves_on() {
         .expect("a Report");
     assert_eq!(first.status, "failed");
     assert_eq!(first.report_id, bad.id);
-    assert!(first.error.expect("an error").starts_with("ParseError: Not a valid JUnit XML report"));
+    assert!(
+        first
+            .error
+            .expect("an error")
+            .starts_with("ParseError: Not a valid JUnit XML report")
+    );
     let second = process_next(db.connection(), &settings())
         .await
         .expect("the processor runs")
         .expect("the next Report");
-    assert_eq!((second.status.as_str(), second.report_id), ("processed", good.id));
+    assert_eq!(
+        (second.status.as_str(), second.report_id),
+        ("processed", good.id)
+    );
     let stored = reports::Entity::find_by_id(bad.id)
         .one(db.connection())
         .await
@@ -474,8 +515,16 @@ async fn a_transient_failure_is_retried_then_capped() {
             .await
             .expect("the Report")
             .expect("the Report exists");
-        assert_eq!((stored.status.as_str(), stored.retry_count), ("pending", expected));
-        assert!(stored.error.expect("an error").starts_with("OperationalError:"));
+        assert_eq!(
+            (stored.status.as_str(), stored.retry_count),
+            ("pending", expected)
+        );
+        assert!(
+            stored
+                .error
+                .expect("an error")
+                .starts_with("OperationalError:")
+        );
     }
     let outcome = process_next(db.connection(), &settings)
         .await
@@ -496,7 +545,9 @@ async fn a_permanent_error_fails_without_spending_the_retry_budget() {
     let project = project(&db, "acme/app", "backend").await;
     // A broken CHECK constraint is a data error (SQLSTATE 23514), which is permanent.
     db.connection()
-        .execute_unprepared("ALTER TABLE test_runs ADD CONSTRAINT reject_all CHECK (false) NOT VALID")
+        .execute_unprepared(
+            "ALTER TABLE test_runs ADD CONSTRAINT reject_all CHECK (false) NOT VALID",
+        )
         .await
         .expect("the constraint is added");
     let report = queue(&db, &project, &make_junit(&[("t", "passed")])).await;
@@ -531,8 +582,14 @@ async fn the_claim_skips_a_locked_row() {
         .expect("the claim")
         .expect("the next Report");
     assert_eq!((claimed_a.id, claimed_b.id), (first.id, second.id));
-    transaction_a.rollback().await.expect("the transaction ends");
-    transaction_b.rollback().await.expect("the transaction ends");
+    transaction_a
+        .rollback()
+        .await
+        .expect("the transaction ends");
+    transaction_b
+        .rollback()
+        .await
+        .expect("the transaction ends");
 }
 
 #[tokio::test]
@@ -540,9 +597,17 @@ async fn a_large_report_crosses_chunk_boundaries() {
     let db = TestDb::new().await.expect("a test database");
     let project = project(&db, "acme/app", "backend").await;
     let cases: Vec<(String, &str)> = (0..2500)
-        .map(|index| (format!("t{index}"), if index % 50 == 0 { "failed" } else { "passed" }))
+        .map(|index| {
+            (
+                format!("t{index}"),
+                if index % 50 == 0 { "failed" } else { "passed" },
+            )
+        })
         .collect();
-    let case_refs: Vec<(&str, &str)> = cases.iter().map(|(name, status)| (name.as_str(), *status)).collect();
+    let case_refs: Vec<(&str, &str)> = cases
+        .iter()
+        .map(|(name, status)| (name.as_str(), *status))
+        .collect();
     queue(&db, &project, &make_junit(&case_refs)).await;
     let outcome = process_next(db.connection(), &settings())
         .await
@@ -567,9 +632,18 @@ async fn a_default_branch_ignores_feature_flips() {
         b.branch("feat").commit_sha("a").default_branch("main")
     })
     .await;
-    queue_with(&db, &project, &make_junit(&[("t", "passed")]), |b| b.branch("feat").commit_sha("b")).await;
-    queue_with(&db, &project, &make_junit(&[("t", "passed")]), |b| b.branch("main").commit_sha("c")).await;
-    queue_with(&db, &project, &make_junit(&[("t", "passed")]), |b| b.branch("main").commit_sha("d")).await;
+    queue_with(&db, &project, &make_junit(&[("t", "passed")]), |b| {
+        b.branch("feat").commit_sha("b")
+    })
+    .await;
+    queue_with(&db, &project, &make_junit(&[("t", "passed")]), |b| {
+        b.branch("main").commit_sha("c")
+    })
+    .await;
+    queue_with(&db, &project, &make_junit(&[("t", "passed")]), |b| {
+        b.branch("main").commit_sha("d")
+    })
+    .await;
     drain(&db, &settings()).await;
     assert_eq!(repo(&db).await.default_branch.as_deref(), Some("main"));
     let row = test(&db).await;
@@ -585,7 +659,10 @@ async fn a_same_sha_flip_on_a_feature_branch_is_still_proven() {
         b.branch("feat").commit_sha("x").default_branch("main")
     })
     .await;
-    queue_with(&db, &project, &make_junit(&[("t", "passed")]), |b| b.branch("feat").commit_sha("x")).await;
+    queue_with(&db, &project, &make_junit(&[("t", "passed")]), |b| {
+        b.branch("feat").commit_sha("x")
+    })
+    .await;
     drain(&db, &settings()).await;
     let row = test(&db).await;
     assert_eq!(row.confirmed_flake_count, 1);
@@ -602,7 +679,10 @@ async fn a_branch_change_rescores_tests_outside_the_report() {
         ("t2", "failed", "c"),
         ("t2", "passed", "d"),
     ] {
-        queue_with(&db, &project, &make_junit(&[(name, status)]), |b| b.branch("feat").commit_sha(sha)).await;
+        queue_with(&db, &project, &make_junit(&[(name, status)]), |b| {
+            b.branch("feat").commit_sha(sha)
+        })
+        .await;
     }
     drain(&db, &settings()).await;
     let before = tests(&db).await;
@@ -620,7 +700,10 @@ async fn a_branch_change_rescores_tests_outside_the_report() {
 async fn the_default_branch_is_applied_only_at_processing() {
     let db = TestDb::new().await.expect("a test database");
     let project = project(&db, "acme/app", "backend").await;
-    queue_with(&db, &project, &make_junit(&[("t", "passed")]), |b| b.default_branch("main")).await;
+    queue_with(&db, &project, &make_junit(&[("t", "passed")]), |b| {
+        b.default_branch("main")
+    })
+    .await;
     assert_eq!(repo(&db).await.default_branch, None);
     drain(&db, &settings()).await;
     assert_eq!(repo(&db).await.default_branch.as_deref(), Some("main"));
@@ -630,7 +713,10 @@ async fn the_default_branch_is_applied_only_at_processing() {
 async fn a_report_without_a_default_branch_never_clears_one() {
     let db = TestDb::new().await.expect("a test database");
     let project = project(&db, "acme/app", "backend").await;
-    queue_with(&db, &project, &make_junit(&[("t", "passed")]), |b| b.default_branch("main")).await;
+    queue_with(&db, &project, &make_junit(&[("t", "passed")]), |b| {
+        b.default_branch("main")
+    })
+    .await;
     drain(&db, &settings()).await;
     queue(&db, &project, &make_junit(&[("t", "passed")])).await;
     drain(&db, &settings()).await;
@@ -642,7 +728,10 @@ async fn the_default_branch_window_keeps_older_default_flips() {
     let db = TestDb::new().await.expect("a test database");
     let project = project(&db, "acme/app", "backend").await;
     let settings = settings_with(|settings| settings.score_window = 3);
-    for (index, status) in ["failed", "passed", "failed", "passed", "failed"].iter().enumerate() {
+    for (index, status) in ["failed", "passed", "failed", "passed", "failed"]
+        .iter()
+        .enumerate()
+    {
         queue_with(&db, &project, &make_junit(&[("t", status)]), |b| {
             let builder = b.branch("main").commit_sha(&format!("m{index}"));
             if index == 0 {
@@ -707,7 +796,7 @@ async fn a_rescore_matches_the_branch_scoped_score_over_all_rows() {
     let changes = rescore(db.connection(), &[row.id], None, &settings)
         .await
         .expect("the rescore");
-    assert!(changes.is_empty());
+    assert_eq!(changes, Vec::new());
     let stored = test(&db).await;
     assert!(stored.flakiness_score > 0.0);
     assert_eq!(stored.clean_streak, 0);
@@ -721,8 +810,14 @@ async fn a_rescore_matches_the_branch_scoped_score_over_all_rows() {
 async fn same_day_reports_share_one_history_row() {
     let db = TestDb::new().await.expect("a test database");
     let project = project(&db, "acme/app", "backend").await;
-    queue_with(&db, &project, &make_junit(&[("t", "failed")]), |b| b.commit_sha("s1")).await;
-    queue_with(&db, &project, &make_junit(&[("t", "passed")]), |b| b.commit_sha("s1")).await;
+    queue_with(&db, &project, &make_junit(&[("t", "failed")]), |b| {
+        b.commit_sha("s1")
+    })
+    .await;
+    queue_with(&db, &project, &make_junit(&[("t", "passed")]), |b| {
+        b.commit_sha("s1")
+    })
+    .await;
     drain(&db, &settings()).await;
     let row = test(&db).await;
     let history = test_score_history::Entity::find()
@@ -740,7 +835,10 @@ async fn the_clean_streak_counts_passes_since_the_last_failure() {
     let db = TestDb::new().await.expect("a test database");
     let project = project(&db, "acme/app", "backend").await;
     for status in ["failed", "passed", "passed"] {
-        queue_with(&db, &project, &make_junit(&[("t", status)]), |b| b.commit_sha("s1")).await;
+        queue_with(&db, &project, &make_junit(&[("t", status)]), |b| {
+            b.commit_sha("s1")
+        })
+        .await;
     }
     drain(&db, &settings()).await;
     assert_eq!(test(&db).await.clean_streak, 2);
@@ -764,9 +862,12 @@ async fn a_zero_clean_streak_clears_the_fixed_note_and_a_positive_one_keeps_it()
         .build(db.connection())
         .await
         .expect("a Test");
-    queue_with(&db, &project, &make_junit(&[("t_fail", "failed"), ("t_keep", "passed")]), |b| {
-        b.branch("main").commit_sha("f9").default_branch("main")
-    })
+    queue_with(
+        &db,
+        &project,
+        &make_junit(&[("t_fail", "failed"), ("t_keep", "passed")]),
+        |b| b.branch("main").commit_sha("f9").default_branch("main"),
+    )
     .await;
     drain(&db, &settings()).await;
     let broke = test_cases::Entity::find_by_id(broke.id)
@@ -825,7 +926,10 @@ async fn five_default_branch_failures_mark_a_test_broken() {
     let row = test(&db).await;
     assert_eq!(row.flakiness_score, 0.0);
     assert_eq!(row.fail_streak, 5);
-    queue_with(&db, &project, &make_junit(&[("t", "passed")]), |b| b.branch("main").commit_sha("m5")).await;
+    queue_with(&db, &project, &make_junit(&[("t", "passed")]), |b| {
+        b.branch("main").commit_sha("m5")
+    })
+    .await;
     drain(&db, &settings()).await;
     assert_eq!(test(&db).await.fail_streak, 0);
 }
@@ -834,13 +938,19 @@ async fn five_default_branch_failures_mark_a_test_broken() {
 async fn an_upward_tier_crossing_is_reported() {
     let db = TestDb::new().await.expect("a test database");
     let project = project(&db, "acme/app", "backend").await;
-    queue_with(&db, &project, &make_junit(&[("t", "failed")]), |b| b.commit_sha("a")).await;
+    queue_with(&db, &project, &make_junit(&[("t", "failed")]), |b| {
+        b.commit_sha("a")
+    })
+    .await;
     let first = process_next(db.connection(), &settings())
         .await
         .expect("the processor runs")
         .expect("a Report");
-    assert!(first.tier_changes.is_empty());
-    queue_with(&db, &project, &make_junit(&[("t", "passed")]), |b| b.commit_sha("b")).await;
+    assert_eq!(first.tier_changes, Vec::new());
+    queue_with(&db, &project, &make_junit(&[("t", "passed")]), |b| {
+        b.commit_sha("b")
+    })
+    .await;
     let second = process_next(db.connection(), &settings())
         .await
         .expect("the processor runs")
@@ -850,11 +960,20 @@ async fn an_upward_tier_crossing_is_reported() {
     assert_eq!(change.kind.as_str(), "test");
     assert_eq!(change.event(), "test.flaky");
     assert_eq!(change.id, i64::from(row.id));
-    assert_eq!((change.repo.as_str(), change.project.as_deref()), ("acme/app", Some("backend")));
-    assert_eq!((change.classname.as_deref(), change.name.as_str()), (Some("tests.test_mod"), "t"));
+    assert_eq!(
+        (change.repo.as_str(), change.project.as_deref()),
+        ("acme/app", Some("backend"))
+    );
+    assert_eq!(
+        (change.classname.as_deref(), change.name.as_str()),
+        (Some("tests.test_mod"), "t")
+    );
     assert_eq!(change.flakiness_score, row.flakiness_score);
     assert_eq!(change.tier, tier_for(row.flakiness_score, 0.30));
-    assert_eq!(change.confirmed_flake_count, usize::try_from(row.confirmed_flake_count).expect("a count"));
+    assert_eq!(
+        change.confirmed_flake_count,
+        usize::try_from(row.confirmed_flake_count).expect("a count")
+    );
     assert_eq!(change.pipeline, None);
 }
 
@@ -863,16 +982,30 @@ async fn a_downward_tier_crossing_is_reported() {
     let db = TestDb::new().await.expect("a test database");
     let project = project(&db, "acme/app", "backend").await;
     for (status, sha) in [("failed", "a"), ("passed", "b")] {
-        queue_with(&db, &project, &make_junit(&[("t", status)]), |b| b.commit_sha(sha)).await;
-        process_next(db.connection(), &settings()).await.expect("the processor runs");
+        queue_with(&db, &project, &make_junit(&[("t", status)]), |b| {
+            b.commit_sha(sha)
+        })
+        .await;
+        process_next(db.connection(), &settings())
+            .await
+            .expect("the processor runs");
     }
-    queue_with(&db, &project, &make_junit(&[("t", "failed")]), |b| b.commit_sha("c")).await;
+    queue_with(&db, &project, &make_junit(&[("t", "failed")]), |b| {
+        b.commit_sha("c")
+    })
+    .await;
     let middle = process_next(db.connection(), &settings())
         .await
         .expect("the processor runs")
         .expect("a Report");
-    assert!(middle.tier_changes.is_empty() || middle.tier_changes[0].tier != flakeradar_core::Tier::Flaky);
-    queue_with(&db, &project, &make_junit(&[("t", "failed")]), |b| b.commit_sha("d")).await;
+    assert!(
+        middle.tier_changes.is_empty()
+            || middle.tier_changes[0].tier != flakeradar_core::Tier::Flaky
+    );
+    queue_with(&db, &project, &make_junit(&[("t", "failed")]), |b| {
+        b.commit_sha("d")
+    })
+    .await;
     let outcome = process_next(db.connection(), &settings())
         .await
         .expect("the processor runs")
@@ -887,15 +1020,23 @@ async fn staying_flaky_reports_no_second_event() {
     let db = TestDb::new().await.expect("a test database");
     let project = project(&db, "acme/app", "backend").await;
     for (status, sha) in [("failed", "a"), ("passed", "b")] {
-        queue_with(&db, &project, &make_junit(&[("t", status)]), |b| b.commit_sha(sha)).await;
-        process_next(db.connection(), &settings()).await.expect("the processor runs");
+        queue_with(&db, &project, &make_junit(&[("t", status)]), |b| {
+            b.commit_sha(sha)
+        })
+        .await;
+        process_next(db.connection(), &settings())
+            .await
+            .expect("the processor runs");
     }
-    queue_with(&db, &project, &make_junit(&[("t", "failed")]), |b| b.commit_sha("a")).await;
+    queue_with(&db, &project, &make_junit(&[("t", "failed")]), |b| {
+        b.commit_sha("a")
+    })
+    .await;
     let outcome = process_next(db.connection(), &settings())
         .await
         .expect("the processor runs")
         .expect("a Report");
-    assert!(outcome.tier_changes.is_empty());
+    assert_eq!(outcome.tier_changes, Vec::new());
 }
 
 #[tokio::test]
@@ -904,11 +1045,19 @@ async fn a_broken_test_reports_no_recovery() {
     let project = project(&db, "acme/app", "backend").await;
     let settings = settings_with(|settings| settings.broken_streak = 2);
     for (status, sha) in [("failed", "a"), ("passed", "b")] {
-        queue_with(&db, &project, &make_junit(&[("t", status)]), |b| b.commit_sha(sha)).await;
-        process_next(db.connection(), &settings).await.expect("the processor runs");
+        queue_with(&db, &project, &make_junit(&[("t", status)]), |b| {
+            b.commit_sha(sha)
+        })
+        .await;
+        process_next(db.connection(), &settings)
+            .await
+            .expect("the processor runs");
     }
     for (status, sha) in [("failed", "c"), ("failed", "d")] {
-        queue_with(&db, &project, &make_junit(&[("t", status)]), |b| b.commit_sha(sha)).await;
+        queue_with(&db, &project, &make_junit(&[("t", status)]), |b| {
+            b.commit_sha(sha)
+        })
+        .await;
         let outcome = process_next(db.connection(), &settings)
             .await
             .expect("the processor runs")
@@ -916,7 +1065,7 @@ async fn a_broken_test_reports_no_recovery() {
         if sha == "d" {
             let row = test(&db).await;
             assert_eq!((row.flakiness_score, row.fail_streak), (0.0, 2));
-            assert!(outcome.tier_changes.is_empty());
+            assert_eq!(outcome.tier_changes, Vec::new());
         }
     }
 }
@@ -926,17 +1075,33 @@ async fn fixing_a_broken_test_reports_flaky_again() {
     let db = TestDb::new().await.expect("a test database");
     let project = project(&db, "acme/app", "backend").await;
     let settings = settings_with(|settings| settings.broken_streak = 2);
-    for (status, sha) in [("failed", "a"), ("passed", "b"), ("failed", "c"), ("failed", "d")] {
-        queue_with(&db, &project, &make_junit(&[("t", status)]), |b| b.commit_sha(sha)).await;
-        process_next(db.connection(), &settings).await.expect("the processor runs");
+    for (status, sha) in [
+        ("failed", "a"),
+        ("passed", "b"),
+        ("failed", "c"),
+        ("failed", "d"),
+    ] {
+        queue_with(&db, &project, &make_junit(&[("t", status)]), |b| {
+            b.commit_sha(sha)
+        })
+        .await;
+        process_next(db.connection(), &settings)
+            .await
+            .expect("the processor runs");
     }
-    queue_with(&db, &project, &make_junit(&[("t", "passed")]), |b| b.commit_sha("e")).await;
+    queue_with(&db, &project, &make_junit(&[("t", "passed")]), |b| {
+        b.commit_sha("e")
+    })
+    .await;
     let outcome = process_next(db.connection(), &settings)
         .await
         .expect("the processor runs")
         .expect("a Report");
     assert_eq!(outcome.tier_changes[0].event(), "test.flaky");
-    queue_with(&db, &project, &make_junit(&[("t", "passed")]), |b| b.commit_sha("f")).await;
+    queue_with(&db, &project, &make_junit(&[("t", "passed")]), |b| {
+        b.commit_sha("f")
+    })
+    .await;
     let outcome = process_next(db.connection(), &settings)
         .await
         .expect("the processor runs")
@@ -948,7 +1113,13 @@ async fn fixing_a_broken_test_reports_flaky_again() {
 async fn a_new_test_above_the_threshold_is_flaky() {
     let db = TestDb::new().await.expect("a test database");
     let project = project(&db, "acme/app", "backend").await;
-    queue_with(&db, &project, &make_junit(&[("t", "failed"), ("t", "passed")]), |b| b.commit_sha("a")).await;
+    queue_with(
+        &db,
+        &project,
+        &make_junit(&[("t", "failed"), ("t", "passed")]),
+        |b| b.commit_sha("a"),
+    )
+    .await;
     let outcome = process_next(db.connection(), &settings())
         .await
         .expect("the processor runs")
@@ -964,7 +1135,10 @@ async fn a_move_into_suspect_reports_nothing() {
     let project = project(&db, "acme/app", "backend").await;
     let settings = settings_with(|settings| settings.flake_threshold = 0.5);
     for (status, sha) in [("failed", "a"), ("passed", "b")] {
-        queue_with(&db, &project, &make_junit(&[("t", status)]), |b| b.commit_sha(sha)).await;
+        queue_with(&db, &project, &make_junit(&[("t", status)]), |b| {
+            b.commit_sha(sha)
+        })
+        .await;
         let outcome = process_next(db.connection(), &settings)
             .await
             .expect("the processor runs")
@@ -972,7 +1146,7 @@ async fn a_move_into_suspect_reports_nothing() {
         if sha == "b" {
             let row = test(&db).await;
             assert!(row.flakiness_score > 0.0 && row.flakiness_score < 0.5);
-            assert!(outcome.tier_changes.is_empty());
+            assert_eq!(outcome.tier_changes, Vec::new());
         }
     }
 }
@@ -982,8 +1156,13 @@ async fn rescore_repo_drops_crossings_and_logs_the_count() {
     let db = TestDb::new().await.expect("a test database");
     let project = project(&db, "acme/app", "backend").await;
     for (status, sha) in [("failed", "a"), ("passed", "b")] {
-        queue_with(&db, &project, &make_junit(&[("t2", status)]), |b| b.branch("feat").commit_sha(sha)).await;
-        process_next(db.connection(), &settings()).await.expect("the processor runs");
+        queue_with(&db, &project, &make_junit(&[("t2", status)]), |b| {
+            b.branch("feat").commit_sha(sha)
+        })
+        .await;
+        process_next(db.connection(), &settings())
+            .await
+            .expect("the processor runs");
     }
     queue_with(&db, &project, &make_junit(&[("t1", "passed")]), |b| {
         b.branch("main").commit_sha("c").default_branch("main")
@@ -995,7 +1174,7 @@ async fn rescore_repo_drops_crossings_and_logs_the_count() {
         .expect("a Report");
     let rows = tests(&db).await;
     assert!(rows.iter().all(|row| row.flakiness_score == 0.0));
-    assert!(outcome.tier_changes.is_empty());
+    assert_eq!(outcome.tier_changes, Vec::new());
 }
 
 // --- Pipeline Reports ---------------------------------------------------
@@ -1022,16 +1201,34 @@ async fn one_pipeline_creates_its_pipeline_jobs_and_executions() {
         outcome.counts,
         Some(serde_json::json!({"passed": 1, "failed": 1, "skipped": 0, "duplicate": 0}))
     );
-    assert_eq!(pipelines::Entity::find().count(db.connection()).await.expect("a count"), 1);
-    assert_eq!(jobs::Entity::find().count(db.connection()).await.expect("a count"), 2);
-    assert_eq!(job_executions::Entity::find().count(db.connection()).await.expect("a count"), 2);
+    assert_eq!(
+        pipelines::Entity::find()
+            .count(db.connection())
+            .await
+            .expect("a count"),
+        1
+    );
+    assert_eq!(
+        jobs::Entity::find()
+            .count(db.connection())
+            .await
+            .expect("a count"),
+        2
+    );
+    assert_eq!(
+        job_executions::Entity::find()
+            .count(db.connection())
+            .await
+            .expect("a count"),
+        2
+    );
     let stored = reports::Entity::find_by_id(report.id)
         .one(db.connection())
         .await
         .expect("the Report")
         .expect("the Report exists");
     assert_eq!((stored.status.as_str(), stored.run_id), ("processed", None));
-    assert!(outcome.touched_test_ids.is_empty());
+    assert_eq!(outcome.touched_test_ids, Vec::<i32>::new());
     let mut ids: Vec<i32> = jobs(&db).await.iter().map(|row| row.id).collect();
     ids.sort_unstable();
     assert_eq!(outcome.touched_job_ids, ids);
@@ -1077,7 +1274,9 @@ async fn a_rerun_on_the_same_sha_is_a_proven_flake() {
         let mut report = payload(vec![job_in(ci_job_id, "test", status)]);
         report.commit_sha = "dead".to_owned();
         queue_pipeline(&db, &project, &report).await;
-        process_next(db.connection(), &settings()).await.expect("the processor runs");
+        process_next(db.connection(), &settings())
+            .await
+            .expect("the processor runs");
     }
     let row = job(&db).await;
     assert_eq!(row.confirmed_flake_count, 1);
@@ -1090,7 +1289,9 @@ async fn a_duplicate_payload_adds_no_rows() {
     let project = project(&db, "acme/app", "backend").await;
     let report = payload(vec![job_in("1", "test", JobStatus::Passed)]);
     queue_pipeline(&db, &project, &report).await;
-    process_next(db.connection(), &settings()).await.expect("the processor runs");
+    process_next(db.connection(), &settings())
+        .await
+        .expect("the processor runs");
     let before = job(&db).await;
     queue_pipeline(&db, &project, &report).await;
     let outcome = process_next(db.connection(), &settings())
@@ -1101,8 +1302,14 @@ async fn a_duplicate_payload_adds_no_rows() {
         outcome.counts,
         Some(serde_json::json!({"passed": 0, "failed": 0, "skipped": 0, "duplicate": 1}))
     );
-    assert!(outcome.touched_job_ids.is_empty());
-    assert_eq!(job_executions::Entity::find().count(db.connection()).await.expect("a count"), 1);
+    assert_eq!(outcome.touched_job_ids, Vec::<i32>::new());
+    assert_eq!(
+        job_executions::Entity::find()
+            .count(db.connection())
+            .await
+            .expect("a count"),
+        1
+    );
     let after = job(&db).await;
     assert_eq!(
         (after.flakiness_score, after.confirmed_flake_count),
@@ -1114,15 +1321,32 @@ async fn a_duplicate_payload_adds_no_rows() {
 async fn the_same_job_name_in_two_pipelines_is_two_jobs() {
     let db = TestDb::new().await.expect("a test database");
     let project = project(&db, "acme/app", "backend").await;
-    for (ci_job_id, pipeline) in [("1", ".github/workflows/ci.yml"), ("2", ".github/workflows/release.yml")] {
+    for (ci_job_id, pipeline) in [
+        ("1", ".github/workflows/ci.yml"),
+        ("2", ".github/workflows/release.yml"),
+    ] {
         let mut report = payload(vec![job_in(ci_job_id, "build", JobStatus::Passed)]);
         report.pipeline = pipeline.to_owned();
         queue_pipeline(&db, &project, &report).await;
-        process_next(db.connection(), &settings()).await.expect("the processor runs");
+        process_next(db.connection(), &settings())
+            .await
+            .expect("the processor runs");
     }
-    assert_eq!(jobs::Entity::find().count(db.connection()).await.expect("a count"), 2);
+    assert_eq!(
+        jobs::Entity::find()
+            .count(db.connection())
+            .await
+            .expect("a count"),
+        2
+    );
     let pipeline_ids: Vec<i32> = jobs(&db).await.iter().map(|row| row.pipeline_id).collect();
-    assert_eq!(pipeline_ids.iter().collect::<std::collections::BTreeSet<_>>().len(), 2);
+    assert_eq!(
+        pipeline_ids
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        2
+    );
 }
 
 #[tokio::test]
@@ -1133,10 +1357,24 @@ async fn the_same_pipeline_name_on_two_providers_is_two_pipelines() {
         let mut report = payload(vec![job_in(ci_job_id, "build", JobStatus::Passed)]);
         report.provider = provider.to_owned();
         queue_pipeline(&db, &project, &report).await;
-        process_next(db.connection(), &settings()).await.expect("the processor runs");
+        process_next(db.connection(), &settings())
+            .await
+            .expect("the processor runs");
     }
-    assert_eq!(pipelines::Entity::find().count(db.connection()).await.expect("a count"), 2);
-    assert_eq!(jobs::Entity::find().count(db.connection()).await.expect("a count"), 2);
+    assert_eq!(
+        pipelines::Entity::find()
+            .count(db.connection())
+            .await
+            .expect("a count"),
+        2
+    );
+    assert_eq!(
+        jobs::Entity::find()
+            .count(db.connection())
+            .await
+            .expect("a count"),
+        2
+    );
 }
 
 #[tokio::test]
@@ -1148,7 +1386,9 @@ async fn a_feature_branch_flip_does_not_score_a_job() {
         report.commit_sha = sha.to_owned();
         report.branch = "feat".to_owned();
         queue_pipeline(&db, &project, &report).await;
-        process_next(db.connection(), &settings()).await.expect("the processor runs");
+        process_next(db.connection(), &settings())
+            .await
+            .expect("the processor runs");
     }
     let row = job(&db).await;
     assert_eq!(row.flakiness_score, 0.0);
@@ -1163,7 +1403,9 @@ async fn a_main_branch_flip_scores_a_job() {
         let mut report = payload(vec![job_in(ci_job_id, "test", status)]);
         report.commit_sha = sha.to_owned();
         queue_pipeline(&db, &project, &report).await;
-        process_next(db.connection(), &settings()).await.expect("the processor runs");
+        process_next(db.connection(), &settings())
+            .await
+            .expect("the processor runs");
     }
     assert!(job(&db).await.flakiness_score > 0.0);
 }
@@ -1178,12 +1420,19 @@ async fn a_default_branch_change_rescores_tests_and_jobs() {
         report.branch = "feat".to_owned();
         report.default_branch = None;
         queue_pipeline(&db, &project, &report).await;
-        process_next(db.connection(), &settings()).await.expect("the processor runs");
+        process_next(db.connection(), &settings())
+            .await
+            .expect("the processor runs");
     }
     assert!(job(&db).await.flakiness_score > 0.0);
     for (status, sha) in [("failed", "c"), ("passed", "d")] {
-        queue_with(&db, &project, &make_junit(&[("t1", status)]), |b| b.branch("feat").commit_sha(sha)).await;
-        process_next(db.connection(), &settings()).await.expect("the processor runs");
+        queue_with(&db, &project, &make_junit(&[("t1", status)]), |b| {
+            b.branch("feat").commit_sha(sha)
+        })
+        .await;
+        process_next(db.connection(), &settings())
+            .await
+            .expect("the processor runs");
     }
     assert!(test(&db).await.flakiness_score > 0.0);
     let mut report = payload(vec![job_in("3", "lint", JobStatus::Passed)]);
@@ -1191,7 +1440,9 @@ async fn a_default_branch_change_rescores_tests_and_jobs() {
     report.branch = "main".to_owned();
     report.default_branch = Some("main".to_owned());
     queue_pipeline(&db, &project, &report).await;
-    process_next(db.connection(), &settings()).await.expect("the processor runs");
+    process_next(db.connection(), &settings())
+        .await
+        .expect("the processor runs");
     assert_eq!(job(&db).await.flakiness_score, 0.0);
     assert_eq!(test(&db).await.flakiness_score, 0.0);
 }
@@ -1212,23 +1463,36 @@ async fn a_malformed_pipeline_body_fails_and_the_queue_moves_on() {
         .expect("the processor runs")
         .expect("a Report");
     assert_eq!((first.status.as_str(), first.report_id), ("failed", bad.id));
-    assert!(first.error.expect("an error").starts_with("ValidationError:"));
+    assert!(
+        first
+            .error
+            .expect("an error")
+            .starts_with("ValidationError:")
+    );
     let second = process_next(db.connection(), &settings())
         .await
         .expect("the processor runs")
         .expect("the next Report");
-    assert_eq!((second.status.as_str(), second.report_id), ("processed", good.id));
+    assert_eq!(
+        (second.status.as_str(), second.report_id),
+        ("processed", good.id)
+    );
 }
 
 #[tokio::test]
 async fn same_day_pipeline_reports_share_one_history_row() {
     let db = TestDb::new().await.expect("a test database");
     let project = project(&db, "acme/app", "backend").await;
-    for (ci_job_id, status, run_id) in [("1", JobStatus::Failed, "r1"), ("2", JobStatus::Passed, "r2")] {
+    for (ci_job_id, status, run_id) in [
+        ("1", JobStatus::Failed, "r1"),
+        ("2", JobStatus::Passed, "r2"),
+    ] {
         let mut report = payload(vec![job_in(ci_job_id, "e2e", status)]);
         report.ci_run_id = run_id.to_owned();
         queue_pipeline(&db, &project, &report).await;
-        process_next(db.connection(), &settings()).await.expect("the processor runs");
+        process_next(db.connection(), &settings())
+            .await
+            .expect("the processor runs");
     }
     let row = job(&db).await;
     let history = job_score_history::Entity::find()
@@ -1246,17 +1510,34 @@ async fn the_summary_flag_defaults_false_and_flips() {
     let project = project(&db, "acme/app", "backend").await;
     let mut alls_green = job_in("1", "alls-green", JobStatus::Passed);
     alls_green.summary = true;
-    queue_pipeline(&db, &project, &payload(vec![alls_green, job_in("2", "test", JobStatus::Passed)])).await;
-    process_next(db.connection(), &settings()).await.expect("the processor runs");
-    let flags: BTreeMap<String, bool> = jobs(&db).await.into_iter().map(|row| (row.name, row.summary)).collect();
-    assert_eq!(flags["alls-green"], true);
-    assert_eq!(flags["test"], false);
-    queue_pipeline(&db, &project, &payload(vec![
-        job_in("3", "alls-green", JobStatus::Passed),
-        job_in("4", "test", JobStatus::Passed),
-    ]))
+    queue_pipeline(
+        &db,
+        &project,
+        &payload(vec![alls_green, job_in("2", "test", JobStatus::Passed)]),
+    )
     .await;
-    process_next(db.connection(), &settings()).await.expect("the processor runs");
+    process_next(db.connection(), &settings())
+        .await
+        .expect("the processor runs");
+    let flags: BTreeMap<String, bool> = jobs(&db)
+        .await
+        .into_iter()
+        .map(|row| (row.name, row.summary))
+        .collect();
+    assert!(flags["alls-green"]);
+    assert!(!flags["test"]);
+    queue_pipeline(
+        &db,
+        &project,
+        &payload(vec![
+            job_in("3", "alls-green", JobStatus::Passed),
+            job_in("4", "test", JobStatus::Passed),
+        ]),
+    )
+    .await;
+    process_next(db.connection(), &settings())
+        .await
+        .expect("the processor runs");
     let row = jobs(&db)
         .await
         .into_iter()
@@ -1284,18 +1565,27 @@ async fn a_job_tier_crossing_reports_job_flaky() {
         if sha == "b" {
             let row = job(&db).await;
             let change = outcome.tier_changes.first().expect("a tier change");
-            assert_eq!((change.kind.as_str(), change.event().as_str()), ("job", "job.flaky"));
+            assert_eq!(
+                (change.kind.as_str(), change.event().as_str()),
+                ("job", "job.flaky")
+            );
             assert_eq!(change.id, i64::from(row.id));
-            assert_eq!((change.repo.as_str(), change.project.as_deref()), ("acme/app", None));
+            assert_eq!(
+                (change.repo.as_str(), change.project.as_deref()),
+                ("acme/app", None)
+            );
             assert_eq!(
                 (change.pipeline.as_deref(), change.name.as_str()),
                 (Some(".github/workflows/ci.yml"), "test (ubuntu, 3.12)")
             );
             assert_eq!(change.flakiness_score, row.flakiness_score);
             assert_eq!(change.tier, flakeradar_core::Tier::Flaky);
-            assert_eq!((change.classname.as_deref(), change.failure_category), (None, None));
+            assert_eq!(
+                (change.classname.as_deref(), change.failure_category),
+                (None, None)
+            );
         } else {
-            assert!(outcome.tier_changes.is_empty());
+            assert_eq!(outcome.tier_changes, Vec::new());
         }
     }
 }
@@ -1312,7 +1602,9 @@ async fn a_job_recovery_reports_job_recovered() {
         report.commit_sha = sha.to_owned();
         report.ci_run_id = run_id.to_owned();
         queue_pipeline(&db, &project, &report).await;
-        process_next(db.connection(), &settings()).await.expect("the processor runs");
+        process_next(db.connection(), &settings())
+            .await
+            .expect("the processor runs");
     }
     let mut report = payload(vec![job_in("3", "lint", JobStatus::Passed)]);
     report.commit_sha = "c".to_owned();
@@ -1341,7 +1633,9 @@ async fn a_default_branch_change_silences_the_pipeline_reports_own_crossings() {
         report.branch = "feat".to_owned();
         report.default_branch = Some("feat".to_owned());
         queue_pipeline(&db, &project, &report).await;
-        process_next(db.connection(), &settings()).await.expect("the processor runs");
+        process_next(db.connection(), &settings())
+            .await
+            .expect("the processor runs");
     }
     let mut report = payload(vec![job_in("3", "lint", JobStatus::Passed)]);
     report.commit_sha = "c".to_owned();
@@ -1351,5 +1645,5 @@ async fn a_default_branch_change_silences_the_pipeline_reports_own_crossings() {
         .await
         .expect("the processor runs")
         .expect("a Report");
-    assert!(outcome.tier_changes.is_empty());
+    assert_eq!(outcome.tier_changes, Vec::new());
 }

@@ -13,8 +13,8 @@
 // Rust guideline compliant 2026-07-21
 
 pub mod attribution;
-pub mod clock;
 mod batching;
+pub mod clock;
 mod connect;
 mod error;
 mod identity;
@@ -58,16 +58,16 @@ pub use processing::{
     rescore, rescore_jobs,
 };
 #[doc(inline)]
-pub use score_history::{
-    HISTORY_DAYS, HistoryKind, HistoryUpdate, ScoreHistoryRow, newest_history_before, past_scores,
-    window_rows, write_today_history,
-};
-#[doc(inline)]
 pub use report_intake::{
     NewJunitReport, NewPipelineReport, REPORT_FAILED, REPORT_KIND_JUNIT, REPORT_KIND_PIPELINE,
     REPORT_PENDING, REPORT_PROCESSED, REPORT_STATUSES, complete_report, fail_report,
     find_junit_duplicate, requeue_report, retry_failed_report, stored_attempt, stored_junit_body,
     stored_pipeline_payload,
+};
+#[doc(inline)]
+pub use score_history::{
+    HISTORY_DAYS, HistoryKind, HistoryUpdate, ScoreHistoryRow, newest_history_before, past_scores,
+    window_rows, write_today_history,
 };
 
 /// Advisory-lock key that serializes the startup migration.

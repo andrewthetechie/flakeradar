@@ -12,16 +12,15 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use flakeradar_core::{
-    ExecutionStatus, FailureCategory, JobStatus, ParsedCase, ParseError, PipelineReportIn, Tier,
-    TierChange,
-    branch_scoped_fail_streak, branch_scoped_score, branch_scoped_streak, classify_failure,
-    dominant_category, is_broken, parse_junit_xml, tier_for,
+    ExecutionStatus, FailureCategory, JobStatus, ParseError, ParsedCase, PipelineReportIn, Tier,
+    TierChange, branch_scoped_fail_streak, branch_scoped_score, branch_scoped_streak,
+    classify_failure, dominant_category, is_broken, parse_junit_xml, tier_for,
 };
 use sea_orm::entity::prelude::DateTimeWithTimeZone;
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, ConnectionTrait, DbBackend, DbErr, EntityTrait, FromQueryResult,
-    IntoActiveModel, QueryFilter, Set, Statement, TransactionSession, TransactionTrait,
-    TryGetable, Value,
+    IntoActiveModel, QueryFilter, Set, Statement, TransactionSession, TransactionTrait, TryGetable,
+    Value,
 };
 use serde_json::{Value as JsonValue, json};
 
@@ -30,10 +29,7 @@ use crate::attribution::{
 };
 use crate::batching::chunks;
 use crate::clock::{SharedClock, SystemClock};
-use crate::entities::{
-    jobs, pipelines, repos, reports, test_cases, test_executions,
-    test_runs,
-};
+use crate::entities::{jobs, pipelines, reports, repos, test_cases, test_executions, test_runs};
 use crate::error::DbError;
 use crate::report_intake::{
     REPORT_FAILED, REPORT_KIND_PIPELINE, REPORT_PENDING, REPORT_PROCESSED, complete_report,
@@ -254,6 +250,24 @@ pub async fn claim_next_report(
     }
 }
 
+/// Writes a Report that a transition changed, keeping every other column.
+///
+/// SeaORM 2 turns a `Model` into an `ActiveModel` of `Unchanged` values, so an
+/// `UPDATE` built from a mutated model sends no column at all and silently
+/// leaves the row alone. `reset_all` promotes the read values back to `Set`.
+pub(crate) async fn write_report(
+    report: &reports::Model,
+    db: &impl ConnectionTrait,
+) -> Result<(), DbError> {
+    report
+        .clone()
+        .into_active_model()
+        .reset_all()
+        .update(db)
+        .await?;
+    Ok(())
+}
+
 /// Parses a JUnit body and classifies each failing case: the CPU half, run off
 /// the async thread.
 fn parse_and_classify(
@@ -264,10 +278,10 @@ fn parse_and_classify(
     Ok(parsed
         .into_iter()
         .map(|case| {
-            let category =
-                case.status
-                    .is_failing()
-                    .then(|| classify_failure(&case.message, &case.details));
+            let category = case
+                .status
+                .is_failing()
+                .then(|| classify_failure(&case.message, &case.details));
             (case, category)
         })
         .collect())
@@ -369,11 +383,12 @@ pub async fn process_next(
         Err(error) => {
             savepoint.rollback().await?;
             let message: String = error.message.chars().take(ERROR_MAX).collect();
-            if error.transient && i64::from(report.retry_count) < i64::from(settings.max_report_retries)
+            if error.transient
+                && i64::from(report.retry_count) < i64::from(settings.max_report_retries)
             {
                 requeue_report(report, Some(&message));
                 let retry_count = report.retry_count;
-                report.clone().into_active_model().update(&transaction).await?;
+                write_report(report, &transaction).await?;
                 transaction.commit().await?;
                 return Ok(Some(ProcessOutcome {
                     report_id: report.id,
@@ -389,7 +404,7 @@ pub async fn process_next(
             }
             let now = settings.clock.now();
             fail_report(report, now, &message);
-            report.clone().into_active_model().update(&transaction).await?;
+            write_report(report, &transaction).await?;
             transaction.commit().await?;
             Ok(Some(ProcessOutcome {
                 report_id: report.id,
@@ -493,21 +508,17 @@ async fn process_report(
     // Jobs that carry this ci_job_id, so arrival order does not matter.
     let mut touched_jobs = Vec::new();
     if let Some(ci_job_id) = report.ci_job_id.clone() {
-        let (job_ids, job_changes) = rescore_jobs_for_ci_job_id(db, report.repo_id, &ci_job_id, settings)
-            .await
-            .map_err(ProcessError::from)?;
+        let (job_ids, job_changes) =
+            rescore_jobs_for_ci_job_id(db, report.repo_id, &ci_job_id, settings)
+                .await
+                .map_err(ProcessError::from)?;
         touched_jobs = job_ids;
         tier_changes.extend(job_changes);
     }
 
     let counts_json = counts.junit_json();
     complete_report(report, now, Some(run.id), counts_json.clone());
-    report
-        .clone()
-        .into_active_model()
-        .update(db)
-        .await
-        .map_err(ProcessError::from)?;
+    write_report(report, db).await.map_err(ProcessError::from)?;
     Ok(ProcessOutcome {
         report_id: report.id,
         status: REPORT_PROCESSED.to_owned(),
@@ -604,8 +615,8 @@ fn record_test_executions(
             });
         }
     }
-    counts.retried = i64::try_from(attempts.values().filter(|seen| **seen > 1).count())
-        .unwrap_or(i64::MAX);
+    counts.retried =
+        i64::try_from(attempts.values().filter(|seen| **seen > 1).count()).unwrap_or(i64::MAX);
     Ok(RecordedTests {
         counts,
         executions,
@@ -634,8 +645,7 @@ async fn upsert_test_cases(
     let mut first: BTreeMap<String, &ParsedCase> = BTreeMap::new();
     for case in parsed {
         let fingerprint = flakeradar_core::fingerprint(&case.suite, &case.classname, &case.name);
-        if let std::collections::btree_map::Entry::Vacant(entry) =
-            first.entry(fingerprint.clone())
+        if let std::collections::btree_map::Entry::Vacant(entry) = first.entry(fingerprint.clone())
         {
             order.push(fingerprint);
             entry.insert(case);
@@ -660,7 +670,14 @@ async fn upsert_test_cases(
         .collect();
     for chunk in chunks(&rows) {
         test_cases::Entity::insert_many(chunk.to_vec())
-            .on_conflict_do_nothing()
+            // Python's bare `ON CONFLICT DO NOTHING` skips a conflict on *any*
+            // constraint; SeaORM's target-less `OnConflict` is that statement,
+            // while `on_conflict_do_nothing` would name the primary key only.
+            .on_conflict(
+                sea_orm::sea_query::OnConflict::new()
+                    .do_nothing()
+                    .to_owned(),
+            )
             .exec_without_returning(db)
             .await?;
     }
@@ -672,7 +689,11 @@ async fn upsert_test_cases(
         );
         let mut values = Vec::with_capacity(chunk.len() + 1);
         values.push(Value::from(project_id));
-        values.extend(chunk.iter().map(|fingerprint| Value::from(fingerprint.clone())));
+        values.extend(
+            chunk
+                .iter()
+                .map(|fingerprint| Value::from(fingerprint.clone())),
+        );
         for row in rows_of(db, sql, values).await? {
             ids.insert(get::<String>(&row, "fingerprint")?, get::<i32>(&row, "id")?);
         }
@@ -705,9 +726,7 @@ async fn update_latest_tests(
                 Value::from(row.last_status.clone()),
                 Value::from(now),
                 Value::from(row.file.is_some()),
-                row.file
-                    .clone()
-                    .map_or(Value::String(None), Value::from),
+                row.file.clone().map_or(Value::String(None), Value::from),
                 row.line.map_or(Value::Int(None), Value::from),
             ]);
         }
@@ -771,10 +790,7 @@ async fn process_pipeline_report(
         insert_pipeline_job_executions(db, &payload, &job_ids, now).await?;
     update_job_last_status(db, &payload, &job_ids, &jobs_with_new_exec, now).await?;
 
-    let touched: Vec<i32> = jobs_with_new_exec
-        .union(&flag_changed)
-        .copied()
-        .collect();
+    let touched: Vec<i32> = jobs_with_new_exec.union(&flag_changed).copied().collect();
     let mut tier_changes = rescore_jobs(db, &touched, Some(&day_counts), settings)
         .await
         .map_err(ProcessError::from)?;
@@ -788,12 +804,7 @@ async fn process_pipeline_report(
         - (new_counts.passed + new_counts.failed + new_counts.skipped);
     let counts_json = new_counts.pipeline_json();
     complete_report(report, now, None, counts_json.clone());
-    report
-        .clone()
-        .into_active_model()
-        .update(db)
-        .await
-        .map_err(ProcessError::from)?;
+    write_report(report, db).await.map_err(ProcessError::from)?;
     Ok(ProcessOutcome {
         report_id: report.id,
         status: REPORT_PROCESSED.to_owned(),
@@ -822,7 +833,11 @@ async fn upsert_pipeline_jobs(
         created_at: Set(now),
         ..Default::default()
     })
-    .on_conflict_do_nothing()
+    .on_conflict(
+        sea_orm::sea_query::OnConflict::new()
+            .do_nothing()
+            .to_owned(),
+    )
     .exec_without_returning(db)
     .await
     .map_err(ProcessError::from)?;
@@ -964,7 +979,10 @@ async fn insert_pipeline_job_executions(
 
 /// The `INSERT ... ON CONFLICT DO NOTHING RETURNING job_id, status` for one
 /// chunk, so only the rows that were actually inserted come back.
-fn insert_job_executions_sql(chunk: &[PipelineExecution], now: DateTimeWithTimeZone) -> (String, Vec<Value>) {
+fn insert_job_executions_sql(
+    chunk: &[PipelineExecution],
+    now: DateTimeWithTimeZone,
+) -> (String, Vec<Value>) {
     let mut values = Vec::with_capacity(chunk.len() * 13);
     let mut placeholders = Vec::with_capacity(chunk.len());
     for (index, row) in chunk.iter().enumerate() {
@@ -1122,7 +1140,7 @@ pub async fn rescore(
                JOIN test_runs r ON r.id = e.test_run_id \
                JOIN projects p ON p.id = r.project_id \
                JOIN repos ro ON ro.id = p.repo_id \
-              WHERE e.id IN ({}) \
+              WHERE e.id IN (SELECT w.id FROM ({}) AS w) \
               ORDER BY e.test_case_id, e.id DESC",
             test_window_ids_sql()
         );
@@ -1197,16 +1215,21 @@ pub async fn rescore(
                     .map_or(0, |(_, failures)| *failures),
             })
             .collect();
-        write_today_history(db, HistoryKind::Test, &history_updates, settings.clock.today()).await?;
+        write_today_history(
+            db,
+            HistoryKind::Test,
+            &history_updates,
+            settings.clock.today(),
+        )
+        .await?;
     }
     Ok(changes)
 }
 
 /// Parses a stored status, refusing an unknown one.
 fn status_of(text: &str) -> Result<ExecutionStatus, DbError> {
-    ExecutionStatus::from_wire(text).ok_or_else(|| {
-        DbError::Database(DbErr::Custom(format!("unknown Execution status {text}")))
-    })
+    ExecutionStatus::from_wire(text)
+        .ok_or_else(|| DbError::Database(DbErr::Custom(format!("unknown Execution status {text}"))))
 }
 
 /// Parses a stored Failure category.
@@ -1352,7 +1375,9 @@ async fn write_test_updates(
                 Value::from(update.confirmed_flake_count),
                 update
                     .failure_category
-                    .map_or(Value::String(None), |category| Value::from(category.as_str())),
+                    .map_or(Value::String(None), |category| {
+                        Value::from(category.as_str())
+                    }),
                 Value::from(update.clean_streak),
                 Value::from(update.fail_streak),
                 Value::from(update.clear_fixed_note),
@@ -1400,7 +1425,7 @@ async fn job_history(
                JOIN jobs j ON j.id = e.job_id \
                JOIN pipelines p ON p.id = j.pipeline_id \
                JOIN repos ro ON ro.id = p.repo_id \
-              WHERE e.id IN ({}) \
+              WHERE e.id IN (SELECT w.id FROM ({}) AS w) \
               ORDER BY e.job_id, e.id DESC",
             job_execution_explained_sql(),
             job_window_ids_sql()
@@ -1484,7 +1509,13 @@ pub async fn rescore_jobs(
                     .map_or(0, |(_, failures)| *failures),
             })
             .collect();
-        write_today_history(db, HistoryKind::Job, &history_updates, settings.clock.today()).await?;
+        write_today_history(
+            db,
+            HistoryKind::Job,
+            &history_updates,
+            settings.clock.today(),
+        )
+        .await?;
     }
     Ok(changes)
 }

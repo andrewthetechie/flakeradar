@@ -127,10 +127,7 @@ pub async fn past_scores(
         );
         let query = values_of(chunk, cutoff);
         for row in rows(db, sql, query).await? {
-            found.insert(
-                get::<i32>(&row, "entity_id")?,
-                get::<f64>(&row, "score")?,
-            );
+            found.insert(get::<i32>(&row, "entity_id")?, get::<f64>(&row, "score")?);
         }
     }
     Ok(found)
