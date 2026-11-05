@@ -543,3 +543,48 @@ async with factory() as db:
     await processing._job_history(db, [1])
 # EXPLAIN (ANALYZE, BUFFERS) <captured statement> run through asyncpg with the captured binds
 ```
+
+## Rust: the same statement, measured again
+
+The port sends the same read (`flakeradar-db/src/attribution.rs`'s
+`job_window_ids_sql`) with the same four binds. Measured on 2026-11-05 with
+`EXPLAIN (ANALYZE, BUFFERS)` on a database the binary migrated and SQL seeded:
+Apple M4, macOS 26.6.2, PostgreSQL 17.11 in `postgres:17-alpine`, one warm run
+after `ANALYZE`.
+
+The data is smaller than the fixture above (a laptop, not a 2M-row seed):
+
+| table | rows |
+| --- | --- |
+| `job_executions` | 4,000 |
+| `jobs` | 20 (10 per Repo) |
+| `pipelines` | 2, one per Repo |
+| `test_runs` | 400 (the Job executions borrow their Run's SHA, branch and CI run) |
+
+`score_window = 50`, one chunk of the 10 Job ids of one Repo.
+
+| statement | execution time | plan |
+| --- | --- | --- |
+| `job_window_ids_sql` | 1.03 ms | one `Limit` per id over `Index Only Scan Backward using ix_job_exec_job_id` (10 loops), and the Default-branch arm over `Index Scan Backward using ix_job_exec_job_id` with a `Seq Scan` of `jobs` and of `pipelines` (10 and 2 rows) to reach the Repo's Default branch |
+
+Both arms stop at the window on `ix_job_exec_job_id`, which is the index the change was made
+for, and there is no sort of the retained executions and no temp block. The `Limit` appears once
+per Job id, as task 07 recorded in `spike-notes.md`. This is the plan this file's "after"
+column describes; only the row count differs.
+
+### Rust seed
+
+```sql
+INSERT INTO pipelines (id, repo_id, provider, name, created_at)
+VALUES (1, 1, 'github', '.github/workflows/ci.yml', now()), (2, 2, 'github', '.github/workflows/ci.yml', now());
+INSERT INTO jobs (id, pipeline_id, name, last_seen_at, created_at)
+SELECT g, CASE WHEN g <= 10 THEN 1 ELSE 2 END, 'job_' || g, now(), now() FROM generate_series(1, 20) AS g;
+INSERT INTO job_executions (job_id, ci_job_id, ci_run_id, commit_sha, branch, status, created_at, ci_run_attempt)
+SELECT j.id, 'j' || j.id || '-' || r.id, r.ci_run_id, r.commit_sha, r.branch,
+       CASE WHEN (j.id + r.id) % 16 = 0 THEN 'failed' ELSE 'passed' END, r.created_at, 1
+FROM jobs j JOIN pipelines p ON p.id = j.pipeline_id JOIN test_runs r ON r.project_id = p.repo_id;
+ANALYZE;
+```
+
+`test_runs`, `projects` and `repos` come from the seed in
+`20-test-rescore-explain.md`'s Rust section.

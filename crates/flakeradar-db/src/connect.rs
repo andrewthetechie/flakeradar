@@ -13,6 +13,15 @@ use sea_orm::{ConnectOptions, Database, DatabaseConnection};
 
 use crate::error::DbError;
 
+/// How long a request waits for a pooled connection before answering 500.
+///
+/// `SQLx` retries a failed connection attempt inside this window, and its default
+/// is 30 seconds: measured against a stopped PostgreSQL, a read waited the whole
+/// 30 seconds before its 500, where asyncpg raised on the pooled connection at
+/// once. Five seconds keeps an outage an error rather than a hang without failing
+/// a request that is only waiting its turn behind the pool's own traffic.
+const ACQUIRE_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Seconds a statement may run before PostgreSQL cancels it.
 ///
 /// The frozen Python server's `db_command_timeout_seconds` default. A long
@@ -72,12 +81,27 @@ impl Default for DbSettings {
 /// Returns [`DbError::NotPostgres`] for any URL that is not PostgreSQL, and
 /// [`DbError::Database`] when the server cannot be reached.
 pub async fn connect(url: &str, settings: DbSettings) -> Result<DatabaseConnection, DbError> {
-    let mut options = ConnectOptions::new(postgres_url(url)?);
+    let mut options = shared_options(url, settings)?;
     // Match asyncpg's `pool_pre_ping`: a connection that died while idle is
     // replaced instead of failing the request that borrowed it.
     options.test_before_acquire(true);
-    options.statement_timeout(settings.command_timeout());
     Ok(Database::connect(options).await?)
+}
+
+/// The pool options both pools share: the URL, the statement timeout and the
+/// bound on waiting for a connection.
+fn shared_options(url: &str, settings: DbSettings) -> Result<ConnectOptions, DbError> {
+    Ok(apply_shared(
+        ConnectOptions::new(postgres_url(url)?),
+        settings,
+    ))
+}
+
+/// Applies the settings both pools share to a new option set.
+fn apply_shared(mut options: ConnectOptions, settings: DbSettings) -> ConnectOptions {
+    options.statement_timeout(settings.command_timeout());
+    options.acquire_timeout(ACQUIRE_TIMEOUT);
+    options
 }
 
 /// Opens a pool of exactly one connection, for a session-scoped advisory lock.
@@ -100,13 +124,12 @@ pub async fn connect_session(
     url: &str,
     settings: DbSettings,
 ) -> Result<DatabaseConnection, DbError> {
-    let mut options = ConnectOptions::new(postgres_url(url)?);
+    let mut options = shared_options(url, settings)?;
     options.max_connections(1);
     options.min_connections(1);
     options.test_before_acquire(false);
     options.idle_timeout(None::<Duration>);
     options.max_lifetime(None::<Duration>);
-    options.statement_timeout(settings.command_timeout());
     Ok(Database::connect(options).await?)
 }
 
@@ -125,7 +148,24 @@ fn postgres_url(url: &str) -> Result<String, DbError> {
 mod tests {
     //! URL and setting parsing need no database, so they are checked here.
 
-    use super::{DbError, DbSettings, postgres_url};
+    use sea_orm::ConnectOptions;
+
+    use super::{ACQUIRE_TIMEOUT, DbError, DbSettings, apply_shared, postgres_url};
+
+    #[test]
+    fn a_pool_waits_five_seconds_for_a_connection_and_no_longer() {
+        let settings = DbSettings::default();
+        let options = apply_shared(
+            ConnectOptions::new("postgresql://u:p@h:5432/d".to_owned()),
+            settings,
+        );
+        assert_eq!(options.get_acquire_timeout(), Some(ACQUIRE_TIMEOUT));
+        assert_eq!(ACQUIRE_TIMEOUT.as_secs(), 5);
+        assert_eq!(
+            options.get_statement_timeout(),
+            Some(settings.command_timeout())
+        );
+    }
 
     #[test]
     fn accepts_every_documented_postgres_url() {
