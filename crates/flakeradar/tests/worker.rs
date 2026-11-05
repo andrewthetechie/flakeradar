@@ -179,22 +179,26 @@ async fn lock_is_free(url: &str) -> bool {
 ///
 /// The lock is session-scoped, so the server frees it the moment the session
 /// dies; a replacement leader could take it at any moment after this.
-async fn terminate_lock_session(db: &TestDb) {
+async fn terminate_lock_session(db: &TestDb, database: &str) {
+    // Both statements run from the maintenance database, so this works while the
+    // test's own database already refuses new connections.
+    let admin = connect(db.maintenance_url(), DbSettings::default())
+        .await
+        .expect("the maintenance connection");
     let statement = Statement::from_sql_and_values(
         sea_orm::DbBackend::Postgres,
         "SELECT pid FROM pg_locks WHERE locktype = 'advisory' AND classid = 0 \
            AND objid::bigint = $1 \
-           AND database = (SELECT oid FROM pg_database WHERE datname = current_database())",
-        [WORKER_LOCK_KEY.into()],
+           AND database = (SELECT oid FROM pg_database WHERE datname = $2)",
+        [WORKER_LOCK_KEY.into(), database.into()],
     );
-    let row = db
-        .connection()
+    let row = admin
         .query_one_raw(statement)
         .await
         .expect("the lock query runs")
         .expect("the lock is held");
     let pid: i32 = row.try_get("", "pid").expect("a backend id");
-    db.connection()
+    admin
         .execute_raw(Statement::from_sql_and_values(
             sea_orm::DbBackend::Postgres,
             "SELECT pg_terminate_backend($1)",
@@ -202,16 +206,15 @@ async fn terminate_lock_session(db: &TestDb) {
         ))
         .await
         .expect("the backend is terminated");
+    admin
+        .close()
+        .await
+        .expect("the maintenance connection closes");
 }
 
-/// Refuses, or again allows, new connections to the test's own database.
+/// The name of the test's own database, read while its pool still answers.
 ///
-/// Ending the session that holds the lock is not enough on its own: the pool
-/// opens a replacement for a connection the server closed, so the next lock
-/// statement can still be answered by a fresh session and the test would race
-/// the pool. With new connections refused, the replacement cannot be opened and
-/// the failure is certain.
-async fn refuse_new_connections(db: &TestDb, refuse: bool) {
+async fn database_name(db: &TestDb) -> String {
     let row = db
         .connection()
         .query_one_raw(Statement::from_string(
@@ -221,16 +224,26 @@ async fn refuse_new_connections(db: &TestDb, refuse: bool) {
         .await
         .expect("the database name reads")
         .expect("a database name");
-    let name: String = row.try_get("", "name").expect("a database name");
-    // The server refuses to disallow connections for the database the statement
-    // runs in, so the policy changes from the maintenance database.
+    row.try_get("", "name").expect("a database name")
+}
+
+/// Refuses, or again allows, new connections to `database`.
+///
+/// Ending the session that holds the lock is not enough on its own: the pool
+/// opens a replacement for a connection the server closed, so the next lock
+/// statement can still be answered by a fresh session and the test would race
+/// the pool. With new connections refused, the replacement cannot be opened and
+/// the failure is certain. The policy changes from the maintenance database,
+/// because the server refuses to disallow connections for the database the
+/// statement runs in, and an existing session is unaffected either way.
+async fn set_connections_allowed(db: &TestDb, database: &str, allowed: bool) {
     let admin = connect(db.maintenance_url(), DbSettings::default())
         .await
         .expect("the maintenance connection");
-    let allowed = if refuse { "false" } else { "true" };
+    let allowed = if allowed { "true" } else { "false" };
     admin
         .execute_unprepared(&format!(
-            "ALTER DATABASE \"{name}\" ALLOW_CONNECTIONS {allowed}"
+            "ALTER DATABASE \"{database}\" ALLOW_CONNECTIONS {allowed}"
         ))
         .await
         .expect("the connection policy changes");
@@ -807,8 +820,9 @@ async fn a_broken_lock_connection_drops_leadership_and_re_elects() {
     // Refuse new connections before ending the session: the pool replaces a
     // connection the server closed, and a replacement opened before the refusal
     // would answer the check and keep the worker leading.
-    refuse_new_connections(&db, true).await;
-    terminate_lock_session(&db).await;
+    let database = database_name(&db).await;
+    set_connections_allowed(&db, &database, false).await;
+    terminate_lock_session(&db, &database).await;
 
     // The next empty-queue check cannot be answered, so the worker releases and
     // re-elects once connections are allowed again; stopping then still ends with
@@ -818,7 +832,7 @@ async fn a_broken_lock_connection_drops_leadership_and_re_elects() {
     })
     .await;
     assert!(!worker.is_leader(), "a broken session never keeps leading");
-    refuse_new_connections(&db, false).await;
+    set_connections_allowed(&db, &database, true).await;
     wait_until("the worker re-elects", || async {
         worker.is_leader() && counted.try_locks() >= 2
     })
@@ -837,21 +851,30 @@ async fn a_failed_lock_statement_drops_the_session() {
     // statement must end that session: a worker that kept using it would go on
     // believing it leads on a connection that no longer holds the lock.
     let db = TestDb::new().await.expect("a test database");
+    let database = database_name(&db).await;
     let session = AdvisoryLock::new(db.url(), DbSettings::default());
     assert!(
         session.try_lock().await.expect("the first election"),
         "the lock is free at the start"
     );
     // Refuse new connections first, so the pool cannot replace the session this
-    // statement is about to run on.
-    refuse_new_connections(&db, true).await;
-    terminate_lock_session(&db).await;
+    // statement is about to run on, and end that session from the maintenance
+    // database, which the refusal does not touch.
+    set_connections_allowed(&db, &database, false).await;
+    terminate_lock_session(&db, &database).await;
 
     session
         .try_lock()
         .await
         .expect_err("a statement on the dead session fails");
-    refuse_new_connections(&db, false).await;
+    // The failed statement dropped the session, so ending it needs no statement
+    // of its own: a session that was kept would try to unlock over a connection
+    // the pool can no longer open, and report that instead of nothing.
+    session
+        .unlock()
+        .await
+        .expect("a dropped session is not unlocked again");
+    set_connections_allowed(&db, &database, true).await;
     // The next election opens a fresh session, which wins the lock the server
     // freed with the old one; a reused broken session would fail again.
     assert!(
