@@ -84,3 +84,30 @@ Task 14 works through this list and closes what it can. Task 15 files a follow-o
 | 11 | `crates/flakeradar/src/mcp.rs` | `serialize_failure`, and `call_tool`'s arm for it | unreached arms | The error arm of `serde_json::to_value` and `to_string` for the answers this file builds. Every field of every answer is a `String`, an integer, a `bool`, an `Option`, or an `f64` from a `double` column, and `serde_json` writes a non-finite float as `null` instead of failing — measured: `a_non_finite_score_is_answered_as_null_not_as_a_failure` stores a `'NaN'` score and the tool answers a well-formed list whose `flakiness_score` fields are `null`. No value this file serializes can therefore fail, so the arm needs a `Serialize` impl that errors, which none of the DTOs has. `ToolFailure::Protocol` is now produced by that arm alone, so `call_tool`'s `return Err(error)` for it cannot run either | — |
 | 11 | `crates/flakeradar/src/mcp.rs` | `object` | unreached arm | The `panic!` for a schema that is not a JSON object. Every input and output schema is an object literal in the same file, so the arm cannot run; a schema that stopped being one is a programming error the build's own tests fail on first, the same shape as task 04's two `Regex` panic arms | — |
 | 13 | `crates/flakeradar/src/main.rs` | `health_check`, `runtime` | `coverage(off)` | Process-edge wrappers: `health_check` reads `Settings::from_env` and blocks a runtime on `healthcheck`, and `runtime` builds the multi-threaded runtime the server runs on. Both read the process environment and build process-wide state, which a test cannot do twice or observe from another thread; `Settings::from_env`, `healthcheck`, `healthcheck_url` and the URL rules are measured by `crates/flakeradar/tests/cli.rs` and the `settings.rs` unit tests, and the runtime itself is tokio's | — |
+
+## Task 14: what remains, and the figures the floor was set from
+
+Measured with `cargo +nightly-2026-10-25 llvm-cov nextest --branch --all-features --profile ci`
+against a PostgreSQL service, with `FLAKERADAR_TEST_DATABASE_URL` set, which is the configuration
+CI measures in. Three consecutive runs produced byte-identical summaries and the same totals:
+**lines 96.73%** (13853/14321), **branches 94.21%** (1074/1140), regions 92.53% (15278/16511) and
+functions 96.03% (1644/1712). `coverage-floor.json` carries `{"lines": 96, "branches": 94}`, both
+rounded down from those totals so the gate cannot fail on a figure the same code did not reach.
+
+Nothing in this task's own code is uncovered: `connect.rs` (the pooled-connection wait),
+`docs.rs` (every route's `#[utoipa::path]`) and the changed arms of `routes/reports.rs`,
+`routes/reads.rs`, `routes/issues.rs` and `routes/admin.rs` are 100% of lines and branches, and the
+new suites are `crates/flakeradar/tests/consumers.rs` and the parity harness's own tests, which
+nextest measures as test code.
+
+The 468 missed lines and 66 missed branches the totals hold are the rows above and no others. Every
+one is either a `coverage(off)` process edge, an arm PostgreSQL cannot produce (an aggregate with no
+`GROUP BY` answering no row, a foreign key making a row impossible, a schema change mid-query), a
+`tracing` field-argument line llvm-cov counts zero although the event fires, a test-only writer's
+`flush`, or the Docker path of `crates/flakeradar-test-support/src/postgres.rs`, which CI never
+takes because it sets the database URL.
+
+One measurement caveat, and it is why the figures come from the URL-set configuration: with
+`FLAKERADAR_TEST_DATABASE_URL` unset the suite starts its own containers, so that file's Docker path
+is covered too and the same tree reports 97.15% of lines and 94.91% of branches. Both figures are
+honest; the floor follows the lower one, which is the one CI reaches.
