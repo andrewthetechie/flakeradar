@@ -13,7 +13,9 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use chrono::{DateTime, FixedOffset};
-use flakeradar_core::{JobResultIn, JobStatus, PipelineReportIn, pipeline_body, tier_for};
+use flakeradar_core::{
+    ExecutionStatus, JobResultIn, JobStatus, PipelineReportIn, pipeline_body, tier_for,
+};
 use flakeradar_db::entities::{
     job_executions, job_score_history, jobs, pipelines, projects, reports, repos, test_cases,
     test_executions, test_runs, test_score_history,
@@ -43,6 +45,24 @@ fn settings() -> ProcessingSettings {
 /// A settings value with one field changed.
 fn settings_with(change: impl FnOnce(&mut ProcessingSettings)) -> ProcessingSettings {
     let mut settings = settings();
+    change(&mut settings);
+    settings
+}
+
+/// Python's `tests/factories._notify_settings`: decay 0 makes the score depend
+/// on one transition and a 0.05 threshold makes a crossing exact.
+fn notify_settings() -> ProcessingSettings {
+    settings_with(|settings| {
+        settings.flake_threshold = 0.05;
+        settings.score_decay = 0.0;
+        settings.score_window = 50;
+        settings.broken_streak = 5;
+    })
+}
+
+/// [`notify_settings`] with one field changed, like `_notify_settings(**kw)`.
+fn notify_settings_with(change: impl FnOnce(&mut ProcessingSettings)) -> ProcessingSettings {
+    let mut settings = notify_settings();
     change(&mut settings);
     settings
 }
@@ -765,6 +785,8 @@ async fn a_rescore_matches_the_branch_scoped_score_over_all_rows() {
         .build(db.connection())
         .await
         .expect("a Test");
+    // Oldest first, so reversing the list gives the newest-first history Python reads.
+    let mut history: Vec<(String, String, ExecutionStatus)> = Vec::new();
     for (index, status) in ["failed", "passed", "failed", "passed", "failed"]
         .iter()
         .enumerate()
@@ -780,6 +802,11 @@ async fn a_rescore_matches_the_branch_scoped_score_over_all_rows() {
             .build(db.connection())
             .await
             .expect("an Execution");
+        history.push((
+            format!("m{index}"),
+            "main".to_owned(),
+            ExecutionStatus::from_wire(status).expect("a status"),
+        ));
     }
     for index in 0..10 {
         let run = flakeradar_test_support::make_run(&project)
@@ -792,18 +819,47 @@ async fn a_rescore_matches_the_branch_scoped_score_over_all_rows() {
             .build(db.connection())
             .await
             .expect("an Execution");
+        history.push((
+            format!("f{index}"),
+            "feat".to_owned(),
+            ExecutionStatus::Passed,
+        ));
     }
-    let changes = rescore(db.connection(), &[row.id], None, &settings)
+    rescore(db.connection(), &[row.id], None, &settings)
         .await
         .expect("the rescore");
-    assert_eq!(changes, Vec::new());
     let stored = test(&db).await;
-    assert!(stored.flakiness_score > 0.0);
-    assert_eq!(stored.clean_streak, 0);
-    assert_eq!(stored.fail_streak, 1);
-    assert!(stored.flakiness_score > 0.0);
-    assert_eq!(stored.clean_streak, 0);
-    assert_eq!(stored.fail_streak, 1);
+    history.reverse();
+    let refs: Vec<(&str, &str, ExecutionStatus)> = history
+        .iter()
+        .map(|(sha, branch, status)| (sha.as_str(), branch.as_str(), *status))
+        .collect();
+    let (expected, confirmed) = flakeradar_core::branch_scoped_score(
+        &refs,
+        Some("main"),
+        settings.score_decay,
+        settings.score_window,
+    );
+    // The newest Default-branch flips still count despite ten newer feature rows.
+    assert!(expected > 0.0);
+    assert_eq!(stored.flakiness_score, expected);
+    assert_eq!(
+        stored.confirmed_flake_count,
+        i32::try_from(confirmed).expect("a count")
+    );
+    assert_eq!(
+        stored.clean_streak,
+        i32::try_from(flakeradar_core::branch_scoped_streak(&refs, Some("main")))
+            .expect("a streak")
+    );
+    assert_eq!(
+        stored.fail_streak,
+        i32::try_from(flakeradar_core::branch_scoped_fail_streak(
+            &refs,
+            Some("main")
+        ))
+        .expect("a streak")
+    );
 }
 
 #[tokio::test]
@@ -942,7 +998,7 @@ async fn an_upward_tier_crossing_is_reported() {
         b.commit_sha("a")
     })
     .await;
-    let first = process_next(db.connection(), &settings())
+    let first = process_next(db.connection(), &notify_settings())
         .await
         .expect("the processor runs")
         .expect("a Report");
@@ -951,7 +1007,7 @@ async fn an_upward_tier_crossing_is_reported() {
         b.commit_sha("b")
     })
     .await;
-    let second = process_next(db.connection(), &settings())
+    let second = process_next(db.connection(), &notify_settings())
         .await
         .expect("the processor runs")
         .expect("a Report");
@@ -969,7 +1025,7 @@ async fn an_upward_tier_crossing_is_reported() {
         (Some("tests.test_mod"), "t")
     );
     assert_eq!(change.flakiness_score, row.flakiness_score);
-    assert_eq!(change.tier, tier_for(row.flakiness_score, 0.30));
+    assert_eq!(change.tier, tier_for(row.flakiness_score, 0.05));
     assert_eq!(
         change.confirmed_flake_count,
         usize::try_from(row.confirmed_flake_count).expect("a count")
@@ -986,7 +1042,7 @@ async fn a_downward_tier_crossing_is_reported() {
             b.commit_sha(sha)
         })
         .await;
-        process_next(db.connection(), &settings())
+        process_next(db.connection(), &notify_settings())
             .await
             .expect("the processor runs");
     }
@@ -994,7 +1050,7 @@ async fn a_downward_tier_crossing_is_reported() {
         b.commit_sha("c")
     })
     .await;
-    let middle = process_next(db.connection(), &settings())
+    let middle = process_next(db.connection(), &notify_settings())
         .await
         .expect("the processor runs")
         .expect("a Report");
@@ -1006,7 +1062,7 @@ async fn a_downward_tier_crossing_is_reported() {
         b.commit_sha("d")
     })
     .await;
-    let outcome = process_next(db.connection(), &settings())
+    let outcome = process_next(db.connection(), &notify_settings())
         .await
         .expect("the processor runs")
         .expect("a Report");
@@ -1024,7 +1080,7 @@ async fn staying_flaky_reports_no_second_event() {
             b.commit_sha(sha)
         })
         .await;
-        process_next(db.connection(), &settings())
+        process_next(db.connection(), &notify_settings())
             .await
             .expect("the processor runs");
     }
@@ -1032,7 +1088,7 @@ async fn staying_flaky_reports_no_second_event() {
         b.commit_sha("a")
     })
     .await;
-    let outcome = process_next(db.connection(), &settings())
+    let outcome = process_next(db.connection(), &notify_settings())
         .await
         .expect("the processor runs")
         .expect("a Report");
@@ -1043,7 +1099,7 @@ async fn staying_flaky_reports_no_second_event() {
 async fn a_broken_test_reports_no_recovery() {
     let db = TestDb::new().await.expect("a test database");
     let project = project(&db, "acme/app", "backend").await;
-    let settings = settings_with(|settings| settings.broken_streak = 2);
+    let settings = notify_settings_with(|settings| settings.broken_streak = 2);
     for (status, sha) in [("failed", "a"), ("passed", "b")] {
         queue_with(&db, &project, &make_junit(&[("t", status)]), |b| {
             b.commit_sha(sha)
@@ -1074,7 +1130,7 @@ async fn a_broken_test_reports_no_recovery() {
 async fn fixing_a_broken_test_reports_flaky_again() {
     let db = TestDb::new().await.expect("a test database");
     let project = project(&db, "acme/app", "backend").await;
-    let settings = settings_with(|settings| settings.broken_streak = 2);
+    let settings = notify_settings_with(|settings| settings.broken_streak = 2);
     for (status, sha) in [
         ("failed", "a"),
         ("passed", "b"),
@@ -1133,7 +1189,7 @@ async fn a_new_test_above_the_threshold_is_flaky() {
 async fn a_move_into_suspect_reports_nothing() {
     let db = TestDb::new().await.expect("a test database");
     let project = project(&db, "acme/app", "backend").await;
-    let settings = settings_with(|settings| settings.flake_threshold = 0.5);
+    let settings = notify_settings_with(|settings| settings.flake_threshold = 0.5);
     for (status, sha) in [("failed", "a"), ("passed", "b")] {
         queue_with(&db, &project, &make_junit(&[("t", status)]), |b| {
             b.commit_sha(sha)
@@ -1152,7 +1208,7 @@ async fn a_move_into_suspect_reports_nothing() {
 }
 
 #[tokio::test]
-async fn rescore_repo_drops_crossings_and_logs_the_count() {
+async fn rescore_repo_drops_crossings() {
     let db = TestDb::new().await.expect("a test database");
     let project = project(&db, "acme/app", "backend").await;
     for (status, sha) in [("failed", "a"), ("passed", "b")] {
@@ -1160,7 +1216,7 @@ async fn rescore_repo_drops_crossings_and_logs_the_count() {
             b.branch("feat").commit_sha(sha)
         })
         .await;
-        process_next(db.connection(), &settings())
+        process_next(db.connection(), &notify_settings())
             .await
             .expect("the processor runs");
     }
@@ -1168,7 +1224,7 @@ async fn rescore_repo_drops_crossings_and_logs_the_count() {
         b.branch("main").commit_sha("c").default_branch("main")
     })
     .await;
-    let outcome = process_next(db.connection(), &settings())
+    let outcome = process_next(db.connection(), &notify_settings())
         .await
         .expect("the processor runs")
         .expect("a Report");
@@ -1558,7 +1614,7 @@ async fn a_job_tier_crossing_reports_job_flaky() {
         report.commit_sha = sha.to_owned();
         report.ci_run_id = run_id.to_owned();
         queue_pipeline(&db, &project, &report).await;
-        let outcome = process_next(db.connection(), &settings())
+        let outcome = process_next(db.connection(), &notify_settings())
             .await
             .expect("the processor runs")
             .expect("a Report");
@@ -1602,7 +1658,7 @@ async fn a_job_recovery_reports_job_recovered() {
         report.commit_sha = sha.to_owned();
         report.ci_run_id = run_id.to_owned();
         queue_pipeline(&db, &project, &report).await;
-        process_next(db.connection(), &settings())
+        process_next(db.connection(), &notify_settings())
             .await
             .expect("the processor runs");
     }
@@ -1610,7 +1666,7 @@ async fn a_job_recovery_reports_job_recovered() {
     report.commit_sha = "c".to_owned();
     report.ci_run_id = "3".to_owned();
     queue_pipeline(&db, &project, &report).await;
-    let outcome = process_next(db.connection(), &settings())
+    let outcome = process_next(db.connection(), &notify_settings())
         .await
         .expect("the processor runs")
         .expect("a Report");
@@ -1633,7 +1689,7 @@ async fn a_default_branch_change_silences_the_pipeline_reports_own_crossings() {
         report.branch = "feat".to_owned();
         report.default_branch = Some("feat".to_owned());
         queue_pipeline(&db, &project, &report).await;
-        process_next(db.connection(), &settings())
+        process_next(db.connection(), &notify_settings())
             .await
             .expect("the processor runs");
     }
@@ -1641,7 +1697,7 @@ async fn a_default_branch_change_silences_the_pipeline_reports_own_crossings() {
     report.commit_sha = "c".to_owned();
     report.ci_run_id = "3".to_owned();
     queue_pipeline(&db, &project, &report).await;
-    let outcome = process_next(db.connection(), &settings())
+    let outcome = process_next(db.connection(), &notify_settings())
         .await
         .expect("the processor runs")
         .expect("a Report");
