@@ -224,6 +224,12 @@ async fn a_head_request_carries_the_headers_and_no_body() {
     );
     assert_eq!(reply.header("etag").as_deref(), Some("\"index-1\""));
     assert_eq!(reply.header("cache-control").as_deref(), Some("no-cache"));
+    // The length is the file's, not the empty body's: Starlette's FileResponse
+    // announced the file it would have sent, and a client asks HEAD to learn it.
+    assert_eq!(
+        reply.header("content-length").as_deref(),
+        Some(PAGE.len().to_string().as_str())
+    );
 }
 
 #[tokio::test]

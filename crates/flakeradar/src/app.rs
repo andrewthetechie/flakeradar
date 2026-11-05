@@ -258,6 +258,11 @@ fn lookup(source: &dyn AssetSource, path: &str) -> Option<(Asset, String)> {
 }
 
 /// The answer for one asset, honouring `If-None-Match`.
+///
+/// `content-length` is the file's own length even for `HEAD`, which is what
+/// Starlette's `FileResponse` sent: the method asks for the headers a `GET`
+/// would carry, not for a zero-length file. Hyper would otherwise derive the
+/// length from the empty body and announce `0`.
 fn asset_response(asset: &Asset, name: &str, method: &Method, headers: &HeaderMap) -> Response {
     let cache = if name.starts_with("assets/") {
         HASHED_ASSET_CACHE
@@ -286,6 +291,7 @@ fn asset_response(asset: &Asset, name: &str, method: &Method, headers: &HeaderMa
             (header::CONTENT_TYPE, content_type(name)),
             (header::ETAG, etag),
             (header::CACHE_CONTROL, cache.to_owned()),
+            (header::CONTENT_LENGTH, asset.data().len().to_string()),
         ],
         body,
     )
