@@ -546,6 +546,17 @@ impl fmt::Debug for Api {
     }
 }
 
+/// The HTTP client every GitHub request goes through.
+///
+/// The timeout is what keeps a slow or unreachable GitHub API from holding a
+/// batch, and the user agent is what every endpoint expects to be told.
+fn github_client() -> anyhow::Result<Client> {
+    Ok(Client::builder()
+        .timeout(std::time::Duration::from_secs(TIMEOUT_SECONDS))
+        .user_agent(format!("flakeradar/{}", env!("CARGO_PKG_VERSION")))
+        .build()?)
+}
+
 impl Api {
     /// A client over `base`, presenting `token`.
     ///
@@ -555,11 +566,25 @@ impl Api {
     /// failing to initialize. A client without the timeout would break this
     /// module's error policy, so none is used.
     pub fn new(token: Secret, base: &str) -> anyhow::Result<Self> {
-        let client = Client::builder()
-            .timeout(std::time::Duration::from_secs(TIMEOUT_SECONDS))
-            .user_agent(format!("flakeradar/{}", env!("CARGO_PKG_VERSION")))
-            .build()
-            .context("building the GitHub HTTP client")?;
+        Self::with_client_build(token, base, github_client)
+    }
+
+    /// The same client, with `build` making the HTTP client instead.
+    ///
+    /// The seam is for the one failure a test cannot stage: only a TLS backend
+    /// that cannot initialize fails a build of a healthy [`Client`], so a test
+    /// asks `build` for the error and asserts the constructor carries it rather
+    /// than answering a client without the timeout.
+    ///
+    /// # Errors
+    ///
+    /// Returns `build`'s error, contexted with what could not be built.
+    pub fn with_client_build(
+        token: Secret,
+        base: &str,
+        build: impl FnOnce() -> anyhow::Result<Client>,
+    ) -> anyhow::Result<Self> {
+        let client = build().context("building the GitHub HTTP client")?;
         Ok(Self {
             client,
             base: base.trim_end_matches('/').to_owned(),

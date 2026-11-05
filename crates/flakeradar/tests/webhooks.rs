@@ -424,6 +424,23 @@ async fn an_endpoint_that_is_not_a_url_is_retried_and_never_logged() {
     );
 }
 
+#[test]
+fn a_failed_client_build_is_an_error_at_construction() {
+    let error = WebhookWorker::with_client_build(
+        vec!["https://hooks.example.com/a".to_owned()],
+        WebhookFormat::Json,
+        "",
+        [0.0, 0.0],
+        || Err(anyhow::anyhow!("the TLS backend did not initialize")),
+    )
+    .expect_err("a failed build is an error, not a task without its timeout");
+    assert_eq!(
+        format!("{error:#}"),
+        "building the Webhook HTTP client: the TLS backend did not initialize",
+        "the error carries the builder's own"
+    );
+}
+
 #[tokio::test]
 async fn the_task_names_itself_and_its_debug_line_carries_no_endpoint() {
     /// A credential in the path, which no `Debug` line may carry.

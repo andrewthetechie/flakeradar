@@ -1801,6 +1801,19 @@ fn an_api_never_prints_its_token() {
     );
 }
 
+#[test]
+fn a_failed_client_build_is_an_error_at_construction() {
+    let error = Api::with_client_build(Secret::new(TOKEN), "https://api.github.com", || {
+        Err(anyhow::anyhow!("the TLS backend did not initialize"))
+    })
+    .expect_err("a failed build is an error, not a client without its timeout");
+    assert_eq!(
+        format!("{error:#}"),
+        "building the GitHub HTTP client: the TLS backend did not initialize",
+        "the error carries the builder's own"
+    );
+}
+
 #[tokio::test]
 async fn a_token_the_header_cannot_carry_goes_out_with_no_credentials() {
     let server = MockServer::start().await;

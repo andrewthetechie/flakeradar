@@ -232,6 +232,17 @@ impl std::fmt::Debug for WebhookWorker {
     }
 }
 
+/// The HTTP client every Notification goes through.
+///
+/// The timeout is what keeps one slow endpoint from parking the queue, and the
+/// user agent is what every endpoint expects to be told.
+fn webhook_client() -> anyhow::Result<reqwest::Client> {
+    Ok(reqwest::Client::builder()
+        .timeout(Duration::from_secs(WEBHOOK_TIMEOUT_SECONDS))
+        .user_agent(format!("flakeradar/{}", env!("CARGO_PKG_VERSION")))
+        .build()?)
+}
+
 impl WebhookWorker {
     /// A task that posts to `urls` in `format`.
     ///
@@ -256,11 +267,27 @@ impl WebhookWorker {
         public_url: &str,
         retry_delays: [f64; 2],
     ) -> anyhow::Result<Self> {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(WEBHOOK_TIMEOUT_SECONDS))
-            .user_agent(format!("flakeradar/{}", env!("CARGO_PKG_VERSION")))
-            .build()
-            .context("building the Webhook HTTP client")?;
+        Self::with_client_build(urls, format, public_url, retry_delays, webhook_client)
+    }
+
+    /// The same task, with `build` making the HTTP client instead.
+    ///
+    /// The seam is for the one failure a test cannot stage: only a TLS backend
+    /// that cannot initialize fails a build of a healthy client, so a test asks
+    /// `build` for the error and asserts the constructor carries it rather than
+    /// answering a task without the timeout.
+    ///
+    /// # Errors
+    ///
+    /// Returns `build`'s error, contexted with what could not be built.
+    pub fn with_client_build(
+        urls: Vec<String>,
+        format: WebhookFormat,
+        public_url: &str,
+        retry_delays: [f64; 2],
+        build: impl FnOnce() -> anyhow::Result<reqwest::Client>,
+    ) -> anyhow::Result<Self> {
+        let client = build().context("building the Webhook HTTP client")?;
         Ok(Self {
             shared: Arc::new(WebhookShared {
                 urls,
