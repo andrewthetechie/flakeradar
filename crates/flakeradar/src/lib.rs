@@ -44,6 +44,10 @@ pub use error::{ApiError, ApiResult, Detail};
 #[doc(inline)]
 pub use extract::{ApiJson, ApiPath, ApiQuery, Validate, body_loc, query_loc};
 #[doc(inline)]
+pub use github::{Answer, Api, FilingGate, JobRow, RecentExecution, TestRow};
+#[doc(inline)]
+pub use github_worker::GitHubWorker;
+#[doc(inline)]
 pub use multipart::file_field;
 #[doc(inline)]
 pub use server::Server;
@@ -54,6 +58,8 @@ pub use settings::{
 };
 #[doc(inline)]
 pub use telemetry::init_tracing;
+#[doc(inline)]
+pub use webhooks::WebhookWorker;
 #[doc(inline)]
 pub use worker::{
     AdvisoryLock, DatabaseProcessor, LeaderTask, LockSession, Pruner, ReportProcessor,
