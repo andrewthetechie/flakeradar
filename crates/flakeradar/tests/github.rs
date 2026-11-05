@@ -9,6 +9,9 @@
     reason = "a test fails loudly when a stub or an answer does not behave"
 )]
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use flakeradar::Settings;
 use flakeradar::github::{self, Api};
 use flakeradar::{FilingGate, JobRow, RecentExecution, TestRow, settings::Secret};
@@ -1378,6 +1381,47 @@ fn an_api_never_prints_its_token() {
 }
 
 #[tokio::test]
+async fn a_token_the_header_cannot_carry_goes_out_with_no_credentials() {
+    let server = MockServer::start().await;
+    mount_close(&server, 123, 201, false).await;
+    mount_close(&server, 123, 200, true).await;
+    // A newline cannot be part of a header value, so `Bearer <token>` is no
+    // header at all: the request still goes out, carrying no credentials.
+    let api = Api::new(Secret::new("tok\nen"), &server.uri());
+
+    let logged = logged_from(github::close_issues_for_deleted_repo(
+        "acme/app",
+        &[123],
+        &gh_settings(&[]),
+        &api,
+    ))
+    .await;
+
+    let requests = server
+        .received_requests()
+        .await
+        .expect("the stub records requests");
+    assert_eq!(
+        requested_paths(&server).await,
+        vec![
+            "/repos/acme/app/issues/123/comments".to_owned(),
+            "/repos/acme/app/issues/123".to_owned(),
+        ],
+        "an unrepresentable token does not stop the request"
+    );
+    assert!(
+        requests
+            .first()
+            .is_some_and(|request| request.headers.get("authorization").is_none()),
+        "the request carries no authorization header"
+    );
+    assert!(
+        !logged.contains("tok"),
+        "a token never reaches a log line: {logged}"
+    );
+}
+
+#[tokio::test]
 async fn a_job_body_without_history_still_carries_the_table_heading() {
     let job = JobRow {
         id: 3,
@@ -1592,7 +1636,7 @@ async fn unlink_test(db: &TestDb, id: i32) {
 /// The log lines `future` writes, with a subscriber installed for this thread.
 async fn logged_from(future: impl Future) -> String {
     use std::io::Write as _;
-    use std::sync::{Arc, Mutex};
+    use std::sync::Mutex;
 
     /// An `io::Write` that appends to the shared buffer.
     struct Sink(Arc<Mutex<Vec<u8>>>);
@@ -3551,6 +3595,172 @@ async fn a_rate_limit_on_either_post_delete_request_stops_the_batch() {
     );
 }
 
+/// A complete `201 Created` answer with a nine-byte JSON body.
+const CREATED: &str = "HTTP/1.1 201 Created\r\nContent-Type: application/json\r\n\
+                      Content-Length: 9\r\nConnection: close\r\n\r\n{\"id\": 1}";
+
+/// The same answer whose body dies after three of the nine bytes it promised.
+const TRUNCATED: &str = "HTTP/1.1 201 Created\r\nContent-Type: application/json\r\n\
+                         Content-Length: 9\r\nConnection: close\r\n\r\n{\"i";
+
+/// A loopback endpoint that answers its first request and hangs up on the rest.
+///
+/// `wiremock` always finishes a response, so the two transport failures that
+/// follow a status line — a body that dies mid-flight, and a connection that
+/// dies between two calls — need a real socket.
+struct Loopback {
+    /// The base URL to hand [`Api::new`].
+    base: String,
+    /// How many connections the endpoint accepted.
+    connections: Arc<AtomicUsize>,
+    /// The task serving the socket, aborted when the test ends.
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl Loopback {
+    /// Starts an endpoint that answers its first request with `first`.
+    ///
+    /// Every later connection is accepted and closed without an answer at all.
+    async fn answering(first: String) -> Self {
+        use tokio::io::AsyncWriteExt as _;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("a loopback port");
+        let base = format!(
+            "http://{}",
+            listener.local_addr().expect("the bound address")
+        );
+        let connections = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&connections);
+        let task = tokio::spawn(async move {
+            let mut first = Some(first);
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
+                counter.fetch_add(1, Ordering::SeqCst);
+                read_request(&mut socket).await;
+                if let Some(answer) = first.take() {
+                    let _ = socket.write_all(answer.as_bytes()).await;
+                }
+                let _ = socket.shutdown().await;
+            }
+        });
+        Self {
+            base,
+            connections,
+            task,
+        }
+    }
+
+    /// How many connections the endpoint accepted.
+    fn accepted(&self) -> usize {
+        self.connections.load(Ordering::SeqCst)
+    }
+}
+
+impl Drop for Loopback {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+/// Reads one request off `socket`, head and body, so the answer cannot race it.
+async fn read_request(socket: &mut tokio::net::TcpStream) {
+    use tokio::io::AsyncReadExt as _;
+
+    let mut buffer = [0_u8; 4096];
+    let mut received = Vec::new();
+    loop {
+        let read = match socket.read(&mut buffer).await {
+            Ok(0) | Err(_) => return,
+            Ok(read) => read,
+        };
+        if let Some(chunk) = buffer.get(..read) {
+            received.extend_from_slice(chunk);
+        }
+        let text = String::from_utf8_lossy(&received).to_lowercase();
+        if let Some((head, body)) = text.split_once("\r\n\r\n") {
+            let expected = head
+                .lines()
+                .find_map(|line| line.strip_prefix("content-length:"))
+                .and_then(|value| value.trim().parse::<usize>().ok())
+                .unwrap_or(0);
+            if body.len() >= expected {
+                return;
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_body_that_dies_after_the_status_line_is_a_transport_error() {
+    // The status line and headers arrive, then the connection dies mid-body, so
+    // the answer is unusable: the step must fail rather than read a short text
+    // and report what it guessed from it.
+    let loopback = Loopback::answering(TRUNCATED.to_owned()).await;
+    let api = Api::new(Secret::new(TOKEN), &loopback.base);
+
+    let logged = logged_from(github::close_issues_for_deleted_repo(
+        "acme/app",
+        &[123],
+        &gh_settings(&[]),
+        &api,
+    ))
+    .await;
+
+    assert_eq!(
+        loopback.accepted(),
+        1,
+        "a dead body costs the issue before a close is attempted"
+    );
+    let skipped = lines_with(&logged, "post-delete close skipped for one issue");
+    assert_eq!(skipped.len(), 1, "{logged}");
+    assert!(
+        skipped
+            .first()
+            .is_some_and(|line| line.contains("GitHub request failed")),
+        "the mapped failure is the transport error: {logged}"
+    );
+    assert!(
+        lines_with(&logged, "comment after an admin delete failed").is_empty()
+            && lines_with(&logged, "closed an issue after an admin delete").is_empty(),
+        "neither a status failure nor a success is reported: {logged}"
+    );
+}
+
+#[tokio::test]
+async fn a_post_delete_close_whose_connection_dies_costs_that_issue() {
+    // The comment lands, then the close's connection is dropped before it
+    // answers: that one issue is lost and the batch goes on.
+    let loopback = Loopback::answering(CREATED.to_owned()).await;
+    let api = Api::new(Secret::new(TOKEN), &loopback.base);
+
+    let logged = logged_from(github::close_issues_for_deleted_repo(
+        "acme/app",
+        &[123],
+        &gh_settings(&[]),
+        &api,
+    ))
+    .await;
+
+    assert_eq!(
+        loopback.accepted(),
+        2,
+        "the comment landed and the close was attempted"
+    );
+    assert_eq!(
+        lines_with(&logged, "post-delete close skipped for one issue").len(),
+        1,
+        "{logged}"
+    );
+    assert!(
+        lines_with(&logged, "closed an issue after an admin delete").is_empty(),
+        "a close that died is never reported as done: {logged}"
+    );
+}
+
 // --- the fixed-note batch's failure policy -------------------------------
 
 /// Sets one Test's or Job's Clean streak.
@@ -3953,6 +4163,41 @@ async fn a_note_network_error_is_logged_and_never_raises() {
 }
 
 #[tokio::test]
+async fn a_fixed_note_close_whose_connection_dies_keeps_the_stamp() {
+    let db = TestDb::new().await.expect("a test database");
+    let test = flaky_test_in(&db, "acme/app", "linked", "linked").await;
+    stamp_link(&db, test, 77, true, false).await;
+    set_clean_streak(&db, "test_cases", test, 3).await;
+    // The comment lands, then the close's connection is dropped before it answers.
+    let loopback = Loopback::answering(CREATED.to_owned()).await;
+    let api = Api::new(Secret::new(TOKEN), &loopback.base);
+    let settings = fixed_settings(&[("FLAKERADAR_GITHUB_CLOSE_FIXED", "true")]);
+
+    let logged = logged_from(github::note_fixed_issues_for(
+        db.connection(),
+        &[test],
+        &settings,
+        &api,
+    ))
+    .await;
+
+    assert_eq!(
+        loopback.accepted(),
+        2,
+        "the comment landed and the close was attempted"
+    );
+    assert_eq!(
+        lines_with(&logged, "GitHub unreachable, skipping the close").len(),
+        1,
+        "{logged}"
+    );
+    assert!(
+        noted(&db, "test_cases", test).await,
+        "the comment already landed, so the row keeps its stamp"
+    );
+}
+
+#[tokio::test]
 async fn an_unusable_note_comment_status_leaves_the_row_unstamped() {
     let db = TestDb::new().await.expect("a test database");
     let bad = flaky_test_in(&db, "acme/a", "bad", "bad").await;
@@ -4087,7 +4332,6 @@ fn stage_mid_request(db: &sea_orm::DatabaseConnection, sql: String) {
 /// thread, so this thread can block without the reactor it is holding.
 fn block_on<F: Future>(future: F) -> F::Output {
     use std::pin::pin;
-    use std::sync::Arc;
     use std::task::{Context, Poll, Wake, Waker};
 
     /// Wakes the thread that parked on one pending poll.
