@@ -123,6 +123,36 @@ jobs:
               sys.exit(1)
           EOF
 
+  # The one automated check that `tests/parity/allowed-differences.json` and
+  # `docs/plans/rust-rewrite/differences.md` still agree: `record.py --verify`
+  # re-records every golden from the frozen Python backend and fails on a stale
+  # allowance, an allowance naming a field its golden lacks, and an allowance
+  # whose differences.md row is gone. Nothing else reconciles the two lists, so
+  # without this job they rot silently. It needs Docker (the recorder starts a
+  # throwaway PostgreSQL 17) and the backend's own requirements, and it is
+  # deleted with `backend/` in task 15.
+  parity-goldens:
+    name: Parity goldens (record.py --verify)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.txt
+
+      - name: Install the recorder's dependencies
+        run: pip install -r backend/requirements-dev.txt
+
+      - name: Re-record every golden and compare
+        # Also checks both directions it can see: an allowance with no
+        # differences.md row, and an allowance naming a field no golden has.
+        run: python tools/parity-record/record.py --verify
+
   rust:
     name: Rust (fmt + clippy + test + audit)
     runs-on: ubuntu-24.04
@@ -586,6 +616,50 @@ jobs:
           done
           echo "::notice::Both fixtures became processed Reports."
 
+      # `report.sh`'s no-match path: a pattern that matches nothing warns,
+      # writes an empty `report_ids` and exits 0, because reporting must never
+      # fail the build. Run through the script itself rather than through the
+      # composite wrapper, so the `::warning::` line it prints can be read back
+      # and asserted; the step above already proves the action's `files` input
+      # reaches this same script. The step's `id` gives it the `report_ids`
+      # output the script writes to `$GITHUB_OUTPUT`.
+      - name: A pattern that matches nothing warns, uploads nothing and exits 0
+        id: nomatch
+        run: |
+          set +e
+          FR_URL=http://127.0.0.1:8000 \
+          FR_TOKEN="$FLAKERADAR_API_TOKEN" \
+          FR_PROJECT=fixtures \
+          FR_FILES='actions/report/test/no-such-fixture-*.xml' \
+            bash actions/report/report.sh >/tmp/no-match.log 2>&1
+          code=$?
+          set -e
+          cat /tmp/no-match.log
+          if [ "$code" -ne 0 ]; then
+            echo "::error::the report action exited $code on a pattern that matches nothing"
+            exit 1
+          fi
+          if ! grep -Fq '::warning::FlakeRadar report: no files matched the pattern(s): actions/report/test/no-such-fixture-*.xml. Nothing was uploaded.' /tmp/no-match.log; then
+            echo "::error::the report action printed no no-files-matched warning"
+            exit 1
+          fi
+          echo "::notice::A pattern that matches nothing warned and exited 0."
+
+      - name: The no-match run reported no id and queued no Report
+        run: |
+          ids="${{ steps.nomatch.outputs.report_ids }}"
+          if [ -n "$ids" ]; then
+            echo "::error::a pattern that matches nothing reported report_ids='$ids'"
+            exit 1
+          fi
+          after=$(curl -fsS -H "X-API-Key: $FLAKERADAR_API_TOKEN" \
+            "http://127.0.0.1:8000/api/reports?limit=200" | jq 'length')
+          if [ "$after" -ne 2 ]; then
+            echo "::error::expected the two fixture Reports and nothing else, got $after"
+            exit 1
+          fi
+          echo "::notice::The no-match run wrote an empty report_ids and queued nothing."
+
   # Exercises the standalone summary action (issue #36) end to end against the
   # real binary: the Reports are seeded through the `actions/report` action
   # rather than through the models, so the action reads data a reporter wrote.
@@ -785,9 +859,32 @@ jobs:
           curl -fsS "$FLAKERADAR_URL/api/health/ready"
 
       - name: The GitLab reporter's payload is accepted by the real endpoint
+        # The test file skips itself at module level when FLAKERADAR_URL or
+        # FLAKERADAR_TOKEN is missing, so a job that lost either would be green
+        # with all 13 cases skipped and nothing exercised. Assert the count and
+        # that nothing was skipped, as well as the exit status.
         run: |
-          FLAKERADAR_TOKEN="$FLAKERADAR_API_TOKEN" \
-            python -m pytest samples/gitlab/test_report_pipeline.py -q
+          set +e
+          output=$(FLAKERADAR_TOKEN="$FLAKERADAR_API_TOKEN" \
+            python -m pytest samples/gitlab/test_report_pipeline.py -q -rs 2>&1)
+          status=$?
+          set -e
+          printf '%s\n' "$output"
+          if [ "$status" -ne 0 ]; then
+            echo "::error::the sample's tests failed with status $status"
+            exit "$status"
+          fi
+          case "$output" in
+            *skipped*)
+              echo "::error::a case was skipped, so the sample was not exercised"
+              exit 1
+              ;;
+          esac
+          if ! printf '%s\n' "$output" | grep -Eq '(^|[^0-9])13 passed'; then
+            echo "::error::expected 13 passed from the sample's tests"
+            exit 1
+          fi
+          echo "::notice::All 13 sample cases ran and passed."
 
       - name: The demo history is visible through the read APIs
         run: |
