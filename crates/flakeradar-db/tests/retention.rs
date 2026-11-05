@@ -991,9 +991,15 @@ async fn run_prune_stops_at_time_budget() {
     // Only the first committed batch; the backlog waits for the next interval.
     assert_eq!(result.executions, 2, "{result:?}");
     assert_eq!(count::<test_executions::Entity>(&db).await, 4);
+    // The frozen server's line, budget included: "Retention prune hit its 60s
+    // budget; the rest waits for the next interval".
+    let budget_stop = format!(
+        "Retention prune hit its {}s budget; the rest waits for the next interval",
+        settings.time_budget_seconds
+    );
     assert!(
-        log.lines().contains("Retention prune hit its budget"),
-        "the budget stop is logged: {}",
+        log.lines().contains(&budget_stop),
+        "the budget stop is logged as the reference logs it: {}",
         log.lines()
     );
 }
