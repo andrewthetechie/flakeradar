@@ -3007,3 +3007,251 @@ async fn the_job_sync_rearms_a_closed_issue_and_the_filer_files_again() {
     assert_eq!(job_link(&db, job).await.0, Some(77));
     assert!(!job_checked(&db, job).await, "a new link is checked first");
 }
+
+// --- closing the issues of a deleted Repo --------------------------------
+
+/// Mounts a comment `POST` and a close `PATCH` for one issue.
+async fn mount_close(server: &MockServer, number: i32, status: u16, is_patch: bool) {
+    let matcher = if is_patch {
+        method("PATCH")
+    } else {
+        method("POST")
+    };
+    let route = if is_patch {
+        format!("/repos/acme/app/issues/{number}")
+    } else {
+        format!("/repos/acme/app/issues/{number}/comments")
+    };
+    Mock::given(matcher)
+        .and(path(route))
+        .respond_with(ResponseTemplate::new(status))
+        .mount(server)
+        .await;
+}
+
+#[tokio::test]
+async fn deleting_a_repo_comments_then_closes_each_issue() {
+    let server = MockServer::start().await;
+    for number in [123, 456] {
+        mount_close(&server, number, 201, false).await;
+        mount_close(&server, number, 200, true).await;
+    }
+
+    github::close_issues_for_deleted_repo(
+        "acme/app",
+        &[123, 456],
+        &gh_settings(&[]),
+        &api(&server),
+    )
+    .await;
+    let requests = server.received_requests().await.expect("a record");
+    let calls: Vec<(String, String)> = requests
+        .iter()
+        .map(|request| {
+            (
+                request.method.as_str().to_owned(),
+                request.url.path().to_owned(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        calls,
+        vec![
+            (
+                "POST".to_owned(),
+                "/repos/acme/app/issues/123/comments".to_owned()
+            ),
+            ("PATCH".to_owned(), "/repos/acme/app/issues/123".to_owned()),
+            (
+                "POST".to_owned(),
+                "/repos/acme/app/issues/456/comments".to_owned()
+            ),
+            ("PATCH".to_owned(), "/repos/acme/app/issues/456".to_owned()),
+        ],
+        "each issue is commented on, then closed"
+    );
+    let comment: Json = serde_json::from_slice(&requests[0].body).expect("the body is JSON");
+    let text = comment["body"].as_str().expect("a body");
+    assert!(text.contains("admin") && text.contains("delet"), "{text}");
+    let close: Json = serde_json::from_slice(&requests[1].body).expect("the body is JSON");
+    assert_eq!(close, json!({"state": "closed"}));
+
+    // No numbers and no token are both silent.
+    let empty = MockServer::start().await;
+    github::close_issues_for_deleted_repo("acme/app", &[], &gh_settings(&[]), &api(&empty)).await;
+    github::close_issues_for_deleted_repo(
+        "acme/app",
+        &[123],
+        &gh_settings(&[]),
+        &Api::new(Secret::new(""), &empty.uri()),
+    )
+    .await;
+    assert!(
+        empty
+            .received_requests()
+            .await
+            .expect("a record")
+            .is_empty()
+    );
+
+    // A gone issue is not closed: the comment's 404 ends that issue.
+    let gone = MockServer::start().await;
+    mount_close(&gone, 123, 404, false).await;
+    mount_close(&gone, 456, 201, false).await;
+    mount_close(&gone, 456, 200, true).await;
+    github::close_issues_for_deleted_repo("acme/app", &[123, 456], &gh_settings(&[]), &api(&gone))
+        .await;
+    assert_eq!(
+        requested_paths(&gone).await,
+        vec![
+            "/repos/acme/app/issues/123/comments",
+            "/repos/acme/app/issues/456/comments",
+            "/repos/acme/app/issues/456",
+        ],
+        "the gone issue gets no close PATCH"
+    );
+}
+
+#[tokio::test]
+async fn a_failed_post_delete_request_costs_only_that_issue() {
+    // A 500 on the comment.
+    let failed_comment = MockServer::start().await;
+    mount_close(&failed_comment, 123, 500, false).await;
+    mount_close(&failed_comment, 456, 201, false).await;
+    mount_close(&failed_comment, 456, 200, true).await;
+    github::close_issues_for_deleted_repo(
+        "acme/app",
+        &[123, 456],
+        &gh_settings(&[]),
+        &api(&failed_comment),
+    )
+    .await;
+    assert_eq!(
+        requested_paths(&failed_comment).await,
+        vec![
+            "/repos/acme/app/issues/123/comments",
+            "/repos/acme/app/issues/456/comments",
+            "/repos/acme/app/issues/456",
+        ]
+    );
+
+    // An issue deleted between the comment and the close PATCH is skipped, with a log line.
+    let gone_close = MockServer::start().await;
+    mount_close(&gone_close, 123, 201, false).await;
+    mount_close(&gone_close, 123, 404, true).await;
+    mount_close(&gone_close, 456, 201, false).await;
+    mount_close(&gone_close, 456, 200, true).await;
+    let logged = logged_from(github::close_issues_for_deleted_repo(
+        "acme/app",
+        &[123, 456],
+        &gh_settings(&[]),
+        &api(&gone_close),
+    ))
+    .await;
+    assert_eq!(
+        requested_paths(&gone_close).await,
+        vec![
+            "/repos/acme/app/issues/123/comments",
+            "/repos/acme/app/issues/123",
+            "/repos/acme/app/issues/456/comments",
+            "/repos/acme/app/issues/456",
+        ]
+    );
+    assert!(
+        !lines_with(&logged, "already gone after an admin delete").is_empty(),
+        "{logged}"
+    );
+
+    // A 5xx on the close PATCH is a warning, and the batch goes on.
+    let failed_close = MockServer::start().await;
+    mount_close(&failed_close, 123, 201, false).await;
+    mount_close(&failed_close, 123, 500, true).await;
+    mount_close(&failed_close, 456, 201, false).await;
+    mount_close(&failed_close, 456, 200, true).await;
+    let logged = logged_from(github::close_issues_for_deleted_repo(
+        "acme/app",
+        &[123, 456],
+        &gh_settings(&[]),
+        &api(&failed_close),
+    ))
+    .await;
+    assert_eq!(
+        requested_paths(&failed_close).await,
+        vec![
+            "/repos/acme/app/issues/123/comments",
+            "/repos/acme/app/issues/123",
+            "/repos/acme/app/issues/456/comments",
+            "/repos/acme/app/issues/456",
+        ]
+    );
+    assert_eq!(
+        lines_with(&logged, "close after an admin delete failed").len(),
+        1,
+        "{logged}"
+    );
+}
+
+#[tokio::test]
+async fn the_post_delete_close_never_raises_when_github_is_unreachable() {
+    // Nothing listens on this port.
+    let api = Api::new(Secret::new(TOKEN), "http://127.0.0.1:1");
+    let logged = logged_from(github::close_issues_for_deleted_repo(
+        "acme/app",
+        &[123],
+        &gh_settings(&[]),
+        &api,
+    ))
+    .await;
+    assert_eq!(
+        lines_with(&logged, "close skipped for one issue").len(),
+        1,
+        "{logged}"
+    );
+}
+
+#[tokio::test]
+async fn a_rate_limit_on_either_post_delete_request_stops_the_batch() {
+    let comment_limit = MockServer::start().await;
+    mount_close(&comment_limit, 123, 429, false).await;
+    mount_close(&comment_limit, 456, 201, false).await;
+    github::close_issues_for_deleted_repo(
+        "acme/app",
+        &[123, 456],
+        &gh_settings(&[]),
+        &api(&comment_limit),
+    )
+    .await;
+    assert_eq!(
+        requested_paths(&comment_limit).await,
+        vec!["/repos/acme/app/issues/123/comments"],
+        "a throttled comment stops the batch"
+    );
+
+    let close_limit = MockServer::start().await;
+    mount_close(&close_limit, 123, 201, false).await;
+    Mock::given(method("PATCH"))
+        .and(path("/repos/acme/app/issues/123"))
+        .respond_with(ResponseTemplate::new(429).insert_header("x-ratelimit-remaining", "0"))
+        .mount(&close_limit)
+        .await;
+    mount_close(&close_limit, 456, 201, false).await;
+    let logged = logged_from(github::close_issues_for_deleted_repo(
+        "acme/app",
+        &[123, 456],
+        &gh_settings(&[]),
+        &api(&close_limit),
+    ))
+    .await;
+    assert_eq!(
+        requested_paths(&close_limit).await,
+        vec![
+            "/repos/acme/app/issues/123/comments",
+            "/repos/acme/app/issues/123",
+        ],
+        "a throttled close PATCH stops the batch"
+    );
+    assert!(
+        !lines_with(&logged, "stopping the post-delete close batch").is_empty(),
+        "{logged}"
+    );
+}
