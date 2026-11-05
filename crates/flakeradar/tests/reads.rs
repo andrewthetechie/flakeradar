@@ -1312,7 +1312,14 @@ async fn quarantine_takes_pydantics_lax_boolean_and_404s_a_missing_test() {
         assert_eq!(reply.status, 404, "{spelling}");
     }
     // A spelling Pydantic refused is still a 422, not a silent coercion.
-    for spelling in [json!("maybe"), json!(2), json!(1.5)] {
+    for spelling in [
+        json!("maybe"),
+        json!(2),
+        json!(1.5),
+        json!(null),
+        json!([]),
+        json!({}),
+    ] {
         let reply = post(
             &app,
             "/api/tests/9999/quarantine",

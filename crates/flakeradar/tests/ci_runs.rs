@@ -167,6 +167,38 @@ async fn pipeline_reports_are_counted() {
 }
 
 #[tokio::test]
+async fn a_failed_report_is_counted_and_lists_no_failures() {
+    // The summary action and Fabro read `reports.failed`; a Report kept after a
+    // failed processing must be counted without inventing a failure entry.
+    let db = TestDb::new().await.expect("a test database");
+    let project = make_project()
+        .repo("acme/app")
+        .build(db.connection())
+        .await
+        .expect("the project");
+    make_report(&project, project.repo_id)
+        .body(b"<not xml")
+        .ci_run_id("300")
+        .ci_run_attempt(1)
+        .status("failed")
+        .error("Not a valid JUnit XML report")
+        .build(db.connection())
+        .await
+        .expect("the failed report");
+    let body = get(&app(&db, &[]), &url("300", "acme/app", ""))
+        .await
+        .json();
+    assert_eq!(body["ci_run_attempt"], 1);
+    assert_eq!(
+        body["reports"],
+        json!({"pending": 0, "processed": 0, "failed": 1})
+    );
+    assert_eq!(body["failures"], json!([]));
+    assert_eq!(body["failed_jobs"], json!([]));
+    assert_eq!(body["truncated"], false);
+}
+
+#[tokio::test]
 async fn a_run_is_found_after_its_reports_are_pruned() {
     let db = TestDb::new().await.expect("a test database");
     let project = make_project()
