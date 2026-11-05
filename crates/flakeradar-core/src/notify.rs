@@ -265,7 +265,10 @@ pub fn render(changes: &[TierChange], format: WebhookFormat, public_url: &str) -
 mod tests {
     use serde_json::json;
 
-    use super::{Kind, TierChange, WebhookFormat, dashboard_url, parse_urls, render, render_json};
+    use super::{
+        Kind, TierChange, WebhookFormat, dashboard_url, parse_urls, render, render_json,
+        render_slack,
+    };
     use crate::classify::FailureCategory;
     use crate::model::Tier;
 
@@ -394,6 +397,151 @@ mod tests {
         assert_eq!(
             body,
             json!({"text": "FlakeRadar: acme/app / frontend — test \"test_login\" became flaky (score 0.50) https://flakes.example/?repo=acme%2Fapp&project=frontend&test=7\nFlakeRadar: acme/app — job \"test (ubuntu)\" in ci.yml recovered (score 0.12) https://flakes.example/?view=jobs&repo=acme%2Fapp&job=3"})
+        );
+    }
+
+    /// The `test_webhook.py` Test fixture, values unchanged.
+    fn python_test_change() -> TierChange {
+        TierChange {
+            kind: Kind::Test,
+            id: 42,
+            repo: "acme/app".to_owned(),
+            project: Some("backend".to_owned()),
+            name: "test_login".to_owned(),
+            flakiness_score: 0.42,
+            tier: Tier::Flaky,
+            confirmed_flake_count: 2,
+            classname: Some("tests.test_auth".to_owned()),
+            pipeline: None,
+            failure_category: Some(FailureCategory::Timing),
+        }
+    }
+
+    /// The `test_webhook.py` Job fixture, values unchanged.
+    fn python_job_change() -> TierChange {
+        TierChange {
+            kind: Kind::Job,
+            id: 3,
+            repo: "acme/app".to_owned(),
+            project: None,
+            name: "test (ubuntu, 3.12)".to_owned(),
+            flakiness_score: 0.51,
+            tier: Tier::Flaky,
+            confirmed_flake_count: 1,
+            classname: None,
+            pipeline: Some(".github/workflows/ci.yml".to_owned()),
+            failure_category: None,
+        }
+    }
+
+    /// The public URL every link in these cases is relative to.
+    const PUBLIC_URL: &str = "https://flakeradar.example.com";
+
+    #[test]
+    fn parse_urls_of_only_blanks_and_commas_is_empty() {
+        for raw in ["", "   ", ",", " , , "] {
+            assert_eq!(parse_urls(raw), Vec::<String>::new(), "{raw:?}");
+        }
+    }
+
+    #[test]
+    fn a_json_test_event_carries_every_field() {
+        assert_eq!(
+            render_json(&[python_test_change()], PUBLIC_URL),
+            [json!({
+                "event": "test.flaky",
+                "repo": "acme/app",
+                "project": "backend",
+                "test": {
+                    "id": 42,
+                    "classname": "tests.test_auth",
+                    "name": "test_login",
+                    "flakiness_score": 0.42,
+                    "tier": "flaky",
+                    "confirmed_flake_count": 2,
+                    "failure_category": "timing"
+                },
+                "url": "https://flakeradar.example.com/?repo=acme%2Fapp&project=backend&test=42"
+            })]
+        );
+    }
+
+    #[test]
+    fn a_json_job_event_has_no_project_and_names_its_pipeline() {
+        let mut change = python_job_change();
+        change.tier = Tier::Suspect;
+        change.flakiness_score = 0.1;
+        assert_eq!(
+            render_json(&[change], PUBLIC_URL),
+            [json!({
+                "event": "job.recovered",
+                "repo": "acme/app",
+                "project": null,
+                "job": {
+                    "id": 3,
+                    "pipeline": ".github/workflows/ci.yml",
+                    "name": "test (ubuntu, 3.12)",
+                    "flakiness_score": 0.1,
+                    "tier": "suspect",
+                    "confirmed_flake_count": 1
+                },
+                "url": "https://flakeradar.example.com/?view=jobs&repo=acme%2Fapp&job=3"
+            })]
+        );
+    }
+
+    #[test]
+    fn a_json_event_omits_the_url_without_a_public_url() {
+        let payloads = render_json(&[python_test_change()], "");
+        assert_eq!(payloads.len(), 1, "one event renders one payload");
+        let Some(payload) = payloads.first() else {
+            return;
+        };
+        assert!(!payload.as_object().expect("an object").contains_key("url"));
+    }
+
+    #[test]
+    fn a_json_batch_is_a_list_for_one_event() {
+        assert_eq!(render_json(&[python_test_change()], PUBLIC_URL).len(), 1);
+        let body = render(&[python_test_change()], WebhookFormat::Json, PUBLIC_URL);
+        assert_eq!(body.as_array().expect("a list").len(), 1);
+    }
+
+    #[test]
+    fn a_slack_payload_has_one_line_per_event() {
+        assert_eq!(
+            render_slack(&[python_test_change(), python_job_change()], PUBLIC_URL),
+            json!({
+                "text": concat!(
+                    "FlakeRadar: acme/app / backend — test \"test_login\" became flaky \
+                     (score 0.42) https://flakeradar.example.com/?repo=acme%2Fapp&project=backend&test=42\n",
+                    "FlakeRadar: acme/app — job \"test (ubuntu, 3.12)\" in \
+                     .github/workflows/ci.yml became flaky (score 0.51) \
+                     https://flakeradar.example.com/?view=jobs&repo=acme%2Fapp&job=3"
+                )
+            })
+        );
+    }
+
+    #[test]
+    fn a_slack_line_says_recovered_for_the_other_tier() {
+        let mut change = python_test_change();
+        change.tier = Tier::Suspect;
+        change.flakiness_score = 0.1;
+        assert_eq!(
+            render_slack(&[change], PUBLIC_URL)["text"],
+            json!(
+                "FlakeRadar: acme/app / backend — test \"test_login\" recovered (score 0.10) \
+                 https://flakeradar.example.com/?repo=acme%2Fapp&project=backend&test=42"
+            )
+        );
+    }
+
+    #[test]
+    fn a_slack_line_without_a_public_url_ends_cleanly() {
+        assert_eq!(
+            render_slack(&[python_test_change()], "")["text"],
+            json!("FlakeRadar: acme/app / backend — test \"test_login\" became flaky (score 0.42)")
         );
     }
 
