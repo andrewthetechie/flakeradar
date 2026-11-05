@@ -12,7 +12,7 @@
 mod common;
 
 use axum::http::{Method, StatusCode};
-use common::{app, get, post, request, request_with_headers, send};
+use common::{app, get, post, request, request_with_headers, send, settings};
 use flakeradar_test_support::{TestDb, make_job, make_pipeline, make_project, make_test_case};
 use sea_orm::ConnectionTrait as _;
 use sea_orm::DbBackend;
@@ -86,6 +86,53 @@ async fn one_test(db: &TestDb) -> flakeradar_db::entities::test_cases::Model {
         .expect("the Test inserts")
 }
 
+/// A Job whose Pipeline is GitHub's, so a GitHub issue can be linked to it.
+async fn one_job(db: &TestDb) -> flakeradar_db::entities::jobs::Model {
+    let pipeline = make_pipeline()
+        .repo("acme/app")
+        .provider("github")
+        .build(db.connection())
+        .await
+        .expect("the Pipeline inserts");
+    make_job(&pipeline)
+        .name("unit")
+        .build(db.connection())
+        .await
+        .expect("the Job inserts")
+}
+
+/// The link columns of one Job, with its exact check stamp.
+async fn job_link(
+    db: &TestDb,
+    id: i32,
+) -> (
+    Option<i32>,
+    Option<bool>,
+    Option<chrono::DateTime<chrono::FixedOffset>>,
+    bool,
+    bool,
+) {
+    let row = db
+        .connection()
+        .query_one_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "SELECT github_issue_number, github_issue_filed, github_issue_checked_at, \
+             github_issue_closed, github_issue_fixed_noted_at IS NOT NULL AS noted \
+             FROM jobs WHERE id = $1",
+            [id.into()],
+        ))
+        .await
+        .expect("the row reads")
+        .expect("the Job exists");
+    (
+        row.try_get("", "github_issue_number").expect("a number"),
+        row.try_get("", "github_issue_filed").expect("filed"),
+        row.try_get("", "github_issue_checked_at").expect("a stamp"),
+        row.try_get("", "github_issue_closed").expect("closed"),
+        row.try_get("", "noted").expect("noted"),
+    )
+}
+
 #[tokio::test]
 async fn linking_a_test_issue_stores_the_pair_and_the_url() {
     let db = TestDb::new().await.expect("a test database");
@@ -115,6 +162,10 @@ async fn linking_a_test_issue_stores_the_pair_and_the_url() {
     assert!(!checked);
     assert!(!closed);
     assert!(!noted);
+
+    let history = get(&app, &format!("/api/tests/{}/history", test.id)).await;
+    assert_eq!(history.json()["test"]["github_issue_number"], json!(12));
+    assert_eq!(history.json()["test"]["github_issue_closed"], json!(false));
 }
 
 #[tokio::test]
@@ -145,6 +196,7 @@ async fn the_same_number_twice_keeps_the_check_stamp() {
     )
     .await;
     assert_eq!(reply.status, StatusCode::OK);
+    assert_eq!(reply.json()["github_issue_number"], json!(12));
     let (_, _, checked, _, _) = test_link(&db, test.id).await;
     assert!(
         checked,
@@ -176,6 +228,16 @@ async fn a_different_number_without_replace_is_a_conflict() {
         json!("Test already links issue #12; pass replace=true to replace it")
     );
     assert_eq!(test_link(&db, test.id).await.0, Some(12));
+
+    let replaced = put(
+        &app,
+        &format!("/api/tests/{}/issue?replace=true", test.id),
+        &json!({"number": 13}),
+    )
+    .await;
+    assert_eq!(replaced.status, StatusCode::OK);
+    assert_eq!(replaced.json()["github_issue_number"], json!(13));
+    assert_eq!(test_link(&db, test.id).await.0, Some(13));
 }
 
 #[tokio::test]
@@ -261,6 +323,11 @@ async fn a_url_must_be_the_issue_in_the_tests_own_repo() {
             "url must be https://github.com/acme/app/issues/16: the issue must be in the Test's own Repo"
         )
     );
+    assert_eq!(
+        test_link(&db, test.id).await.0,
+        Some(14),
+        "a refused url leaves the link alone"
+    );
 }
 
 #[tokio::test]
@@ -308,6 +375,15 @@ async fn a_number_out_of_range_is_the_validation_error_pydantic_gave() {
         not_an_integer.json()["detail"][0]["loc"],
         json!(["body", "number"])
     );
+
+    for body in [
+        json!({"number": -1}),
+        json!({}),
+        json!({"number": 1, "url": "x".repeat(2049)}),
+    ] {
+        let reply = put(&app, &format!("/api/tests/{}/issue", test.id), &body).await;
+        assert_eq!(reply.status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    }
 }
 
 #[tokio::test]
@@ -379,9 +455,20 @@ async fn an_unknown_test_or_job_is_a_404_naming_its_kind() {
     assert_eq!(missing_test.status, StatusCode::NOT_FOUND);
     assert_eq!(missing_test.json()["detail"], json!("Test not found"));
 
+    let missing_test_delete = delete(&app, "/api/tests/999/issue").await;
+    assert_eq!(missing_test_delete.status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        missing_test_delete.json()["detail"],
+        json!("Test not found")
+    );
+
     let missing_job = delete(&app, "/api/jobs/999/issue").await;
     assert_eq!(missing_job.status, StatusCode::NOT_FOUND);
     assert_eq!(missing_job.json()["detail"], json!("Job not found"));
+
+    let missing_job_put = put(&app, "/api/jobs/999/issue", &json!({"number": 1})).await;
+    assert_eq!(missing_job_put.status, StatusCode::NOT_FOUND);
+    assert_eq!(missing_job_put.json()["detail"], json!("Job not found"));
 }
 
 #[tokio::test]
@@ -407,6 +494,7 @@ async fn only_a_github_pipelines_job_can_link_an_issue() {
         .expect("the Pipeline inserts");
     let other = make_job(&gitlab)
         .name("deploy")
+        .github_issue_number(3)
         .build(db.connection())
         .await
         .expect("the Job inserts");
@@ -435,6 +523,15 @@ async fn only_a_github_pipelines_job_can_link_an_issue() {
         refused.json()["detail"],
         json!("Only Jobs of GitHub Pipelines can link a GitHub issue")
     );
+    assert_eq!(
+        job_link(&db, other.id).await.0,
+        Some(3),
+        "the refused link leaves the Job alone"
+    );
+
+    let unlinked = delete(&app, &format!("/api/jobs/{}/issue", other.id)).await;
+    assert_eq!(unlinked.status, StatusCode::OK);
+    assert_eq!(unlinked.json()["github_issue_number"], Value::Null);
 }
 
 #[tokio::test]
@@ -472,21 +569,32 @@ async fn a_linked_test_is_what_the_leaderboard_and_its_filter_list() {
 #[tokio::test]
 async fn the_link_routes_need_the_token() {
     let db = TestDb::new().await.expect("a test database");
+    let test = one_test(&db).await;
     let app = app(&db, &[("FLAKERADAR_API_TOKEN", TOKEN)]);
 
     for (method, uri) in [
-        (Method::PUT, "/api/tests/1/issue"),
-        (Method::DELETE, "/api/tests/1/issue"),
-        (Method::PUT, "/api/jobs/1/issue"),
-        (Method::DELETE, "/api/jobs/1/issue"),
+        (Method::PUT, format!("/api/tests/{}/issue", test.id)),
+        (Method::DELETE, format!("/api/tests/{}/issue", test.id)),
+        (Method::PUT, format!("/api/jobs/{}/issue", test.id)),
+        (Method::DELETE, format!("/api/jobs/{}/issue", test.id)),
     ] {
-        let reply = request(&app, method, uri).await;
+        let reply = request(&app, method, &uri).await;
         assert_eq!(reply.status, StatusCode::UNAUTHORIZED, "{uri}");
         assert_eq!(
             reply.json()["detail"],
             json!("Invalid or missing X-API-Key")
         );
     }
+
+    let wrong = request_with_headers(
+        &app,
+        Method::PUT,
+        &format!("/api/tests/{}/issue", test.id),
+        &[("X-API-Key", "wrong")],
+    )
+    .await;
+    assert_eq!(wrong.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(test_link(&db, test.id).await.0, None);
 }
 
 #[tokio::test]
@@ -547,4 +655,219 @@ async fn posting_to_a_link_route_is_a_method_error_with_the_allow_header() {
     let reply = post(&app, "/api/tests/1/issue", &[], "").await;
     assert_eq!(reply.status, StatusCode::METHOD_NOT_ALLOWED);
     assert_eq!(reply.json()["detail"], json!("Method Not Allowed"));
+}
+
+#[tokio::test]
+async fn linking_a_job_issue_stores_the_number_and_url() {
+    let db = TestDb::new().await.expect("a test database");
+    let job = one_job(&db).await;
+    let app = app(&db, &[("FLAKERADAR_API_TOKEN", TOKEN)]);
+
+    let reply = put(
+        &app,
+        &format!("/api/jobs/{}/issue", job.id),
+        &json!({"number": 42}),
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::OK);
+    let body = reply.json();
+    assert_eq!(body["id"], json!(job.id));
+    assert_eq!(body["github_issue_number"], json!(42));
+    assert_eq!(
+        body["github_issue_url"],
+        json!("https://github.com/acme/app/issues/42")
+    );
+
+    let (number, filed, checked, closed, noted) = job_link(&db, job.id).await;
+    assert_eq!(number, Some(42));
+    assert_eq!(filed, Some(false), "a human linked it, not FlakeRadar");
+    assert!(checked.is_none(), "a fresh link is checked first");
+    assert!(!closed);
+    assert!(!noted);
+
+    let history = get(&app, &format!("/api/jobs/{}/history", job.id)).await;
+    assert_eq!(history.json()["job"]["github_issue_number"], json!(42));
+}
+
+#[tokio::test]
+async fn a_job_link_conflict_needs_replace() {
+    let db = TestDb::new().await.expect("a test database");
+    let job = one_job(&db).await;
+    db.connection()
+        .execute_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "UPDATE jobs SET github_issue_number = 4 WHERE id = $1",
+            [job.id.into()],
+        ))
+        .await
+        .expect("the seeded link writes");
+    let app = app(&db, &[("FLAKERADAR_API_TOKEN", TOKEN)]);
+
+    let conflict = put(
+        &app,
+        &format!("/api/jobs/{}/issue", job.id),
+        &json!({"number": 5}),
+    )
+    .await;
+    assert_eq!(conflict.status, StatusCode::CONFLICT);
+    assert_eq!(
+        conflict.json()["detail"],
+        json!("Job already links issue #4; pass replace=true to replace it")
+    );
+
+    let replaced = put(
+        &app,
+        &format!("/api/jobs/{}/issue?replace=true", job.id),
+        &json!({"number": 5}),
+    )
+    .await;
+    assert_eq!(replaced.status, StatusCode::OK);
+    assert_eq!(replaced.json()["github_issue_number"], json!(5));
+    assert_eq!(job_link(&db, job.id).await.0, Some(5));
+}
+
+#[tokio::test]
+async fn the_same_job_number_keeps_the_check_stamp() {
+    let db = TestDb::new().await.expect("a test database");
+    let job = one_job(&db).await;
+    db.connection()
+        .execute_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "UPDATE jobs SET github_issue_number = 5, github_issue_checked_at = now() WHERE id = $1",
+            [job.id.into()],
+        ))
+        .await
+        .expect("the seeded link writes");
+    let app = app(&db, &[("FLAKERADAR_API_TOKEN", TOKEN)]);
+    let before = job_link(&db, job.id).await;
+    assert!(before.2.is_some());
+
+    let reply = put(
+        &app,
+        &format!("/api/jobs/{}/issue", job.id),
+        &json!({"number": 5}),
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::OK);
+    assert_eq!(reply.json()["github_issue_number"], json!(5));
+    let after = job_link(&db, job.id).await;
+    assert_eq!(after.0, Some(5));
+    assert_eq!(
+        after.2, before.2,
+        "a same-number link keeps the stamp it just checked"
+    );
+}
+
+#[tokio::test]
+async fn a_job_url_must_be_the_issue_in_its_own_repo() {
+    let db = TestDb::new().await.expect("a test database");
+    let job = one_job(&db).await;
+    let app = app(&db, &[("FLAKERADAR_API_TOKEN", TOKEN)]);
+
+    let refused = put(
+        &app,
+        &format!("/api/jobs/{}/issue", job.id),
+        &json!({"number": 6, "url": "https://github.com/other/repo/issues/6"}),
+    )
+    .await;
+    assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        refused.json()["detail"],
+        json!(
+            "url must be https://github.com/acme/app/issues/6: the issue must be in the Job's own Repo"
+        )
+    );
+    assert_eq!(job_link(&db, job.id).await.0, None);
+
+    let accepted = put(
+        &app,
+        &format!("/api/jobs/{}/issue", job.id),
+        &json!({"number": 6, "url": "https://github.com/acme/app/issues/6"}),
+    )
+    .await;
+    assert_eq!(accepted.status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn unlinking_a_job_clears_both_halves_and_its_provenance() {
+    let db = TestDb::new().await.expect("a test database");
+    let job = one_job(&db).await;
+    db.connection()
+        .execute_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "UPDATE jobs SET github_issue_number = 8, github_issue_filed = FALSE, \
+             github_issue_checked_at = now(), github_issue_closed = TRUE WHERE id = $1",
+            [job.id.into()],
+        ))
+        .await
+        .expect("the seeded link writes");
+    let app = app(&db, &[("FLAKERADAR_API_TOKEN", TOKEN)]);
+
+    let reply = delete(&app, &format!("/api/jobs/{}/issue", job.id)).await;
+    assert_eq!(reply.status, StatusCode::OK);
+    let body = reply.json();
+    assert_eq!(body["github_issue_number"], Value::Null);
+    assert_eq!(body["github_issue_url"], Value::Null);
+    let (number, filed, checked, closed, noted) = job_link(&db, job.id).await;
+    assert_eq!(number, None);
+    assert_eq!(filed, None, "an unlinked row carries no provenance");
+    assert!(checked.is_none());
+    assert!(!closed);
+    assert!(!noted);
+
+    let again = delete(&app, &format!("/api/jobs/{}/issue", job.id)).await;
+    assert_eq!(again.status, StatusCode::OK);
+    assert_eq!(again.json()["github_issue_number"], Value::Null);
+}
+
+#[tokio::test]
+#[expect(
+    clippy::panic,
+    reason = "the test names the arm that must not happen when the engine answers"
+)]
+async fn the_link_engine_refuses_with_its_status_and_links() {
+    use flakeradar_db::LinkError;
+    use flakeradar_db::LinkTarget;
+    use flakeradar_db::issue_links::{IssueLinkError, link_issue};
+
+    let db = TestDb::new().await.expect("a test database");
+    let test = one_test(&db).await;
+    let reads = settings(&[]).reads();
+
+    let refused = link_issue(
+        db.connection(),
+        LinkTarget::Test,
+        i64::from(test.id),
+        0,
+        None,
+        false,
+        &reads,
+    )
+    .await;
+    let LinkError::Refused(error) = refused.expect_err("a zero number is refused") else {
+        panic!("the engine refuses, not fails");
+    };
+    assert_eq!(
+        error,
+        IssueLinkError::NotLinkable("number must be between 1 and 2147483647".to_owned())
+    );
+    assert_eq!(error.status(), 422);
+    assert_eq!(IssueLinkError::NotFound(String::new()).status(), 404);
+    assert_eq!(IssueLinkError::Conflict(String::new()).status(), 409);
+
+    let linked = link_issue(
+        db.connection(),
+        LinkTarget::Test,
+        i64::from(test.id),
+        11,
+        None,
+        false,
+        &reads,
+    )
+    .await
+    .expect("a valid number links");
+    let flakeradar_db::LinkedOut::Test(out) = linked else {
+        panic!("a Test target answers a Test");
+    };
+    assert_eq!(out.github_issue_number, Some(11));
 }
