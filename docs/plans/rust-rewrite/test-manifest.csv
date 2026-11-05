@@ -567,7 +567,7 @@ tests/test_worker.py::test_loop_error_drops_leadership_and_retries,8,ported,flak
 tests/test_worker.py::test_processes_without_a_hook,8,ported,flakeradar::worker::processing_works_without_any_leader_task,
 tests/test_worker.py::test_release_survives_a_failing_github_stop,8,ported,flakeradar::worker::a_failing_leader_task_stop_is_logged_and_the_lock_released_anyway,
 tests/test_worker.py::test_release_survives_a_failing_webhook_stop,8,ported,flakeradar::worker::a_failing_notification_stop_is_logged_and_the_lock_released_anyway,
-tests/test_worker.py::test_release_with_a_dead_lock_connection,8,ported,flakeradar::worker::a_broken_lock_connection_drops_leadership_and_re_elects,"the backend is terminated for real, as Python kills it, and the worker lets the lock go without raising; `a_failing_unlock_is_logged_and_the_lock_is_let_go` covers the logged unlock failure"
+tests/test_worker.py::test_release_with_a_dead_lock_connection,8,ported,flakeradar::worker::an_unreachable_database_drops_leadership_and_re_elects_after_recovery,"the backend is terminated for real, as Python kills it, and the worker lets the lock go without raising; `a_failing_unlock_is_logged_and_the_lock_is_let_go` covers the logged unlock failure"
 tests/test_worker.py::test_single_leader_and_takeover,8,ported,flakeradar::worker::a_single_leader_processes_and_a_standby_takes_over,
 tests/test_worker.py::test_stop_releases_the_lock,8,ported,flakeradar::worker::stopping_releases_the_lock,
 tests/test_worker.py::test_stop_without_start_returns,8,ported,flakeradar::worker::stopping_a_worker_that_never_started_is_a_no_op,
