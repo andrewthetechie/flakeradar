@@ -196,6 +196,48 @@ pub enum FailedJobOutcome {
     Unexplained,
 }
 
+/// Which of the two uploads a Report holds.
+///
+/// A JUnit Report carries one JUnit XML file and becomes a Run; a Pipeline
+/// Report carries one attempt of a Pipeline run and becomes Job executions.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, ToSchema,
+)]
+#[serde(rename_all = "lowercase")]
+#[schema(rename_all = "lowercase")]
+pub enum ReportKind {
+    /// One uploaded JUnit XML file.
+    Junit,
+    /// One attempt of one Pipeline run.
+    Pipeline,
+}
+
+impl ReportKind {
+    /// Both kinds, in the order the frozen server listed them.
+    pub const ALL: [Self; 2] = [Self::Junit, Self::Pipeline];
+
+    /// The kind as the frozen server stored it.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Junit => "junit",
+            Self::Pipeline => "pipeline",
+        }
+    }
+
+    /// The kind one stored spelling names, or `None` when nothing does.
+    #[must_use]
+    pub fn from_wire(text: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|kind| kind.as_str() == text)
+    }
+}
+
+impl fmt::Display for ReportKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// A Report's place in the ingest queue.
 ///
 /// A Report is queued [`Pending`](Self::Pending) and leaves the queue as
@@ -246,7 +288,8 @@ impl fmt::Display for ReportStatus {
 #[cfg(test)]
 mod tests {
     use super::{
-        ExecutionStatus, FailedJobOutcome, JobOutcome, JobStatus, ReportStatus, Tier, Trend,
+        ExecutionStatus, FailedJobOutcome, JobOutcome, JobStatus, ReportKind, ReportStatus, Tier,
+        Trend,
     };
 
     #[test]
@@ -291,6 +334,25 @@ mod tests {
         assert_eq!(Trend::Steady.to_string(), "steady");
         assert_eq!(JobStatus::Passed.to_string(), "passed");
         assert_eq!(JobStatus::Skipped.to_string(), "skipped");
+    }
+
+    #[test]
+    fn a_report_kind_is_one_of_the_two_stored_spellings() {
+        assert_eq!(
+            ReportKind::ALL.map(ReportKind::as_str),
+            ["junit", "pipeline"]
+        );
+        assert_eq!(ReportKind::Pipeline.to_string(), "pipeline");
+        assert_eq!(ReportKind::from_wire("junit"), Some(ReportKind::Junit));
+        assert_eq!(
+            ReportKind::from_wire("pipeline"),
+            Some(ReportKind::Pipeline)
+        );
+        assert_eq!(ReportKind::from_wire("xml"), None);
+        assert_eq!(
+            serde_json::to_string(&ReportKind::Junit).unwrap(),
+            "\"junit\""
+        );
     }
 
     #[test]

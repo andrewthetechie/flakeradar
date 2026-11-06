@@ -14,8 +14,8 @@
 use chrono::{DateTime, NaiveDate, TimeZone as _, Utc};
 use flakeradar_core::dto::lax_bool;
 use flakeradar_core::{
-    BodyRefusal, IssueLinkIn, JobResultIn, LocSegment, PipelineReportIn, QuarantineIn, ReportOut,
-    ReportStatus, ScorePointOut, TestOut, Tier, Trend, ValidationIssue,
+    BodyRefusal, IssueLinkIn, JobResultIn, LocSegment, PipelineReportIn, QuarantineIn, ReportKind,
+    ReportOut, ReportStatus, ScorePointOut, TestOut, Tier, Trend, ValidationIssue,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -58,7 +58,7 @@ fn validated(body: &Value) -> Result<PipelineReportIn, Vec<ValidationIssue>> {
 fn a_report_out_writes_timestamps_in_the_one_accepted_shape() {
     let report = ReportOut {
         id: 1,
-        kind: "junit".to_owned(),
+        kind: ReportKind::Junit,
         repo: "acme/app".to_owned(),
         project: Some("default".to_owned()),
         commit_sha: "abc".to_owned(),

@@ -12,19 +12,15 @@
 // Rust guideline compliant 2026-07-21
 
 use chrono::Utc;
-use flakeradar_core::{PipelineReportIn, ReportOut, ReportStatus, ReportSummaryOut, body_digest};
+use flakeradar_core::{
+    PipelineReportIn, ReportKind, ReportOut, ReportStatus, ReportSummaryOut, body_digest,
+};
 use sea_orm::entity::prelude::DateTimeWithTimeZone;
 use sea_orm::{ConnectionTrait, DbBackend, FromQueryResult as _, JsonValue, Set, Statement, Value};
 
 use crate::entities::reports;
 use crate::error::DbError;
 use crate::sql::{Binds, get, one, required_one, rows};
-
-/// A Report holding one uploaded JUnit XML file.
-pub const REPORT_KIND_JUNIT: &str = "junit";
-
-/// A Report holding one attempt of one Pipeline run.
-pub const REPORT_KIND_PIPELINE: &str = "pipeline";
 
 /// The JUnit duplicate identity: a CI retry whose response was lost uploads the
 /// same bytes under the same attribution, so it must not queue a second Run.
@@ -91,7 +87,7 @@ impl NewJunitReport {
     pub fn into_active_model(self, now: DateTimeWithTimeZone) -> reports::ActiveModel {
         let body_sha256 = self.body_sha256();
         reports::ActiveModel {
-            kind: Set(REPORT_KIND_JUNIT.to_owned()),
+            kind: Set(ReportKind::Junit.as_str().to_owned()),
             project_id: Set(Some(self.project_id)),
             repo_id: Set(self.repo_id),
             body: Set(self.body),
@@ -140,7 +136,7 @@ impl NewPipelineReport {
     #[must_use]
     pub fn into_active_model(self, now: DateTimeWithTimeZone) -> reports::ActiveModel {
         reports::ActiveModel {
-            kind: Set(REPORT_KIND_PIPELINE.to_owned()),
+            kind: Set(ReportKind::Pipeline.as_str().to_owned()),
             project_id: Set(None),
             repo_id: Set(self.repo_id),
             body: Set(self.body),
@@ -184,7 +180,7 @@ pub async fn find_junit_duplicate(
         DbBackend::Postgres,
         DUPLICATE_SQL,
         [
-            Value::from(REPORT_KIND_JUNIT),
+            Value::from(ReportKind::Junit.as_str()),
             Value::from(candidate.project_id),
             Value::from(candidate.commit_sha.clone()),
             Value::from(candidate.ci_run_id.clone()),
@@ -309,7 +305,7 @@ impl StoredReport {
     pub fn into_out(self) -> Result<ReportOut, DbError> {
         Ok(ReportOut {
             id: i64::from(self.report.id),
-            kind: self.report.kind,
+            kind: report_kind(&self.report.kind)?,
             repo: self.repo,
             project: self.project,
             commit_sha: self.report.commit_sha,
@@ -406,6 +402,18 @@ pub async fn list_reports(
     Ok(out)
 }
 
+/// The kind one stored spelling names, refusing what this version never writes.
+///
+/// # Errors
+///
+/// Returns [`DbError::UnknownReportKind`] for a spelling the two [`ReportKind`]
+/// variants do not cover.
+pub fn report_kind(text: &str) -> Result<ReportKind, DbError> {
+    ReportKind::from_wire(text).ok_or_else(|| DbError::UnknownReportKind {
+        value: text.to_owned(),
+    })
+}
+
 /// The status one stored spelling names, refusing what this version never writes.
 ///
 /// # Errors
@@ -424,7 +432,7 @@ fn report_out(row: &sea_orm::QueryResult) -> Result<ReportOut, DbError> {
     let processed_at: Option<DateTimeWithTimeZone> = get(row, "processed_at")?;
     Ok(ReportOut {
         id: i64::from(get::<i32>(row, "id")?),
-        kind: get(row, "kind")?,
+        kind: report_kind(&get::<String>(row, "kind")?)?,
         repo: get(row, "repo_name")?,
         project: get(row, "project_name")?,
         commit_sha: get(row, "commit_sha")?,

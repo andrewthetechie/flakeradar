@@ -92,10 +92,10 @@ pub use reads::{
 };
 #[doc(inline)]
 pub use report_intake::{
-    NewJunitReport, NewPipelineReport, REPORT_KIND_JUNIT, REPORT_KIND_PIPELINE, StoredReport,
-    complete_report, fail_report, find_junit_duplicate, list_reports, report_status,
-    report_summary, requeue_report, reset_for_retry, stored_ci_run_attempt, stored_junit_body,
-    stored_pipeline_report, stored_report,
+    NewJunitReport, NewPipelineReport, StoredReport, complete_report, fail_report,
+    find_junit_duplicate, list_reports, report_kind, report_status, report_summary, requeue_report,
+    reset_for_retry, stored_ci_run_attempt, stored_junit_body, stored_pipeline_report,
+    stored_report,
 };
 #[doc(inline)]
 pub use retention::{PruneResult, RetentionSettings, prune, run_prune};

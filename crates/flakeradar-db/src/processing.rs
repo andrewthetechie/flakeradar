@@ -13,7 +13,7 @@ use std::fmt;
 
 use flakeradar_core::{
     ExecutionStatus, FailureCategory, JobStatus, ParseError, ParsedCase, PipelineReportIn,
-    ReportStatus, ScoredExecution, Tier, TierChange, branch_scoped_fail_streak,
+    ReportKind, ReportStatus, ScoredExecution, Tier, TierChange, branch_scoped_fail_streak,
     branch_scoped_score, branch_scoped_streak, classify_failure, defaults, dominant_category,
     is_broken, parse_junit_xml, tier_for,
 };
@@ -32,8 +32,7 @@ use crate::clock::{SharedClock, SystemClock};
 use crate::entities::{jobs, pipelines, reports, repos, test_cases, test_executions, test_runs};
 use crate::error::DbError;
 use crate::report_intake::{
-    REPORT_KIND_PIPELINE, complete_report, fail_report, requeue_report, stored_junit_body,
-    stored_pipeline_report,
+    complete_report, fail_report, requeue_report, stored_junit_body, stored_pipeline_report,
 };
 use crate::score_history::{HistoryKind, HistoryUpdate, write_today_history};
 use crate::sql::{get, placeholder_list, rows, value_row};
@@ -402,7 +401,7 @@ async fn process_report(
     report: &mut reports::Model,
     settings: &ProcessingSettings,
 ) -> Result<ProcessOutcome, ProcessError> {
-    if report.kind == REPORT_KIND_PIPELINE {
+    if report.kind == ReportKind::Pipeline.as_str() {
         return process_pipeline_report(db, report, settings).await;
     }
     let (body, line_base) = stored_junit_body(report);

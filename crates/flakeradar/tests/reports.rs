@@ -311,6 +311,27 @@ async fn a_report_whose_stored_status_this_version_never_wrote_is_a_server_error
 }
 
 #[tokio::test]
+async fn a_report_whose_stored_kind_this_version_never_wrote_is_a_server_error() {
+    // The sibling of the unknown-status case: only this server writes a
+    // `reports` row, so a kind that is neither `junit` nor `pipeline` means
+    // another writer made it.
+    let db = TestDb::new().await.expect("a test database is available");
+    let project = make_project()
+        .build(db.connection())
+        .await
+        .expect("a Project");
+    let report = make_report(&project, project.repo_id)
+        .commit_sha("a")
+        .kind("xml")
+        .build(db.connection())
+        .await
+        .expect("a Report");
+    let reply = get(&test_app(&db), &format!("/api/reports/{}", report.id)).await;
+    assert_eq!(reply.status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(reply.text(), "Internal Server Error");
+}
+
+#[tokio::test]
 async fn a_report_query_that_fails_is_a_server_error() {
     let db = TestDb::new().await.expect("a test database is available");
     let app = test_app(&db);

@@ -18,7 +18,9 @@ use utoipa::ToSchema;
 
 use crate::identity::{IdentityError, normalize_provider, normalize_repo};
 use crate::lax;
-use crate::model::{FailedJobOutcome, JobOutcome, JobStatus, ReportStatus, Tier, Trend};
+use crate::model::{
+    FailedJobOutcome, JobOutcome, JobStatus, ReportKind, ReportStatus, Tier, Trend,
+};
 use crate::py::strip_wire_whitespace;
 use crate::types::CiRunId;
 
@@ -1244,7 +1246,7 @@ pub struct ReportOut {
     /// The Report's id.
     pub id: i64,
     /// `junit` or `pipeline`.
-    pub kind: String,
+    pub kind: ReportKind,
     /// The Repo's `owner/name`.
     pub repo: String,
     /// The Project's name, or `None` for a Pipeline report.

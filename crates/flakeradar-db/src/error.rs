@@ -61,6 +61,15 @@ pub enum DbError {
         /// What the parser rejected.
         detail: String,
     },
+    /// A stored Report holds a kind this version does not write.
+    ///
+    /// A Report row is only ever written by this server, so an unknown kind
+    /// means something else wrote the row.
+    #[error("stored Report kind {value:?} is not one of junit or pipeline")]
+    UnknownReportKind {
+        /// The kind the row holds, printed as it was read.
+        value: String,
+    },
     /// A stored Report holds a status this version does not write.
     ///
     /// A Report row is only ever written by this server, so an unknown status
