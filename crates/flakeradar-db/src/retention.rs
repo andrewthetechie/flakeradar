@@ -21,18 +21,16 @@ use flakeradar_core::{ReportStatus, defaults};
 use sea_orm::entity::prelude::DateTimeWithTimeZone;
 use sea_orm::sea_query::{Expr, ExprTrait as _, Order, Query};
 use sea_orm::{
-    ColumnTrait, ConnectionTrait, DatabaseConnection, EntityTrait, QueryFilter, QueryOrder as _,
-    QuerySelect, TransactionTrait,
+    ColumnTrait, ConnectionTrait, DatabaseConnection, DbBackend, EntityTrait, QueryFilter,
+    Statement, TransactionTrait, Value,
 };
 use tracing::info;
 
 use crate::clock::MonotonicClock;
-use crate::entities::{
-    job_executions, job_score_history, reports, test_cases, test_executions, test_runs,
-    test_score_history,
-};
+use crate::entities::{reports, test_cases, test_executions, test_runs};
 use crate::error::DbError;
 use crate::processing::{ProcessingSettings, rescore, rescore_jobs};
+use crate::sql::{bigint_array, get, rows};
 
 /// The largest retention window a setting may ask for, in days.
 ///
@@ -178,14 +176,26 @@ pub async fn prune(
     let execution_cutoff = cutoff(now, retention.execution_days);
     // The ids of this batch are read before the delete, so the Tests and Jobs
     // that lose Executions can still be rescored afterwards.
-    let (executions, stale_tests) = expire_test_executions(db, execution_cutoff, batch).await?;
-    let (job_executions, stale_jobs) = expire_job_executions(db, execution_cutoff, batch).await?;
+    let (executions, stale_tests) =
+        expire_executions(db, &TEST_EXECUTIONS, execution_cutoff, batch).await?;
+    let (job_executions, stale_jobs) =
+        expire_executions(db, &JOB_EXECUTIONS, execution_cutoff, batch).await?;
     // Runs only become deletable once their last Execution is gone.
     let runs = delete_empty_runs(db, execution_cutoff, batch).await?;
-    let test_score_history =
-        delete_test_history(db, cutoff(now, retention.history_days).date_naive(), batch).await?;
-    let job_score_history =
-        delete_job_history(db, cutoff(now, retention.history_days).date_naive(), batch).await?;
+    let test_score_history = delete_history(
+        db,
+        &TEST_HISTORY,
+        cutoff(now, retention.history_days).date_naive(),
+        batch,
+    )
+    .await?;
+    let job_score_history = delete_history(
+        db,
+        &JOB_HISTORY,
+        cutoff(now, retention.history_days).date_naive(),
+        batch,
+    )
+    .await?;
 
     drop_silent_tier_changes(db, &stale_tests, &stale_jobs, processing).await?;
     let expired_quarantines = clear_expired_quarantines(db, now).await?;
@@ -256,74 +266,63 @@ async fn delete_failed_reports(
         .rows_affected)
 }
 
-/// Deletes one batch of old Test executions, naming the Tests that owned them.
-async fn expire_test_executions(
-    db: &impl ConnectionTrait,
-    cutoff: DateTimeWithTimeZone,
-    batch: u64,
-) -> Result<(u64, Vec<i32>), DbError> {
-    let ids: Vec<i64> = test_executions::Entity::find()
-        .select_only()
-        .column(test_executions::Column::Id)
-        .filter(test_executions::Column::CreatedAt.lt(cutoff))
-        .order_by_asc(test_executions::Column::Id)
-        .limit(batch)
-        .into_tuple::<i64>()
-        .all(db)
-        .await?;
-    if ids.is_empty() {
-        return Ok((0, Vec::new()));
-    }
-    let mut owners: Vec<i32> = test_executions::Entity::find()
-        .select_only()
-        .column(test_executions::Column::TestCaseId)
-        .filter(test_executions::Column::Id.is_in(ids.clone()))
-        .distinct()
-        .into_tuple::<i32>()
-        .all(db)
-        .await?;
-    owners.sort_unstable();
-    let deleted = test_executions::Entity::delete_many()
-        .filter(test_executions::Column::Id.is_in(ids))
-        .exec(db)
-        .await?
-        .rows_affected;
-    Ok((deleted, owners))
+/// An Executions table one retention step expires, and its owner's column.
+struct Executions {
+    /// The table's name.
+    table: &'static str,
+    /// The column naming the Test or Job that owns a row.
+    owner_column: &'static str,
 }
 
-/// Deletes one batch of old Job executions, naming the Jobs that owned them.
-async fn expire_job_executions(
+/// The Tests' Executions.
+const TEST_EXECUTIONS: Executions = Executions {
+    table: "test_executions",
+    owner_column: "test_case_id",
+};
+
+/// The Jobs' Executions.
+const JOB_EXECUTIONS: Executions = Executions {
+    table: "job_executions",
+    owner_column: "job_id",
+};
+
+/// Deletes one batch of old Executions, naming the Tests or Jobs that owned them.
+///
+/// The owners are read before the delete, because a deleted row no longer names
+/// one; they are what the round rescores.
+async fn expire_executions(
     db: &impl ConnectionTrait,
+    executions: &Executions,
     cutoff: DateTimeWithTimeZone,
     batch: u64,
 ) -> Result<(u64, Vec<i32>), DbError> {
-    let ids: Vec<i64> = job_executions::Entity::find()
-        .select_only()
-        .column(job_executions::Column::Id)
-        .filter(job_executions::Column::CreatedAt.lt(cutoff))
-        .order_by_asc(job_executions::Column::Id)
-        .limit(batch)
-        .into_tuple::<i64>()
-        .all(db)
-        .await?;
+    let table = executions.table;
+    let owner = executions.owner_column;
+    let mut ids: Vec<i64> = Vec::new();
+    let expired = format!("SELECT id FROM {table} WHERE created_at < $1 ORDER BY id ASC LIMIT $2");
+    for row in rows(db, expired, vec![Value::from(cutoff), Value::from(batch)]).await? {
+        ids.push(get(&row, "id")?);
+    }
     if ids.is_empty() {
         return Ok((0, Vec::new()));
     }
-    let mut owners: Vec<i32> = job_executions::Entity::find()
-        .select_only()
-        .column(job_executions::Column::JobId)
-        .filter(job_executions::Column::Id.is_in(ids.clone()))
-        .distinct()
-        .into_tuple::<i32>()
-        .all(db)
-        .await?;
+    let owners_sql = format!(
+        "SELECT DISTINCT {owner} AS owner FROM {table} WHERE id = ANY($1::BIGINT[]) ORDER BY {owner}"
+    );
+    let mut owners: Vec<i32> = Vec::new();
+    for row in rows(db, owners_sql, vec![bigint_array(&ids)]).await? {
+        owners.push(get(&row, "owner")?);
+    }
     owners.sort_unstable();
-    let deleted = job_executions::Entity::delete_many()
-        .filter(job_executions::Column::Id.is_in(ids))
-        .exec(db)
-        .await?
-        .rows_affected;
-    Ok((deleted, owners))
+    let deleted = format!("DELETE FROM {table} WHERE id = ANY($1::BIGINT[])");
+    let result = db
+        .execute_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            deleted,
+            vec![bigint_array(&ids)],
+        ))
+        .await?;
+    Ok((result.rows_affected(), owners))
 }
 
 /// Deletes one batch of Runs old enough to expire and left with no Execution.
@@ -365,63 +364,47 @@ async fn delete_empty_runs(
         .rows_affected)
 }
 
-/// Deletes one batch of Test Score history rows by their (Test, day) key.
-async fn delete_test_history(
-    db: &impl ConnectionTrait,
-    cutoff: NaiveDate,
-    batch: u64,
-) -> Result<u64, DbError> {
-    Ok(test_score_history::Entity::delete_many()
-        .filter(
-            Expr::tuple([
-                Expr::col((
-                    test_score_history::Entity,
-                    test_score_history::Column::TestCaseId,
-                )),
-                Expr::col((test_score_history::Entity, test_score_history::Column::Day)),
-            ])
-            .in_subquery(
-                Query::select()
-                    .column(test_score_history::Column::TestCaseId)
-                    .column(test_score_history::Column::Day)
-                    .from(test_score_history::Entity)
-                    .and_where(test_score_history::Column::Day.lt(cutoff))
-                    .order_by(test_score_history::Column::Day, Order::Asc)
-                    .limit(batch)
-                    .to_owned(),
-            ),
-        )
-        .exec(db)
-        .await?
-        .rows_affected)
+/// A Score-history table one retention step expires, and its owner's column.
+struct History {
+    /// The table's name.
+    table: &'static str,
+    /// The column naming the Test or Job that owns a row.
+    owner_column: &'static str,
 }
 
-/// Deletes one batch of Job Score history rows by their (Job, day) key.
-async fn delete_job_history(
+/// The Tests' Score history.
+const TEST_HISTORY: History = History {
+    table: "test_score_history",
+    owner_column: "test_case_id",
+};
+
+/// The Jobs' Score history.
+const JOB_HISTORY: History = History {
+    table: "job_score_history",
+    owner_column: "job_id",
+};
+
+/// Deletes one batch of Score history rows by their (owner, day) key.
+async fn delete_history(
     db: &impl ConnectionTrait,
+    history: &History,
     cutoff: NaiveDate,
     batch: u64,
 ) -> Result<u64, DbError> {
-    Ok(job_score_history::Entity::delete_many()
-        .filter(
-            Expr::tuple([
-                Expr::col((job_score_history::Entity, job_score_history::Column::JobId)),
-                Expr::col((job_score_history::Entity, job_score_history::Column::Day)),
-            ])
-            .in_subquery(
-                Query::select()
-                    .column(job_score_history::Column::JobId)
-                    .column(job_score_history::Column::Day)
-                    .from(job_score_history::Entity)
-                    .and_where(job_score_history::Column::Day.lt(cutoff))
-                    .order_by(job_score_history::Column::Day, Order::Asc)
-                    .limit(batch)
-                    .to_owned(),
-            ),
-        )
-        .exec(db)
-        .await?
-        .rows_affected)
+    let table = history.table;
+    let owner = history.owner_column;
+    let sql = format!(
+        "DELETE FROM {table} WHERE ({owner}, day) IN ( \
+           SELECT {owner}, day FROM {table} WHERE day < $1 ORDER BY day ASC LIMIT $2)"
+    );
+    let result = db
+        .execute_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            sql,
+            vec![Value::from(cutoff), Value::from(batch)],
+        ))
+        .await?;
+    Ok(result.rows_affected())
 }
 
 /// Rescores what lost Executions, dropping the Tier changes that causes.

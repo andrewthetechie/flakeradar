@@ -94,6 +94,15 @@ pub async fn required_one(
     })
 }
 
+/// `ids` as one `BIGINT[]` bind, for a statement that takes a batch of ids.
+#[must_use]
+pub fn bigint_array(ids: &[i64]) -> Value {
+    Value::Array(
+        sea_orm::sea_query::ArrayType::BigInt,
+        Some(Box::new(ids.iter().copied().map(Value::from).collect())),
+    )
+}
+
 /// The `$n` placeholders from `start`, one per bind: `$3, $4, $5`.
 #[must_use]
 pub fn placeholder_list(start: usize, count: usize) -> String {
