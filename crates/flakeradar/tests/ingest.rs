@@ -896,7 +896,7 @@ async fn a_valid_pipeline_report_is_queued() {
         &test_app(&db),
         "/api/ingest/pipeline",
         &[("x-api-key", TOKEN), ("content-type", "application/json")],
-        pipeline_payload(&json!({})),
+        pipeline_report_body(&json!({})),
     )
     .await;
     assert_eq!(reply.status, StatusCode::ACCEPTED, "{}", reply.text());
@@ -916,14 +916,14 @@ async fn a_valid_pipeline_report_is_queued() {
         .expect("the Repo");
     assert_eq!(repo.name, "acme/app");
 
-    // The stored body is the normalized payload.
-    let payload: Value = serde_json::from_slice(&report.body).expect("the stored payload is JSON");
-    assert_eq!(payload["repo"], json!("acme/app"));
-    assert_eq!(payload["provider"], json!("github"));
+    // The stored body is the normalized Report.
+    let body: Value = serde_json::from_slice(&report.body).expect("the stored Report body is JSON");
+    assert_eq!(body["repo"], json!("acme/app"));
+    assert_eq!(body["provider"], json!("github"));
 }
 
-/// A Pipeline report body, with `over` overriding its fields.
-fn pipeline_payload(over: &Value) -> Vec<u8> {
+/// A Pipeline Report body, with `over` overriding its fields.
+fn pipeline_report_body(over: &Value) -> Vec<u8> {
     let mut body = json!({
         "repo": "Acme/App",
         "provider": "github",
@@ -956,7 +956,7 @@ async fn pipeline(app: &Router, over: &Value) -> Reply {
         app,
         "/api/ingest/pipeline",
         &[("x-api-key", TOKEN), ("content-type", "application/json")],
-        pipeline_payload(over),
+        pipeline_report_body(over),
     )
     .await
 }
@@ -977,11 +977,11 @@ async fn pipeline_ingest_strips_names() {
     assert_eq!(reply.status, StatusCode::ACCEPTED, "{}", reply.text());
     let stored = stored_reports(&db).await;
     let report = stored.first().expect("one Report");
-    let payload: Value = serde_json::from_slice(&report.body).expect("the stored payload is JSON");
-    assert_eq!(payload["pipeline"], json!("ci.yml"));
-    assert_eq!(payload["branch"], json!("feat"));
-    assert_eq!(payload["default_branch"], Value::Null);
-    assert_eq!(payload["jobs"][0]["name"], json!("build"));
+    let body: Value = serde_json::from_slice(&report.body).expect("the stored Report body is JSON");
+    assert_eq!(body["pipeline"], json!("ci.yml"));
+    assert_eq!(body["branch"], json!("feat"));
+    assert_eq!(body["default_branch"], Value::Null);
+    assert_eq!(body["jobs"][0]["name"], json!("build"));
     assert_eq!(report.pipeline.as_deref(), Some("ci.yml"));
     assert_eq!(report.branch, "feat");
     assert_eq!(report.default_branch, None);
@@ -994,7 +994,7 @@ async fn pipeline_ingest_requires_token() {
         &test_app(&db),
         "/api/ingest/pipeline",
         &[("content-type", "application/json")],
-        pipeline_payload(&json!({})),
+        pipeline_report_body(&json!({})),
     )
     .await;
     assert_eq!(reply.status, StatusCode::UNAUTHORIZED);

@@ -82,8 +82,8 @@ async fn report_ids(db: &TestDb) -> Vec<i32> {
     rows.into_iter().map(|report| report.id).collect()
 }
 
-/// The Pipeline payload the cases build a body from.
-fn pipeline_payload() -> PipelineReportIn {
+/// The Pipeline Report the cases build a body from.
+fn pipeline_report() -> PipelineReportIn {
     let json = serde_json::json!({
         "repo": "acme/app",
         "provider": "github",
@@ -95,7 +95,7 @@ fn pipeline_payload() -> PipelineReportIn {
         "ci_run_attempt": 1,
         "jobs": [{"ci_job_id": "1", "name": "test", "status": "passed"}]
     });
-    serde_json::from_value(json).expect("the fixture payload deserializes")
+    serde_json::from_value(json).expect("the fixture Report deserializes")
 }
 
 #[test]
@@ -141,10 +141,10 @@ fn the_junit_row_carries_the_body_and_its_digest() {
 
 #[test]
 fn the_pipeline_row_has_no_project_and_no_digest() {
-    let payload = pipeline_payload();
+    let report = pipeline_report();
     let row = NewPipelineReport {
         repo_id: 3,
-        body: pipeline_body(&payload),
+        body: pipeline_body(&report),
         commit_sha: "sha1".to_owned(),
         branch: "main".to_owned(),
         ci_run_id: "1".to_owned(),
@@ -165,16 +165,16 @@ fn the_pipeline_row_has_no_project_and_no_digest() {
 }
 
 #[test]
-fn the_pipeline_body_is_the_canonical_json_of_the_payload() {
-    let payload = pipeline_payload();
-    let body = pipeline_body(&payload);
+fn the_pipeline_body_is_the_canonical_json_of_the_report() {
+    let report = pipeline_report();
+    let body = pipeline_body(&report);
     assert_eq!(
         body,
-        serde_json::to_vec(&payload).expect("the payload serializes")
+        serde_json::to_vec(&report).expect("the Report serializes")
     );
     let read_back: PipelineReportIn =
-        serde_json::from_slice(&body).expect("the body is the payload");
-    assert_eq!(read_back, payload);
+        serde_json::from_slice(&body).expect("the body is the Report");
+    assert_eq!(read_back, report);
 }
 
 #[tokio::test]
@@ -423,7 +423,7 @@ async fn a_pipeline_row_is_never_a_duplicate() {
     let project = project(&db).await;
     let pipeline = NewPipelineReport {
         repo_id: project.repo_id,
-        body: pipeline_body(&pipeline_payload()),
+        body: pipeline_body(&pipeline_report()),
         commit_sha: "p".to_owned(),
         branch: "main".to_owned(),
         ci_run_id: "1".to_owned(),
@@ -470,21 +470,21 @@ async fn the_stored_junit_body_reads_a_null_line_base_as_one() {
 async fn the_stored_pipeline_report_is_the_inverse_of_the_body() {
     let db = TestDb::new().await.expect("a migrated test database");
     let project = project(&db).await;
-    let payload = pipeline_payload();
+    let report = pipeline_report();
     let stored = make_report(&project, project.repo_id)
-        .body(&pipeline_body(&payload))
+        .body(&pipeline_body(&report))
         .kind("pipeline")
         .build(db.connection())
         .await
         .expect("a Pipeline Report");
     assert_eq!(
-        stored_pipeline_report(&stored).expect("the stored payload"),
-        payload
+        stored_pipeline_report(&stored).expect("the stored Report"),
+        report
     );
 }
 
 #[tokio::test]
-async fn a_stored_body_that_is_not_a_payload_is_reported() {
+async fn a_stored_body_that_is_not_a_report_is_reported() {
     let db = TestDb::new().await.expect("a migrated test database");
     let project = project(&db).await;
     let stored = make_report(&project, project.repo_id)
@@ -493,9 +493,14 @@ async fn a_stored_body_that_is_not_a_payload_is_reported() {
         .build(db.connection())
         .await
         .expect("a Pipeline Report");
-    let error = stored_pipeline_report(&stored).expect_err("the body is not a payload");
+    let error = stored_pipeline_report(&stored).expect_err("the body is not a Report");
     assert!(matches!(error, DbError::StoredReportBody { .. }), "{error}");
-    assert!(error.to_string().contains("not its payload"), "{error}");
+    assert!(
+        error
+            .to_string()
+            .contains("not the Report it was built from"),
+        "{error}"
+    );
 }
 
 #[tokio::test]

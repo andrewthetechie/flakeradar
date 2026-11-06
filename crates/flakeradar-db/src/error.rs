@@ -55,8 +55,8 @@ pub enum DbError {
         /// The page size it was asked for with.
         page_size: i64,
     },
-    /// A stored Pipeline Report body is not the payload it was built from.
-    #[error("the stored Pipeline Report body is not its payload: {detail}")]
+    /// A stored Pipeline Report body is not the Report it was built from.
+    #[error("the stored Pipeline Report body is not the Report it was built from: {detail}")]
     StoredReportBody {
         /// What the parser rejected.
         detail: String,
