@@ -4,8 +4,9 @@
 
 use flakeradar_core::model::{Tier, Trend};
 use flakeradar_core::{
-    LocationRef, body_digest, escape_like, is_broken, issue_url, permalink, repo_path, tier_for,
-    trend_for,
+    helpers::LocationRef, helpers::body_digest, helpers::escape_like, helpers::is_broken,
+    helpers::issue_url, helpers::permalink, helpers::repo_path, helpers::tier_for,
+    helpers::trend_for,
 };
 
 #[test]

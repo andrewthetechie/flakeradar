@@ -13,7 +13,7 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{Method, StatusCode};
 use chrono::{DateTime, FixedOffset, TimeZone as _, Utc};
-use flakeradar_core::ReportStatus;
+use flakeradar_core::model::ReportStatus;
 use flakeradar_db::entities::{projects, reports, repos};
 use flakeradar_test_support::{
     FIXTURE_INSTANT, FixedClock, Reply, TestDb, app_with, get, make_junit, make_project, post,
@@ -30,7 +30,7 @@ use serde_json::{Value, json};
 const TOKEN: &str = "ingest-token";
 
 /// The settings every test runs with: a known token and nothing else.
-fn test_settings() -> flakeradar::Settings {
+fn test_settings() -> flakeradar::settings::Settings {
     settings(&[("FLAKERADAR_API_TOKEN", TOKEN)])
 }
 
@@ -41,13 +41,13 @@ fn test_app(db: &TestDb) -> Router {
 
 /// The app over `db`, on a clock that always reads `instant`.
 fn app_at(db: &TestDb, instant: DateTime<FixedOffset>) -> Router {
-    let state = flakeradar::AppState::new(
+    let state = flakeradar::app::AppState::new(
         db.connection().clone(),
         std::sync::Arc::new(test_settings()),
     )
     .expect("the app state builds")
     .with_clock(std::sync::Arc::new(FixedClock::new(instant)));
-    flakeradar::build_app(state)
+    flakeradar::app::build_app(state)
 }
 
 /// The headers an authorised upload sends.
@@ -1240,7 +1240,7 @@ async fn pipeline_ingest_cuts_off_an_oversized_body() {
     // The route keeps the app's JSON body limit, so a body past it is refused
     // while it is read rather than buffered.
     let db = TestDb::new().await.expect("a test database is available");
-    let body = vec![b'a'; flakeradar::JSON_BODY_LIMIT + 1];
+    let body = vec![b'a'; flakeradar::app::JSON_BODY_LIMIT + 1];
     let reply = post(
         &test_app(&db),
         "/api/ingest/pipeline",

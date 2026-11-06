@@ -10,7 +10,7 @@
 )]
 
 use axum::http::{Method, StatusCode};
-use flakeradar_core::EntityKind;
+use flakeradar_core::model::EntityKind;
 use flakeradar_test_support::{
     Reply, TestDb, app, get, link_of, make_job, make_pipeline, make_project, make_test_case, post,
     request, request_with_headers, send, settings, system_clock,
@@ -880,8 +880,8 @@ async fn unlinking_a_job_clears_both_halves_and_its_provenance() {
     reason = "the test names the arm that must not happen when the engine answers"
 )]
 async fn the_link_engine_refuses_with_its_status_and_links() {
-    use flakeradar_core::EntityKind;
-    use flakeradar_db::LinkError;
+    use flakeradar_core::model::EntityKind;
+    use flakeradar_db::issue_links::LinkError;
     use flakeradar_db::issue_links::{IssueLinkError, link_issue};
 
     let db = TestDb::new().await.expect("a test database");
@@ -907,15 +907,15 @@ async fn the_link_engine_refuses_with_its_status_and_links() {
     );
     // The refusal's kind decides the status at the front door, not in the engine.
     assert_eq!(
-        flakeradar::RouteError::Refused(error).status(),
+        flakeradar::error::RouteError::Refused(error).status(),
         StatusCode::UNPROCESSABLE_ENTITY
     );
     assert_eq!(
-        flakeradar::RouteError::Refused(IssueLinkError::NotFound(String::new())).status(),
+        flakeradar::error::RouteError::Refused(IssueLinkError::NotFound(String::new())).status(),
         StatusCode::NOT_FOUND
     );
     assert_eq!(
-        flakeradar::RouteError::Refused(IssueLinkError::Conflict(String::new())).status(),
+        flakeradar::error::RouteError::Refused(IssueLinkError::Conflict(String::new())).status(),
         StatusCode::CONFLICT
     );
 
@@ -930,7 +930,7 @@ async fn the_link_engine_refuses_with_its_status_and_links() {
     )
     .await
     .expect("a valid number links");
-    let flakeradar_db::LinkedOut::Test(out) = linked else {
+    let flakeradar_db::issue_links::LinkedOut::Test(out) = linked else {
         panic!("a Test target answers a Test");
     };
     assert_eq!(out.github_issue_number, Some(11));

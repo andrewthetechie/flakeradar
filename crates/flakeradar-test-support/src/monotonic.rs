@@ -5,7 +5,7 @@
 use std::collections::VecDeque;
 use std::sync::Mutex;
 
-use flakeradar_db::MonotonicClock;
+use flakeradar_db::clock::MonotonicClock;
 
 /// A monotonic clock that answers each reading from a list the test wrote.
 ///

@@ -3,7 +3,7 @@
 // Rust guideline compliant 2026-07-21
 
 use flakeradar::github;
-use flakeradar_core::{EntityKind, ReportStatus};
+use flakeradar_core::{model::EntityKind, model::ReportStatus};
 use flakeradar_test_support::{TestDb, system_clock};
 use serde_json::json;
 use wiremock::matchers::{any, method, path};

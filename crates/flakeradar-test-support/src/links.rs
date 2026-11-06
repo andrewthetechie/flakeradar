@@ -9,7 +9,7 @@
 )]
 
 use chrono::{DateTime, FixedOffset};
-use flakeradar_core::EntityKind;
+use flakeradar_core::model::EntityKind;
 use sea_orm::{ConnectionTrait as _, DbBackend, Statement, Value};
 
 use crate::TestDb;

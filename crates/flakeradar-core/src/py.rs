@@ -21,7 +21,7 @@ pub const TRUNCATION_MARKER: &str = "\n…[truncated]";
 /// # Examples
 ///
 /// ```
-/// assert_eq!(flakeradar_core::strip_wire_whitespace("\x1c padded \u{85}"), "padded");
+/// assert_eq!(flakeradar_core::py::strip_wire_whitespace("\x1c padded \u{85}"), "padded");
 /// ```
 #[must_use]
 pub fn strip_wire_whitespace(text: &str) -> &str {
@@ -54,7 +54,7 @@ fn is_python_line_break(ch: char) -> bool {
 /// # Examples
 ///
 /// ```
-/// assert_eq!(flakeradar_core::py_splitlines("a\r\nb\u{2028}c"), ["a", "b", "c"]);
+/// assert_eq!(flakeradar_core::py::py_splitlines("a\r\nb\u{2028}c"), ["a", "b", "c"]);
 /// ```
 #[must_use]
 pub fn py_splitlines(text: &str) -> Vec<String> {
@@ -87,10 +87,10 @@ pub fn py_splitlines(text: &str) -> Vec<String> {
 ///
 /// ```
 /// let text = "x".repeat(30);
-/// let capped = flakeradar_core::cap(&text, 20);
+/// let capped = flakeradar_core::py::cap(&text, 20);
 /// assert_eq!(capped.chars().count(), 20);
 /// assert!(capped.ends_with("…[truncated]"));
-/// assert_eq!(flakeradar_core::cap("abc", 20), "abc");
+/// assert_eq!(flakeradar_core::py::cap("abc", 20), "abc");
 /// ```
 #[must_use]
 pub fn cap(text: &str, limit: usize) -> String {
@@ -114,8 +114,8 @@ pub fn cap(text: &str, limit: usize) -> String {
 /// # Examples
 ///
 /// ```
-/// assert_eq!(flakeradar_core::round4(0.03125), 0.0312);
-/// assert_eq!(flakeradar_core::round4(0.09375), 0.0938);
+/// assert_eq!(flakeradar_core::py::round4(0.03125), 0.0312);
+/// assert_eq!(flakeradar_core::py::round4(0.09375), 0.0938);
 /// ```
 #[must_use]
 pub fn round4(value: f64) -> f64 {

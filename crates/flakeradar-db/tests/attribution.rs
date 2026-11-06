@@ -13,11 +13,14 @@
 use std::sync::Arc;
 
 use chrono::{DateTime, FixedOffset};
-use flakeradar_core::{CiRunId, JobResultIn, JobStatus, PipelineReportIn, pipeline_body};
+use flakeradar_core::{
+    dto::JobResultIn, dto::PipelineReportIn, dto::pipeline_body, model::JobStatus, types::CiRunId,
+};
 use flakeradar_db::entities::{job_executions, jobs, projects, repos, test_runs};
 use flakeradar_db::{
-    ProcessingSettings, SIBLING_MAX, explained_ci_job_ids, get_or_create_project, job_history,
-    process_next, rescore_jobs, summary_explaining_siblings, unexplained_failure_counts,
+    SIBLING_MAX, explained_ci_job_ids, get_or_create_project, processing::ProcessingSettings,
+    processing::job_history, processing::process_next, processing::rescore_jobs,
+    summary_explaining_siblings, unexplained_failure_counts,
 };
 use flakeradar_test_support::{
     FixedClock, TestDb, make_execution, make_job, make_job_execution, make_junit, make_pipeline,
@@ -120,7 +123,10 @@ async fn queue_junit(
 }
 
 /// Processes one Report and returns its outcome.
-async fn process(db: &TestDb, settings: &ProcessingSettings) -> flakeradar_db::ProcessOutcome {
+async fn process(
+    db: &TestDb,
+    settings: &ProcessingSettings,
+) -> flakeradar_db::processing::ProcessOutcome {
     process_next(db.connection(), settings)
         .await
         .expect("the processor runs")

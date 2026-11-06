@@ -11,12 +11,13 @@
 )]
 
 use chrono::{Duration, NaiveDate};
-use flakeradar_core::EntityKind;
-use flakeradar_core::TREND_DAYS;
+use flakeradar_core::helpers::TREND_DAYS;
+use flakeradar_core::model::EntityKind;
 use flakeradar_db::entities::{job_score_history, pipelines, test_score_history};
 use flakeradar_db::{
-    HISTORY_DAYS, HistoryUpdate, newest_history_before, past_scores, window_rows,
-    write_today_history,
+    score_history::HISTORY_DAYS, score_history::HistoryUpdate,
+    score_history::newest_history_before, score_history::past_scores, score_history::window_rows,
+    score_history::write_today_history,
 };
 use flakeradar_test_support::{
     TestDb, make_job, make_job_score, make_pipeline, make_project, make_test_case, make_test_score,

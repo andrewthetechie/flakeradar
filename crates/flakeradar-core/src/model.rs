@@ -99,7 +99,7 @@ impl fmt::Display for Tier {
     }
 }
 
-/// The direction a score moved over the last [`TREND_DAYS`](crate::TREND_DAYS) days.
+/// The direction a score moved over the last [`TREND_DAYS`](crate::helpers::TREND_DAYS) days.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "lowercase")]
 #[schema(rename_all = "lowercase")]

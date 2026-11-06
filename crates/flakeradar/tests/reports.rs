@@ -9,7 +9,7 @@
 )]
 
 use axum::http::{Method, StatusCode};
-use flakeradar_core::ReportStatus;
+use flakeradar_core::model::ReportStatus;
 use flakeradar_db::entities::reports;
 use flakeradar_test_support::{
     Reply, TestDb, app, get, make_project, make_report, post, request, request_with_headers,

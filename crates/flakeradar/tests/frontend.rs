@@ -298,7 +298,7 @@ async fn the_embedded_frontend_is_in_the_binary() {
     use std::sync::Arc;
 
     use flakeradar::assets::embedded;
-    use flakeradar::{AppState, build_app};
+    use flakeradar::{app::AppState, app::build_app};
 
     let db = TestDb::new().await.expect("a test database is available");
     let state = AppState::new(db.connection().clone(), Arc::new(settings(&[])))

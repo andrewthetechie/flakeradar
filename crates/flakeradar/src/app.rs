@@ -14,7 +14,7 @@ use axum::extract::{DefaultBodyLimit, State};
 use axum::http::header::{self, HeaderValue};
 use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Redirect, Response};
-use flakeradar_db::{ReadSettings, SharedClock, SystemClock};
+use flakeradar_db::{clock::SharedClock, clock::SystemClock, reads::ReadSettings};
 use sea_orm::DatabaseConnection;
 
 use crate::assets::{Asset, AssetSource, NoAssets};
@@ -67,7 +67,7 @@ impl AppState {
     /// The GitHub client talks to the production REST API; a test that needs a
     /// different base URL calls [`AppState::with_github`]. Nothing is served
     /// from memory until [`AppState::with_assets`] names a source, which is how
-    /// [`crate::Server`] hands the state the frontend it was built with. A test
+    /// [`crate::server::Server`] hands the state the frontend it was built with. A test
     /// that has to know which instant a request wrote calls
     /// [`AppState::with_clock`].
     ///

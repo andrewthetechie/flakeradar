@@ -14,7 +14,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use flakeradar_core::{ParseError, SUITE_DEPTH_MAX, parse_junit_xml};
+use flakeradar_core::{parsing::ParseError, parsing::SUITE_DEPTH_MAX, parsing::parse_junit_xml};
 
 /// Every corpus file, sorted so a failure names a stable file.
 fn corpus() -> Vec<PathBuf> {

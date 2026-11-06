@@ -13,11 +13,13 @@
 use std::sync::Arc;
 
 use chrono::{DateTime, FixedOffset};
-use flakeradar_core::{ExecutionStatus, PipelineReportIn, pipeline_body};
+use flakeradar_core::{dto::PipelineReportIn, dto::pipeline_body, model::ExecutionStatus};
 use flakeradar_db::{
-    ListOptions, ProcessingSettings, ReadSettings, Scope, SortKey, TestListFilters,
-    ci_run_failures, find_job_ids, find_test_ids, get_test, job_summary, latest_failure, list_jobs,
-    list_tests, process_next, search_jobs, search_tests, summary,
+    processing::ProcessingSettings, processing::process_next, reads::ListOptions,
+    reads::ReadSettings, reads::Scope, reads::SortKey, reads::TestListFilters,
+    reads::ci_run_failures, reads::find_job_ids, reads::find_test_ids, reads::get_test,
+    reads::job_summary, reads::latest_failure, reads::list_jobs, reads::list_tests,
+    reads::search_jobs, reads::search_tests, reads::summary,
 };
 use flakeradar_test_support::{
     FixedClock, TestDb, make_execution, make_job, make_job_execution, make_job_score,
@@ -479,7 +481,7 @@ async fn a_nextest_flaky_fail_is_a_proven_flake_in_its_ci_run() {
     .expect("the listing");
     assert_eq!(
         listing.reports,
-        flakeradar_core::ReportCountsOut {
+        flakeradar_core::dto::ReportCountsOut {
             pending: 0,
             processed: 2,
             failed: 0
@@ -500,7 +502,7 @@ async fn a_nextest_flaky_fail_is_a_proven_flake_in_its_ci_run() {
     assert_eq!(listing.failed_jobs.len(), 1);
     assert_eq!(
         listing.failed_jobs[0].outcome,
-        flakeradar_core::FailedJobOutcome::Explained
+        flakeradar_core::model::FailedJobOutcome::Explained
     );
     assert_eq!(listing.failed_jobs[0].ci_job_id, "J1");
 }
@@ -608,7 +610,7 @@ async fn an_unknown_test_has_no_detail() {
             .is_none()
     );
     assert!(
-        flakeradar_db::get_job(db.connection(), 9999, &settings(), 60)
+        flakeradar_db::reads::get_job(db.connection(), 9999, &settings(), 60)
             .await
             .expect("the lookup")
             .is_none()
@@ -622,7 +624,7 @@ async fn job_listings_of_an_empty_database_answer_empty_pages() {
     let page = list_jobs(
         db.connection(),
         None,
-        &flakeradar_db::JobListFilters::default(),
+        &flakeradar_db::reads::JobListFilters::default(),
         &options(|_| {}),
         &settings(),
     )
@@ -696,13 +698,14 @@ async fn a_skipped_job_execution_has_the_skipped_outcome() {
         .build(db.connection())
         .await
         .expect("the skipped execution");
-    let history = flakeradar_db::get_job(db.connection(), i64::from(job.id), &settings(), 60)
-        .await
-        .expect("the history")
-        .expect("a Job");
+    let history =
+        flakeradar_db::reads::get_job(db.connection(), i64::from(job.id), &settings(), 60)
+            .await
+            .expect("the history")
+            .expect("a Job");
     assert_eq!(
         history.executions[0].outcome,
-        flakeradar_core::JobOutcome::Skipped
+        flakeradar_core::model::JobOutcome::Skipped
     );
 }
 

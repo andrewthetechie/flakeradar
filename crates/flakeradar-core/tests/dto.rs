@@ -14,9 +14,9 @@
 use chrono::{DateTime, NaiveDate, TimeZone as _, Utc};
 use flakeradar_core::dto::lax_bool;
 use flakeradar_core::{
-    BodyRefusal, ExecutionStatus, IssueLinkIn, JobResultIn, LocSegment, PipelineReportIn,
-    QuarantineIn, ReportKind, ReportOut, ReportStatus, ScorePointOut, TestOut, Tier, Trend,
-    ValidationIssue,
+    dto::BodyRefusal, dto::IssueLinkIn, dto::JobResultIn, dto::LocSegment, dto::PipelineReportIn,
+    dto::QuarantineIn, dto::ReportOut, dto::ScorePointOut, dto::TestOut, dto::ValidationIssue,
+    model::ExecutionStatus, model::ReportKind, model::ReportStatus, model::Tier, model::Trend,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};

@@ -2,16 +2,16 @@
 
 // Rust guideline compliant 2026-07-21
 
-use flakeradar::Settings;
 use flakeradar::github::{self, Api, Verdict};
 use flakeradar::settings::Secret;
-use flakeradar_core::EntityKind;
+use flakeradar::settings::Settings;
+use flakeradar_core::model::EntityKind;
 use flakeradar_db::issue_links;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use chrono::{DateTime, FixedOffset, TimeZone as _, Utc};
-use flakeradar_db::SharedClock;
+use flakeradar_db::clock::SharedClock;
 use flakeradar_test_support::{FixedClock, TestDb, system_clock};
 use sea_orm::ConnectionTrait as _;
 use sea_orm::{DbBackend, Statement, Value};

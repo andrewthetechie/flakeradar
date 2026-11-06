@@ -17,7 +17,8 @@ use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
 use flakeradar_core::{
-    ExecutionStatus, ParseError, ParsedCase, classify_failure, fingerprint, parse_junit_xml,
+    classify::classify_failure, model::ExecutionStatus, parsing::ParseError, parsing::ParsedCase,
+    parsing::fingerprint, parsing::parse_junit_xml,
 };
 use serde_json::Value;
 

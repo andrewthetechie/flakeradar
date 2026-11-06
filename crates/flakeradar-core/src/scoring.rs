@@ -64,7 +64,7 @@ fn count_as_f64(count: usize) -> f64 {
 /// # Examples
 ///
 /// ```
-/// use flakeradar_core::{ExecutionStatus, flip_score};
+/// use flakeradar_core::{model::ExecutionStatus, scoring::flip_score};
 ///
 /// let alternating = [ExecutionStatus::Passed, ExecutionStatus::Failed];
 /// assert_eq!(flip_score(&alternating, 0.85, 50), 1.0 / 6.0);
@@ -110,7 +110,7 @@ pub fn flip_score(statuses: &[ExecutionStatus], decay: f64, window: usize) -> f6
 /// # Examples
 ///
 /// ```
-/// use flakeradar_core::{ExecutionStatus, count_proven_flakes};
+/// use flakeradar_core::{model::ExecutionStatus, scoring::count_proven_flakes};
 ///
 /// let executions = [("abc", ExecutionStatus::Passed), ("abc", ExecutionStatus::Failed)];
 /// assert_eq!(count_proven_flakes(&executions), 1);
@@ -146,7 +146,7 @@ pub fn count_proven_flakes(executions: &[(&str, ExecutionStatus)]) -> usize {
 /// # Examples
 ///
 /// ```
-/// use flakeradar_core::{ExecutionStatus, combined_score};
+/// use flakeradar_core::{model::ExecutionStatus, scoring::combined_score};
 ///
 /// let statuses = [ExecutionStatus::Passed, ExecutionStatus::Failed];
 /// let executions = [("abc", ExecutionStatus::Passed), ("abc", ExecutionStatus::Failed)];
@@ -233,7 +233,7 @@ pub fn branch_scoped_score(
 /// # Examples
 ///
 /// ```
-/// use flakeradar_core::{ExecutionStatus, clean_streak};
+/// use flakeradar_core::{model::ExecutionStatus, scoring::clean_streak};
 ///
 /// let statuses = [ExecutionStatus::Passed, ExecutionStatus::Skipped, ExecutionStatus::Failed];
 /// assert_eq!(clean_streak(&statuses), 1);
@@ -264,7 +264,7 @@ pub fn branch_scoped_streak(history: &[ScoredExecution], default_branch: Option<
 /// # Examples
 ///
 /// ```
-/// use flakeradar_core::{ExecutionStatus, fail_streak};
+/// use flakeradar_core::{model::ExecutionStatus, scoring::fail_streak};
 ///
 /// let statuses = [ExecutionStatus::Failed, ExecutionStatus::Skipped, ExecutionStatus::Error];
 /// assert_eq!(fail_streak(&statuses), 2);

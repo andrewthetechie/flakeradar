@@ -132,6 +132,8 @@ Every task must leave all of this passing:
 ```bash
 cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
+cargo test --doc --all-features
+RUSTDOCFLAGS='-D warnings' cargo doc --no-deps --all-features --document-private-items --workspace
 cargo nextest run --all-features --profile ci     # needs Docker, or FLAKERADAR_TEST_DATABASE_URL
 cd frontend && npm run typecheck && npm test      # only if you touched frontend/
 ```

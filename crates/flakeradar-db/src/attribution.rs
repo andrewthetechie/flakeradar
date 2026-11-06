@@ -10,7 +10,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use flakeradar_core::ExplainingJobOut;
+use flakeradar_core::dto::ExplainingJobOut;
 use sea_orm::{ConnectionTrait, Value};
 
 use crate::batching::chunks;

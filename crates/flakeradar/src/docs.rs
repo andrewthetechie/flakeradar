@@ -14,12 +14,14 @@ use axum::http::header;
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
 use flakeradar_core::{
-    CiRunFailedJobOut, CiRunFailuresOut, CiRunTestFailureOut, DeletedCountsOut, ExecutionOut,
-    ExplainingJobOut, ExplainingTestOut, HistoryOut, IngestAccepted, IssueLinkIn, JobExecutionOut,
-    JobHistoryOut, JobOut, JobPage, JobResultIn, JobStatus, JobSummaryOut, LocSegment, LocationOut,
-    PipelineReportIn, ProjectDeleteOut, ProjectOut, QuarantineIn, QuarantineItem, ReadinessOut,
-    RepoDeleteOut, RepoOut, ReportCountsOut, ReportOut, ReportSummaryOut, RunnerStatOut,
-    ScorePointOut, SummaryOut, TestJobLinkOut, TestOut, TestPage, ValidationIssue,
+    dto::CiRunFailedJobOut, dto::CiRunFailuresOut, dto::CiRunTestFailureOut, dto::DeletedCountsOut,
+    dto::ExecutionOut, dto::ExplainingJobOut, dto::ExplainingTestOut, dto::HistoryOut,
+    dto::IngestAccepted, dto::IssueLinkIn, dto::JobExecutionOut, dto::JobHistoryOut, dto::JobOut,
+    dto::JobPage, dto::JobResultIn, dto::JobSummaryOut, dto::LocSegment, dto::LocationOut,
+    dto::PipelineReportIn, dto::ProjectDeleteOut, dto::ProjectOut, dto::QuarantineIn,
+    dto::QuarantineItem, dto::ReadinessOut, dto::RepoDeleteOut, dto::RepoOut, dto::ReportCountsOut,
+    dto::ReportOut, dto::ReportSummaryOut, dto::RunnerStatOut, dto::ScorePointOut, dto::SummaryOut,
+    dto::TestJobLinkOut, dto::TestOut, dto::TestPage, dto::ValidationIssue, model::JobStatus,
 };
 use utoipa::OpenApi;
 use utoipa::openapi::OpenApi as OpenApiDocument;

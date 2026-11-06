@@ -9,7 +9,7 @@ use rmcp::model::ToolAnnotations;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use flakeradar_core::{normalize_repo, strip_wire_whitespace};
+use flakeradar_core::{identity::normalize_repo, py::strip_wire_whitespace};
 use flakeradar_db::reads::{self, FAILURES_LIMIT};
 
 use crate::mcp::{

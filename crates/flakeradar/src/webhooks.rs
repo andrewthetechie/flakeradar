@@ -18,8 +18,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context as _;
-use flakeradar_core::{TierChange, WebhookFormat, render};
-use flakeradar_db::ProcessOutcome;
+use flakeradar_core::{notify::TierChange, notify::WebhookFormat, notify::render};
+use flakeradar_db::processing::ProcessOutcome;
 use tokio_util::sync::CancellationToken;
 
 use crate::queue::BatchQueue;
@@ -326,7 +326,9 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::{WebhookShared, WebhookWorker, retry_after_seconds};
-    use flakeradar_core::{EntityKind, Tier, TierChange, WebhookFormat};
+    use flakeradar_core::{
+        model::EntityKind, model::Tier, notify::TierChange, notify::WebhookFormat,
+    };
     use reqwest::header::{HeaderMap, HeaderValue};
     use tokio_util::sync::CancellationToken;
 

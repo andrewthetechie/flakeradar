@@ -33,7 +33,7 @@ const QUEUE_SQL: &str = "
 ";
 
 // The tiers are the cached score columns, classified exactly as
-// `flakeradar_core::tier_for` does: at or above the Flake threshold is flaky,
+// `flakeradar_core::helpers::tier_for` does: at or above the Flake threshold is flaky,
 // above 0 suspect, otherwise stable.
 const TEST_TIERS_SQL: &str = "
     SELECT CASE WHEN flakiness_score >= $1 THEN 'flaky'

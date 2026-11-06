@@ -16,7 +16,8 @@
 
 use chrono::{DateTime, FixedOffset, Utc};
 use flakeradar_core::{
-    EntityKind, JobOut, MAX_ISSUE_NUMBER, TestOut, issue_url, strip_wire_whitespace,
+    dto::JobOut, dto::MAX_ISSUE_NUMBER, dto::TestOut, helpers::issue_url, model::EntityKind,
+    py::strip_wire_whitespace,
 };
 use sea_orm::{ConnectionTrait, DbBackend, Statement, TransactionSession, TransactionTrait, Value};
 

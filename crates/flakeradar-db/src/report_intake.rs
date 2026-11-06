@@ -13,7 +13,8 @@
 
 use chrono::Utc;
 use flakeradar_core::{
-    PipelineReportIn, ReportKind, ReportOut, ReportStatus, ReportSummaryOut, body_digest,
+    dto::PipelineReportIn, dto::ReportOut, dto::ReportSummaryOut, helpers::body_digest,
+    model::ReportKind, model::ReportStatus,
 };
 use sea_orm::entity::prelude::DateTimeWithTimeZone;
 use sea_orm::{ConnectionTrait, DbBackend, FromQueryResult as _, JsonValue, Set, Statement, Value};
@@ -208,7 +209,7 @@ pub fn stored_junit_body(report: &reports::Model) -> (&[u8], i32) {
 }
 
 /// The stored body of a Pipeline Report read back as its payload: the inverse of
-/// [`flakeradar_core::pipeline_body`].
+/// [`flakeradar_core::dto::pipeline_body`].
 ///
 /// # Errors
 ///

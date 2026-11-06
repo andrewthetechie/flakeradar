@@ -12,7 +12,7 @@ use axum::Json;
 use axum::extract::State;
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use flakeradar_core::{ReadinessOut, ReportStatus};
+use flakeradar_core::{dto::ReadinessOut, model::ReportStatus};
 use flakeradar_db::{
     DbError, QueueFacts, WORKER_LOCK_KEY, job_tier_counts, last_processed_at, queue_facts,
     reachable, report_status_counts, test_tier_counts,

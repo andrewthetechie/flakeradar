@@ -41,7 +41,7 @@ pub struct Server {
 /// No URLs means no task at all, not an idle one: the reference's lifespan built
 /// `WebhookWorker` only when `parse_urls` answered a non-empty list.
 fn webhook_task(settings: &Settings) -> anyhow::Result<Option<Arc<WebhookWorker>>> {
-    let urls = flakeradar_core::parse_urls(settings.webhook_urls.expose());
+    let urls = flakeradar_core::notify::parse_urls(settings.webhook_urls.expose());
     if urls.is_empty() {
         Ok(None)
     } else {
@@ -96,7 +96,7 @@ impl Server {
             settings.database_url.expose(),
             settings.database_settings()?,
         );
-        let clock: flakeradar_db::SharedClock = Arc::new(flakeradar_db::SystemClock);
+        let clock: flakeradar_db::clock::SharedClock = Arc::new(flakeradar_db::clock::SystemClock);
         let processing = settings.processing(Arc::clone(&clock));
         let mut worker = ReportWorker::new(
             pool.clone(),
@@ -177,7 +177,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::webhook_task;
-    use crate::Settings;
+    use crate::settings::Settings;
 
     /// Settings built from `pairs`.
     fn settings(pairs: &[(&str, &str)]) -> Settings {

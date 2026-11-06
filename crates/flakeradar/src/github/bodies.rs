@@ -7,7 +7,9 @@
 
 // Rust guideline compliant 2026-07-21
 
-use flakeradar_core::{EntityKind, JobExecutionOut, JobHistoryOut, repo_path};
+use flakeradar_core::{
+    dto::JobExecutionOut, dto::JobHistoryOut, helpers::repo_path, model::EntityKind,
+};
 use flakeradar_db::filing::{JobRow, RecentExecution, TestRow};
 
 use crate::settings::Settings;
@@ -331,13 +333,15 @@ fn permalink(
 ) -> Option<String> {
     let file = test.file.as_ref()?;
     let commit_sha = &failing?.commit_sha;
-    Some(flakeradar_core::permalink(&flakeradar_core::LocationRef {
-        repo,
-        commit_sha,
-        project_root: root,
-        file,
-        line: test.line.map(i64::from),
-    }))
+    Some(flakeradar_core::helpers::permalink(
+        &flakeradar_core::helpers::LocationRef {
+            repo,
+            commit_sha,
+            project_root: root,
+            file,
+            line: test.line.map(i64::from),
+        },
+    ))
 }
 
 /// The Test body's table: one row per recent Execution, newest first.
@@ -465,9 +469,9 @@ fn execution_line(execution: &JobExecutionOut) -> String {
 /// The word the Job body prints for one execution's outcome.
 fn outcome_word(execution: &JobExecutionOut) -> &'static str {
     match execution.outcome {
-        flakeradar_core::JobOutcome::Explained => "explained",
-        flakeradar_core::JobOutcome::Passed => "passed",
-        flakeradar_core::JobOutcome::Skipped => "skipped",
-        flakeradar_core::JobOutcome::Failed => "failed",
+        flakeradar_core::model::JobOutcome::Explained => "explained",
+        flakeradar_core::model::JobOutcome::Passed => "passed",
+        flakeradar_core::model::JobOutcome::Skipped => "skipped",
+        flakeradar_core::model::JobOutcome::Failed => "failed",
     }
 }

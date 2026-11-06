@@ -19,7 +19,7 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{Method, Request};
 use chrono::NaiveDateTime;
-use flakeradar_db::ProcessingSettings;
+use flakeradar_db::processing::ProcessingSettings;
 use flakeradar_test_support::{TestDb, app, get};
 
 use serde::Deserialize;
@@ -114,7 +114,7 @@ async fn upload_as_the_report_action(
 /// Drains the queue the way the worker does.
 async fn process_all(db: &TestDb) {
     let settings = ProcessingSettings::default();
-    while flakeradar_db::process_next(db.connection(), &settings)
+    while flakeradar_db::processing::process_next(db.connection(), &settings)
         .await
         .expect("processing a queued Report succeeds")
         .is_some()

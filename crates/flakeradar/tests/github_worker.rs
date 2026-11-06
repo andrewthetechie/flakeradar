@@ -19,13 +19,13 @@ use std::time::Duration;
 use flakeradar::worker::{
     AdvisoryLock, LockSession, ProcessFuture, ReportProcessor, ReportWorker, WorkerSettings,
 };
-use flakeradar::{Api, Settings, settings::Secret};
-use flakeradar::{GitHubWorker, LeaderTask};
-use flakeradar_core::ReportStatus;
+use flakeradar::{github::Api, settings::Secret, settings::Settings};
+use flakeradar::{github_worker::GitHubWorker, worker::LeaderTask};
+use flakeradar_core::model::ReportStatus;
 use flakeradar_db::entities::{projects, reports};
 use flakeradar_db::{
-    DbError, DbSettings, ProcessOutcome, ProcessingSettings, WORKER_LOCK_KEY, connect,
-    connect_session,
+    DbError, DbSettings, WORKER_LOCK_KEY, connect, connect_session, processing::ProcessOutcome,
+    processing::ProcessingSettings,
 };
 use flakeradar_test_support::{
     FixedClock, ScriptedMonotonic, TestDb, Unanswered, app, database_name, dropped, end_session,
@@ -484,11 +484,11 @@ impl LeaderTask for Announced {
         self.inner.name()
     }
 
-    fn start(&self) -> flakeradar::StartFuture<'_> {
+    fn start(&self) -> flakeradar::worker::StartFuture<'_> {
         self.inner.start()
     }
 
-    fn stop(&self) -> flakeradar::StopFuture<'_> {
+    fn stop(&self) -> flakeradar::worker::StopFuture<'_> {
         self.seen.store(true, Ordering::SeqCst);
         self.stopping.notify_waiters();
         self.inner.stop()
@@ -1948,10 +1948,11 @@ async fn a_sync_holds_no_row_lock_across_its_get() {
         .build(db.connection())
         .await
         .expect("a queued Report");
-    let outcome = flakeradar_db::process_next(db.connection(), &ProcessingSettings::default())
-        .await
-        .expect("the processor runs")
-        .expect("the Report is queued");
+    let outcome =
+        flakeradar_db::processing::process_next(db.connection(), &ProcessingSettings::default())
+            .await
+            .expect("the processor runs")
+            .expect("the Report is queued");
     assert_eq!(
         outcome.status,
         ReportStatus::Processed,

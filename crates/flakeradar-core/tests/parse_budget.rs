@@ -5,7 +5,7 @@
 //! copied the name once per case). The parser now refuses past a budget, so what
 //! is proved here is a measured allocation, not a wall-clock time: a counting
 //! allocator records the peak live bytes of each parse and the test asserts the
-//! bound `flakeradar_core::PARSE_BYTES_MAX` promises.
+//! bound `flakeradar_core::parsing::PARSE_BYTES_MAX` promises.
 //!
 //! This file holds one test on purpose. `cargo nextest` runs every test in its
 //! own process, but `cargo test` runs tests on threads of one process, where a
@@ -21,7 +21,7 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use flakeradar_core::{PARSE_BYTES_MAX, ParseError, parse_junit_xml};
+use flakeradar_core::{parsing::PARSE_BYTES_MAX, parsing::ParseError, parsing::parse_junit_xml};
 
 /// Bytes currently allocated by any thread.
 static LIVE: AtomicUsize = AtomicUsize::new(0);

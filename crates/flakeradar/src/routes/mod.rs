@@ -1,6 +1,6 @@
 //! Every route the server serves, in the order later tasks add them.
 //!
-//! [`router`] is what [`crate::build_app`] merges: the operations routes, the
+//! [`router`] is what [`crate::app::build_app`] merges: the operations routes, the
 //! API documentation, and from task 06 on the Report routes. A route group that
 //! needs the shared token attaches
 //! [`crate::middleware::require_token`] to its own subtree, so the read APIs stay

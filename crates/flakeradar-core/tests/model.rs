@@ -8,8 +8,8 @@
 )]
 
 use flakeradar_core::{
-    EntityKind, ExecutionStatus, FailedJobOutcome, JobOutcome, JobStatus, ReportKind, ReportStatus,
-    Tier, Trend,
+    model::EntityKind, model::ExecutionStatus, model::FailedJobOutcome, model::JobOutcome,
+    model::JobStatus, model::ReportKind, model::ReportStatus, model::Tier, model::Trend,
 };
 
 #[test]

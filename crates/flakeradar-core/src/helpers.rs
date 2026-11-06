@@ -26,7 +26,7 @@ pub const TREND_DELTA: f64 = 0.05;
 /// # Examples
 ///
 /// ```
-/// use flakeradar_core::{Tier, tier_for};
+/// use flakeradar_core::{model::Tier, helpers::tier_for};
 ///
 /// assert_eq!(tier_for(0.5, 0.5), Tier::Flaky);
 /// assert_eq!(tier_for(0.1, 0.5), Tier::Suspect);
@@ -50,8 +50,8 @@ pub fn tier_for(score: f64, threshold: f64) -> Tier {
 /// # Examples
 ///
 /// ```
-/// assert!(flakeradar_core::is_broken(5, 5));
-/// assert!(!flakeradar_core::is_broken(5, 0));
+/// assert!(flakeradar_core::helpers::is_broken(5, 5));
+/// assert!(!flakeradar_core::helpers::is_broken(5, 0));
 /// ```
 #[must_use]
 pub fn is_broken(fail_streak: i64, broken_streak: i64) -> bool {
@@ -83,7 +83,7 @@ pub fn trend_for(current: f64, past: Option<f64>) -> Option<Trend> {
 /// # Examples
 ///
 /// ```
-/// assert_eq!(flakeradar_core::escape_like(r"50%_off\"), r"50\%\_off\\");
+/// assert_eq!(flakeradar_core::helpers::escape_like(r"50%_off\"), r"50\%\_off\\");
 /// ```
 #[must_use]
 pub fn escape_like(text: &str) -> String {
@@ -104,8 +104,8 @@ pub fn issue_url(repo: &str, number: Option<i64>) -> Option<String> {
 /// # Examples
 ///
 /// ```
-/// assert_eq!(flakeradar_core::repo_path("frontend", "src/a.ts"), "frontend/src/a.ts");
-/// assert_eq!(flakeradar_core::repo_path("", "src/a.ts"), "src/a.ts");
+/// assert_eq!(flakeradar_core::helpers::repo_path("frontend", "src/a.ts"), "frontend/src/a.ts");
+/// assert_eq!(flakeradar_core::helpers::repo_path("", "src/a.ts"), "src/a.ts");
 /// ```
 #[must_use]
 pub fn repo_path(root: &str, file: &str) -> String {

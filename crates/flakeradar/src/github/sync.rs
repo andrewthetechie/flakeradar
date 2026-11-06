@@ -10,8 +10,8 @@
 use std::ops::ControlFlow;
 
 use chrono::{DateTime, Utc};
-use flakeradar_core::EntityKind;
-use flakeradar_db::{SharedClock, issue_links};
+use flakeradar_core::model::EntityKind;
+use flakeradar_db::{clock::SharedClock, issue_links};
 use sea_orm::ConnectionTrait;
 use tokio_util::sync::CancellationToken;
 

@@ -12,7 +12,7 @@
 
 use std::time::{Duration, Instant};
 
-use flakeradar::BatchQueue;
+use flakeradar::queue::BatchQueue;
 
 /// The longest a [`wait_until`] call may take before the test fails.
 ///

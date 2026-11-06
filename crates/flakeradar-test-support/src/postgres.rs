@@ -48,8 +48,8 @@ const READY_POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// # Errors
 ///
 /// Returns [`TestError::Docker`] when Docker is missing or the container cannot
-/// be started, and when it is still not accepting connections after
-/// [`STARTUP_TIMEOUT`].
+/// be started, and when it is still not accepting connections when its startup
+/// deadline passes.
 pub fn ensure_postgres() -> Result<String, TestError> {
     if let Ok(url) = std::env::var("FLAKERADAR_TEST_DATABASE_URL")
         && !url.trim().is_empty()

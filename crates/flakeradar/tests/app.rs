@@ -7,8 +7,8 @@
 )]
 
 use axum::http::{Method, StatusCode};
-use flakeradar::AppState;
-use flakeradar::build_app;
+use flakeradar::app::AppState;
+use flakeradar::app::build_app;
 use flakeradar_test_support::{TestDb, app, get, post, request, send, settings};
 
 use serde_json::json;
@@ -241,7 +241,7 @@ async fn the_json_body_limit_is_twenty_megabytes() {
         std::sync::Arc::new(settings.clone()),
     )
     .expect("the app state builds");
-    let app = flakeradar::with_common_layers(
+    let app = flakeradar::app::with_common_layers(
         axum::Router::new().route(
             "/echo",
             axum::routing::post(|body: axum::body::Bytes| async move { body.len().to_string() }),
@@ -250,7 +250,7 @@ async fn the_json_body_limit_is_twenty_megabytes() {
     )
     .with_state(state);
 
-    let inside = "a".repeat(flakeradar::JSON_BODY_LIMIT);
+    let inside = "a".repeat(flakeradar::app::JSON_BODY_LIMIT);
     let reply = post(
         &app,
         "/echo",
@@ -260,7 +260,7 @@ async fn the_json_body_limit_is_twenty_megabytes() {
     .await;
     assert_eq!(reply.status, StatusCode::OK);
 
-    let over = "a".repeat(flakeradar::JSON_BODY_LIMIT + 1);
+    let over = "a".repeat(flakeradar::app::JSON_BODY_LIMIT + 1);
     let reply = post(&app, "/echo", &[("content-type", "application/json")], over).await;
     assert_eq!(reply.status, StatusCode::PAYLOAD_TOO_LARGE);
 }

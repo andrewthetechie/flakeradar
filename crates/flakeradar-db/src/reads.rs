@@ -17,12 +17,15 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{DateTime, Duration, FixedOffset, NaiveDate, Utc};
 use flakeradar_core::{
-    CiRunFailedJobOut, CiRunFailuresOut, CiRunTestFailureOut, EntityKind, ExecutionOut,
-    ExecutionStatus, ExplainingTestOut, FailedJobOutcome, FailureCategory, HistoryOut,
-    JobExecutionOut, JobHistoryOut, JobOut, JobOutcome, JobPage, JobSummaryOut, LocationOut,
-    LocationRef, QuarantineItem, RepoOut, ReportCountsOut, ReportStatus, RunnerStatOut,
-    ScorePointOut, SummaryOut, TestJobLinkOut, TestOut, TestPage, Trend, defaults, escape_like,
-    is_broken, issue_url, permalink, repo_path, tier_for, trend_for,
+    classify::FailureCategory, defaults, dto::CiRunFailedJobOut, dto::CiRunFailuresOut,
+    dto::CiRunTestFailureOut, dto::ExecutionOut, dto::ExplainingTestOut, dto::HistoryOut,
+    dto::JobExecutionOut, dto::JobHistoryOut, dto::JobOut, dto::JobPage, dto::JobSummaryOut,
+    dto::LocationOut, dto::QuarantineItem, dto::RepoOut, dto::ReportCountsOut, dto::RunnerStatOut,
+    dto::ScorePointOut, dto::SummaryOut, dto::TestJobLinkOut, dto::TestOut, dto::TestPage,
+    helpers::LocationRef, helpers::escape_like, helpers::is_broken, helpers::issue_url,
+    helpers::permalink, helpers::repo_path, helpers::tier_for, helpers::trend_for,
+    model::EntityKind, model::ExecutionStatus, model::FailedJobOutcome, model::JobOutcome,
+    model::ReportStatus, model::Trend,
 };
 use sea_orm::{ConnectionTrait, DbBackend, QueryResult, Statement, Value};
 use serde_json::Value as JsonValue;
@@ -434,7 +437,7 @@ pub async fn list_repos(db: &impl ConnectionTrait) -> Result<Vec<RepoOut>, DbErr
     let mut repos: Vec<RepoOut> = Vec::new();
     for row in rows(db, sql, Vec::new()).await? {
         let repo: String = get(&row, "repo")?;
-        let project = flakeradar_core::ProjectOut {
+        let project = flakeradar_core::dto::ProjectOut {
             name: get(&row, "project")?,
             root: get(&row, "root")?,
         };

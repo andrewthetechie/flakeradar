@@ -9,10 +9,10 @@
 
 use std::ops::ControlFlow;
 
-use flakeradar_core::EntityKind;
+use flakeradar_core::model::EntityKind;
 use flakeradar_db::filing::{self, FilingGate};
 use flakeradar_db::issue_links;
-use flakeradar_db::{DbError, SharedClock, get_job};
+use flakeradar_db::{DbError, clock::SharedClock, reads::get_job};
 use sea_orm::{ConnectionTrait, TransactionSession as _, TransactionTrait};
 use tokio_util::sync::CancellationToken;
 

@@ -5,11 +5,11 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use flakeradar::Settings;
 use flakeradar::github::Api;
 use flakeradar::settings::Secret;
-use flakeradar_core::{EntityKind, ReportStatus};
-use flakeradar_db::ProcessOutcome;
+use flakeradar::settings::Settings;
+use flakeradar_core::{model::EntityKind, model::ReportStatus};
+use flakeradar_db::processing::ProcessOutcome;
 #[expect(
     unused_imports,
     reason = "the module's own users name these helpers through it"

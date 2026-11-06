@@ -14,16 +14,17 @@ use std::sync::Arc;
 
 use chrono::{DateTime, FixedOffset};
 use flakeradar_core::{
-    CiRunId, ExecutionStatus, JobResultIn, JobStatus, PipelineReportIn, ReportStatus,
-    ScoredExecution, pipeline_body, tier_for,
+    dto::JobResultIn, dto::PipelineReportIn, dto::pipeline_body, helpers::tier_for,
+    model::ExecutionStatus, model::JobStatus, model::ReportStatus, scoring::ScoredExecution,
+    types::CiRunId,
 };
 use flakeradar_db::entities::{
     job_executions, job_score_history, jobs, pipelines, projects, reports, repos, test_cases,
     test_executions, test_runs, test_score_history,
 };
 use flakeradar_db::{
-    ProcessingSettings, claim_next_report, get_or_create_project, process_next, rescore,
-    rescore_jobs,
+    get_or_create_project, processing::ProcessingSettings, processing::claim_next_report,
+    processing::process_next, processing::rescore, processing::rescore_jobs,
 };
 use flakeradar_test_support::{
     FixedClock, TestDb, make_job, make_job_execution, make_junit, make_pipeline, make_report,
@@ -120,7 +121,10 @@ async fn queue_pipeline(
 }
 
 /// Processes until the queue is empty, returning the outcomes.
-async fn drain(db: &TestDb, settings: &ProcessingSettings) -> Vec<flakeradar_db::ProcessOutcome> {
+async fn drain(
+    db: &TestDb,
+    settings: &ProcessingSettings,
+) -> Vec<flakeradar_db::processing::ProcessOutcome> {
     let mut outcomes = Vec::new();
     while let Some(outcome) = process_next(db.connection(), settings)
         .await
@@ -973,7 +977,7 @@ async fn a_rescore_matches_the_branch_scoped_score_over_all_rows() {
     let stored = test(&db).await;
     history.reverse();
     let history = history;
-    let (expected, confirmed) = flakeradar_core::branch_scoped_score(
+    let (expected, confirmed) = flakeradar_core::scoring::branch_scoped_score(
         &history,
         Some("main"),
         settings.score_decay,
@@ -988,7 +992,7 @@ async fn a_rescore_matches_the_branch_scoped_score_over_all_rows() {
     );
     assert_eq!(
         stored.clean_streak,
-        i32::try_from(flakeradar_core::branch_scoped_streak(
+        i32::try_from(flakeradar_core::scoring::branch_scoped_streak(
             &history,
             Some("main")
         ))
@@ -996,7 +1000,7 @@ async fn a_rescore_matches_the_branch_scoped_score_over_all_rows() {
     );
     assert_eq!(
         stored.fail_streak,
-        i32::try_from(flakeradar_core::branch_scoped_fail_streak(
+        i32::try_from(flakeradar_core::scoring::branch_scoped_fail_streak(
             &history,
             Some("main")
         ))
@@ -1915,7 +1919,7 @@ async fn a_job_tier_crossing_reports_job_flaky() {
                 (Some(".github/workflows/ci.yml"), "test (ubuntu, 3.12)")
             );
             assert_eq!(change.flakiness_score, row.flakiness_score);
-            assert_eq!(change.tier, flakeradar_core::Tier::Flaky);
+            assert_eq!(change.tier, flakeradar_core::model::Tier::Flaky);
             assert_eq!(
                 (change.classname.as_deref(), change.failure_category),
                 (None, None)
@@ -2137,7 +2141,7 @@ async fn a_report_that_changes_the_default_branch_drops_its_own_crossings() {
                 outcome
                     .tier_changes
                     .first()
-                    .map(flakeradar_core::TierChange::event),
+                    .map(flakeradar_core::notify::TierChange::event),
                 Some("test.flaky".to_owned())
             );
         }

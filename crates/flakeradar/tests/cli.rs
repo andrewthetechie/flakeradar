@@ -15,7 +15,9 @@ use axum::Router;
 use axum::http::StatusCode;
 use axum::routing::get;
 use clap::Parser as _;
-use flakeradar::{Cli, Command, Settings, healthcheck, healthcheck_url};
+use flakeradar::{
+    cli::Cli, cli::Command, cli::healthcheck, cli::healthcheck_url, settings::Settings,
+};
 use tokio::net::TcpListener;
 
 /// Settings built from `pairs`, which are `FLAKERADAR_*` variables.

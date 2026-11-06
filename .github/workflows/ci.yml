@@ -80,6 +80,14 @@ jobs:
         # a doc comment can pass CI forever.
         run: cargo test --doc --all-features
 
+      - name: Build the docs (cargo doc)
+        # A broken intra-doc link and a doc that points at a private item are
+        # rustdoc warnings, which no other step turns into a failure. Private
+        # items are documented too, so a link in a module's own docs is checked.
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+        run: cargo doc --no-deps --all-features --document-private-items --workspace
+
       - name: Cache sea-orm-cli binary
         id: cache-sea-orm-cli
         uses: actions/cache@v4

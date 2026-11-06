@@ -1,6 +1,6 @@
 //! The app a test drives, and the doubles a route test needs.
 //!
-//! Every test builds [`flakeradar::build_app`] over its own database and sends
+//! Every test builds [`flakeradar::app::build_app`] over its own database and sends
 //! requests with `tower`'s `oneshot`, so no test binds a port unless it is the
 //! subject. [`MemoryAssets`] stands in for the embedded frontend and
 //! [`Unanswered`] is an endpoint that reads a request and never answers it,
@@ -21,7 +21,9 @@ use std::sync::Arc;
 use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{HeaderMap, Method, Request, StatusCode};
-use flakeradar::{AppState, Asset, AssetSource, Settings, build_app};
+use flakeradar::{
+    app::AppState, app::build_app, assets::Asset, assets::AssetSource, settings::Settings,
+};
 use serde_json::Value;
 use tower::ServiceExt as _;
 

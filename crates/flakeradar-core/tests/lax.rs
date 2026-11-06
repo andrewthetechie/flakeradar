@@ -12,7 +12,7 @@
 )]
 
 use chrono::{DateTime, TimeZone as _, Utc};
-use flakeradar_core::LocSegment;
+use flakeradar_core::dto::LocSegment;
 use flakeradar_core::lax::{self, Fields};
 use serde_json::{Value, json};
 
@@ -25,7 +25,9 @@ fn at() -> Vec<LocSegment> {
 }
 
 /// The `(type, loc)` an expected issue carries.
-fn kind_of(value: Result<impl std::fmt::Debug, Box<flakeradar_core::ValidationIssue>>) -> String {
+fn kind_of(
+    value: Result<impl std::fmt::Debug, Box<flakeradar_core::dto::ValidationIssue>>,
+) -> String {
     match value {
         Ok(reading) => panic!("the value is refused, not read as {reading:?}"),
         Err(issue) => {

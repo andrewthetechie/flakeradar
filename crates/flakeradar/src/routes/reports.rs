@@ -17,10 +17,11 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Router, middleware};
 use flakeradar_core::{
-    AttemptIn, IngestAccepted, ParseError, PipelineReportIn, ReportOut, ReportStatus,
-    ReportSummaryOut, ValidationIssue, ci_run_attempt_too_large, lax, normalize_project,
-    normalize_repo, normalize_root, parse_junit_xml, pipeline_body, read_ci_run_attempt,
-    strip_wire_whitespace,
+    dto::AttemptIn, dto::IngestAccepted, dto::PipelineReportIn, dto::ReportOut,
+    dto::ReportSummaryOut, dto::ValidationIssue, dto::ci_run_attempt_too_large, dto::pipeline_body,
+    dto::read_ci_run_attempt, identity::normalize_project, identity::normalize_repo,
+    identity::normalize_root, lax, model::ReportStatus, parsing::ParseError,
+    parsing::parse_junit_xml, py::strip_wire_whitespace,
 };
 use flakeradar_db::entities::reports;
 use flakeradar_db::list_reports as report_queue;
@@ -528,7 +529,7 @@ async fn parse_report_body(content: Bytes, line_base: i64) -> ApiResult<()> {
 }
 
 /// The 422 for a Repo, Project or root name the server cannot accept.
-fn named_error(error: &flakeradar_core::IdentityError) -> ApiError {
+fn named_error(error: &flakeradar_core::identity::IdentityError) -> ApiError {
     ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, error.to_string())
 }
 

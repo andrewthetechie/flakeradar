@@ -9,7 +9,7 @@
 // Rust guideline compliant 2026-07-21
 
 use chrono::NaiveDate;
-use flakeradar_core::EntityKind;
+use flakeradar_core::model::EntityKind;
 use sea_orm::{ConnectionTrait, DbBackend, Statement, Value};
 
 use crate::attribution::int_array;
@@ -81,7 +81,7 @@ pub async fn past_scores(
     ids: &[i32],
     today: NaiveDate,
 ) -> Result<std::collections::BTreeMap<i32, f64>, DbError> {
-    let cutoff = today - chrono::Duration::days(flakeradar_core::TREND_DAYS);
+    let cutoff = today - chrono::Duration::days(flakeradar_core::helpers::TREND_DAYS);
     let table = history_table(kind);
     let owner = owner_column(kind);
     let mut found = std::collections::BTreeMap::new();

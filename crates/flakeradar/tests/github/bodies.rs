@@ -3,7 +3,7 @@
 // Rust guideline compliant 2026-07-21
 
 use flakeradar::github;
-use flakeradar_core::{EntityKind, ExecutionStatus};
+use flakeradar_core::{model::EntityKind, model::ExecutionStatus};
 use flakeradar_db::filing::{JobRow, RecentExecution, TestRow};
 use flakeradar_test_support::{
     FIXTURE_INSTANT, TestDb, make_execution, make_job_execution, make_project, make_run,
@@ -265,7 +265,10 @@ async fn a_job_body_without_history_still_carries_the_table_heading() {
 
 #[test]
 fn a_job_body_names_every_outcome_runner_and_link_it_has() {
-    use flakeradar_core::{JobExecutionOut, JobHistoryOut, JobOut, JobOutcome, RunnerStatOut};
+    use flakeradar_core::{
+        dto::JobExecutionOut, dto::JobHistoryOut, dto::JobOut, dto::RunnerStatOut,
+        model::JobOutcome,
+    };
 
     /// One Job execution with the fields the body prints.
     fn execution(outcome: JobOutcome, url: &str, runner_name: &str) -> JobExecutionOut {
@@ -303,7 +306,7 @@ fn a_job_body_names_every_outcome_runner_and_link_it_has() {
             pipeline: "ci".to_owned(),
             name: "unit".to_owned(),
             flakiness_score: 0.5,
-            tier: flakeradar_core::Tier::Suspect,
+            tier: flakeradar_core::model::Tier::Suspect,
             confirmed_flake_count: 1,
             clean_streak: 0,
             trend: None,

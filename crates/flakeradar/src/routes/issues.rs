@@ -11,7 +11,7 @@ use axum::extract::State;
 use axum::routing::put;
 use axum::{Router, middleware};
 use flakeradar_core::dto::lax_bool;
-use flakeradar_core::{EntityKind, IssueLinkIn, JobOut, TestOut};
+use flakeradar_core::{dto::IssueLinkIn, dto::JobOut, dto::TestOut, model::EntityKind};
 use flakeradar_db::issue_links::{self, IssueLinkError, LinkedOut};
 
 use serde::Deserialize;

@@ -2,10 +2,11 @@
 //! the GitHub and webhook clients, and the embedded frontend.
 //!
 //! The library holds everything the binary runs, so the routes and workers are
-//! reachable from integration tests without starting a process. [`build_app`]
-//! assembles the router over a [`flakeradar_db::connect`] pool and an
-//! [`AppState`]; [`Server`] adds the migration, the socket and the shutdown, and
-//! [`Settings`] is the configuration both run with.
+//! reachable from integration tests without starting a process.
+//! [`app::build_app`] assembles the router over a [`flakeradar_db::connect()`]
+//! pool and an [`app::AppState`]; [`server::Server`] adds the migration, the
+//! socket and the shutdown, and [`settings::Settings`] is the configuration both
+//! run with.
 
 // Rust guideline compliant 2026-07-21
 
@@ -42,40 +43,4 @@ pub mod webhooks;
 pub mod worker;
 
 #[doc(inline)]
-pub use app::{AppState, JSON_BODY_LIMIT, build_app, with_common_layers};
-#[doc(inline)]
-pub use assets::{Asset, AssetSource};
-#[doc(inline)]
-pub use cli::{Cli, Command, HEALTH_PATH, HEALTHCHECK_TIMEOUT, healthcheck, healthcheck_url};
-#[doc(inline)]
-pub use error::{ApiError, ApiResult, Detail, RouteError, RouteResult};
-#[doc(inline)]
-pub use extract::{ApiJson, ApiPath, ApiQuery, FromJsonObject, Validate, body_loc, query_loc};
-#[doc(inline)]
-pub use github::{Answer, Api};
-#[doc(inline)]
-pub use github_worker::GitHubWorker;
-#[doc(inline)]
-pub use mcp::{INSTRUCTIONS, McpServer};
-#[doc(inline)]
-pub use multipart::file_field;
-#[doc(inline)]
-pub use queue::BatchQueue;
-pub use routes::{JobPath, TestPath};
-#[doc(inline)]
-pub use server::Server;
-#[doc(inline)]
-pub use settings::{
-    ALLOW_INSECURE_VARIABLE, Secret, Settings, SettingsError, assert_secure_token, check_api_token,
-    is_default_token,
-};
-#[doc(inline)]
 pub use telemetry::init_tracing;
-#[doc(inline)]
-pub use webhooks::WebhookWorker;
-#[doc(inline)]
-pub use worker::{
-    AdvisoryLock, DatabaseProcessor, LeaderRun, LeaderTask, LockSession, Pruner, ReportProcessor,
-    ReportWorker, RetentionPrune, StartFuture, StopFuture, TokioWaiter, Waiter, WorkerSettings,
-    until_stopped,
-};

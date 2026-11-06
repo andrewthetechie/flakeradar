@@ -9,8 +9,8 @@ use std::collections::BTreeSet;
 use std::ops::ControlFlow;
 
 use chrono::{DateTime, Utc};
-use flakeradar_core::EntityKind;
-use flakeradar_db::SharedClock;
+use flakeradar_core::model::EntityKind;
+use flakeradar_db::clock::SharedClock;
 use flakeradar_db::filing::{self, NoteCandidate};
 use flakeradar_db::issue_links::{self, NoteRowState};
 use sea_orm::{ConnectionTrait, TransactionTrait};

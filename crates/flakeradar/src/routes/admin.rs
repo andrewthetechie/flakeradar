@@ -13,7 +13,10 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::routing::delete;
 use axum::{Router, middleware};
-use flakeradar_core::{ProjectDeleteOut, RepoDeleteOut, normalize_project, normalize_repo};
+use flakeradar_core::{
+    dto::ProjectDeleteOut, dto::RepoDeleteOut, identity::normalize_project,
+    identity::normalize_repo,
+};
 use flakeradar_db::ProjectDelete;
 use serde::Deserialize;
 
@@ -55,7 +58,7 @@ pub struct ProjectPath {
 }
 
 /// A 422 from an identity rule, as `{"detail": "<message>"}`.
-fn identity_error(error: &flakeradar_core::IdentityError) -> ApiError {
+fn identity_error(error: &flakeradar_core::identity::IdentityError) -> ApiError {
     ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, error.to_string())
 }
 

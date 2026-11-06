@@ -14,7 +14,7 @@
 use std::collections::BTreeMap;
 
 use chrono::{DateTime, FixedOffset, Utc};
-use flakeradar_core::{EntityKind, ExecutionStatus};
+use flakeradar_core::{model::EntityKind, model::ExecutionStatus};
 use sea_orm::sea_query::Value;
 use sea_orm::{ConnectionTrait, QueryResult};
 

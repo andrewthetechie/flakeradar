@@ -11,8 +11,8 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::path::Path;
 
-use flakeradar_core::WebhookFormat;
 use flakeradar_core::defaults;
+use flakeradar_core::notify::WebhookFormat;
 use thiserror::Error;
 
 /// The token a fresh install ships with, which start-up refuses to keep.
@@ -390,11 +390,14 @@ impl Settings {
     /// The read layer's view of these settings, on `clock`.
     ///
     /// The caller brings the clock: one process reads every instant through
-    /// [`crate::AppState`]'s, so a test can put a whole server on a fixed day
+    /// [`crate::app::AppState`]'s, so a test can put a whole server on a fixed day
     /// instead of only the layer it called directly.
     #[must_use]
-    pub fn reads(&self, clock: flakeradar_db::SharedClock) -> flakeradar_db::ReadSettings {
-        flakeradar_db::ReadSettings {
+    pub fn reads(
+        &self,
+        clock: flakeradar_db::clock::SharedClock,
+    ) -> flakeradar_db::reads::ReadSettings {
+        flakeradar_db::reads::ReadSettings {
             flake_threshold: self.flake_threshold,
             broken_streak: self.broken_streak,
             score_window: self.score_window,
@@ -409,9 +412,9 @@ impl Settings {
     #[must_use]
     pub fn processing(
         &self,
-        clock: flakeradar_db::SharedClock,
-    ) -> flakeradar_db::ProcessingSettings {
-        flakeradar_db::ProcessingSettings {
+        clock: flakeradar_db::clock::SharedClock,
+    ) -> flakeradar_db::processing::ProcessingSettings {
+        flakeradar_db::processing::ProcessingSettings {
             score_window: self.score_window,
             score_decay: self.score_decay,
             broken_streak: self.broken_streak,
@@ -630,8 +633,8 @@ impl Settings {
     /// The database layer cannot depend on this module, so it takes only the
     /// values retention reads.
     #[must_use]
-    pub fn retention(&self) -> flakeradar_db::RetentionSettings {
-        flakeradar_db::RetentionSettings {
+    pub fn retention(&self) -> flakeradar_db::retention::RetentionSettings {
+        flakeradar_db::retention::RetentionSettings {
             report_days: self.report_retention_days,
             failed_report_days: self.failed_report_retention_days,
             execution_days: self.execution_retention_days,
@@ -948,7 +951,7 @@ mod tests {
         assert_eq!(settings.webhook_urls.expose(), "");
         assert_eq!(
             settings.webhook_format,
-            flakeradar_core::WebhookFormat::Json
+            flakeradar_core::notify::WebhookFormat::Json
         );
         assert_eq!(settings.cors_origins, "http://localhost:5173");
         assert_eq!(settings.worker_poll_seconds, 1.0);
@@ -1028,7 +1031,7 @@ mod tests {
         );
         assert_eq!(
             settings.webhook_format,
-            flakeradar_core::WebhookFormat::Slack
+            flakeradar_core::notify::WebhookFormat::Slack
         );
         // The space after the comma is part of the second origin, as it was in
         // Python: splitting is all the frozen server did.
@@ -1413,10 +1416,10 @@ mod tests {
     #[test]
     fn the_settings_views_and_retention_agree_on_every_default() {
         let settings = Settings::default();
-        let clock: flakeradar_db::SharedClock = Arc::new(flakeradar_db::SystemClock);
-        let processing = flakeradar_db::ProcessingSettings::default();
-        let reads = flakeradar_db::ReadSettings::default();
-        let retention = flakeradar_db::RetentionSettings::default();
+        let clock: flakeradar_db::clock::SharedClock = Arc::new(flakeradar_db::clock::SystemClock);
+        let processing = flakeradar_db::processing::ProcessingSettings::default();
+        let reads = flakeradar_db::reads::ReadSettings::default();
+        let retention = flakeradar_db::retention::RetentionSettings::default();
         // The views are the same types on both sides, so a default that lives in
         // one place and is restated in another cannot drift unnoticed.
         assert_eq!(

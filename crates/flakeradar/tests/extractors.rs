@@ -16,8 +16,11 @@ use axum::Router;
 use axum::extract::DefaultBodyLimit;
 use axum::http::StatusCode;
 use axum::routing::{get, post};
-use flakeradar::{ApiError, ApiJson, ApiPath, ApiQuery, FromJsonObject, Validate, query_loc};
-use flakeradar_core::{LocSegment, ValidationIssue, lax};
+use flakeradar::{
+    error::ApiError, extract::ApiJson, extract::ApiPath, extract::ApiQuery,
+    extract::FromJsonObject, extract::Validate, extract::query_loc,
+};
+use flakeradar_core::{dto::LocSegment, dto::ValidationIssue, lax};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
@@ -199,7 +202,7 @@ fn extractor_app() -> Router {
             "/pair/{left}/{right}",
             get(|ApiPath(pair): ApiPath<(i64, i64)>| async move { format!("{pair:?}") }),
         )
-        .layer(DefaultBodyLimit::max(flakeradar::JSON_BODY_LIMIT))
+        .layer(DefaultBodyLimit::max(flakeradar::app::JSON_BODY_LIMIT))
 }
 
 /// Sends one request to the extractor app.
@@ -505,7 +508,7 @@ async fn a_body_field_with_a_rule_of_its_own_reports_it() {
 async fn a_json_body_over_the_limit_is_refused() {
     let body = format!(
         "{{\"number\": 1, \"reason\": \"{}\"}}",
-        "a".repeat(flakeradar::JSON_BODY_LIMIT)
+        "a".repeat(flakeradar::app::JSON_BODY_LIMIT)
     );
     let reply = call(
         axum::http::Method::POST,

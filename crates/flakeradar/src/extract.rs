@@ -21,7 +21,9 @@ use axum::http::request::Parts;
 use axum::http::{StatusCode, header};
 use flakeradar_core::dto::lax_bool;
 use flakeradar_core::lax;
-use flakeradar_core::{BodyRefusal, LocSegment, ValidationIssue, ci_run_attempt_too_large};
+use flakeradar_core::{
+    dto::BodyRefusal, dto::LocSegment, dto::ValidationIssue, dto::ci_run_attempt_too_large,
+};
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
 use serde_path_to_error::{Path as ErrorPath, Segment};
@@ -156,19 +158,19 @@ where
     }
 }
 
-impl FromJsonObject for flakeradar_core::QuarantineIn {
+impl FromJsonObject for flakeradar_core::dto::QuarantineIn {
     fn from_object(object: &Map<String, Value>) -> ApiResult<Self> {
         Self::from_value(object).map_err(ApiError::unprocessable)
     }
 }
 
-impl FromJsonObject for flakeradar_core::IssueLinkIn {
+impl FromJsonObject for flakeradar_core::dto::IssueLinkIn {
     fn from_object(object: &Map<String, Value>) -> ApiResult<Self> {
         Self::from_value(object).map_err(ApiError::unprocessable)
     }
 }
 
-impl FromJsonObject for flakeradar_core::PipelineReportIn {
+impl FromJsonObject for flakeradar_core::dto::PipelineReportIn {
     fn from_object(object: &Map<String, Value>) -> ApiResult<Self> {
         Self::from_value(object).map_err(ApiError::from)
     }
@@ -543,7 +545,7 @@ pub(crate) fn body_error(rejection: &axum::extract::rejection::BytesRejection) -
 mod tests {
     //! The error-shape mapping, on messages the parsers really produce.
 
-    use flakeradar_core::LocSegment;
+    use flakeradar_core::dto::LocSegment;
     use serde_json::Value;
 
     use flakeradar_core::dto::lax_bool;

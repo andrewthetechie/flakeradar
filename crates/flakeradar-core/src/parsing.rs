@@ -158,7 +158,7 @@ pub enum ParseError {
 ///
 /// ```
 /// assert_eq!(
-///     flakeradar_core::fingerprint("unit", "tests.test_mod", "t1").as_str(),
+///     flakeradar_core::parsing::fingerprint("unit", "tests.test_mod", "t1").as_str(),
 ///     "2b8823c6c55be0a19a34111f08b687028f5273df"
 /// );
 /// ```
@@ -192,7 +192,7 @@ fn hex_lower(bytes: impl AsRef<[u8]>) -> String {
 /// # Examples
 ///
 /// ```
-/// use flakeradar_core::{ExecutionStatus, parse_junit_xml};
+/// use flakeradar_core::{model::ExecutionStatus, parsing::parse_junit_xml};
 ///
 /// let xml = br#"<testsuite name="unit"><testcase classname="c" name="t" time="0.5"/></testsuite>"#;
 /// let cases = parse_junit_xml(xml, 1).unwrap();

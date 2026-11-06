@@ -10,7 +10,7 @@
     reason = "a test fails loudly when report intake misbehaves"
 )]
 
-use flakeradar_core::{PipelineReportIn, ReportStatus, pipeline_body};
+use flakeradar_core::{dto::PipelineReportIn, dto::pipeline_body, model::ReportStatus};
 use flakeradar_db::entities::{projects, reports};
 use flakeradar_db::{
     DbError, NewJunitReport, NewPipelineReport, complete_report, fail_report, find_junit_duplicate,

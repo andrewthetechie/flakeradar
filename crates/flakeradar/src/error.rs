@@ -15,9 +15,9 @@ use std::fmt;
 use axum::Json;
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use flakeradar_core::ValidationIssue;
+use flakeradar_core::dto::ValidationIssue;
 use flakeradar_db::issue_links::IssueLinkError;
-use flakeradar_db::{DbError, DeleteError, LinkError, ReadError};
+use flakeradar_db::{DbError, DeleteError, issue_links::LinkError, reads::ReadError};
 use serde::Serialize;
 
 /// What a failed request says about itself.
@@ -270,8 +270,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_validation_error_is_a_422_with_a_list_of_issues() {
-        let issue = flakeradar_core::ValidationIssue::int_parsing(
-            vec![flakeradar_core::LocSegment::Field("limit".to_owned())],
+        let issue = flakeradar_core::dto::ValidationIssue::int_parsing(
+            vec![flakeradar_core::dto::LocSegment::Field("limit".to_owned())],
             json!("abc"),
         );
         let error = ApiError::unprocessable(vec![issue]);
@@ -324,7 +324,7 @@ mod tests {
             .to_string(),
             "not linkable"
         );
-        let read = RouteError::from(flakeradar_db::ReadError::Database(
+        let read = RouteError::from(flakeradar_db::reads::ReadError::Database(
             flakeradar_db::DbError::Database(sea_orm::DbErr::RecordNotFound("a row".to_owned())),
         ));
         assert!(read.source().is_some());

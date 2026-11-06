@@ -9,7 +9,7 @@
 
 // Rust guideline compliant 2026-07-21
 
-use flakeradar_core::ExecutionStatus;
+use flakeradar_core::model::ExecutionStatus;
 use sea_orm::{ConnectionTrait, DbBackend, DbErr, QueryResult, Statement, TryGetable, Value};
 
 use crate::error::DbError;

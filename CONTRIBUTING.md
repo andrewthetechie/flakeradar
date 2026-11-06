@@ -42,6 +42,7 @@ cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo nextest run --all-features --profile ci   # needs Docker or FLAKERADAR_TEST_DATABASE_URL
 cargo test --doc --all-features
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features --document-private-items --workspace
 cargo audit
 cd frontend && npm run typecheck && npm run lint && npm run format:check && npm test
 ```

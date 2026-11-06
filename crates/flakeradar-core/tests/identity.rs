@@ -8,8 +8,8 @@
 )]
 
 use flakeradar_core::{
-    DEFAULT_PROJECT, IdentityError, normalize_project, normalize_provider, normalize_repo,
-    normalize_root,
+    identity::DEFAULT_PROJECT, identity::IdentityError, identity::normalize_project,
+    identity::normalize_provider, identity::normalize_repo, identity::normalize_root,
 };
 
 #[test]

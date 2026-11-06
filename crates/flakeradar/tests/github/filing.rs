@@ -2,10 +2,10 @@
 
 // Rust guideline compliant 2026-07-21
 
-use flakeradar::Settings;
 use flakeradar::github::{self, Api};
 use flakeradar::settings::Secret;
-use flakeradar_core::EntityKind;
+use flakeradar::settings::Settings;
+use flakeradar_core::model::EntityKind;
 use flakeradar_test_support::{
     TestDb, make_execution, make_job, make_job_execution, make_pipeline, make_project, make_run,
     make_test_case, system_clock,

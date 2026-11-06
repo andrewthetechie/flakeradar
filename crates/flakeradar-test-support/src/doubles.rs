@@ -23,10 +23,10 @@ use flakeradar::worker::{
     AdvisoryLock, LeaderTask, LockFuture, LockSession, ProcessFuture, PruneFuture, Pruner,
     ReportProcessor, SessionFuture, StartFuture, StopFuture, WaitFuture, Waiter,
 };
-use flakeradar_core::{ReportStatus, TierChange};
+use flakeradar_core::{model::ReportStatus, notify::TierChange};
 use flakeradar_db::{
-    DbError, DbSettings, MonotonicClock, ProcessOutcome, ProcessingSettings, PruneResult,
-    WORKER_LOCK_KEY, connect,
+    DbError, DbSettings, WORKER_LOCK_KEY, clock::MonotonicClock, connect,
+    processing::ProcessOutcome, processing::ProcessingSettings, retention::PruneResult,
 };
 use sea_orm::{ConnectionTrait as _, DatabaseConnection, Statement};
 
@@ -545,7 +545,7 @@ impl ReportProcessor for FailingOnceProcessor {
                 )))
             })
         } else {
-            Box::pin(async move { flakeradar_db::process_next(&pool, &settings).await })
+            Box::pin(async move { flakeradar_db::processing::process_next(&pool, &settings).await })
         }
     }
 }

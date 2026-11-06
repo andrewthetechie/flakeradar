@@ -16,7 +16,7 @@
 
 // Rust guideline compliant 2026-07-21
 
-use flakeradar_core::{DeletedCountsOut, ProjectDeleteOut, RepoDeleteOut};
+use flakeradar_core::{dto::DeletedCountsOut, dto::ProjectDeleteOut, dto::RepoDeleteOut};
 use sea_orm::sqlx::error::Error as SqlxError;
 use sea_orm::{
     ConnectionTrait, DbBackend, DbErr, RuntimeErr, Statement, TransactionSession, TransactionTrait,

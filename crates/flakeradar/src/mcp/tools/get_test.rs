@@ -11,8 +11,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use flakeradar_core::{
-    DEFAULT_PROJECT, ExecutionOut, ExecutionStatus, FailureCategory, LocationOut, TestJobLinkOut,
-    TestOut, dto::timestamp,
+    classify::FailureCategory, dto::ExecutionOut, dto::LocationOut, dto::TestJobLinkOut,
+    dto::TestOut, dto::timestamp, identity::DEFAULT_PROJECT, model::ExecutionStatus,
 };
 use flakeradar_db::reads;
 
@@ -154,7 +154,7 @@ struct LatestFailure {
     status: ExecutionStatus,
     /// The Failure message.
     message: String,
-    /// The Failure details, capped at [`DETAILS_MAX`].
+    /// The Failure details, capped at the tool's details limit.
     details: String,
     /// The commit the Execution ran.
     commit_sha: String,
@@ -239,6 +239,6 @@ struct TestDetail {
     executions: Vec<ExecutionSummary>,
     /// The Jobs whose Executions came from these Runs.
     jobs: Vec<TestJobLinkOut>,
-    /// The last [`SCORE_HISTORY_MAX`] days of Score history.
+    /// The Score history of the last 30 days, oldest first.
     score_history: Vec<ScorePointSummary>,
 }

@@ -9,7 +9,7 @@ use rmcp::model::ToolAnnotations;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use flakeradar_core::normalize_repo;
+use flakeradar_core::identity::normalize_repo;
 use flakeradar_db::reads;
 
 use crate::mcp::{

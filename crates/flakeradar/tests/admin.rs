@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use axum::Router;
 use axum::http::{Method, StatusCode};
-use flakeradar::{Api, AppState, build_app};
+use flakeradar::{app::AppState, app::build_app, github::Api};
 use flakeradar_test_support::{
     Reply, TestDb, get, make_execution, make_job, make_job_execution, make_pipeline, make_project,
     make_report, make_run, make_test_case, request, request_with_headers, settings,

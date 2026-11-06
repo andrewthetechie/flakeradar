@@ -11,8 +11,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use flakeradar_core::{
-    ExplainingJobOut, ExplainingTestOut, JobExecutionOut, JobOut, JobOutcome, RunnerStatOut,
-    dto::timestamp, normalize_repo,
+    dto::ExplainingJobOut, dto::ExplainingTestOut, dto::JobExecutionOut, dto::JobOut,
+    dto::RunnerStatOut, dto::timestamp, identity::normalize_repo, model::JobOutcome,
 };
 use flakeradar_db::reads;
 
@@ -194,6 +194,6 @@ struct JobDetail {
     runners: Vec<RunnerStatOut>,
     /// The newest executions first, trimmed.
     executions: Vec<JobExecutionSummary>,
-    /// The last [`SCORE_HISTORY_MAX`] days of Score history.
+    /// The Score history of the last 30 days, oldest first.
     score_history: Vec<ScorePointSummary>,
 }

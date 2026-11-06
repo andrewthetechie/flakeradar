@@ -168,7 +168,7 @@ fn match_category(text: &str) -> Option<FailureCategory> {
 /// # Examples
 ///
 /// ```
-/// use flakeradar_core::{FailureCategory, classify_failure};
+/// use flakeradar_core::{classify::FailureCategory, classify::classify_failure};
 ///
 /// assert_eq!(classify_failure("connect ECONNREFUSED 127.0.0.1:5432", ""), FailureCategory::Network);
 /// assert_eq!(classify_failure("AssertionError: expected 3, got 4", ""), FailureCategory::Assertion);
@@ -188,7 +188,7 @@ pub fn classify_failure(message: &str, details: &str) -> FailureCategory {
 /// # Examples
 ///
 /// ```
-/// use flakeradar_core::{FailureCategory, dominant_category};
+/// use flakeradar_core::{classify::FailureCategory, classify::dominant_category};
 ///
 /// let categories = [Some(FailureCategory::Assertion), Some(FailureCategory::Timing)];
 /// assert_eq!(dominant_category(&categories), Some(FailureCategory::Assertion));

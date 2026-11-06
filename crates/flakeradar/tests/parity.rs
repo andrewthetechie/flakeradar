@@ -3,7 +3,7 @@
 //! The contract is `tests/parity/README.md`. The deleted recorder
 //! (`tools/parity-record/record.py` at `97b933d`) recorded what the frozen
 //! Python server answered for each step of each scenario; this harness sends the
-//! same requests to [`flakeradar::build_app`] on a database of its own and
+//! same requests to [`flakeradar::app::build_app`] on a database of its own and
 //! compares the answers.
 //!
 //! Every scenario in `tests/parity/scenarios/` runs every step: there is no list
@@ -39,11 +39,12 @@ use axum::routing::get;
 use chrono::DateTime;
 use common::allowances::{Allowances, AllowedField, allowed, contract_for};
 use flakeradar::{
-    AdvisoryLock, Api, AppState, DatabaseProcessor, GitHubWorker, ReportProcessor, ReportWorker,
-    Settings, WebhookWorker, WorkerSettings, build_app,
+    app::AppState, app::build_app, github::Api, github_worker::GitHubWorker, settings::Settings,
+    webhooks::WebhookWorker, worker::AdvisoryLock, worker::DatabaseProcessor,
+    worker::ReportProcessor, worker::ReportWorker, worker::WorkerSettings,
 };
 use flakeradar_db::entities::repos;
-use flakeradar_db::{DbSettings, ProcessingSettings};
+use flakeradar_db::{DbSettings, processing::ProcessingSettings};
 use flakeradar_test_support::{FIXTURE_INSTANT, TestDb, app, system_clock};
 
 use sea_orm::{ConnectionTrait, DbBackend, EntityTrait, JsonValue, Statement};
@@ -377,7 +378,7 @@ impl Replay {
                 Duration::try_from_secs_f64(settings.prune_interval_seconds).unwrap_or_default(),
             )));
         }
-        let urls = flakeradar_core::parse_urls(settings.webhook_urls.expose());
+        let urls = flakeradar_core::notify::parse_urls(settings.webhook_urls.expose());
         if !urls.is_empty() {
             worker = worker.with_leader_task(Arc::new(
                 WebhookWorker::new(urls, settings.webhook_format, &settings.public_url)

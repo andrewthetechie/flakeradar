@@ -25,10 +25,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
-use flakeradar_core::ReportStatus;
+use flakeradar_core::model::ReportStatus;
 use flakeradar_db::{
-    DbError, DbSettings, ProcessOutcome, ProcessingSettings, PruneResult, RetentionSettings,
-    SharedMonotonic, SystemMonotonic, WORKER_LOCK_KEY, connect_session, process_next, run_prune,
+    DbError, DbSettings, WORKER_LOCK_KEY, clock::SharedMonotonic, clock::SystemMonotonic,
+    connect_session, processing::ProcessOutcome, processing::ProcessingSettings,
+    processing::process_next, retention::PruneResult, retention::RetentionSettings,
+    retention::run_prune,
 };
 use sea_orm::{ConnectionTrait, DatabaseConnection, DbBackend, Statement};
 use tokio::task::JoinHandle;
@@ -194,7 +196,7 @@ pub trait ReportProcessor: fmt::Debug + Send + Sync {
     ) -> ProcessFuture<'static>;
 }
 
-/// The real processor: [`flakeradar_db::process_next`].
+/// The real processor: [`flakeradar_db::processing::process_next`].
 #[derive(Debug, Clone, Copy, Default)]
 pub struct DatabaseProcessor;
 
@@ -217,7 +219,7 @@ pub trait Pruner: fmt::Debug + Send + Sync {
     fn prune(&self, pool: DatabaseConnection) -> PruneFuture<'static>;
 }
 
-/// The real retention run: [`flakeradar_db::run_prune`] with these settings.
+/// The real retention run: [`flakeradar_db::retention::run_prune`] with these settings.
 #[derive(Debug)]
 pub struct RetentionPrune {
     retention: RetentionSettings,
@@ -604,7 +606,7 @@ impl ReportWorker {
     ///
     /// The wait is the graceful part: a Report transaction in flight is rolled
     /// back by the processor's own transaction, so the Report simply stays
-    /// pending. Leadership actually ends in [`ReportWorker::release`], which
+    /// pending. Leadership actually ends in the worker's own release step, which
     /// stops the leader tasks before it unlocks.
     pub async fn stop(&self) {
         self.cancel.cancel();

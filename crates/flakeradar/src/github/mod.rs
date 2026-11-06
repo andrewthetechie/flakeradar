@@ -79,8 +79,8 @@ mod notes;
 mod policy;
 mod sync;
 
-use flakeradar_core::ReportStatus;
-use flakeradar_db::{ProcessOutcome, SharedClock};
+use flakeradar_core::model::ReportStatus;
+use flakeradar_db::{clock::SharedClock, processing::ProcessOutcome};
 use sea_orm::{ConnectionTrait, TransactionTrait};
 use tokio_util::sync::CancellationToken;
 

@@ -41,8 +41,10 @@ is worse than none.
   lint arrives through `pedantic`, which is already on. Do not "restore" it: it is a removed
   lint, so it trips `renamed_and_removed_lints` and fails `clippy -D warnings`.
 - `cargo fmt --all -- --check`, `cargo clippy --all-targets --all-features -- -D warnings`,
-  `cargo nextest run --all-features --profile ci` and `cargo audit` are the gates CI runs. Run
-  them before every commit; the same commands are in `docs/plans/rust-rewrite/00-shared-context.md`.
+  `cargo nextest run --all-features --profile ci`, `cargo test --doc --all-features`,
+  `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features --document-private-items
+  --workspace` and `cargo audit` are the gates CI runs. Run them before every commit; the same
+  commands are in `docs/plans/rust-rewrite/00-shared-context.md`.
 - rustfmt runs with default settings. If we ever deviate, commit a `rustfmt.toml` so editors and
   CI agree.
 - `#[expect]` with a reason for every override (M-LINT-OVERRIDE-EXPECT): a lint suppressed with

@@ -35,7 +35,7 @@ impl Clock for SystemClock {
     }
 }
 
-/// The clock a [`ProcessingSettings`](crate::ProcessingSettings) carries.
+/// The clock a [`ProcessingSettings`](crate::processing::ProcessingSettings) carries.
 pub type SharedClock = Arc<dyn Clock>;
 
 /// Where a background run learns how much time it has spent.

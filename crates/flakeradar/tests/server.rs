@@ -1,6 +1,6 @@
 //! The server on a real socket, over a database that has no schema yet.
 //!
-//! This is the start-up a deployment takes: [`flakeradar::Server::start`]
+//! This is the start-up a deployment takes: [`flakeradar::server::Server::start`]
 //! connects, migrates, builds the app and binds a port, and nothing answers
 //! until it has done all three. The port is 0, so the kernel picks one and the
 //! test asks the server which it got; the database is [`TestDb::empty`], so the
@@ -11,7 +11,7 @@
     reason = "a test fails loudly when the server does not answer as it must"
 )]
 
-use flakeradar::{Server, Settings};
+use flakeradar::{server::Server, settings::Settings};
 use flakeradar_test_support::{TestDb, settings, wait_until};
 
 use sea_orm::{ConnectionTrait as _, EntityTrait as _, PaginatorTrait as _};

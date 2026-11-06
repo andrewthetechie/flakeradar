@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use chrono::{DateTime, FixedOffset};
-use flakeradar_db::{Clock, SharedClock, SystemClock};
+use flakeradar_db::{clock::Clock, clock::SharedClock, clock::SystemClock};
 
 /// The system clock, boxed the way a seam takes one.
 ///

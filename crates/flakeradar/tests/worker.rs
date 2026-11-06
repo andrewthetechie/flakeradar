@@ -15,14 +15,14 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use chrono::{DateTime, FixedOffset};
-use flakeradar::WebhookWorker;
+use flakeradar::webhooks::WebhookWorker;
 use flakeradar::worker::{
     AdvisoryLock, LeaderRun, LockSession, Pruner, ReportProcessor, ReportWorker, Waiter,
     WorkerSettings,
 };
-use flakeradar_core::WebhookFormat;
+use flakeradar_core::notify::WebhookFormat;
 use flakeradar_db::entities::{projects, reports};
-use flakeradar_db::{DbSettings, MonotonicClock, ProcessingSettings};
+use flakeradar_db::{DbSettings, clock::MonotonicClock, processing::ProcessingSettings};
 use flakeradar_test_support::{
     CapturedLog, CountingLock, CountingPruner, FailingLock, FailingOnceProcessor,
     FailingUnlockLock, FixedClock, GateWaiter, ManualMonotonic, RecordingTask, RecordingWaiter,

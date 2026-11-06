@@ -15,7 +15,10 @@ use flakeradar_db::entities::{
     job_executions, job_score_history, reports, test_cases, test_executions, test_runs,
     test_score_history,
 };
-use flakeradar_db::{DbError, ProcessingSettings, RetentionSettings, prune, run_prune};
+use flakeradar_db::{
+    DbError, processing::ProcessingSettings, retention::RetentionSettings, retention::prune,
+    retention::run_prune,
+};
 use flakeradar_test_support::{
     FixedClock, ScriptedMonotonic, TestDb, make_execution, make_job, make_job_execution,
     make_job_score, make_pipeline, make_project, make_report, make_run, make_test_case,

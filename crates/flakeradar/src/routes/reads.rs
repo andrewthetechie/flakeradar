@@ -15,15 +15,18 @@ use axum::routing::{get, post};
 use axum::{Router, middleware};
 use flakeradar_core::limits::{LIST_LIMIT_MAX, NEW_WITHIN_DAYS_MAX};
 use flakeradar_core::{
-    CiRunFailuresOut, FailureCategory, HistoryOut, JobHistoryOut, JobPage, JobSummaryOut,
-    QuarantineIn, QuarantineItem, RepoOut, SummaryOut, TestOut, TestPage, ValidationIssue, lax,
-    normalize_project, normalize_repo,
+    classify::FailureCategory, dto::CiRunFailuresOut, dto::HistoryOut, dto::JobHistoryOut,
+    dto::JobPage, dto::JobSummaryOut, dto::QuarantineIn, dto::QuarantineItem, dto::RepoOut,
+    dto::SummaryOut, dto::TestOut, dto::TestPage, dto::ValidationIssue,
+    identity::normalize_project, identity::normalize_repo, lax,
 };
 use flakeradar_db::{
-    DEFAULT_EXECUTIONS_LIMIT, FAILURES_LIMIT, JobListFilters, ListOptions, MAX_EXECUTIONS_LIMIT,
-    QuarantineDecision, ReadSettings, Scope, SortKey, TestListFilters, ci_run_failures, get_job,
-    get_test, job_summary, list_jobs, list_repos, list_tests, quarantine_list, set_quarantine,
-    summary,
+    reads::DEFAULT_EXECUTIONS_LIMIT, reads::FAILURES_LIMIT, reads::JobListFilters,
+    reads::ListOptions, reads::MAX_EXECUTIONS_LIMIT, reads::QuarantineDecision,
+    reads::ReadSettings, reads::Scope, reads::SortKey, reads::TestListFilters,
+    reads::ci_run_failures, reads::get_job, reads::get_test, reads::job_summary, reads::list_jobs,
+    reads::list_repos, reads::list_tests, reads::quarantine_list, reads::set_quarantine,
+    reads::summary,
 };
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
@@ -60,7 +63,7 @@ fn read_settings(state: &AppState) -> ReadSettings {
 }
 
 /// A 422 from an identity rule, as `{"detail": "<message>"}`.
-fn identity_error(error: &flakeradar_core::IdentityError) -> ApiError {
+fn identity_error(error: &flakeradar_core::identity::IdentityError) -> ApiError {
     ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, error.to_string())
 }
 
@@ -763,8 +766,8 @@ pub async fn ci_run(
     if length > 255 {
         issues.push(ValidationIssue::string_too_long(
             vec![
-                flakeradar_core::LocSegment::Field("path".to_owned()),
-                flakeradar_core::LocSegment::Field("ci_run_id".to_owned()),
+                flakeradar_core::dto::LocSegment::Field("path".to_owned()),
+                flakeradar_core::dto::LocSegment::Field("ci_run_id".to_owned()),
             ],
             JsonValue::from(path.ci_run_id.clone()),
             255,

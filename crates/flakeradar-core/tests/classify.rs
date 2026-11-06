@@ -2,7 +2,9 @@
 
 // Rust guideline compliant 2026-07-21
 
-use flakeradar_core::{FailureCategory::*, classify_failure, dominant_category};
+use flakeradar_core::{
+    classify::FailureCategory::*, classify::classify_failure, classify::dominant_category,
+};
 
 #[test]
 fn classify_failure_matches_the_python_rules() {

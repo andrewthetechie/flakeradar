@@ -43,7 +43,7 @@ impl Fingerprint {
     /// The fingerprint of a digest this crate just computed.
     ///
     /// Only this crate may skip the check, because the one caller is
-    /// [`fingerprint`](crate::fingerprint): it renders a SHA-1 in lowercase hex,
+    /// [`fingerprint`](crate::parsing::fingerprint): it renders a SHA-1 in lowercase hex,
     /// so its output always satisfies [`Fingerprint::new`].
     pub(crate) fn from_digest(digest: String) -> Self {
         debug_assert!(

@@ -14,7 +14,7 @@
 use std::fmt;
 
 use anyhow::Context as _;
-use flakeradar_core::MAX_ISSUE_NUMBER;
+use flakeradar_core::dto::MAX_ISSUE_NUMBER;
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
 use reqwest::{Client, Method};
 use serde_json::{Value, json};

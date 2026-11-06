@@ -2,7 +2,7 @@
 
 // Rust guideline compliant 2026-07-21
 
-use flakeradar_core::{cap, py_splitlines, round4, strip_wire_whitespace};
+use flakeradar_core::{py::cap, py::py_splitlines, py::round4, py::strip_wire_whitespace};
 
 #[test]
 fn strip_wire_whitespace_removes_pythons_whitespace_set() {
@@ -35,7 +35,7 @@ fn cap_counts_code_points_and_keeps_the_marker_inside_the_limit() {
     let text = "é".repeat(30);
     let capped = cap(&text, 20);
     assert_eq!(capped.chars().count(), 20);
-    assert!(capped.ends_with(flakeradar_core::TRUNCATION_MARKER));
+    assert!(capped.ends_with(flakeradar_core::py::TRUNCATION_MARKER));
     assert_eq!(cap("short", 20), "short");
 }
 

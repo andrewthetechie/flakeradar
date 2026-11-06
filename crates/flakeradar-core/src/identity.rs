@@ -74,7 +74,7 @@ pub enum IdentityError {
 ///
 /// ```
 /// assert_eq!(
-///     flakeradar_core::normalize_repo("  Acme/App ").unwrap(),
+///     flakeradar_core::identity::normalize_repo("  Acme/App ").unwrap(),
 ///     "acme/app"
 /// );
 /// ```
@@ -98,8 +98,8 @@ pub fn normalize_repo(raw: &str) -> Result<String, IdentityError> {
 /// # Examples
 ///
 /// ```
-/// assert_eq!(flakeradar_core::normalize_project(None).unwrap(), "default");
-/// assert_eq!(flakeradar_core::normalize_project(Some(" Backend ")).unwrap(), "backend");
+/// assert_eq!(flakeradar_core::identity::normalize_project(None).unwrap(), "default");
+/// assert_eq!(flakeradar_core::identity::normalize_project(Some(" Backend ")).unwrap(), "backend");
 /// ```
 pub fn normalize_project(raw: Option<&str>) -> Result<String, IdentityError> {
     let given = raw.unwrap_or_default();
@@ -130,9 +130,9 @@ pub fn normalize_project(raw: Option<&str>) -> Result<String, IdentityError> {
 /// # Examples
 ///
 /// ```
-/// assert_eq!(flakeradar_core::normalize_root(None).unwrap(), None);
+/// assert_eq!(flakeradar_core::identity::normalize_root(None).unwrap(), None);
 /// assert_eq!(
-///     flakeradar_core::normalize_root(Some("./frontend/")).unwrap(),
+///     flakeradar_core::identity::normalize_root(Some("./frontend/")).unwrap(),
 ///     Some("frontend".to_owned())
 /// );
 /// ```
@@ -163,7 +163,7 @@ pub fn normalize_root(raw: Option<&str>) -> Result<Option<String>, IdentityError
 /// # Examples
 ///
 /// ```
-/// assert_eq!(flakeradar_core::normalize_provider(" GitHub ").unwrap(), "github");
+/// assert_eq!(flakeradar_core::identity::normalize_provider(" GitHub ").unwrap(), "github");
 /// ```
 pub fn normalize_provider(raw: &str) -> Result<String, IdentityError> {
     let value = strip_wire_whitespace(raw).to_lowercase();

@@ -10,7 +10,8 @@
 )]
 
 use flakeradar_core::{
-    DETAILS_MAX, ExecutionStatus, MESSAGE_MAX, ParseError, ParsedCase, fingerprint, parse_junit_xml,
+    model::ExecutionStatus, parsing::DETAILS_MAX, parsing::MESSAGE_MAX, parsing::ParseError,
+    parsing::ParsedCase, parsing::fingerprint, parsing::parse_junit_xml,
 };
 
 /// Parses a report known to hold exactly one case.

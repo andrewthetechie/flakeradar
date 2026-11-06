@@ -6,17 +6,17 @@
 //! stays a human decision. A request must carry
 //! `Authorization: Bearer <FLAKERADAR_API_TOKEN>`.
 //!
-//! Each tool lives in its own file under [`tools`], which also holds the order
-//! `tools/list` answers; this module is what the tools share: the server they
-//! borrow the pool and the settings from, the one [`ToolAnswer`] a tool produces,
+//! Each tool lives in its own file in a private `tools` module, which also
+//! holds the order `tools/list` answers; this module is what the tools share: the server
+//! they borrow the pool and the settings from, the one answer a tool produces,
 //! the one refusal a call can be, and the helpers several tools read. The
-//! transport — the router, the bearer check and the JSON-body guard — is
-//! [`transport`].
+//! transport — the router, the bearer check and the JSON-body guard — is its own
+//! private module.
 //!
-//! The tool names, titles, descriptions, argument schemas and annotations are
-//! the recorded contract of the frozen Python server, so they are written out
-//! as literals in the tool files rather than derived: a schema `schemars`
-//! arranges differently is a different wire.
+//! The tool names, titles, descriptions, argument schemas and annotations are a
+//! wire contract: a client reads them, and `tests/parity` pins every one against
+//! the recorded replay. They are therefore written out as literals in the tool
+//! files rather than derived, so no schema crate can arrange them differently.
 
 // Rust guideline compliant 2026-07-21
 
@@ -25,12 +25,13 @@ use std::sync::Arc;
 
 use chrono::NaiveDate;
 use flakeradar_core::{
-    DEFAULT_PROJECT, EntityKind, FailureCategory, IdentityError, ScorePointOut, TRUNCATION_MARKER,
-    lax, normalize_project, normalize_repo, strip_wire_whitespace,
+    classify::FailureCategory, dto::ScorePointOut, identity::DEFAULT_PROJECT,
+    identity::IdentityError, identity::normalize_project, identity::normalize_repo, lax,
+    model::EntityKind, py::TRUNCATION_MARKER, py::strip_wire_whitespace,
 };
 use flakeradar_db::issue_links::{LinkError, LinkedOut};
 use flakeradar_db::reads::{ReadError, ReadSettings, Scope};
-use flakeradar_db::{DbError, SharedClock, SystemClock};
+use flakeradar_db::{DbError, clock::SharedClock, clock::SystemClock};
 use rmcp::ErrorData as McpError;
 use rmcp::ServerHandler;
 use rmcp::model::{

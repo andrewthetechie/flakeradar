@@ -12,10 +12,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use flakeradar_core::{
-    EntityKind, ExecutionStatus, FailureCategory, Fingerprint, JobStatus, ParseError, ParsedCase,
-    PipelineReportIn, ReportKind, ReportStatus, ScoredExecution, Tier, TierChange,
-    branch_scoped_fail_streak, branch_scoped_score, branch_scoped_streak, classify_failure,
-    defaults, dominant_category, is_broken, parse_junit_xml, tier_for,
+    classify::FailureCategory, classify::classify_failure, classify::dominant_category, defaults,
+    dto::PipelineReportIn, helpers::is_broken, helpers::tier_for, model::EntityKind,
+    model::ExecutionStatus, model::JobStatus, model::ReportKind, model::ReportStatus, model::Tier,
+    notify::TierChange, parsing::ParseError, parsing::ParsedCase, parsing::parse_junit_xml,
+    scoring::ScoredExecution, scoring::branch_scoped_fail_streak, scoring::branch_scoped_score,
+    scoring::branch_scoped_streak, types::Fingerprint,
 };
 use sea_orm::entity::prelude::DateTimeWithTimeZone;
 use sea_orm::{
@@ -264,7 +266,11 @@ fn parse_and_classify(body: &[u8], line_base: i32) -> Result<ParsedReport, Parse
     let cases: Vec<ReportedCase> = parsed
         .into_iter()
         .map(|case| ReportedCase {
-            fingerprint: flakeradar_core::fingerprint(&case.suite, &case.classname, &case.name),
+            fingerprint: flakeradar_core::parsing::fingerprint(
+                &case.suite,
+                &case.classname,
+                &case.name,
+            ),
             category: case
                 .status
                 .is_failing()
@@ -1863,7 +1869,7 @@ mod tests {
     use sea_orm::sqlx::error::Error as SqlxError;
 
     use super::{ProcessError, transient_db_error, transient_sqlstate};
-    use crate::DbError;
+    use crate::error::DbError;
 
     /// A statement failure, wrapped the way the driver returns one.
     fn driver(error: SqlxError) -> DbErr {

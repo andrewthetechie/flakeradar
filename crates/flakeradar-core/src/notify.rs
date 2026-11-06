@@ -76,7 +76,7 @@ impl TierChange {
 ///
 /// ```
 /// assert_eq!(
-///     flakeradar_core::parse_urls(" https://a , ,https://b "),
+///     flakeradar_core::notify::parse_urls(" https://a , ,https://b "),
 ///     ["https://a", "https://b"]
 /// );
 /// ```

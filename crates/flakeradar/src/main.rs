@@ -16,8 +16,8 @@ use std::process::ExitCode;
 use anyhow::Context as _;
 use clap::Parser as _;
 use flakeradar::{
-    ALLOW_INSECURE_VARIABLE, Cli, Command, Server, Settings, assert_secure_token, healthcheck,
-    init_tracing,
+    cli::Cli, cli::Command, cli::healthcheck, init_tracing, server::Server,
+    settings::ALLOW_INSECURE_VARIABLE, settings::Settings, settings::assert_secure_token,
 };
 
 /// The allocator musl builds run with.

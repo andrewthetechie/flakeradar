@@ -17,7 +17,7 @@
 // Rust guideline compliant 2026-07-21
 
 use chrono::{NaiveDate, TimeDelta};
-use flakeradar_core::{ReportStatus, defaults};
+use flakeradar_core::{defaults, model::ReportStatus};
 use sea_orm::entity::prelude::DateTimeWithTimeZone;
 use sea_orm::sea_query::{Expr, ExprTrait as _, Order, Query};
 use sea_orm::{

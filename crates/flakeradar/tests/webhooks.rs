@@ -12,10 +12,12 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use flakeradar::LeaderTask;
-use flakeradar::WebhookWorker;
-use flakeradar_core::{EntityKind, ReportStatus, Tier, TierChange, WebhookFormat};
-use flakeradar_db::ProcessOutcome;
+use flakeradar::webhooks::WebhookWorker;
+use flakeradar::worker::LeaderTask;
+use flakeradar_core::{
+    model::EntityKind, model::ReportStatus, model::Tier, notify::TierChange, notify::WebhookFormat,
+};
+use flakeradar_db::processing::ProcessOutcome;
 use flakeradar_test_support::{Unanswered, dropped, queued, until_finished, wait_until, within};
 
 use serde_json::{Value, json};
