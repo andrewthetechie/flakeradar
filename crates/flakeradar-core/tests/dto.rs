@@ -14,8 +14,9 @@
 use chrono::{DateTime, NaiveDate, TimeZone as _, Utc};
 use flakeradar_core::dto::lax_bool;
 use flakeradar_core::{
-    BodyRefusal, IssueLinkIn, JobResultIn, LocSegment, PipelineReportIn, QuarantineIn, ReportKind,
-    ReportOut, ReportStatus, ScorePointOut, TestOut, Tier, Trend, ValidationIssue,
+    BodyRefusal, ExecutionStatus, IssueLinkIn, JobResultIn, LocSegment, PipelineReportIn,
+    QuarantineIn, ReportKind, ReportOut, ReportStatus, ScorePointOut, TestOut, Tier, Trend,
+    ValidationIssue,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -166,7 +167,7 @@ fn a_test_out_keeps_every_field_the_consumers_read() {
         fail_streak: 0,
         broken: false,
         trend: None,
-        last_status: "passed".to_owned(),
+        last_status: ExecutionStatus::Passed,
         last_seen_at: at(0),
         quarantined: false,
         quarantined_at: None,

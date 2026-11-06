@@ -19,7 +19,7 @@ use utoipa::ToSchema;
 use crate::identity::{IdentityError, normalize_provider, normalize_repo};
 use crate::lax;
 use crate::model::{
-    FailedJobOutcome, JobOutcome, JobStatus, ReportKind, ReportStatus, Tier, Trend,
+    ExecutionStatus, FailedJobOutcome, JobOutcome, JobStatus, ReportKind, ReportStatus, Tier, Trend,
 };
 use crate::py::strip_wire_whitespace;
 use crate::types::CiRunId;
@@ -1392,7 +1392,7 @@ pub struct TestOut {
     #[serde(default)]
     pub trend: Option<Trend>,
     /// The newest Execution's status.
-    pub last_status: String,
+    pub last_status: ExecutionStatus,
     /// When the Test last ran.
     #[serde(with = "timestamp")]
     pub last_seen_at: DateTime<Utc>,
@@ -1458,7 +1458,7 @@ pub struct ExecutionOut {
     /// The Execution's id.
     pub id: i64,
     /// What the Execution did.
-    pub status: String,
+    pub status: ExecutionStatus,
     /// How long it took, in seconds.
     pub duration: f64,
     /// The Failure message.
@@ -1599,8 +1599,8 @@ pub struct ExplainingTestOut {
     pub classname: String,
     /// The Test's name.
     pub name: String,
-    /// The failing status: `failed` or `error`.
-    pub status: String,
+    /// The newest Execution's status in this Run.
+    pub status: ExecutionStatus,
 }
 
 /// One sibling Job that explains a Summary Job's failure.
@@ -1855,7 +1855,7 @@ pub struct CiRunTestFailureOut {
     /// The CI provider's Job id.
     pub ci_job_id: Option<String>,
     /// The Test's newest status in this Run.
-    pub status: String,
+    pub status: ExecutionStatus,
     /// How many failing Executions this Run had.
     pub failed_attempts: i64,
     /// The last failing Execution's category.

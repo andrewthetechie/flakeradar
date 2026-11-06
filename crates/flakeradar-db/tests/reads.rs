@@ -13,7 +13,7 @@
 use std::sync::Arc;
 
 use chrono::{DateTime, FixedOffset};
-use flakeradar_core::{PipelineReportIn, pipeline_body};
+use flakeradar_core::{ExecutionStatus, PipelineReportIn, pipeline_body};
 use flakeradar_db::{
     FixedClock, ListOptions, ProcessingSettings, ReadSettings, Scope, SortKey, TestListFilters,
     ci_run_failures, find_job_ids, find_test_ids, get_test, job_summary, latest_failure, list_jobs,
@@ -492,7 +492,7 @@ async fn a_nextest_flaky_fail_is_a_proven_flake_in_its_ci_run() {
             .name
             .ends_with("invalidate_priority_readiness_drops_from_each_driver")
     );
-    assert_eq!(failure.status, "passed");
+    assert_eq!(failure.status, ExecutionStatus::Passed);
     assert_eq!(failure.failed_attempts, 1);
     assert!(failure.message.starts_with("thread 'embedding::reindexer"));
     assert_eq!(failure.confirmed_flake_count, 1);

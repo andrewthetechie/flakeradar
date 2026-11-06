@@ -682,11 +682,6 @@ impl Api {
     }
 }
 
-/// Whether a stored status counts as a failure.
-fn is_failing(status: &str) -> bool {
-    matches!(status, "failed" | "error")
-}
-
 /// The first ten characters of a commit SHA, as Python's slice did.
 fn short_sha(sha: &str) -> String {
     sha.chars().take(10).collect()
@@ -714,7 +709,7 @@ fn newest_failure(recent: &[RecentExecution]) -> Option<NewestFailure> {
     let mut sample: Option<&str> = None;
     for execution in recent
         .iter()
-        .filter(|execution| is_failing(&execution.status))
+        .filter(|execution| execution.status.is_failing())
     {
         newest.get_or_insert(execution);
         if sample.is_none() {

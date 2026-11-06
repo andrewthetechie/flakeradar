@@ -35,7 +35,7 @@ use crate::report_intake::{
     complete_report, fail_report, requeue_report, stored_junit_body, stored_pipeline_report,
 };
 use crate::score_history::{HistoryKind, HistoryUpdate, write_today_history};
-use crate::sql::{get, placeholder_list, rows, value_row};
+use crate::sql::{execution_status, get, placeholder_list, rows, value_row};
 
 /// The longest error text a failed Report keeps.
 pub const ERROR_MAX: usize = 2000;
@@ -1106,7 +1106,7 @@ pub async fn rescore(
             history.entry(id).or_default().push(ScoredExecution::new(
                 get::<String>(&row, "commit_sha")?,
                 get::<String>(&row, "branch")?,
-                status_of(&get::<String>(&row, "status")?)?,
+                execution_status(&get::<String>(&row, "status")?)?,
             ));
             categories.entry(id).or_default().push(
                 get::<Option<String>>(&row, "failure_category")?
@@ -1171,12 +1171,6 @@ pub async fn rescore(
         .await?;
     }
     Ok(changes)
-}
-
-/// Parses a stored status, refusing an unknown one.
-fn status_of(text: &str) -> Result<ExecutionStatus, DbError> {
-    ExecutionStatus::from_wire(text)
-        .ok_or_else(|| DbError::Database(DbErr::Custom(format!("unknown Execution status {text}"))))
 }
 
 /// The scores a Test rescore is about to replace, read before the update.
@@ -1393,7 +1387,7 @@ pub async fn job_history(
         for row in rows(db, sql, values).await? {
             let id: i32 = get(&row, "job_id")?;
             let explained: bool = get(&row, "explained")?;
-            let mut status = status_of(&get::<String>(&row, "status")?)?;
+            let mut status = execution_status(&get::<String>(&row, "status")?)?;
             if explained && status == ExecutionStatus::Failed {
                 status = ExecutionStatus::Skipped;
             }

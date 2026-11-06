@@ -9,9 +9,22 @@
 
 // Rust guideline compliant 2026-07-21
 
+use flakeradar_core::ExecutionStatus;
 use sea_orm::{ConnectionTrait, DbBackend, DbErr, QueryResult, Statement, TryGetable, Value};
 
 use crate::error::DbError;
+
+/// Reads one stored Execution status.
+///
+/// # Errors
+///
+/// Returns [`DbError::UnknownExecutionStatus`] for a spelling the four
+/// [`ExecutionStatus`] variants do not cover.
+pub(crate) fn execution_status(text: &str) -> Result<ExecutionStatus, DbError> {
+    ExecutionStatus::from_wire(text).ok_or_else(|| DbError::UnknownExecutionStatus {
+        value: text.to_owned(),
+    })
+}
 
 /// Reads one column of a raw row.
 ///

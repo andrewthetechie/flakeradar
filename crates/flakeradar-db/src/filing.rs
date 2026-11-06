@@ -22,7 +22,7 @@ use crate::attribution::{int_array, test_window_ids_overall_sql, unexplained_fai
 use crate::batching::chunks;
 use crate::error::DbError;
 use crate::issue_links::LinkTarget;
-use crate::sql::{get, rows};
+use crate::sql::{execution_status, get, rows};
 
 /// The gate every fileable row must pass, as one value.
 ///
@@ -125,7 +125,7 @@ fn job_row(row: &QueryResult) -> Result<JobRow, DbError> {
 #[derive(Debug, Clone)]
 pub struct RecentExecution {
     /// The Execution's outcome.
-    pub status: String,
+    pub status: ExecutionStatus,
     /// The Failure message.
     pub message: String,
     /// The Failure details.
@@ -161,7 +161,7 @@ pub async fn recent_executions(
     for row in rows(db, sql, vec![Value::from(test_id)]).await? {
         let created: DateTime<FixedOffset> = get(&row, "created_at")?;
         recent.push(RecentExecution {
-            status: get(&row, "status")?,
+            status: execution_status(&get::<String>(&row, "status")?)?,
             message: get(&row, "message")?,
             details: get(&row, "details")?,
             commit_sha: get(&row, "commit_sha")?,

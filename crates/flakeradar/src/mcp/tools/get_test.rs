@@ -11,7 +11,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use flakeradar_core::{
-    DEFAULT_PROJECT, ExecutionOut, LocationOut, TestJobLinkOut, TestOut, dto::timestamp,
+    DEFAULT_PROJECT, ExecutionOut, ExecutionStatus, LocationOut, TestJobLinkOut, TestOut,
+    dto::timestamp,
 };
 use flakeradar_db::reads;
 
@@ -149,7 +150,7 @@ pub(super) fn call(server: &McpServer, arguments: Value) -> BoxFuture<'_, ToolRe
 #[derive(Debug, Serialize)]
 struct LatestFailure {
     /// What the Execution did.
-    status: String,
+    status: ExecutionStatus,
     /// The Failure message.
     message: String,
     /// The Failure details, capped at [`DETAILS_MAX`].
@@ -168,7 +169,7 @@ struct LatestFailure {
 impl From<&ExecutionOut> for LatestFailure {
     fn from(failure: &ExecutionOut) -> Self {
         Self {
-            status: failure.status.clone(),
+            status: failure.status,
             message: failure.message.clone(),
             details: cap_details(&failure.details),
             commit_sha: failure.commit_sha.clone(),
@@ -184,7 +185,7 @@ impl From<&ExecutionOut> for LatestFailure {
 #[derive(Debug, Serialize)]
 struct ExecutionSummary {
     /// What the Execution did.
-    status: String,
+    status: ExecutionStatus,
     /// The commit the Execution ran.
     commit_sha: String,
     /// The branch the commit is on.
@@ -207,7 +208,7 @@ struct ExecutionSummary {
 impl From<&ExecutionOut> for ExecutionSummary {
     fn from(execution: &ExecutionOut) -> Self {
         Self {
-            status: execution.status.clone(),
+            status: execution.status,
             commit_sha: execution.commit_sha.clone(),
             branch: execution.branch.clone(),
             ci_run_id: execution.ci_run_id.clone(),

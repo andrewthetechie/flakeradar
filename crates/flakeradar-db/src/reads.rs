@@ -17,12 +17,12 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{DateTime, Duration, FixedOffset, NaiveDate, Utc};
 use flakeradar_core::{
-    CiRunFailedJobOut, CiRunFailuresOut, CiRunTestFailureOut, ExecutionOut, ExplainingTestOut,
-    FailedJobOutcome, FailureCategory, HistoryOut, JobExecutionOut, JobHistoryOut, JobOut,
-    JobOutcome, JobPage, JobSummaryOut, LocationOut, LocationRef, QuarantineItem, RepoOut,
-    ReportCountsOut, ReportStatus, RunnerStatOut, ScorePointOut, SummaryOut, TestJobLinkOut,
-    TestOut, TestPage, Trend, defaults, escape_like, is_broken, issue_url, permalink, repo_path,
-    tier_for, trend_for,
+    CiRunFailedJobOut, CiRunFailuresOut, CiRunTestFailureOut, ExecutionOut, ExecutionStatus,
+    ExplainingTestOut, FailedJobOutcome, FailureCategory, HistoryOut, JobExecutionOut,
+    JobHistoryOut, JobOut, JobOutcome, JobPage, JobSummaryOut, LocationOut, LocationRef,
+    QuarantineItem, RepoOut, ReportCountsOut, ReportStatus, RunnerStatOut, ScorePointOut,
+    SummaryOut, TestJobLinkOut, TestOut, TestPage, Trend, defaults, escape_like, is_broken,
+    issue_url, permalink, repo_path, tier_for, trend_for,
 };
 use sea_orm::{ConnectionTrait, DbBackend, QueryResult, Statement, Value};
 use serde_json::Value as JsonValue;
@@ -34,7 +34,7 @@ use crate::attribution::{
 use crate::clock::SharedClock;
 use crate::error::DbError;
 use crate::score_history::{self, HistoryKind};
-use crate::sql::{Binds, get, one, required_one, rows};
+use crate::sql::{Binds, execution_status, get, one, required_one, rows};
 
 /// The dashboard tiles' "became flaky recently" window.
 pub const NEW_FLAKY_DAYS: i64 = 7;
@@ -480,7 +480,7 @@ pub(crate) fn test_out(
         fail_streak,
         broken: is_broken(fail_streak, broken_streak),
         trend,
-        last_status: get(row, "last_status")?,
+        last_status: execution_status(&get::<String>(row, "last_status")?)?,
         last_seen_at: timestamp(row, "last_seen_at")?,
         quarantined: get(row, "quarantined")?,
         quarantined_at: optional_timestamp(row, "quarantined_at")?,
@@ -898,7 +898,7 @@ async fn category_counts(
 fn execution_out(row: &QueryResult) -> Result<ExecutionOut, DbError> {
     Ok(ExecutionOut {
         id: get(row, "id")?,
-        status: get(row, "status")?,
+        status: execution_status(&get::<String>(row, "status")?)?,
         duration: get(row, "duration")?,
         message: get(row, "message")?,
         details: get(row, "details")?,
@@ -1468,7 +1468,7 @@ async fn explaining_tests(
             project: get(&row, "project")?,
             classname: get(&row, "classname")?,
             name: get(&row, "name")?,
-            status: get(&row, "status")?,
+            status: execution_status(&get::<String>(&row, "status")?)?,
         });
     }
     Ok(by_exec)
@@ -1764,7 +1764,7 @@ pub async fn find_job_ids(
 /// One execution of a failing (Test, Run) pair, as the CI run listing reads it.
 #[derive(Debug, Clone)]
 struct PairExecution {
-    status: String,
+    status: ExecutionStatus,
     failure_category: Option<String>,
     message: String,
 }
@@ -1987,7 +1987,7 @@ async fn pair_executions(
             get::<i32>(&row, "test_run_id")?,
         );
         by_pair.entry(key).or_default().push(PairExecution {
-            status: get(&row, "status")?,
+            status: execution_status(&get::<String>(&row, "status")?)?,
             failure_category: get(&row, "failure_category")?,
             message: get(&row, "message")?,
         });
@@ -2012,7 +2012,7 @@ fn ci_run_failure_item(
     };
     let failing: Vec<&PairExecution> = executions
         .iter()
-        .filter(|execution| matches!(execution.status.as_str(), "failed" | "error"))
+        .filter(|execution| execution.status.is_failing())
         .collect();
     let Some(last_failing) = failing.last() else {
         return Ok(None);
@@ -2029,7 +2029,7 @@ fn ci_run_failure_item(
         name: get(row, "name")?,
         run_id: id(run_id),
         ci_job_id: get(row, "ci_job_id")?,
-        status: last.status.clone(),
+        status: last.status,
         failed_attempts: i64::try_from(failing.len()).unwrap_or(i64::MAX),
         failure_category: last_failing.failure_category.clone(),
         message: last_failing

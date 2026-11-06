@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use flakeradar::Settings;
 use flakeradar::github::{self, Api};
 use flakeradar::settings::Secret;
-use flakeradar_core::ReportStatus;
+use flakeradar_core::{ExecutionStatus, ReportStatus};
 use flakeradar_db::filing::{JobRow, RecentExecution, TestRow};
 use flakeradar_db::issue_links::{self, LinkTarget, linked_for_check};
 use flakeradar_db::{ProcessOutcome, ReadSettings};
@@ -1472,7 +1472,7 @@ async fn a_field_the_body_prices_differently_is_still_the_reference_sentence() {
         confirmed_flake_count: 0,
     };
     let recent = [RecentExecution {
-        status: "passed".to_owned(),
+        status: ExecutionStatus::Passed,
         message: String::new(),
         details: None,
         commit_sha: "abcdef1234567890".to_owned(),
@@ -1515,7 +1515,7 @@ fn the_last_failing_commit_has_no_branch_clause_when_no_branch_was_reported() {
         confirmed_flake_count: 1,
     };
     let recent = [RecentExecution {
-        status: "failed".to_owned(),
+        status: ExecutionStatus::Failed,
         message: "AssertionError".to_owned(),
         details: None,
         commit_sha: "abcdef1234567890".to_owned(),
@@ -1593,7 +1593,7 @@ fn the_body_matches_the_reference_byte_for_byte() {
     };
     let recent = [
         RecentExecution {
-            status: "passed".to_owned(),
+            status: ExecutionStatus::Passed,
             message: String::new(),
             details: Some(String::new()),
             commit_sha: "s2".to_owned(),
@@ -1601,7 +1601,7 @@ fn the_body_matches_the_reference_byte_for_byte() {
             created_at: at(23),
         },
         RecentExecution {
-            status: "failed".to_owned(),
+            status: ExecutionStatus::Failed,
             message: String::new(),
             details: Some(String::new()),
             commit_sha: "s2".to_owned(),
@@ -1609,7 +1609,7 @@ fn the_body_matches_the_reference_byte_for_byte() {
             created_at: at(22),
         },
         RecentExecution {
-            status: "failed".to_owned(),
+            status: ExecutionStatus::Failed,
             message: "boom older".to_owned(),
             details: Some("older details".to_owned()),
             commit_sha: "s1".to_owned(),

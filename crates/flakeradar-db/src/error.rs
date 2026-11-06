@@ -61,6 +61,16 @@ pub enum DbError {
         /// What the parser rejected.
         detail: String,
     },
+    /// A stored Execution or Job execution holds a status this version does not write.
+    ///
+    /// The status column is text, and this server only ever writes `passed`,
+    /// `failed`, `error` or `skipped`: an unknown value means something else
+    /// wrote the row, and the rule that reads it cannot say what it flaked.
+    #[error("unknown Execution status {value}")]
+    UnknownExecutionStatus {
+        /// The status the row holds, printed as it was read.
+        value: String,
+    },
     /// A stored Report holds a kind this version does not write.
     ///
     /// A Report row is only ever written by this server, so an unknown kind
