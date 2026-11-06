@@ -464,6 +464,80 @@ async fn prune_clears_expired_quarantines_only() {
 }
 
 #[tokio::test]
+async fn an_expiry_round_clears_every_due_quarantine_in_one_statement() {
+    let now = now();
+    let db = TestDb::new().await.expect("a test database");
+    let project = make_project()
+        .repo("acme/app")
+        .project("backend")
+        .build(db.connection())
+        .await
+        .expect("a Project");
+    for name in ["one", "two", "three"] {
+        make_test_case(&project)
+            .name(name)
+            .quarantined_at(days_before(now, 30))
+            .quarantine_reason("flaky on arm")
+            .quarantine_expires_at(days_before(now, 1))
+            .build(db.connection())
+            .await
+            .expect("an expired quarantine");
+    }
+    audit_test_case_updates(&db).await;
+
+    let result = prune(db.connection(), now, &retention(), &processing(now))
+        .await
+        .expect("the prune runs");
+
+    assert_eq!(result.expired_quarantines, 3, "{result:?}");
+    // The audit counts UPDATE statements, not rows: one statement clears every
+    // due quarantine, so the number of statements stays 1 whatever the backlog.
+    let statements = test_case_updates(&db).await;
+    assert_eq!(
+        statements, 1,
+        "one statement clears every due quarantine, not one per Test"
+    );
+}
+
+/// Counts the `UPDATE` statements a prune round sends at `test_cases`.
+///
+/// A statement-level trigger fires once per `UPDATE` whatever the row count, so
+/// a step that issues one statement per row is visible as a count rather than as
+/// a duration. The audit table and the trigger are created after the fixtures, so
+/// nothing the test itself writes is counted.
+async fn audit_test_case_updates(db: &TestDb) {
+    db.connection()
+        .execute_unprepared(
+            "CREATE TABLE test_case_update_audit (id SERIAL);
+             CREATE FUNCTION audit_test_case_update() RETURNS TRIGGER
+                LANGUAGE plpgsql AS $$
+                BEGIN
+                    INSERT INTO test_case_update_audit DEFAULT VALUES;
+                    RETURN NULL;
+                END $$;
+             CREATE TRIGGER audit_test_case_update
+                AFTER UPDATE ON test_cases
+                FOR EACH STATEMENT EXECUTE FUNCTION audit_test_case_update();",
+        )
+        .await
+        .expect("the update audit is installed");
+}
+
+/// How many `UPDATE` statements the audit saw.
+async fn test_case_updates(db: &TestDb) -> i64 {
+    let row = db
+        .connection()
+        .query_one_raw(sea_orm::Statement::from_string(
+            sea_orm::DbBackend::Postgres,
+            "SELECT count(*) AS statements FROM test_case_update_audit",
+        ))
+        .await
+        .expect("the audit reads")
+        .expect("a count row");
+    row.try_get::<i64>("", "statements").expect("a count")
+}
+
+#[tokio::test]
 async fn prune_deletes_old_job_executions() {
     let now = now();
     let db = TestDb::new().await.expect("a test database");

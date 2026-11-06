@@ -27,7 +27,7 @@ use sea_orm::{
 use tracing::info;
 
 use crate::clock::MonotonicClock;
-use crate::entities::{reports, test_cases, test_executions, test_runs};
+use crate::entities::{reports, test_executions, test_runs};
 use crate::error::DbError;
 use crate::processing::{ProcessingSettings, rescore, rescore_jobs};
 use crate::sql::{bigint_array, get, rows};
@@ -432,29 +432,31 @@ async fn drop_silent_tier_changes(
 }
 
 /// Clears every quarantine whose human-set expiry has passed, all in this round.
+///
+/// One `UPDATE ... RETURNING` clears the whole set, so the number of statements
+/// no longer grows with the number of expired Tests. Each cleared Test still
+/// gets the line an operator reads.
 async fn clear_expired_quarantines(
     db: &impl ConnectionTrait,
     now: DateTimeWithTimeZone,
 ) -> Result<u64, DbError> {
-    let due = test_cases::Entity::find()
-        .filter(test_cases::Column::Quarantined.eq(true))
-        .filter(test_cases::Column::QuarantineExpiresAt.lte(now))
-        .all(db)
-        .await?;
-    for test in &due {
-        info!(test_id = test.id, name = %test.name, "Quarantine expired; cleared");
-        test_cases::Entity::update(test_cases::ActiveModel {
-            id: sea_orm::Set(test.id),
-            quarantined: sea_orm::Set(false),
-            quarantined_at: sea_orm::Set(None),
-            quarantine_reason: sea_orm::Set(None),
-            quarantine_expires_at: sea_orm::Set(None),
-            ..Default::default()
-        })
-        .exec(db)
-        .await?;
+    let cleared = rows(
+        db,
+        "UPDATE test_cases SET quarantined = FALSE, quarantined_at = NULL, \
+            quarantine_reason = NULL, quarantine_expires_at = NULL \
+          WHERE quarantined AND quarantine_expires_at <= $1 \
+          RETURNING id, name",
+        vec![Value::from(now)],
+    )
+    .await?;
+    for row in &cleared {
+        info!(
+            test_id = get::<i32>(row, "id")?,
+            name = %get::<String>(row, "name")?,
+            "Quarantine expired; cleared"
+        );
     }
-    Ok(u64::try_from(due.len()).unwrap_or(u64::MAX))
+    Ok(u64::try_from(cleared.len()).unwrap_or(u64::MAX))
 }
 
 /// Deletes the expired backlog in committed batches, stopping at the time budget.
