@@ -44,6 +44,13 @@ chrono = { workspace = true, features = ["clock", "std"] }
 clap.workspace = true
 flakeradar-test-support = { path = "../flakeradar-test-support" }
 futures-util = { version = "0.3", default-features = false }
+# The MCP client half of the SDK, for the one test that drives `/mcp/` with a
+# real client. It stays out of `[dependencies]`: the binary serves and never
+# calls out as an MCP client.
+rmcp = { workspace = true, features = [
+    "client",
+    "transport-streamable-http-client-reqwest",
+] }
 tokio = { workspace = true, features = ["io-util", "test-util", "time"] }
 tower = { workspace = true, features = ["util"] }
 wiremock.workspace = true
