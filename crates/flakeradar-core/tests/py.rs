@@ -5,7 +5,7 @@
 use flakeradar_core::{py::cap, py::py_splitlines, py::round4, py::strip_wire_whitespace};
 
 #[test]
-fn strip_wire_whitespace_removes_pythons_whitespace_set() {
+fn strip_wire_whitespace_removes_the_whole_whitespace_set() {
     assert_eq!(
         strip_wire_whitespace("\x1c\x1d\x1e\x1f\n\t a b \u{85}\u{a0}"),
         "a b"
@@ -14,7 +14,7 @@ fn strip_wire_whitespace_removes_pythons_whitespace_set() {
 }
 
 #[test]
-fn py_splitlines_splits_on_every_python_break() {
+fn py_splitlines_splits_on_every_wire_break() {
     assert_eq!(
         py_splitlines("a\nb\rc\r\nd\u{0b}e\u{0c}f\u{1c}g"),
         ["a", "b", "c", "d", "e", "f", "g"]
@@ -40,8 +40,8 @@ fn cap_counts_code_points_and_keeps_the_marker_inside_the_limit() {
 }
 
 #[test]
-fn round4_matches_cpython_half_to_even() {
-    // The table from 00-shared-context.md, recorded from CPython.
+fn round4_rounds_half_to_even() {
+    // Every row is a recorded answer of the reference's rounding.
     let table = [
         (0.03125, 0.0312),
         (0.09375, 0.0938),

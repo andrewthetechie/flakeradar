@@ -7,7 +7,7 @@ use flakeradar_core::{
 };
 
 #[test]
-fn classify_failure_matches_the_python_rules() {
+fn classify_failure_matches_the_recorded_rules() {
     // Each case is one line of the reference classifier's behaviour at 86c98804, so
     // the expected category is the requirement rather than a restatement.
     let cases = [

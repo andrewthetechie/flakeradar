@@ -1,11 +1,10 @@
-//! The request and response DTOs, one per model in the frozen server's
-//! `schemas.py`.
+//! The request and response DTOs, and the lax readers that validate a body.
 //!
-//! Each struct keeps that model's field names and optionality, so the JSON the
-//! Rust server serves is the JSON its consumers already parse. A `None` Python
-//! serialized as `null` stays `null`: no field is skipped unless Python omitted
-//! it. Timestamps go through [`timestamp`] so every one follows the timestamp
-//! rule.
+//! Each struct is a field-for-field mirror of the JSON this API answers and
+//! accepts, because the frontend, the CI actions and Fabro parse it. A field that
+//! has no value serializes as `null` rather than being skipped, except where a
+//! request may leave it out. Timestamps go through [`timestamp`] so every one
+//! follows the timestamp rule.
 
 // Rust guideline compliant 2026-07-21
 
@@ -102,37 +101,37 @@ pub mod optional_timestamp {
     }
 }
 
-/// Pydantic's lax boolean, for the values FastAPI accepted from a query or a body.
+/// The lax boolean a query or a body may spell, for the quarantine toggle.
 ///
-/// Pydantic 2's lax mode takes JSON `true`/`false`, the numbers `1`/`0` (as
-/// integers or as the floats `1.0`/`0.0`) and the strings `on`/`off`, `t`/`f`,
-/// `true`/`false`, `y`/`n` and `yes`/`no` in any case. It refuses everything
-/// else with one of two kinds: `bool_type` for a value of another JSON type, and
-/// `bool_parsing` for a number or string of the right type it could not read.
-/// The quarantine route needs both, because `{"quarantined": "yes"}` validated
-/// and answered 404 for a missing Test in the frozen server, while
-/// `{"quarantined": []}` was a 422 of the type kind.
+/// Accepted: JSON `true`/`false`, the numbers `1`/`0` (as integers or as the
+/// floats `1.0`/`0.0`) and the strings `on`/`off`, `t`/`f`, `true`/`false`,
+/// `y`/`n` and `yes`/`no` in any case. Everything else is refused with one of two
+/// kinds: `bool_type` for a value of another JSON type, and `bool_parsing` for a
+/// number or string of the right type that spells no boolean. Both kinds reach
+/// the client, so both are part of the wire: `{"quarantined": "yes"}` is read as
+/// `true` and the answer is the route's 404 for a missing Test, while
+/// `{"quarantined": []}` is a 422 of the type kind.
 pub mod lax_bool {
     use serde::{Deserialize, Deserializer};
     use serde_json::{Number, Value};
 
-    /// Pydantic's message for a value it could not read, which the request
-    /// extractors report as `bool_parsing`.
+    /// The message a boolean of the right type but the wrong spelling is refused
+    /// with, which the request extractors report as `bool_parsing`.
     pub const UNPARSABLE_MESSAGE: &str =
         "Input should be a valid boolean, unable to interpret input";
 
-    /// Pydantic's message for a value of another JSON type, which the request
-    /// extractors report as `bool_type`.
+    /// The message a value of another JSON type is refused with, which the
+    /// request extractors report as `bool_type`.
     pub const WRONG_TYPE_MESSAGE: &str = "Input should be a valid boolean";
 
-    /// The float Pydantic reads as `false`.
+    /// The float that reads as `false`.
     const ZERO: f64 = 0.0;
 
-    /// The float Pydantic reads as `true`.
+    /// The float that reads as `true`.
     const ONE: f64 = 1.0;
 
-    /// The lower bound, exclusive, of the range Pydantic's float-to-integer
-    /// conversion accepts: `i64::MIN` as a `f64`.
+    /// The lower bound, exclusive, of the range the float-to-integer conversion
+    /// accepts: `i64::MIN` as a `f64`.
     const INTEGER_FLOOR: f64 = -9.223_372_036_854_776e18;
 
     /// The upper bound, exclusive, of that range: `i64::MAX` plus one as a `f64`.
@@ -159,8 +158,8 @@ pub mod lax_bool {
         }
     }
 
-    /// The `serde` error a refused value becomes, carrying Pydantic's message so
-    /// the request extractors report Pydantic's kind.
+    /// The `serde` error a refused value becomes, carrying the message so the
+    /// request extractors report the matching kind.
     fn refusal<E: serde::de::Error>(refusal: Refusal) -> E {
         match refusal {
             Refusal::WrongType => E::custom(WRONG_TYPE_MESSAGE),
@@ -168,26 +167,26 @@ pub mod lax_bool {
         }
     }
 
-    /// What Pydantic's lax mode made of one JSON value.
+    /// What the lax reading makes of one JSON value.
     ///
     /// # Errors
     ///
     /// Returns [`Refusal::WrongType`] for a value of another JSON type and
-    /// [`Refusal::Unparsable`] for a number or a string it could not read.
+    /// [`Refusal::Unparsable`] for a number or a string with no boolean in it.
     pub fn read(value: &Value) -> Result<bool, Refusal> {
         interpret(value)
     }
 
-    /// Why Pydantic refused a value, which is also the error kind it reported.
+    /// Why a value was refused, which is also the error kind the 422 reports.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum Refusal {
-        /// A value of another JSON type: Pydantic's `bool_type`.
+        /// A value of another JSON type: the `bool_type` kind.
         WrongType,
-        /// A number or string Pydantic could not read: `bool_parsing`.
+        /// A number or a string with no boolean in it: the `bool_parsing` kind.
         Unparsable,
     }
 
-    /// What Pydantic's lax mode made of one JSON value.
+    /// What the lax reading makes of one JSON value.
     fn interpret(value: &Value) -> Result<bool, Refusal> {
         match value {
             Value::Bool(flag) => Ok(*flag),
@@ -201,17 +200,17 @@ pub mod lax_bool {
         }
     }
 
-    /// What Pydantic made of one JSON number.
+    /// What the lax reading makes of one JSON number.
     ///
-    /// A whole number goes through Pydantic's integer path, which reads `0` and
-    /// `1` and refuses the rest as unparsable. A float reads `0.0` and `1.0`, and
-    /// takes the integer path when it is whole and fits the conversion Pydantic
+    /// A whole number goes through the integer path, which reads `0` and `1` and
+    /// refuses the rest as unparsable. A float reads `0.0` and `1.0`, and takes
+    /// the integer path when it is whole and fits the conversion the integer rule
     /// makes, so `2.0` is unparsable; every other float, including `1.5`, `NaN`
     /// and an infinity, is a value of the wrong type.
     #[expect(
         clippy::float_cmp_const,
-        reason = "Pydantic reads exactly these floats as booleans: a tolerance would accept a \
-                  value Pydantic refuses"
+        reason = "the rule reads exactly these floats as booleans: a tolerance would accept a \
+                  value it refuses"
     )]
     fn interpret_number(number: &Number) -> Result<bool, Refusal> {
         if let Some(integer) = number.as_i64() {
@@ -222,7 +221,7 @@ pub mod lax_bool {
             };
         }
         if number.as_u64().is_some() {
-            // A whole number past `i64::MAX` fits no integer Pydantic reads.
+            // A whole number past `i64::MAX` fits no integer the rule reads.
             return Err(Refusal::WrongType);
         }
         let Some(float) = number.as_f64() else {
@@ -240,36 +239,36 @@ pub mod lax_bool {
     }
 }
 
-/// Pydantic's lax integer, for the query parameters FastAPI read as one.
+/// The lax integer a query parameter may spell.
 ///
-/// A query string carries text, and Pydantic read it as an integer in the
-/// spellings its lax mode took: `"1_0"` is 10, `"2.0"` is 2, `" 2 "` is 2, and
-/// `"true"` or `"0x10"` are none. Axum's own `serde` route takes only digits, so
+/// A query string carries text, and an integer there is read in the spellings
+/// this API accepts: `"1_0"` is 10, `"2.0"` is 2, `" 2 "` is 2, and `"true"` or
+/// `"0x10"` are none of them. `serde`'s own number reader takes only digits, so
 /// every query field that is an integer goes through here.
 pub mod lax_int {
     use serde::{Deserialize, Deserializer};
 
-    use crate::lax::{INT_PARSING_MESSAGE, python_int};
+    use crate::lax::{INT_PARSING_MESSAGE, text_int};
 
     /// Reads a required lax integer.
     ///
     /// # Errors
     ///
-    /// Returns Pydantic's `int_parsing` message for a text that is no integer.
+    /// Returns the `int_parsing` message for a text that is no integer.
     pub fn value<'de, D: Deserializer<'de>>(deserializer: D) -> Result<i64, D::Error> {
         let text = String::deserialize(deserializer)?;
-        python_int(&text).ok_or_else(|| serde::de::Error::custom(INT_PARSING_MESSAGE))
+        text_int(&text).ok_or_else(|| serde::de::Error::custom(INT_PARSING_MESSAGE))
     }
 
     /// Reads an optional lax integer, where an absent parameter is `None`.
     ///
     /// # Errors
     ///
-    /// Returns Pydantic's `int_parsing` message for a text that is no integer.
+    /// Returns the `int_parsing` message for a text that is no integer.
     pub fn optional<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<i64>, D::Error> {
         Option::<String>::deserialize(deserializer)?
             .map(|text| {
-                python_int(&text).ok_or_else(|| serde::de::Error::custom(INT_PARSING_MESSAGE))
+                text_int(&text).ok_or_else(|| serde::de::Error::custom(INT_PARSING_MESSAGE))
             })
             .transpose()
     }
@@ -292,16 +291,16 @@ pub enum LocSegment {
 )]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct ValidationIssue {
-    /// Pydantic's error kind, such as `string_too_long` or `value_error`.
+    /// The error kind, such as `string_too_long` or `value_error`.
     pub r#type: String,
     /// Where the bad value was.
     pub loc: Vec<LocSegment>,
-    /// The message, in Pydantic's wording.
+    /// The message, as the client reads it.
     pub msg: String,
-    /// The rejected input, when Pydantic would report it.
+    /// The rejected input, on the kinds that carry one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub input: Option<Value>,
-    /// The constraint that failed, when Pydantic would report it.
+    /// The constraint that failed, on the kinds that name one.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schema(value_type = Option<Object>)]
     pub ctx: Option<Value>,
@@ -506,7 +505,7 @@ impl ValidationIssue {
         )
     }
 
-    /// A string Pydantic could not read as a date or a datetime.
+    /// A string that is no date and no datetime, with the reader's reason.
     #[must_use]
     pub fn datetime_from_date_parsing(loc: Vec<LocSegment>, input: Value, error: &str) -> Self {
         let mut ctx = serde_json::Map::new();
@@ -582,7 +581,7 @@ impl ValidationIssue {
         }
     }
 
-    /// A value a field type could not parse, with Pydantic's message for it.
+    /// A value a field type could not parse, with the message the client reads.
     fn parsing(error_type: &str, msg: &str, loc: Vec<LocSegment>, input: Value) -> Self {
         Self {
             r#type: error_type.to_owned(),
@@ -623,7 +622,7 @@ fn body_loc_root() -> Vec<LocSegment> {
     vec![LocSegment::Field("body".to_owned())]
 }
 
-/// Pydantic's singular or plural noun for a limit of `limit`.
+/// The singular or plural noun a limit's message ends with.
 fn plural(limit: usize) -> &'static str {
     if limit == 1 { "" } else { "s" }
 }
@@ -747,14 +746,14 @@ const RUNNER_LABELS_MAX: usize = 50;
 const RUNNER_LABEL_MAX: usize = NAME_MAX;
 
 impl JobResultIn {
-    /// Reads one Job of a Pipeline report the way Pydantic read it.
+    /// Reads one Job of a Pipeline report with the lax rules this API applies.
     ///
     /// `at` is where the Job sits in the body, so each issue's `loc` names the
     /// Job and the field a client has to fix.
     ///
     /// # Errors
     ///
-    /// Returns every issue Pydantic listed for the Job, in field order.
+    /// Returns every issue the Job has, in field order.
     pub fn from_value(
         object: &serde_json::Map<String, Value>,
         at: Vec<LocSegment>,
@@ -812,7 +811,7 @@ fn read_string(
 /// The string `field` of `fields` holds, stripped and checked, when it is there.
 ///
 /// The field has a default, so an absent value leaves it; a `null` is a value of
-/// the wrong type, which Pydantic refused exactly as it refused a number.
+/// the wrong type, which is refused exactly as a number of the wrong type is.
 fn read_defaulted_string(
     fields: &lax::Fields<'_>,
     field: &str,
@@ -829,7 +828,7 @@ fn read_defaulted_string(
     }
 }
 
-/// The `status` of a Job, as Pydantic's literal set read it.
+/// The `status` of a Job, read against the literals a Job status may be.
 fn read_status(fields: &lax::Fields<'_>, issues: &mut Vec<ValidationIssue>) -> Option<JobStatus> {
     let value = fields.required("status", issues)?;
     let options: Vec<&str> = JobStatus::ALL
@@ -857,8 +856,8 @@ fn read_runner_labels(fields: &lax::Fields<'_>, issues: &mut Vec<ValidationIssue
             return Vec::new();
         }
     };
-    // A list past the bound is refused whole, as Pydantic's list constraint
-    // refuses it before it reads any item.
+    // A list past the bound is refused whole, before any item is read: one issue
+    // names the list's length rather than one issue per label.
     if labels.len() > RUNNER_LABELS_MAX {
         issues.push(ValidationIssue::list_too_long(
             fields.loc("runner_labels"),
@@ -909,7 +908,7 @@ fn read_optional_timestamp(
 /// The boolean `field` of `fields` holds, when it is there.
 ///
 /// The field has a default, so an absent value leaves it; a `null` is a value of
-/// the wrong type, as it was to Pydantic.
+/// the wrong type, which is refused the same way.
 fn read_defaulted_bool(
     fields: &lax::Fields<'_>,
     field: &str,
@@ -925,7 +924,7 @@ fn read_defaulted_bool(
     }
 }
 
-/// Trims text the way Pydantic's `str_strip_whitespace` does.
+/// Trims text on both ends past every whitespace character.
 fn stripped(text: &str) -> String {
     strip_wire_whitespace(text).to_owned()
 }
@@ -972,7 +971,7 @@ pub const ATTEMPT_MAX: i64 = i32::MAX as i64;
 /// Why a Pipeline report body was refused.
 #[derive(Debug, Clone, PartialEq)]
 pub enum BodyRefusal {
-    /// Every issue Pydantic listed, which the 422's `detail` list carries.
+    /// Every issue the body has, which the 422's `detail` list carries.
     Issues(Vec<ValidationIssue>),
     /// A `ci_run_attempt` past the `int4` column, which both ingest routes answer
     /// 400 for rather than rewriting the value CI sent.
@@ -992,11 +991,11 @@ pub enum AttemptIn {
     BelowMinimum(Value),
     /// A number past the `int4` column, however it is spelled.
     PastColumn,
-    /// A value that is no integer, in the terms Pydantic reported it.
+    /// A value that is no integer, in the terms the 422 reports it.
     NotAnInteger {
-        /// Pydantic's error kind, such as `int_type`.
+        /// The error kind, such as `int_type`.
         kind: String,
-        /// Pydantic's message for that kind.
+        /// The message for that kind.
         msg: String,
         /// The value as the caller sent it.
         input: Value,
@@ -1028,16 +1027,16 @@ impl AttemptIn {
 
 /// Reads a `ci_run_attempt` from the value a request carried.
 ///
-/// One rule serves both ingest routes: Pydantic's lax integer, at least 1, and
-/// inside the `int4` column. The issue's `loc` is the route's to place, so the
-/// reading is built without one.
+/// One rule serves both ingest routes: the lax integer, at least 1, and inside
+/// the `int4` column. The issue's `loc` is the route's to place, so the reading
+/// is built without one.
 #[must_use]
 pub fn read_ci_run_attempt(value: &Value) -> AttemptIn {
     // A run of digits past `i64` is a number past the column whatever it spells,
-    // where any other unreadable value is Pydantic's `int_parsing`.
+    // where any other unreadable value is the `int_parsing` kind.
     if let Value::String(text) = value {
         let trimmed = strip_wire_whitespace(text);
-        if lax::python_int(text).is_none()
+        if lax::text_int(text).is_none()
             && !trimmed.is_empty()
             && trimmed.bytes().all(|byte| byte.is_ascii_digit())
         {
@@ -1093,11 +1092,11 @@ fn default_attempt() -> i64 {
 }
 
 impl PipelineReportIn {
-    /// Reads a Pipeline report body the way Pydantic read one.
+    /// Reads a Pipeline report body with the lax rules this API applies.
     ///
     /// # Errors
     ///
-    /// Returns every issue Pydantic listed, in field order, or
+    /// Returns every issue the body has, in field order, or
     /// [`BodyRefusal::AttemptPastColumn`] for an attempt the `int4` column cannot
     /// hold.
     pub fn from_value(object: &serde_json::Map<String, Value>) -> Result<Self, BodyRefusal> {
@@ -1139,8 +1138,8 @@ impl PipelineReportIn {
         let jobs = read_jobs(&fields, &mut issues);
 
         if issues.is_empty() {
-            // A model-level rule runs only once every field validated, as
-            // Pydantic's `model_validator(mode="after")` does.
+            // A model-level rule runs only once every field validated, so a body
+            // with two faults reports the field's issue and not the model's.
             let mut seen = std::collections::BTreeSet::new();
             if !jobs.iter().all(|job| seen.insert(job.ci_job_id.clone())) {
                 issues.push(ValidationIssue::model_error("duplicate ci_job_id in jobs"));
@@ -1799,7 +1798,7 @@ pub struct JobSummaryOut {
 /// A human's quarantine decision.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct QuarantineIn {
-    /// Whether the Test is quarantined, in any spelling Pydantic took.
+    /// Whether the Test is quarantined, in any spelling [`lax_bool`] accepts.
     #[serde(deserialize_with = "lax_bool::deserialize")]
     pub quarantined: bool,
     /// Why the human quarantined it.
@@ -1811,12 +1810,12 @@ pub struct QuarantineIn {
 }
 
 impl QuarantineIn {
-    /// Reads a quarantine body the way Pydantic read it.
+    /// Reads a quarantine body with the lax rules this API applies.
     ///
     /// # Errors
     ///
-    /// Returns every issue Pydantic listed, in field order, which the 422's
-    /// `detail` list carries.
+    /// Returns every issue the body has, in field order, which the 422's `detail`
+    /// list carries.
     pub fn from_value(
         object: &serde_json::Map<String, Value>,
     ) -> Result<Self, Vec<ValidationIssue>> {
@@ -2053,12 +2052,12 @@ pub struct IssueLinkIn {
 }
 
 impl IssueLinkIn {
-    /// Reads an Issue link body the way Pydantic read it.
+    /// Reads an Issue link body with the lax rules this API applies.
     ///
     /// # Errors
     ///
-    /// Returns every issue Pydantic listed, in field order, which the 422's
-    /// `detail` list carries.
+    /// Returns every issue the body has, in field order, which the 422's `detail`
+    /// list carries.
     pub fn from_value(
         object: &serde_json::Map<String, Value>,
     ) -> Result<Self, Vec<ValidationIssue>> {

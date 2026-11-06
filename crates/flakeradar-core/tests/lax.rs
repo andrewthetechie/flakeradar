@@ -1,14 +1,13 @@
 //! The lax readings a request body's values get, one value at a time.
 //!
-//! Every expected `type`, `loc` and accepted spelling was recorded by running
-//! Pydantic 2.14.2, which the reference validated its bodies with: `"1_0"` is
-//! 10, `1e300` is `int_parsing_size`, `false` as a boolean is `false`, and a
-//! date alone is that day's midnight.
+//! Every expected `type`, `loc` and accepted spelling is a recorded answer:
+//! `"1_0"` is 10, `1e300` is `int_parsing_size`, `false` as a boolean is `false`,
+//! and a date alone is that day's midnight.
 
 #![expect(
     clippy::expect_used,
     clippy::panic,
-    reason = "a test fails loudly when a reading is not the one Pydantic made"
+    reason = "a test fails loudly when a reading is not the recorded one"
 )]
 
 use chrono::{DateTime, TimeZone as _, Utc};
@@ -49,7 +48,7 @@ fn a_string_is_read_only_from_a_json_string() {
 }
 
 #[test]
-fn an_integer_takes_every_number_pydantic_took() {
+fn an_integer_takes_every_number_the_record_took() {
     for (value, expected) in [
         (json!(2), 2),
         (json!(2.0), 2),
@@ -73,7 +72,7 @@ fn an_integer_takes_every_number_pydantic_took() {
 }
 
 #[test]
-fn an_integer_refusal_names_the_kind_pydantic_used() {
+fn an_integer_refusal_names_the_kind_the_record_used() {
     for (value, expected) in [
         (json!(2.5), "int_from_float"),
         (json!("2.5"), "int_parsing"),
@@ -86,10 +85,10 @@ fn an_integer_refusal_names_the_kind_pydantic_used() {
         (json!("1_"), "int_parsing"),
         (json!(""), "int_parsing"),
         (json!("0x10"), "int_parsing"),
-        // A run past `i64` is no integer here, although Python's `int` holds it.
+        // A run past `i64` is no integer here, although a wider integer holds it.
         (json!("9223372036854775808"), "int_parsing"),
         (json!("١٢"), "int_parsing"),
-        // A number past `i64` is the size Pydantic reports for a float.
+        // A number past `i64` is the size a float is refused with.
         (json!(1e300), "int_parsing_size"),
         (json!(9_223_372_036_854_775_808_u64), "int_parsing_size"),
         (json!(null), "int_type"),
@@ -101,7 +100,7 @@ fn an_integer_refusal_names_the_kind_pydantic_used() {
 }
 
 #[test]
-fn a_boolean_takes_exactly_the_values_pydantic_read() {
+fn a_boolean_takes_exactly_the_values_the_wire_reads() {
     for (value, expected) in [
         (json!(true), true),
         (json!(false), false),
@@ -131,7 +130,7 @@ fn a_boolean_takes_exactly_the_values_pydantic_read() {
 }
 
 #[test]
-fn a_timestamp_takes_every_iso_form_and_epoch_pydantic_took() {
+fn a_timestamp_takes_every_iso_form_and_epoch_the_record_took() {
     let midnight = Utc
         .with_ymd_and_hms(2026, 1, 1, 0, 0, 0)
         .single()
@@ -203,7 +202,7 @@ fn a_timestamp_takes_every_iso_form_and_epoch_pydantic_took() {
 }
 
 #[test]
-fn a_timestamp_refusal_names_the_kind_pydantic_used() {
+fn a_timestamp_refusal_names_the_kind_the_record_used() {
     for (value, expected) in [
         (json!(""), "datetime_from_date_parsing"),
         (json!("2026-1-1"), "datetime_from_date_parsing"),
@@ -309,7 +308,7 @@ fn a_nul_is_refused_wherever_it_appears_in_text() {
 }
 
 #[test]
-fn a_number_spelled_as_a_string_is_read_as_pydantic_read_one() {
+fn a_number_spelled_as_a_string_is_read_as_the_wire_reads() {
     for (text, expected) in [
         ("0", Some(0)),
         ("-0", Some(0)),
@@ -326,7 +325,7 @@ fn a_number_spelled_as_a_string_is_read_as_pydantic_read_one() {
         ("", None),
         ("9223372036854775808", None),
     ] {
-        assert_eq!(lax::python_int(text), expected, "{text}");
+        assert_eq!(lax::text_int(text), expected, "{text}");
     }
 }
 
@@ -339,7 +338,7 @@ fn a_timestamp_that_names_no_instant_is_refused_with_a_detail() {
     );
     assert!(
         issue.ctx.is_some(),
-        "Pydantic reports the parser's own error"
+        "the refusal carries the parser's own error"
     );
     let issue = lax::timestamp(&Value::from("not a date at all"), at()).expect_err("no instant");
     assert_eq!(

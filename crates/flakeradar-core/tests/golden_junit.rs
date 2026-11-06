@@ -1,7 +1,7 @@
 //! Replays every recorded JUnit golden file through the Rust parser.
 //!
-//! The goldens are what the frozen Python server produced for each corpus file
-//! (task 02), so this is the parity check for parsing, fingerprints and Failure
+//! The goldens are the recorded answer for each corpus file, so this is the check
+//! that parsing, fingerprints and Failure
 //! categories. A difference is accepted only through an entry in
 //! `tests/parity/allowed-differences.json`, read here exactly as the parity
 //! rules describe it, so an intended difference can never hide in this test.
@@ -33,7 +33,7 @@ struct Allowance {
     file: String,
     /// Dotted path of the differing field within that golden.
     field: String,
-    /// The exact Python value, when the allowance names one.
+    /// The exact recorded value, when the allowance names one.
     python_value: Option<Value>,
     /// The exact Rust value, when the allowance names one.
     rust_value: Option<Value>,
@@ -70,7 +70,7 @@ static ALLOWANCES: LazyLock<Vec<Allowance>> = LazyLock::new(|| {
 });
 
 /// Whether `allowed-differences.json` covers this exact value difference.
-fn is_allowed(golden: &str, field: &str, python: &Value, rust: &Value) -> bool {
+fn is_allowed(golden: &str, field: &str, recorded: &Value, rust: &Value) -> bool {
     let file = format!("golden/junit/{golden}");
     ALLOWANCES.iter().any(|allowance| {
         allowance.file == file
@@ -78,7 +78,7 @@ fn is_allowed(golden: &str, field: &str, python: &Value, rust: &Value) -> bool {
             && allowance
                 .python_value
                 .as_ref()
-                .is_none_or(|value| value == python)
+                .is_none_or(|value| value == recorded)
             && allowance
                 .rust_value
                 .as_ref()
@@ -97,7 +97,7 @@ fn check_field(golden: &str, field: &str, want: &Value, got: Value) {
     }
     assert!(
         is_allowed(golden, field, want, &got),
-        "{golden}: {field} is {got}, Python recorded {want}"
+        "{golden}: {field} is {got}, the golden records {want}"
     );
 }
 
@@ -182,13 +182,14 @@ fn every_recorded_junit_golden_replays_identically() {
 fn check_error(golden: &Golden, recorded: &str, parsed: Result<Vec<ParsedCase>, ParseError>) {
     let error = parsed.err().unwrap_or_else(|| {
         panic!(
-            "{}: Python recorded an error but Rust parsed the report",
+            "{}: the golden records an error but this parser read the report",
             golden.name
         )
     });
     if recorded.starts_with("unhandled ") {
-        // Python raised out of the parser here; the Rust parser must name the
-        // bad value so the ingest route can answer 400 (differences.md).
+        // The recorded answer for this corpus file is an unhandled error; the
+        // parser names the bad value instead, so the ingest route answers 400
+        // (differences.md).
         assert!(
             matches!(error, ParseError::InvalidTime { .. }),
             "{}: expected a typed time error, got {error}",
@@ -207,7 +208,7 @@ fn check_error(golden: &Golden, recorded: &str, parsed: Result<Vec<ParsedCase>, 
 fn check_cases(golden: &Golden, parsed: &Result<Vec<ParsedCase>, ParseError>) {
     let cases = parsed.as_ref().unwrap_or_else(|error| {
         panic!(
-            "{}: Python parsed the report but Rust failed: {error}",
+            "{}: the golden parsed the report but this parser failed: {error}",
             golden.name
         )
     });

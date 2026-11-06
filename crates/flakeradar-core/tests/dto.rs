@@ -1,7 +1,8 @@
 //! The DTOs' wire shape and the upload validation rules.
 //!
 //! The shape is what the frontend, the CI actions and Fabro parse, so each test
-//! names the field it pins. The validation tests port the rules Pydantic applied
+//! names the field it pins. The validation tests pin the lax rules the body
+//! readers apply
 //! to a Pipeline report.
 
 #![expect(
@@ -132,7 +133,7 @@ fn a_bad_timestamp_is_a_deserialization_error() {
 }
 
 #[test]
-fn dates_and_tiers_keep_their_python_spelling() {
+fn dates_and_tiers_keep_their_wire_spelling() {
     let point = ScorePointOut {
         day: NaiveDate::from_ymd_opt(2026, 10, 20).expect("the date exists"),
         flakiness_score: 0.5,
@@ -241,7 +242,7 @@ fn a_blank_default_branch_is_unknown() {
 }
 
 #[test]
-fn a_bad_repo_is_a_value_error_with_pydantic_wording() {
+fn a_bad_repo_is_a_value_error_with_the_wire_wording() {
     let mut body = valid_report();
     body["repo"] = json!("Not A Repo");
     let issues = validated(&body).expect_err("the report is rejected");
@@ -364,14 +365,14 @@ fn duplicate_job_ids_are_a_model_error() {
     assert_eq!(issues[0].r#type, "value_error");
     assert_eq!(issues[0].msg, "Value error, duplicate ci_job_id in jobs");
     assert_eq!(issues[0].loc, [LocSegment::Field("body".to_owned())]);
-    // Pydantic reports no input for a model-level rule.
+    // A model-level rule reports no input: there is no one value to point at.
     let value = serde_json::to_value(&issues[0]).expect("the issue serializes");
     assert!(value.get("input").is_none());
 }
 
 #[test]
 fn duplicate_job_ids_are_not_checked_while_a_field_is_invalid() {
-    // Pydantic skips a model validator when field validation already failed.
+    // A model-level rule is skipped when a field already failed to validate.
     let mut body = valid_report();
     body["pipeline"] = json!("");
     body["jobs"] = json!([
@@ -452,8 +453,8 @@ fn a_job_timestamp_round_trips_in_the_accepted_shape() {
 
 #[test]
 fn a_stored_payload_that_names_no_attempt_counts_as_the_first() {
-    // The stored body is written by this port, so it always names an attempt;
-    // the default is what Pydantic gave a payload that named none.
+    // The stored body is written by this server, so it always names an attempt;
+    // the default is what a payload that names none is read as.
     let mut body = json!({
         "repo": "acme/app",
         "provider": "github",
@@ -486,7 +487,7 @@ fn a_job_validation_is_usable_on_its_own() {
 #[test]
 fn a_quarantine_body_may_omit_the_reason_and_expiry() {
     // `tests/parity/scenarios/quarantine.json` step 10 POSTs exactly this body,
-    // and Python's `QuarantineIn` defaults both optional fields, so serde must
+    // and both optional fields have defaults, so serde must
     // accept the body and read the documented defaults.
     let body: QuarantineIn = serde_json::from_value(json!({"quarantined": false}))
         .expect("a body with only `quarantined` deserializes");
@@ -541,11 +542,10 @@ fn read(value: &Value) -> Result<bool, serde_json::Error> {
 }
 
 #[test]
-fn a_lax_boolean_takes_exactly_the_values_pydantic_reads() {
-    // The rows are Pydantic 2.14.2's own answers for a `bool` field, checked
-    // against `backend/.venv`: `1.0` and `0.0` are booleans (the Rust port used
-    // to refuse them), and a value of another JSON type is `bool_type` where a
-    // number or string of the right type it cannot read is `bool_parsing`.
+fn a_lax_boolean_takes_exactly_the_documented_values() {
+    // Every row is a recorded answer for a `bool` field: `1.0` and `0.0` are
+    // booleans, and a value of another JSON type is `bool_type` where a number or
+    // string of the right type that spells no boolean is `bool_parsing`.
     let accepted: [(&str, Value, bool); 8] = [
         ("true", json!(true), true),
         ("false", json!(false), false),
@@ -562,7 +562,7 @@ fn a_lax_boolean_takes_exactly_the_values_pydantic_reads() {
             Err(error) => panic!("{label} was refused: {error}"),
         }
     }
-    // `-0.0` is the same float as `0.0`, and Pydantic reads it as `false`.
+    // `-0.0` is the same float as `0.0`, and it reads as `false`.
     match read(&json!(-0.0)) {
         Ok(flag) => assert!(!flag, "-0.0"),
         Err(error) => panic!("-0.0 was refused: {error}"),
@@ -592,7 +592,7 @@ fn a_lax_boolean_takes_exactly_the_values_pydantic_reads() {
 }
 
 #[test]
-fn a_refused_lax_boolean_carries_pydantics_kind_and_wording() {
+fn a_refused_lax_boolean_carries_the_kind_and_wording() {
     let wrong_type = lax_bool::WRONG_TYPE_MESSAGE;
     let unparsable = lax_bool::UNPARSABLE_MESSAGE;
     let refused: [(&str, Value, &str); 18] = [
@@ -653,7 +653,7 @@ fn an_optional_lax_boolean_reads_null_and_absence_as_none() {
 #[test]
 fn an_issue_link_body_may_omit_the_url() {
     // `tests/parity/scenarios/issue-links.json` step 8 PUTs exactly this body,
-    // and Python's `IssueLinkIn` defaults `url` to `None`.
+    // and `url` defaults to `None`.
     let body: IssueLinkIn = serde_json::from_value(json!({"number": 12}))
         .expect("a body with only `number` deserializes");
     assert_eq!((body.number, body.url), (12, None));
@@ -682,7 +682,7 @@ fn body(field: &str) -> Vec<LocSegment> {
 }
 
 #[test]
-fn a_validation_issue_keeps_pydantics_kind_loc_and_wording() {
+fn a_validation_issue_keeps_its_kind_loc_and_wording() {
     let cases = [
         (
             ValidationIssue::int_parsing(body("number"), json!("twelve")),

@@ -1,8 +1,8 @@
 //! The small enums the DTOs and the scoring rules share.
 //!
-//! Each variant's wire spelling is the string the frozen Python server stored
-//! and served, so a value never changes form between the database, the JSON
-//! responses and the MCP tools.
+//! Each variant's wire spelling is the string the database stores and the JSON
+//! responses and MCP tools serve, so a value never changes form between the
+//! three.
 
 // Rust guideline compliant 2026-07-21
 
@@ -38,7 +38,7 @@ impl ExecutionStatus {
         matches!(self, Self::Failed | Self::Error)
     }
 
-    /// The status as the Python server spelled it.
+    /// The status as the wire spells it.
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
@@ -82,7 +82,7 @@ pub enum Tier {
 }
 
 impl Tier {
-    /// The tier as the Python server spelled it.
+    /// The tier as the wire spells it.
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
@@ -113,7 +113,7 @@ pub enum Trend {
 }
 
 impl Trend {
-    /// The trend as the Python server spelled it.
+    /// The trend as the wire spells it.
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
@@ -144,10 +144,10 @@ pub enum JobStatus {
 }
 
 impl JobStatus {
-    /// Every spelling a Pipeline report may use, in Pydantic's order.
+    /// Every spelling a Pipeline report may use, in the order the 422 lists them.
     pub const ALL: [Self; 3] = [Self::Passed, Self::Failed, Self::Skipped];
 
-    /// The status as the Python server spelled it.
+    /// The status as the wire spells it.
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
@@ -213,7 +213,7 @@ impl EntityKind {
     /// Both entities, in the order the sync and the leaderboard list them.
     pub const ALL: [Self; 2] = [Self::Test, Self::Job];
 
-    /// The entity as the frozen server spelled it: `test` or `job`.
+    /// The entity as the wire spells it: `test` or `job`.
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
@@ -255,10 +255,10 @@ pub enum ReportKind {
 }
 
 impl ReportKind {
-    /// Both kinds, in the order the frozen server listed them.
+    /// Both kinds, in the order the 422 lists them.
     pub const ALL: [Self; 2] = [Self::Junit, Self::Pipeline];
 
-    /// The kind as the frozen server stored it.
+    /// The kind as the database stores it.
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
@@ -304,7 +304,7 @@ impl ReportStatus {
     /// Every status a stored Report may hold, in the order the queue filter lists them.
     pub const ALL: [Self; 3] = [Self::Pending, Self::Processed, Self::Failed];
 
-    /// The status as the frozen server stored it.
+    /// The status as the database stores it.
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {

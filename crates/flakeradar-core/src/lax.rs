@@ -1,11 +1,11 @@
-//! Pydantic's lax reading of one JSON request body, field by field.
+//! The lax reading of one JSON request body, field by field.
 //!
-//! The reference validated a body in one pass and answered every field it
-//! refused, accepting the spellings Pydantic 2's lax mode takes: `"2"` and
-//! `2.0` for an integer, `"yes"` and `1` for a boolean, a date or an epoch
-//! number for a timestamp. `serde` stops at the first failure and takes one
-//! spelling per type, so a body is read here with the coercion Pydantic applied
-//! and the issue it reported for each value it refused.
+//! A body is validated in one pass and every field it gets wrong is answered at
+//! once, in the spellings this API accepts: `"2"` and `2.0` for an integer,
+//! `"yes"` and `1` for a boolean, a date or an epoch number for a timestamp.
+//! `serde` stops at the first failure and takes one spelling per type, so the
+//! reader here applies the coercion itself and builds the issue each refused
+//! value answers with.
 
 // Rust guideline compliant 2026-07-21
 
@@ -16,15 +16,15 @@ use crate::dto::lax_bool::{self, Refusal};
 use crate::dto::{LocSegment, ValidationIssue};
 use crate::py::strip_wire_whitespace;
 
-/// `2^63`, the first whole number above `i64::MAX`. Pydantic's float-to-integer
+/// `2^63`, the first whole number above `i64::MAX`. The float-to-integer
 /// conversion accepts a float at or above the negative bound and below this one,
 /// and reports `int_parsing_size` outside that range.
 const INTEGER_RANGE: f64 = 9_223_372_036_854_776_000_000_000_000_000.0;
 
-/// The milliseconds in one second, as Pydantic's timestamps count them.
+/// The nanoseconds in one second, the unit a timestamp's fraction is scaled by.
 const NANOS_PER_SECOND: f64 = 1_000_000_000.0;
 
-/// Pydantic's message for a string it could not read as an integer, which the
+/// The message a string that spells no integer is refused with, which the
 /// request extractors report as `int_parsing`.
 pub const INT_PARSING_MESSAGE: &str =
     "Input should be a valid integer, unable to parse string as an integer";
@@ -54,7 +54,7 @@ impl<'a> Fields<'a> {
         self.object.get(field)
     }
 
-    /// The value of `field`, recording Pydantic's `missing` issue when absent.
+    /// The value of `field`, recording the `missing` issue when absent.
     pub fn required(&self, field: &str, issues: &mut Vec<ValidationIssue>) -> Option<&'a Value> {
         let value = self.field(field);
         if value.is_none() {
@@ -80,11 +80,11 @@ impl<'a> Fields<'a> {
     }
 }
 
-/// The string `value` holds, as Pydantic read a `str`.
+/// The string `value` holds, when it holds one.
 ///
-/// Pydantic 2 refuses every other JSON type for a string field, reporting
-/// `string_type`; it never coerces a number into text, which is the change from
-/// Pydantic 1 that this port keeps.
+/// Any other JSON type is refused with `string_type`: a number is never coerced
+/// into text, so a body that sends `{"name": 5}` is told what is wrong instead of
+/// having a name invented for it.
 ///
 /// # Errors
 ///
@@ -96,7 +96,7 @@ pub fn string(value: &Value, loc: Vec<LocSegment>) -> Result<String, Box<Validat
     }
 }
 
-/// The integer `value` names, as Pydantic's lax mode read one.
+/// The integer `value` names, in any spelling this API accepts.
 ///
 /// A JSON `true` or `false` is `1` or `0`; a whole float is its integer, and a
 /// float with a fractional part is `int_from_float`; a string is read as a
@@ -106,14 +106,15 @@ pub fn string(value: &Value, loc: Vec<LocSegment>) -> Result<String, Box<Validat
 ///
 /// # Errors
 ///
-/// Returns the issue Pydantic reported for a value it could not read as an
-/// integer: `int_type`, `int_from_float`, `int_parsing` or `int_parsing_size`.
+/// Returns the issue a value that is no integer answers with: `int_type`,
+/// `int_from_float`, `int_parsing` or `int_parsing_size`.
 pub fn integer(value: &Value, loc: Vec<LocSegment>) -> Result<i64, Box<ValidationIssue>> {
     match value {
         Value::Bool(flag) => Ok(i64::from(*flag)),
         Value::Number(number) => integer_from_number(number, value, loc),
-        Value::String(text) => python_int(text)
-            .ok_or_else(|| Box::new(ValidationIssue::int_parsing(loc, value.clone()))),
+        Value::String(text) => {
+            text_int(text).ok_or_else(|| Box::new(ValidationIssue::int_parsing(loc, value.clone())))
+        }
         _ => Err(Box::new(ValidationIssue::int_type(loc, value.clone()))),
     }
 }
@@ -163,15 +164,16 @@ fn whole_integer(float: f64) -> i64 {
     float as i64
 }
 
-/// The integer a string spells, as Pydantic's lax mode read one.
+/// The integer a string spells, in the form a query or a body may send.
 ///
 /// The spelling is an optional sign, then ASCII digits with single underscores
 /// allowed between them, then either nothing or a `.` and a run of digits that
 /// are all zeros: `"1_0"` is 10, `"10.000"` is 10, and `"1e3"`, `"5."` and
-/// `"1_0.5"` are no integer. A run past `i64`'s range is no integer here either,
-/// although Python's `int` holds it.
+/// `"1_0.5"` are no integer. A run past `i64`'s range is no integer either, even
+/// though a wider integer type could hold it: a value past the column's range is
+/// refused rather than truncated.
 #[must_use]
-pub fn python_int(text: &str) -> Option<i64> {
+pub fn text_int(text: &str) -> Option<i64> {
     let text = strip_wire_whitespace(text);
     let (negative, rest) = match text.strip_prefix('-') {
         Some(rest) => (true, rest),
@@ -196,8 +198,8 @@ pub fn python_int(text: &str) -> Option<i64> {
 /// The values of the ASCII digits of `text`, which may be separated by single
 /// underscores.
 ///
-/// An underscore must sit between two digits, as Python's own literal rules have
-/// it, so `"_1"`, `"1_"` and `"1__0"` are no number.
+/// An underscore must sit between two digits, so `"_1"`, `"1_"` and `"1__0"` are
+/// no number.
 fn digits_of(text: &str) -> Option<impl Iterator<Item = u8> + '_> {
     if text.is_empty() || text.starts_with('_') || text.ends_with('_') || text.contains("__") {
         return None;
@@ -215,7 +217,7 @@ fn digits_of(text: &str) -> Option<impl Iterator<Item = u8> + '_> {
     )
 }
 
-/// The boolean `value` names, as Pydantic's lax mode read one.
+/// The boolean `value` names, in any spelling [`lax_bool`] accepts.
 ///
 /// # Errors
 ///
@@ -231,9 +233,9 @@ pub fn boolean(value: &Value, loc: Vec<LocSegment>) -> Result<bool, Box<Validati
     }
 }
 
-/// The instant `value` names, as Pydantic's lax mode read one.
+/// The instant `value` names, in any spelling this API accepts.
 ///
-/// A string is any ISO 8601 form Pydantic took: a datetime with or without
+/// A string is any ISO 8601 form the reader takes: a datetime with or without
 /// seconds, a space or `T` between the date and the time, a `.` or `,` before a
 /// fraction, and `Z`, `z` or an offset with or without its colon; or a date
 /// alone, which is that day's midnight. A number is a Unix timestamp in seconds,
@@ -263,8 +265,8 @@ pub fn timestamp(
 
 /// The instant `text` names, when it names one.
 fn parse_timestamp(text: &str) -> Option<DateTime<Utc>> {
-    // `chrono` reads a date whose month and day are not zero-padded, and
-    // Pydantic does not: it reports `2026-1-1` as too short.
+    // `chrono` reads a date whose month and day are not zero-padded, and this
+    // reader does not: `2026-1-1` is refused as too short.
     if !starts_like_a_date(text) {
         return None;
     }
@@ -306,7 +308,7 @@ fn starts_like_a_date(text: &str) -> bool {
         && digits(8..10)
 }
 
-/// `text` with the separators Pydantic also took put in the shape `chrono` reads.
+/// `text` with the separators this API accepts put in the shape `chrono` reads.
 ///
 /// A comma before the fraction becomes a dot, a lowercase `z` becomes `Z`, and an
 /// offset written without its colon (`+0200`) gets one.
@@ -338,7 +340,7 @@ fn normalised_timestamp(text: &str) -> String {
     with_colon.unwrap_or(text)
 }
 
-/// Pydantic's own wording for a string it could not read as a date or datetime.
+/// The wording a string that names no instant is refused with.
 fn timestamp_detail(text: &str) -> &'static str {
     if text.chars().count() < 10 {
         "input is too short"
@@ -387,7 +389,7 @@ fn epoch_instant(number: &Number) -> Option<DateTime<Utc>> {
 ///
 /// # Errors
 ///
-/// Returns Pydantic's `list_type` issue for a value of another JSON type.
+/// Returns the `list_type` issue for a value of another JSON type.
 pub fn list_of(value: &Value, loc: Vec<LocSegment>) -> Result<&[Value], Box<ValidationIssue>> {
     match value {
         Value::Array(items) => Ok(items),
@@ -399,8 +401,8 @@ pub fn list_of(value: &Value, loc: Vec<LocSegment>) -> Result<&[Value], Box<Vali
 ///
 /// # Errors
 ///
-/// Returns Pydantic's `literal_error` issue, whose `expected` lists every option
-/// as Pydantic printed it, for a value that names none.
+/// Returns the `literal_error` issue, whose `expected` lists every option, for a
+/// value that names none.
 pub fn literal<'v>(
     value: &'v Value,
     options: &[&str],
@@ -416,7 +418,7 @@ pub fn literal<'v>(
     }
 }
 
-/// `options` as Pydantic printed them: each quoted, with `or` before the last.
+/// `options` as the 422 spells them: each quoted, with `or` before the last.
 #[must_use]
 pub fn expected_list(options: &[&str]) -> String {
     let quoted: Vec<String> = options.iter().map(|option| format!("'{option}'")).collect();

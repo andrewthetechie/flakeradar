@@ -14,7 +14,7 @@ use flakeradar_core::{
 
 #[test]
 fn statuses_keep_their_wire_spelling() {
-    // The spellings are the frozen server's wire vocabulary, so each expected value
+    // The spellings are the wire vocabulary, so each expected value
     // is the contract rather than a copy of what the enum says about itself.
     assert_eq!(ExecutionStatus::Passed.as_str(), "passed");
     assert_eq!(ExecutionStatus::Failed.as_str(), "failed");
@@ -111,7 +111,7 @@ fn a_report_status_is_one_of_the_three_stored_spellings() {
 }
 
 #[test]
-fn enums_serialize_to_the_python_strings() {
+fn enums_serialize_to_the_wire_strings() {
     assert_eq!(serde_json::to_string(&Tier::Flaky).unwrap(), "\"flaky\"");
     assert_eq!(
         serde_json::to_string(&Tier::Suspect).unwrap(),

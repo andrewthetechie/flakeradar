@@ -110,10 +110,11 @@ fn dashboard_url(change: &TierChange, public_url: &str) -> Option<String> {
     }
 }
 
-/// Percent-encodes text the way `urllib.parse.quote(text, safe="")` does.
+/// Percent-encodes text for a URL path segment.
 ///
-/// Python always keeps the ASCII letters, digits and `_.-~`, and writes every
-/// other byte of the UTF-8 encoding as uppercase `%XX`.
+/// The ASCII letters, digits and `_.-~` are kept, and every other byte of the
+/// UTF-8 encoding is written as uppercase `%XX`, which is the one form webhook
+/// clients agree on.
 fn percent_encode(text: &str) -> String {
     let mut encoded = String::with_capacity(text.len());
     for byte in text.bytes() {
@@ -379,8 +380,9 @@ mod tests {
         );
     }
 
-    /// The `test_webhook.py` Test fixture, values unchanged.
-    fn python_test_change() -> TierChange {
+    /// The recorded Tier change of a Test, with the values the payloads below
+    /// state.
+    fn recorded_test_change() -> TierChange {
         TierChange {
             kind: EntityKind::Test,
             id: 42,
@@ -396,8 +398,9 @@ mod tests {
         }
     }
 
-    /// The `test_webhook.py` Job fixture, values unchanged.
-    fn python_job_change() -> TierChange {
+    /// The recorded Tier change of a Job, with the values the payloads below
+    /// state.
+    fn recorded_job_change() -> TierChange {
         TierChange {
             kind: EntityKind::Job,
             id: 3,
@@ -426,7 +429,7 @@ mod tests {
     #[test]
     fn a_json_test_event_carries_every_field() {
         assert_eq!(
-            render_json(&[python_test_change()], PUBLIC_URL),
+            render_json(&[recorded_test_change()], PUBLIC_URL),
             [json!({
                 "event": "test.flaky",
                 "repo": "acme/app",
@@ -447,7 +450,7 @@ mod tests {
 
     #[test]
     fn a_json_job_event_has_no_project_and_names_its_pipeline() {
-        let mut change = python_job_change();
+        let mut change = recorded_job_change();
         change.tier = Tier::Suspect;
         change.flakiness_score = 0.1;
         assert_eq!(
@@ -471,7 +474,7 @@ mod tests {
 
     #[test]
     fn a_json_event_omits_the_url_without_a_public_url() {
-        let payloads = render_json(&[python_test_change()], "");
+        let payloads = render_json(&[recorded_test_change()], "");
         assert_eq!(payloads.len(), 1, "one event renders one payload");
         let Some(payload) = payloads.first() else {
             return;
@@ -481,15 +484,15 @@ mod tests {
 
     #[test]
     fn a_json_batch_is_a_list_for_one_event() {
-        assert_eq!(render_json(&[python_test_change()], PUBLIC_URL).len(), 1);
-        let body = render(&[python_test_change()], WebhookFormat::Json, PUBLIC_URL);
+        assert_eq!(render_json(&[recorded_test_change()], PUBLIC_URL).len(), 1);
+        let body = render(&[recorded_test_change()], WebhookFormat::Json, PUBLIC_URL);
         assert_eq!(body.as_array().expect("a list").len(), 1);
     }
 
     #[test]
     fn a_slack_payload_has_one_line_per_event() {
         assert_eq!(
-            render_slack(&[python_test_change(), python_job_change()], PUBLIC_URL),
+            render_slack(&[recorded_test_change(), recorded_job_change()], PUBLIC_URL),
             json!({
                 "text": concat!(
                     "FlakeRadar: acme/app / backend — test \"test_login\" became flaky \
@@ -504,7 +507,7 @@ mod tests {
 
     #[test]
     fn a_slack_line_says_recovered_for_the_other_tier() {
-        let mut change = python_test_change();
+        let mut change = recorded_test_change();
         change.tier = Tier::Suspect;
         change.flakiness_score = 0.1;
         assert_eq!(
@@ -519,16 +522,16 @@ mod tests {
     #[test]
     fn a_slack_line_without_a_public_url_ends_cleanly() {
         assert_eq!(
-            render_slack(&[python_test_change()], "")["text"],
+            render_slack(&[recorded_test_change()], "")["text"],
             json!("FlakeRadar: acme/app / backend — test \"test_login\" became flaky (score 0.42)")
         );
     }
 
     #[test]
     fn render_selects_the_format() {
-        let json_body = render(&[job_change()], WebhookFormat::Json, "");
+        let json_body = render(&[recorded_job_change()], WebhookFormat::Json, "");
         assert!(json_body.is_array());
-        let slack_body = render(&[job_change()], WebhookFormat::Slack, "");
+        let slack_body = render(&[recorded_job_change()], WebhookFormat::Slack, "");
         assert!(slack_body.is_object());
         let text = slack_body["text"].as_str().expect("slack carries text");
         assert!(text.starts_with("FlakeRadar: "), "{text}");

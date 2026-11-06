@@ -34,7 +34,8 @@ pub enum FailureCategory {
 }
 
 impl FailureCategory {
-    /// Every category, in the order the frozen server's `CATEGORIES` lists them.
+    /// Every category, in the order the 422's message lists them and the summary
+    /// reports them.
     pub const ALL: [Self; 5] = [
         Self::Network,
         Self::Environment,
@@ -51,7 +52,7 @@ impl FailureCategory {
             .find(|category| category.as_str() == text)
     }
 
-    /// The category as the Python server spelled it.
+    /// The category as the wire spells it.
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
@@ -72,8 +73,8 @@ impl fmt::Display for FailureCategory {
 
 /// A category and the patterns that prove it, in rule order.
 ///
-/// The order is the frozen server's: the most specific cause first, so a
-/// network error that also mentions a timeout stays a network error.
+/// The order is from most specific cause to least, so a network error that also
+/// mentions a timeout stays a network error: the first group that matches wins.
 static RULES: LazyLock<Vec<(FailureCategory, Regex)>> = LazyLock::new(build_rules);
 
 /// Compiles the rule groups once, refusing to run with a broken rule.
@@ -140,8 +141,8 @@ fn build_rules() -> Vec<(FailureCategory, Regex)> {
     groups
         .into_iter()
         .map(|(category, patterns)| {
-            // Alternation of the group's patterns, compiled with the Unicode
-            // case folding `re.IGNORECASE` applies to `str` in Python.
+            // Alternation of the group's patterns, compiled with Unicode case
+            // folding so a category matches however a runner spells it.
             let joined = patterns.join("|");
             let pattern = format!("(?i){joined}");
             let regex = Regex::new(&pattern).unwrap_or_else(|error| {

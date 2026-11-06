@@ -6,8 +6,8 @@
 //! below is written once and read by all of them, and each doc comment says why
 //! that number and what a change costs.
 //!
-//! Every value is the frozen Python server's `config.py` default, so an install
-//! that sets nothing keeps the scores, tiers and retention it had.
+//! Every value is the shipped default, so an install that sets nothing gets these
+//! scores, tiers and retention windows.
 
 // Rust guideline compliant 2026-07-21
 

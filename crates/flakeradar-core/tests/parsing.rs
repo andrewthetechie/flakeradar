@@ -1,7 +1,7 @@
 //! JUnit parsing behaviour: identity, outcome, Location and the retry elements.
 //!
-//! Each test ports one function of `backend/tests/test_parsing.py`, and the
-//! names say what the behaviour is rather than what the Python mechanics were.
+//! Each test pins one behaviour rule of the parser, and its name says what the
+//! behaviour is: an identity, an outcome, a Location or a retry's duration.
 
 #![expect(
     clippy::unwrap_used,
@@ -184,8 +184,7 @@ fn flaky_failure_becomes_a_failed_attempt_before_the_pass() {
     );
 }
 
-/// A `cargo-nextest` report, inlined because the frozen Python tree is deleted
-/// at cutover.
+/// A `cargo-nextest` report, inlined so the corpus stays self-contained.
 const NEXTEST_FLAKY_FAIL: &str = include_str!("fixtures/nextest_flaky_fail.xml");
 
 #[test]
@@ -421,8 +420,8 @@ fn properties_child_of_testsuites_is_not_yielded() {
 
 #[test]
 fn nested_suites_report_their_cases_under_the_outer_name() {
-    // The Python model yields a suite's own cases before a nested suite's, and
-    // the nested cases carry the outer suite's name.
+    // A suite's own cases come before a nested suite's, and the nested cases
+    // carry the outer suite's name.
     let cases = parse_junit_xml(
         br#"<testsuites name="nested"><testsuite name="outer"><testsuite name="inner"><testcase classname="c" name="test_inner"/></testsuite><testcase classname="c" name="test_outer"/></testsuite></testsuites>"#,
         1,
@@ -439,9 +438,8 @@ fn nested_suites_report_their_cases_under_the_outer_name() {
 
 #[test]
 fn a_testcase_time_that_is_not_a_number_is_a_typed_error() {
-    // User decision 2026-11-04: Python crashes with an unhandled ValueError
-    // here and answers 500; Rust validates the attribute so the route can
-    // answer 400.
+    // User decision 2026-11-04: an unparsable `time` used to crash the request
+    // with a 500; the parser validates the attribute so the route answers 400.
     let error = parse_junit_xml(
         br#"<testsuite name="s"><testcase classname="c" name="t" time="abc"/></testsuite>"#,
         1,
@@ -460,7 +458,7 @@ fn a_testcase_time_that_is_not_a_number_is_a_typed_error() {
 }
 
 #[test]
-fn time_values_python_accepts_keep_their_meaning() {
+fn time_values_the_record_accepts_keep_their_meaning() {
     // Missing and empty read as 0.0, and a negative or fractional value is the
     // number itself.
     let cases = parse_junit_xml(
@@ -484,8 +482,8 @@ fn time_values_python_accepts_keep_their_meaning() {
 
 #[test]
 fn a_testcase_time_with_thousands_commas_is_read_as_junitparser_reads_it() {
-    // junitparser's FloatAttr removes every comma before calling float(), so the
-    // testcase's own time keeps Python's behaviour.
+    // Every comma goes before the testcase's own `time` is parsed, so a
+    // thousands separator is part of a number here.
     let case =
         one(r#"<testsuite name="s"><testcase classname="c" name="t" time="1,234.5"/></testsuite>"#);
     assert_eq!(case.duration, 1234.5);
@@ -493,8 +491,8 @@ fn a_testcase_time_with_thousands_commas_is_read_as_junitparser_reads_it() {
 
 #[test]
 fn a_retry_time_with_a_comma_is_not_a_number_so_it_is_zero() {
-    // `_retry_outcome` calls plain float(), which rejects "1,5", so Python's
-    // except branch stores 0.0. Only the testcase's own time is comma-stripped.
+    // A retry's `time` is parsed as written, so "1,5" is no number and stores
+    // 0.0. Only the testcase's own time is comma-stripped.
     let cases = parse_junit_xml(
         br#"<testsuite name="s"><testcase classname="c" name="t"><flakyFailure message="m" time="1,5"/></testcase></testsuite>"#,
         1,
@@ -504,7 +502,7 @@ fn a_retry_time_with_a_comma_is_not_a_number_so_it_is_zero() {
 }
 
 #[test]
-fn underscores_between_digits_are_read_as_python_reads_them() {
+fn underscores_between_digits_are_read_as_numbers() {
     let cases = parse_junit_xml(
         br#"<testsuite name="s"><testcase classname="c" name="a" time="1_000.5"/><testcase classname="c" name="b"><flakyFailure message="m" time="1_0"/></testcase></testsuite>"#,
         1,
@@ -515,8 +513,8 @@ fn underscores_between_digits_are_read_as_python_reads_them() {
 }
 
 #[test]
-fn unicode_decimal_digits_are_read_as_python_reads_them() {
-    // Python's float() rewrites Arabic-Indic digits as ASCII before parsing.
+fn unicode_decimal_digits_are_read_as_their_ascii_digits() {
+    // Arabic-Indic digits are rewritten as ASCII digits before parsing.
     let xml = "<testsuite name=\"s\"><testcase classname=\"c\" name=\"a\" time=\"١٢٣.٥٩\"/><testcase classname=\"c\" name=\"b\"><flakyFailure message=\"m\" time=\"١_٢\"/></testcase></testsuite>";
     let cases = parse_junit_xml(xml.as_bytes(), 1).unwrap();
     assert_eq!(cases[0].duration, 123.59);
@@ -524,7 +522,7 @@ fn unicode_decimal_digits_are_read_as_python_reads_them() {
 }
 
 #[test]
-fn surrounding_whitespace_is_ignored_as_python_ignores_it() {
+fn surrounding_whitespace_is_ignored() {
     let cases = parse_junit_xml(
         br#"<testsuite name="s"><testcase classname="c" name="a" time=" 1.5 "/><testcase classname="c" name="b"><flakyFailure message="m" time=" 2.5 "/></testcase></testsuite>"#,
         1,
@@ -536,7 +534,7 @@ fn surrounding_whitespace_is_ignored_as_python_ignores_it() {
 
 #[test]
 fn a_time_with_a_misplaced_underscore_is_an_error() {
-    // Python's float() rejects this too, so the upload is not a number.
+    // A misplaced underscore is no number, so the upload is refused.
     for value in ["_1", "1_", "1__0"] {
         let xml = format!(
             r#"<testsuite name="s"><testcase classname="c" name="t" time="{value}"/></testsuite>"#
@@ -631,9 +629,9 @@ fn an_external_entity_is_never_fetched() {
     );
 }
 
-// The review of PR #135 found the reference and this parser disagreeing on the
-// inputs below. Each expected value was recorded by running the frozen parser
-// (`backend/app/parsing.py` at 86c98804) over the same bytes.
+// The review of PR #135 found the recorded parser and this one disagreeing on the
+// inputs below. Each expected value was recorded by running the recorded parser
+// over the same bytes.
 
 /// A failing case's details, as the reference parses them.
 fn details(xml: &str) -> String {
@@ -696,9 +694,9 @@ fn a_comment_before_a_stack_trace_keeps_the_message_and_details() {
 
 #[test]
 fn iso_8859_1_is_true_latin_1() {
-    // Python decodes the label with its own codec, so 0x80 is U+0080 rather than
-    // the euro sign WHATWG's alias for the label would give it. The fingerprint
-    // is the reference's.
+    // The label names true Latin-1, so 0x80 is U+0080 rather than the euro sign
+    // WHATWG's alias for the label would give it. The fingerprint is the recorded
+    // one.
     let xml = b"<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?><testsuite name=\"s\"><testcase classname=\"c\" name=\"na\x80me\"/></testsuite>";
     let case = &parse_junit_xml(xml, 1).unwrap()[0];
     assert_eq!(case.name.as_str(), "na\u{80}me");
@@ -709,9 +707,9 @@ fn iso_8859_1_is_true_latin_1() {
 }
 
 #[test]
-fn us_ascii_falls_back_to_utf_8_as_python_does() {
-    // Python's ASCII parse refuses the byte, and its lenient UTF-8 retry then
-    // reads the name as `té`.
+fn us_ascii_falls_back_to_utf_8() {
+    // US-ASCII refuses the byte, and the lossy UTF-8 read then gives the name as
+    // `té`.
     let xml = b"<?xml version=\"1.0\" encoding=\"US-ASCII\"?><testsuite name=\"s\"><testcase classname=\"c\" name=\"t\xc3\xa9\"/></testsuite>";
     let case = &parse_junit_xml(xml, 1).unwrap()[0];
     assert_eq!(case.name.as_str(), "té");
@@ -756,8 +754,8 @@ fn a_namespaced_element_is_not_a_junit_element() {
 
 #[test]
 fn a_namespaced_suite_is_refused() {
-    // Python's parser compares the fully qualified root tag, so a default
-    // namespace on `<testsuite>` is `Invalid format.` rather than a report.
+    // The root tag is compared fully qualified, so a default namespace on
+    // `<testsuite>` is `Invalid format.` rather than a report.
     for xml in [
         r#"<testsuite xmlns="urn:x" name="s"><testcase classname="c" name="t"/></testsuite>"#,
         r#"<testsuites xmlns="urn:x"><testsuite name="s"><testcase classname="c" name="t"/></testsuite></testsuites>"#,
@@ -800,7 +798,7 @@ fn an_internal_entity_is_expanded() {
 #[test]
 fn a_utf16_report_without_a_byte_order_mark_is_read_as_utf16() {
     // XML settles the encoding from the document's own bytes before the
-    // declaration is read, and Python's parser does the same.
+    // declaration is read, which is why the byte-order mark decides.
     let document = "<?xml version=\"1.0\" encoding=\"UTF-16\"?><testsuite name=\"s\"><testcase classname=\"c\" name=\"t\" time=\"1.5\"/></testsuite>";
     let units: Vec<u16> = document.encode_utf16().collect();
     for bytes in [
@@ -860,7 +858,7 @@ fn a_character_reference_in_cdata_or_a_comment_is_literal_text() {
 }
 
 #[test]
-fn an_encoding_python_does_not_know_is_refused() {
+fn an_unknown_encoding_is_refused() {
     let xml = b"<?xml version=\"1.0\" encoding=\"bogus\"?><testsuite name=\"s\"><testcase classname=\"c\" name=\"t\"/></testsuite>";
     assert_eq!(
         parse_junit_xml(xml, 1),
@@ -871,10 +869,10 @@ fn an_encoding_python_does_not_know_is_refused() {
 }
 
 #[test]
-fn a_multi_byte_declared_encoding_is_refused_as_python_refuses_it() {
-    // Python's parser refuses a multi-byte codec, and so does this one, whether
-    // it names one outright or not at all. Only the wording after the prefix
-    // differs, which is the parse-error difference the plan already records.
+fn a_multi_byte_declared_encoding_is_refused() {
+    // A multi-byte codec is refused whether it names one outright or not at all.
+    // Only the wording after the prefix differs, which is the parse-error
+    // difference the plan already records.
     for label in ["shift_jis", "UTF16", "utf-32"] {
         let xml = format!(
             "<?xml version=\"1.0\" encoding=\"{label}\"?><testsuite name=\"s\"><testcase classname=\"c\" name=\"t\"/></testsuite>"
@@ -890,9 +888,9 @@ fn a_multi_byte_declared_encoding_is_refused_as_python_refuses_it() {
 }
 
 #[test]
-fn a_declared_encoding_python_reads_only_leniently_falls_back() {
-    // Python's strict parse refuses the endian-specific UTF-16 spellings, and its
-    // lenient retry then reads the bytes as UTF-8.
+fn a_declared_encoding_read_only_leniently_falls_back() {
+    // An endian-specific UTF-16 spelling decides nothing, so the bytes are read
+    // as UTF-8.
     let xml = b"<?xml version=\"1.0\" encoding=\"utf-16le\"?><testsuite name=\"s\"><testcase classname=\"c\" name=\"t\"/></testsuite>";
     assert_eq!(parse_junit_xml(xml, 1).unwrap()[0].name, "t");
 }
@@ -900,7 +898,7 @@ fn a_declared_encoding_python_reads_only_leniently_falls_back() {
 #[test]
 fn a_digit_from_a_wide_decimal_block_keeps_its_value() {
     // U+1D7CE..U+1D7FF is five adjacent `Nd` blocks, so the value is the digit's
-    // position in the run modulo ten; Python reads each of these as named.
+    // position in the run modulo ten; each of these keeps the value it names.
     let xml = "<testsuite name=\"s\"><testcase classname=\"c\" name=\"a\" time=\"\u{1D7D9}\"/><testcase classname=\"c\" name=\"b\" time=\"\u{1D7CE}\"/><testcase classname=\"c\" name=\"c\" time=\"\u{1D7FF}\"/><testcase classname=\"c\" name=\"d\" time=\"\u{FF15}\"/><testcase classname=\"c\" name=\"e\" time=\"\u{967}\u{968}\"/><testcase classname=\"c\" name=\"f\" time=\"\u{1D7D8}\"/></testsuite>";
     assert_eq!(
         parse_junit_xml(xml.as_bytes(), 1)
@@ -988,8 +986,8 @@ fn an_unterminated_comment_is_the_parsers_error() {
 
 #[test]
 fn a_single_byte_code_page_label_is_decoded_by_its_own_codec() {
-    // Python hands the label to its codec registry, so a single-byte code page
-    // that its parser can use decodes exactly as that code page says.
+    // The label goes to the codec registry, so a single-byte code page decodes
+    // exactly as that code page says.
     let cases: [(&str, &[u8], &str); 4] = [
         ("windows-1252", b"\x80", "n€"),
         ("iso-8859-15", b"\xa4", "n€"),

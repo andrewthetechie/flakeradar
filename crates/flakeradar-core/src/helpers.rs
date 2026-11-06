@@ -1,8 +1,9 @@
 //! The small pure helpers the queries and the DTOs share.
 //!
-//! Each one is a rule the frozen Python server applied inline: the tier a score
-//! falls in, whether a Test is broken, the trend arrow, LIKE escaping, GitHub
-//! URLs and the Report body digest.
+//! Each one is a rule the queries and the DTOs both read: the tier a score falls
+//! in, whether a Test is broken, the trend arrow, LIKE escaping, GitHub URLs and
+//! the Report body digest. They live here so the routes, the MCP tools and the
+//! processors cannot answer differently about the same row.
 
 // Rust guideline compliant 2026-07-21
 

@@ -3,8 +3,9 @@
 //! A Test that fails every time is broken, not flaky: flakiness is instability,
 //! so the primary signal is status flips between consecutive Executions,
 //! weighted so recent flips matter more. A fail and a pass on the same commit
-//! SHA prove nondeterminism, and that proof puts a floor under the score. The
-//! rules and their constants are the frozen Python server's `scoring.py`.
+//! SHA prove nondeterminism, and that proof puts a floor under the score. Every
+//! served score, and so every tier and every Notification, comes from these
+//! rules; `tests/parity` replays the recorded answers.
 
 // Rust guideline compliant 2026-07-21
 
@@ -84,7 +85,7 @@ pub fn flip_score(statuses: &[ExecutionStatus], decay: f64, window: usize) -> f6
     let mut numerator = 0.0;
     let mut denominator = 0.0;
     // Walking newest to oldest means each step back in time is one more decay
-    // step, which is what `decay**i` in the Python loop counts.
+    // step: the offset is the exponent, so the newest flip weighs `decay^0`.
     for (offset, (newer, older)) in relevant.iter().zip(relevant.iter().skip(1)).enumerate() {
         let weight = decay.powf(count_as_f64(offset));
         denominator += weight;
@@ -138,7 +139,7 @@ pub fn count_proven_flakes(executions: &[(&str, ExecutionStatus)]) -> usize {
 /// The Flakiness score and the Proven flake count of one history.
 ///
 /// The score is the flip score, floored and then raised by repeated proof of
-/// nondeterminism, capped at 1 and rounded to four decimals as Python does. A
+/// nondeterminism, capped at 1 and rounded to four decimals with [`round4`]. A
 /// flip rate that is not a number proves nothing, so it scores 0: `f64::min`
 /// answers the other operand for NaN, which used to turn an undefined rate into a
 /// perfect score.
@@ -191,12 +192,12 @@ pub fn combined_score(
 }
 /// The score floor repeated proof of nondeterminism earns.
 ///
-/// Python evaluated `PROVEN_FLAKE_FLOOR + 0.1 * (count - 1)` with two roundings; a
-/// fused multiply-add would differ in the last bit, so the expression stays
-/// spelled out.
+/// The product is rounded and then added, as two separate steps: a fused
+/// multiply-add would differ in the last bit, and a served score has no tolerance
+/// for that.
 #[expect(
     clippy::suboptimal_flops,
-    reason = "Python rounded the product and the sum separately; fusing them could \
+    reason = "the product is rounded and then added; fusing the two steps could \
               change the last bit of a served score"
 )]
 fn proof_floor(proven: usize) -> f64 {

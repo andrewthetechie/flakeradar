@@ -47,11 +47,12 @@ pub const DETAILS_MAX: usize = 16384;
 
 /// The deepest `<testsuite>` nesting one report may have.
 ///
-/// The reference walked nested suites by recursion and raised `RecursionError`,
-/// which the route answered with 500, at 995 levels under Python's default
-/// 1000-frame limit. A crash is not a contract, so the approved rule makes
-/// anything that deep a refused upload instead; this limit is the deepest
-/// nesting the reference could still parse.
+/// A recursive walk of nested suites aborted the process at about 995 levels, and
+/// an abort is not an answer: the route died rather than answering. This parser
+/// holds its pending suites in a `Vec` instead, and refuses anything deeper than
+/// this as an upload error, so the depth a report may have is a 422 rather than a
+/// crash. 990 is the deepest nesting that still parsed, so every report that used
+/// to be processed still is.
 pub const SUITE_DEPTH_MAX: usize = 990;
 
 /// The most XML nodes (elements and text) one report may hold.
@@ -146,9 +147,9 @@ pub enum ParseError {
     NoTestCases,
     /// A `<testcase time>` attribute that is not a number.
     ///
-    /// The frozen Python server raised an unhandled `ValueError` here and
-    /// answered 500; the Rust server rejects the upload with a 400 instead, so
-    /// the error carries the offending value.
+    /// An unparsable `time` used to reach the process as an unhandled error and
+    /// answer 500; it is a property of the upload, so the route refuses it with a
+    /// 400 and the error carries the offending value.
     #[error("Not a valid JUnit XML report: testcase time '{value}' is not a number")]
     InvalidTime {
         /// The attribute value as it was given.
@@ -210,8 +211,9 @@ pub fn parse_junit_xml(content: &[u8], line_base: i64) -> Result<Vec<ParsedCase>
     let strict = strict_decode(content)?;
     if let Some(text) = strict {
         match parse_text(&text, line_base) {
-            // The frozen Python server retried on a lenient UTF-8 decode when
-            // the XML parser rejected the declared encoding's bytes.
+            // A document whose declared encoding does not describe its bytes is
+            // read again as lossy UTF-8, so a report with a stale declaration is
+            // still processed.
             Err(ParseError::InvalidXml { .. }) => {
                 parse_text(&String::from_utf8_lossy(content), line_base)
             }
@@ -225,20 +227,19 @@ pub fn parse_junit_xml(content: &[u8], line_base: i64) -> Result<Vec<ParsedCase>
 /// Decodes the bytes with their declared encoding, or reports that they are not
 /// valid in it.
 ///
-/// `Ok(None)` means the reference's parser rejected the bytes in the declared
-/// encoding and retried on a lenient UTF-8 decode, which is this parser's cue to
-/// do the same.
+/// `Ok(None)` means the bytes are not valid in the encoding they declare, and the
+/// caller reads them again as lossy UTF-8.
 ///
 /// # Errors
 ///
-/// Returns [`ParseError::InvalidXml`] when the declaration names an encoding the
-/// reference's parser could not use at all: one Python's codecs do not know, or
-/// a multi-byte one.
+/// Returns [`ParseError::InvalidXml`] when the declaration names an encoding this
+/// server cannot use at all: one its codec list does not know, or a multi-byte
+/// one.
 fn strict_decode(content: &[u8]) -> Result<Option<String>, ParseError> {
     // XML settles the encoding before the declaration is read: a byte-order mark
     // decides it, and so does the first byte of a document that starts with `<`.
-    // Python's parser does the same, which is why a UTF-16 report without a
-    // byte-order mark is still read as UTF-16.
+    // A leading `0x3C 0x00` is `<` in UTF-16LE, which is why a UTF-16 report
+    // without a byte-order mark is still read as UTF-16.
     match content {
         [0xFF, 0xFE, ..] | [0x3C, 0x00, ..] => return Ok(decode_utf16(content, UTF_16LE)),
         [0xFE, 0xFF, ..] | [0x00, 0x3C, ..] => return Ok(decode_utf16(content, UTF_16BE)),
@@ -248,17 +249,17 @@ fn strict_decode(content: &[u8]) -> Result<Option<String>, ParseError> {
         let (text, _, had_errors) = UTF_8.decode(content);
         return Ok((!had_errors).then(|| text.into_owned()));
     };
-    let Some(encoding) = python_encoding(&label)? else {
+    let Some(encoding) = encoding_rule(&label)? else {
         return Ok(None);
     };
     match encoding {
-        PythonEncoding::Latin1 => Ok(Some(content.iter().map(|byte| char::from(*byte)).collect())),
-        PythonEncoding::Ascii => Ok(std::str::from_utf8(content)
+        EncodingRule::Latin1 => Ok(Some(content.iter().map(|byte| char::from(*byte)).collect())),
+        EncodingRule::Ascii => Ok(std::str::from_utf8(content)
             .ok()
             .filter(|text| text.is_ascii())
             .map(ToOwned::to_owned)),
-        PythonEncoding::Utf16 => Ok(decode_utf16(content, UTF_16LE)),
-        PythonEncoding::Other(encoding) => {
+        EncodingRule::Utf16 => Ok(decode_utf16(content, UTF_16LE)),
+        EncodingRule::Other(encoding) => {
             let (text, _, had_errors) = encoding.decode(content);
             Ok((!had_errors).then(|| text.into_owned()))
         }
@@ -274,20 +275,20 @@ fn decode_utf16(content: &[u8], encoding: &'static Encoding) -> Option<String> {
     (!had_errors).then(|| text.into_owned())
 }
 
-/// An encoding the reference's parser decodes bytes with.
+/// The rule a declared encoding's label is decoded by.
 #[derive(Debug, Clone, Copy)]
-enum PythonEncoding {
+enum EncodingRule {
     /// True Latin-1: every byte is its own code point, including `0x80`-`0x9F`.
     Latin1,
     /// US-ASCII: a byte past `0x7F` is not valid in it.
     Ascii,
-    /// UTF-16, which Python's parser only accepts with a byte-order mark.
+    /// UTF-16, which is read only from a byte-order mark or a leading `<`.
     Utf16,
     /// Any other single-byte encoding the two agree on, decoded by `encoding_rs`.
     Other(&'static Encoding),
 }
 
-/// The encoding labels Python's codecs read as Latin-1, without punctuation.
+/// The encoding labels read as true Latin-1, without punctuation.
 const LATIN1_LABELS: [&str; 9] = [
     "iso88591",
     "iso8859",
@@ -300,7 +301,7 @@ const LATIN1_LABELS: [&str; 9] = [
     "csisolatin1",
 ];
 
-/// The encoding labels Python's codecs read as US-ASCII, without punctuation.
+/// The encoding labels read as US-ASCII, without punctuation.
 const ASCII_LABELS: [&str; 6] = [
     "usascii",
     "ascii",
@@ -310,24 +311,25 @@ const ASCII_LABELS: [&str; 6] = [
     "csascii",
 ];
 
-/// The encoding a declaration's label names, as Python's parser reads it.
+/// The rule a declaration's label names.
 ///
-/// Python hands an unknown label to its codec registry, which is why Latin-1 is
-/// the real Latin-1 rather than WHATWG's windows-1252 alias for it, and why
-/// US-ASCII refuses the bytes Latin-1 accepts. Labels ASCII agrees with
-/// Python's codecs on go through [`encoding_rs`].
+/// The label set is the one an XML reader's own codec list defines, which is why
+/// Latin-1 is the real Latin-1 rather than WHATWG's windows-1252 alias for it,
+/// and why US-ASCII refuses the bytes Latin-1 accepts. A label the table here
+/// does not name goes to [`encoding_rs`]'s registry.
 ///
-/// `Ok(None)` covers a label Python's strict parse rejects though its lenient
-/// retry still parses the bytes, such as the endian-specific UTF-16 spellings.
-fn python_encoding(label: &str) -> Result<Option<PythonEncoding>, ParseError> {
+/// `Ok(None)` covers a label whose bytes are then read lossily instead, such as
+/// the endian-specific UTF-16 spellings: the declaration decides nothing there.
+fn encoding_rule(label: &str) -> Result<Option<EncodingRule>, ParseError> {
     let lowercase = label.to_ascii_lowercase();
     match lowercase.as_str() {
-        "utf-16" => return Ok(Some(PythonEncoding::Utf16)),
-        // Python's strict parse refuses these spellings and its lenient retry
-        // reads the bytes lossily instead, so the declaration decides nothing.
+        "utf-16" => return Ok(Some(EncodingRule::Utf16)),
+        // These spellings name an endianness the byte-order mark already
+        // decides, so the declaration decides nothing and the bytes are read
+        // lossily.
         "utf-16le" | "utf-16be" => return Ok(None),
-        // Python hands the unhyphenated spelling to its codecs, which know it as
-        // a multi-byte encoding and refuse it.
+        // The unhyphenated spelling names a multi-byte encoding this server
+        // cannot read, so the upload is refused rather than decoded wrongly.
         "utf16" => {
             return Err(ParseError::InvalidXml {
                 detail: "multi-byte encodings are not supported".to_owned(),
@@ -340,17 +342,17 @@ fn python_encoding(label: &str) -> Result<Option<PythonEncoding>, ParseError> {
         .filter(|ch| !matches!(ch, '-' | '_' | ' '))
         .collect();
     if squashed == "utf8" {
-        return Ok(Some(PythonEncoding::Other(UTF_8)));
+        return Ok(Some(EncodingRule::Other(UTF_8)));
     }
     if LATIN1_LABELS.contains(&squashed.as_str()) {
-        return Ok(Some(PythonEncoding::Latin1));
+        return Ok(Some(EncodingRule::Latin1));
     }
     if ASCII_LABELS.contains(&squashed.as_str()) {
-        return Ok(Some(PythonEncoding::Ascii));
+        return Ok(Some(EncodingRule::Ascii));
     }
     match Encoding::for_label(label.as_bytes()) {
-        Some(encoding) if encoding == UTF_8 => Ok(Some(PythonEncoding::Other(UTF_8))),
-        Some(encoding) if encoding.is_single_byte() => Ok(Some(PythonEncoding::Other(encoding))),
+        Some(encoding) if encoding == UTF_8 => Ok(Some(EncodingRule::Other(UTF_8))),
+        Some(encoding) if encoding.is_single_byte() => Ok(Some(EncodingRule::Other(encoding))),
         Some(_) => Err(ParseError::InvalidXml {
             detail: "multi-byte encodings are not supported".to_owned(),
         }),
@@ -582,7 +584,7 @@ fn child_elements<'a, 'input>(
 }
 
 /// Collects one suite's cases: its own `<testcase>` children first, then those
-/// of nested suites, as the Python model iterates them.
+/// of nested suites, in document order.
 ///
 /// The walk holds the suites still to visit in a `Vec` rather than recursing, so
 /// nesting cannot overflow the stack; a suite nested deeper than
@@ -592,9 +594,9 @@ fn collect_suite(
     line_base: i64,
     collector: &mut CaseCollector,
 ) -> Result<(), ParseError> {
-    // A case inside a nested suite keeps the outer suite's name, because the
-    // Python model reports the suite it iterated rather than the suite the case
-    // sits in.
+    // A case inside a nested suite keeps the outer suite's name: the suite a walk
+    // started from is the one its cases are reported under, not the one each case
+    // happens to sit in.
     let suite_name = attribute(suite, "name").unwrap_or_default();
     let mut pending = vec![(suite, 1_usize)];
     while let Some((node, depth)) = pending.pop() {
@@ -709,8 +711,9 @@ fn retry_case(
 
 /// The status, Failure message and Failure details of a case's own result.
 ///
-/// The first `<failure>`, `<error>` or `<skipped>` in document order wins, as
-/// the Python model's first result does.
+/// The first `<failure>`, `<error>` or `<skipped>` in document order wins; a case
+/// that carries two of them reports the first, because one Execution has one
+/// outcome.
 fn outcome(case: Node<'_, '_>) -> (ExecutionStatus, String, String) {
     let Some(result) = case.descendants().find(|node| {
         ["failure", "error", "skipped"]
@@ -772,8 +775,9 @@ fn retry_outcome(elem: Node<'_, '_>) -> Result<(ExecutionStatus, String, String,
         child_text(elem, "system-err"),
     );
     let raw = attribute(elem, "time").unwrap_or_default();
-    // Python reads a retry's `time` with a bare `float()`, so a value it cannot
-    // parse is 0.0 rather than an error.
+    // A retry's `time` is read leniently: a value that is no number is 0.0 rather
+    // than a refused upload, because a retry's duration is context and not the
+    // case's own duration.
     let duration = parse_seconds(raw).unwrap_or(0.0);
     Ok((
         status,
@@ -819,11 +823,12 @@ fn first_line(text: &str) -> String {
 /// error.
 fn case_duration(case: Node<'_, '_>) -> Result<f64, ParseError> {
     let raw = attribute(case, "time").unwrap_or_default();
-    // junitparser's `FloatAttr` reads a missing or empty attribute as absent.
+    // A missing or empty attribute is no duration rather than a bad one.
     if raw.is_empty() {
         return Ok(0.0);
     }
-    // junitparser removes every comma before Python's `float()` sees the value.
+    // A thousands separator is not part of a number here, so every comma goes
+    // before the value is parsed.
     let without_commas = raw.replace(',', "");
     let duration = parse_seconds(&without_commas).ok_or_else(|| ParseError::InvalidTime {
         value: strip_wire_whitespace(raw).to_owned(),
@@ -846,7 +851,7 @@ fn finite_duration(duration: f64, raw: &str) -> Result<f64, ParseError> {
     })
 }
 
-/// Matches one Unicode decimal digit, the characters Python's `float` rewrites.
+/// Matches one Unicode decimal digit, the characters the reader rewrites.
 static DECIMAL_DIGIT: LazyLock<Regex> = LazyLock::new(decimal_digit);
 
 /// Compiles the decimal-digit pattern, refusing to run with a broken pattern.
@@ -859,14 +864,15 @@ fn decimal_digit() -> Regex {
     Regex::new(r"\A\p{Nd}\z").expect("the decimal-digit pattern compiles")
 }
 
-/// Parses a float the way Python's `float(text)` does.
+/// Parses a `time` attribute the way this API reads a number.
 ///
-/// Python trims Unicode whitespace (but not the information separators
-/// `\x1c`–`\x1f`, which `str.strip` would remove), rewrites every Unicode
-/// decimal digit as ASCII, and allows one underscore between two digits. Rust's
-/// parser does none of those, so each rule is applied first. Commas are not
-/// special here: the retry path calls plain `float()` in Python, while the
-/// testcase path removes them before this function, as junitparser does.
+/// Unicode whitespace around the value is trimmed (but not the information
+/// separators `\x1c`–`\x1f`), every Unicode decimal digit is rewritten as its
+/// ASCII digit, and one underscore is allowed between two digits. Rust's own
+/// parser does none of those, so each rule is applied first. A comma is not
+/// special here: the testcase path removes them before this function is called,
+/// and the retry path does not, which is why a retry with `<retry time="1,5">`
+/// reads 0.0.
 fn parse_seconds(raw: &str) -> Option<f64> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -920,7 +926,7 @@ fn is_decimal_digit(ch: char) -> bool {
     DECIMAL_DIGIT.is_match(ch.encode_utf8(&mut encoded))
 }
 
-/// Removes the underscores Python's `float` allows between two digits.
+/// Removes the underscores a number may carry between two digits.
 fn strip_numeric_underscores(text: &str) -> Option<String> {
     let chars: Vec<char> = text.chars().collect();
     let mut out = String::with_capacity(text.len());
