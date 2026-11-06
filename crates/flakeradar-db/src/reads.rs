@@ -594,6 +594,30 @@ pub struct ListOptions {
     pub new_within_days: Option<i64>,
 }
 
+/// Reads each row into its response shape, with the score it had a week ago.
+///
+/// The past scores are one query for the whole page, whatever its size.
+async fn read_items<T>(
+    db: &impl ConnectionTrait,
+    kind: EntityKind,
+    rows: &[QueryResult],
+    settings: &ReadSettings,
+    out: impl Fn(&QueryResult, Option<Trend>) -> Result<T, DbError>,
+) -> Result<Vec<T>, DbError> {
+    let ids: Vec<i32> = rows
+        .iter()
+        .map(|row| get::<i32>(row, "id"))
+        .collect::<Result<_, _>>()?;
+    let past = score_history::past_scores(db, kind, &ids, settings.today()).await?;
+    let mut items = Vec::with_capacity(rows.len());
+    for row in rows {
+        let id: i32 = get(row, "id")?;
+        let score: f64 = get(row, "flakiness_score")?;
+        items.push(out(row, trend_for(score, past.get(&id).copied()))?);
+    }
+    Ok(items)
+}
+
 /// The Tests leaderboard.
 ///
 /// # Errors
@@ -641,23 +665,10 @@ pub async fn list_tests(
         today: settings.today(),
     };
     let page = board.run(db).await?;
-    let ids: Vec<i32> = page
-        .rows
-        .iter()
-        .map(|row| get::<i32>(row, "id"))
-        .collect::<Result<_, _>>()?;
-    let past = score_history::past_scores(db, EntityKind::Test, &ids, settings.today()).await?;
-    let mut items = Vec::with_capacity(page.rows.len());
-    for row in &page.rows {
-        let test_id: i32 = get(row, "id")?;
-        let row_score: f64 = get(row, "flakiness_score")?;
-        items.push(test_out(
-            row,
-            settings.flake_threshold,
-            settings.broken_streak,
-            trend_for(row_score, past.get(&test_id).copied()),
-        )?);
-    }
+    let items = read_items(db, EntityKind::Test, &page.rows, settings, |row, trend| {
+        test_out(row, settings.flake_threshold, settings.broken_streak, trend)
+    })
+    .await?;
     Ok(TestPage {
         items,
         total: page.total,
@@ -695,22 +706,10 @@ pub async fn list_jobs(
         today: settings.today(),
     };
     let page = board.run(db).await?;
-    let ids: Vec<i32> = page
-        .rows
-        .iter()
-        .map(|row| get::<i32>(row, "id"))
-        .collect::<Result<_, _>>()?;
-    let past = score_history::past_scores(db, EntityKind::Job, &ids, settings.today()).await?;
-    let mut items = Vec::with_capacity(page.rows.len());
-    for row in &page.rows {
-        let job_id: i32 = get(row, "id")?;
-        let score: f64 = get(row, "flakiness_score")?;
-        items.push(job_out(
-            row,
-            settings.flake_threshold,
-            trend_for(score, past.get(&job_id).copied()),
-        )?);
-    }
+    let items = read_items(db, EntityKind::Job, &page.rows, settings, |row, trend| {
+        job_out(row, settings.flake_threshold, trend)
+    })
+    .await?;
     Ok(JobPage {
         items,
         total: page.total,
@@ -1205,23 +1204,10 @@ pub async fn search_tests(
     let mut values = vec![Value::from(format!("%{}%", escape_like(query)))];
     values.extend(binds.into_values());
     let rows = rows(db, sql, values).await?;
-    let ids: Vec<i32> = rows
-        .iter()
-        .map(|row| get::<i32>(row, "id"))
-        .collect::<Result<_, _>>()?;
-    let past = score_history::past_scores(db, EntityKind::Test, &ids, settings.today()).await?;
-    let mut found = Vec::with_capacity(rows.len());
-    for row in &rows {
-        let test_id: i32 = get(row, "id")?;
-        let row_score: f64 = get(row, "flakiness_score")?;
-        found.push(test_out(
-            row,
-            settings.flake_threshold,
-            settings.broken_streak,
-            trend_for(row_score, past.get(&test_id).copied()),
-        )?);
-    }
-    Ok(found)
+    read_items(db, EntityKind::Test, &rows, settings, |row, trend| {
+        test_out(row, settings.flake_threshold, settings.broken_streak, trend)
+    })
+    .await
 }
 
 /// Exact-match lookup of a Test by name, and optionally classname.
@@ -1725,22 +1711,10 @@ pub async fn search_jobs(
         Value::from(limit),
     ];
     let rows = rows(db, sql, values).await?;
-    let ids: Vec<i32> = rows
-        .iter()
-        .map(|row| get::<i32>(row, "id"))
-        .collect::<Result<_, _>>()?;
-    let past = score_history::past_scores(db, EntityKind::Job, &ids, settings.today()).await?;
-    let mut found = Vec::with_capacity(rows.len());
-    for row in &rows {
-        let job_id: i32 = get(row, "id")?;
-        let row_score: f64 = get(row, "flakiness_score")?;
-        found.push(job_out(
-            row,
-            settings.flake_threshold,
-            trend_for(row_score, past.get(&job_id).copied()),
-        )?);
-    }
-    Ok(found)
+    read_items(db, EntityKind::Job, &rows, settings, |row, trend| {
+        job_out(row, settings.flake_threshold, trend)
+    })
+    .await
 }
 
 /// Exact-match lookup of a Job by name, and optionally Pipeline name.
