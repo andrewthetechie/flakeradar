@@ -157,7 +157,9 @@ crates/
     extract.rs            the 422 query/path/JSON extractors
     mcp/                  the MCP server (rmcp): the transport, one file per tool
     worker.rs             the single Report processor (Postgres advisory lock)
-    github.rs, github_worker.rs   the GitHub client and the issue-filing task
+    github/               the GitHub client, one file per responsibility:
+                          client, policy, bodies, filing, sync, notes
+    github_worker.rs      the task that files and syncs on the leader
     webhooks.rs           the Notification delivery task
     assets.rs             the embedded dashboard (rust-embed)
     settings.rs, cli.rs   every FLAKERADAR_* setting, and the command line

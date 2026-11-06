@@ -71,18 +71,18 @@ Task 14 works through this list and closes what it can. Task 15 files a follow-o
 | 10 | `crates/flakeradar/src/routes/issues.rs` | `link_test`, `unlink_test`, `link_job`, `unlink_job` | unreachable arms | The four `LinkedOut` mismatch arms (200-202, 235-237, 282-284, 317-319). `link_issue` and `unlink_issue` build the variant from the target they are handed, and each route passes one target, so a Test route cannot get a `LinkedOut::Job` back (or the reverse) | — |
 | 10 | `crates/flakeradar/src/routes/issues.rs` | `IssueRouteError::into_response` | unreachable arm | `StatusCode::from_u16(error.status()).unwrap_or(StatusCode::UNPROCESSABLE_ENTITY)`: `IssueLinkError::status` answers 404, 409 or 422 only, so the fallback cannot be taken (line 78 is covered; the unreachable part is the closure's body) | — |
 | 10 | `crates/flakeradar/src/routes/admin.rs` | `From<DbError>`, `From<DbErr> for AdminRouteError` | dead conversion | No caller: every delete fails with `DeleteError`, which has its own conversion (covered by the deadlock and 503 tests), and the extractors answer themselves | — |
-| 10 | `crates/flakeradar/src/github.rs` | `get` | unreached arm | The `.map_err` on a column read. Every column is named by the statement that selected it, so only a schema change fails it; the same shape as task 07's `processing.rs` row | — |
-| 10 | `crates/flakeradar/src/github.rs` | `commit_filed_link` | unreached arms | The savepoint's start (1563) and its commit (1586) failing, each needing the driver to fail between statements of a filing that is already in progress. Task 18 covered the third arm this row used to name, the link `UPDATE` itself failing: `a_store_failure_leaves_the_issue_open_and_stops_the_batch` raises from a `BEFORE UPDATE` trigger | — |
-| 18 | `crates/flakeradar/src/github.rs` | `github_client` | unreached arm | The error its `build()?` carries, which is the TLS backend failing to initialize: no test can make a healthy backend fail. The constructor's own failure arm is covered through the injected builder (`Api::with_client_build`), which `a_failed_client_build_is_an_error_at_construction` proves answers `Err` carrying the builder's error; every GitHub test takes the success arm here | — |
+| 10 | `crates/flakeradar-db/src/sql.rs` | `get` | unreached arm | The `.map_err` on a column read. Every column is named by the statement that selected it, so only a schema change fails it; the same shape as task 07's `processing.rs` row. The row named `crates/flakeradar/src/github.rs`, which held its own `get` until task 24 moved it here | — |
+| 10 | `crates/flakeradar/src/github/filing.rs` | `commit_filed_link` | unreached arms | The savepoint's start and its commit failing, each needing the driver to fail between statements of a filing that is already in progress. Task 18 covered the third arm this row used to name, the link `UPDATE` itself failing: `a_store_failure_leaves_the_issue_open_and_stops_the_batch` raises from a `BEFORE UPDATE` trigger | — |
+| 18 | `crates/flakeradar/src/github/client.rs` | `github_client` | unreached arm | The error its `build()?` carries, which is the TLS backend failing to initialize: no test can make a healthy backend fail. The constructor's own failure arm is covered through the injected builder (`Api::with_client_build`), which `a_failed_client_build_is_an_error_at_construction` proves answers `Err` carrying the builder's error; every GitHub test takes the success arm here | — |
 | 18 | `crates/flakeradar/src/webhooks.rs` | `webhook_client` | unreached arm | The same `build()?` failure on the Notification client, for the reason the `github_client` row gives; `WebhookWorker::with_client_build` is the covered seam | — |
 | 18 | `crates/flakeradar/src/app.rs` | `AppState::new` | unreachable arm | The `?` that carries `Api::production`'s failure, which the two rows above make unreachable in a test | — |
 | 18 | `crates/flakeradar/src/server.rs` | `Server::start`, `webhook_task` | unreachable arm | The two `?`s that carry those constructor errors out of the lifespan. Same reason; every other line of both functions is covered by `tests/server.rs` and the `webhook_task` unit test | — |
 | 18 | `crates/flakeradar/tests/ops.rs` | test helper `logged_from`'s `Sink` | test-only arm | Its `flush` body, for the reason the `tests/app.rs` sink row gives: `tracing_subscriber`'s fmt layer never flushes a writer from `MakeWriter`. The helper's other lines are covered by `metrics_logs_the_error_it_answers_503_for` | — |
-| 10 | `crates/flakeradar/src/github.rs` | `sync_closed_issues`, `record_check` | unreached arm | The write of one row's check failing (1669), which needs the driver to fail on the statement that follows the `GET`. A dropped table reaches the rotation-list read (`a_sync_whose_rotation_list_cannot_be_read_makes_no_request`). Task 17 removed the transaction this row used to name: the sync now reads its list and writes each row with no statement open across a `GET`, so the four per-row writes this list used to name separately (a stamp, a kept `not_planned` link, a re-arm and a cleared flag) are one statement, `issue_links::record_check`, reached through this one call | — |
-| 10 | `crates/flakeradar/src/github.rs` | `stamp_note` | unreached arm | The fixed-note stamp write failing (2020-2021), which needs the driver to fail on the `UPDATE` that follows the comment `POST`. The two candidate reads this row used to name are covered now: `a_candidate_read_that_fails_logs_and_reports_an_empty_batch` drops the tables and asserts both note entry points answer an empty `BatchReport`, since task 17 made that path return the batch rather than only logging | — |
-| 10 | `crates/flakeradar/src/github.rs` | every `tracing::…!` event | measurement artifact | The field-argument and message lines of the events in `BatchReport::log`, `file_batch`, `clear_if_closed`, `sync_decision`, `close_issues_for_deleted_repo`, `note_batch`, `stamp_note`, `log_note_stamp_failure` and `close_note`. `tracing` evaluates them lazily inside the macro, so `llvm-cov` counts them zero although the event fires; every event's statement line is covered, and the log-capture tests in `tests/github.rs` pin the message text. The numbers are not listed because every rewrite of this file moves them | — |
+| 10 | `crates/flakeradar/src/github/sync.rs` | `sync_closed_issues`, `record_check` | unreached arm | The write of one row's check failing, which needs the driver to fail on the statement that follows the `GET`. A dropped table reaches the rotation-list read (`a_sync_whose_rotation_list_cannot_be_read_makes_no_request`). Task 17 removed the transaction this row used to name: the sync now reads its list and writes each row with no statement open across a `GET`, so the four per-row writes this list used to name separately (a stamp, a kept `not_planned` link, a re-arm and a cleared flag) are one statement, `issue_links::record_check`, reached through this one call | — |
+| 10 | `crates/flakeradar/src/github/notes.rs` | `stamp_note` | unreached arm | The fixed-note stamp write failing, which needs the driver to fail on the `UPDATE` that follows the comment `POST`. The two candidate reads this row used to name are covered now: `a_candidate_read_that_fails_logs_and_reports_an_empty_batch` drops the tables and asserts both note entry points answer an empty `BatchReport`, since task 17 made that path return the batch rather than only logging | — |
+| 10 | `crates/flakeradar/src/github/{policy,filing,sync,notes}.rs` | every `tracing::…!` event | measurement artifact | The field-argument and message lines of the events in `BatchReport::log`, `file_batch`, `clear_if_closed`, `sync_decision`, `close_issues_after_removal`, `note_batch`, `stamp_note`, `log_note_stamp_failure` and `close_note`. `tracing` evaluates them lazily inside the macro, so `llvm-cov` counts them zero although the event fires; every event's statement line is covered, and the log-capture tests in `crates/flakeradar/tests/github/` pin the message text. The numbers are not listed because every rewrite of these files moves them | — |
 | 10 | `crates/flakeradar/src/github_worker.rs` | `with_monotonic` | unreachable arm | The `None` of `Arc::get_mut`: `with_monotonic` takes `self` and nothing clones a `GitHubWorker`, so the worker holds the only reference to its shared state and the arm cannot be taken | — |
-| 10 | `crates/flakeradar/src/webhooks.rs` | `post` | measurement artifact | The field-argument lines of its `tracing` events (`152-153`, `161-165`, `172-174`, `180`, `182`, `187`, `189-191` after task 16 added the stop event), for the reason the `github.rs` row gives: the events fire (the retry and stop tests count them) and the argument lines still report zero | — |
+| 10 | `crates/flakeradar/src/webhooks.rs` | `post` | measurement artifact | The field-argument lines of its `tracing` events (`152-153`, `161-165`, `172-174`, `180`, `182`, `187`, `189-191` after task 16 added the stop event), for the reason the GitHub events' row gives: the events fire (the retry and stop tests count them) and the argument lines still report zero | — |
 | 10 | `crates/flakeradar/src/webhooks.rs` | test `a_delivery_that_raises_is_logged_and_the_task_keeps_serving` | test-only arm | Its `Sink::flush` body, which `tracing_subscriber`'s fmt layer never calls (it writes to a fresh writer from `MakeWriter`); `io::Write` requires the method. Same reason as the `settings.rs` sink row | — |
 | 10 | `crates/flakeradar-core/src/notify.rs` | test `a_json_event_omits_the_url_without_a_public_url` | test-only arm | The `return` of its `let Some(payload) = … else`, which cannot be reached because the line above asserts the list holds exactly one event | — |
 | 11 | `crates/flakeradar/src/mcp/mod.rs` | `serialize_failure`, and `call_tool`'s arm for it | unreached arms | The error arm of `serde_json::to_value` and `to_string` for the answers this file builds. Every field of every answer is a `String`, an integer, a `bool`, an `Option`, or an `f64` from a `double` column, and `serde_json` writes a non-finite float as `null` instead of failing — measured: `a_non_finite_score_is_answered_as_null_not_as_a_failure` stores a `'NaN'` score and the tool answers a well-formed list whose `flakiness_score` fields are `null`. No value this file serializes can therefore fail, so the arm needs a `Serialize` impl that errors, which none of the DTOs has. `ToolFailure::Protocol` is now produced by that arm alone, so `call_tool`'s `return Err(error)` for it cannot run either | — |
@@ -142,12 +142,12 @@ Measured with the command and configuration tasks 14 and 15 used
 
 Task 16 adds no row. `LeaderRun` and `until_stopped` in `worker.rs` are covered both ways — a run
 started, stopped and started again; a call and a wait each ended by the token and each left to
-finish — and so are the four stop arms in `github.rs` (`file_batch`, `clear_if_closed`,
+finish — and so are the four stop arms in `github/` (`file_batch`, `clear_if_closed`,
 `note_batch`, `close_note`), the stop arm in `webhooks.rs`'s `post`, and the queue's drop in
 `github_worker.rs`. The only misses left in those files are the rows above: `worker.rs`'s two
 `None` arms (row 08, whose line numbers moved to 370-371), `github_worker.rs`'s `Arc::get_mut`
 (row 10), `webhooks.rs`'s `post` field-argument lines and its test sink's `flush` (rows 10), and
-`github.rs`'s own artifact and schema-change rows (row 10).
+`github/`'s own artifact and schema-change row (row 10).
 
 ## Task 18: no new line uncovered, five unreachable client-build arms
 
@@ -161,10 +161,10 @@ Every line this task adds is covered except the two `commit_filed_link` arms row
 and a new test covers the third arm that row used to include. The constructors that return the
 client-build error (`Api::new`, `WebhookWorker::new`/`with_retry_delays`, `AppState::new` and
 `Server::start`) answer it from an injected builder, and
-`a_failed_client_build_is_an_error_at_construction` (once in `tests/github.rs`, once in
+`a_failed_client_build_is_an_error_at_construction` (once in `crates/flakeradar/tests/github/client.rs`, once in
 `tests/webhooks.rs`) fails the build on purpose and asserts the error carries the builder's own,
 so what stays uncovered is only the production builders' `build()?` and the two callers a test
-cannot make fail: four of the five rows above. The `github.rs` field-argument artifact row also
+cannot make fail: four of the five rows above. The GitHub field-argument artifact row also
 covers the three events this task added or moved (`record_filed`'s three outcomes and
 `file_job_issues_for`'s unreadable-history warning), all of which a log-capture test proves fires.
 
@@ -201,3 +201,26 @@ final newline and none). What stays uncovered is the reading itself failing:
 |---|---|---|---|---|---|
 | 21 | `crates/flakeradar/src/settings.rs` | `dotenv_values` | unreached arm | The `File::open` mapping (see the task 05 row above, which this task's split of the function moved it into): only a `.env` that exists and cannot be opened reaches it, and staging that needs another user or a directory with a `.env`'s name | — |
 | 21 | `crates/flakeradar/src/settings.rs` | `dotenv_error` | unreached arm | The `other` arm, for a `dotenvy` error that is not `LineParse`: the iterator's only other failure is an I/O error between two lines of a file that is already open, which no test can make happen on a healthy file. The `LineParse` arm is covered by `a_dotenv_token_never_reaches_the_log_main_writes` and `a_malformed_dotenv_line_names_its_number_and_never_its_text` | — |
+
+## Task 26: the GitHub rows follow their files, and no line is left uncovered
+
+`crates/flakeradar/src/github.rs` became the directory `crates/flakeradar/src/github/`
+(`client`, `policy`, `bodies`, `filing`, `sync`, `notes` and `mod`), and
+`crates/flakeradar/tests/github.rs` became `crates/flakeradar/tests/github/` along the same
+lines. The rows above whose code moved keep their reason and now name the file that holds it.
+
+Nothing this task adds is uncovered. `bodies.rs`'s `Body` is exercised by the two bodies the
+tests render, every method by at least one of them: `nested_bullet` and `filing_gate` by
+`a_job_body_lists_its_worst_runner_groups_first`, `code` and `section` by both,
+`both_bodies_name_the_executions_the_filing_reads` for the heading `Body::executions` states
+once. The three `location` arms, the two `last_failing_commit` arms and both `permalink`
+refusals have a test each: `a_field_the_body_prices_differently_is_still_the_reference_sentence`
+(no file, hence no Location and no permalink, and the run-hint fallback),
+`the_last_failing_commit_has_no_branch_clause_when_no_branch_was_reported` (an empty branch) and
+`the_body_matches_the_reference_byte_for_byte` (a file, a line and a branch), which is also the
+byte-for-byte comparison against the reference's own output.
+
+One row moved with its code rather than being re-homed here: `github.rs`'s own `get` went to
+`flakeradar_db::sql::get` in task 24, so its row now names `crates/flakeradar-db/src/sql.rs`.
+The line numbers in the rows this task touched are gone rather than corrected: the split moves
+every one of them, and a function name survives a move.
