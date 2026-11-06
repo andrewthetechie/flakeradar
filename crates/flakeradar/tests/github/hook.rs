@@ -4,7 +4,7 @@
 
 use flakeradar::github;
 use flakeradar_core::{EntityKind, ReportStatus};
-use flakeradar_test_support::TestDb;
+use flakeradar_test_support::{TestDb, system_clock};
 use serde_json::json;
 use wiremock::matchers::{any, method, path};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
@@ -33,6 +33,7 @@ async fn a_failed_report_is_never_filed_and_a_processed_one_is() {
         &failed,
         &gh_settings(&[]),
         &api(&server),
+        &system_clock(),
         &unstopped(),
     )
     .await;
@@ -49,6 +50,7 @@ async fn a_failed_report_is_never_filed_and_a_processed_one_is() {
         &processed(&[test], &[]),
         &gh_settings(&[]),
         &api(&server),
+        &system_clock(),
         &unstopped(),
     )
     .await;
@@ -82,6 +84,7 @@ async fn the_note_step_skips_the_link_this_same_pass_filed(kind: EntityKind) {
         &outcome,
         &settings,
         &api(&server),
+        &system_clock(),
         &unstopped(),
     )
     .await;
@@ -145,6 +148,7 @@ async fn a_processed_report_never_notes_the_issue_it_filed(kind: EntityKind) {
         &outcome,
         &settings,
         &api(&server),
+        &system_clock(),
         &unstopped(),
     )
     .await;
@@ -177,6 +181,7 @@ async fn a_processed_report_never_notes_the_issue_it_filed(kind: EntityKind) {
         &outcome,
         &settings,
         &api(&server),
+        &system_clock(),
         &unstopped(),
     )
     .await;

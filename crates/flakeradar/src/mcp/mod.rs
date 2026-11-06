@@ -37,9 +37,9 @@ use flakeradar_core::{
     DEFAULT_PROJECT, EntityKind, FailureCategory, IdentityError, ScorePointOut, TRUNCATION_MARKER,
     lax, normalize_project, normalize_repo, strip_wire_whitespace,
 };
-use flakeradar_db::DbError;
 use flakeradar_db::issue_links::{LinkError, LinkedOut};
 use flakeradar_db::reads::{ReadError, ReadSettings, Scope};
+use flakeradar_db::{DbError, SharedClock, SystemClock};
 use rmcp::ErrorData as McpError;
 use rmcp::ServerHandler;
 use rmcp::model::{
@@ -258,13 +258,26 @@ pub struct McpServer {
     pool: DatabaseConnection,
     /// The configuration the tools read: the Flake threshold and the history window.
     settings: Arc<Settings>,
+    /// Where a tool that needs the current instant reads it.
+    clock: SharedClock,
 }
 
 impl McpServer {
     /// Builds a server over `pool` with `settings`.
     #[must_use]
     pub fn new(pool: DatabaseConnection, settings: Arc<Settings>) -> Self {
-        Self { pool, settings }
+        Self {
+            pool,
+            settings,
+            clock: Arc::new(SystemClock),
+        }
+    }
+
+    /// Reads `clock` for every instant a tool needs, instead of the system clock.
+    #[must_use]
+    pub fn with_clock(mut self, clock: SharedClock) -> Self {
+        self.clock = clock;
+        self
     }
 
     /// The pool a tool's queries borrow.
@@ -274,7 +287,7 @@ impl McpServer {
 
     /// The read settings the queries take.
     pub(crate) fn read_settings(&self) -> ReadSettings {
-        self.settings.reads()
+        self.settings.reads(Arc::clone(&self.clock))
     }
 
     /// Runs one tool by name over its arguments.

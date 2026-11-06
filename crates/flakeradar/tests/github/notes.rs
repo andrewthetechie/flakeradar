@@ -2,13 +2,17 @@
 
 // Rust guideline compliant 2026-07-21
 
+use std::sync::Arc;
+
+use chrono::{DateTime, FixedOffset, TimeZone as _, Utc};
 use flakeradar::Settings;
 use flakeradar::github::{self, Api};
 use flakeradar::settings::Secret;
 use flakeradar_core::EntityKind;
 use flakeradar_db::ReadSettings;
+use flakeradar_db::SharedClock;
 use flakeradar_db::issue_links::{self, linked_for_check};
-use flakeradar_test_support::{TestDb, make_job, make_pipeline};
+use flakeradar_test_support::{FixedClock, TestDb, make_job, make_pipeline, system_clock};
 use sea_orm::ConnectionTrait as _;
 use sea_orm::{DbBackend, Statement, Value};
 use serde_json::{Value as Json, json};
@@ -22,6 +26,54 @@ use crate::support::{
     noted, requested_calls, requested_paths, set_clean_streak, stage_mid_request, stamp_job_link,
     stamp_link, stamp_note, test_link, unstopped,
 };
+
+/// One Test's stored fixed-note stamp.
+async fn noted_at(db: &TestDb, id: i32) -> Option<DateTime<FixedOffset>> {
+    let row = db
+        .connection()
+        .query_one_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "SELECT github_issue_fixed_noted_at FROM test_cases WHERE id = $1",
+            [Value::from(id)],
+        ))
+        .await
+        .expect("the stamp reads")
+        .expect("the Test exists");
+    row.try_get("", "github_issue_fixed_noted_at")
+        .expect("the stamp is a timestamp")
+}
+
+#[tokio::test]
+async fn a_fixed_note_is_stamped_with_the_clock_it_was_given() {
+    let db = TestDb::new().await.expect("a test database");
+    let test = flaky_test(&db).await;
+    stamp_link(&db, test, 12, true, false).await;
+    set_clean_streak(&db, "test_cases", test, 5).await;
+    let server = MockServer::start().await;
+    mount_comment(&server, "acme/app", 12, ResponseTemplate::new(201)).await;
+    let instant = Utc
+        .with_ymd_and_hms(2001, 2, 3, 4, 5, 6)
+        .unwrap()
+        .fixed_offset();
+    let clock: SharedClock = Arc::new(FixedClock::new(instant));
+
+    let report = github::note_fixed_issues_for(
+        db.connection(),
+        &[test],
+        &fixed_settings(&[]),
+        &api(&server),
+        &clock,
+        &unstopped(),
+    )
+    .await;
+
+    assert_eq!(report.stopped, None, "the batch ran to its end");
+    assert_eq!(
+        noted_at(&db, test).await,
+        Some(instant),
+        "the note was stamped with the clock the batch was given"
+    );
+}
 
 #[tokio::test]
 async fn the_fixed_note_comments_once_with_the_configured_sentence() {
@@ -49,6 +101,7 @@ async fn the_fixed_note_comments_once_with_the_configured_sentence() {
         &[test],
         &settings,
         &api(&server),
+        &system_clock(),
         &unstopped(),
     )
     .await;
@@ -69,6 +122,7 @@ async fn the_fixed_note_comments_once_with_the_configured_sentence() {
         &[test],
         &settings,
         &api(&server),
+        &system_clock(),
         &unstopped(),
     )
     .await;
@@ -88,6 +142,7 @@ async fn the_fixed_note_comments_once_with_the_configured_sentence() {
         &[test],
         &settings,
         &api(&server),
+        &system_clock(),
         &unstopped(),
     )
     .await;
@@ -127,6 +182,7 @@ async fn the_fixed_note_names_the_default_branch_when_it_is_known() {
         &[test],
         &fixed_settings(&[]),
         &api(&server),
+        &system_clock(),
         &unstopped(),
     )
     .await;
@@ -172,6 +228,7 @@ async fn the_fixed_note_closes_the_issue_only_when_asked() {
         &[test],
         &fixed_settings(&[]),
         &api(&server),
+        &system_clock(),
         &unstopped(),
     )
     .await;
@@ -195,6 +252,7 @@ async fn the_fixed_note_closes_the_issue_only_when_asked() {
         &[test],
         &settings,
         &api(&server),
+        &system_clock(),
         &unstopped(),
     )
     .await;
@@ -239,6 +297,7 @@ async fn the_fixed_note_is_disabled_while_the_streak_is_zero() {
         &[test],
         &gh_settings(&[]),
         &api(&server),
+        &system_clock(),
         &unstopped(),
     )
     .await;
@@ -267,6 +326,7 @@ async fn a_job_issue_is_noted_and_closed_with_the_same_wording() {
         &[job],
         &settings,
         &api(&server),
+        &system_clock(),
         &unstopped(),
     )
     .await;
@@ -315,6 +375,7 @@ async fn a_note_ignores_a_row_with_no_live_note() {
         &[short, unlinked, declined],
         &fixed_settings(&[]),
         &api(&server),
+        &system_clock(),
         &unstopped(),
     )
     .await;
@@ -337,6 +398,7 @@ async fn a_note_ignores_a_row_with_no_live_note() {
         &[at_streak],
         &off,
         &api(&server),
+        &system_clock(),
         &unstopped(),
     )
     .await;
@@ -374,6 +436,7 @@ async fn a_note_skips_a_job_of_another_provider() {
         &[job.id],
         &fixed_settings(&[]),
         &api(&server),
+        &system_clock(),
         &unstopped(),
     )
     .await;
@@ -409,6 +472,7 @@ async fn a_note_close_that_fails_keeps_the_stamp() {
         &[test],
         &settings,
         &api(&server),
+        &system_clock(),
         &unstopped(),
     ))
     .await;
@@ -431,6 +495,7 @@ async fn a_note_close_that_fails_keeps_the_stamp() {
         &[test],
         &settings,
         &api(&server),
+        &system_clock(),
         &unstopped(),
     )
     .await;
@@ -466,6 +531,7 @@ async fn a_note_rate_limit_stops_the_batch() {
             &[first, second],
             &fixed_settings(&[]),
             &api(&server),
+            &system_clock(),
             &unstopped(),
         )
         .await;
@@ -503,6 +569,7 @@ async fn a_note_rate_limit_stops_the_batch() {
         &[first, second],
         &settings,
         &api(&server),
+        &system_clock(),
         &unstopped(),
     ))
     .await;
@@ -548,6 +615,7 @@ async fn a_note_permission_403_skips_only_that_repo() {
         &[a1, other, a2],
         &fixed_settings(&[]),
         &api(&server),
+        &system_clock(),
         &unstopped(),
     )
     .await;
@@ -587,6 +655,7 @@ async fn a_note_permission_403_skips_only_that_repo() {
         &[a, b],
         &settings,
         &api(&server),
+        &system_clock(),
         &unstopped(),
     ))
     .await;
@@ -621,6 +690,7 @@ async fn a_note_network_error_is_logged_and_never_raises() {
         &[test],
         &fixed_settings(&[]),
         &api,
+        &system_clock(),
         &unstopped(),
     ))
     .await;
@@ -651,6 +721,7 @@ async fn a_transport_error_on_a_fixed_note_close_ends_the_batch() {
         &[first, second],
         &settings,
         &Api::new(Secret::new(TOKEN), &loopback.base).expect("the HTTP client builds"),
+        &system_clock(),
         &unstopped(),
     )
     .await;
@@ -691,6 +762,7 @@ async fn a_fixed_note_close_whose_connection_dies_keeps_the_stamp() {
         &[test],
         &settings,
         &api,
+        &system_clock(),
         &unstopped(),
     ))
     .await;
@@ -731,6 +803,7 @@ async fn an_unusable_note_comment_status_leaves_the_row_unstamped() {
         &[bad, other],
         &fixed_settings(&[]),
         &api(&server),
+        &system_clock(),
         &unstopped(),
     ))
     .await;
@@ -755,11 +828,26 @@ async fn an_unusable_note_comment_status_leaves_the_row_unstamped() {
 async fn note_entity(db: &TestDb, kind: EntityKind, ids: &[i32], settings: &Settings, api: &Api) {
     match kind {
         EntityKind::Test => {
-            github::note_fixed_issues_for(db.connection(), ids, settings, api, &unstopped()).await;
+            github::note_fixed_issues_for(
+                db.connection(),
+                ids,
+                settings,
+                api,
+                &system_clock(),
+                &unstopped(),
+            )
+            .await;
         }
         EntityKind::Job => {
-            github::note_fixed_job_issues_for(db.connection(), ids, settings, api, &unstopped())
-                .await;
+            github::note_fixed_job_issues_for(
+                db.connection(),
+                ids,
+                settings,
+                api,
+                &system_clock(),
+                &unstopped(),
+            )
+            .await;
         }
     }
 }
@@ -853,7 +941,14 @@ async fn job_link_change_and_unlink_reset_the_check_stamp() {
     )
     .await
     .expect("the link succeeds");
-    github::sync_closed_issues(db.connection(), &settings, &api(&server), &unstopped()).await;
+    github::sync_closed_issues(
+        db.connection(),
+        &settings,
+        &api(&server),
+        &system_clock(),
+        &unstopped(),
+    )
+    .await;
     assert!(
         job_checked(&db, job).await,
         "an open issue is still a check"
@@ -875,7 +970,14 @@ async fn job_link_change_and_unlink_reset_the_check_stamp() {
         !job_checked(&db, job).await,
         "a replaced link is checked first"
     );
-    github::sync_closed_issues(db.connection(), &settings, &api(&server), &unstopped()).await;
+    github::sync_closed_issues(
+        db.connection(),
+        &settings,
+        &api(&server),
+        &system_clock(),
+        &unstopped(),
+    )
+    .await;
     assert!(job_checked(&db, job).await, "the new link is checked");
 
     issue_links::unlink_issue(db.connection(), EntityKind::Job, i64::from(job), &reads)
@@ -1059,6 +1161,7 @@ async fn an_unlink_clears_both_halves_and_a_rearm_keeps_its_stamp() {
         db.connection(),
         &gh_settings(&[]),
         &api(&server),
+        &system_clock(),
         &unstopped(),
     )
     .await;
@@ -1101,6 +1204,7 @@ async fn an_unlink_after_a_rearm_clears_the_kept_stamp(kind: EntityKind) {
         db.connection(),
         &gh_settings(&[]),
         &api(&server),
+        &system_clock(),
         &unstopped(),
     )
     .await;
@@ -1138,6 +1242,7 @@ async fn an_unlink_after_a_rearm_clears_the_kept_stamp(kind: EntityKind) {
         db.connection(),
         &gh_settings(&[]),
         &api(&server),
+        &system_clock(),
         &unstopped(),
     )
     .await;
@@ -1230,6 +1335,7 @@ async fn an_unlink_rearms_a_declined_link_and_the_filer_files_it_again() {
         db.connection(),
         &gh_settings(&[]),
         &api(&sync),
+        &system_clock(),
         &unstopped(),
     )
     .await;

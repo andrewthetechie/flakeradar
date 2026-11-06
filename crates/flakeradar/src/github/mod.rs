@@ -80,7 +80,7 @@ mod policy;
 mod sync;
 
 use flakeradar_core::ReportStatus;
-use flakeradar_db::ProcessOutcome;
+use flakeradar_db::{ProcessOutcome, SharedClock};
 use sea_orm::{ConnectionTrait, TransactionTrait};
 use tokio_util::sync::CancellationToken;
 
@@ -116,13 +116,15 @@ pub async fn on_report_processed(
     outcome: &ProcessOutcome,
     settings: &Settings,
     api: &Api,
+    clock: &SharedClock,
     stop: &CancellationToken,
 ) {
     if outcome.status != ReportStatus::Processed || !api.configured() {
         return;
     }
     let filed = file_issues_for(db, &outcome.touched_test_ids, settings, api, stop).await;
-    let filed_jobs = file_job_issues_for(db, &outcome.touched_job_ids, settings, api, stop).await;
+    let filed_jobs =
+        file_job_issues_for(db, &outcome.touched_job_ids, settings, api, clock, stop).await;
     let note_ids: Vec<i32> = outcome
         .touched_test_ids
         .iter()
@@ -135,6 +137,6 @@ pub async fn on_report_processed(
         .copied()
         .filter(|id| !filed_jobs.linked.contains(id))
         .collect();
-    note_fixed_issues_for(db, &note_ids, settings, api, stop).await;
-    note_fixed_job_issues_for(db, &note_job_ids, settings, api, stop).await;
+    note_fixed_issues_for(db, &note_ids, settings, api, clock, stop).await;
+    note_fixed_job_issues_for(db, &note_job_ids, settings, api, clock, stop).await;
 }

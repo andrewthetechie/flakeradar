@@ -14,7 +14,9 @@ mod common;
 use axum::http::{Method, StatusCode};
 use common::{app, get, post, request, request_with_headers, send, settings};
 use flakeradar_core::EntityKind;
-use flakeradar_test_support::{TestDb, make_job, make_pipeline, make_project, make_test_case};
+use flakeradar_test_support::{
+    TestDb, make_job, make_pipeline, make_project, make_test_case, system_clock,
+};
 use sea_orm::ConnectionTrait as _;
 use sea_orm::DbBackend;
 use sea_orm::Statement;
@@ -876,7 +878,7 @@ async fn the_link_engine_refuses_with_its_status_and_links() {
 
     let db = TestDb::new().await.expect("a test database");
     let test = one_test(&db).await;
-    let reads = settings(&[]).reads();
+    let reads = settings(&[]).reads(system_clock());
 
     let refused = link_issue(
         db.connection(),

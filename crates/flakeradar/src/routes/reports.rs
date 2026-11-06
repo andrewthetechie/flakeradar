@@ -16,7 +16,6 @@ use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Router, middleware};
-use chrono::Utc;
 use flakeradar_core::{
     AttemptIn, IngestAccepted, ParseError, PipelineReportIn, ReportOut, ReportStatus,
     ReportSummaryOut, ValidationIssue, ci_run_attempt_too_large, lax, normalize_project,
@@ -394,7 +393,7 @@ pub async fn ingest(
     // refusal before this one answers exactly as it did.
     let ci_run_attempt = accepted_ci_run_attempt(query.ci_run_attempt.as_ref());
 
-    let now = Utc::now().fixed_offset();
+    let now = state.clock().now();
     // The Repo, Project and Report are one unit of work: Python committed them
     // once, at the end, so a duplicate answer or a failed insert left none of
     // them behind. A transaction keeps that promise when the insert fails.
@@ -569,7 +568,7 @@ pub async fn ingest_pipeline(
     State(state): State<AppState>,
     ApiJson(payload): ApiJson<PipelineReportIn>,
 ) -> RouteResult<Response> {
-    let now = Utc::now().fixed_offset();
+    let now = state.clock().now();
     // The Repo and the Report are one unit of work, as they were for Python's
     // single `commit`: a failed insert leaves no Repo behind.
     let txn = state.pool().begin().await?;

@@ -44,7 +44,7 @@ use flakeradar::{
 };
 use flakeradar_db::entities::repos;
 use flakeradar_db::{DbSettings, ProcessingSettings};
-use flakeradar_test_support::TestDb;
+use flakeradar_test_support::{TestDb, system_clock};
 use sea_orm::{ConnectionTrait, DbBackend, EntityTrait, JsonValue, Statement};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -485,7 +485,7 @@ fn settings_for(scenario: &ScenarioFile, db: &TestDb, webhook: &str) -> Settings
 
 /// The processor settings the worker claims and rescores with.
 fn processing_of(settings: &Settings) -> ProcessingSettings {
-    settings.processing()
+    settings.processing(system_clock())
 }
 
 /// Replays one step and reports every difference from its golden.

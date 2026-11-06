@@ -8,8 +8,9 @@
 use std::collections::BTreeSet;
 use std::ops::ControlFlow;
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use flakeradar_core::EntityKind;
+use flakeradar_db::SharedClock;
 use flakeradar_db::filing::{self, NoteCandidate};
 use flakeradar_db::issue_links::{self, NoteRowState};
 use sea_orm::{ConnectionTrait, TransactionTrait};
@@ -29,6 +30,7 @@ pub async fn note_fixed_issues_for(
     test_ids: &[i32],
     settings: &Settings,
     api: &Api,
+    clock: &SharedClock,
     stop: &CancellationToken,
 ) -> BatchReport {
     if !api.configured() || settings.github_fixed_streak <= 0 || test_ids.is_empty() {
@@ -36,7 +38,8 @@ pub async fn note_fixed_issues_for(
     }
     match filing::note_test_candidates(db, test_ids, settings.github_fixed_streak).await {
         Ok(candidates) if !candidates.is_empty() => {
-            let report = note_batch(db, candidates, EntityKind::Test, settings, api, stop).await;
+            let report =
+                note_batch(db, candidates, EntityKind::Test, settings, api, clock, stop).await;
             report.log(Operation::Note);
             report
         }
@@ -54,6 +57,7 @@ pub async fn note_fixed_job_issues_for(
     job_ids: &[i32],
     settings: &Settings,
     api: &Api,
+    clock: &SharedClock,
     stop: &CancellationToken,
 ) -> BatchReport {
     if !api.configured() || settings.github_fixed_streak <= 0 || job_ids.is_empty() {
@@ -61,7 +65,8 @@ pub async fn note_fixed_job_issues_for(
     }
     match filing::note_job_candidates(db, job_ids, settings.github_fixed_streak).await {
         Ok(candidates) if !candidates.is_empty() => {
-            let report = note_batch(db, candidates, EntityKind::Job, settings, api, stop).await;
+            let report =
+                note_batch(db, candidates, EntityKind::Job, settings, api, clock, stop).await;
             report.log(Operation::Note);
             report
         }
@@ -83,6 +88,7 @@ async fn note_batch(
     entity: EntityKind,
     settings: &Settings,
     api: &Api,
+    clock: &SharedClock,
     stop: &CancellationToken,
 ) -> BatchReport {
     let mut report = BatchReport::default();
@@ -118,7 +124,9 @@ async fn note_batch(
         let verdict = comment.classify(Success::Created);
         match action(Operation::Note, verdict) {
             Action::Use => {
-                if !stamp_note(db, &row, entity, settings).await || !settings.github_close_fixed {
+                if !stamp_note(db, &row, entity, settings, clock.now().with_timezone(&Utc)).await
+                    || !settings.github_close_fixed
+                {
                     continue;
                 }
                 if let ControlFlow::Break(stop_reason) =
@@ -166,6 +174,7 @@ async fn stamp_note(
     row: &NoteCandidate,
     entity: EntityKind,
     settings: &Settings,
+    now: DateTime<Utc>,
 ) -> bool {
     let threshold = i32::try_from(settings.github_fixed_streak).unwrap_or(i32::MAX);
     let stamp = match issue_links::stamp_fixed_note(
@@ -174,7 +183,7 @@ async fn stamp_note(
         i64::from(row.entity_id),
         row.number,
         threshold,
-        Utc::now(),
+        now,
     )
     .await
     {

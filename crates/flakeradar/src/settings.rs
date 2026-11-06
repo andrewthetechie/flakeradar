@@ -387,30 +387,37 @@ impl Default for Settings {
 }
 
 impl Settings {
-    /// The read layer's view of these settings, with the system clock.
+    /// The read layer's view of these settings, on `clock`.
+    ///
+    /// The caller brings the clock: one process reads every instant through
+    /// [`crate::AppState`]'s, so a test can put a whole server on a fixed day
+    /// instead of only the layer it called directly.
     #[must_use]
-    pub fn reads(&self) -> flakeradar_db::ReadSettings {
+    pub fn reads(&self, clock: flakeradar_db::SharedClock) -> flakeradar_db::ReadSettings {
         flakeradar_db::ReadSettings {
             flake_threshold: self.flake_threshold,
             broken_streak: self.broken_streak,
             score_window: self.score_window,
-            clock: std::sync::Arc::new(flakeradar_db::SystemClock),
+            clock,
         }
     }
 
-    /// The processor's view of these settings, with the system clock.
+    /// The processor's view of these settings, on `clock`.
     ///
     /// The database layer cannot depend on this module, so it takes only the
     /// values the processor reads.
     #[must_use]
-    pub fn processing(&self) -> flakeradar_db::ProcessingSettings {
+    pub fn processing(
+        &self,
+        clock: flakeradar_db::SharedClock,
+    ) -> flakeradar_db::ProcessingSettings {
         flakeradar_db::ProcessingSettings {
             score_window: self.score_window,
             score_decay: self.score_decay,
             broken_streak: self.broken_streak,
             flake_threshold: self.flake_threshold,
             max_report_retries: self.max_report_retries,
-            clock: std::sync::Arc::new(flakeradar_db::SystemClock),
+            clock,
         }
     }
 
@@ -1406,26 +1413,42 @@ mod tests {
     #[test]
     fn the_settings_views_and_retention_agree_on_every_default() {
         let settings = Settings::default();
+        let clock: flakeradar_db::SharedClock = Arc::new(flakeradar_db::SystemClock);
         let processing = flakeradar_db::ProcessingSettings::default();
         let reads = flakeradar_db::ReadSettings::default();
         let retention = flakeradar_db::RetentionSettings::default();
         // The views are the same types on both sides, so a default that lives in
         // one place and is restated in another cannot drift unnoticed.
-        assert_eq!(settings.processing().score_window, processing.score_window);
-        assert_eq!(settings.reads().score_window, reads.score_window);
-        assert_eq!(settings.processing().score_decay, processing.score_decay);
         assert_eq!(
-            settings.processing().broken_streak,
+            settings.processing(Arc::clone(&clock)).score_window,
+            processing.score_window
+        );
+        assert_eq!(
+            settings.reads(Arc::clone(&clock)).score_window,
+            reads.score_window
+        );
+        assert_eq!(
+            settings.processing(Arc::clone(&clock)).score_decay,
+            processing.score_decay
+        );
+        assert_eq!(
+            settings.processing(Arc::clone(&clock)).broken_streak,
             processing.broken_streak
         );
-        assert_eq!(settings.reads().broken_streak, reads.broken_streak);
         assert_eq!(
-            settings.processing().flake_threshold,
+            settings.reads(Arc::clone(&clock)).broken_streak,
+            reads.broken_streak
+        );
+        assert_eq!(
+            settings.processing(Arc::clone(&clock)).flake_threshold,
             processing.flake_threshold
         );
-        assert_eq!(settings.reads().flake_threshold, reads.flake_threshold);
         assert_eq!(
-            settings.processing().max_report_retries,
+            settings.reads(Arc::clone(&clock)).flake_threshold,
+            reads.flake_threshold
+        );
+        assert_eq!(
+            settings.processing(Arc::clone(&clock)).max_report_retries,
             processing.max_report_retries
         );
         assert_eq!(settings.retention(), retention);

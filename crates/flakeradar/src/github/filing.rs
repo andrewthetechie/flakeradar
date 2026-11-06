@@ -12,7 +12,7 @@ use std::ops::ControlFlow;
 use flakeradar_core::EntityKind;
 use flakeradar_db::filing::{self, FilingGate};
 use flakeradar_db::issue_links;
-use flakeradar_db::{DbError, get_job};
+use flakeradar_db::{DbError, SharedClock, get_job};
 use sea_orm::{ConnectionTrait, TransactionSession as _, TransactionTrait};
 use tokio_util::sync::CancellationToken;
 
@@ -102,6 +102,7 @@ pub async fn file_job_issues_for(
     job_ids: &[i32],
     settings: &Settings,
     api: &Api,
+    clock: &SharedClock,
     stop: &CancellationToken,
 ) -> BatchReport {
     if !api.configured() || job_ids.is_empty() {
@@ -129,7 +130,7 @@ pub async fn file_job_issues_for(
         let history = match get_job(
             db,
             i64::from(candidate.job.id),
-            &settings.reads(),
+            &settings.reads(std::sync::Arc::clone(clock)),
             i64::try_from(BODY_EXECUTIONS).unwrap_or(10),
         )
         .await

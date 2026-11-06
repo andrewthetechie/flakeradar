@@ -11,6 +11,7 @@
 
 // Rust guideline compliant 2026-07-21
 
+mod clock;
 mod db;
 mod error;
 mod factories;
@@ -18,6 +19,8 @@ mod junit;
 mod monotonic;
 mod postgres;
 
+#[doc(inline)]
+pub use clock::{FixedClock, system_clock};
 #[doc(inline)]
 pub use db::TestDb;
 #[doc(inline)]

@@ -7,6 +7,7 @@ use flakeradar_core::{EntityKind, ExecutionStatus};
 use flakeradar_db::filing::{JobRow, RecentExecution, TestRow};
 use flakeradar_test_support::{
     TestDb, make_execution, make_job_execution, make_project, make_run, make_test_case,
+    system_clock,
 };
 use sea_orm::ConnectionTrait as _;
 use sea_orm::EntityTrait as _;
@@ -502,6 +503,7 @@ async fn a_job_body_lists_its_worst_runner_groups_first() {
         &[job],
         &gh_settings(&[]),
         &api(&server),
+        &system_clock(),
         &unstopped(),
     )
     .await;
@@ -564,6 +566,7 @@ async fn a_job_body_caps_the_runner_groups_at_three() {
         &[job],
         &gh_settings(&[]),
         &api(&server),
+        &system_clock(),
         &unstopped(),
     )
     .await;
@@ -603,6 +606,7 @@ async fn a_job_body_omits_the_runner_section_without_an_unexplained_failure() {
         &[job],
         &gh_settings(&[]),
         &api(&server),
+        &system_clock(),
         &unstopped(),
     )
     .await;

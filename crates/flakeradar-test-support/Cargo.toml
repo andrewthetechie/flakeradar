@@ -11,6 +11,7 @@ workspace = true
 
 [dependencies]
 chrono = { workspace = true, features = ["clock", "std"] }
+flakeradar = { path = "../flakeradar" }
 flakeradar-db = { path = "../flakeradar-db" }
 sea-orm = { workspace = true, features = [
   "macros",

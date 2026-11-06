@@ -84,7 +84,7 @@ pub async fn link_test(
         body.number,
         body.url.as_deref(),
         query.replace.unwrap_or(false),
-        &state.settings().reads(),
+        &state.reads(),
     )
     .await?;
     match out {
@@ -117,13 +117,9 @@ pub async fn unlink_test(
     State(state): State<AppState>,
     ApiPath(path): ApiPath<TestPath>,
 ) -> RouteResult<Json<TestOut>> {
-    let out = issue_links::unlink_issue(
-        state.pool(),
-        EntityKind::Test,
-        path.test_id,
-        &state.settings().reads(),
-    )
-    .await?;
+    let out =
+        issue_links::unlink_issue(state.pool(), EntityKind::Test, path.test_id, &state.reads())
+            .await?;
     match out {
         LinkedOut::Test(test) => Ok(Json(test)),
         LinkedOut::Job(_) => Err(RouteError::Refused(IssueLinkError::NotFound(
@@ -169,7 +165,7 @@ pub async fn link_job(
         body.number,
         body.url.as_deref(),
         query.replace.unwrap_or(false),
-        &state.settings().reads(),
+        &state.reads(),
     )
     .await?;
     match out {
@@ -202,13 +198,8 @@ pub async fn unlink_job(
     State(state): State<AppState>,
     ApiPath(path): ApiPath<JobPath>,
 ) -> RouteResult<Json<JobOut>> {
-    let out = issue_links::unlink_issue(
-        state.pool(),
-        EntityKind::Job,
-        path.job_id,
-        &state.settings().reads(),
-    )
-    .await?;
+    let out = issue_links::unlink_issue(state.pool(), EntityKind::Job, path.job_id, &state.reads())
+        .await?;
     match out {
         LinkedOut::Job(job) => Ok(Json(job)),
         LinkedOut::Test(_) => Err(RouteError::Refused(IssueLinkError::NotFound(

@@ -40,8 +40,11 @@ const MCP_BARE_PATH: &str = "/mcp";
 pub fn router(state: AppState) -> Router<AppState> {
     let pool = state.pool().clone();
     let settings = Arc::new(state.settings().clone());
+    let clock = Arc::clone(state.clock());
     let service = StreamableHttpService::new(
-        move || Ok(McpServer::new(pool.clone(), Arc::clone(&settings))),
+        move || {
+            Ok(McpServer::new(pool.clone(), Arc::clone(&settings)).with_clock(Arc::clone(&clock)))
+        },
         Arc::new(NeverSessionManager::default()),
         server_config(),
     );

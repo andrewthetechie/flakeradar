@@ -15,7 +15,7 @@ use chrono::{DateTime, FixedOffset, NaiveDate, Utc};
 use sea_orm::entity::prelude::DateTimeWithTimeZone;
 
 /// Where the processor learns the current instant.
-pub trait Clock: Send + Sync {
+pub trait Clock: fmt::Debug + Send + Sync {
     /// The current instant, in UTC.
     fn now(&self) -> DateTimeWithTimeZone;
 

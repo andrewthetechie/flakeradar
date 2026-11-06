@@ -7,7 +7,7 @@ use flakeradar::github::{self, Api};
 use flakeradar::settings::Secret;
 use flakeradar_test_support::{
     TestDb, make_execution, make_job, make_job_execution, make_pipeline, make_project, make_run,
-    make_test_case,
+    make_test_case, system_clock,
 };
 use sea_orm::ConnectionTrait as _;
 use sea_orm::EntityTrait as _;
@@ -654,6 +654,7 @@ async fn a_flaky_job_is_filed_with_its_pipeline_and_unexplained_failures() {
         &[job],
         &gh_settings(&[]),
         &api(&server),
+        &system_clock(),
         &unstopped(),
     )
     .await;
@@ -703,6 +704,7 @@ async fn a_job_of_another_provider_is_never_filed() {
             &[job.id],
             &gh_settings(&[]),
             &api(&server),
+            &system_clock(),
             &unstopped()
         )
         .await
@@ -746,6 +748,7 @@ async fn a_candidate_read_that_fails_logs_and_reports_an_empty_batch() {
         &[job],
         &gh_settings(&[]),
         &api,
+        &system_clock(),
         &unstopped(),
     )
     .await;
@@ -755,10 +758,24 @@ async fn a_candidate_read_that_fails_logs_and_reports_an_empty_batch() {
     // than raising.
     let settings = fixed_settings(&[]);
     for report in [
-        github::note_fixed_issues_for(db.connection(), &[test], &settings, &api, &unstopped())
-            .await,
-        github::note_fixed_job_issues_for(db.connection(), &[job], &settings, &api, &unstopped())
-            .await,
+        github::note_fixed_issues_for(
+            db.connection(),
+            &[test],
+            &settings,
+            &api,
+            &system_clock(),
+            &unstopped(),
+        )
+        .await,
+        github::note_fixed_job_issues_for(
+            db.connection(),
+            &[job],
+            &settings,
+            &api,
+            &system_clock(),
+            &unstopped(),
+        )
+        .await,
     ] {
         assert_eq!(report, github::BatchReport::default());
     }
@@ -933,6 +950,7 @@ async fn a_rate_limit_stops_the_test_and_job_batches() {
         &[ja, jb],
         &gh_settings(&[]),
         &api(&jobs),
+        &system_clock(),
         &unstopped(),
     )
     .await;
@@ -973,6 +991,7 @@ async fn a_429_stops_the_test_and_job_batches() {
         &[ja, jb],
         &gh_settings(&[]),
         &api(&jobs),
+        &system_clock(),
         &unstopped(),
     )
     .await;
@@ -1056,6 +1075,7 @@ async fn a_permission_403_costs_only_the_denied_repo() {
             &[ja1, ja2, jb],
             &gh_settings(&[]),
             &api(&jobs),
+            &system_clock(),
             &unstopped(),
         )
         .await;
@@ -1160,6 +1180,7 @@ async fn a_repo_whose_issues_are_disabled_is_skipped_for_the_rest_of_the_batch()
                 &[ja1, ja2, jb],
                 &gh_settings(&[]),
                 &api(&jobs),
+                &system_clock(),
                 &unstopped(),
             )
             .await;
@@ -1578,6 +1599,7 @@ async fn a_job_history_that_cannot_be_read_is_logged_and_the_issue_still_files()
             &[job],
             &gh_settings(&[]),
             &api(&server),
+            &system_clock(),
             &unstopped(),
         )
         .await;
@@ -1731,6 +1753,7 @@ async fn the_job_row_deleted_while_filing_closes_the_new_issue() {
             &[job],
             &gh_settings(&[]),
             &api(&server),
+            &system_clock(),
             &unstopped(),
         )
         .await;
@@ -1768,6 +1791,7 @@ async fn a_job_that_was_reported_is_not_filed_twice() {
             &[job],
             &gh_settings(&[]),
             &api(&server),
+            &system_clock(),
             &unstopped()
         )
         .await
@@ -1781,6 +1805,7 @@ async fn a_job_that_was_reported_is_not_filed_twice() {
             &[job],
             &gh_settings(&[]),
             &api(&server),
+            &system_clock(),
             &unstopped()
         )
         .await
@@ -1799,10 +1824,17 @@ async fn a_job_filing_without_a_token_is_silent() {
     let api = Api::new(Secret::new(""), &server.uri()).expect("the HTTP client builds");
 
     assert!(
-        github::file_job_issues_for(db.connection(), &[job], &settings, &api, &unstopped())
-            .await
-            .linked
-            .is_empty()
+        github::file_job_issues_for(
+            db.connection(),
+            &[job],
+            &settings,
+            &api,
+            &system_clock(),
+            &unstopped()
+        )
+        .await
+        .linked
+        .is_empty()
     );
     assert!(
         requested_paths(&server).await.is_empty(),
@@ -1845,6 +1877,7 @@ async fn only_unexplained_job_failures_meet_the_min_failures_gate() {
             &[all_explained],
             &settings,
             &api(&server),
+            &system_clock(),
             &unstopped()
         )
         .await
@@ -1875,6 +1908,7 @@ async fn only_unexplained_job_failures_meet_the_min_failures_gate() {
             &[mixed],
             &settings,
             &api(&server),
+            &system_clock(),
             &unstopped()
         )
         .await
@@ -1944,6 +1978,7 @@ async fn the_job_failure_gate_counts_the_overall_window_only() {
         &[job.id],
         &settings,
         &api(&server),
+        &system_clock(),
         &unstopped(),
     )
     .await;
@@ -1993,6 +2028,7 @@ async fn a_linked_test_and_a_linked_job_are_never_filed() {
         &[job],
         &gh_settings(&[]),
         &api(&server),
+        &system_clock(),
         &unstopped(),
     )
     .await;

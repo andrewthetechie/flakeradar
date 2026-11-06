@@ -96,7 +96,8 @@ impl Server {
             settings.database_url.expose(),
             settings.database_settings()?,
         );
-        let processing = settings.processing();
+        let clock: flakeradar_db::SharedClock = Arc::new(flakeradar_db::SystemClock);
+        let processing = settings.processing(Arc::clone(&clock));
         let mut worker = ReportWorker::new(
             pool.clone(),
             Arc::new(lock),
@@ -109,13 +110,16 @@ impl Server {
         )));
         // The GitHub task re-checks stored links once per prune interval, the
         // same interval the reference used for both.
-        let github: Arc<dyn LeaderTask> = Arc::new(GitHubWorker::new(
-            pool.clone(),
-            Arc::new(settings.clone()),
-            Api::production(settings.github_token.clone())?,
-            std::time::Duration::try_from_secs_f64(settings.prune_interval_seconds)
-                .unwrap_or_default(),
-        ));
+        let github: Arc<dyn LeaderTask> = Arc::new(
+            GitHubWorker::new(
+                pool.clone(),
+                Arc::new(settings.clone()),
+                Api::production(settings.github_token.clone())?,
+                std::time::Duration::try_from_secs_f64(settings.prune_interval_seconds)
+                    .unwrap_or_default(),
+            )
+            .with_clock(clock),
+        );
         worker = worker.with_leader_task(github);
         if let Some(webhook) = webhook_task(&settings)? {
             worker = worker.with_leader_task(webhook);

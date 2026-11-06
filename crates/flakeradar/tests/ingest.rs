@@ -14,10 +14,11 @@ mod common;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Method, StatusCode};
+use chrono::{DateTime, FixedOffset, TimeZone as _, Utc};
 use common::{Reply, get, post, request, send, settings};
 use flakeradar_core::ReportStatus;
 use flakeradar_db::entities::{projects, reports, repos};
-use flakeradar_test_support::{TestDb, make_junit};
+use flakeradar_test_support::{FixedClock, TestDb, make_junit};
 use sea_orm::{
     ColumnTrait, ConnectionTrait as _, DbErr, EntityTrait, PaginatorTrait as _, QueryFilter,
     QueryOrder,
@@ -35,6 +36,17 @@ fn test_settings() -> flakeradar::Settings {
 /// An app over `db` with the test's settings.
 fn test_app(db: &TestDb) -> Router {
     common::app_with(db, test_settings())
+}
+
+/// The app over `db`, on a clock that always reads `instant`.
+fn app_at(db: &TestDb, instant: DateTime<FixedOffset>) -> Router {
+    let state = flakeradar::AppState::new(
+        db.connection().clone(),
+        std::sync::Arc::new(test_settings()),
+    )
+    .expect("the app state builds")
+    .with_clock(std::sync::Arc::new(FixedClock::new(instant)));
+    flakeradar::build_app(state)
 }
 
 /// The headers an authorised upload sends.
@@ -98,6 +110,46 @@ async fn ingest_requires_token() {
         json!({"detail": "Invalid or missing X-API-Key"})
     );
     assert_eq!(stored_reports(&db).await.len(), 0);
+}
+
+/// The instant the clock stops at, which no wall clock would agree with.
+fn frozen_instant() -> DateTime<FixedOffset> {
+    Utc.with_ymd_and_hms(2001, 2, 3, 4, 5, 6)
+        .unwrap()
+        .fixed_offset()
+}
+
+#[tokio::test]
+async fn a_report_is_stamped_with_the_states_clock() {
+    let db = TestDb::new().await.expect("a test database is available");
+    let instant = frozen_instant();
+    let reply = ingest(&app_at(&db, instant), &[], passing_report()).await;
+    assert_eq!(reply.status, StatusCode::ACCEPTED, "{}", reply.text());
+
+    let stored = stored_reports(&db).await;
+    let report = stored.first().expect("one Report");
+    assert_eq!(
+        report.created_at, instant,
+        "the Report was stamped with the state's clock, not the wall clock"
+    );
+}
+
+#[tokio::test]
+async fn a_pipeline_report_is_stamped_with_the_states_clock() {
+    let db = TestDb::new().await.expect("a test database is available");
+    let instant = frozen_instant();
+    let reply = post(
+        &app_at(&db, instant),
+        "/api/ingest/pipeline",
+        &[("x-api-key", TOKEN), ("content-type", "application/json")],
+        pipeline_report_body(&json!({})),
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::ACCEPTED, "{}", reply.text());
+
+    let stored = stored_reports(&db).await;
+    let report = stored.first().expect("one Report");
+    assert_eq!(report.created_at, instant);
 }
 
 #[tokio::test]
@@ -1274,7 +1326,7 @@ async fn a_reports_list_counts_only_the_rows_it_holds() {
             pipeline: None,
             default_branch: None,
         }
-        .into_active_model(chrono::Utc::now().fixed_offset()),
+        .into_active_model(Utc::now().fixed_offset()),
     )
     .exec(db.connection())
     .await

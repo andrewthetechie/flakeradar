@@ -14,6 +14,7 @@ use axum::extract::{DefaultBodyLimit, State};
 use axum::http::header::{self, HeaderValue};
 use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Redirect, Response};
+use flakeradar_db::{ReadSettings, SharedClock, SystemClock};
 use sea_orm::DatabaseConnection;
 
 use crate::assets::{Asset, AssetSource, NoAssets};
@@ -57,6 +58,7 @@ pub struct AppState {
     settings: Arc<Settings>,
     github: Api,
     assets: Arc<dyn AssetSource>,
+    clock: SharedClock,
 }
 
 impl AppState {
@@ -65,7 +67,9 @@ impl AppState {
     /// The GitHub client talks to the production REST API; a test that needs a
     /// different base URL calls [`AppState::with_github`]. Nothing is served
     /// from memory until [`AppState::with_assets`] names a source, which is how
-    /// [`crate::Server`] hands the state the frontend it was built with.
+    /// [`crate::Server`] hands the state the frontend it was built with. A test
+    /// that has to know which instant a request wrote calls
+    /// [`AppState::with_clock`].
     ///
     /// # Errors
     ///
@@ -78,7 +82,28 @@ impl AppState {
             settings,
             github,
             assets: Arc::new(NoAssets),
+            clock: Arc::new(SystemClock),
         })
+    }
+
+    /// Replaces the clock every handler and worker reads, so a test can say
+    /// which instant a request wrote.
+    #[must_use]
+    pub fn with_clock(mut self, clock: SharedClock) -> Self {
+        self.clock = clock;
+        self
+    }
+
+    /// The clock every handler reads the current instant from.
+    #[must_use]
+    pub fn clock(&self) -> &SharedClock {
+        &self.clock
+    }
+
+    /// The read layer's view of these settings, on this state's clock.
+    #[must_use]
+    pub fn reads(&self) -> ReadSettings {
+        self.settings.reads(Arc::clone(&self.clock))
     }
 
     /// The GitHub client every outward call goes through.

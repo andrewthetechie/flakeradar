@@ -11,7 +11,7 @@ use std::ops::ControlFlow;
 
 use chrono::{DateTime, Utc};
 use flakeradar_core::EntityKind;
-use flakeradar_db::issue_links;
+use flakeradar_db::{SharedClock, issue_links};
 use sea_orm::ConnectionTrait;
 use tokio_util::sync::CancellationToken;
 
@@ -37,6 +37,7 @@ pub async fn sync_closed_issues(
     db: &impl ConnectionTrait,
     settings: &Settings,
     api: &Api,
+    clock: &SharedClock,
     stop: &CancellationToken,
 ) -> BatchReport {
     let mut report = BatchReport::default();
@@ -54,7 +55,7 @@ pub async fn sync_closed_issues(
             }
         }
     }
-    let now = Utc::now();
+    let now = clock.now().with_timezone(&Utc);
     for (target, row) in rows {
         if report.skipped.contains(&row.repo) {
             // An unreadable Repo this run: rotate it like a checked row.

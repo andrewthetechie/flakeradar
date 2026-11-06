@@ -23,7 +23,7 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use flakeradar_db::{ProcessOutcome, SharedMonotonic, SystemMonotonic};
+use flakeradar_db::{ProcessOutcome, SharedClock, SharedMonotonic, SystemClock, SystemMonotonic};
 use sea_orm::DatabaseConnection;
 use tokio_util::sync::CancellationToken;
 
@@ -54,6 +54,7 @@ struct GitHubShared {
     notify: tokio::sync::Notify,
     last_sync: Mutex<Option<f64>>,
     monotonic: SharedMonotonic,
+    clock: SharedClock,
 }
 
 impl std::fmt::Debug for GitHubShared {
@@ -93,14 +94,22 @@ impl GitHubShared {
 
     /// Files issues for one outcome's touched Tests and Jobs.
     async fn file(&self, outcome: ProcessOutcome, stop: &CancellationToken) {
-        crate::github::on_report_processed(&self.pool, &outcome, &self.settings, &self.api, stop)
-            .await;
+        crate::github::on_report_processed(
+            &self.pool,
+            &outcome,
+            &self.settings,
+            &self.api,
+            &self.clock,
+            stop,
+        )
+        .await;
     }
 
     /// Re-arms the links whose issue GitHub reports closed.
     async fn sync(&self, stop: &CancellationToken) {
         *guard(&self.last_sync) = Some(self.monotonic.now());
-        crate::github::sync_closed_issues(&self.pool, &self.settings, &self.api, stop).await;
+        crate::github::sync_closed_issues(&self.pool, &self.settings, &self.api, &self.clock, stop)
+            .await;
     }
 
     /// Takes the next queued outcome, waiting at most `seconds`.
@@ -180,6 +189,7 @@ impl GitHubWorker {
                 notify: tokio::sync::Notify::new(),
                 last_sync: Mutex::new(None),
                 monotonic: Arc::new(SystemMonotonic::new()),
+                clock: Arc::new(SystemClock),
             }),
             run: LeaderRun::new(),
         }
@@ -190,6 +200,15 @@ impl GitHubWorker {
     pub fn with_monotonic(mut self, monotonic: SharedMonotonic) -> Self {
         if let Some(shared) = Arc::get_mut(&mut self.shared) {
             shared.monotonic = monotonic;
+        }
+        self
+    }
+
+    /// Reads the instant it stamps a checked link with from `clock`.
+    #[must_use]
+    pub fn with_clock(mut self, clock: SharedClock) -> Self {
+        if let Some(shared) = Arc::get_mut(&mut self.shared) {
+            shared.clock = clock;
         }
         self
     }

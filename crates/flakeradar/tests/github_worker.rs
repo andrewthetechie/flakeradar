@@ -13,6 +13,8 @@
 mod common;
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+use chrono::{FixedOffset, TimeZone as _, Utc};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -28,8 +30,8 @@ use flakeradar_db::{
     connect_session,
 };
 use flakeradar_test_support::{
-    ScriptedMonotonic, TestDb, make_job, make_junit, make_pipeline, make_project, make_report,
-    make_test_case,
+    FixedClock, ScriptedMonotonic, TestDb, make_job, make_junit, make_pipeline, make_project,
+    make_report, make_test_case,
 };
 use sea_orm::ConnectionTrait as _;
 use sea_orm::{
@@ -209,6 +211,58 @@ async fn the_first_sync_runs_at_start_and_the_next_one_on_the_interval() {
     until_count(&server, 1).await;
     until_count(&server, 2).await;
     LeaderTask::stop(&worker).await.expect("the task stops");
+}
+
+#[tokio::test]
+async fn the_sync_stamps_a_checked_link_with_the_tasks_clock() {
+    let db = TestDb::new().await.expect("a test database");
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/app/issues/12"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"state": "open"})))
+        .mount(&server)
+        .await;
+    let test = flaky_test(&db).await;
+    db.connection()
+        .execute_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "UPDATE test_cases SET github_issue_number = 12 WHERE id = $1",
+            [Value::from(test)],
+        ))
+        .await
+        .expect("the link writes");
+    let instant = Utc
+        .with_ymd_and_hms(2001, 2, 3, 4, 5, 6)
+        .unwrap()
+        .fixed_offset();
+
+    let worker = GitHubWorker::new(
+        db.connection().clone(),
+        Arc::new(settings()),
+        Api::new(Secret::new(TOKEN), &server.uri()).expect("the HTTP client builds"),
+        Duration::from_secs(3600),
+    )
+    .with_clock(Arc::new(FixedClock::new(instant)));
+    LeaderTask::start(&worker).await;
+    until_count(&server, 1).await;
+    LeaderTask::stop(&worker).await.expect("the task stops");
+
+    let row = db
+        .connection()
+        .query_one_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "SELECT github_issue_checked_at FROM test_cases WHERE id = $1",
+            [Value::from(test)],
+        ))
+        .await
+        .expect("the stamp reads")
+        .expect("the Test exists");
+    assert_eq!(
+        row.try_get::<Option<chrono::DateTime<FixedOffset>>>("", "github_issue_checked_at")
+            .expect("a timestamp"),
+        Some(instant),
+        "the task's own sync stamped the clock it was given"
+    );
 }
 
 #[tokio::test]

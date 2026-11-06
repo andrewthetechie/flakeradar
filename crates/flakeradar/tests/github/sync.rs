@@ -7,7 +7,11 @@ use flakeradar::github::{self, Api};
 use flakeradar::settings::Secret;
 use flakeradar_core::EntityKind;
 use flakeradar_db::issue_links;
-use flakeradar_test_support::TestDb;
+use std::sync::Arc;
+
+use chrono::{DateTime, FixedOffset, TimeZone as _, Utc};
+use flakeradar_db::SharedClock;
+use flakeradar_test_support::{FixedClock, TestDb, system_clock};
 use sea_orm::ConnectionTrait as _;
 use sea_orm::{DbBackend, Statement, Value};
 use serde_json::{Value as Json, json};
@@ -20,6 +24,57 @@ use crate::support::{
     mount_create, mount_issue, mount_state, noted, requested_paths, stamp_job_link, stamp_link,
     stamp_note, test_link, unstopped,
 };
+
+/// One Test's stored check stamp.
+async fn checked_at(db: &TestDb, id: i32) -> Option<DateTime<FixedOffset>> {
+    let row = db
+        .connection()
+        .query_one_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "SELECT github_issue_checked_at FROM test_cases WHERE id = $1",
+            [Value::from(id)],
+        ))
+        .await
+        .expect("the stamp reads")
+        .expect("the Test exists");
+    row.try_get("", "github_issue_checked_at")
+        .expect("the stamp is a timestamp")
+}
+
+#[tokio::test]
+async fn the_sync_stamps_a_checked_link_with_the_clock_it_was_given() {
+    let db = TestDb::new().await.expect("a test database");
+    let test = flaky_test(&db).await;
+    stamp_link(&db, test, 11, false, false).await;
+    let server = MockServer::start().await;
+    mount_issue(
+        &server,
+        "acme/app",
+        11,
+        ResponseTemplate::new(200).set_body_json(json!({"state": "open"})),
+    )
+    .await;
+    let instant = Utc
+        .with_ymd_and_hms(2001, 2, 3, 4, 5, 6)
+        .unwrap()
+        .fixed_offset();
+    let clock: SharedClock = Arc::new(FixedClock::new(instant));
+
+    github::sync_closed_issues(
+        db.connection(),
+        &gh_settings(&[]),
+        &api(&server),
+        &clock,
+        &unstopped(),
+    )
+    .await;
+
+    assert_eq!(
+        checked_at(&db, test).await,
+        Some(instant),
+        "the check was stamped with the clock the sync was given"
+    );
+}
 
 #[tokio::test]
 async fn the_sync_rearms_a_link_whose_issue_closed() {
@@ -47,6 +102,7 @@ async fn the_sync_rearms_a_link_whose_issue_closed() {
         db.connection(),
         &gh_settings(&[]),
         &api(&server),
+        &system_clock(),
         &unstopped(),
     )
     .await;
@@ -89,6 +145,7 @@ async fn the_sync_keeps_a_link_closed_as_not_planned() {
         db.connection(),
         &gh_settings(&[]),
         &api(&server),
+        &system_clock(),
         &unstopped(),
     )
     .await;
@@ -128,6 +185,7 @@ async fn the_sync_clears_the_flag_when_a_declined_issue_reopens() {
         db.connection(),
         &gh_settings(&[]),
         &api(&server),
+        &system_clock(),
         &unstopped(),
     )
     .await;
@@ -149,6 +207,7 @@ async fn the_sync_rearms_a_link_whose_issue_is_gone() {
         db.connection(),
         &gh_settings(&[]),
         &api(&server),
+        &system_clock(),
         &unstopped(),
     )
     .await;
@@ -184,6 +243,7 @@ async fn the_sync_keeps_a_link_on_a_permission_error_and_stamps_it() {
         db.connection(),
         &gh_settings(&[]),
         &api(&server),
+        &system_clock(),
         &unstopped(),
     )
     .await;
@@ -235,6 +295,7 @@ async fn the_sync_leaves_an_unreadable_body_alone_and_stamps_it() {
             db.connection(),
             &gh_settings(&[]),
             &api(&server),
+            &system_clock(),
             &unstopped(),
         ))
         .await;
@@ -276,6 +337,7 @@ async fn the_sync_stops_on_a_rate_limit_before_stamping_the_row() {
         db.connection(),
         &gh_settings(&[]),
         &api(&server),
+        &system_clock(),
         &unstopped(),
     )
     .await;
@@ -296,6 +358,7 @@ async fn nothing_configured_syncs_nothing() {
         db.connection(),
         &settings,
         &Api::new(Secret::new(""), &server.uri()).expect("the HTTP client builds"),
+        &system_clock(),
         &unstopped(),
     )
     .await;
@@ -327,6 +390,7 @@ async fn a_sync_whose_rotation_list_cannot_be_read_makes_no_request() {
         db.connection(),
         &gh_settings(&[]),
         &api(&server),
+        &system_clock(),
         &unstopped(),
     )
     .await;
@@ -366,6 +430,7 @@ async fn the_sync_leaves_an_unknown_issue_state_alone() {
         db.connection(),
         &gh_settings(&[]),
         &api(&server),
+        &system_clock(),
         &unstopped(),
     )
     .await;
@@ -392,7 +457,14 @@ async fn the_sync_rotates_through_its_links_a_batch_at_a_time() {
         .await;
     let settings = gh_settings(&[("FLAKERADAR_GITHUB_SYNC_BATCH", "2")]);
 
-    github::sync_closed_issues(db.connection(), &settings, &api(&server), &unstopped()).await;
+    github::sync_closed_issues(
+        db.connection(),
+        &settings,
+        &api(&server),
+        &system_clock(),
+        &unstopped(),
+    )
+    .await;
     assert_eq!(
         requested_paths(&server).await,
         vec!["/repos/acme/app/issues/11", "/repos/acme/app/issues/22"],
@@ -404,7 +476,14 @@ async fn the_sync_rotates_through_its_links_a_batch_at_a_time() {
         "an open issue is still a check"
     );
 
-    github::sync_closed_issues(db.connection(), &settings, &api(&server), &unstopped()).await;
+    github::sync_closed_issues(
+        db.connection(),
+        &settings,
+        &api(&server),
+        &system_clock(),
+        &unstopped(),
+    )
+    .await;
     assert_eq!(
         requested_paths(&server).await,
         vec![
@@ -434,6 +513,7 @@ async fn a_never_checked_link_goes_before_a_stamped_one() {
         db.connection(),
         &gh_settings(&[]),
         &api(&server),
+        &system_clock(),
         &unstopped(),
     )
     .await;
@@ -446,7 +526,14 @@ async fn a_never_checked_link_goes_before_a_stamped_one() {
     let fresh = flaky_test_in(&db, "acme/app", "p3", "t3").await;
     stamp_link(&db, fresh, 33, false, false).await;
     let settings = gh_settings(&[("FLAKERADAR_GITHUB_SYNC_BATCH", "1")]);
-    github::sync_closed_issues(db.connection(), &settings, &api(&server), &unstopped()).await;
+    github::sync_closed_issues(
+        db.connection(),
+        &settings,
+        &api(&server),
+        &system_clock(),
+        &unstopped(),
+    )
+    .await;
     assert_eq!(
         requested_paths(&server).await[2..],
         ["/repos/acme/app/issues/33"],
@@ -469,6 +556,7 @@ async fn a_sync_stops_at_a_transport_error_with_one_request() {
         db.connection(),
         &gh_settings(&[]),
         &Api::new(Secret::new(TOKEN), &loopback.base).expect("the HTTP client builds"),
+        &system_clock(),
         &unstopped(),
     )
     .await;
@@ -520,6 +608,7 @@ async fn a_sync_rate_limit_stops_the_batch_and_keeps_the_stamp_it_made() {
         db.connection(),
         &gh_settings(&[]),
         &api(&server),
+        &system_clock(),
         &unstopped(),
     )
     .await;
@@ -571,6 +660,7 @@ async fn a_sync_continues_from_the_stamp_a_stopped_run_left() {
         db.connection(),
         &gh_settings(&[]),
         &api(&server),
+        &system_clock(),
         &unstopped(),
     )
     .await;
@@ -595,6 +685,7 @@ async fn a_sync_continues_from_the_stamp_a_stopped_run_left() {
         db.connection(),
         &gh_settings(&[]),
         &api(&second_server),
+        &system_clock(),
         &unstopped(),
     )
     .await;
@@ -636,6 +727,7 @@ async fn a_permission_403_skips_the_later_rows_of_that_repo() {
         db.connection(),
         &gh_settings(&[]),
         &api(&server),
+        &system_clock(),
         &unstopped(),
     )
     .await;
@@ -687,14 +779,28 @@ async fn the_sync_rotates_past_a_denied_repo() {
     .await;
     let settings = gh_settings(&[("FLAKERADAR_GITHUB_SYNC_BATCH", "2")]);
 
-    github::sync_closed_issues(db.connection(), &settings, &api(&server), &unstopped()).await;
+    github::sync_closed_issues(
+        db.connection(),
+        &settings,
+        &api(&server),
+        &system_clock(),
+        &unstopped(),
+    )
+    .await;
     assert_eq!(
         requested_paths(&server).await,
         vec!["/repos/acme/a/issues/11"],
         "the cap holds the two denied rows and the second gets no GET"
     );
 
-    github::sync_closed_issues(db.connection(), &settings, &api(&server), &unstopped()).await;
+    github::sync_closed_issues(
+        db.connection(),
+        &settings,
+        &api(&server),
+        &system_clock(),
+        &unstopped(),
+    )
+    .await;
     assert_eq!(
         requested_paths(&server).await,
         vec![
@@ -741,6 +847,7 @@ async fn a_sync_definitive_client_error_keeps_the_link_and_skips_the_repo() {
             db.connection(),
             &gh_settings(&[]),
             &api(&server),
+            &system_clock(),
             &unstopped(),
         )
         .await;
@@ -793,7 +900,14 @@ async fn the_sync_rotates_past_an_unreadable_link() {
     .await;
     let settings = gh_settings(&[("FLAKERADAR_GITHUB_SYNC_BATCH", "2")]);
 
-    github::sync_closed_issues(db.connection(), &settings, &api(&server), &unstopped()).await;
+    github::sync_closed_issues(
+        db.connection(),
+        &settings,
+        &api(&server),
+        &system_clock(),
+        &unstopped(),
+    )
+    .await;
     assert_eq!(
         requested_paths(&server).await,
         vec!["/repos/acme/a/issues/11", "/repos/acme/b/issues/22"]
@@ -801,7 +915,14 @@ async fn the_sync_rotates_past_an_unreadable_link() {
     assert_eq!(test_link(&db, bad).await.0, Some(11));
     assert!(test_link(&db, bad).await.2, "the bad row rotates");
 
-    github::sync_closed_issues(db.connection(), &settings, &api(&server), &unstopped()).await;
+    github::sync_closed_issues(
+        db.connection(),
+        &settings,
+        &api(&server),
+        &system_clock(),
+        &unstopped(),
+    )
+    .await;
     assert_eq!(
         requested_paths(&server).await[2..],
         ["/repos/acme/c/issues/33", "/repos/acme/a/issues/11"],
@@ -837,6 +958,7 @@ async fn a_gone_issue_rearms_its_link_but_any_other_answer_keeps_it(kind: Entity
         db.connection(),
         &gh_settings(&[]),
         &api(&gone),
+        &system_clock(),
         &unstopped(),
     ))
     .await;
@@ -870,6 +992,7 @@ async fn a_gone_issue_rearms_its_link_but_any_other_answer_keeps_it(kind: Entity
         db.connection(),
         &gh_settings(&[]),
         &api(&broken),
+        &system_clock(),
         &unstopped(),
     ))
     .await;
@@ -916,6 +1039,7 @@ async fn the_job_sync_rearms_a_closed_issue_and_the_filer_files_again() {
         &[job],
         &gh_settings(&[]),
         &api(&server),
+        &system_clock(),
         &unstopped(),
     )
     .await;
@@ -933,6 +1057,7 @@ async fn the_job_sync_rearms_a_closed_issue_and_the_filer_files_again() {
         db.connection(),
         &gh_settings(&[]),
         &api(&sync_server),
+        &system_clock(),
         &unstopped(),
     )
     .await;
@@ -950,6 +1075,7 @@ async fn the_job_sync_rearms_a_closed_issue_and_the_filer_files_again() {
             &[job],
             &gh_settings(&[]),
             &api(&refile),
+            &system_clock(),
             &unstopped()
         )
         .await
@@ -1185,9 +1311,10 @@ async fn a_link_replaced_during_the_sync_get_survives() {
     };
     let settings = gh_settings(&[]);
     let api = api(&server);
+    let clock = system_clock();
     let stop = unstopped();
     tokio::join!(
-        github::sync_closed_issues(db.connection(), &settings, &api, &stop),
+        github::sync_closed_issues(db.connection(), &settings, &api, &clock, &stop),
         relink
     );
 
@@ -1276,6 +1403,7 @@ async fn a_test_sync_rearms_its_closed_issue_and_the_filer_files_again() {
         db.connection(),
         &gh_settings(&[]),
         &api(&sync_server),
+        &system_clock(),
         &unstopped(),
     )
     .await;
@@ -1343,6 +1471,7 @@ async fn the_sync_rearm_clears_the_fixed_note_stamp_but_a_declined_link_keeps_it
         db.connection(),
         &gh_settings(&[]),
         &api(&server),
+        &system_clock(),
         &unstopped(),
     )
     .await;

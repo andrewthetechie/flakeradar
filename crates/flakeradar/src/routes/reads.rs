@@ -56,7 +56,7 @@ pub fn router(state: AppState) -> Router<AppState> {
 
 /// The read settings the configuration holds.
 fn read_settings(state: &AppState) -> ReadSettings {
-    state.settings().reads()
+    state.reads()
 }
 
 /// A 422 from an identity rule, as `{"detail": "<message>"}`.
