@@ -205,12 +205,6 @@ impl From<ReadError> for RouteError {
     }
 }
 
-impl From<IssueLinkError> for RouteError {
-    fn from(error: IssueLinkError) -> Self {
-        Self::Refused(error)
-    }
-}
-
 impl From<LinkError> for RouteError {
     fn from(error: LinkError) -> Self {
         match error {
@@ -237,6 +231,8 @@ mod tests {
     use axum::http::StatusCode;
     use axum::response::IntoResponse as _;
     use serde_json::{Value, json};
+
+    use std::error::Error as _;
 
     use super::{ApiError, RouteError};
 
@@ -294,6 +290,36 @@ mod tests {
             "Test not found"
         );
         assert_eq!(RouteError::Raced.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            RouteError::NotFound("Test not found".to_owned()).status(),
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            RouteError::Internal(flakeradar_db::DbError::Database(
+                sea_orm::DbErr::RecordNotFound("a row".to_owned())
+            ))
+            .status(),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+        assert_eq!(
+            RouteError::Raced.to_string(),
+            "the delete raced the report processor"
+        );
+        assert_eq!(
+            RouteError::Rejected(ApiError::new(StatusCode::BAD_REQUEST, "bad body")).to_string(),
+            "a rejected request, 400 Bad Request"
+        );
+        assert_eq!(
+            RouteError::Refused(flakeradar_db::issue_links::IssueLinkError::NotLinkable(
+                "not linkable".to_owned()
+            ))
+            .to_string(),
+            "not linkable"
+        );
+        let read = RouteError::from(flakeradar_db::ReadError::Database(
+            flakeradar_db::DbError::Database(sea_orm::DbErr::RecordNotFound("a row".to_owned())),
+        ));
+        assert!(read.source().is_some());
         assert_eq!(
             RouteError::Refused(flakeradar_db::issue_links::IssueLinkError::Conflict(
                 "already linked".to_owned()

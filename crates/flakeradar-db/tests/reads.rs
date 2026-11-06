@@ -748,3 +748,33 @@ async fn runner_statistics_break_ties_by_labels_then_name() {
     assert_eq!(stats[2].labels, ["beta"]);
     assert_eq!(stats[2].runner_name, None);
 }
+
+#[tokio::test]
+async fn a_required_row_that_is_missing_names_the_query() {
+    let db = TestDb::new().await.expect("a test database");
+    let error = flakeradar_db::sql::required_one(
+        db.connection(),
+        "SELECT 1 AS one WHERE false".to_owned(),
+        Vec::new(),
+        "aggregate",
+    )
+    .await
+    .expect_err("a statement with no row is an error");
+    assert!(
+        error
+            .to_string()
+            .contains("the aggregate query returned no row"),
+        "{error}"
+    );
+}
+
+#[tokio::test]
+async fn a_column_the_row_does_not_hold_is_a_database_error() {
+    let db = TestDb::new().await.expect("a test database");
+    let rows = flakeradar_db::sql::rows(db.connection(), "SELECT 1 AS one".to_owned(), Vec::new())
+        .await
+        .expect("one row");
+    let row = rows.first().expect("one row");
+    let read: Result<i32, _> = flakeradar_db::sql::get(row, "missing");
+    assert!(read.is_err(), "a column the statement did not select fails");
+}
