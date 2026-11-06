@@ -17,7 +17,15 @@ use crate::batching::chunks;
 use crate::error::DbError;
 use crate::sql::{get, rows, value_row};
 
-/// How many days of history the detail responses embed.
+/// How many days of Score history the detail responses embed.
+///
+/// A quarter is what a person checks to see whether a Test is getting worse: the
+/// tile's window is a month, and the detail view needs the weeks before it to
+/// show the shape. It is the Execution retention window's own default, so the
+/// history this embeds is the history retention keeps rather than a window that
+/// reaches past it. Widening it reads rows retention has already dropped and
+/// lengthens every detail answer; narrowing it hides the history a fix shows up
+/// in.
 pub const HISTORY_DAYS: i64 = 90;
 
 /// The Score-history table that holds `kind`'s history.

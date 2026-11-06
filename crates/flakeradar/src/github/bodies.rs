@@ -15,12 +15,31 @@ use flakeradar_db::filing::{JobRow, RecentExecution, TestRow};
 use crate::settings::Settings;
 
 /// How many recent Executions an issue body lists.
+///
+/// The body's table is what a person reads to see the flake they were assigned,
+/// so it shows the newest runs and stops: ten covers the flips that made the Test
+/// flaky without turning the issue into a log. Each row carries a status, a
+/// commit and a message, and GitHub caps an issue body at 65536 characters, which
+/// ten rows cannot reach. Raising it lengthens every filed issue; lowering it can
+/// hide the flip the body exists to show.
 pub const BODY_EXECUTIONS: usize = 10;
 
 /// How many run commands a Job body lists.
+///
+/// A Job's body names the runners whose outcomes differed, which is how a person
+/// tells "only Windows" from "everywhere"; three is the usual spread of a matrix
+/// dimension's values, so a longer list is a matrix with more legs than a reader
+/// compares at a glance. Raising it grows every filed Job issue; lowering it can
+/// hide the leg that is failing.
 pub const BODY_RUNNERS: usize = 3;
 
 /// How many characters of a sample failure an issue body carries.
+///
+/// One traceback's worth, as a code block, is what makes an issue actionable
+/// without opening the dashboard. 1500 code points holds an assertion error with
+/// its own frames, and the GitHub body limit leaves room for the rest of the
+/// body. Raising it spends the body on one traceback; lowering it cuts the frames
+/// that name the cause.
 pub const SAMPLE_FAILURE_MAX: usize = 1500;
 
 /// The issue title a filed Test gets.
@@ -97,9 +116,14 @@ pub fn fixed_comment(
 }
 
 /// How much of a commit SHA a body's table prints.
+///
+/// Ten hex characters is GitHub's own short form, so the value in the table is
+/// the one `git log --oneline` and GitHub's UI show and a reader can paste
+/// straight into a search. A shorter prefix can be ambiguous in a busy
+/// repository; a longer one wraps the column.
 const SHORT_SHA_CHARS: usize = 10;
 
-/// The first characters of a commit SHA, as Python's slice did.
+/// The first [`SHORT_SHA_CHARS`] of a commit SHA.
 fn short_sha(sha: &str) -> String {
     sha.chars().take(SHORT_SHA_CHARS).collect()
 }

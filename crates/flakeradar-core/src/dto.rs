@@ -668,11 +668,83 @@ pub struct JobResultIn {
     pub summary: bool,
 }
 
+/// The longest name a Report may give a Repo, a Project, a branch, a
+/// `ci_job_id`, a `ci_run_id` or a runner label, in code points.
+///
+/// This is the bound this API publishes: a longer value is refused with the 422
+/// `string_too_long` naming the field, which `tests/parity` replays against the
+/// recorded answer. Raising it would accept a Report no consumer has ever sent
+/// and store a name in a `text` column that the published contract says is too
+/// long; lowering it would refuse an `owner/repo` or a matrix Job name a CI
+/// provider really reports.
+pub const NAME_MAX: usize = 255;
+
+/// The longest name a Pipeline's Job may carry, in code points.
+///
+/// A matrix Job's name spells its whole matrix in one string, such as
+/// `test (ubuntu-24.04, 3.12)`, and several of those run long, so a Job name gets
+/// twice the room an identity does. The bound is part of the published 422 and
+/// `tests/parity` replays it.
+pub const JOB_NAME_MAX: usize = 512;
+
+/// The longest Report `pipeline`, in code points.
+///
+/// A `pipeline` is a workflow path such as
+/// `.github/workflows/integration-tests.yml`, which is why it shares the Job
+/// name's bound rather than the shorter identity one.
+pub const PIPELINE_MAX: usize = JOB_NAME_MAX;
+
+/// The longest commit SHA a Report may name, in code points.
+///
+/// Both SHA-1 (40 hex characters) and SHA-256 (64) Git object names fit, and
+/// nothing longer is an object name. The column is `text`, so this bound is the
+/// contract's rather than storage's.
+pub const COMMIT_SHA_MAX: usize = 64;
+
+/// The longest Provider name a Report may name, in code points.
+///
+/// Providers are a short fixed vocabulary (`github`, `gitlab`, `other`), so
+/// anything past a short word is not one. The published 422 names the field when
+/// the value is longer.
+pub const PROVIDER_MAX: usize = 32;
+
+/// The longest Project name a Report or a query may name, in code points.
+///
+/// A Project is a test suite's name (`frontend`, `backend`, `e2e`), so a short
+/// word is normal and 100 is generous. The bound is published on both the ingest
+/// query and the read filters, and `tests/parity` replays the 422 for a longer
+/// one. The column is `text`, so nothing in the database enforces it.
+pub const PROJECT_MAX: usize = 100;
+
+/// The longest path a Report or a query may name, in code points.
+///
+/// A Project root and a Test's `file` are paths inside a repository, and a
+/// deeply nested monorepo path runs long; 1024 is the usual filesystem ceiling
+/// and far past any path a repository holds. Both the ingest query and the Test
+/// list filter publish the same bound, and the column is `text`.
+pub const PATH_MAX: usize = 1024;
+
+/// The longest URL a Report or an Issue link may carry, in code points.
+///
+/// A GitHub issue URL with a long Repo name and a query string fits well inside
+/// 2048, which is the bound browsers and GitHub's own API work to. The column is
+/// `text`; the bound is the contract's, and `tests/parity` replays the 422.
+pub const URL_MAX: usize = 2048;
+
 /// The longest `runner_labels` list a Job may carry.
+///
+/// A GitHub Actions matrix leg reports one label per dimension plus its own
+/// (`ubuntu-24.04`, `3.12`, `gpu` and so on), so a handful is normal and 50 is
+/// far past any real matrix. A longer list is refused with the recorded 422
+/// rather than stored; the list is stored as one row's text, so no index or
+/// column width bounds it.
 const RUNNER_LABELS_MAX: usize = 50;
 
 /// The longest one runner label may be.
-const RUNNER_LABEL_MAX: usize = 255;
+///
+/// Labels are runner names and container image tags, the longest of which fit in
+/// a short line. The bound is part of the same published 422 as the list's size.
+const RUNNER_LABEL_MAX: usize = NAME_MAX;
 
 impl JobResultIn {
     /// Reads one Job of a Pipeline report the way Pydantic read it.
@@ -690,12 +762,13 @@ impl JobResultIn {
         let fields = lax::Fields::new(object, at);
         let mut issues = Vec::new();
 
-        let ci_job_id = read_string(&fields, "ci_job_id", 1, 255, &mut issues).unwrap_or_default();
-        let name = read_string(&fields, "name", 1, 512, &mut issues).unwrap_or_default();
+        let ci_job_id =
+            read_string(&fields, "ci_job_id", 1, NAME_MAX, &mut issues).unwrap_or_default();
+        let name = read_string(&fields, "name", 1, JOB_NAME_MAX, &mut issues).unwrap_or_default();
         let status = read_status(&fields, &mut issues).unwrap_or(JobStatus::Passed);
-        let url = read_defaulted_string(&fields, "url", 2048, &mut issues).unwrap_or_default();
-        let runner_name =
-            read_defaulted_string(&fields, "runner_name", 255, &mut issues).unwrap_or_default();
+        let url = read_defaulted_string(&fields, "url", URL_MAX, &mut issues).unwrap_or_default();
+        let runner_name = read_defaulted_string(&fields, "runner_name", NAME_MAX, &mut issues)
+            .unwrap_or_default();
         let runner_labels = read_runner_labels(&fields, &mut issues);
         let started_at = read_optional_timestamp(&fields, "started_at", &mut issues);
         let completed_at = read_optional_timestamp(&fields, "completed_at", &mut issues);
@@ -886,6 +959,11 @@ fn check_string(
 }
 
 /// The most Jobs one Pipeline report may carry.
+///
+/// One Pipeline run reports its whole Job matrix in one upload, and a large
+/// repository's is dozens, not hundreds. 1000 is far past any real matrix and is
+/// what the published 422 states; a longer list is refused before anything is
+/// stored, so the upload cannot fill `job_executions` on its own.
 const JOBS_MAX: usize = 1000;
 
 /// The largest `ci_run_attempt` the `int4` column holds.
@@ -1026,15 +1104,23 @@ impl PipelineReportIn {
         let fields = lax::Fields::new(object, body_loc_root());
         let mut issues = Vec::new();
 
-        let repo = read_name(&fields, "repo", 255, &mut issues, normalize_repo);
-        let provider = read_name(&fields, "provider", 32, &mut issues, normalize_provider);
-        let pipeline = read_string(&fields, "pipeline", 1, 512, &mut issues).unwrap_or_default();
-        let commit_sha = read_string(&fields, "commit_sha", 1, 64, &mut issues).unwrap_or_default();
-        let branch = read_string(&fields, "branch", 1, 255, &mut issues).unwrap_or_default();
+        let repo = read_name(&fields, "repo", NAME_MAX, &mut issues, normalize_repo);
+        let provider = read_name(
+            &fields,
+            "provider",
+            PROVIDER_MAX,
+            &mut issues,
+            normalize_provider,
+        );
+        let pipeline =
+            read_string(&fields, "pipeline", 1, PIPELINE_MAX, &mut issues).unwrap_or_default();
+        let commit_sha =
+            read_string(&fields, "commit_sha", 1, COMMIT_SHA_MAX, &mut issues).unwrap_or_default();
+        let branch = read_string(&fields, "branch", 1, NAME_MAX, &mut issues).unwrap_or_default();
         let default_branch = read_default_branch(&fields, &mut issues);
         // A refused id is the reason the whole body is refused, so the fallback
         // value never reaches a row.
-        let ci_run_id = read_defaulted_string(&fields, "ci_run_id", 255, &mut issues)
+        let ci_run_id = read_defaulted_string(&fields, "ci_run_id", NAME_MAX, &mut issues)
             .and_then(|text| CiRunId::new(&text).ok())
             .unwrap_or_else(CiRunId::empty);
         let mut ci_run_attempt = default_attempt();
@@ -1121,11 +1207,11 @@ fn read_default_branch(
     if text.is_empty() {
         return None;
     }
-    if text.chars().count() > 255 {
+    if text.chars().count() > NAME_MAX {
         issues.push(ValidationIssue::string_too_long(
             fields.loc("default_branch"),
             Value::from(text),
-            255,
+            NAME_MAX,
         ));
         return None;
     }
@@ -1796,10 +1882,20 @@ impl QuarantineIn {
     }
 }
 
-/// The longest quarantine reason a human may record.
+/// The longest quarantine reason a human may record, in code points.
+///
+/// A reason is a sentence or two, such as "fails on CI's Windows runner, see
+/// issue 42"; 500 characters holds that with room to spare. The value travels to
+/// the frontend's quarantine form, which publishes the same bound, and a longer
+/// one is refused with the recorded 422.
 const QUARANTINE_REASON_MAX: usize = 500;
 
 /// The most days a quarantine may last.
+///
+/// A quarantine expires by itself when its day count runs out, so this bound is
+/// how far ahead one person can switch a Test off without coming back to it. A
+/// year is the longest a fix could plausibly take; a longer one would be a way to
+/// forget a Test forever, so it is refused with the recorded 422.
 const QUARANTINE_DAYS_MAX: i64 = 365;
 
 /// One quarantined Test in the quarantine list.
@@ -2012,5 +2108,9 @@ impl IssueLinkIn {
     }
 }
 
-/// The longest issue url an Issue link body may carry.
-const ISSUE_URL_MAX: usize = 2048;
+/// The longest issue url an Issue link body may carry, in code points.
+///
+/// It is [`URL_MAX`]: a GitHub issue URL with a long Repo name, a query string
+/// and a fragment fits inside it, and the published 422 names the field when one
+/// does not. The URL is stored as `text`, so the bound is the contract's.
+const ISSUE_URL_MAX: usize = URL_MAX;

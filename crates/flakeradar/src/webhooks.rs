@@ -26,6 +26,12 @@ use crate::queue::BatchQueue;
 use crate::worker::{LeaderRun, LeaderTask, StartFuture, StopFuture, until_stopped};
 
 /// The delays before the second and third Notification attempts, in seconds.
+///
+/// Half a second and then one second ride out a dropped connection or a Slack
+/// hiccup without holding the queue, and the second delay is double the first so
+/// two retries span 1.5 seconds rather than one. A longer schedule would delay
+/// every Notification queued behind the endpoint; a shorter one retries inside
+/// the same outage.
 pub const RETRY_DELAYS: [f64; 2] = [0.5, 1.0];
 
 /// How many attempts one endpoint gets for one batch.
@@ -33,15 +39,37 @@ pub const ATTEMPTS: usize = RETRY_DELAYS.len() + 1;
 
 /// The ceiling for a rate limit's `retry-after`, so one endpoint cannot park the
 /// queue for minutes.
+///
+/// A 429 names how long to wait, and a webhook endpoint is free to name minutes
+/// or hours; the queue is one task, so honouring that would stall every other
+/// endpoint's Notifications for the same span. Ten seconds is the longest a
+/// Notification can be held back; past it the batch is retried on the fixed
+/// schedule instead, and a Notification that cannot be delivered is lost by
+/// design.
 pub const MAX_RETRY_AFTER_SECONDS: f64 = 10.0;
 
 /// How long one Notification attempt may take.
+///
+/// A Slack or Teams endpoint answers a small JSON post in well under a second, so
+/// five seconds is a generous ceiling that still bounds the queue's stall on a
+/// black-holed endpoint. Raising it delays every Notification behind a stuck
+/// one; lowering it fails a delivery a slow endpoint would have accepted.
 pub const WEBHOOK_TIMEOUT_SECONDS: u64 = 5;
 
 /// How many batches the Notification queue holds before it drops the oldest.
+///
+/// The queue is in memory and a Notification is best effort, so a burst of Tier
+/// changes must not grow it without bound; past a thousand pending batches the
+/// oldest is dropped and logged. A batch holds every Tier change of one Report,
+/// so a thousand batches is far past what a working endpoint accumulates.
 pub const QUEUE_MAX: usize = 1000;
 
 /// The statuses a Notification retries; every other client error is permanent.
+///
+/// 408 is a request the endpoint timed out on and 429 is its rate limit, and both
+/// describe a moment rather than the message, so a retry can succeed. Any other
+/// refusal (404 for a deleted hook, 400 for a body the endpoint dislikes) is the
+/// same on the next attempt, so the queue does not spend retries on it.
 pub const RETRYABLE_STATUSES: [u16; 2] = [408, 429];
 
 /// Everything the Notification task shares with its loop.

@@ -40,7 +40,13 @@ use crate::report_intake::{
 use crate::score_history::{HistoryUpdate, write_today_history};
 use crate::sql::{execution_status, get, placeholder_list, rows, value_row};
 
-/// The longest error text a failed Report keeps.
+/// The longest error text a failed Report keeps, in code points.
+///
+/// The text is what `/api/reports/{id}` shows the person who uploaded the file,
+/// and it is one line plus the database's own message, so 2000 holds it with
+/// room. It is stored in the Report's `error` column, which is `text`, so this
+/// bound is the contract's: a longer message is cut with the truncation marker
+/// rather than refused, because a failure must always be recorded.
 pub const ERROR_MAX: usize = 2000;
 
 /// The score window as a bind parameter: a setting far past `i32` is capped,

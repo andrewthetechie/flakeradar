@@ -36,6 +36,13 @@ use crate::types::Fingerprint;
 pub const MESSAGE_MAX: usize = 2000;
 
 /// The longest Failure details kept, in code points.
+///
+/// Details are the traceback plus any captured output, and a real one is a few
+/// thousand characters: 16,384 holds a deep traceback with its captured stdout
+/// and leaves the stored row well inside a `text` column. Widening it stores more
+/// of every failure of every Execution; narrowing it cuts the frames a person
+/// reads to find the cause. The truncation marker is reserved inside this limit,
+/// so a capped value is exactly this long.
 pub const DETAILS_MAX: usize = 16384;
 
 /// The deepest `<testsuite>` nesting one report may have.

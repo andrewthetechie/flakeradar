@@ -459,6 +459,26 @@ impl LockSession for AdvisoryLock {
     }
 }
 
+/// How long a standby replica waits before it asks for the lock again.
+///
+/// A standby's whole loop is one `pg_try_advisory_lock`, run on every replica
+/// that is not the leader, so five seconds keeps that query off the database's
+/// hot path while still handing a lost leadership over within one poll. Raising
+/// it delays every takeover by that much, and a Report waits in the queue for
+/// the whole delay; lowering it puts an idle write to `pg_locks` on every
+/// standby several times a second.
+const STANDBY_WAIT: Duration = Duration::from_secs(5);
+
+/// The longest wait between the retries of one Report.
+///
+/// A Report requeued for a retry waits `poll * 2^retry_count`, so the wait grows
+/// with each failure; this ceiling stops that growth at 30 seconds, which keeps
+/// the last of `max_report_retries` retries inside a few minutes and matches the
+/// ceiling the reference's own backoff used. Removing it would let a long
+/// database outage space one Report's retries hours apart; lowering it makes a
+/// still-failing Report spend its retries before the database is back.
+const MAX_BACKOFF: Duration = Duration::from_secs(30);
+
 /// The loop's intervals, so no test depends on a real one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WorkerSettings {
@@ -473,15 +493,14 @@ pub struct WorkerSettings {
 }
 
 impl WorkerSettings {
-    /// The frozen server's `worker_poll_seconds` and `prune_interval_seconds`,
-    /// with its fixed 5-second standby and 30-second retry ceiling.
+    /// The configured poll and prune intervals with the two fixed waits.
     #[must_use]
     pub fn from_settings(settings: &Settings) -> Self {
         Self {
             poll: seconds(settings.worker_poll_seconds),
-            standby: Duration::from_secs(5),
+            standby: STANDBY_WAIT,
             prune_interval: seconds(settings.prune_interval_seconds),
-            max_backoff: Duration::from_secs(30),
+            max_backoff: MAX_BACKOFF,
         }
     }
 }

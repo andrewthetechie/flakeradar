@@ -71,18 +71,39 @@ pub(crate) const MAX_NEW_WITHIN_DAYS: i64 = flakeradar_core::limits::NEW_WITHIN_
 
 /// How many characters of a Failure's details a tool returns.
 ///
-/// Unlike `parsing._cap`, which reserves the marker inside the limit, the MCP
-/// cap appends it after the limit, so a capped traceback is 4096 characters
-/// plus the marker.
+/// A tool answer is read by a language model, so one traceback's worth of context
+/// is what a tool should spend: 4096 code points holds the frames that name the
+/// cause. Unlike the store's cap, which reserves room for the marker inside its
+/// limit, this cap appends the marker after it, so a capped traceback is 4096
+/// characters plus the marker. Raising it costs every caller's context window;
+/// lowering it cuts the frame that named the cause.
 const DETAILS_MAX: usize = 4096;
 
 /// How many explaining Tests or Jobs one Job execution lists.
+///
+/// The list answers "what else failed in this Job attempt", and a tool answer is
+/// read as prose, so five entries name the cause without turning one execution
+/// into a table. The REST answer embeds a longer list, because a page can scroll
+/// and a model's context cannot. Raising it lengthens every `get_job`; lowering
+/// it can hide the Test that explains the failure.
 pub(crate) const EXPLAINED_BY_MAX: usize = 5;
 
 /// How many days of Score history a detail tool returns.
+///
+/// A month of points is enough for a model to answer "is this getting worse"
+/// without spending its context on a quarter of daily values; the REST detail
+/// route embeds [`flakeradar_db::score_history::HISTORY_DAYS`] because a chart can
+/// plot them. Raising it grows every `get_test` and `get_job` answer; lowering it
+/// hides the trend the tool exists to report.
 const SCORE_HISTORY_MAX: usize = 30;
 
 /// The default `limit` and `executions_limit` every listing tool declares.
+///
+/// A tool's answer is read into a model's context, so the default page is small:
+/// 20 rows is a list a reader can act on, and both arguments accept up to
+/// [`MAX_LIMIT`] for a caller that asks for more. Every tool's published
+/// `inputSchema` states this default, so changing it changes the wire
+/// `tests/parity` replays.
 pub(crate) const DEFAULT_LIMIT: i64 = 20;
 
 /// The version this server reports in `serverInfo`.

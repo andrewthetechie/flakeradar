@@ -17,7 +17,8 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Router, middleware};
 use flakeradar_core::{
-    dto::AttemptIn, dto::IngestAccepted, dto::PipelineReportIn, dto::ReportOut,
+    dto::AttemptIn, dto::COMMIT_SHA_MAX, dto::IngestAccepted, dto::NAME_MAX, dto::PATH_MAX,
+    dto::PIPELINE_MAX, dto::PROJECT_MAX, dto::PipelineReportIn, dto::ReportOut,
     dto::ReportSummaryOut, dto::ValidationIssue, dto::ci_run_attempt_too_large, dto::pipeline_body,
     dto::read_ci_run_attempt, identity::normalize_project, identity::normalize_repo,
     identity::normalize_root, lax, model::ReportStatus, parsing::ParseError,
@@ -64,9 +65,20 @@ pub const MULTIPART_ALLOWANCE: usize = 64 * 1024;
 pub const INGEST_BODY_LIMIT: usize = MAX_REPORT_BYTES + MULTIPART_ALLOWANCE;
 
 /// The `limit` a Report list request defaults to.
+///
+/// `GET /api/reports` is the queue view an operator opens when uploads stall, so
+/// one page is a screen of Reports at a time; the frontend reads this default
+/// when it sends no `limit`. Raising it makes every unpaged read heavier;
+/// lowering it pushes a queue of pending uploads onto several pages.
 const DEFAULT_REPORT_LIMIT: i64 = 50;
 
 /// The most Reports one list request returns.
+///
+/// A request above it is refused with the recorded 422 rather than answered with
+/// a body of unbounded size, and a Report row carries its whole JUnit payload, so
+/// a page of 200 is already a large answer. Raising it multiplies the largest
+/// response the database builds; lowering it refuses a page the frontend can ask
+/// for.
 const MAX_REPORT_LIMIT: i64 = 200;
 
 /// The Report routes.
@@ -162,12 +174,12 @@ impl Validate for IngestQuery {
     /// parameters are declared.
     fn validate(&self) -> ApiResult<()> {
         let mut issues = Vec::new();
-        check_max(&self.repo, 255, "repo", &mut issues);
+        check_max(&self.repo, NAME_MAX, "repo", &mut issues);
         if let Some(project) = &self.project {
-            check_max(project, 100, "project", &mut issues);
+            check_max(project, PROJECT_MAX, "project", &mut issues);
         }
         if let Some(root) = &self.root {
-            check_max(root, 1024, "root", &mut issues);
+            check_max(root, PATH_MAX, "root", &mut issues);
         }
         if self.line_base < 0 {
             issues.push(ValidationIssue::greater_than_equal(
@@ -183,14 +195,14 @@ impl Validate for IngestQuery {
             ));
         }
         check_min(&self.commit_sha, 1, "commit_sha", &mut issues);
-        check_max(&self.commit_sha, 64, "commit_sha", &mut issues);
-        check_max(&self.branch, 255, "branch", &mut issues);
-        check_max(&self.ci_run_id, 255, "ci_run_id", &mut issues);
+        check_max(&self.commit_sha, COMMIT_SHA_MAX, "commit_sha", &mut issues);
+        check_max(&self.branch, NAME_MAX, "branch", &mut issues);
+        check_max(&self.ci_run_id, NAME_MAX, "ci_run_id", &mut issues);
         if let Some(default_branch) = &self.default_branch {
-            check_max(default_branch, 255, "default_branch", &mut issues);
+            check_max(default_branch, NAME_MAX, "default_branch", &mut issues);
         }
         if let Some(ci_job_id) = &self.ci_job_id {
-            check_max(ci_job_id, 255, "ci_job_id", &mut issues);
+            check_max(ci_job_id, NAME_MAX, "ci_job_id", &mut issues);
         }
         let attempt_over_range = match &self.ci_run_attempt {
             Some(AttemptQuery(reading)) => {
@@ -202,7 +214,7 @@ impl Validate for IngestQuery {
             None => false,
         };
         if let Some(pipeline) = &self.pipeline {
-            check_max(pipeline, 512, "pipeline", &mut issues);
+            check_max(pipeline, PIPELINE_MAX, "pipeline", &mut issues);
         }
         if !issues.is_empty() {
             return Err(ApiError::unprocessable(issues));

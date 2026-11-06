@@ -39,28 +39,74 @@ use crate::error::DbError;
 use crate::score_history;
 use crate::sql::{Binds, execution_status, get, one, required_one, rows};
 
-/// The dashboard tiles' "became flaky recently" window.
+/// The dashboard tiles' "became flaky recently" window, in days.
+///
+/// The tiles answer "what needs attention this week", so a day short of one week
+/// is the window a reviewer of a CI dashboard reads. The same number is the
+/// default `new_within_days` filter, which `tests/parity` records in the
+/// scenario answers: changing it changes every served tile without an error.
 pub const NEW_FLAKY_DAYS: i64 = 7;
 
-/// The Score-history window the dashboard tiles sum over.
+/// The Score-history window the dashboard tiles sum over, in days.
+///
+/// A tile shows a month of movement, which is the span a person compares against
+/// "last month". The window also decides how much Score history a summary read
+/// scans, so widening it costs a longer range scan of `test_score_history`;
+/// narrowing it hides a Test that went flaky before a weekend's confusion.
 pub const SUMMARY_WINDOW_DAYS: i64 = 30;
 
-/// Groups `get_job` returns, worst unexplained rate first.
+/// How many runner groups `get_job` returns, worst unexplained rate first.
+///
+/// One Job's executions are grouped by runner, and a matrix with more than ten
+/// distinct runners is rare; the detail view shows a table, so the tail is cut
+/// rather than paginated. Raising it makes the detail response larger, and a
+/// Job with hundreds of ephemeral runner names would answer a table nobody
+/// reads; lowering it hides the runner that is failing.
 pub const RUNNER_STATS_LIMIT: usize = 10;
 
-/// How many failing Tests one failed Job execution lists.
+/// How many failing Tests one failed Job execution lists as explanation.
+///
+/// The list answers "which Tests failed in this Job attempt", and one attempt
+/// rarely fails more than a handful. It is bounded because a suite with a broken
+/// fixture can fail every Test it has, and the answer embeds each one's message:
+/// 20 keeps one such attempt from filling a response that a matrix of failing
+/// Jobs then multiplies.
 pub const EXPLAINED_TESTS_MAX: usize = 20;
 
 /// The most failures one CI run attempt lists.
+///
+/// `actions/summary/summary.sh` and Fabro read this answer, and a CI run that
+/// fails a whole matrix fails hundreds of Tests at once. 500 covers the runs
+/// these consumers see; the answer carries a `truncated` flag, so a larger run is
+/// cut and says so rather than answering a body of unbounded size. Raising it
+/// grows every summary answer that hits the cap; lowering it truncates a real
+/// matrix failure.
 pub const FAILURES_LIMIT: i64 = 500;
 
 /// The most characters of a failure message a CI run listing keeps.
+///
+/// The listing is a table of failures, not a report of them: one line of context
+/// per Test, so the first 1024 code points hold an assertion error and the start
+/// of its traceback. The full text stays in the Run's Executions, which the
+/// history route serves. Raising it makes every truncated failure cost more, and
+/// a matrix failure multiplies that by [`FAILURES_LIMIT`].
 pub const CI_RUN_MESSAGE_MAX: usize = 1024;
 
 /// How many history rows a detail response embeds by default.
+///
+/// The detail view plots a Test's recent Executions and the frontend reads this
+/// default when it sends no `limit`. 60 is enough points to see a flake pattern
+/// on a chart; the route accepts up to [`MAX_EXECUTIONS_LIMIT`] for a caller that
+/// wants a longer run, and `tests/parity` records the default in the answers.
 pub const DEFAULT_EXECUTIONS_LIMIT: i64 = 60;
 
 /// The largest `limit` a detail response accepts.
+///
+/// A request above it is refused with the recorded 422 rather than answered with
+/// a body of unbounded size, because every row carries a message and details.
+/// 500 is a full page of a well-tested suite's history; raising it multiplies
+/// the largest response the database has to build, and lowering it refuses a
+/// request the frontend can make.
 pub const MAX_EXECUTIONS_LIMIT: i64 = 500;
 
 /// The values a read needs that the configuration owns.

@@ -16,9 +16,10 @@ use axum::{Router, middleware};
 use flakeradar_core::limits::{LIST_LIMIT_MAX, NEW_WITHIN_DAYS_MAX};
 use flakeradar_core::{
     classify::FailureCategory, dto::CiRunFailuresOut, dto::HistoryOut, dto::JobHistoryOut,
-    dto::JobPage, dto::JobSummaryOut, dto::QuarantineIn, dto::QuarantineItem, dto::RepoOut,
-    dto::SummaryOut, dto::TestOut, dto::TestPage, dto::ValidationIssue,
-    identity::normalize_project, identity::normalize_repo, lax,
+    dto::JobPage, dto::JobSummaryOut, dto::NAME_MAX, dto::PATH_MAX, dto::PIPELINE_MAX,
+    dto::PROJECT_MAX, dto::QuarantineIn, dto::QuarantineItem, dto::RepoOut, dto::SummaryOut,
+    dto::TestOut, dto::TestPage, dto::ValidationIssue, identity::normalize_project,
+    identity::normalize_repo, lax,
 };
 use flakeradar_db::{
     reads::DEFAULT_EXECUTIONS_LIMIT, reads::FAILURES_LIMIT, reads::JobListFilters,
@@ -71,6 +72,14 @@ fn identity_error(error: &flakeradar_core::identity::IdentityError) -> ApiError 
 fn detail_error(message: impl Into<String>) -> ApiError {
     ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, message)
 }
+
+/// The longest search term a leaderboard filter accepts, in code points.
+///
+/// `q` is matched as a substring of a name, a classname or a file, and 200 keeps
+/// the pattern short enough for the index to help while admitting a full
+/// `file::test` path. The bound is published on both leaderboards, which share
+/// the filter, and `tests/parity` replays the 422 for a longer one.
+const QUERY_MAX: usize = 200;
 
 /// Records a string with a NUL in it, and one longer than its limit.
 ///
@@ -198,8 +207,8 @@ pub struct ScopeQuery {
 impl Validate for ScopeQuery {
     fn validate(&self) -> ApiResult<()> {
         let mut issues = Vec::new();
-        check_max(self.repo.as_ref(), 255, "repo", &mut issues);
-        check_max(self.project.as_ref(), 100, "project", &mut issues);
+        check_max(self.repo.as_ref(), NAME_MAX, "repo", &mut issues);
+        check_max(self.project.as_ref(), PROJECT_MAX, "project", &mut issues);
         if issues.is_empty() {
             Ok(())
         } else {
@@ -255,13 +264,13 @@ pub struct TestsQuery {
 impl Validate for TestsQuery {
     fn validate(&self) -> ApiResult<()> {
         let mut issues = Vec::new();
-        check_max(self.repo.as_ref(), 255, "repo", &mut issues);
-        check_max(self.project.as_ref(), 100, "project", &mut issues);
+        check_max(self.repo.as_ref(), NAME_MAX, "repo", &mut issues);
+        check_max(self.project.as_ref(), PROJECT_MAX, "project", &mut issues);
         validate_sort(self.sort.as_ref(), &mut issues);
         validate_paging(self.page, self.page_size, &mut issues);
-        check_max(self.file.as_ref(), 1024, "file", &mut issues);
+        check_max(self.file.as_ref(), PATH_MAX, "file", &mut issues);
         validate_category(self.category.as_ref(), &mut issues);
-        check_max(self.q.as_ref(), 200, "q", &mut issues);
+        check_max(self.q.as_ref(), QUERY_MAX, "q", &mut issues);
         validate_new_within_days(self.new_within_days, &mut issues);
         if issues.is_empty() {
             Ok(())
@@ -327,11 +336,16 @@ pub struct JobsQuery {
 impl Validate for JobsQuery {
     fn validate(&self) -> ApiResult<()> {
         let mut issues = Vec::new();
-        check_max(self.repo.as_ref(), 255, "repo", &mut issues);
+        check_max(self.repo.as_ref(), NAME_MAX, "repo", &mut issues);
         validate_sort(self.sort.as_ref(), &mut issues);
         validate_paging(self.page, self.page_size, &mut issues);
-        check_max(self.q.as_ref(), 200, "q", &mut issues);
-        check_max(self.pipeline.as_ref(), 512, "pipeline", &mut issues);
+        check_max(self.q.as_ref(), QUERY_MAX, "q", &mut issues);
+        check_max(
+            self.pipeline.as_ref(),
+            PIPELINE_MAX,
+            "pipeline",
+            &mut issues,
+        );
         validate_new_within_days(self.new_within_days, &mut issues);
         if issues.is_empty() {
             Ok(())
@@ -388,7 +402,7 @@ pub struct CiRunFailuresQuery {
 impl Validate for CiRunFailuresQuery {
     fn validate(&self) -> ApiResult<()> {
         let mut issues = Vec::new();
-        check_max(Some(&self.repo), 255, "repo", &mut issues);
+        check_max(Some(&self.repo), NAME_MAX, "repo", &mut issues);
         check_ge(self.ci_run_attempt, 1, "ci_run_attempt", &mut issues);
         if issues.is_empty() {
             Ok(())
@@ -411,8 +425,8 @@ pub struct QuarantineQuery {
 impl Validate for QuarantineQuery {
     fn validate(&self) -> ApiResult<()> {
         let mut issues = Vec::new();
-        check_max(Some(&self.repo), 255, "repo", &mut issues);
-        check_max(self.project.as_ref(), 100, "project", &mut issues);
+        check_max(Some(&self.repo), NAME_MAX, "repo", &mut issues);
+        check_max(self.project.as_ref(), PROJECT_MAX, "project", &mut issues);
         if issues.is_empty() {
             Ok(())
         } else {

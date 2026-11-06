@@ -12,10 +12,22 @@ use sha2::{Digest as _, Sha256};
 
 use crate::model::{Tier, Trend};
 
-/// The age, in days, at which a stored Score history point is the trend baseline.
+/// The age, in days, of the Score history point a trend is measured from.
+///
+/// A trend compares today's score against the score two weeks ago, which is long
+/// enough to see past one bad afternoon and short enough that a fix shows up.
+/// The frontend shows the same arrow for the same reason, and the leaderboard's
+/// `trend` field is this comparison: widening it flattens every arrow, narrowing
+/// it makes one bad day read as a worsening Test.
 pub const TREND_DAYS: i64 = 14;
 
 /// The score movement that counts as a trend rather than noise.
+///
+/// A Flakiness score moves whenever one Execution flips, and the smallest useful
+/// move of a rounded score is 0.0001, so anything nonzero would call noise a
+/// trend. Five points is about one flip in a window of 20 Executions, which is
+/// the smallest move worth an arrow. Raising it hides a Test getting worse;
+/// lowering it makes every arrow flicker between runs.
 pub const TREND_DELTA: f64 = 0.05;
 
 /// The Flakiness tier a score falls in.

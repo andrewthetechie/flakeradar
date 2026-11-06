@@ -29,9 +29,22 @@ pub const API_BASE: &str = "https://api.github.com";
 pub const API_VERSION: &str = "2022-11-28";
 
 /// The request timeout every call uses.
+///
+/// One call is one small REST request against GitHub's API, which answers in
+/// well under a second; fifteen seconds bounds a filing batch's stall on a
+/// black-holed connection. It is also the lateness a stop can tolerate: the
+/// issue-creating `POST` is the one call left to finish, so it is the longest a
+/// shutdown waits. Raising it delays shutdown and blocks the filing batch;
+/// lowering it fails a request a slow GitHub would have answered.
 pub const TIMEOUT_SECONDS: u64 = 15;
 
 /// How many characters of a response body a log line keeps.
+///
+/// A failed call logs what the endpoint said, which is a JSON error object or an
+/// HTML error page: 300 code points holds the message and drops the page. The
+/// text can quote a request, so a longer excerpt is also more log to scrub.
+/// Raising it puts whole error pages in the log; lowering it cuts the message
+/// that says why GitHub refused.
 pub const RESPONSE_TEXT_MAX: usize = 300;
 
 /// One HTTP answer, whatever its status.

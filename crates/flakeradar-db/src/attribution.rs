@@ -17,7 +17,14 @@ use crate::batching::chunks;
 use crate::error::DbError;
 use crate::sql::{get, rows, value_row};
 
-/// Most explaining sibling Jobs listed per `(ci_run_id, ci_run_attempt)` pair.
+/// The most explaining sibling Jobs listed per `(ci_run_id, ci_run_attempt)`.
+///
+/// An explained failure names the Jobs of the same CI run attempt that failed
+/// too, which is how a person sees whether a summary Job is the only failure. A
+/// wide matrix can fail twenty-plus Jobs at once and the list is read as a
+/// sentence, so 20 is where the answer stops growing. Raising it lengthens the
+/// answer for every failed Job execution; lowering it hides the sibling that
+/// explains the failure.
 pub const SIBLING_MAX: usize = 20;
 
 /// Joins a `Vec<i32>` as one PostgreSQL `integer[]` bind parameter.
