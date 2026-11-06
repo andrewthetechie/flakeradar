@@ -305,10 +305,10 @@ mod tests {
             RouteError::Raced.to_string(),
             "the delete raced the report processor"
         );
-        assert_eq!(
-            RouteError::Rejected(ApiError::new(StatusCode::BAD_REQUEST, "bad body")).to_string(),
-            "a rejected request, 400 Bad Request"
-        );
+        let rejected = RouteError::Rejected(ApiError::new(StatusCode::BAD_REQUEST, "bad body"));
+        assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(rejected.to_string(), "a rejected request, 400 Bad Request");
+        assert!(rejected.source().is_none(), "a rejection wraps no error");
         assert_eq!(
             RouteError::Refused(flakeradar_db::issue_links::IssueLinkError::NotLinkable(
                 "not linkable".to_owned()
