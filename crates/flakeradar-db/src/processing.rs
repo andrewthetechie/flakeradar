@@ -20,7 +20,8 @@ use flakeradar_core::{
 use sea_orm::entity::prelude::DateTimeWithTimeZone;
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, ConnectionTrait, DbBackend, DbErr, EntityTrait, FromQueryResult,
-    IntoActiveModel, QueryFilter, Set, Statement, TransactionSession, TransactionTrait, Value,
+    IntoActiveModel, QueryFilter, QueryResult, Set, Statement, TransactionSession,
+    TransactionTrait, Value,
 };
 use serde_json::{Value as JsonValue, json};
 
@@ -1142,7 +1143,7 @@ pub async fn rescore(
         });
     }
     let old = old_scores(db, EntityKind::Test, test_case_ids).await?;
-    let changes = test_tier_changes(db, &updates, &old, settings).await?;
+    let changes = tier_changes(db, &TEST_NOTICES, &updates, &old, settings).await?;
     write_updates(db, &TEST_TABLE, &updates).await?;
     if !updates.is_empty() {
         let history_updates: Vec<HistoryUpdate> = updates
@@ -1213,21 +1214,106 @@ fn crossed<T: Copy>(updates: &[(i32, f64, T)], old: &BTreeMap<i32, f64>, thresho
         .collect()
 }
 
-/// The names a tier-change event gives a Test.
-#[derive(Debug, Clone)]
-struct NamedTest {
-    repo: String,
-    project: String,
-    classname: String,
-    name: String,
+/// What differs between a Test's and a Job's Tier change.
+struct Notices {
+    /// The statement naming the rows an event reports, by id.
+    names_sql: fn(&str) -> String,
+    /// Whether a row that left the flaky tier has recovered.
+    ///
+    /// A Job always has. A Test that is now broken has not fixed itself, so it
+    /// sends no event.
+    recovered: fn(&Update, &ProcessingSettings) -> bool,
+    /// Builds the event from one row's name columns.
+    change: fn(&Update, &QueryResult, f64) -> Result<TierChange, DbError>,
 }
 
-/// Notifications for the Tests whose tier this rescore moves (ADR 0009).
+/// The Tests' Tier changes.
+const TEST_NOTICES: Notices = Notices {
+    names_sql: test_names_sql,
+    recovered: test_recovered,
+    change: test_change,
+};
+
+/// The Jobs' Tier changes.
+const JOB_NOTICES: Notices = Notices {
+    names_sql: job_names_sql,
+    recovered: job_recovered,
+    change: job_change,
+};
+
+/// The statement naming the Tests an event reports, by id.
+fn test_names_sql(placeholders: &str) -> String {
+    format!(
+        "SELECT t.id, t.classname, t.name, p.name AS project, r.name AS repo \
+           FROM test_cases t \
+           JOIN projects p ON p.id = t.project_id \
+           JOIN repos r ON r.id = p.repo_id \
+          WHERE t.id IN ({placeholders}) ORDER BY t.id"
+    )
+}
+
+/// The statement naming the Jobs an event reports, by id.
+fn job_names_sql(placeholders: &str) -> String {
+    format!(
+        "SELECT j.id, j.name, p.name AS pipeline, r.name AS repo \
+           FROM jobs j \
+           JOIN pipelines p ON p.id = j.pipeline_id \
+           JOIN repos r ON r.id = p.repo_id \
+          WHERE j.id IN ({placeholders}) ORDER BY j.id"
+    )
+}
+
+/// Whether a Test that left the flaky tier has recovered.
+fn test_recovered(update: &Update, settings: &ProcessingSettings) -> bool {
+    !is_broken(i64::from(update.fail_streak), settings.broken_streak)
+}
+
+/// Whether a Job that left the flaky tier has recovered.
+fn job_recovered(_update: &Update, _settings: &ProcessingSettings) -> bool {
+    true
+}
+
+/// The Tier change a Test's row names.
+fn test_change(update: &Update, row: &QueryResult, threshold: f64) -> Result<TierChange, DbError> {
+    Ok(TierChange {
+        kind: EntityKind::Test,
+        id: i64::from(update.id),
+        repo: get(row, "repo")?,
+        project: Some(get(row, "project")?),
+        name: get(row, "name")?,
+        flakiness_score: update.flakiness_score,
+        tier: tier_for(update.flakiness_score, threshold),
+        proven_flake_count: usize::try_from(update.confirmed_flake_count).unwrap_or(0),
+        classname: Some(get(row, "classname")?),
+        pipeline: None,
+        failure_category: update.failure_category,
+    })
+}
+
+/// The Tier change a Job's row names.
+fn job_change(update: &Update, row: &QueryResult, threshold: f64) -> Result<TierChange, DbError> {
+    Ok(TierChange {
+        kind: EntityKind::Job,
+        id: i64::from(update.id),
+        repo: get(row, "repo")?,
+        project: None,
+        name: get(row, "name")?,
+        flakiness_score: update.flakiness_score,
+        tier: tier_for(update.flakiness_score, threshold),
+        proven_flake_count: usize::try_from(update.confirmed_flake_count).unwrap_or(0),
+        classname: None,
+        pipeline: Some(get(row, "pipeline")?),
+        failure_category: None,
+    })
+}
+
+/// Notifications for the rows whose tier this rescore moves (ADR 0009).
 ///
-/// A Test that leaves the flaky tier because it is now broken has not recovered,
-/// so it sends no event.
-async fn test_tier_changes(
+/// The crossing rule, the id order and the read of the names are the same for
+/// both entities; the descriptor carries what differs.
+async fn tier_changes(
     db: &impl ConnectionTrait,
+    notices: &Notices,
     updates: &[Update],
     old: &BTreeMap<i32, f64>,
     settings: &ProcessingSettings,
@@ -1241,7 +1327,7 @@ async fn test_tier_changes(
         .into_iter()
         .filter(|update| {
             tier_for(update.flakiness_score, threshold) == Tier::Flaky
-                || !is_broken(i64::from(update.fail_streak), settings.broken_streak)
+                || (notices.recovered)(update, settings)
         })
         .collect();
     if crossed.is_empty() {
@@ -1250,51 +1336,26 @@ async fn test_tier_changes(
     // Python builds these from `_rows_by_id`, a dict sorted by id, so the events go
     // out in id order whatever order the caller listed the ids in.
     crossed.sort_unstable_by_key(|update| update.id);
+    let by_id: BTreeMap<i32, Update> = crossed.iter().map(|update| (update.id, *update)).collect();
     let ids: Vec<i32> = crossed.iter().map(|update| update.id).collect();
-    let mut named: BTreeMap<i32, NamedTest> = BTreeMap::new();
+    let mut named: BTreeMap<i32, TierChange> = BTreeMap::new();
     for chunk in chunks(&ids) {
         let placeholders = placeholder_list(1, chunk.len());
-        let sql = format!(
-            "SELECT t.id, t.classname, t.name, p.name AS project, r.name AS repo \
-               FROM test_cases t \
-               JOIN projects p ON p.id = t.project_id \
-               JOIN repos r ON r.id = p.repo_id \
-              WHERE t.id IN ({placeholders}) ORDER BY t.id"
-        );
+        let sql = (notices.names_sql)(&placeholders);
         let values = chunk.iter().map(|id| Value::from(*id)).collect();
         for row in rows(db, sql, values).await? {
-            named.insert(
-                get(&row, "id")?,
-                NamedTest {
-                    repo: get(&row, "repo")?,
-                    project: get(&row, "project")?,
-                    classname: get(&row, "classname")?,
-                    name: get(&row, "name")?,
-                },
-            );
+            let id: i32 = get(&row, "id")?;
+            let Some(update) = by_id.get(&id) else {
+                continue;
+            };
+            named.insert(id, (notices.change)(update, &row, threshold)?);
         }
     }
-    let mut changes = Vec::with_capacity(crossed.len());
-    for update in crossed {
-        let Some(named) = named.get(&update.id) else {
-            // A Test deleted before this read names nothing, so it sends nothing.
-            continue;
-        };
-        changes.push(TierChange {
-            kind: EntityKind::Test,
-            id: i64::from(update.id),
-            repo: named.repo.clone(),
-            project: Some(named.project.clone()),
-            name: named.name.clone(),
-            flakiness_score: update.flakiness_score,
-            tier: tier_for(update.flakiness_score, threshold),
-            proven_flake_count: usize::try_from(update.confirmed_flake_count).unwrap_or(0),
-            classname: Some(named.classname.clone()),
-            pipeline: None,
-            failure_category: update.failure_category,
-        });
-    }
-    Ok(changes)
+    // A row deleted before this read names nothing, so it sends nothing.
+    Ok(crossed
+        .iter()
+        .filter_map(|update| named.get(&update.id).cloned())
+        .collect())
 }
 
 /// One column of a bulk rescore write, and the value it binds.
@@ -1549,7 +1610,7 @@ pub async fn rescore_jobs(
         });
     }
     let old = old_scores(db, EntityKind::Job, job_ids).await?;
-    let changes = job_tier_changes(db, &updates, &old, settings).await?;
+    let changes = tier_changes(db, &JOB_NOTICES, &updates, &old, settings).await?;
     write_updates(db, &JOB_TABLE, &updates).await?;
     if !updates.is_empty() {
         let history_updates: Vec<HistoryUpdate> = updates
@@ -1573,78 +1634,6 @@ pub async fn rescore_jobs(
             settings.clock.today(),
         )
         .await?;
-    }
-    Ok(changes)
-}
-
-/// The names a tier-change event gives a Job.
-#[derive(Debug, Clone)]
-struct NamedJob {
-    repo: String,
-    pipeline: String,
-    name: String,
-}
-
-/// Notifications for the Jobs whose tier this rescore moves (ADR 0009).
-async fn job_tier_changes(
-    db: &impl ConnectionTrait,
-    updates: &[Update],
-    old: &BTreeMap<i32, f64>,
-    settings: &ProcessingSettings,
-) -> Result<Vec<TierChange>, DbError> {
-    let threshold = settings.flake_threshold;
-    let scored: Vec<(i32, f64, Update)> = updates
-        .iter()
-        .map(|update| (update.id, update.flakiness_score, *update))
-        .collect();
-    let mut crossed: Vec<Update> = crossed(&scored, old, threshold);
-    if crossed.is_empty() {
-        return Ok(Vec::new());
-    }
-    // Python builds these from `_rows_by_id`, a dict sorted by id, so the events go
-    // out in id order whatever order the caller listed the ids in.
-    crossed.sort_unstable_by_key(|update| update.id);
-    let ids: Vec<i32> = crossed.iter().map(|update| update.id).collect();
-    let mut named: BTreeMap<i32, NamedJob> = BTreeMap::new();
-    for chunk in chunks(&ids) {
-        let placeholders = placeholder_list(1, chunk.len());
-        let sql = format!(
-            "SELECT j.id, j.name, p.name AS pipeline, r.name AS repo \
-               FROM jobs j \
-               JOIN pipelines p ON p.id = j.pipeline_id \
-               JOIN repos r ON r.id = p.repo_id \
-              WHERE j.id IN ({placeholders}) ORDER BY j.id"
-        );
-        let values = chunk.iter().map(|id| Value::from(*id)).collect();
-        for row in rows(db, sql, values).await? {
-            named.insert(
-                get(&row, "id")?,
-                NamedJob {
-                    repo: get(&row, "repo")?,
-                    pipeline: get(&row, "pipeline")?,
-                    name: get(&row, "name")?,
-                },
-            );
-        }
-    }
-    let mut changes = Vec::with_capacity(crossed.len());
-    for update in crossed {
-        let Some(named) = named.get(&update.id) else {
-            continue;
-        };
-        changes.push(TierChange {
-            kind: EntityKind::Job,
-            id: i64::from(update.id),
-            repo: named.repo.clone(),
-            project: None,
-            name: named.name.clone(),
-            flakiness_score: update.flakiness_score,
-            tier: tier_for(update.flakiness_score, threshold),
-            proven_flake_count: usize::try_from(update.confirmed_flake_count).unwrap_or(0),
-            classname: None,
-            pipeline: Some(named.pipeline.clone()),
-            failure_category: None,
-        });
     }
     Ok(changes)
 }
