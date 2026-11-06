@@ -92,6 +92,7 @@ impl BatchReport {
     /// Logs this batch's summary once, at the edge that owns it.
     pub(super) fn log(&self, operation: Operation) {
         tracing::info!(
+            name: "github.batch.finished",
             operation = ?operation,
             linked = self.linked.len(),
             skipped_repos = self.skipped.len(),
@@ -120,6 +121,7 @@ impl RemovalReport {
     /// Logs this batch's summary once, at the edge that owns it.
     pub(super) fn log(&self) {
         tracing::info!(
+            name: "github.batch.finished",
             operation = ?Operation::CloseDeleted,
             closed = self.closed.len(),
             refused = self.refused.len(),

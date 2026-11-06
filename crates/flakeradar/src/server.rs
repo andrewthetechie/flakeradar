@@ -89,7 +89,11 @@ impl Server {
             .with_context(|| format!("reading the address of {requested}"))?;
         // The address is worth logging on its own: port 0 means the kernel chose
         // the port, and an operator reading the log needs the number it chose.
-        tracing::info!(address = %address, "flakeradar listening");
+        tracing::info!(
+            name: "server.listening",
+            address = %address,
+            "flakeradar listening",
+        );
         // The worker starts only once the socket is bound: a start-up that fails
         // before this point has no lock to hold and no task to leak.
         let lock = AdvisoryLock::new(
@@ -165,9 +169,16 @@ impl Server {
             .context("serving requests");
         self.worker.stop().await;
         if let Err(error) = self.pool.close().await {
-            tracing::warn!(error = %error, "closing the pool failed");
+            tracing::warn!(
+                name: "server.pool_close_failed",
+                error = %error,
+                "closing the pool failed",
+            );
         }
-        tracing::info!("flakeradar stopped");
+        tracing::info!(
+            name: "server.stopped",
+            "flakeradar stopped",
+        );
         result
     }
 }

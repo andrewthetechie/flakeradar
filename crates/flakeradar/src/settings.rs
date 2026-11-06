@@ -697,8 +697,11 @@ pub fn check_api_token(token: &str, allow_insecure: Option<&str>) -> Result<(), 
         return Ok(());
     }
     if allow_insecure.map(str::trim) == Some("1") {
-        let message = "FLAKERADAR_API_TOKEN is the default 'changeme' — set a real token.";
-        tracing::warn!(token.is_default = true, "{message}");
+        tracing::warn!(
+            name: "settings.token_default",
+            { token.is_default = true },
+            "FLAKERADAR_API_TOKEN is the default 'changeme' — set a real token.",
+        );
         return Ok(());
     }
     Err(SettingsError::InsecureToken)
@@ -1353,7 +1356,11 @@ mod tests {
             let error = environment_values(&path, std::iter::empty())
                 .context("reading the settings")
                 .expect_err("the unclosed quote is refused");
-            tracing::error!(error = ?error, "flakeradar exited with a failure");
+            tracing::error!(
+                name: "server.exited",
+                error = ?error,
+                "flakeradar exited with a failure",
+            );
         });
         assert!(logged.contains("flakeradar-env-"), "{logged}");
         assert!(logged.contains("line 2"), "{logged}");

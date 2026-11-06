@@ -45,7 +45,11 @@ pub async fn note_fixed_issues_for(
         }
         Ok(_) => BatchReport::default(),
         Err(error) => {
-            tracing::warn!(error = %error, "GitHub fixed-note could not read its candidates");
+            tracing::warn!(
+                name: "github.notes.candidates_unreadable",
+                error = %error,
+                "GitHub fixed-note could not read its candidates",
+            );
             BatchReport::default()
         }
     }
@@ -72,7 +76,11 @@ pub async fn note_fixed_job_issues_for(
         }
         Ok(_) => BatchReport::default(),
         Err(error) => {
-            tracing::warn!(error = %error, "GitHub fixed-note could not read its candidates");
+            tracing::warn!(
+                name: "github.notes.candidates_unreadable",
+                error = %error,
+                "GitHub fixed-note could not read its candidates",
+            );
             BatchReport::default()
         }
     }
@@ -107,6 +115,7 @@ async fn note_batch(
         let Some(answered) = until_stopped(stop, api.comment(&row.repo, row.number, &body)).await
         else {
             tracing::info!(
+                name: "github.notes.stopped",
                 entity = entity.as_str(),
                 "stopping the fixed-note batch: leadership ended"
             );
@@ -116,7 +125,12 @@ async fn note_batch(
         let comment = match answered {
             Ok(comment) => comment,
             Err(error) => {
-                tracing::warn!(error = %error, entity = entity.as_str(), "GitHub unreachable, skipping fixed-note comments");
+                tracing::warn!(
+                    name: "github.notes.unreachable",
+                    error = %error,
+                    entity = entity.as_str(),
+                    "GitHub unreachable, skipping fixed-note comments",
+                );
                 report.stopped = Some(batch_stop(Verdict::Unreachable));
                 break;
             }
@@ -138,6 +152,7 @@ async fn note_batch(
             }
             Action::Stop => {
                 tracing::warn!(
+                    name: "github.notes.rate_limited",
                     remaining = %comment.remaining_text(),
                     "GitHub rate limit; stopping the fixed-note batch"
                 );
@@ -146,6 +161,7 @@ async fn note_batch(
             }
             Action::SkipRepo => {
                 tracing::warn!(
+                    name: "github.notes.repo_skipped",
                     repo = %row.repo,
                     status = comment.status(),
                     body = %comment.short_text(),
@@ -155,6 +171,7 @@ async fn note_batch(
             }
             Action::SkipRow | Action::Rearm => {
                 tracing::warn!(
+                    name: "github.notes.comment_failed",
                     entity = entity.as_str(),
                     entity_id = row.entity_id,
                     repo = %row.repo,
@@ -189,7 +206,11 @@ async fn stamp_note(
     {
         Ok(stamp) => stamp,
         Err(error) => {
-            tracing::warn!(error = %error, "GitHub fixed-note could not stamp its row");
+            tracing::warn!(
+                name: "github.notes.stamp_failed",
+                error = %error,
+                "GitHub fixed-note could not stamp its row",
+            );
             return false;
         }
     };
@@ -198,6 +219,7 @@ async fn stamp_note(
         return false;
     }
     tracing::info!(
+        name: "github.notes.noted",
         repo = %row.repo,
         number = row.number,
         entity = entity.as_str(),
@@ -211,6 +233,7 @@ async fn stamp_note(
 fn log_note_stamp_failure(state: Option<NoteRowState>, entity: EntityKind, row: &NoteCandidate) {
     match state {
         None => tracing::warn!(
+            name: "github.notes.row_gone",
             entity = entity.as_str(),
             entity_id = row.entity_id,
             repo = %row.repo,
@@ -218,6 +241,7 @@ fn log_note_stamp_failure(state: Option<NoteRowState>, entity: EntityKind, row: 
             "row deleted (admin delete) while noting its issue"
         ),
         Some(state) => tracing::warn!(
+            name: "github.notes.no_longer_noteable",
             entity = entity.as_str(),
             entity_id = row.entity_id,
             streak = state.clean_streak,
@@ -244,6 +268,7 @@ async fn close_note(
     .await
     else {
         tracing::info!(
+            name: "github.notes.close_stopped",
             entity = entity.as_str(),
             "stopping the fixed-close batch: leadership ended"
         );
@@ -252,7 +277,12 @@ async fn close_note(
     let close = match answered {
         Ok(close) => close,
         Err(error) => {
-            tracing::warn!(error = %error, entity = entity.as_str(), "GitHub unreachable, skipping the close");
+            tracing::warn!(
+                name: "github.notes.close_unreachable",
+                error = %error,
+                entity = entity.as_str(),
+                "GitHub unreachable, skipping the close",
+            );
             return ControlFlow::Break(batch_stop(Verdict::Unreachable));
         }
     };
@@ -260,6 +290,7 @@ async fn close_note(
     match action(Operation::CloseNote, verdict) {
         Action::Use => {
             tracing::info!(
+                name: "github.notes.closed",
                 repo = %row.repo,
                 number = row.number,
                 "closed an issue after noting the fix"
@@ -268,6 +299,7 @@ async fn close_note(
         }
         Action::Stop => {
             tracing::warn!(
+                name: "github.notes.close_rate_limited",
                 remaining = %close.remaining_text(),
                 repo = %row.repo,
                 number = row.number,
@@ -277,6 +309,7 @@ async fn close_note(
         }
         Action::SkipRepo => {
             tracing::warn!(
+                name: "github.notes.close_repo_skipped",
                 repo = %row.repo,
                 status = close.status(),
                 body = %close.short_text(),
@@ -287,6 +320,7 @@ async fn close_note(
         }
         Action::SkipRow | Action::Rearm => {
             tracing::warn!(
+                name: "github.notes.close_failed",
                 repo = %row.repo,
                 number = row.number,
                 status = close.status(),

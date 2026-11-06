@@ -45,7 +45,11 @@ fn main() -> ExitCode {
         Err(error) => {
             // The subscriber is installed first, so a failure reaches the log
             // rather than a bare exit status.
-            tracing::error!(error = ?error, "flakeradar exited with a failure");
+            tracing::error!(
+                name: "server.exited",
+                error = ?error,
+                "flakeradar exited with a failure",
+            );
             ExitCode::FAILURE
         }
     }
@@ -106,7 +110,11 @@ async fn shutdown_signal() {
                 let _ = stream.recv().await;
             }
             Err(error) => {
-                tracing::error!(error = %error, "listening for SIGTERM failed");
+                tracing::error!(
+                    name: "server.signal_failed",
+                    error = %error,
+                    "listening for SIGTERM failed",
+                );
                 std::future::pending::<()>().await;
             }
         }

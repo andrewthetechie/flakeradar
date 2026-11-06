@@ -96,6 +96,7 @@ impl WebhookShared {
     fn push(&self, batch: Vec<TierChange>) {
         if self.queue.push(batch).is_some() {
             tracing::warn!(
+                name: "webhook.queue.dropped",
                 dropped = self.queue.dropped(),
                 "Webhook queue full; dropped the oldest batch"
             );
@@ -136,7 +137,12 @@ impl WebhookShared {
             }
             while let Some(result) = set.join_next().await {
                 if let Err(error) = result {
-                    tracing::error!(events, error = %error, "Webhook delivery failed");
+                    tracing::error!(
+                        name: "webhook.delivery.failed",
+                        events,
+                        error = %error,
+                        "Webhook delivery failed",
+                    );
                 }
             }
             self.queue.finish();
@@ -163,6 +169,7 @@ impl WebhookShared {
             let answer = until_stopped(stop, self.client.post(url).json(&body).send()).await;
             let Some(answer) = answer else {
                 tracing::info!(
+                    name: "webhook.task.stopped",
                     endpoint = %label,
                     "the Notification task stopped with a delivery in flight"
                 );
@@ -172,6 +179,7 @@ impl WebhookShared {
             match answer {
                 Err(error) => {
                     tracing::warn!(
+                        name: "webhook.delivery.unreachable",
                         endpoint = %label,
                         attempt = attempt + 1,
                         attempts = ATTEMPTS,
@@ -183,6 +191,7 @@ impl WebhookShared {
                     let status = response.status().as_u16();
                     if (200..300).contains(&status) {
                         tracing::info!(
+                            name: "webhook.delivery.sent",
                             notifications = batch.len(),
                             endpoint = %label,
                             "sent a batch of Tier changes"
@@ -191,6 +200,7 @@ impl WebhookShared {
                     }
                     if !RETRYABLE_STATUSES.contains(&status) && status < 500 {
                         tracing::warn!(
+                            name: "webhook.delivery.rejected",
                             endpoint = %label,
                             status,
                             "Webhook endpoint rejected the batch"
@@ -198,6 +208,7 @@ impl WebhookShared {
                         return;
                     }
                     tracing::warn!(
+                        name: "webhook.delivery.failed",
                         endpoint = %label,
                         status,
                         attempt = attempt + 1,

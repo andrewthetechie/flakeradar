@@ -52,7 +52,11 @@ pub async fn sync_closed_issues(
         match issue_links::linked_for_check(db, target, batch).await {
             Ok(linked) => rows.extend(linked.into_iter().map(|row| (target, row))),
             Err(error) => {
-                tracing::warn!(error = %error, "GitHub issue-state sync could not read its rotation list");
+                tracing::warn!(
+                    name: "github.sync.rotation_unreadable",
+                    error = %error,
+                    "GitHub issue-state sync could not read its rotation list",
+                );
                 return report;
             }
         }
@@ -90,14 +94,21 @@ async fn clear_if_closed(
     stop: &CancellationToken,
 ) -> ControlFlow<BatchStop> {
     let Some(answered) = until_stopped(stop, api.get_issue(&row.repo, row.number)).await else {
-        tracing::info!("stopping the GitHub issue-state sync: leadership ended");
+        tracing::info!(
+            name: "github.sync.stopped",
+            "stopping the GitHub issue-state sync: leadership ended",
+        );
         return ControlFlow::Break(BatchStop::Stopped);
     };
     let answer = match answered {
         Ok(answer) => answer,
         Err(error) => {
             // No answer at all, so this row goes unstamped and the run stops here.
-            tracing::warn!(error = %error, "GitHub unreachable, skipping issue-state sync");
+            tracing::warn!(
+                name: "github.sync.unreachable",
+                error = %error,
+                "GitHub unreachable, skipping issue-state sync",
+            );
             return ControlFlow::Break(batch_stop(Verdict::Unreachable));
         }
     };
@@ -106,6 +117,7 @@ async fn clear_if_closed(
         Action::Use => sync_decision(&answer, row, target),
         Action::Rearm => {
             tracing::info!(
+                name: "github.sync.issue_gone",
                 repo = %row.repo,
                 number = row.number,
                 target = target.as_str(),
@@ -116,6 +128,7 @@ async fn clear_if_closed(
         }
         Action::SkipRepo => {
             tracing::warn!(
+                name: "github.sync.repo_skipped",
                 repo = %row.repo,
                 status = answer.status(),
                 body = %answer.short_text(),
@@ -126,7 +139,10 @@ async fn clear_if_closed(
         }
         Action::SkipRow => issue_links::Check::Kept,
         Action::Stop => {
-            tracing::warn!("GitHub rate limit in sync; stopping the batch");
+            tracing::warn!(
+                name: "github.sync.rate_limited",
+                "GitHub rate limit in sync; stopping the batch",
+            );
             return ControlFlow::Break(batch_stop(verdict));
         }
     };
@@ -145,6 +161,7 @@ fn sync_decision(
             let reason = answer.state_reason();
             if reason.as_deref() == Some("not_planned") {
                 tracing::info!(
+                    name: "github.sync.issue_declined",
                     repo = %row.repo,
                     number = row.number,
                     target = target.as_str(),
@@ -154,6 +171,7 @@ fn sync_decision(
                 issue_links::Check::Declined
             } else {
                 tracing::info!(
+                    name: "github.sync.issue_closed",
                     repo = %row.repo,
                     number = row.number,
                     target = target.as_str(),
@@ -171,6 +189,7 @@ fn sync_decision(
         Some(_) => issue_links::Check::Kept,
         None => {
             tracing::warn!(
+                name: "github.sync.unusable_body",
                 repo = %row.repo,
                 number = row.number,
                 body = %answer.short_text(),
@@ -192,7 +211,11 @@ async fn record_check(
     if let Err(error) =
         issue_links::record_check(db, target, i64::from(row.entity_id), row.number, check, at).await
     {
-        tracing::warn!(error = %error, "GitHub issue-state sync could not write its check");
+        tracing::warn!(
+            name: "github.sync.check_unwritable",
+            error = %error,
+            "GitHub issue-state sync could not write its check",
+        );
     }
 }
 
@@ -216,6 +239,7 @@ pub async fn close_issues_after_removal(repo: &str, numbers: &[i32], api: &Api) 
             Ok(comment) => comment,
             Err(error) => {
                 tracing::warn!(
+                    name: "github.sync.close_skipped",
                     error = %error,
                     repo = %repo,
                     number,
@@ -230,6 +254,7 @@ pub async fn close_issues_after_removal(repo: &str, numbers: &[i32], api: &Api) 
             Action::Use => {}
             Action::Stop => {
                 tracing::warn!(
+                    name: "github.sync.close_rate_limited",
                     remaining = %comment.remaining_text(),
                     "GitHub rate limit; stopping the post-delete close batch"
                 );
@@ -237,18 +262,7 @@ pub async fn close_issues_after_removal(repo: &str, numbers: &[i32], api: &Api) 
                 break;
             }
             Action::SkipRow | Action::SkipRepo | Action::Rearm => {
-                if already_gone(&comment) {
-                    tracing::info!(repo = %repo, number, "issue already gone after an admin delete");
-                } else {
-                    tracing::warn!(
-                        repo = %repo,
-                        number,
-                        status = comment.status(),
-                        body = %comment.short_text(),
-                        "GitHub comment after an admin delete failed"
-                    );
-                }
-                report.refused.insert(*number, verdict);
+                note_refused(&mut report, repo, *number, verdict, &comment);
                 continue;
             }
         }
@@ -256,6 +270,7 @@ pub async fn close_issues_after_removal(repo: &str, numbers: &[i32], api: &Api) 
             Ok(close) => close,
             Err(error) => {
                 tracing::warn!(
+                    name: "github.sync.close_skipped",
                     error = %error,
                     repo = %repo,
                     number,
@@ -268,11 +283,17 @@ pub async fn close_issues_after_removal(repo: &str, numbers: &[i32], api: &Api) 
         let verdict = close.classify(Success::Fetched);
         match action(Operation::CloseDeleted, verdict) {
             Action::Use => {
-                tracing::info!(repo = %repo, number, "closed an issue after an admin delete");
                 report.closed.insert(*number);
+                tracing::info!(
+                    name: "github.sync.closed",
+                    repo = %repo,
+                    number = *number,
+                    "closed an issue after an admin delete",
+                );
             }
             Action::Stop => {
                 tracing::warn!(
+                    name: "github.sync.close_rate_limited",
                     remaining = %close.remaining_text(),
                     repo = %repo,
                     number,
@@ -282,23 +303,44 @@ pub async fn close_issues_after_removal(repo: &str, numbers: &[i32], api: &Api) 
                 break;
             }
             Action::SkipRow | Action::SkipRepo | Action::Rearm => {
-                if already_gone(&close) {
-                    tracing::info!(repo = %repo, number, "issue already gone after an admin delete");
-                } else {
-                    tracing::warn!(
-                        repo = %repo,
-                        number,
-                        status = close.status(),
-                        body = %close.short_text(),
-                        "GitHub close after an admin delete failed"
-                    );
-                }
-                report.refused.insert(*number, verdict);
+                note_refused(&mut report, repo, *number, verdict, &close);
             }
         }
     }
     report.log();
     report
+}
+
+/// Records an issue this batch refused, and says which way it went.
+///
+/// The two outcomes read differently to an operator: the issue was already gone,
+/// which is what the batch wanted, or the request failed for a reason other than
+/// a rate limit, which names the status and the body that explain it.
+fn note_refused(
+    report: &mut RemovalReport,
+    repo: &str,
+    number: i32,
+    verdict: Verdict,
+    answer: &Answer,
+) {
+    if already_gone(answer) {
+        tracing::info!(
+            name: "github.sync.close_already_gone",
+            repo = %repo,
+            number,
+            "issue already gone after an admin delete",
+        );
+    } else {
+        tracing::warn!(
+            name: "github.sync.close_failed",
+            repo = %repo,
+            number,
+            status = answer.status(),
+            body = %answer.short_text(),
+            "GitHub close after an admin delete failed"
+        );
+    }
+    report.refused.insert(number, verdict);
 }
 
 /// Whether a post-delete answer is the issue already being gone.

@@ -1857,7 +1857,10 @@ async fn rescore_repo(
     if dropped > 0 {
         // One event per changed Test would flood the channel, so only the count
         // is reported (ADR 0009).
-        tracing::info!("Rescore of Repo {repo_id} dropped {dropped} Notification(s)");
+        tracing::info!(
+            name: "db.processing.notifications_dropped",
+            "Rescore of Repo {repo_id} dropped {dropped} Notification(s)",
+        );
     }
     Ok(())
 }

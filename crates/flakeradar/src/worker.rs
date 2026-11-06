@@ -681,12 +681,19 @@ impl ReportWorker {
         for task in &self.leader_tasks {
             task.start().await;
         }
-        tracing::info!("This process is now the Report processor");
+        tracing::info!(
+            name: "worker.processor.elected",
+            "This process is now the Report processor",
+        );
     }
 
     /// Logs the error, ends leadership and waits one poll before trying again.
     async fn drop_leadership(&self, error: &DbError) {
-        tracing::error!(error = %error, "Report worker error; dropping leadership and retrying");
+        tracing::error!(
+            name: "worker.processor.failed",
+            error = %error,
+            "Report worker error; dropping leadership and retrying",
+        );
         self.release().await;
         self.sleep(self.settings.poll).await;
     }
@@ -695,12 +702,15 @@ impl ReportWorker {
     async fn deliver(&self, outcome: &ProcessOutcome) {
         for task in &self.leader_tasks {
             if let Err(error) = task.enqueue(outcome) {
-                let name = task.name();
+                let task = task.name();
                 let report_id = outcome.report_id;
-                let message = format!(
-                    "the {name} leader task failed to take processed Report {report_id}: {error}"
+                tracing::error!(
+                    name: "worker.leader_task.enqueue_failed",
+                    task,
+                    report_id,
+                    error = %error,
+                    "the {task} leader task failed to take processed Report {report_id}: {error}",
                 );
-                tracing::error!("{message}");
             }
         }
         if outcome.status == ReportStatus::Pending {
@@ -735,7 +745,11 @@ impl ReportWorker {
         }
         *self.last_prune() = Some(now);
         if let Err(error) = pruner.prune(self.pool.clone()).await {
-            tracing::error!(error = %error, "Retention prune failed; will retry next interval");
+            tracing::error!(
+                name: "worker.prune.failed",
+                error = %error,
+                "Retention prune failed; will retry next interval",
+            );
         }
     }
 
@@ -748,17 +762,23 @@ impl ReportWorker {
     async fn release(&self) {
         for task in &self.leader_tasks {
             if let Err(error) = task.stop().await {
-                let name = task.name();
-                let message = format!(
-                    "stopping the {name} leader task failed; releasing the lock anyway: {error}"
+                let task = task.name();
+                tracing::error!(
+                    name: "worker.leader_task.stop_failed",
+                    task,
+                    error = %error,
+                    "stopping the {task} leader task failed; releasing the lock anyway: {error}",
                 );
-                tracing::error!("{message}");
             }
         }
         self.leader.store(false, Ordering::SeqCst);
         if let Err(error) = self.lock.unlock().await {
             // The server already dropped the session lock with the connection.
-            tracing::warn!(error = %error, "the lock connection is broken; it has been dropped");
+            tracing::warn!(
+                name: "worker.leadership.lock_lost",
+                error = %error,
+                "the lock connection is broken; it has been dropped",
+            );
         }
     }
 

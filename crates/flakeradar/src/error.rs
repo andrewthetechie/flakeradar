@@ -162,7 +162,11 @@ impl IntoResponse for RouteError {
             .into_response(),
             Self::Internal(error) => {
                 // A database error names a statement, never what a caller asked for.
-                tracing::error!(error = %error, "a route's query failed");
+                tracing::error!(
+                    name: "http.route.failed",
+                    error = %error,
+                    "a route's query failed",
+                );
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],

@@ -80,6 +80,7 @@ impl GitHubShared {
     fn push(&self, outcome: ProcessOutcome) {
         if self.queue.push(outcome).is_some() {
             tracing::warn!(
+                name: "github.queue.dropped",
                 dropped = self.queue.dropped(),
                 "GitHub queue full; dropped the oldest outcome"
             );

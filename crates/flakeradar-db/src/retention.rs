@@ -426,7 +426,11 @@ async fn drop_silent_tier_changes(
         dropped += rescore_jobs(db, stale_jobs, None, processing).await?.len();
     }
     if dropped > 0 {
-        info!(dropped, "Prune dropped Notifications");
+        info!(
+            name: "retention.notifications_dropped",
+            dropped,
+            "Prune dropped Notifications",
+        );
     }
     Ok(())
 }
@@ -451,6 +455,7 @@ async fn clear_expired_quarantines(
     .await?;
     for row in &cleared {
         info!(
+            name: "retention.quarantine_expired",
             test_id = get::<i32>(row, "id")?,
             name = %get::<String>(row, "name")?,
             "Quarantine expired; cleared"
@@ -494,22 +499,33 @@ pub async fn run_prune(
         }
         if monotonic.now() >= deadline {
             let budget = retention.time_budget_seconds;
-            info!("Retention prune hit its {budget}s budget; the rest waits for the next interval");
+            info!(
+                name: "retention.prune.budget_reached",
+                budget_seconds = budget,
+                "Retention prune hit its {budget}s budget; the rest waits for the next interval",
+            );
             break;
         }
     }
-    // The frozen server's own summary line, with the counts in the same order.
-    let summary = format!(
-        "Pruned {} reports, {} failed reports, {} executions, {} job executions, {} runs, \
-         {} score history rows, cleared {} expired quarantines",
-        totals.reports,
-        totals.failed_reports,
-        totals.executions,
-        totals.job_executions,
-        totals.runs,
-        totals.score_history(),
-        totals.expired_quarantines
+    let reports = totals.reports;
+    let failed_reports = totals.failed_reports;
+    let executions = totals.executions;
+    let job_executions = totals.job_executions;
+    let runs = totals.runs;
+    let score_history_rows = totals.score_history();
+    let expired_quarantines = totals.expired_quarantines;
+    info!(
+        name: "retention.prune.finished",
+        reports,
+        failed_reports,
+        executions,
+        job_executions,
+        runs,
+        score_history_rows,
+        expired_quarantines,
+        "Pruned {reports} reports, {failed_reports} failed reports, {executions} executions, \
+         {job_executions} job executions, {runs} runs, {score_history_rows} score history rows, \
+         cleared {expired_quarantines} expired quarantines",
     );
-    info!("{summary}");
     Ok(totals)
 }

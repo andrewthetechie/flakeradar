@@ -48,20 +48,20 @@ pub async fn file_issues_for(
     if !api.configured() || test_ids.is_empty() {
         return BatchReport::default();
     }
-    let candidates = match filing::test_candidates(
-        db,
-        test_ids,
-        &filing_gate(settings),
-        settings.score_window,
-    )
-    .await
-    {
-        Ok(candidates) => candidates,
-        Err(error) => {
-            tracing::warn!(error = %error, "GitHub issue filing could not read its Test candidates");
-            return BatchReport::default();
-        }
-    };
+    let candidates =
+        match filing::test_candidates(db, test_ids, &filing_gate(settings), settings.score_window)
+            .await
+        {
+            Ok(candidates) => candidates,
+            Err(error) => {
+                tracing::warn!(
+                    name: "github.filing.test_candidates_unreadable",
+                    error = %error,
+                    "GitHub issue filing could not read its Test candidates",
+                );
+                return BatchReport::default();
+            }
+        };
     if candidates.is_empty() {
         return BatchReport::default();
     }
@@ -70,7 +70,11 @@ pub async fn file_issues_for(
         let recent = match filing::recent_executions(db, candidate.test.id, BODY_EXECUTIONS).await {
             Ok(recent) => recent,
             Err(error) => {
-                tracing::warn!(error = %error, "GitHub issue filing could not read a Test's Executions");
+                tracing::warn!(
+                    name: "github.filing.test_executions_unreadable",
+                    error = %error,
+                    "GitHub issue filing could not read a Test's Executions",
+                );
                 Vec::new()
             }
         };
@@ -108,20 +112,20 @@ pub async fn file_job_issues_for(
     if !api.configured() || job_ids.is_empty() {
         return BatchReport::default();
     }
-    let candidates = match filing::job_candidates(
-        db,
-        job_ids,
-        &filing_gate(settings),
-        settings.score_window,
-    )
-    .await
-    {
-        Ok(candidates) => candidates,
-        Err(error) => {
-            tracing::warn!(error = %error, "GitHub issue filing could not read its Job candidates");
-            return BatchReport::default();
-        }
-    };
+    let candidates =
+        match filing::job_candidates(db, job_ids, &filing_gate(settings), settings.score_window)
+            .await
+        {
+            Ok(candidates) => candidates,
+            Err(error) => {
+                tracing::warn!(
+                    name: "github.filing.job_candidates_unreadable",
+                    error = %error,
+                    "GitHub issue filing could not read its Job candidates",
+                );
+                return BatchReport::default();
+            }
+        };
     if candidates.is_empty() {
         return BatchReport::default();
     }
@@ -138,6 +142,7 @@ pub async fn file_job_issues_for(
             Ok(history) => history,
             Err(error) => {
                 tracing::warn!(
+                    name: "github.filing.job_executions_unreadable",
                     error = %error,
                     repo = %candidate.repo,
                     entity_id = candidate.job.id,
@@ -193,6 +198,7 @@ async fn file_batch(
     for request in batch {
         if stop.is_cancelled() {
             tracing::info!(
+                name: "github.filing.stopped",
                 entity = entity.as_str(),
                 "stopping the issue-filing batch: leadership ended"
             );
@@ -215,7 +221,12 @@ async fn file_batch(
             Err(error) => {
                 // Filing never carries on without an answer, which is the table's
                 // `File`/`Unreachable` cell.
-                tracing::warn!(error = %error, entity = entity.as_str(), "GitHub unreachable, skipping issue filing");
+                tracing::warn!(
+                    name: "github.filing.unreachable",
+                    error = %error,
+                    entity = entity.as_str(),
+                    "GitHub unreachable, skipping issue filing",
+                );
                 report.stopped = Some(batch_stop(Verdict::Unreachable));
                 break;
             }
@@ -232,6 +243,7 @@ async fn file_batch(
             }
             Action::Stop => {
                 tracing::warn!(
+                    name: "github.filing.rate_limited",
                     remaining = %answer.remaining_text(),
                     "GitHub rate limit; stopping the filing batch"
                 );
@@ -240,6 +252,7 @@ async fn file_batch(
             }
             Action::SkipRepo => {
                 tracing::warn!(
+                    name: "github.filing.repo_skipped",
                     repo = %request.repo,
                     status = answer.status(),
                     body = %answer.short_text(),
@@ -249,6 +262,7 @@ async fn file_batch(
             }
             Action::SkipRow | Action::Rearm => {
                 tracing::warn!(
+                    name: "github.filing.create_failed",
                     entity = entity.as_str(),
                     entity_id = request.entity_id,
                     repo = %request.repo,
@@ -287,6 +301,7 @@ async fn record_filed(
 ) -> ControlFlow<BatchStop> {
     let Some(number) = answer.issue_number() else {
         tracing::warn!(
+            name: "github.filing.create_without_number",
             repo = %request.repo,
             body = %answer.short_text(),
             "GitHub issue creation returned 201 with no issue number"
@@ -297,6 +312,7 @@ async fn record_filed(
         FiledLink::Stored => {
             report.linked.insert(request.entity_id);
             tracing::info!(
+                name: "github.filing.filed",
                 repo = %request.repo,
                 number,
                 entity = entity.as_str(),
@@ -309,6 +325,7 @@ async fn record_filed(
             // close the issue just created, best effort.
             let _ = close_issues_after_removal(&request.repo, &[number], api).await;
             tracing::warn!(
+                name: "github.filing.row_gone",
                 entity = entity.as_str(),
                 entity_id = request.entity_id,
                 repo = %request.repo,
@@ -320,6 +337,7 @@ async fn record_filed(
             // The reference lets this error propagate: the issue just created stays
             // open, and the batch ends here.
             tracing::error!(
+                name: "github.filing.store_failed",
                 error = %error,
                 entity = entity.as_str(),
                 entity_id = request.entity_id,

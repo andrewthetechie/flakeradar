@@ -112,7 +112,11 @@ pub async fn metrics(State(state): State<AppState>) -> Response {
         Err(error) => {
             // The empty body keeps a scrape failing rather than reporting zeros, and
             // the error is the only thing that says why the scrape failed.
-            tracing::warn!(error = %error, "the metrics scrape failed; answering 503");
+            tracing::warn!(
+                name: "http.metrics.failed",
+                error = %error,
+                "the metrics scrape failed; answering 503",
+            );
             (
                 StatusCode::SERVICE_UNAVAILABLE,
                 [(header::CONTENT_TYPE, PROMETHEUS_MEDIA_TYPE)],
@@ -231,7 +235,11 @@ fn render_seconds(value: f64) -> String {
 /// scrape answers 503 instead, because its whole query block was inside the
 /// `try`.
 fn database_failure(error: &DbError) -> Response {
-    tracing::error!(error = %error, "readiness query failed");
+    tracing::error!(
+        name: "http.readiness.failed",
+        error = %error,
+        "readiness query failed",
+    );
     (
         StatusCode::INTERNAL_SERVER_ERROR,
         [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],

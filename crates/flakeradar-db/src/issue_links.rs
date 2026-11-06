@@ -298,6 +298,7 @@ pub async fn link_issue(
     write_link(&transaction, target, target_id, stored).await?;
     transaction.commit().await?;
     tracing::info!(
+        name: "db.issue_link.linked",
         repo = %repo,
         number,
         target = target.as_str(),
@@ -345,6 +346,7 @@ pub async fn unlink_issue(
     transaction.commit().await?;
     if let Some(previous) = previous {
         tracing::info!(
+            name: "db.issue_link.unlinked",
             repo = %repo,
             number = previous,
             target = target.as_str(),
