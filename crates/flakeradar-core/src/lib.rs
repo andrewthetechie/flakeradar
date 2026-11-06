@@ -18,6 +18,7 @@
 )]
 
 pub mod classify;
+pub mod defaults;
 pub mod dto;
 pub mod helpers;
 pub mod identity;

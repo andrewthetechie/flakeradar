@@ -24,10 +24,11 @@ const ACQUIRE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Seconds a statement may run before PostgreSQL cancels it.
 ///
-/// The frozen Python server's `db_command_timeout_seconds` default. A long
-/// statement would otherwise hold a pooled connection until the client gives
-/// up, so the server cancels it instead.
-const DEFAULT_COMMAND_TIMEOUT_SECONDS: f64 = 30.0;
+/// The frozen Python server's `db_command_timeout_seconds` default; the settings
+/// and this pool take the value from one place, so they cannot disagree. A long
+/// statement would otherwise hold a pooled connection until the client gives up,
+/// so the server cancels it instead.
+const DEFAULT_COMMAND_TIMEOUT_SECONDS: f64 = flakeradar_core::defaults::DB_COMMAND_TIMEOUT_SECONDS;
 
 /// Settings that shape the connection pool.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,6 +80,7 @@ impl Default for DbSettings {
 /// # Errors
 ///
 /// Returns [`DbError::NotPostgres`] for any URL that is not PostgreSQL, and
+/// [`DbError::UnusableUrl`] for one the driver cannot parse, and
 /// [`DbError::Database`] when the server cannot be reached.
 pub async fn connect(url: &str, settings: DbSettings) -> Result<DatabaseConnection, DbError> {
     let mut options = shared_options(url, settings)?;
@@ -90,11 +92,41 @@ pub async fn connect(url: &str, settings: DbSettings) -> Result<DatabaseConnecti
 
 /// The pool options both pools share: the URL, the statement timeout and the
 /// bound on waiting for a connection.
+///
+/// # Errors
+///
+/// Returns [`DbError::NotPostgres`] for a URL that is not PostgreSQL and
+/// [`DbError::UnusableUrl`] for one the driver cannot parse. The second check is
+/// made here rather than left to the driver because `Database::connect` quotes
+/// the whole connection string when it cannot parse it, and that string holds the
+/// database password.
 fn shared_options(url: &str, settings: DbSettings) -> Result<ConnectOptions, DbError> {
-    Ok(apply_shared(
-        ConnectOptions::new(postgres_url(url)?),
-        settings,
-    ))
+    let url = postgres_url(url)?;
+    if url::Url::parse(&url).is_err() {
+        return Err(DbError::UnusableUrl { url: redact(&url) });
+    }
+    Ok(apply_shared(ConnectOptions::new(url), settings))
+}
+
+/// The URL with its password replaced, so it can name itself in an error.
+///
+/// The scheme, user, host, port and database stay readable, because one of them
+/// is the typo an operator has to fix; only the password is removed. An
+/// unparseable URL still has an authority section often enough to keep it.
+fn redact(url: &str) -> String {
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return "an unparseable URL".to_owned();
+    };
+    let (authority, tail) = rest
+        .find('/')
+        .map_or((rest, ""), |index| rest.split_at(index));
+    let Some((userinfo, host)) = authority.rsplit_once('@') else {
+        return format!("{scheme}://{authority}{tail}");
+    };
+    let user = userinfo
+        .split_once(':')
+        .map_or(userinfo, |(user, _password)| user);
+    format!("{scheme}://{user}:***@{host}{tail}")
 }
 
 /// Applies the settings both pools share to a new option set.
@@ -118,7 +150,8 @@ fn apply_shared(mut options: ConnectOptions, settings: DbSettings) -> ConnectOpt
 ///
 /// # Errors
 ///
-/// Returns [`DbError::NotPostgres`] for any URL that is not PostgreSQL, and
+/// Returns [`DbError::NotPostgres`] for any URL that is not PostgreSQL,
+/// [`DbError::UnusableUrl`] for one the driver cannot parse, and
 /// [`DbError::Database`] when the server cannot be reached.
 pub async fn connect_session(
     url: &str,
@@ -148,9 +181,16 @@ fn postgres_url(url: &str) -> Result<String, DbError> {
 mod tests {
     //! URL and setting parsing need no database, so they are checked here.
 
+    #![expect(
+        clippy::expect_used,
+        reason = "a test fails loudly when a fixture is not what it claims"
+    )]
+
     use sea_orm::ConnectOptions;
 
-    use super::{ACQUIRE_TIMEOUT, DbError, DbSettings, apply_shared, postgres_url};
+    use super::{
+        ACQUIRE_TIMEOUT, DbError, DbSettings, apply_shared, postgres_url, redact, shared_options,
+    };
 
     #[test]
     fn a_pool_waits_five_seconds_for_a_connection_and_no_longer() {
@@ -190,6 +230,34 @@ mod tests {
             Err(DbError::NotPostgres)
         ));
         assert!(matches!(postgres_url(""), Err(DbError::NotPostgres)));
+    }
+
+    #[test]
+    fn a_database_url_that_cannot_be_parsed_never_names_its_password() {
+        let error = shared_options(
+            "postgresql://flakeradar:s3cret-password@db:notaport/flakeradar",
+            DbSettings::default(),
+        )
+        .expect_err("a port that is not a number is not a URL");
+        let text = error.to_string();
+        assert!(!text.contains("s3cret-password"), "{text}");
+        // The rest of the URL stays readable, because it is the typo to fix.
+        assert!(text.contains("db:notaport"), "{text}");
+    }
+
+    #[test]
+    fn a_redacted_url_keeps_everything_but_the_password() {
+        assert_eq!(
+            redact("postgresql://flakeradar:s3cret@db:5432/flakeradar?sslmode=require"),
+            "postgresql://flakeradar:***@db:5432/flakeradar?sslmode=require"
+        );
+        // No userinfo at all, and a URL with no scheme: neither has a password
+        // to remove, and neither can panic on the way through.
+        assert_eq!(
+            redact("postgresql://db:5432/flakeradar"),
+            "postgresql://db:5432/flakeradar"
+        );
+        assert_eq!(redact("not a url"), "an unparseable URL");
     }
 
     #[test]

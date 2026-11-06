@@ -12,6 +12,7 @@ use std::fmt;
 use std::path::Path;
 
 use flakeradar_core::WebhookFormat;
+use flakeradar_core::defaults;
 use thiserror::Error;
 
 /// The token a fresh install ships with, which start-up refuses to keep.
@@ -36,9 +37,10 @@ pub const DEFAULT_PORT: u16 = 8000;
 
 /// A configuration value that must never reach a log line.
 ///
-/// The API token and the Webhook URLs are credentials (ADR 0009), so they are
-/// wrapped rather than stored as plain strings: a derived `Debug` on any struct
-/// holding one prints the wrapper's redacted form, not the secret.
+/// The API token, the GitHub token, the Webhook URLs (ADR 0009) and the database
+/// URL's password are credentials, so they are wrapped rather than stored as
+/// plain strings: a derived `Debug` on any struct holding one prints the
+/// wrapper's redacted form, not the secret.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Secret(String);
 
@@ -75,6 +77,20 @@ pub enum SettingsError {
         /// What the field accepts, in words.
         expected: &'static str,
     },
+    /// A variable holds a value that parses but that the field could not mean.
+    ///
+    /// The frozen server took every value the type admitted, so a NaN decay
+    /// scored every Test flaky instead of refusing to start. Only non-secret
+    /// fields are checked against a range, so the value here is never a token.
+    #[error("{}: expected {expected}, got '{value}'", .variable)]
+    OutOfRange {
+        /// The variable's name, such as `FLAKERADAR_SCORE_DECAY`.
+        variable: String,
+        /// The value that was read.
+        value: String,
+        /// What the field accepts, in words.
+        expected: String,
+    },
     /// The database URL is not a PostgreSQL URL.
     #[error(
         "FLAKERADAR_DATABASE_URL must be a PostgreSQL URL (postgresql+asyncpg://user:pass@host:5432/db)"
@@ -88,6 +104,17 @@ pub enum SettingsError {
         /// Why it could not be read.
         source: std::io::Error,
     },
+    /// A line of the `.env` file is not a `KEY=value` assignment.
+    ///
+    /// The line's text is deliberately absent, and so is the key: a `.env` holds
+    /// tokens, and this message reaches the log line `main` writes.
+    #[error("reading {path}: line {line} is not a FLAKERADAR_* assignment")]
+    EnvFileLine {
+        /// The file that could not be parsed.
+        path: String,
+        /// The 1-based number of the line that does not parse.
+        line: usize,
+    },
     /// The shipped default token is still in use without the opt-in.
     #[error(
         "FLAKERADAR_API_TOKEN is still the default 'changeme'. Set a real token (see .env.example) \
@@ -99,6 +126,54 @@ pub enum SettingsError {
 /// The variable holding one setting.
 fn variable(field: &str) -> String {
     format!("FLAKERADAR_{field}")
+}
+
+/// Sets `slot` to `value`, which is `None` when its variable was unset.
+fn set_if_some<T>(slot: &mut T, value: Option<T>) {
+    if let Some(value) = value {
+        *slot = value;
+    }
+}
+
+/// Refuses a whole-number setting below `lowest`.
+fn at_least<T: PartialOrd + fmt::Display>(
+    field: &str,
+    value: &T,
+    lowest: &T,
+) -> Result<(), SettingsError> {
+    if value >= lowest {
+        return Ok(());
+    }
+    Err(out_of_range(field, value, &format!("{lowest} or more")))
+}
+
+/// Refuses a value outside 0 to 1, which no score or weight can be.
+fn fraction(field: &str, value: f64) -> Result<(), SettingsError> {
+    if value.is_finite() && (0.0..=1.0).contains(&value) {
+        return Ok(());
+    }
+    Err(out_of_range(field, value, "a number from 0 to 1"))
+}
+
+/// Refuses a wait, a budget or a timeout that is not a positive interval.
+fn interval(field: &str, value: f64) -> Result<(), SettingsError> {
+    if value.is_finite() && value > 0.0 {
+        return Ok(());
+    }
+    Err(out_of_range(
+        field,
+        value,
+        "a number of seconds more than 0",
+    ))
+}
+
+/// The refusal for a value the field could never take.
+fn out_of_range(field: &str, value: impl fmt::Display, expected: &str) -> SettingsError {
+    SettingsError::OutOfRange {
+        variable: variable(field),
+        value: value.to_string(),
+        expected: expected.to_owned(),
+    }
 }
 
 /// The raw `FLAKERADAR_*` values, before they are parsed into [`Settings`].
@@ -124,47 +199,57 @@ impl Raw<'_> {
         self.raw(field).map(str::trim)
     }
 
-    /// The value of `field`, or `default` when it is unset.
-    fn text(&self, field: &str, default: &str) -> String {
-        self.raw(field).unwrap_or(default).to_owned()
+    /// The value of `field`, or `None` when it is unset.
+    fn text(&self, field: &str) -> Option<String> {
+        self.raw(field).map(str::to_owned)
     }
 
-    /// The value of `field` parsed as a signed integer.
-    fn int(&self, field: &str, default: i64) -> Result<i64, SettingsError> {
+    /// The value of `field` parsed by `T`, or `None` when it is unset.
+    fn parsed<T: std::str::FromStr>(
+        &self,
+        field: &str,
+        expected: &'static str,
+    ) -> Result<Option<T>, SettingsError> {
         match self.trimmed(field) {
-            None => Ok(default),
-            Some(text) => text.parse().map_err(|_error| SettingsError::InvalidValue {
-                variable: variable(field),
-                value: text.to_owned(),
-                expected: "a whole number",
-            }),
+            None => Ok(None),
+            Some(text) => text
+                .parse()
+                .map(Some)
+                .map_err(|_error| SettingsError::InvalidValue {
+                    variable: variable(field),
+                    value: text.to_owned(),
+                    expected,
+                }),
         }
     }
 
-    /// The value of `field` parsed as a number.
-    fn float(&self, field: &str, default: f64) -> Result<f64, SettingsError> {
-        match self.trimmed(field) {
-            None => Ok(default),
-            Some(text) => text.parse().map_err(|_error| SettingsError::InvalidValue {
-                variable: variable(field),
-                value: text.to_owned(),
-                expected: "a number",
-            }),
-        }
+    /// The value of `field` parsed as a whole number, or `None` when it is unset.
+    fn int<T: std::str::FromStr>(&self, field: &str) -> Result<Option<T>, SettingsError> {
+        self.parsed(field, "a whole number")
     }
 
-    /// The value of `field` parsed as a boolean.
+    /// The value of `field` parsed as a number, or `None` when it is unset.
+    fn float(&self, field: &str) -> Result<Option<f64>, SettingsError> {
+        self.parsed(field, "a number")
+    }
+
+    /// The value of `field` parsed as a TCP port, or `None` when it is unset.
+    fn port(&self, field: &str) -> Result<Option<u16>, SettingsError> {
+        self.parsed(field, "a port number between 0 and 65535")
+    }
+
+    /// The value of `field` parsed as a boolean, or `None` when it is unset.
     ///
     /// Accepts `1`/`0`, `true`/`false`, `yes`/`no` and `on`/`off`, in any case,
     /// which is the set Pydantic accepted for the frozen server's `bool` fields.
     /// Pydantic compared those spellings exactly, so `" yes "` is not one of
     /// them and is refused here too.
-    fn boolean(&self, field: &str, default: bool) -> Result<bool, SettingsError> {
+    fn boolean(&self, field: &str) -> Result<Option<bool>, SettingsError> {
         match self.raw(field) {
-            None => Ok(default),
+            None => Ok(None),
             Some(text) => match text.to_lowercase().as_str() {
-                "1" | "true" | "yes" | "on" => Ok(true),
-                "0" | "false" | "no" | "off" => Ok(false),
+                "1" | "true" | "yes" | "on" => Ok(Some(true)),
+                "0" | "false" | "no" | "off" => Ok(Some(false)),
                 _ => Err(SettingsError::InvalidValue {
                     variable: variable(field),
                     value: text.to_owned(),
@@ -174,27 +259,16 @@ impl Raw<'_> {
         }
     }
 
-    /// The value of `field` parsed as a TCP port.
-    fn port(&self, field: &str, default: u16) -> Result<u16, SettingsError> {
-        match self.trimmed(field) {
-            None => Ok(default),
-            Some(text) => text.parse().map_err(|_error| SettingsError::InvalidValue {
-                variable: variable(field),
-                value: text.to_owned(),
-                expected: "a port number between 0 and 65535",
-            }),
-        }
-    }
-
-    /// The value of `field` parsed as a Webhook format.
+    /// The value of `field` parsed as a Webhook format, or `None` when unset.
     ///
     /// The two names are compared exactly, as Pydantic's `Literal` compared
     /// them, so a padded `" slack "` is refused.
-    fn webhook_format(&self, field: &str) -> Result<WebhookFormat, SettingsError> {
-        match self.text(field, "json").as_str() {
-            "json" => Ok(WebhookFormat::Json),
-            "slack" => Ok(WebhookFormat::Slack),
-            other => Err(SettingsError::InvalidValue {
+    fn webhook_format(&self, field: &str) -> Result<Option<WebhookFormat>, SettingsError> {
+        match self.raw(field) {
+            None => Ok(None),
+            Some("json") => Ok(Some(WebhookFormat::Json)),
+            Some("slack") => Ok(Some(WebhookFormat::Slack)),
+            Some(other) => Err(SettingsError::InvalidValue {
                 variable: variable(field),
                 value: other.to_owned(),
                 expected: "one of json, slack",
@@ -214,9 +288,11 @@ pub struct Settings {
     /// The shared token CI systems send, and MCP clients send as a Bearer token.
     pub api_token: Secret,
     /// The PostgreSQL URL, in any of the spellings [`flakeradar_db::connect`] takes.
-    pub database_url: String,
+    ///
+    /// It is a [`Secret`] because it holds the database password.
+    pub database_url: Secret,
     /// How many recent Executions the Flakiness score weighs.
-    pub score_window: i64,
+    pub score_window: usize,
     /// The per-step decay of that weight, so recent flips count for more.
     pub score_decay: f64,
     /// Consecutive default-branch failures at which a Test counts as broken.
@@ -252,7 +328,7 @@ pub struct Settings {
     /// The statement timeout every pooled connection is set to, in seconds.
     pub db_command_timeout_seconds: f64,
     /// How often a Report may be re-processed after a transient failure.
-    pub max_report_retries: i64,
+    pub max_report_retries: i32,
     /// How many days processed Reports are kept.
     pub report_retention_days: i64,
     /// How many days failed Reports are kept; `0` keeps them until a human acts.
@@ -277,10 +353,10 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             api_token: Secret::new(DEFAULT_INSECURE_TOKEN),
-            database_url: DEFAULT_DATABASE_URL.to_owned(),
-            score_window: 50,
-            score_decay: 0.85,
-            broken_streak: 5,
+            database_url: Secret::new(DEFAULT_DATABASE_URL),
+            score_window: defaults::SCORE_WINDOW,
+            score_decay: defaults::SCORE_DECAY,
+            broken_streak: defaults::BROKEN_STREAK,
             github_token: Secret::new(""),
             github_issue_label: "flakeradar".to_owned(),
             github_issue_min_score: 0.30,
@@ -290,20 +366,20 @@ impl Default for Settings {
             github_fixed_streak: 0,
             github_close_fixed: false,
             public_url: String::new(),
-            flake_threshold: 0.30,
+            flake_threshold: defaults::FLAKE_THRESHOLD,
             webhook_urls: Secret::new(""),
             webhook_format: WebhookFormat::Json,
             cors_origins: "http://localhost:5173".to_owned(),
             worker_poll_seconds: 1.0,
-            db_command_timeout_seconds: 30.0,
-            max_report_retries: 3,
-            report_retention_days: 7,
-            failed_report_retention_days: 0,
-            execution_retention_days: 90,
-            score_history_retention_days: 365,
+            db_command_timeout_seconds: defaults::DB_COMMAND_TIMEOUT_SECONDS,
+            max_report_retries: defaults::MAX_REPORT_RETRIES,
+            report_retention_days: defaults::REPORT_RETENTION_DAYS,
+            failed_report_retention_days: defaults::FAILED_REPORT_RETENTION_DAYS,
+            execution_retention_days: defaults::EXECUTION_RETENTION_DAYS,
+            score_history_retention_days: defaults::SCORE_HISTORY_RETENTION_DAYS,
             prune_interval_seconds: 3600.0,
-            prune_batch: 5000,
-            prune_time_budget_seconds: 60.0,
+            prune_batch: defaults::PRUNE_BATCH,
+            prune_time_budget_seconds: defaults::PRUNE_TIME_BUDGET_SECONDS,
             host: DEFAULT_HOST.to_owned(),
             port: DEFAULT_PORT,
         }
@@ -311,29 +387,29 @@ impl Default for Settings {
 }
 
 impl Settings {
-    /// The processor's view of these settings, with the system clock.
-    ///
-    /// The read layer's view of these settings.
+    /// The read layer's view of these settings, with the system clock.
     #[must_use]
     pub fn reads(&self) -> flakeradar_db::ReadSettings {
         flakeradar_db::ReadSettings {
             flake_threshold: self.flake_threshold,
             broken_streak: self.broken_streak,
-            score_window: usize::try_from(self.score_window).unwrap_or_default(),
+            score_window: self.score_window,
             clock: std::sync::Arc::new(flakeradar_db::SystemClock),
         }
     }
 
+    /// The processor's view of these settings, with the system clock.
+    ///
     /// The database layer cannot depend on this module, so it takes only the
     /// values the processor reads.
     #[must_use]
     pub fn processing(&self) -> flakeradar_db::ProcessingSettings {
         flakeradar_db::ProcessingSettings {
-            score_window: usize::try_from(self.score_window).unwrap_or_default(),
+            score_window: self.score_window,
             score_decay: self.score_decay,
             broken_streak: self.broken_streak,
             flake_threshold: self.flake_threshold,
-            max_report_retries: i32::try_from(self.max_report_retries).unwrap_or(i32::MAX),
+            max_report_retries: self.max_report_retries,
             clock: std::sync::Arc::new(flakeradar_db::SystemClock),
         }
     }
@@ -342,47 +418,112 @@ impl Settings {
     ///
     /// `values` holds `FLAKERADAR_*` variables only; anything else is ignored,
     /// exactly as the frozen server's `extra="ignore"` did. A variable that is
-    /// absent keeps its default, so a test states only what it changes.
+    /// absent keeps its default, so a test states only what it changes, and every
+    /// default is stated once: in [`Settings::default`].
     ///
     /// # Errors
     ///
     /// Returns [`SettingsError::InvalidValue`] naming the variable when a value
-    /// cannot be parsed, and [`SettingsError::NotPostgres`] when the database
-    /// URL is not PostgreSQL.
+    /// cannot be parsed, [`SettingsError::OutOfRange`] when it parses but that
+    /// field could never take it, and [`SettingsError::NotPostgres`] when the
+    /// database URL is not PostgreSQL.
     pub fn from_map(values: &BTreeMap<String, String>) -> Result<Self, SettingsError> {
         let raw = Raw { values };
-        let settings = Self {
-            api_token: Secret::new(raw.text("API_TOKEN", DEFAULT_INSECURE_TOKEN)),
-            database_url: raw.text("DATABASE_URL", DEFAULT_DATABASE_URL),
-            score_window: raw.int("SCORE_WINDOW", 50)?,
-            score_decay: raw.float("SCORE_DECAY", 0.85)?,
-            broken_streak: raw.int("BROKEN_STREAK", 5)?,
-            github_token: Secret::new(raw.text("GITHUB_TOKEN", "")),
-            github_issue_label: raw.text("GITHUB_ISSUE_LABEL", "flakeradar"),
-            github_issue_min_score: raw.float("GITHUB_ISSUE_MIN_SCORE", 0.30)?,
-            github_issue_min_proven_flakes: raw.int("GITHUB_ISSUE_MIN_PROVEN_FLAKES", 0)?,
-            github_issue_min_failures: raw.int("GITHUB_ISSUE_MIN_FAILURES", 0)?,
-            github_sync_batch: raw.int("GITHUB_SYNC_BATCH", 2000)?,
-            github_fixed_streak: raw.int("GITHUB_FIXED_STREAK", 0)?,
-            github_close_fixed: raw.boolean("GITHUB_CLOSE_FIXED", false)?,
-            public_url: raw.text("PUBLIC_URL", ""),
-            flake_threshold: raw.float("FLAKE_THRESHOLD", 0.30)?,
-            webhook_urls: Secret::new(raw.text("WEBHOOK_URLS", "")),
-            webhook_format: raw.webhook_format("WEBHOOK_FORMAT")?,
-            cors_origins: raw.text("CORS_ORIGINS", "http://localhost:5173"),
-            worker_poll_seconds: raw.float("WORKER_POLL_SECONDS", 1.0)?,
-            db_command_timeout_seconds: raw.float("DB_COMMAND_TIMEOUT_SECONDS", 30.0)?,
-            max_report_retries: raw.int("MAX_REPORT_RETRIES", 3)?,
-            report_retention_days: raw.int("REPORT_RETENTION_DAYS", 7)?,
-            failed_report_retention_days: raw.int("FAILED_REPORT_RETENTION_DAYS", 0)?,
-            execution_retention_days: raw.int("EXECUTION_RETENTION_DAYS", 90)?,
-            score_history_retention_days: raw.int("SCORE_HISTORY_RETENTION_DAYS", 365)?,
-            prune_interval_seconds: raw.float("PRUNE_INTERVAL_SECONDS", 3600.0)?,
-            prune_batch: raw.int("PRUNE_BATCH", 5000)?,
-            prune_time_budget_seconds: raw.float("PRUNE_TIME_BUDGET_SECONDS", 60.0)?,
-            host: raw.text("HOST", DEFAULT_HOST),
-            port: raw.port("PORT", DEFAULT_PORT)?,
-        };
+        let mut settings = Self::default();
+        set_if_some(
+            &mut settings.api_token,
+            raw.text("API_TOKEN").map(Secret::new),
+        );
+        set_if_some(
+            &mut settings.database_url,
+            raw.text("DATABASE_URL").map(Secret::new),
+        );
+        set_if_some(&mut settings.score_window, raw.int("SCORE_WINDOW")?);
+        set_if_some(&mut settings.score_decay, raw.float("SCORE_DECAY")?);
+        set_if_some(&mut settings.broken_streak, raw.int("BROKEN_STREAK")?);
+        set_if_some(
+            &mut settings.github_token,
+            raw.text("GITHUB_TOKEN").map(Secret::new),
+        );
+        set_if_some(
+            &mut settings.github_issue_label,
+            raw.text("GITHUB_ISSUE_LABEL"),
+        );
+        set_if_some(
+            &mut settings.github_issue_min_score,
+            raw.float("GITHUB_ISSUE_MIN_SCORE")?,
+        );
+        set_if_some(
+            &mut settings.github_issue_min_proven_flakes,
+            raw.int("GITHUB_ISSUE_MIN_PROVEN_FLAKES")?,
+        );
+        set_if_some(
+            &mut settings.github_issue_min_failures,
+            raw.int("GITHUB_ISSUE_MIN_FAILURES")?,
+        );
+        set_if_some(
+            &mut settings.github_sync_batch,
+            raw.int("GITHUB_SYNC_BATCH")?,
+        );
+        set_if_some(
+            &mut settings.github_fixed_streak,
+            raw.int("GITHUB_FIXED_STREAK")?,
+        );
+        set_if_some(
+            &mut settings.github_close_fixed,
+            raw.boolean("GITHUB_CLOSE_FIXED")?,
+        );
+        set_if_some(&mut settings.public_url, raw.text("PUBLIC_URL"));
+        set_if_some(&mut settings.flake_threshold, raw.float("FLAKE_THRESHOLD")?);
+        set_if_some(
+            &mut settings.webhook_urls,
+            raw.text("WEBHOOK_URLS").map(Secret::new),
+        );
+        set_if_some(
+            &mut settings.webhook_format,
+            raw.webhook_format("WEBHOOK_FORMAT")?,
+        );
+        set_if_some(&mut settings.cors_origins, raw.text("CORS_ORIGINS"));
+        set_if_some(
+            &mut settings.worker_poll_seconds,
+            raw.float("WORKER_POLL_SECONDS")?,
+        );
+        set_if_some(
+            &mut settings.db_command_timeout_seconds,
+            raw.float("DB_COMMAND_TIMEOUT_SECONDS")?,
+        );
+        set_if_some(
+            &mut settings.max_report_retries,
+            raw.int("MAX_REPORT_RETRIES")?,
+        );
+        set_if_some(
+            &mut settings.report_retention_days,
+            raw.int("REPORT_RETENTION_DAYS")?,
+        );
+        set_if_some(
+            &mut settings.failed_report_retention_days,
+            raw.int("FAILED_REPORT_RETENTION_DAYS")?,
+        );
+        set_if_some(
+            &mut settings.execution_retention_days,
+            raw.int("EXECUTION_RETENTION_DAYS")?,
+        );
+        set_if_some(
+            &mut settings.score_history_retention_days,
+            raw.int("SCORE_HISTORY_RETENTION_DAYS")?,
+        );
+        set_if_some(
+            &mut settings.prune_interval_seconds,
+            raw.float("PRUNE_INTERVAL_SECONDS")?,
+        );
+        set_if_some(&mut settings.prune_batch, raw.int("PRUNE_BATCH")?);
+        set_if_some(
+            &mut settings.prune_time_budget_seconds,
+            raw.float("PRUNE_TIME_BUDGET_SECONDS")?,
+        );
+        set_if_some(&mut settings.host, raw.text("HOST"));
+        set_if_some(&mut settings.port, raw.port("PORT")?);
+        settings.validate()?;
         settings.check_database_url()?;
         Ok(settings)
     }
@@ -409,16 +550,75 @@ impl Settings {
         self
     }
 
+    /// Refuses a value that no configuration of its field could mean.
+    ///
+    /// The frozen server accepted every value the type admitted, and the fields'
+    /// meanings are narrower than their types: a NaN decay scored every Test 1.0
+    /// because `f64::min` answers the other operand, a window of 0 weighed no
+    /// Execution at all, and a poll of 0 made the worker query with no wait. A
+    /// refused value stops the process at start-up instead, and the error names
+    /// the variable rather than the value of a secret.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SettingsError::OutOfRange`] naming the variable and the range
+    /// the field accepts.
+    fn validate(&self) -> Result<(), SettingsError> {
+        at_least("SCORE_WINDOW", &self.score_window, &1)?;
+        fraction("SCORE_DECAY", self.score_decay)?;
+        at_least("BROKEN_STREAK", &self.broken_streak, &0)?;
+        fraction("GITHUB_ISSUE_MIN_SCORE", self.github_issue_min_score)?;
+        at_least(
+            "GITHUB_ISSUE_MIN_PROVEN_FLAKES",
+            &self.github_issue_min_proven_flakes,
+            &0,
+        )?;
+        at_least(
+            "GITHUB_ISSUE_MIN_FAILURES",
+            &self.github_issue_min_failures,
+            &0,
+        )?;
+        at_least("GITHUB_SYNC_BATCH", &self.github_sync_batch, &0)?;
+        at_least("GITHUB_FIXED_STREAK", &self.github_fixed_streak, &0)?;
+        fraction("FLAKE_THRESHOLD", self.flake_threshold)?;
+        interval("WORKER_POLL_SECONDS", self.worker_poll_seconds)?;
+        interval(
+            "DB_COMMAND_TIMEOUT_SECONDS",
+            self.db_command_timeout_seconds,
+        )?;
+        at_least("MAX_REPORT_RETRIES", &self.max_report_retries, &0)?;
+        at_least("REPORT_RETENTION_DAYS", &self.report_retention_days, &0)?;
+        at_least(
+            "FAILED_REPORT_RETENTION_DAYS",
+            &self.failed_report_retention_days,
+            &0,
+        )?;
+        at_least(
+            "EXECUTION_RETENTION_DAYS",
+            &self.execution_retention_days,
+            &0,
+        )?;
+        at_least(
+            "SCORE_HISTORY_RETENTION_DAYS",
+            &self.score_history_retention_days,
+            &0,
+        )?;
+        interval("PRUNE_INTERVAL_SECONDS", self.prune_interval_seconds)?;
+        at_least("PRUNE_BATCH", &self.prune_batch, &1)?;
+        interval("PRUNE_TIME_BUDGET_SECONDS", self.prune_time_budget_seconds)
+    }
+
     /// Refuses a non-PostgreSQL database URL.
     ///
     /// # Errors
     ///
     /// Returns [`SettingsError::NotPostgres`] for any other scheme. The three
     /// PostgreSQL spellings are all accepted, because
-    /// [`flakeradar_db::connect`] rewrites them.
+    /// [`flakeradar_db::connect`] rewrites them. The URL is not repeated in the
+    /// error: it holds the database password.
     fn check_database_url(&self) -> Result<(), SettingsError> {
         for prefix in ["postgresql://", "postgres://", "postgresql+asyncpg://"] {
-            if self.database_url.starts_with(prefix) {
+            if self.database_url.expose().starts_with(prefix) {
                 return Ok(());
             }
         }
@@ -531,28 +731,140 @@ pub fn assert_secure_token(
 ///
 /// # Errors
 ///
-/// Returns [`SettingsError::EnvFile`] when the file exists but cannot be read or
-/// parsed. A missing file contributes nothing.
+/// Returns [`SettingsError::EnvFile`] when the file exists but cannot be read, and
+/// [`SettingsError::EnvFileLine`] when a line of it is not an assignment. A
+/// missing file contributes nothing.
 fn environment_values(
     path: &Path,
     process: impl Iterator<Item = (String, String)>,
 ) -> Result<BTreeMap<String, String>, SettingsError> {
     let mut values = BTreeMap::new();
     if path.is_file() {
-        let entries = dotenvy::from_path_iter(path).map_err(|source| SettingsError::EnvFile {
-            path: path.display().to_string(),
-            source: std::io::Error::other(source.to_string()),
-        })?;
-        for entry in entries {
-            let (key, value) = entry.map_err(|source| SettingsError::EnvFile {
-                path: path.display().to_string(),
-                source: std::io::Error::other(source.to_string()),
-            })?;
-            let _ = values.insert(key, value);
-        }
+        values.extend(dotenv_values(path)?);
     }
     values.extend(process);
     Ok(values)
+}
+
+/// Every variable the `.env` file at `path` sets.
+///
+/// A line that does not parse is refused by its number and never by its text:
+/// the file holds tokens, and this error is what `main` logs.
+fn dotenv_values(path: &Path) -> Result<BTreeMap<String, String>, SettingsError> {
+    let file = std::fs::File::open(path).map_err(|source| SettingsError::EnvFile {
+        path: path.display().to_string(),
+        source,
+    })?;
+    let mut lines = LineCounted::new(std::io::BufReader::new(file));
+    let mut values = BTreeMap::new();
+    let mut failure = None;
+    for entry in dotenvy::from_read_iter(&mut lines) {
+        match entry {
+            Ok((key, value)) => {
+                let _ = values.insert(key, value);
+            }
+            Err(error) => {
+                failure = Some(error);
+                break;
+            }
+        }
+    }
+    if let Some(error) = failure {
+        return Err(dotenv_error(path, &lines, error));
+    }
+    Ok(values)
+}
+
+/// The settings error a `.env` read failure deserves.
+fn dotenv_error(
+    path: &Path,
+    lines: &LineCounted<impl std::io::BufRead>,
+    error: dotenvy::Error,
+) -> SettingsError {
+    let path = path.display().to_string();
+    match error {
+        dotenvy::Error::LineParse(text, _index) => SettingsError::EnvFileLine {
+            path,
+            line: lines.first_line_of(&text),
+        },
+        other => SettingsError::EnvFile {
+            path,
+            source: std::io::Error::other(other.to_string()),
+        },
+    }
+}
+
+/// A reader that counts the lines it has handed out.
+///
+/// `dotenvy` reports a malformed `.env` line by its text and its position within
+/// that text, never by its line number, so the number comes from here: the reader
+/// hands out one line per `read` call, which keeps `dotenvy`'s buffer from
+/// running ahead of the line it is parsing.
+struct LineCounted<R> {
+    inner: R,
+    /// How many line breaks `inner` has handed out.
+    breaks: usize,
+    /// Whether the last byte handed out was a line break.
+    ended_line: bool,
+}
+
+impl<R: std::io::BufRead> LineCounted<R> {
+    /// Reads `inner` one line at a time.
+    fn new(inner: R) -> Self {
+        Self {
+            inner,
+            breaks: 0,
+            ended_line: false,
+        }
+    }
+
+    /// The 1-based number of the line `text` starts on.
+    ///
+    /// `text` is what `dotenvy` refused: either a fragment of the line it was
+    /// parsing, or every line it had read when a quote was left open. Both end at
+    /// the last byte read, so the fragment's first line is that byte's line minus
+    /// the line breaks inside the fragment.
+    fn first_line_of(&self, text: &str) -> usize {
+        let current = if self.ended_line {
+            self.breaks
+        } else {
+            self.breaks.saturating_add(1)
+        };
+        let inside = text.matches('\n').count();
+        let first = if text.ends_with('\n') {
+            current.saturating_sub(inside).saturating_add(1)
+        } else {
+            current.saturating_sub(inside)
+        };
+        first.max(1)
+    }
+}
+
+impl<R: std::io::BufRead> std::io::Read for LineCounted<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let available = self.inner.fill_buf()?;
+        if available.is_empty() || buf.is_empty() {
+            return Ok(0);
+        }
+        // Up to and including the next line break, so a caller's 8 KiB buffer
+        // never holds a second line; a line longer than the buffer is split.
+        let up_to_break = available
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map_or(available.len(), |index| index.saturating_add(1));
+        let read = up_to_break.min(buf.len());
+        for (slot, byte) in buf.iter_mut().zip(available.iter()) {
+            *slot = *byte;
+        }
+        self.breaks += available
+            .iter()
+            .take(read)
+            .filter(|byte| **byte == b'\n')
+            .count();
+        self.ended_line = available.iter().take(read).next_back() == Some(&b'\n');
+        self.inner.consume(read);
+        Ok(read)
+    }
 }
 
 #[cfg(test)]
@@ -561,6 +873,8 @@ mod tests {
 
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
+
+    use anyhow::Context as _;
 
     use super::{
         DEFAULT_DATABASE_URL, DEFAULT_HOST, DEFAULT_INSECURE_TOKEN, DEFAULT_PORT, Secret, Settings,
@@ -613,7 +927,7 @@ mod tests {
     fn every_setting_defaults_to_the_frozen_servers_value() {
         let settings = Settings::default();
         assert_eq!(settings.api_token.expose(), DEFAULT_INSECURE_TOKEN);
-        assert_eq!(settings.database_url, DEFAULT_DATABASE_URL);
+        assert_eq!(settings.database_url.expose(), DEFAULT_DATABASE_URL);
         assert_eq!(settings.score_window, 50);
         assert_eq!(settings.score_decay, 0.85);
         assert_eq!(settings.broken_streak, 5);
@@ -690,7 +1004,7 @@ mod tests {
         // A `str` field keeps the spaces the environment held, as Pydantic kept
         // them: the token is a credential, so nothing rewrites it.
         assert_eq!(settings.api_token.expose(), " token ");
-        assert_eq!(settings.database_url, "postgres://u@h/d");
+        assert_eq!(settings.database_url.expose(), "postgres://u@h/d");
         assert_eq!(settings.score_window, 7);
         assert_eq!(settings.score_decay, 0.5);
         assert_eq!(settings.broken_streak, 2);
@@ -825,7 +1139,7 @@ mod tests {
         ] {
             let settings = Settings::from_map(&map(&[("FLAKERADAR_DATABASE_URL", url)]))
                 .expect("a PostgreSQL URL is accepted");
-            assert_eq!(settings.database_url, url);
+            assert_eq!(settings.database_url.expose(), url);
         }
     }
 
@@ -838,15 +1152,32 @@ mod tests {
                 "FLAKERADAR_WEBHOOK_URLS",
                 "https://hooks.example.com/T000/B000/xyz",
             ),
+            // The database URL holds the password, so it is a credential too.
+            (
+                "FLAKERADAR_DATABASE_URL",
+                "postgresql://flakeradar:s3cret-password@db:5432/flakeradar",
+            ),
         ]))
         .expect("the fixture is valid");
         let printed = format!("{settings:?}");
         assert!(!printed.contains("super-secret-token"), "{printed}");
         assert!(!printed.contains("ghp_secret"), "{printed}");
         assert!(!printed.contains("hooks.example.com"), "{printed}");
+        assert!(!printed.contains("s3cret-password"), "{printed}");
         assert!(printed.contains("Secret(..)"), "{printed}");
         // The wrapper redacts whatever it holds, including the empty default.
         assert_eq!(format!("{:?}", Secret::new("s3cret")), "Secret(..)");
+    }
+
+    #[test]
+    fn the_lock_session_never_prints_its_database_password() {
+        let lock = crate::worker::AdvisoryLock::new(
+            "postgresql://flakeradar:s3cret-password@db:5432/flakeradar",
+            flakeradar_db::DbSettings::default(),
+        );
+        let printed = format!("{lock:?}");
+        assert!(!printed.contains("s3cret-password"), "{printed}");
+        assert!(printed.contains("Secret(..)"), "{printed}");
     }
 
     #[test]
@@ -920,11 +1251,17 @@ mod tests {
 
     #[test]
     fn a_command_timeout_of_zero_is_refused() {
-        let settings = Settings::from_map(&map(&[("FLAKERADAR_DB_COMMAND_TIMEOUT_SECONDS", "0")]))
-            .expect("the fixture is valid");
-        settings
-            .database_settings()
-            .expect_err("a zero timeout is refused");
+        let error = Settings::from_map(&map(&[("FLAKERADAR_DB_COMMAND_TIMEOUT_SECONDS", "0")]))
+            .expect_err("a zero timeout would cancel every statement");
+        assert!(
+            error
+                .to_string()
+                .contains("FLAKERADAR_DB_COMMAND_TIMEOUT_SECONDS"),
+            "{error}"
+        );
+        // The pool's own settings refuse it as well, for a caller that builds
+        // them without going through the environment.
+        flakeradar_db::DbSettings::new(0.0).expect_err("a zero timeout is refused");
         assert_eq!(
             Settings::default()
                 .database_settings()
@@ -967,5 +1304,130 @@ mod tests {
             environment_values(&path, std::iter::empty()).expect_err("a malformed line is refused");
         assert!(error.to_string().contains("flakeradar-env-"), "{error}");
         std::fs::remove_file(&path).expect("the fixture is removed");
+    }
+
+    #[test]
+    fn a_malformed_dotenv_line_names_its_number_and_never_its_text() {
+        // With and without a final newline: both report the line the refused text
+        // starts on, and neither repeats the text.
+        for (name, contents) in [
+            (
+                "terminated",
+                "FLAKERADAR_PORT=9000\ns3cret-token is not an assignment\n",
+            ),
+            (
+                "unterminated",
+                "FLAKERADAR_PORT=9000\ns3cret-token is not an assignment",
+            ),
+        ] {
+            let path = dotenv_fixture(name, contents);
+            let error = environment_values(&path, std::iter::empty())
+                .expect_err("a malformed line is refused");
+            let text = error.to_string();
+            assert!(text.contains("line 2"), "{name}: {text}");
+            assert!(!text.contains("s3cret-token"), "{name}: {text}");
+            std::fs::remove_file(&path).expect("the fixture is removed");
+        }
+    }
+
+    #[test]
+    fn a_dotenv_token_never_reaches_the_log_main_writes() {
+        // The `main` path: read the settings, add the context it adds, log the
+        // error the way it logs one. A `.env` holds tokens, and an unclosed
+        // quote is the mistake `dotenvy` reports by printing the whole line.
+        let path = dotenv_fixture(
+            "token",
+            "FLAKERADAR_PORT=9000\nFLAKERADAR_API_TOKEN=\"s3cret-token\n",
+        );
+        let logged = captured_log(|| {
+            let error = environment_values(&path, std::iter::empty())
+                .context("reading the settings")
+                .expect_err("the unclosed quote is refused");
+            tracing::error!(error = ?error, "flakeradar exited with a failure");
+        });
+        assert!(logged.contains("flakeradar-env-"), "{logged}");
+        assert!(logged.contains("line 2"), "{logged}");
+        assert!(!logged.contains("s3cret-token"), "{logged}");
+        std::fs::remove_file(&path).expect("the fixture is removed");
+    }
+
+    #[test]
+    fn a_value_no_configuration_of_its_field_could_mean_is_refused() {
+        let cases: &[(&str, &str)] = &[
+            ("FLAKERADAR_SCORE_DECAY", "NaN"),
+            ("FLAKERADAR_SCORE_DECAY", "-0.5"),
+            ("FLAKERADAR_SCORE_DECAY", "1.5"),
+            ("FLAKERADAR_SCORE_DECAY", "inf"),
+            ("FLAKERADAR_FLAKE_THRESHOLD", "-3"),
+            ("FLAKERADAR_FLAKE_THRESHOLD", "NaN"),
+            ("FLAKERADAR_GITHUB_ISSUE_MIN_SCORE", "2"),
+            ("FLAKERADAR_SCORE_WINDOW", "-1"),
+            ("FLAKERADAR_SCORE_WINDOW", "0"),
+            ("FLAKERADAR_WORKER_POLL_SECONDS", "-1"),
+            ("FLAKERADAR_WORKER_POLL_SECONDS", "0"),
+            ("FLAKERADAR_WORKER_POLL_SECONDS", "NaN"),
+            ("FLAKERADAR_PRUNE_INTERVAL_SECONDS", "-3600"),
+            ("FLAKERADAR_PRUNE_TIME_BUDGET_SECONDS", "0"),
+            ("FLAKERADAR_DB_COMMAND_TIMEOUT_SECONDS", "-1"),
+            ("FLAKERADAR_BROKEN_STREAK", "-1"),
+            ("FLAKERADAR_GITHUB_FIXED_STREAK", "-2"),
+            ("FLAKERADAR_GITHUB_SYNC_BATCH", "-5"),
+            ("FLAKERADAR_GITHUB_ISSUE_MIN_PROVEN_FLAKES", "-1"),
+            ("FLAKERADAR_GITHUB_ISSUE_MIN_FAILURES", "-1"),
+            ("FLAKERADAR_MAX_REPORT_RETRIES", "-1"),
+            ("FLAKERADAR_REPORT_RETENTION_DAYS", "-1"),
+            ("FLAKERADAR_FAILED_REPORT_RETENTION_DAYS", "-1"),
+            ("FLAKERADAR_EXECUTION_RETENTION_DAYS", "-30"),
+            ("FLAKERADAR_SCORE_HISTORY_RETENTION_DAYS", "-1"),
+            ("FLAKERADAR_PRUNE_BATCH", "0"),
+        ];
+        for (variable, value) in cases {
+            let error = Settings::from_map(&map(&[(variable, value)]))
+                .expect_err("the value is outside what the field means");
+            let text = error.to_string();
+            assert!(text.contains(variable), "{variable}={value}: {text}");
+            assert!(
+                text.contains(value),
+                "the refusal names the value it read: {variable}={value}: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_database_url_error_never_carries_the_password() {
+        let error = Settings::from_map(&map(&[(
+            "FLAKERADAR_DATABASE_URL",
+            "sqlite://flakeradar:s3cret-password@db/flakeradar",
+        )]))
+        .expect_err("sqlite is not PostgreSQL");
+        assert!(!error.to_string().contains("s3cret-password"), "{error}");
+    }
+
+    #[test]
+    fn the_settings_views_and_retention_agree_on_every_default() {
+        let settings = Settings::default();
+        let processing = flakeradar_db::ProcessingSettings::default();
+        let reads = flakeradar_db::ReadSettings::default();
+        let retention = flakeradar_db::RetentionSettings::default();
+        // The views are the same types on both sides, so a default that lives in
+        // one place and is restated in another cannot drift unnoticed.
+        assert_eq!(settings.processing().score_window, processing.score_window);
+        assert_eq!(settings.reads().score_window, reads.score_window);
+        assert_eq!(settings.processing().score_decay, processing.score_decay);
+        assert_eq!(
+            settings.processing().broken_streak,
+            processing.broken_streak
+        );
+        assert_eq!(settings.reads().broken_streak, reads.broken_streak);
+        assert_eq!(
+            settings.processing().flake_threshold,
+            processing.flake_threshold
+        );
+        assert_eq!(settings.reads().flake_threshold, reads.flake_threshold);
+        assert_eq!(
+            settings.processing().max_report_retries,
+            processing.max_report_retries
+        );
+        assert_eq!(settings.retention(), retention);
     }
 }

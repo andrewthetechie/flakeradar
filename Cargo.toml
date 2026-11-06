@@ -50,6 +50,7 @@ tracing = { version = "0.1", default-features = false }
 tracing-subscriber = { version = "0.3", default-features = false }
 utoipa = { version = "6", default-features = false }
 utoipa-redoc = { version = "7", default-features = false }
+url = { version = "2", default-features = false }
 # Test-only. Members name these under `[dev-dependencies]`.
 testcontainers = { version = "0.28", default-features = false }
 wiremock = { version = "0.6", default-features = false }

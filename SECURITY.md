@@ -26,11 +26,20 @@ FlakeRadar's security posture is deliberate and documented:
   same trust level under which they can already read every result. Gate it at
   the reverse proxy if your dashboard is not on a trusted network.
 - **Secrets** (`FLAKERADAR_API_TOKEN`, `FLAKERADAR_GITHUB_TOKEN`,
-  `FLAKERADAR_WEBHOOK_URLS`) live only in `.env`, which is git-ignored. Never
-  commit them. Rotate the API token if it is ever exposed. The binary
-  **refuses to start** on the shipped default token (`changeme`) unless
-  `FLAKERADAR_ALLOW_INSECURE=1` is set, and it never logs a token or a Webhook
-  URL: those settings print redacted.
+  `FLAKERADAR_WEBHOOK_URLS`, and `FLAKERADAR_DATABASE_URL`, whose password is a
+  credential) live only in `.env`, which is git-ignored. Never commit them.
+  Rotate the API token if it is ever exposed. The binary **refuses to start** on
+  the shipped default token (`changeme`) unless `FLAKERADAR_ALLOW_INSECURE=1` is
+  set, and no secret reaches a log line or a `Debug` print: those four settings
+  print redacted in every struct that holds them, an error about a refused
+  setting names the `FLAKERADAR_*` variable and never a secret's value, and an
+  error about a malformed `.env` names the file and the line number and never
+  the line. A database URL the driver cannot parse is echoed with its password
+  replaced by `***`.
+- **A setting outside what its field means refuses to start** (exit status 1)
+  rather than scoring wrong: a NaN or out-of-range `FLAKERADAR_SCORE_DECAY`
+  would otherwise mark every Test flaky. The ranges are listed in
+  `docs/plans/rust-rewrite/differences.md`.
 - **The database is trusted.** The binary creates its schema and refuses a
   database another tool made; it needs a role that can create tables on first
   start.

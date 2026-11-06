@@ -283,6 +283,33 @@ async fn the_app_is_built_over_the_state_it_is_given() {
     assert_eq!(reply.json(), json!({"status": "ok"}));
 }
 
+#[tokio::test]
+async fn the_app_state_debug_names_no_database_password() {
+    let db = TestDb::new().await.expect("a test database is available");
+    let state = AppState::new(
+        db.connection().clone(),
+        std::sync::Arc::new(settings(&[
+            ("FLAKERADAR_API_TOKEN", "real-token"),
+            (
+                "FLAKERADAR_DATABASE_URL",
+                "postgresql://flakeradar:s3cret-password@db:5432/flakeradar",
+            ),
+            (
+                "FLAKERADAR_WEBHOOK_URLS",
+                "https://hooks.example.com/T000/B000/xyz",
+            ),
+        ])),
+    )
+    .expect("the app state builds");
+    let printed = format!("{state:?}");
+    // The state derives `Debug` over the settings, so every credential in them
+    // reaches any log line that prints it unless the field redacts itself.
+    assert!(!printed.contains("s3cret-password"), "{printed}");
+    assert!(!printed.contains("real-token"), "{printed}");
+    assert!(!printed.contains("hooks.example.com"), "{printed}");
+    assert!(printed.contains("Secret(..)"), "{printed}");
+}
+
 /// A log sink a test can read back.
 ///
 /// The subscriber is installed for the current thread only, so it sees the

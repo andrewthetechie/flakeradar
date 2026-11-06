@@ -14,7 +14,7 @@ use std::fmt;
 use flakeradar_core::{
     ExecutionStatus, FailureCategory, JobStatus, ParseError, ParsedCase, PipelineReportIn, Tier,
     TierChange, branch_scoped_fail_streak, branch_scoped_score, branch_scoped_streak,
-    classify_failure, dominant_category, is_broken, parse_junit_xml, tier_for,
+    classify_failure, defaults, dominant_category, is_broken, parse_junit_xml, tier_for,
 };
 use sea_orm::entity::prelude::DateTimeWithTimeZone;
 use sea_orm::{
@@ -69,11 +69,11 @@ pub struct ProcessingSettings {
 impl Default for ProcessingSettings {
     fn default() -> Self {
         Self {
-            score_window: 50,
-            score_decay: 0.85,
-            broken_streak: 5,
-            flake_threshold: 0.30,
-            max_report_retries: 3,
+            score_window: defaults::SCORE_WINDOW,
+            score_decay: defaults::SCORE_DECAY,
+            broken_streak: defaults::BROKEN_STREAK,
+            flake_threshold: defaults::FLAKE_THRESHOLD,
+            max_report_retries: defaults::MAX_REPORT_RETRIES,
             clock: std::sync::Arc::new(SystemClock),
         }
     }

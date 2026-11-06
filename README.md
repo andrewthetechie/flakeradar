@@ -1085,7 +1085,10 @@ Alert when the queue stops draining:
 ## Configuration
 
 FlakeRadar reads environment variables with the prefix `FLAKERADAR_`. It also
-reads a `.env` file.
+reads a `.env` file. A value outside what its setting means — a NaN or
+out-of-range score decay, a score window below 1, a negative retention window, a
+poll of 0 — stops the process at start-up with an error naming the variable,
+rather than scoring with a value nobody meant.
 
 | Variable | Default | Meaning |
 |---|---|---|

@@ -1217,12 +1217,7 @@ async fn test_candidates(
             .iter()
             .map(|candidate| candidate.test.id)
             .collect();
-        let failures = window_failures(
-            db,
-            &ids,
-            usize::try_from(settings.score_window.max(1)).unwrap_or(usize::MAX),
-        )
-        .await?;
+        let failures = window_failures(db, &ids, settings.score_window).await?;
         candidates.retain(|candidate| {
             failures
                 .get(&candidate.test.id)
@@ -1276,12 +1271,7 @@ async fn job_candidates(
             .iter()
             .map(|candidate| candidate.job.id)
             .collect();
-        let failures = unexplained_failure_counts(
-            db,
-            &ids,
-            usize::try_from(settings.score_window.max(1)).unwrap_or(usize::MAX),
-        )
-        .await?;
+        let failures = unexplained_failure_counts(db, &ids, settings.score_window).await?;
         candidates.retain(|candidate| {
             failures
                 .get(&candidate.job.id)

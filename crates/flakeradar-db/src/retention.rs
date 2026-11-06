@@ -17,6 +17,7 @@
 // Rust guideline compliant 2026-07-21
 
 use chrono::{NaiveDate, TimeDelta};
+use flakeradar_core::defaults;
 use sea_orm::entity::prelude::DateTimeWithTimeZone;
 use sea_orm::sea_query::{Expr, ExprTrait as _, Order, Query};
 use sea_orm::{
@@ -65,12 +66,12 @@ pub struct RetentionSettings {
 impl Default for RetentionSettings {
     fn default() -> Self {
         Self {
-            report_days: 7,
-            failed_report_days: 0,
-            execution_days: 90,
-            history_days: 365,
-            batch: 5000,
-            time_budget_seconds: 60.0,
+            report_days: defaults::REPORT_RETENTION_DAYS,
+            failed_report_days: defaults::FAILED_REPORT_RETENTION_DAYS,
+            execution_days: defaults::EXECUTION_RETENTION_DAYS,
+            history_days: defaults::SCORE_HISTORY_RETENTION_DAYS,
+            batch: defaults::PRUNE_BATCH,
+            time_budget_seconds: defaults::PRUNE_TIME_BUDGET_SECONDS,
         }
     }
 }

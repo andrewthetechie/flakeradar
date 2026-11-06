@@ -314,12 +314,6 @@ impl WebhookWorker {
     pub fn dropped(&self) -> usize {
         *guard(&self.shared.dropped)
     }
-
-    /// The Webhook URLs the task posts to, for a test.
-    #[must_use]
-    pub fn urls(&self) -> Vec<String> {
-        self.shared.urls.clone()
-    }
 }
 
 impl LeaderTask for WebhookWorker {

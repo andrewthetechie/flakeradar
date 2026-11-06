@@ -16,6 +16,15 @@ pub enum DbError {
          (postgresql+asyncpg://user:pass@host:5432/db)"
     )]
     NotPostgres,
+    /// The configured database URL is not a URL the driver can parse.
+    ///
+    /// The message carries a redacted copy, because the URL holds the database
+    /// password and the driver's own error would quote all of it.
+    #[error("FLAKERADAR_DATABASE_URL is not a URL: {url}")]
+    UnusableUrl {
+        /// The URL with its password replaced by `***`.
+        url: String,
+    },
     /// The connection settings hold a value PostgreSQL cannot accept.
     #[error("{variable} must be a positive number of seconds, got {value}")]
     InvalidTimeout {

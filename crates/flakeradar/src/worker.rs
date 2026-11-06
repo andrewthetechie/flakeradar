@@ -34,7 +34,7 @@ use sea_orm::{ConnectionTrait, DatabaseConnection, DbBackend, Statement};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use crate::settings::Settings;
+use crate::settings::{Secret, Settings};
 
 /// The advisory lock every process tries to take to become the processor.
 ///
@@ -304,7 +304,7 @@ pub trait LockSession: fmt::Debug + Send + Sync {
 /// backend took the lock and checks every liveness answer against it.
 #[derive(Debug)]
 pub struct AdvisoryLock {
-    url: String,
+    url: Secret,
     settings: DbSettings,
     session: tokio::sync::Mutex<Option<LockedSession>>,
 }
@@ -319,10 +319,13 @@ struct LockedSession {
 
 impl AdvisoryLock {
     /// A lock session over the pool `url` names.
+    ///
+    /// The URL is kept as a [`Secret`], so a `Debug` line on this lock — and on
+    /// the worker that holds it — prints no database password.
     #[must_use]
     pub fn new(url: impl Into<String>, settings: DbSettings) -> Self {
         Self {
-            url: url.into(),
+            url: Secret::new(url),
             settings,
             session: tokio::sync::Mutex::new(None),
         }
@@ -341,7 +344,7 @@ impl AdvisoryLock {
         match guard.take() {
             Some(session) => Ok(session),
             None => Ok(LockedSession {
-                connection: connect_session(&self.url, self.settings).await?,
+                connection: connect_session(self.url.expose(), self.settings).await?,
                 backend_pid: None,
             }),
         }

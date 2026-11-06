@@ -20,7 +20,7 @@ use flakeradar_core::{
     CiRunFailedJobOut, CiRunFailuresOut, CiRunTestFailureOut, ExecutionOut, ExplainingTestOut,
     FailedJobOutcome, FailureCategory, HistoryOut, JobExecutionOut, JobHistoryOut, JobOut,
     JobOutcome, JobPage, JobSummaryOut, LocationOut, QuarantineItem, RepoOut, ReportCountsOut,
-    RunnerStatOut, ScorePointOut, SummaryOut, TestJobLinkOut, TestOut, TestPage, Trend,
+    RunnerStatOut, ScorePointOut, SummaryOut, TestJobLinkOut, TestOut, TestPage, Trend, defaults,
     escape_like, is_broken, issue_url, permalink, repo_path, tier_for, trend_for,
 };
 use sea_orm::{ConnectionTrait, DbBackend, DbErr, QueryResult, Statement, TryGetable, Value};
@@ -84,9 +84,9 @@ impl std::fmt::Debug for ReadSettings {
 impl Default for ReadSettings {
     fn default() -> Self {
         Self {
-            flake_threshold: 0.30,
-            broken_streak: 5,
-            score_window: 50,
+            flake_threshold: defaults::FLAKE_THRESHOLD,
+            broken_streak: defaults::BROKEN_STREAK,
+            score_window: defaults::SCORE_WINDOW,
             clock: std::sync::Arc::new(crate::clock::SystemClock),
         }
     }

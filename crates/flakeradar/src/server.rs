@@ -67,9 +67,12 @@ impl Server {
     /// cannot be built, or the address cannot be bound. Each carries the setting
     /// or address it failed on.
     pub async fn start(settings: Settings) -> anyhow::Result<Self> {
-        let pool = flakeradar_db::connect(&settings.database_url, settings.database_settings()?)
-            .await
-            .context("connecting to the database")?;
+        let pool = flakeradar_db::connect(
+            settings.database_url.expose(),
+            settings.database_settings()?,
+        )
+        .await
+        .context("connecting to the database")?;
         flakeradar_db::run_migrations(&pool)
             .await
             .context("migrating the database")?;
@@ -89,7 +92,10 @@ impl Server {
         tracing::info!(address = %address, "flakeradar listening");
         // The worker starts only once the socket is bound: a start-up that fails
         // before this point has no lock to hold and no task to leak.
-        let lock = AdvisoryLock::new(settings.database_url.clone(), settings.database_settings()?);
+        let lock = AdvisoryLock::new(
+            settings.database_url.expose(),
+            settings.database_settings()?,
+        );
         let processing = settings.processing();
         let mut worker = ReportWorker::new(
             pool.clone(),
@@ -186,12 +192,16 @@ mod tests {
                 .is_none(),
             "no URLs means no Notification task at all"
         );
-        let task = webhook_task(&settings(&[
-            ("FLAKERADAR_API_TOKEN", "real-token"),
-            ("FLAKERADAR_WEBHOOK_URLS", " https://hooks.example.com/a , "),
-        ]))
-        .expect("a configured endpoint builds the task")
-        .expect("the task is there");
-        assert_eq!(task.urls(), vec!["https://hooks.example.com/a"]);
+        // What the task does with the URLs it was given is `tests/webhooks.rs`'s
+        // subject, where a real endpoint receives the batch.
+        assert!(
+            webhook_task(&settings(&[
+                ("FLAKERADAR_API_TOKEN", "real-token"),
+                ("FLAKERADAR_WEBHOOK_URLS", " https://hooks.example.com/a , "),
+            ]))
+            .expect("a configured endpoint builds the task")
+            .is_some(),
+            "one URL means one Notification task"
+        );
     }
 }

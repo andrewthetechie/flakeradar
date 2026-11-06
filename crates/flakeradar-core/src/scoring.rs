@@ -121,7 +121,10 @@ pub fn count_same_sha_flips(executions: &[(&str, ExecutionStatus)]) -> usize {
 /// The Flakiness score and the Proven flake count of one history.
 ///
 /// The score is the flip score, floored and then raised by repeated proof of
-/// nondeterminism, capped at 1 and rounded to four decimals as Python does.
+/// nondeterminism, capped at 1 and rounded to four decimals as Python does. A
+/// flip rate that is not a number proves nothing, so it scores 0: `f64::min`
+/// answers the other operand for NaN, which used to turn an undefined rate into a
+/// perfect score.
 ///
 /// # Examples
 ///
@@ -147,9 +150,15 @@ pub fn combined_score(
         // toward 1.
         score = score.max(1.0_f64.min(proof_floor(confirmed)));
     }
-    (round4(score.min(1.0)), confirmed)
+    // A rate that is not a number scores nothing: `min` answers the other side
+    // for NaN, so an undefined rate would otherwise be served as a perfect one.
+    let score = if score.is_finite() {
+        score.min(1.0)
+    } else {
+        0.0
+    };
+    (round4(score), confirmed)
 }
-
 /// The score floor repeated proof of nondeterminism earns.
 ///
 /// Python evaluated `SAME_SHA_FLOOR + 0.1 * (count - 1)` with two roundings; a
@@ -285,6 +294,19 @@ mod tests {
         (0..count)
             .map(|index| if index % 2 == 0 { Passed } else { Failed })
             .collect()
+    }
+
+    #[test]
+    fn a_decay_that_is_not_a_number_scores_nothing() {
+        // `f64::min` answers the other operand when one side is NaN, so the old
+        // `score.min(1.0)` turned an undefined flip rate into a perfect score:
+        // a typo in `FLAKERADAR_SCORE_DECAY` marked every Test flaky.
+        let statuses = repeat(Passed, 4);
+        for decay in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let (score, proven) = combined_score(&statuses, &[], decay, 50);
+            assert_eq!(score, 0.0, "decay {decay}");
+            assert_eq!(proven, 0);
+        }
     }
 
     #[test]
