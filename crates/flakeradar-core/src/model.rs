@@ -196,6 +196,48 @@ pub enum FailedJobOutcome {
     Unexplained,
 }
 
+/// Which of the two scored entities something is about.
+///
+/// A Test is scored per Project; a Job belongs to a Repo through its Pipeline.
+/// The wire spells both lowercase, which is also the key a Notification's JSON
+/// payload uses for the entity object.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum EntityKind {
+    /// A Test.
+    Test,
+    /// A Job.
+    Job,
+}
+
+impl EntityKind {
+    /// Both entities, in the order the sync and the leaderboard list them.
+    pub const ALL: [Self; 2] = [Self::Test, Self::Job];
+
+    /// The entity as the frozen server spelled it: `test` or `job`.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Test => "test",
+            Self::Job => "job",
+        }
+    }
+
+    /// The entity's name in a sentence: `Test` or `Job`.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Test => "Test",
+            Self::Job => "Job",
+        }
+    }
+}
+
+impl fmt::Display for EntityKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// Which of the two uploads a Report holds.
 ///
 /// A JUnit Report carries one JUnit XML file and becomes a Run; a Pipeline
@@ -288,8 +330,8 @@ impl fmt::Display for ReportStatus {
 #[cfg(test)]
 mod tests {
     use super::{
-        ExecutionStatus, FailedJobOutcome, JobOutcome, JobStatus, ReportKind, ReportStatus, Tier,
-        Trend,
+        EntityKind, ExecutionStatus, FailedJobOutcome, JobOutcome, JobStatus, ReportKind,
+        ReportStatus, Tier, Trend,
     };
 
     #[test]
@@ -334,6 +376,13 @@ mod tests {
         assert_eq!(Trend::Steady.to_string(), "steady");
         assert_eq!(JobStatus::Passed.to_string(), "passed");
         assert_eq!(JobStatus::Skipped.to_string(), "skipped");
+    }
+
+    #[test]
+    fn an_entity_kind_names_the_entity_two_ways() {
+        assert_eq!(EntityKind::ALL.map(EntityKind::as_str), ["test", "job"]);
+        assert_eq!(EntityKind::ALL.map(EntityKind::name), ["Test", "Job"]);
+        assert_eq!(EntityKind::Job.to_string(), "job");
     }
 
     #[test]

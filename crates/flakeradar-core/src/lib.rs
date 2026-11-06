@@ -56,10 +56,11 @@ pub use identity::{
 };
 #[doc(inline)]
 pub use model::{
-    ExecutionStatus, FailedJobOutcome, JobOutcome, JobStatus, ReportKind, ReportStatus, Tier, Trend,
+    EntityKind, ExecutionStatus, FailedJobOutcome, JobOutcome, JobStatus, ReportKind, ReportStatus,
+    Tier, Trend,
 };
 #[doc(inline)]
-pub use notify::{Kind, TierChange, WebhookFormat, parse_urls, render, render_json, render_slack};
+pub use notify::{TierChange, WebhookFormat, parse_urls, render, render_json, render_slack};
 #[doc(inline)]
 pub use parsing::{
     DETAILS_MAX, MESSAGE_MAX, PARSE_BYTES_MAX, ParseError, ParsedCase, SUITE_DEPTH_MAX,

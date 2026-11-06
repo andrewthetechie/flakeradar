@@ -15,9 +15,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use flakeradar::Settings;
 use flakeradar::github::{self, Api};
 use flakeradar::settings::Secret;
-use flakeradar_core::{ExecutionStatus, ReportStatus};
+use flakeradar_core::{EntityKind, ExecutionStatus, ReportStatus};
 use flakeradar_db::filing::{JobRow, RecentExecution, TestRow};
-use flakeradar_db::issue_links::{self, LinkTarget, linked_for_check};
+use flakeradar_db::issue_links::{self, linked_for_check};
 use flakeradar_db::{ProcessOutcome, ReadSettings};
 use flakeradar_test_support::{
     TestDb, make_execution, make_job, make_job_execution, make_pipeline, make_project, make_run,
@@ -1783,7 +1783,14 @@ fn an_issue_state_reason_that_is_not_text_reads_as_none() {
 
 #[test]
 fn the_fixed_comment_links_a_job_to_the_job_view() {
-    let comment = github::fixed_comment("job", 7, 3, 0.5, None, "https://flakes.example.com/");
+    let comment = github::fixed_comment(
+        EntityKind::Job,
+        7,
+        3,
+        0.5,
+        None,
+        "https://flakes.example.com/",
+    );
     assert_eq!(
         comment,
         "FlakeRadar: 3 passing runs since the last failure (score now 0.50). \
@@ -4825,7 +4832,7 @@ async fn a_link_replaced_during_the_sync_get_survives() {
     // issue. The answer to the old number must not touch the new link.
     let relink = async {
         arrived_rx.await.expect("the sync's GET arrives");
-        issue_links::store_filed_link(db.connection(), LinkTarget::Test, i64::from(test), 99)
+        issue_links::store_filed_link(db.connection(), EntityKind::Test, i64::from(test), 99)
             .await
             .expect("the link is replaced");
         release.send(()).expect("the GET is released");
@@ -5696,7 +5703,7 @@ async fn link_writes_reset_the_closed_flag() {
 
     issue_links::unlink_issue(
         db.connection(),
-        LinkTarget::Test,
+        EntityKind::Test,
         i64::from(flagged),
         &ReadSettings::default(),
     )
@@ -5722,7 +5729,7 @@ async fn link_writes_reset_the_closed_flag() {
         ))
         .await
         .expect("the fixture link writes");
-    issue_links::store_filed_link(db.connection(), LinkTarget::Test, i64::from(relinked), 44)
+    issue_links::store_filed_link(db.connection(), EntityKind::Test, i64::from(relinked), 44)
         .await
         .expect("the fresh link writes");
     assert_eq!(
@@ -5760,7 +5767,7 @@ async fn job_link_change_and_unlink_reset_the_check_stamp() {
 
     issue_links::link_issue(
         db.connection(),
-        LinkTarget::Job,
+        EntityKind::Job,
         i64::from(job),
         301,
         None,
@@ -5777,7 +5784,7 @@ async fn job_link_change_and_unlink_reset_the_check_stamp() {
 
     issue_links::link_issue(
         db.connection(),
-        LinkTarget::Job,
+        EntityKind::Job,
         i64::from(job),
         44,
         None,
@@ -5794,7 +5801,7 @@ async fn job_link_change_and_unlink_reset_the_check_stamp() {
     github::sync_closed_issues(db.connection(), &settings, &api(&server), &unstopped()).await;
     assert!(job_checked(&db, job).await, "the new link is checked");
 
-    issue_links::unlink_issue(db.connection(), LinkTarget::Job, i64::from(job), &reads)
+    issue_links::unlink_issue(db.connection(), EntityKind::Job, i64::from(job), &reads)
         .await
         .expect("the unlink succeeds");
     assert_eq!(job_link(&db, job).await.0, None, "no number is left");
@@ -6078,7 +6085,7 @@ async fn an_unlink_clears_both_halves_and_a_rearm_keeps_its_stamp() {
 
     issue_links::unlink_issue(
         db.connection(),
-        LinkTarget::Test,
+        EntityKind::Test,
         i64::from(unlinked),
         &ReadSettings::default(),
     )
@@ -6125,11 +6132,11 @@ async fn an_unlink_after_a_rearm_clears_the_kept_stamp_on_a_test_and_a_job() {
         let (id, number, target) = if entity == "test" {
             let id = flaky_test(&db).await;
             stamp_link(&db, id, 300, false, false).await;
-            (id, 300, LinkTarget::Test)
+            (id, 300, EntityKind::Test)
         } else {
             let id = flaky_job(&db).await;
             stamp_job_link(&db, id, 302, false).await;
-            (id, 302, LinkTarget::Job)
+            (id, 302, EntityKind::Job)
         };
         let server = MockServer::start().await;
         mount_state(
@@ -6221,7 +6228,7 @@ async fn an_unlink_rearms_a_declined_link_and_the_filer_files_it_again() {
 
     issue_links::unlink_issue(
         db.connection(),
-        LinkTarget::Test,
+        EntityKind::Test,
         i64::from(test),
         &ReadSettings::default(),
     )
@@ -6234,7 +6241,7 @@ async fn an_unlink_rearms_a_declined_link_and_the_filer_files_it_again() {
 
     issue_links::unlink_issue(
         db.connection(),
-        LinkTarget::Job,
+        EntityKind::Job,
         i64::from(job),
         &ReadSettings::default(),
     )
@@ -6296,14 +6303,14 @@ async fn every_link_write_clears_the_fixed_note_stamp() {
     stamp_note(&db, "test_cases", unlinked).await;
     stamp_note(&db, "jobs", job).await;
 
-    issue_links::store_filed_link(db.connection(), LinkTarget::Test, i64::from(filed), 11)
+    issue_links::store_filed_link(db.connection(), EntityKind::Test, i64::from(filed), 11)
         .await
         .expect("the filer stores what GitHub created");
     assert!(!noted(&db, "test_cases", filed).await);
 
     issue_links::link_issue(
         db.connection(),
-        LinkTarget::Test,
+        EntityKind::Test,
         i64::from(relinked),
         22,
         None,
@@ -6316,7 +6323,7 @@ async fn every_link_write_clears_the_fixed_note_stamp() {
 
     issue_links::link_issue(
         db.connection(),
-        LinkTarget::Job,
+        EntityKind::Job,
         i64::from(job),
         41,
         None,
@@ -6330,7 +6337,7 @@ async fn every_link_write_clears_the_fixed_note_stamp() {
 
     issue_links::unlink_issue(
         db.connection(),
-        LinkTarget::Test,
+        EntityKind::Test,
         i64::from(unlinked),
         &ReadSettings::default(),
     )

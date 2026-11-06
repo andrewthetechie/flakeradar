@@ -11,8 +11,8 @@ use axum::extract::State;
 use axum::routing::put;
 use axum::{Router, middleware};
 use flakeradar_core::dto::lax_bool;
-use flakeradar_core::{IssueLinkIn, JobOut, TestOut};
-use flakeradar_db::issue_links::{self, IssueLinkError, LinkTarget, LinkedOut};
+use flakeradar_core::{EntityKind, IssueLinkIn, JobOut, TestOut};
+use flakeradar_db::issue_links::{self, IssueLinkError, LinkedOut};
 
 use serde::Deserialize;
 
@@ -79,7 +79,7 @@ pub async fn link_test(
 ) -> RouteResult<Json<TestOut>> {
     let out = issue_links::link_issue(
         state.pool(),
-        LinkTarget::Test,
+        EntityKind::Test,
         path.test_id,
         body.number,
         body.url.as_deref(),
@@ -119,7 +119,7 @@ pub async fn unlink_test(
 ) -> RouteResult<Json<TestOut>> {
     let out = issue_links::unlink_issue(
         state.pool(),
-        LinkTarget::Test,
+        EntityKind::Test,
         path.test_id,
         &state.settings().reads(),
     )
@@ -164,7 +164,7 @@ pub async fn link_job(
 ) -> RouteResult<Json<JobOut>> {
     let out = issue_links::link_issue(
         state.pool(),
-        LinkTarget::Job,
+        EntityKind::Job,
         path.job_id,
         body.number,
         body.url.as_deref(),
@@ -204,7 +204,7 @@ pub async fn unlink_job(
 ) -> RouteResult<Json<JobOut>> {
     let out = issue_links::unlink_issue(
         state.pool(),
-        LinkTarget::Job,
+        EntityKind::Job,
         path.job_id,
         &state.settings().reads(),
     )

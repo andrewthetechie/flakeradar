@@ -13,6 +13,7 @@ mod common;
 
 use axum::http::{Method, StatusCode};
 use common::{app, get, post, request, request_with_headers, send, settings};
+use flakeradar_core::EntityKind;
 use flakeradar_test_support::{TestDb, make_job, make_pipeline, make_project, make_test_case};
 use sea_orm::ConnectionTrait as _;
 use sea_orm::DbBackend;
@@ -676,25 +677,17 @@ async fn replacing_a_link_puts_it_back_at_the_front_of_the_sync_rotation() {
         &json!({"number": 12}),
     )
     .await;
-    let rows = flakeradar_db::issue_links::linked_for_check(
-        db.connection(),
-        flakeradar_db::LinkTarget::Test,
-        10,
-    )
-    .await
-    .expect("the rotation list reads");
+    let rows = flakeradar_db::issue_links::linked_for_check(db.connection(), EntityKind::Test, 10)
+        .await
+        .expect("the rotation list reads");
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].number, 12);
     assert_eq!(rows[0].repo, "acme/app");
 
     delete(&app, &format!("/api/tests/{}/issue", test.id)).await;
-    let empty = flakeradar_db::issue_links::linked_for_check(
-        db.connection(),
-        flakeradar_db::LinkTarget::Test,
-        10,
-    )
-    .await
-    .expect("the rotation list reads");
+    let empty = flakeradar_db::issue_links::linked_for_check(db.connection(), EntityKind::Test, 10)
+        .await
+        .expect("the rotation list reads");
     assert!(empty.is_empty(), "an unlinked row has nothing to look up");
 }
 
@@ -877,8 +870,8 @@ async fn unlinking_a_job_clears_both_halves_and_its_provenance() {
     reason = "the test names the arm that must not happen when the engine answers"
 )]
 async fn the_link_engine_refuses_with_its_status_and_links() {
+    use flakeradar_core::EntityKind;
     use flakeradar_db::LinkError;
-    use flakeradar_db::LinkTarget;
     use flakeradar_db::issue_links::{IssueLinkError, link_issue};
 
     let db = TestDb::new().await.expect("a test database");
@@ -887,7 +880,7 @@ async fn the_link_engine_refuses_with_its_status_and_links() {
 
     let refused = link_issue(
         db.connection(),
-        LinkTarget::Test,
+        EntityKind::Test,
         i64::from(test.id),
         0,
         None,
@@ -918,7 +911,7 @@ async fn the_link_engine_refuses_with_its_status_and_links() {
 
     let linked = link_issue(
         db.connection(),
-        LinkTarget::Test,
+        EntityKind::Test,
         i64::from(test.id),
         11,
         None,

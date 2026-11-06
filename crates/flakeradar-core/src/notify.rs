@@ -14,27 +14,7 @@ use std::fmt::Write as _;
 use serde_json::{Map, Value};
 
 use crate::classify::FailureCategory;
-use crate::model::Tier;
-
-/// What a Tier change happened to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Kind {
-    /// A Test crossed the Flake threshold.
-    Test,
-    /// A Job crossed the Flake threshold.
-    Job,
-}
-
-impl Kind {
-    /// The key the entity's object takes in the JSON payload.
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Test => "test",
-            Self::Job => "job",
-        }
-    }
-}
+use crate::model::{EntityKind, Tier};
 
 /// The format a Webhook URL expects.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,7 +33,7 @@ pub enum WebhookFormat {
 #[derive(Debug, Clone, PartialEq)]
 pub struct TierChange {
     /// Whether a Test or a Job crossed.
-    pub kind: Kind,
+    pub kind: EntityKind,
     /// The Test's or Job's id.
     pub id: i64,
     /// The Repo's `owner/name`.
@@ -119,8 +99,8 @@ fn dashboard_url(change: &TierChange, public_url: &str) -> Option<String> {
     }
     let repo = percent_encode(&change.repo);
     match change.kind {
-        Kind::Job => Some(format!("{base}/?view=jobs&repo={repo}&job={}", change.id)),
-        Kind::Test => {
+        EntityKind::Job => Some(format!("{base}/?view=jobs&repo={repo}&job={}", change.id)),
+        EntityKind::Test => {
             let project = percent_encode(change.project.as_deref().unwrap_or_default());
             Some(format!(
                 "{base}/?repo={repo}&project={project}&test={}",
@@ -151,13 +131,13 @@ fn json_payload(change: &TierChange, public_url: &str) -> Value {
     let mut entity = Map::new();
     let _ = entity.insert("id".to_owned(), Value::from(change.id));
     match change.kind {
-        Kind::Job => {
+        EntityKind::Job => {
             let _ = entity.insert(
                 "pipeline".to_owned(),
                 change.pipeline.clone().map_or(Value::Null, Value::from),
             );
         }
-        Kind::Test => {
+        EntityKind::Test => {
             let _ = entity.insert(
                 "classname".to_owned(),
                 change.classname.clone().map_or(Value::Null, Value::from),
@@ -174,7 +154,7 @@ fn json_payload(change: &TierChange, public_url: &str) -> Value {
         "confirmed_flake_count".to_owned(),
         Value::from(change.proven_flake_count),
     );
-    if change.kind == Kind::Test {
+    if change.kind == EntityKind::Test {
         let _ = entity.insert(
             "failure_category".to_owned(),
             change
@@ -209,17 +189,17 @@ pub fn render_json(changes: &[TierChange], public_url: &str) -> Vec<Value> {
 /// One line per event; Slack renders the newlines as separate lines.
 fn slack_line(change: &TierChange, public_url: &str) -> String {
     let subject = match change.kind {
-        Kind::Test => format!(
+        EntityKind::Test => format!(
             "{} / {}",
             change.repo,
             change.project.as_deref().unwrap_or_default()
         ),
-        Kind::Job => change.repo.clone(),
+        EntityKind::Job => change.repo.clone(),
     };
     let noun = change.kind.as_str();
     let where_ = match change.kind {
-        Kind::Test => String::new(),
-        Kind::Job => change
+        EntityKind::Test => String::new(),
+        EntityKind::Job => change
             .pipeline
             .as_deref()
             .map_or_else(String::new, |pipeline| format!(" in {pipeline}")),
@@ -266,15 +246,14 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        Kind, TierChange, WebhookFormat, dashboard_url, parse_urls, render, render_json,
-        render_slack,
+        TierChange, WebhookFormat, dashboard_url, parse_urls, render, render_json, render_slack,
     };
     use crate::classify::FailureCategory;
-    use crate::model::Tier;
+    use crate::model::{EntityKind, Tier};
 
     fn test_change() -> TierChange {
         TierChange {
-            kind: Kind::Test,
+            kind: EntityKind::Test,
             id: 7,
             repo: "acme/app".to_owned(),
             project: Some("frontend".to_owned()),
@@ -290,7 +269,7 @@ mod tests {
 
     fn job_change() -> TierChange {
         TierChange {
-            kind: Kind::Job,
+            kind: EntityKind::Job,
             id: 3,
             repo: "acme/app".to_owned(),
             project: None,
@@ -403,7 +382,7 @@ mod tests {
     /// The `test_webhook.py` Test fixture, values unchanged.
     fn python_test_change() -> TierChange {
         TierChange {
-            kind: Kind::Test,
+            kind: EntityKind::Test,
             id: 42,
             repo: "acme/app".to_owned(),
             project: Some("backend".to_owned()),
@@ -420,7 +399,7 @@ mod tests {
     /// The `test_webhook.py` Job fixture, values unchanged.
     fn python_job_change() -> TierChange {
         TierChange {
-            kind: Kind::Job,
+            kind: EntityKind::Job,
             id: 3,
             repo: "acme/app".to_owned(),
             project: None,

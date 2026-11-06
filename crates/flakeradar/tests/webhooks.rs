@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use flakeradar::LeaderTask;
 use flakeradar::WebhookWorker;
-use flakeradar_core::{Kind, ReportStatus, Tier, TierChange, WebhookFormat};
+use flakeradar_core::{EntityKind, ReportStatus, Tier, TierChange, WebhookFormat};
 use flakeradar_db::ProcessOutcome;
 use serde_json::{Value, json};
 use wiremock::matchers::{method, path};
@@ -32,7 +32,7 @@ const STOP_BOUND: Duration = Duration::from_secs(2);
 /// One Test's crossing of the Flake threshold.
 fn test_change() -> TierChange {
     TierChange {
-        kind: Kind::Test,
+        kind: EntityKind::Test,
         id: 1,
         repo: "acme/app".to_owned(),
         project: Some("backend".to_owned()),
@@ -49,7 +49,7 @@ fn test_change() -> TierChange {
 /// One Job's crossing of the Flake threshold.
 fn job_change() -> TierChange {
     TierChange {
-        kind: Kind::Job,
+        kind: EntityKind::Job,
         id: 2,
         repo: "acme/app".to_owned(),
         project: None,

@@ -34,11 +34,11 @@ use std::sync::Arc;
 
 use chrono::NaiveDate;
 use flakeradar_core::{
-    DEFAULT_PROJECT, FailureCategory, IdentityError, ScorePointOut, TRUNCATION_MARKER, lax,
-    normalize_project, normalize_repo, strip_wire_whitespace,
+    DEFAULT_PROJECT, EntityKind, FailureCategory, IdentityError, ScorePointOut, TRUNCATION_MARKER,
+    lax, normalize_project, normalize_repo, strip_wire_whitespace,
 };
 use flakeradar_db::DbError;
-use flakeradar_db::issue_links::{LinkError, LinkTarget, LinkedOut};
+use flakeradar_db::issue_links::{LinkError, LinkedOut};
 use flakeradar_db::reads::{ReadError, ReadSettings, Scope};
 use rmcp::ErrorData as McpError;
 use rmcp::ServerHandler;
@@ -549,10 +549,10 @@ fn only_id(
 }
 
 /// The one target a link tool was asked for: its kind and id.
-fn one_target(test_id: Option<i64>, job_id: Option<i64>) -> Result<(LinkTarget, i64), ToolFailure> {
+fn one_target(test_id: Option<i64>, job_id: Option<i64>) -> Result<(EntityKind, i64), ToolFailure> {
     match (test_id, job_id) {
-        (Some(test_id), None) => Ok((LinkTarget::Test, test_id)),
-        (None, Some(job_id)) => Ok((LinkTarget::Job, job_id)),
+        (Some(test_id), None) => Ok((EntityKind::Test, test_id)),
+        (None, Some(job_id)) => Ok((EntityKind::Job, job_id)),
         _ => Err(ToolFailure::Tool(
             "Pass exactly one of test_id or job_id.".to_owned(),
         )),

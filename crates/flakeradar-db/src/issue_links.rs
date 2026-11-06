@@ -8,14 +8,16 @@
 //! when the issue closes as completed or is gone.
 //!
 //! The rules live in the engines, once for both targets; only an intended
-//! per-target difference is [`LinkTarget::data`] (a Job may link an issue only
+//! per-target difference is [`github_provider_only`] (a Job may link an issue only
 //! on a GitHub Pipeline). The two targets select genuinely different row shapes,
 //! which is the one place the engines switch on the target.
 
 // Rust guideline compliant 2026-07-21
 
 use chrono::{DateTime, FixedOffset, Utc};
-use flakeradar_core::{JobOut, MAX_ISSUE_NUMBER, TestOut, issue_url, strip_wire_whitespace};
+use flakeradar_core::{
+    EntityKind, JobOut, MAX_ISSUE_NUMBER, TestOut, issue_url, strip_wire_whitespace,
+};
 use sea_orm::{ConnectionTrait, DbBackend, Statement, TransactionSession, TransactionTrait, Value};
 
 use crate::error::DbError;
@@ -25,50 +27,17 @@ use crate::reads::{
 };
 use crate::sql::{get, one, rows};
 
-/// The two entities that can hold an Issue link.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum LinkTarget {
-    /// A Test, which reaches its Repo through a Project.
-    Test,
-    /// A Job, which reaches its Repo through its Pipeline.
-    Job,
+/// The table that holds `kind`'s link columns.
+const fn link_table(kind: EntityKind) -> &'static str {
+    match kind {
+        EntityKind::Test => "test_cases",
+        EntityKind::Job => "jobs",
+    }
 }
 
-impl LinkTarget {
-    /// Both targets, in the order the sync checks them.
-    pub const ALL: [Self; 2] = [Self::Test, Self::Job];
-
-    /// The noun a 404 and a log line use: `Test` or `Job`.
-    #[must_use]
-    pub fn kind(self) -> &'static str {
-        match self {
-            Self::Test => "Test",
-            Self::Job => "Job",
-        }
-    }
-
-    /// The noun a log line uses, lowercase: `test` or `job`.
-    #[must_use]
-    pub fn entity(self) -> &'static str {
-        match self {
-            Self::Test => "test",
-            Self::Job => "job",
-        }
-    }
-
-    /// The table that holds this target's link columns.
-    const fn table(self) -> &'static str {
-        match self {
-            Self::Test => "test_cases",
-            Self::Job => "jobs",
-        }
-    }
-
-    /// Whether only a GitHub Pipeline's Job can hold a link (ADR 0008).
-    #[must_use]
-    pub const fn github_provider_only(self) -> bool {
-        matches!(self, Self::Job)
-    }
+/// Whether only a GitHub Pipeline's Job can hold a link (ADR 0008).
+const fn github_provider_only(kind: EntityKind) -> bool {
+    matches!(kind, EntityKind::Job)
 }
 
 /// What a link or unlink answered: the target's own response shape.
@@ -143,7 +112,7 @@ struct LinkState {
 
 /// The number, url and conflict rules of a link.
 fn check_link(
-    target: LinkTarget,
+    target: EntityKind,
     current: Option<i32>,
     number: i64,
     repo: &str,
@@ -163,7 +132,7 @@ fn check_link(
         if normalized != expected {
             return Err(IssueLinkError::NotLinkable(format!(
                 "url must be {expected}: the issue must be in the {}'s own Repo",
-                target.kind()
+                target.name()
             )));
         }
     }
@@ -173,7 +142,7 @@ fn check_link(
     {
         return Err(IssueLinkError::Conflict(format!(
             "{} already links issue #{current}; pass replace=true to replace it",
-            target.kind()
+            target.name()
         )));
     }
     Ok(())
@@ -192,18 +161,18 @@ fn link_state(row: &sea_orm::QueryResult) -> Result<LinkState, DbError> {
 
 /// The response shape of one locked row.
 fn out_for(
-    target: LinkTarget,
+    target: EntityKind,
     row: &sea_orm::QueryResult,
     settings: &ReadSettings,
 ) -> Result<LinkedOut, DbError> {
     match target {
-        LinkTarget::Test => Ok(LinkedOut::Test(test_out(
+        EntityKind::Test => Ok(LinkedOut::Test(test_out(
             row,
             settings.flake_threshold,
             settings.broken_streak,
             None,
         )?)),
-        LinkTarget::Job => Ok(LinkedOut::Job(job_out(
+        EntityKind::Job => Ok(LinkedOut::Job(job_out(
             row,
             settings.flake_threshold,
             None,
@@ -239,7 +208,7 @@ fn patched_out(mut out: LinkedOut, repo: &str, state: LinkState) -> LinkedOut {
 /// Writes one target's link columns.
 async fn write_link(
     db: &impl ConnectionTrait,
-    target: LinkTarget,
+    target: EntityKind,
     target_id: i64,
     state: LinkState,
 ) -> Result<(), DbError> {
@@ -247,11 +216,11 @@ async fn write_link(
         "UPDATE {} SET github_issue_number = $2, github_issue_checked_at = $3, \
          github_issue_filed = $4, github_issue_closed = $5, \
          github_issue_fixed_noted_at = $6 WHERE id = $1",
-        target.table()
+        link_table(target)
     );
     let filed = match target {
         // A front door linked this one, so FlakeRadar must not close it.
-        LinkTarget::Test | LinkTarget::Job => state.number.map(|_| false),
+        EntityKind::Test | EntityKind::Job => state.number.map(|_| false),
     };
     db.execute_raw(Statement::from_sql_and_values(
         DbBackend::Postgres,
@@ -280,7 +249,7 @@ async fn write_link(
 /// [`LinkError::Database`] when a statement fails.
 pub async fn link_issue(
     db: &(impl ConnectionTrait + TransactionTrait),
-    target: LinkTarget,
+    target: EntityKind,
     target_id: i64,
     number: i64,
     url: Option<&str>,
@@ -296,10 +265,10 @@ pub async fn link_issue(
     .await?;
     let Some(row) = row else {
         transaction.rollback().await?;
-        return Err(IssueLinkError::NotFound(format!("{} not found", target.kind())).into());
+        return Err(IssueLinkError::NotFound(format!("{} not found", target.name())).into());
     };
     let repo = repo_of(target, &row)?;
-    if target.github_provider_only() {
+    if github_provider_only(target) {
         let provider: String = get(&row, "provider")?;
         if provider != "github" {
             transaction.rollback().await?;
@@ -332,7 +301,7 @@ pub async fn link_issue(
     tracing::info!(
         repo = %repo,
         number,
-        target = target.entity(),
+        target = target.as_str(),
         entity_id = target_id,
         previous = ?current.number,
         "linked a GitHub issue"
@@ -348,7 +317,7 @@ pub async fn link_issue(
 /// [`LinkError::Database`] when a statement fails.
 pub async fn unlink_issue(
     db: &(impl ConnectionTrait + TransactionTrait),
-    target: LinkTarget,
+    target: EntityKind,
     target_id: i64,
     settings: &ReadSettings,
 ) -> Result<LinkedOut, LinkError> {
@@ -361,7 +330,7 @@ pub async fn unlink_issue(
     .await?;
     let Some(row) = row else {
         transaction.rollback().await?;
-        return Err(IssueLinkError::NotFound(format!("{} not found", target.kind())).into());
+        return Err(IssueLinkError::NotFound(format!("{} not found", target.name())).into());
     };
     let repo = repo_of(target, &row)?;
     let previous = link_state(&row)?.number;
@@ -379,7 +348,7 @@ pub async fn unlink_issue(
         tracing::info!(
             repo = %repo,
             number = previous,
-            target = target.entity(),
+            target = target.as_str(),
             entity_id = target_id,
             "unlinked a GitHub issue"
         );
@@ -392,7 +361,7 @@ pub async fn unlink_issue(
 }
 
 /// The Repo name a locked row belongs to.
-fn repo_of(_target: LinkTarget, row: &sea_orm::QueryResult) -> Result<String, DbError> {
+fn repo_of(_target: EntityKind, row: &sea_orm::QueryResult) -> Result<String, DbError> {
     get(row, "repo_name")
 }
 
@@ -404,15 +373,15 @@ fn stored_number(number: i64) -> i32 {
 }
 
 /// The locked select of one target, as SQL.
-fn locked_select_sql(target: LinkTarget) -> String {
+fn locked_select_sql(target: EntityKind) -> String {
     match target {
-        LinkTarget::Test => format!(
+        EntityKind::Test => format!(
             "{TESTS_SELECT}, t.github_issue_checked_at AS checked_at, \
              t.github_issue_closed AS closed, \
              t.github_issue_fixed_noted_at AS fixed_noted_at \
              {TESTS_FROM} WHERE t.id = $1 FOR UPDATE OF t"
         ),
-        LinkTarget::Job => format!(
+        EntityKind::Job => format!(
             "{JOBS_SELECT}, j.github_issue_checked_at AS checked_at, \
              j.github_issue_closed AS closed, \
              j.github_issue_fixed_noted_at AS fixed_noted_at \
@@ -432,18 +401,18 @@ fn locked_select_sql(target: LinkTarget) -> String {
 /// Returns [`DbError::Database`] when the statement fails.
 pub async fn linked_for_check(
     db: &impl ConnectionTrait,
-    target: LinkTarget,
+    target: EntityKind,
     batch: i64,
 ) -> Result<Vec<LinkedIssue>, DbError> {
     let sql = match target {
-        LinkTarget::Test => {
+        EntityKind::Test => {
             "SELECT t.id AS id, t.github_issue_number AS number, r.name AS repo_name \
              FROM test_cases t JOIN projects p ON p.id = t.project_id \
              JOIN repos r ON r.id = p.repo_id \
              WHERE t.github_issue_number IS NOT NULL \
              ORDER BY t.github_issue_checked_at ASC NULLS FIRST, t.id LIMIT $1"
         }
-        LinkTarget::Job => {
+        EntityKind::Job => {
             "SELECT j.id AS id, j.github_issue_number AS number, r.name AS repo_name \
              FROM jobs j JOIN pipelines p ON p.id = j.pipeline_id \
              JOIN repos r ON r.id = p.repo_id \
@@ -473,7 +442,7 @@ pub async fn linked_for_check(
 /// Returns [`DbError::Database`] when the statement fails.
 pub async fn store_filed_link(
     db: &impl ConnectionTrait,
-    target: LinkTarget,
+    target: EntityKind,
     target_id: i64,
     number: i32,
 ) -> Result<u64, DbError> {
@@ -481,7 +450,7 @@ pub async fn store_filed_link(
         "UPDATE {} SET github_issue_number = $2, github_issue_checked_at = NULL, \
          github_issue_filed = TRUE, github_issue_closed = FALSE, \
          github_issue_fixed_noted_at = NULL WHERE id = $1",
-        target.table()
+        link_table(target)
     );
     let result = db
         .execute_raw(Statement::from_sql_and_values(
@@ -523,7 +492,7 @@ pub enum Check {
 /// Returns [`DbError::Database`] when the statement fails.
 pub async fn record_check(
     db: &impl ConnectionTrait,
-    target: LinkTarget,
+    target: EntityKind,
     target_id: i64,
     number: i32,
     check: Check,
@@ -543,7 +512,7 @@ pub async fn record_check(
     }
     let sql = format!(
         "UPDATE {} SET {} WHERE id = $1 AND github_issue_number = $2",
-        target.table(),
+        link_table(target),
         set.join(", ")
     );
     let result = db
@@ -590,7 +559,7 @@ pub struct NoteRowState {
 /// Returns [`DbError::Database`] when a statement fails.
 pub async fn stamp_fixed_note(
     db: &impl ConnectionTrait,
-    target: LinkTarget,
+    target: EntityKind,
     target_id: i64,
     number: i32,
     threshold: i32,
@@ -600,7 +569,7 @@ pub async fn stamp_fixed_note(
         "UPDATE {} SET github_issue_fixed_noted_at = $4 WHERE id = $1 \
          AND github_issue_fixed_noted_at IS NULL AND github_issue_number = $2 \
          AND clean_streak >= $3",
-        target.table()
+        link_table(target)
     );
     let result = db
         .execute_raw(Statement::from_sql_and_values(
@@ -622,7 +591,7 @@ pub async fn stamp_fixed_note(
     }
     let sql = format!(
         "SELECT clean_streak, github_issue_number FROM {} WHERE id = $1",
-        target.table()
+        link_table(target)
     );
     let state = one(db, sql, vec![Value::from(target_id)]).await?;
     let state = match state {

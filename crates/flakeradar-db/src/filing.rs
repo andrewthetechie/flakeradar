@@ -14,14 +14,13 @@
 use std::collections::BTreeMap;
 
 use chrono::{DateTime, FixedOffset, Utc};
-use flakeradar_core::ExecutionStatus;
+use flakeradar_core::{EntityKind, ExecutionStatus};
 use sea_orm::sea_query::Value;
 use sea_orm::{ConnectionTrait, QueryResult};
 
 use crate::attribution::{int_array, test_window_ids_overall_sql, unexplained_failure_counts};
 use crate::batching::chunks;
 use crate::error::DbError;
-use crate::issue_links::LinkTarget;
 use crate::sql::{execution_status, get, rows};
 
 /// The gate every fileable row must pass, as one value.
@@ -348,7 +347,7 @@ pub async fn job_candidates(
 #[derive(Debug, Clone)]
 pub struct NoteCandidate {
     /// Whether the row is a Test or a Job.
-    pub target: LinkTarget,
+    pub target: EntityKind,
     /// The Test's or Job's id.
     pub entity_id: i32,
     /// The Repo's `owner/name`.
@@ -391,7 +390,7 @@ pub async fn note_test_candidates(
         .await?
         {
             candidates.push(NoteCandidate {
-                target: LinkTarget::Test,
+                target: EntityKind::Test,
                 entity_id: get(&row, "id")?,
                 repo: get(&row, "repo_name")?,
                 default_branch: get(&row, "default_branch")?,
@@ -433,7 +432,7 @@ pub async fn note_job_candidates(
         .await?
         {
             candidates.push(NoteCandidate {
-                target: LinkTarget::Job,
+                target: EntityKind::Job,
                 entity_id: get(&row, "id")?,
                 repo: get(&row, "repo_name")?,
                 default_branch: get(&row, "default_branch")?,

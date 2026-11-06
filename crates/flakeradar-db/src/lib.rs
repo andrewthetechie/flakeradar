@@ -69,7 +69,7 @@ pub use filing::{
 #[doc(inline)]
 pub use identity::{get_or_create_project, get_or_create_repo};
 #[doc(inline)]
-pub use issue_links::{LinkError, LinkTarget, LinkedIssue, LinkedOut, NoteRowState, NoteStamp};
+pub use issue_links::{LinkError, LinkedIssue, LinkedOut, NoteRowState, NoteStamp};
 #[doc(inline)]
 pub use metrics::{
     QueueFacts, job_tier_counts, last_processed_at, queue_facts, reachable, report_status_counts,
@@ -101,8 +101,8 @@ pub use report_intake::{
 pub use retention::{PruneResult, RetentionSettings, prune, run_prune};
 #[doc(inline)]
 pub use score_history::{
-    HISTORY_DAYS, HistoryKind, HistoryUpdate, ScoreHistoryRow, newest_history_before, past_scores,
-    window_rows, write_today_history,
+    HISTORY_DAYS, HistoryUpdate, ScoreHistoryRow, newest_history_before, past_scores, window_rows,
+    write_today_history,
 };
 
 /// Advisory-lock key that serializes the startup migration.

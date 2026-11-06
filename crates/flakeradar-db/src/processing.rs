@@ -12,10 +12,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use flakeradar_core::{
-    ExecutionStatus, FailureCategory, JobStatus, ParseError, ParsedCase, PipelineReportIn,
-    ReportKind, ReportStatus, ScoredExecution, Tier, TierChange, branch_scoped_fail_streak,
-    branch_scoped_score, branch_scoped_streak, classify_failure, defaults, dominant_category,
-    is_broken, parse_junit_xml, tier_for,
+    EntityKind, ExecutionStatus, FailureCategory, JobStatus, ParseError, ParsedCase,
+    PipelineReportIn, ReportKind, ReportStatus, ScoredExecution, Tier, TierChange,
+    branch_scoped_fail_streak, branch_scoped_score, branch_scoped_streak, classify_failure,
+    defaults, dominant_category, is_broken, parse_junit_xml, tier_for,
 };
 use sea_orm::entity::prelude::DateTimeWithTimeZone;
 use sea_orm::{
@@ -34,7 +34,7 @@ use crate::error::DbError;
 use crate::report_intake::{
     complete_report, fail_report, requeue_report, stored_junit_body, stored_pipeline_report,
 };
-use crate::score_history::{HistoryKind, HistoryUpdate, write_today_history};
+use crate::score_history::{HistoryUpdate, write_today_history};
 use crate::sql::{execution_status, get, placeholder_list, rows, value_row};
 
 /// The longest error text a failed Report keeps.
@@ -1164,7 +1164,7 @@ pub async fn rescore(
             .collect();
         write_today_history(
             db,
-            HistoryKind::Test,
+            EntityKind::Test,
             &history_updates,
             settings.clock.today(),
         )
@@ -1273,7 +1273,7 @@ async fn test_tier_changes(
             continue;
         };
         changes.push(TierChange {
-            kind: flakeradar_core::Kind::Test,
+            kind: EntityKind::Test,
             id: i64::from(update.id),
             repo: named.repo.clone(),
             project: Some(named.project.clone()),
@@ -1464,7 +1464,7 @@ pub async fn rescore_jobs(
             .collect();
         write_today_history(
             db,
-            HistoryKind::Job,
+            EntityKind::Job,
             &history_updates,
             settings.clock.today(),
         )
@@ -1547,7 +1547,7 @@ async fn job_tier_changes(
             continue;
         };
         changes.push(TierChange {
-            kind: flakeradar_core::Kind::Job,
+            kind: EntityKind::Job,
             id: i64::from(update.id),
             repo: named.repo.clone(),
             project: None,

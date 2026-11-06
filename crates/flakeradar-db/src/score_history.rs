@@ -9,6 +9,7 @@
 // Rust guideline compliant 2026-07-21
 
 use chrono::NaiveDate;
+use flakeradar_core::EntityKind;
 use sea_orm::{ConnectionTrait, DbBackend, Statement, Value};
 
 use crate::attribution::int_array;
@@ -19,32 +20,19 @@ use crate::sql::{get, rows, value_row};
 /// How many days of history the detail responses embed.
 pub const HISTORY_DAYS: i64 = 90;
 
-/// Which Score-history table a read or write touches.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HistoryKind {
-    /// `test_score_history`, owned by a Test.
-    Test,
-    /// `job_score_history`, owned by a Job.
-    Job,
+/// The Score-history table that holds `kind`'s history.
+fn history_table(kind: EntityKind) -> &'static str {
+    match kind {
+        EntityKind::Test => "test_score_history",
+        EntityKind::Job => "job_score_history",
+    }
 }
 
-impl HistoryKind {
-    /// The table name.
-    #[must_use]
-    pub fn table(self) -> &'static str {
-        match self {
-            Self::Test => "test_score_history",
-            Self::Job => "job_score_history",
-        }
-    }
-
-    /// The column naming the owner: the Test's or the Job's id.
-    #[must_use]
-    pub fn owner_column(self) -> &'static str {
-        match self {
-            Self::Test => "test_case_id",
-            Self::Job => "job_id",
-        }
+/// The column naming the owner: the Test's or the Job's id.
+fn owner_column(kind: EntityKind) -> &'static str {
+    match kind {
+        EntityKind::Test => "test_case_id",
+        EntityKind::Job => "job_id",
     }
 }
 
@@ -89,13 +77,13 @@ pub struct HistoryUpdate {
 /// score cannot be read.
 pub async fn past_scores(
     db: &impl ConnectionTrait,
-    kind: HistoryKind,
+    kind: EntityKind,
     ids: &[i32],
     today: NaiveDate,
 ) -> Result<std::collections::BTreeMap<i32, f64>, DbError> {
     let cutoff = today - chrono::Duration::days(flakeradar_core::TREND_DAYS);
-    let table = kind.table();
-    let owner = kind.owner_column();
+    let table = history_table(kind);
+    let owner = owner_column(kind);
     let mut found = std::collections::BTreeMap::new();
     for chunk in chunks(ids) {
         let sql = format!(
@@ -121,9 +109,9 @@ pub async fn past_scores(
 /// filter with before counting and paginating. `owner` is the table alias the
 /// caller uses for the Test or Job (`t` or `j`), and `$1` is the cut-off day.
 #[must_use]
-pub fn newest_history_before(kind: HistoryKind, owner: &str) -> String {
-    let table = kind.table();
-    let owner_column = kind.owner_column();
+pub fn newest_history_before(kind: EntityKind, owner: &str) -> String {
+    let table = history_table(kind);
+    let owner_column = owner_column(kind);
     format!(
         "SELECT h.flakiness_score AS score FROM {table} h \
           WHERE h.{owner_column} = {owner}.id AND h.day <= $1::DATE \
@@ -142,13 +130,13 @@ pub fn newest_history_before(kind: HistoryKind, owner: &str) -> String {
 /// Returns [`DbError::Database`] when the statement fails.
 pub async fn window_rows(
     db: &impl ConnectionTrait,
-    kind: HistoryKind,
+    kind: EntityKind,
     owner_id: i32,
     today: NaiveDate,
 ) -> Result<Vec<ScoreHistoryRow>, DbError> {
     let cutoff = today - chrono::Duration::days(HISTORY_DAYS);
-    let table = kind.table();
-    let owner_column = kind.owner_column();
+    let table = history_table(kind);
+    let owner_column = owner_column(kind);
     let sql = format!(
         "SELECT day, flakiness_score, confirmed_flake_count, executions, failures \
            FROM {table} WHERE {owner_column} = $1 AND day > $2::DATE ORDER BY day"
@@ -176,12 +164,12 @@ pub async fn window_rows(
 /// Returns [`DbError::Database`] when the statement fails.
 pub async fn write_today_history(
     db: &impl ConnectionTrait,
-    kind: HistoryKind,
+    kind: EntityKind,
     updates: &[HistoryUpdate],
     today: NaiveDate,
 ) -> Result<(), DbError> {
-    let table = kind.table();
-    let owner = kind.owner_column();
+    let table = history_table(kind);
+    let owner = owner_column(kind);
     for chunk in chunks(updates) {
         let mut placeholders = Vec::with_capacity(chunk.len());
         let mut values = Vec::with_capacity(chunk.len() * 6);

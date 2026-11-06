@@ -17,12 +17,12 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{DateTime, Duration, FixedOffset, NaiveDate, Utc};
 use flakeradar_core::{
-    CiRunFailedJobOut, CiRunFailuresOut, CiRunTestFailureOut, ExecutionOut, ExecutionStatus,
-    ExplainingTestOut, FailedJobOutcome, FailureCategory, HistoryOut, JobExecutionOut,
-    JobHistoryOut, JobOut, JobOutcome, JobPage, JobSummaryOut, LocationOut, LocationRef,
-    QuarantineItem, RepoOut, ReportCountsOut, ReportStatus, RunnerStatOut, ScorePointOut,
-    SummaryOut, TestJobLinkOut, TestOut, TestPage, Trend, defaults, escape_like, is_broken,
-    issue_url, permalink, repo_path, tier_for, trend_for,
+    CiRunFailedJobOut, CiRunFailuresOut, CiRunTestFailureOut, EntityKind, ExecutionOut,
+    ExecutionStatus, ExplainingTestOut, FailedJobOutcome, FailureCategory, HistoryOut,
+    JobExecutionOut, JobHistoryOut, JobOut, JobOutcome, JobPage, JobSummaryOut, LocationOut,
+    LocationRef, QuarantineItem, RepoOut, ReportCountsOut, ReportStatus, RunnerStatOut,
+    ScorePointOut, SummaryOut, TestJobLinkOut, TestOut, TestPage, Trend, defaults, escape_like,
+    is_broken, issue_url, permalink, repo_path, tier_for, trend_for,
 };
 use sea_orm::{ConnectionTrait, DbBackend, QueryResult, Statement, Value};
 use serde_json::Value as JsonValue;
@@ -33,7 +33,7 @@ use crate::attribution::{
 };
 use crate::clock::SharedClock;
 use crate::error::DbError;
-use crate::score_history::{self, HistoryKind};
+use crate::score_history;
 use crate::sql::{Binds, execution_status, get, one, required_one, rows};
 
 /// The dashboard tiles' "became flaky recently" window.
@@ -197,7 +197,7 @@ fn scope_conditions(scope: &Scope, repo_column: &str, project_column: &str, filt
 }
 
 /// The SQL a `new_within_days` filter adds: the per-row newest old history point.
-fn newest_history_join(kind: HistoryKind, alias: &str, cutoff: NaiveDate) -> String {
+fn newest_history_join(kind: EntityKind, alias: &str, cutoff: NaiveDate) -> String {
     let lateral = score_history::newest_history_before(kind, alias)
         .replace("$1::DATE", &format!("DATE '{}'", cutoff.format("%Y-%m-%d")));
     format!(" LEFT JOIN LATERAL ({lateral}) AS past ON true")
@@ -226,7 +226,7 @@ pub(crate) fn id(value: i32) -> i64 {
 /// What the one leaderboard engine needs to know about an entity to query it.
 struct EntityBoard {
     /// The Score-history table the past-score lookups use.
-    kind: HistoryKind,
+    kind: EntityKind,
     /// The entity's table alias in `select`.
     alias: &'static str,
     /// The `SELECT` list, ending with the entity's own columns.
@@ -241,7 +241,7 @@ struct EntityBoard {
 
 /// The Tests leaderboard's descriptor.
 const TESTS_BOARD: EntityBoard = EntityBoard {
-    kind: HistoryKind::Test,
+    kind: EntityKind::Test,
     alias: "t",
     select: TESTS_SELECT,
     from: TESTS_FROM,
@@ -251,7 +251,7 @@ const TESTS_BOARD: EntityBoard = EntityBoard {
 
 /// The Jobs leaderboard's descriptor.
 const JOBS_BOARD: EntityBoard = EntityBoard {
-    kind: HistoryKind::Job,
+    kind: EntityKind::Job,
     alias: "j",
     select: JOBS_SELECT,
     from: JOBS_FROM,
@@ -646,7 +646,7 @@ pub async fn list_tests(
         .iter()
         .map(|row| get::<i32>(row, "id"))
         .collect::<Result<_, _>>()?;
-    let past = score_history::past_scores(db, HistoryKind::Test, &ids, settings.today()).await?;
+    let past = score_history::past_scores(db, EntityKind::Test, &ids, settings.today()).await?;
     let mut items = Vec::with_capacity(page.rows.len());
     for row in &page.rows {
         let test_id: i32 = get(row, "id")?;
@@ -700,7 +700,7 @@ pub async fn list_jobs(
         .iter()
         .map(|row| get::<i32>(row, "id"))
         .collect::<Result<_, _>>()?;
-    let past = score_history::past_scores(db, HistoryKind::Job, &ids, settings.today()).await?;
+    let past = score_history::past_scores(db, EntityKind::Job, &ids, settings.today()).await?;
     let mut items = Vec::with_capacity(page.rows.len());
     for row in &page.rows {
         let job_id: i32 = get(row, "id")?;
@@ -813,7 +813,7 @@ async fn new_flaky_count(
 ) -> Result<i64, DbError> {
     let cutoff = today - Duration::days(NEW_FLAKY_DAYS);
     // The lateral subquery's cut-off is a literal day, so the binds stay simple.
-    let old_point = score_history::newest_history_before(HistoryKind::Test, "t")
+    let old_point = score_history::newest_history_before(EntityKind::Test, "t")
         .replace("$1::DATE", &format!("DATE '{}'", cutoff.format("%Y-%m-%d")));
     let mut new_flaky = Binds::after(2);
     new_flaky.raw("(past.score IS NULL OR past.score < $1)");
@@ -958,7 +958,7 @@ pub async fn get_test(
     };
     let stored_id: i32 = get(&row, "id")?;
     let today = settings.today();
-    let past = score_history::past_scores(db, HistoryKind::Test, &[stored_id], today).await?;
+    let past = score_history::past_scores(db, EntityKind::Test, &[stored_id], today).await?;
     let score: f64 = get(&row, "flakiness_score")?;
     let test = test_out(
         &row,
@@ -1020,7 +1020,7 @@ pub async fn get_test(
         None => None,
     };
 
-    let history = score_history::window_rows(db, HistoryKind::Test, stored_id, today).await?;
+    let history = score_history::window_rows(db, EntityKind::Test, stored_id, today).await?;
     Ok(Some(HistoryOut {
         test,
         location,
@@ -1209,7 +1209,7 @@ pub async fn search_tests(
         .iter()
         .map(|row| get::<i32>(row, "id"))
         .collect::<Result<_, _>>()?;
-    let past = score_history::past_scores(db, HistoryKind::Test, &ids, settings.today()).await?;
+    let past = score_history::past_scores(db, EntityKind::Test, &ids, settings.today()).await?;
     let mut found = Vec::with_capacity(rows.len());
     for row in &rows {
         let test_id: i32 = get(row, "id")?;
@@ -1276,7 +1276,7 @@ pub async fn get_job(
     let repo_id: i32 = get(&row, "repo_id")?;
     let summary_job: bool = get(&row, "summary")?;
     let today = settings.today();
-    let past = score_history::past_scores(db, HistoryKind::Job, &[stored_id], today).await?;
+    let past = score_history::past_scores(db, EntityKind::Job, &[stored_id], today).await?;
     let score: f64 = get(&row, "flakiness_score")?;
     let job = job_out(
         &row,
@@ -1312,7 +1312,7 @@ pub async fn get_job(
         attach_explaining_siblings(db, repo_id, &mut histories.executions).await?;
     }
 
-    let history = score_history::window_rows(db, HistoryKind::Job, stored_id, today).await?;
+    let history = score_history::window_rows(db, EntityKind::Job, stored_id, today).await?;
     Ok(Some(JobHistoryOut {
         job,
         unexplained_failures: histories.unexplained,
@@ -1633,7 +1633,7 @@ pub async fn job_summary(
 
     let today = settings.today();
     let cutoff = today - Duration::days(NEW_FLAKY_DAYS);
-    let old_point = score_history::newest_history_before(HistoryKind::Job, "j")
+    let old_point = score_history::newest_history_before(EntityKind::Job, "j")
         .replace("$1::DATE", &format!("DATE '{}'", cutoff.format("%Y-%m-%d")));
     let mut new_flaky = Binds::after(2);
     new_flaky.raw("(past.score IS NULL OR past.score < $1)");
@@ -1729,7 +1729,7 @@ pub async fn search_jobs(
         .iter()
         .map(|row| get::<i32>(row, "id"))
         .collect::<Result<_, _>>()?;
-    let past = score_history::past_scores(db, HistoryKind::Job, &ids, settings.today()).await?;
+    let past = score_history::past_scores(db, EntityKind::Job, &ids, settings.today()).await?;
     let mut found = Vec::with_capacity(rows.len());
     for row in &rows {
         let job_id: i32 = get(row, "id")?;
@@ -2142,7 +2142,7 @@ mod tests {
     )]
 
     use super::{
-        Binds, HistoryKind, ListOptions, NEW_FLAKY_DAYS, ReadError, ReadSettings, SortKey,
+        Binds, EntityKind, ListOptions, NEW_FLAKY_DAYS, ReadError, ReadSettings, SortKey,
         TierFilter, newest_history_join, scope_conditions,
     };
 
@@ -2252,7 +2252,7 @@ mod tests {
     fn the_new_flaky_window_reads_a_literal_day() {
         let today = chrono::NaiveDate::from_ymd_opt(2026, 1, 20).expect("a day");
         let join = newest_history_join(
-            HistoryKind::Test,
+            EntityKind::Test,
             "t",
             today - chrono::Duration::days(NEW_FLAKY_DAYS),
         );

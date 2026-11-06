@@ -349,7 +349,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::{WebhookShared, WebhookWorker, retry_after_seconds};
-    use flakeradar_core::{Kind, Tier, TierChange, WebhookFormat};
+    use flakeradar_core::{EntityKind, Tier, TierChange, WebhookFormat};
     use reqwest::header::{HeaderMap, HeaderValue};
     use tokio_util::sync::CancellationToken;
 
@@ -366,7 +366,7 @@ mod tests {
     /// One Test crossing the Flake threshold.
     fn change(id: i64) -> TierChange {
         TierChange {
-            kind: Kind::Test,
+            kind: EntityKind::Test,
             id,
             repo: "acme/app".to_owned(),
             project: Some("backend".to_owned()),

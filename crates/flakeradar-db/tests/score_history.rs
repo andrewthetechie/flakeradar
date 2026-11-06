@@ -11,10 +11,11 @@
 )]
 
 use chrono::{Duration, NaiveDate};
+use flakeradar_core::EntityKind;
 use flakeradar_core::TREND_DAYS;
 use flakeradar_db::entities::{job_score_history, pipelines, test_score_history};
 use flakeradar_db::{
-    HISTORY_DAYS, HistoryKind, HistoryUpdate, newest_history_before, past_scores, window_rows,
+    HISTORY_DAYS, HistoryUpdate, newest_history_before, past_scores, window_rows,
     write_today_history,
 };
 use flakeradar_test_support::{
@@ -51,7 +52,7 @@ async fn write_today_history_replaces_score_and_adds_counts_for_a_test() {
         .expect("a Test");
     write_today_history(
         db.connection(),
-        HistoryKind::Test,
+        EntityKind::Test,
         &[update(test_case.id, 0.5, 2, (3, 1))],
         today(),
     )
@@ -59,7 +60,7 @@ async fn write_today_history_replaces_score_and_adds_counts_for_a_test() {
     .expect("the first write");
     write_today_history(
         db.connection(),
-        HistoryKind::Test,
+        EntityKind::Test,
         &[update(test_case.id, 0.25, 4, (2, 1))],
         today(),
     )
@@ -90,7 +91,7 @@ async fn write_today_history_replaces_score_and_adds_counts_for_a_job() {
         .expect("a Job");
     write_today_history(
         db.connection(),
-        HistoryKind::Job,
+        EntityKind::Job,
         &[update(job.id, 0.5, 2, (3, 1))],
         today(),
     )
@@ -98,7 +99,7 @@ async fn write_today_history_replaces_score_and_adds_counts_for_a_job() {
     .expect("the first write");
     write_today_history(
         db.connection(),
-        HistoryKind::Job,
+        EntityKind::Job,
         &[update(job.id, 0.25, 4, (2, 1))],
         today(),
     )
@@ -130,7 +131,7 @@ async fn write_today_history_defaults_missing_counts_to_zero() {
         .expect("a Test");
     write_today_history(
         db.connection(),
-        HistoryKind::Test,
+        EntityKind::Test,
         &[update(no_counts.id, 0.75, 1, (0, 0))],
         today(),
     )
@@ -148,7 +149,7 @@ async fn write_today_history_defaults_missing_counts_to_zero() {
     // A same-day rescore with no counts rewrites the day's score without adding counts.
     write_today_history(
         db.connection(),
-        HistoryKind::Test,
+        EntityKind::Test,
         &[update(no_counts.id, 0.1, 0, (0, 0))],
         today(),
     )
@@ -183,7 +184,7 @@ async fn a_same_day_rescore_with_no_counts_adds_nothing() {
         .expect("a Test");
     write_today_history(
         db.connection(),
-        HistoryKind::Test,
+        EntityKind::Test,
         &[
             update(covered.id, 0.2, 0, (2, 1)),
             update(uncovered.id, 0.4, 1, (0, 0)),
@@ -215,7 +216,7 @@ async fn a_same_day_rescore_with_no_counts_adds_nothing() {
     // The uncovered owner hits the conflict path too: its counts stay (0, 0), its score is replaced.
     write_today_history(
         db.connection(),
-        HistoryKind::Test,
+        EntityKind::Test,
         &[update(uncovered.id, 0.6, 3, (0, 0))],
         today(),
     )
@@ -254,7 +255,7 @@ async fn the_history_upsert_keys_the_conflict_on_owner_and_day() {
         .expect("yesterday's row");
     write_today_history(
         db.connection(),
-        HistoryKind::Test,
+        EntityKind::Test,
         &[update(test_case.id, 0.5, 2, (3, 1))],
         today(),
     )
@@ -262,7 +263,7 @@ async fn the_history_upsert_keys_the_conflict_on_owner_and_day() {
     .expect("today's first write");
     write_today_history(
         db.connection(),
-        HistoryKind::Test,
+        EntityKind::Test,
         &[update(test_case.id, 0.1, 0, (2, 1))],
         today(),
     )
@@ -289,7 +290,7 @@ async fn the_history_upsert_keys_the_conflict_on_owner_and_day() {
 /// condition the listing queries use, keyed by owner.
 async fn lateral_scores(
     db: &TestDb,
-    kind: HistoryKind,
+    kind: EntityKind,
     table: &str,
     ids: &[i32],
     today: NaiveDate,
@@ -366,12 +367,12 @@ async fn score_history_reads_agree_for_a_test() {
         .expect("a history row");
 
     let ids = [seasoned.id, fresh.id];
-    let past = past_scores(db.connection(), HistoryKind::Test, &ids, today)
+    let past = past_scores(db.connection(), EntityKind::Test, &ids, today)
         .await
         .expect("the past scores");
     assert_eq!(past, std::collections::BTreeMap::from([(seasoned.id, 0.2)]));
 
-    let lateral = lateral_scores(&db, HistoryKind::Test, "test_cases", &ids, today).await;
+    let lateral = lateral_scores(&db, EntityKind::Test, "test_cases", &ids, today).await;
     assert_eq!(
         lateral,
         [(seasoned.id, Some(0.2)), (fresh.id, None)]
@@ -387,7 +388,7 @@ async fn score_history_reads_agree_for_a_test() {
         lateral
     );
 
-    let rows = window_rows(db.connection(), HistoryKind::Test, seasoned.id, today)
+    let rows = window_rows(db.connection(), EntityKind::Test, seasoned.id, today)
         .await
         .expect("the detail window");
     assert_eq!(
@@ -403,7 +404,7 @@ async fn score_history_reads_agree_for_a_test() {
         ] // the row exactly on the window edge is out; oldest first
     );
     assert_eq!(
-        window_rows(db.connection(), HistoryKind::Test, fresh.id, today)
+        window_rows(db.connection(), EntityKind::Test, fresh.id, today)
             .await
             .expect("the detail window")
             .iter()
@@ -452,12 +453,12 @@ async fn score_history_reads_agree_for_a_job() {
         .expect("a history row");
 
     let ids = [seasoned.id, fresh.id];
-    let past = past_scores(db.connection(), HistoryKind::Job, &ids, today)
+    let past = past_scores(db.connection(), EntityKind::Job, &ids, today)
         .await
         .expect("the past scores");
     assert_eq!(past, std::collections::BTreeMap::from([(seasoned.id, 0.2)]));
 
-    let lateral = lateral_scores(&db, HistoryKind::Job, "jobs", &ids, today).await;
+    let lateral = lateral_scores(&db, EntityKind::Job, "jobs", &ids, today).await;
     assert_eq!(
         lateral,
         [(seasoned.id, Some(0.2)), (fresh.id, None)]
@@ -472,7 +473,7 @@ async fn score_history_reads_agree_for_a_job() {
         lateral
     );
 
-    let rows = window_rows(db.connection(), HistoryKind::Job, seasoned.id, today)
+    let rows = window_rows(db.connection(), EntityKind::Job, seasoned.id, today)
         .await
         .expect("the detail window");
     assert_eq!(
@@ -488,7 +489,7 @@ async fn score_history_reads_agree_for_a_job() {
         ]
     );
     assert_eq!(
-        window_rows(db.connection(), HistoryKind::Job, fresh.id, today)
+        window_rows(db.connection(), EntityKind::Job, fresh.id, today)
             .await
             .expect("the detail window")
             .iter()

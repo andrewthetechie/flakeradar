@@ -69,9 +69,11 @@ use std::ops::ControlFlow;
 
 use anyhow::Context as _;
 use chrono::{DateTime, Utc};
-use flakeradar_core::{JobExecutionOut, JobHistoryOut, MAX_ISSUE_NUMBER, ReportStatus, repo_path};
+use flakeradar_core::{
+    EntityKind, JobExecutionOut, JobHistoryOut, MAX_ISSUE_NUMBER, ReportStatus, repo_path,
+};
 use flakeradar_db::filing::{self, FilingGate, JobRow, NoteCandidate, RecentExecution, TestRow};
-use flakeradar_db::issue_links::{self, LinkTarget, NoteRowState};
+use flakeradar_db::issue_links::{self, NoteRowState};
 use flakeradar_db::{DbError, ProcessOutcome, get_job};
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
 use reqwest::{Client, Method};
@@ -154,7 +156,7 @@ pub fn run_hint(path: Option<&str>, classname: &str, name: &str) -> String {
 /// the entity's own dashboard view.
 #[must_use]
 pub fn fixed_comment(
-    entity: &str,
+    entity: EntityKind,
     id: i64,
     clean_streak: i64,
     score: f64,
@@ -173,7 +175,7 @@ pub fn fixed_comment(
         return body;
     }
     let base = public_url.trim_end_matches('/');
-    let link = if entity == "job" {
+    let link = if entity == EntityKind::Job {
         format!("{base}/?view=jobs&job={id}")
     } else {
         format!("{base}/?test={id}")
@@ -1025,14 +1027,14 @@ pub async fn file_issues_for(
             settings,
         );
         batch.push(FileRequest {
-            target: LinkTarget::Test,
+            target: EntityKind::Test,
             entity_id: candidate.test.id,
             repo: candidate.repo,
             title,
             body,
         });
     }
-    let report = file_batch(db, batch, "test", settings, api, stop).await;
+    let report = file_batch(db, batch, EntityKind::Test, settings, api, stop).await;
     report.log(Operation::File);
     report
 }
@@ -1095,14 +1097,14 @@ pub async fn file_job_issues_for(
             settings,
         );
         batch.push(FileRequest {
-            target: LinkTarget::Job,
+            target: EntityKind::Job,
             entity_id: candidate.job.id,
             repo: candidate.repo,
             title,
             body,
         });
     }
-    let report = file_batch(db, batch, "job", settings, api, stop).await;
+    let report = file_batch(db, batch, EntityKind::Job, settings, api, stop).await;
     report.log(Operation::File);
     report
 }
@@ -1110,7 +1112,7 @@ pub async fn file_job_issues_for(
 /// One rendered issue to file.
 #[derive(Debug, Clone)]
 struct FileRequest {
-    target: LinkTarget,
+    target: EntityKind,
     entity_id: i32,
     repo: String,
     title: String,
@@ -1124,7 +1126,7 @@ struct FileRequest {
 async fn file_batch(
     db: &(impl ConnectionTrait + TransactionTrait),
     batch: Vec<FileRequest>,
-    entity: &str,
+    entity: EntityKind,
     settings: &Settings,
     api: &Api,
     stop: &CancellationToken,
@@ -1132,7 +1134,10 @@ async fn file_batch(
     let mut report = BatchReport::default();
     for request in batch {
         if stop.is_cancelled() {
-            tracing::info!(entity, "stopping the issue-filing batch: leadership ended");
+            tracing::info!(
+                entity = entity.as_str(),
+                "stopping the issue-filing batch: leadership ended"
+            );
             report.stopped = Some(BatchStop::Stopped);
             break;
         }
@@ -1152,7 +1157,7 @@ async fn file_batch(
             Err(error) => {
                 // Filing never carries on without an answer, which is the table's
                 // `File`/`Unreachable` cell.
-                tracing::warn!(error = %error, entity, "GitHub unreachable, skipping issue filing");
+                tracing::warn!(error = %error, entity = entity.as_str(), "GitHub unreachable, skipping issue filing");
                 report.stopped = Some(batch_stop(Verdict::Unreachable));
                 break;
             }
@@ -1186,7 +1191,7 @@ async fn file_batch(
             }
             Action::SkipRow | Action::Rearm => {
                 tracing::warn!(
-                    entity,
+                    entity = entity.as_str(),
                     entity_id = request.entity_id,
                     repo = %request.repo,
                     status = answer.status,
@@ -1218,7 +1223,7 @@ async fn record_filed(
     db: &(impl ConnectionTrait + TransactionTrait),
     request: &FileRequest,
     answer: &Answer,
-    entity: &str,
+    entity: EntityKind,
     api: &Api,
     report: &mut BatchReport,
 ) -> ControlFlow<BatchStop> {
@@ -1236,7 +1241,7 @@ async fn record_filed(
             tracing::info!(
                 repo = %request.repo,
                 number,
-                entity,
+                entity = entity.as_str(),
                 entity_id = request.entity_id,
                 "filed a GitHub issue"
             );
@@ -1246,7 +1251,7 @@ async fn record_filed(
             // close the issue just created, best effort.
             let _ = close_issues_after_removal(&request.repo, &[number], api).await;
             tracing::warn!(
-                entity,
+                entity = entity.as_str(),
                 entity_id = request.entity_id,
                 repo = %request.repo,
                 number,
@@ -1258,7 +1263,7 @@ async fn record_filed(
             // open, and the batch ends here.
             tracing::error!(
                 error = %error,
-                entity,
+                entity = entity.as_str(),
                 entity_id = request.entity_id,
                 repo = %request.repo,
                 number,
@@ -1331,8 +1336,8 @@ pub async fn sync_closed_issues(
         return report;
     }
     let batch = settings.github_sync_batch;
-    let mut rows: Vec<(LinkTarget, issue_links::LinkedIssue)> = Vec::new();
-    for target in LinkTarget::ALL {
+    let mut rows: Vec<(EntityKind, issue_links::LinkedIssue)> = Vec::new();
+    for target in EntityKind::ALL {
         match issue_links::linked_for_check(db, target, batch).await {
             Ok(linked) => rows.extend(linked.into_iter().map(|row| (target, row))),
             Err(error) => {
@@ -1366,7 +1371,7 @@ pub async fn sync_closed_issues(
 /// or a transport error leaves the row unstamped so it is retried first.
 async fn clear_if_closed(
     db: &impl ConnectionTrait,
-    target: LinkTarget,
+    target: EntityKind,
     row: &issue_links::LinkedIssue,
     api: &Api,
     report: &mut BatchReport,
@@ -1392,7 +1397,7 @@ async fn clear_if_closed(
             tracing::info!(
                 repo = %row.repo,
                 number = row.number,
-                target = target.entity(),
+                target = target.as_str(),
                 entity_id = row.entity_id,
                 "issue gone; re-arming the link"
             );
@@ -1422,7 +1427,7 @@ async fn clear_if_closed(
 fn sync_decision(
     answer: &Answer,
     row: &issue_links::LinkedIssue,
-    target: LinkTarget,
+    target: EntityKind,
 ) -> issue_links::Check {
     match answer.issue_state().as_deref() {
         Some("closed") => {
@@ -1431,7 +1436,7 @@ fn sync_decision(
                 tracing::info!(
                     repo = %row.repo,
                     number = row.number,
-                    target = target.entity(),
+                    target = target.as_str(),
                     entity_id = row.entity_id,
                     "issue closed as not planned; keeping the link"
                 );
@@ -1440,7 +1445,7 @@ fn sync_decision(
                 tracing::info!(
                     repo = %row.repo,
                     number = row.number,
-                    target = target.entity(),
+                    target = target.as_str(),
                     entity_id = row.entity_id,
                     reason = %reason.as_deref().unwrap_or("without a reason"),
                     "issue closed; re-arming the link"
@@ -1468,7 +1473,7 @@ fn sync_decision(
 /// Writes one row's check, warning when the write cannot land.
 async fn record_check(
     db: &impl ConnectionTrait,
-    target: LinkTarget,
+    target: EntityKind,
     row: &issue_links::LinkedIssue,
     check: issue_links::Check,
     at: DateTime<Utc>,
@@ -1599,7 +1604,7 @@ pub async fn note_fixed_issues_for(
     }
     match filing::note_test_candidates(db, test_ids, settings.github_fixed_streak).await {
         Ok(candidates) if !candidates.is_empty() => {
-            let report = note_batch(db, candidates, "test", settings, api, stop).await;
+            let report = note_batch(db, candidates, EntityKind::Test, settings, api, stop).await;
             report.log(Operation::Note);
             report
         }
@@ -1624,7 +1629,7 @@ pub async fn note_fixed_job_issues_for(
     }
     match filing::note_job_candidates(db, job_ids, settings.github_fixed_streak).await {
         Ok(candidates) if !candidates.is_empty() => {
-            let report = note_batch(db, candidates, "job", settings, api, stop).await;
+            let report = note_batch(db, candidates, EntityKind::Job, settings, api, stop).await;
             report.log(Operation::Note);
             report
         }
@@ -1643,7 +1648,7 @@ pub async fn note_fixed_job_issues_for(
 async fn note_batch(
     db: &(impl ConnectionTrait + TransactionTrait),
     rows: Vec<NoteCandidate>,
-    entity: &str,
+    entity: EntityKind,
     settings: &Settings,
     api: &Api,
     stop: &CancellationToken,
@@ -1663,14 +1668,17 @@ async fn note_batch(
         );
         let Some(answered) = until_stopped(stop, api.comment(&row.repo, row.number, &body)).await
         else {
-            tracing::info!(entity, "stopping the fixed-note batch: leadership ended");
+            tracing::info!(
+                entity = entity.as_str(),
+                "stopping the fixed-note batch: leadership ended"
+            );
             report.stopped = Some(BatchStop::Stopped);
             break;
         };
         let comment = match answered {
             Ok(comment) => comment,
             Err(error) => {
-                tracing::warn!(error = %error, entity, "GitHub unreachable, skipping fixed-note comments");
+                tracing::warn!(error = %error, entity = entity.as_str(), "GitHub unreachable, skipping fixed-note comments");
                 report.stopped = Some(batch_stop(Verdict::Unreachable));
                 break;
             }
@@ -1707,7 +1715,7 @@ async fn note_batch(
             }
             Action::SkipRow | Action::Rearm => {
                 tracing::warn!(
-                    entity,
+                    entity = entity.as_str(),
                     entity_id = row.entity_id,
                     repo = %row.repo,
                     status = comment.status,
@@ -1724,7 +1732,7 @@ async fn note_batch(
 async fn stamp_note(
     db: &impl ConnectionTrait,
     row: &NoteCandidate,
-    entity: &str,
+    entity: EntityKind,
     settings: &Settings,
 ) -> bool {
     let threshold = i32::try_from(settings.github_fixed_streak).unwrap_or(i32::MAX);
@@ -1751,7 +1759,7 @@ async fn stamp_note(
     tracing::info!(
         repo = %row.repo,
         number = row.number,
-        entity,
+        entity = entity.as_str(),
         entity_id = row.entity_id,
         "noted that the fix appears to hold"
     );
@@ -1759,17 +1767,17 @@ async fn stamp_note(
 }
 
 /// Logs why a note's stamp did not land: the row vanished or stopped being noteable.
-fn log_note_stamp_failure(state: Option<NoteRowState>, entity: &str, row: &NoteCandidate) {
+fn log_note_stamp_failure(state: Option<NoteRowState>, entity: EntityKind, row: &NoteCandidate) {
     match state {
         None => tracing::warn!(
-            entity,
+            entity = entity.as_str(),
             entity_id = row.entity_id,
             repo = %row.repo,
             number = row.number,
             "row deleted (admin delete) while noting its issue"
         ),
         Some(state) => tracing::warn!(
-            entity,
+            entity = entity.as_str(),
             entity_id = row.entity_id,
             streak = state.clean_streak,
             number = ?state.issue_number,
@@ -1783,7 +1791,7 @@ fn log_note_stamp_failure(state: Option<NoteRowState>, entity: &str, row: &NoteC
 /// A stop signal or a rate limit ends the whole batch rather than only this issue.
 async fn close_note(
     row: &NoteCandidate,
-    entity: &str,
+    entity: EntityKind,
     api: &Api,
     skipped: &mut BTreeSet<String>,
     stop: &CancellationToken,
@@ -1794,13 +1802,16 @@ async fn close_note(
     )
     .await
     else {
-        tracing::info!(entity, "stopping the fixed-close batch: leadership ended");
+        tracing::info!(
+            entity = entity.as_str(),
+            "stopping the fixed-close batch: leadership ended"
+        );
         return ControlFlow::Break(BatchStop::Stopped);
     };
     let close = match answered {
         Ok(close) => close,
         Err(error) => {
-            tracing::warn!(error = %error, entity, "GitHub unreachable, skipping the close");
+            tracing::warn!(error = %error, entity = entity.as_str(), "GitHub unreachable, skipping the close");
             return ControlFlow::Break(batch_stop(Verdict::Unreachable));
         }
     };
