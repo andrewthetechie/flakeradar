@@ -95,6 +95,10 @@ is worse than none.
 - `pub use` re-exports of crate items get `#[doc(inline)]` (M-DOC-INLINE). Re-exports of `std`
   or third-party types do not — leaving them un-inlined is what marks them as foreign.
 - Re-export items by name, never `pub use foo::*` (M-NO-GLOB-REEXPORTS).
+- An item has one path (M-SINGLE-ITEM-PATH). A public module's items are reached through that
+  module — `flakeradar_db::reads::Board` — and are not also re-exported at the crate root. What
+  `lib.rs` re-exports is what a private module holds, so `flakeradar_db::DbError` has one path
+  and no module path. `flakeradar-core`, `flakeradar-db` and `flakeradar` follow the same rule.
 - Comments in American English.
 
 ## Workspace and types
@@ -116,7 +120,7 @@ is worse than none.
   implement `Debug` manually with redaction, plus a unit test proving the secret does not appear
   in the output.
 - Magic values are named constants with a doc comment saying why the value, what breaks if it
-  changes, and what external system it interacts with (M-DOCUMENTED-MAGIC). The `0.5` default
+  changes, and what external system it interacts with (M-DOCUMENTED-MAGIC). The `0.30` default
   Flake threshold and the 2000-character `MESSAGE_MAX` are examples.
 
 ## Testing
