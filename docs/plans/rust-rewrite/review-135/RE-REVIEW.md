@@ -5,9 +5,13 @@ This page is for the owner's second review of `feat/rust-rewrite`. The first rev
 `ledger.md` that tracks every finding — and it was written against `f9330fd`. The fixes are tasks
 16–31 of `docs/plans/rust-rewrite/`, whose shared contract is `00-fixes-context.md`.
 
-**Head: `e8563b1`** for the code, plus the documentation commits after it — this file,
-`HANDOFF.md` and `STATUS.md`'s row for task 31 — so `git diff e8563b1..HEAD --stat` names only
-those files, and one test fix (`04bc0ac`, below).
+**Head: `150bcd4`** for the code, the tests and `coverage-floor.json`. The commits after it are
+documentation only — this file, `HANDOFF.md` and `STATUS.md`'s row for task 31 — so
+`git diff 150bcd4..HEAD --stat` names only those files. The path from the reviewed head is
+`f9330fd` → `e8563b1` (the parity test's race) → `04bc0ac` (the conditional import) → `46c244d`
+(the merge of `main`'s #129) → `150bcd4` (the branch floor), with documentation commits between
+them. **The run on the pushed head is the CI evidence**; the run before it, on `04bc0ac`, passed
+17 of its 19 checks and failed only `Rust coverage`, on the floor this head changes.
 
 **The coverage floor is 93 branches, by the owner's decision of 2026-11-06.** The first CI run
 after the fixes failed `Rust coverage (lines + branches)` on `branches 1274 / 1356 = 93.95%` against
