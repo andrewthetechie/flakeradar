@@ -21,10 +21,10 @@ pub const TRUNCATION_MARKER: &str = "\n…[truncated]";
 /// # Examples
 ///
 /// ```
-/// assert_eq!(flakeradar_core::py_strip("\x1c padded \u{85}"), "padded");
+/// assert_eq!(flakeradar_core::strip_wire_whitespace("\x1c padded \u{85}"), "padded");
 /// ```
 #[must_use]
-pub fn py_strip(text: &str) -> &str {
+pub fn strip_wire_whitespace(text: &str) -> &str {
     text.trim_matches(is_python_whitespace)
 }
 
@@ -127,12 +127,15 @@ pub fn round4(value: f64) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{cap, py_splitlines, py_strip, round4};
+    use super::{cap, py_splitlines, round4, strip_wire_whitespace};
 
     #[test]
-    fn py_strip_removes_pythons_whitespace_set() {
-        assert_eq!(py_strip("\x1c\x1d\x1e\x1f\n\t a b \u{85}\u{a0}"), "a b");
-        assert_eq!(py_strip(""), "");
+    fn strip_wire_whitespace_removes_pythons_whitespace_set() {
+        assert_eq!(
+            strip_wire_whitespace("\x1c\x1d\x1e\x1f\n\t a b \u{85}\u{a0}"),
+            "a b"
+        );
+        assert_eq!(strip_wire_whitespace(""), "");
     }
 
     #[test]

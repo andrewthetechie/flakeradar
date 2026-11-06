@@ -33,7 +33,7 @@ use crate::entities::{jobs, pipelines, reports, repos, test_cases, test_executio
 use crate::error::DbError;
 use crate::report_intake::{
     REPORT_FAILED, REPORT_KIND_PIPELINE, REPORT_PENDING, REPORT_PROCESSED, complete_report,
-    fail_report, requeue_report, stored_junit_body, stored_pipeline_payload,
+    fail_report, requeue_report, stored_junit_body, stored_pipeline_report,
 };
 use crate::score_history::{HistoryKind, HistoryUpdate, write_today_history};
 use crate::sql::{get, placeholder_list, rows, value_row};
@@ -457,7 +457,7 @@ async fn process_report(
         executions,
         latest,
         day_counts,
-    } = record_test_executions(&classified, &ids, run.id, now)?;
+    } = build_test_executions(&classified, &ids, run.id, now)?;
 
     for chunk in chunks(&executions) {
         test_executions::Entity::insert_many(chunk.to_vec())
@@ -538,7 +538,7 @@ pub struct DayCounts {
 /// `attempt` counts per Test from 0; the last occurrence of a Test wins its
 /// `last_status`, and only an occurrence with a Location sets one. Day counts
 /// feed today's Score history row.
-fn record_test_executions(
+fn build_test_executions(
     classified: &[(ParsedCase, Option<FailureCategory>)],
     ids: &BTreeMap<String, i32>,
     run_id: i32,
@@ -763,7 +763,7 @@ async fn process_pipeline_report(
     report: &mut reports::Model,
     settings: &ProcessingSettings,
 ) -> Result<ProcessOutcome, ProcessError> {
-    let payload = stored_pipeline_payload(report)
+    let payload = stored_pipeline_report(report)
         .map_err(|error| ProcessError::permanent(format!("ValidationError: {error}")))?;
     let now = settings.clock.now();
     let branch_changed =
@@ -916,7 +916,7 @@ async fn insert_pipeline_job_executions(
             job_id,
             ci_job_id: job.ci_job_id.clone(),
             ci_run_id: payload.ci_run_id.clone(),
-            ci_run_attempt: crate::report_intake::stored_attempt(payload.ci_run_attempt),
+            ci_run_attempt: crate::report_intake::stored_ci_run_attempt(payload.ci_run_attempt),
             commit_sha: payload.commit_sha.clone(),
             branch: payload.branch.clone(),
             status: job.status,
@@ -1121,7 +1121,7 @@ pub async fn rescore(
         let empty = Vec::new();
         let executions = history.get(id).unwrap_or(&empty);
         let branch = default_branch.get(id).cloned().flatten();
-        let (score, confirmed) = branch_scoped_score(
+        let (score, proven) = branch_scoped_score(
             executions,
             branch.as_deref(),
             settings.score_decay,
@@ -1135,7 +1135,7 @@ pub async fn rescore(
         updates.push(TestUpdate {
             id: *id,
             flakiness_score: score,
-            confirmed_flake_count: i32::try_from(confirmed).unwrap_or(i32::MAX),
+            confirmed_flake_count: i32::try_from(proven).unwrap_or(i32::MAX),
             failure_category: dominant_category(&window_categories),
             clean_streak: i32::try_from(streak).unwrap_or(i32::MAX),
             fail_streak: i32::try_from(branch_scoped_fail_streak(executions, branch.as_deref()))
@@ -1285,7 +1285,7 @@ async fn test_tier_changes(
             name: named.name.clone(),
             flakiness_score: update.flakiness_score,
             tier: tier_for(update.flakiness_score, threshold),
-            confirmed_flake_count: usize::try_from(update.confirmed_flake_count).unwrap_or(0),
+            proven_flake_count: usize::try_from(update.confirmed_flake_count).unwrap_or(0),
             classname: Some(named.classname.clone()),
             pipeline: None,
             failure_category: update.failure_category,
@@ -1434,7 +1434,7 @@ pub async fn rescore_jobs(
     for id in job_ids {
         let entry = history.get(id).cloned().unwrap_or_default();
         let branch = entry.default_branch;
-        let (score, confirmed) = branch_scoped_score(
+        let (score, proven) = branch_scoped_score(
             &entry.executions,
             branch.as_deref(),
             settings.score_decay,
@@ -1444,7 +1444,7 @@ pub async fn rescore_jobs(
         updates.push(JobUpdate {
             id: *id,
             flakiness_score: score,
-            confirmed_flake_count: i32::try_from(confirmed).unwrap_or(i32::MAX),
+            confirmed_flake_count: i32::try_from(proven).unwrap_or(i32::MAX),
             clean_streak: i32::try_from(streak).unwrap_or(i32::MAX),
             clear_fixed_note: streak == 0,
         });
@@ -1559,7 +1559,7 @@ async fn job_tier_changes(
             name: named.name.clone(),
             flakiness_score: update.flakiness_score,
             tier: tier_for(update.flakiness_score, threshold),
-            confirmed_flake_count: usize::try_from(update.confirmed_flake_count).unwrap_or(0),
+            proven_flake_count: usize::try_from(update.confirmed_flake_count).unwrap_or(0),
             classname: None,
             pipeline: Some(named.pipeline.clone()),
             failure_category: None,

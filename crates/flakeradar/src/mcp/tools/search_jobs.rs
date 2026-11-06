@@ -13,7 +13,7 @@ use flakeradar_core::normalize_repo;
 use flakeradar_db::reads;
 
 use crate::mcp::{
-    Answer, BoxFuture, DEFAULT_LIMIT, McpServer, ToolResult, check_limit, checked_query,
+    BoxFuture, DEFAULT_LIMIT, McpServer, ToolAnswer, ToolResult, check_limit, checked_query,
     default_limit, lax_integer, parse, read_only,
 };
 
@@ -78,6 +78,6 @@ pub(super) fn call(server: &McpServer, arguments: Value) -> BoxFuture<'_, ToolRe
             args.limit,
         )
         .await?;
-        Answer::list(&found)
+        ToolAnswer::list(&found)
     })
 }

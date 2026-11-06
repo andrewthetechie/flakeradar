@@ -178,7 +178,7 @@ impl NewPipelineReport {
 /// rule existed: the column is what limits it, and failing that stored Report
 /// would lose a Run over an attempt number nobody reads.
 #[must_use]
-pub fn stored_attempt(ci_run_attempt: i64) -> i32 {
+pub fn stored_ci_run_attempt(ci_run_attempt: i64) -> i32 {
     i32::try_from(ci_run_attempt).unwrap_or(i32::MAX)
 }
 
@@ -228,10 +228,10 @@ pub fn stored_junit_body(report: &reports::Model) -> (&[u8], i32) {
 ///
 /// # Errors
 ///
-/// Returns [`DbError::StoredPayload`] when the stored body is not a valid
+/// Returns [`DbError::StoredReportBody`] when the stored body is not a valid
 /// Pipeline payload, which means the row was not written by this server.
-pub fn stored_pipeline_payload(report: &reports::Model) -> Result<PipelineReportIn, DbError> {
-    serde_json::from_slice(&report.body).map_err(|error| DbError::StoredPayload {
+pub fn stored_pipeline_report(report: &reports::Model) -> Result<PipelineReportIn, DbError> {
+    serde_json::from_slice(&report.body).map_err(|error| DbError::StoredReportBody {
         detail: error.to_string(),
     })
 }
@@ -272,7 +272,7 @@ pub fn requeue_report(report: &mut reports::Model, error: Option<&str>) {
 /// The manual-retry transition: a human puts a failed Report back in the queue
 /// with a fresh automatic-retry budget. Field-only; the caller owns the
 /// transaction.
-pub fn retry_failed_report(report: &mut reports::Model) {
+pub fn reset_for_retry(report: &mut reports::Model) {
     report.retry_count = 0;
     REPORT_PENDING.clone_into(&mut report.status);
     report.error = None;

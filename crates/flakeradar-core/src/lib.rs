@@ -63,10 +63,10 @@ pub use parsing::{
     fingerprint, parse_junit_xml,
 };
 #[doc(inline)]
-pub use py::{TRUNCATION_MARKER, cap, py_splitlines, py_strip, round4};
+pub use py::{TRUNCATION_MARKER, cap, py_splitlines, round4, strip_wire_whitespace};
 #[doc(inline)]
 pub use scoring::{
-    FULL_CONFIDENCE_SAMPLES, SAME_SHA_FLOOR, ScoredExecution, branch_scoped_fail_streak,
-    branch_scoped_score, branch_scoped_streak, clean_streak, combined_score, count_same_sha_flips,
+    FULL_CONFIDENCE_SAMPLES, PROVEN_FLAKE_FLOOR, ScoredExecution, branch_scoped_fail_streak,
+    branch_scoped_score, branch_scoped_streak, clean_streak, combined_score, count_proven_flakes,
     fail_streak, flip_score,
 };

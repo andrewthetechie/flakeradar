@@ -46,9 +46,10 @@ impl ScoredExecution {
 
 /// The lowest score a Proven flake can have.
 ///
-/// A same-SHA flip is proof of nondeterminism, so the score jumps to at least
-/// this value even when the flip history looks calm.
-pub const SAME_SHA_FLOOR: f64 = 0.6;
+/// One commit SHA that both passed and failed is a Proven flake: proof of
+/// nondeterminism, so the score jumps to at least this value even when the flip
+/// history looks calm.
+pub const PROVEN_FLAKE_FLOOR: f64 = 0.6;
 
 /// The number of non-skipped Executions at which a flip rate is fully trusted.
 ///
@@ -124,13 +125,13 @@ pub fn flip_score(statuses: &[ExecutionStatus], decay: f64, window: usize) -> f6
 /// # Examples
 ///
 /// ```
-/// use flakeradar_core::{ExecutionStatus, count_same_sha_flips};
+/// use flakeradar_core::{ExecutionStatus, count_proven_flakes};
 ///
 /// let executions = [("abc", ExecutionStatus::Passed), ("abc", ExecutionStatus::Failed)];
-/// assert_eq!(count_same_sha_flips(&executions), 1);
+/// assert_eq!(count_proven_flakes(&executions), 1);
 /// ```
 #[must_use]
-pub fn count_same_sha_flips(executions: &[(&str, ExecutionStatus)]) -> usize {
+pub fn count_proven_flakes(executions: &[(&str, ExecutionStatus)]) -> usize {
     let mut by_sha: BTreeMap<&str, (bool, bool)> = BTreeMap::new();
     for (sha, status) in executions {
         if *status == ExecutionStatus::Skipped {
@@ -174,12 +175,12 @@ pub fn combined_score(
     window: usize,
 ) -> (f64, usize) {
     let flips = flip_score(statuses, decay, window);
-    let confirmed = count_same_sha_flips(executions);
+    let proven = count_proven_flakes(executions);
     let mut score = flips;
-    if confirmed > 0 {
+    if proven > 0 {
         // Proven nondeterminism: floor the score and let repeated proof push it
         // toward 1.
-        score = score.max(1.0_f64.min(proof_floor(confirmed)));
+        score = score.max(1.0_f64.min(proof_floor(proven)));
     }
     // A rate that is not a number scores nothing: `min` answers the other side
     // for NaN, so an undefined rate would otherwise be served as a perfect one.
@@ -188,11 +189,11 @@ pub fn combined_score(
     } else {
         0.0
     };
-    (round4(score), confirmed)
+    (round4(score), proven)
 }
 /// The score floor repeated proof of nondeterminism earns.
 ///
-/// Python evaluated `SAME_SHA_FLOOR + 0.1 * (count - 1)` with two roundings; a
+/// Python evaluated `PROVEN_FLAKE_FLOOR + 0.1 * (count - 1)` with two roundings; a
 /// fused multiply-add would differ in the last bit, so the expression stays
 /// spelled out.
 #[expect(
@@ -200,8 +201,8 @@ pub fn combined_score(
     reason = "Python rounded the product and the sum separately; fusing them could \
               change the last bit of a served score"
 )]
-fn proof_floor(confirmed: usize) -> f64 {
-    SAME_SHA_FLOOR + 0.1 * count_as_f64(confirmed.saturating_sub(1))
+fn proof_floor(proven: usize) -> f64 {
+    PROVEN_FLAKE_FLOOR + 0.1 * count_as_f64(proven.saturating_sub(1))
 }
 
 /// Flips on the Default branch only; Proven flakes on every branch.
@@ -309,9 +310,9 @@ fn default_branch_statuses(
 #[cfg(test)]
 mod tests {
     use super::{
-        FULL_CONFIDENCE_SAMPLES, SAME_SHA_FLOOR, ScoredExecution, branch_scoped_fail_streak,
+        FULL_CONFIDENCE_SAMPLES, PROVEN_FLAKE_FLOOR, ScoredExecution, branch_scoped_fail_streak,
         branch_scoped_score, branch_scoped_streak, clean_streak, combined_score,
-        count_same_sha_flips, fail_streak, flip_score,
+        count_proven_flakes, fail_streak, flip_score,
     };
     use crate::model::ExecutionStatus::{self, Error, Failed, Passed, Skipped};
 
@@ -418,43 +419,43 @@ mod tests {
     }
 
     #[test]
-    fn same_sha_flip_detection() {
+    fn a_sha_with_both_outcomes_is_a_proven_flake() {
         let executions = [("abc", Passed), ("abc", Failed), ("def", Passed)];
-        assert_eq!(count_same_sha_flips(&executions), 1);
+        assert_eq!(count_proven_flakes(&executions), 1);
     }
 
     #[test]
-    fn same_sha_requires_both_outcomes() {
+    fn a_proven_flake_needs_both_outcomes_on_the_sha() {
         let executions = [("abc", Failed), ("abc", Failed), ("def", Passed)];
-        assert_eq!(count_same_sha_flips(&executions), 0);
+        assert_eq!(count_proven_flakes(&executions), 0);
     }
 
     #[test]
-    fn same_sha_skips_dont_count() {
+    fn a_skipped_execution_does_not_prove_a_flake() {
         let executions = [("abc", Skipped), ("abc", Failed)];
-        assert_eq!(count_same_sha_flips(&executions), 0);
+        assert_eq!(count_proven_flakes(&executions), 0);
     }
 
     #[test]
-    fn same_sha_flake_beats_sample_damping() {
+    fn a_proven_flake_beats_sample_damping() {
         let statuses = [Passed, Failed];
         let with_sha = [("abc", Passed), ("abc", Failed)];
-        let (score, confirmed) = combined_score(&statuses, &with_sha, 0.85, 50);
-        assert_eq!(confirmed, 1);
+        let (score, proven) = combined_score(&statuses, &with_sha, 0.85, 50);
+        assert_eq!(proven, 1);
         assert!(
-            (score - SAME_SHA_FLOOR).abs() < 1e-12,
+            (score - PROVEN_FLAKE_FLOOR).abs() < 1e-12,
             "score {score} is not the floor"
         );
     }
 
     #[test]
-    fn combined_score_floors_on_confirmed_flake() {
+    fn combined_score_floors_on_a_proven_flake() {
         let mut statuses = repeat(Passed, 30);
         statuses.push(Failed);
         let with_sha = [("abc", Passed), ("abc", Failed)];
-        let (score, confirmed) = combined_score(&statuses, &with_sha, 0.85, 50);
-        assert_eq!(confirmed, 1);
-        assert!(score >= SAME_SHA_FLOOR);
+        let (score, proven) = combined_score(&statuses, &with_sha, 0.85, 50);
+        assert_eq!(proven, 1);
+        assert!(score >= PROVEN_FLAKE_FLOOR);
     }
 
     #[test]
@@ -530,9 +531,9 @@ mod tests {
     #[test]
     fn branch_scoped_same_sha_flip_on_feature_branch_still_counts() {
         let history = history(&[("x", "feat", Passed), ("x", "feat", Failed)]);
-        let (score, confirmed) = branch_scoped_score(&history, Some("main"), 0.85, 50);
-        assert_eq!(confirmed, 1);
-        assert!(score >= SAME_SHA_FLOOR);
+        let (score, proven) = branch_scoped_score(&history, Some("main"), 0.85, 50);
+        assert_eq!(proven, 1);
+        assert!(score >= PROVEN_FLAKE_FLOOR);
     }
 
     #[test]
@@ -544,8 +545,8 @@ mod tests {
             ("x", "main", Failed),
             ("x", "main", Passed),
         ]);
-        let (_, confirmed) = branch_scoped_score(&history, Some("main"), 0.85, 3);
-        assert_eq!(confirmed, 0);
+        let (_, proven) = branch_scoped_score(&history, Some("main"), 0.85, 3);
+        assert_eq!(proven, 0);
     }
 
     #[test]

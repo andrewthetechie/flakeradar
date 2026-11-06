@@ -17,9 +17,9 @@ use flakeradar_core::{
 use flakeradar_db::reads;
 
 use crate::mcp::{
-    Answer, BoxFuture, DEFAULT_LIMIT, EXPLAINED_BY_MAX, McpServer, ScorePointSummary, ToolFailure,
-    ToolResult, check_limit, default_limit, lax_integer, lax_optional_integer, nullable, only_id,
-    parse, read_only, score_points,
+    BoxFuture, DEFAULT_LIMIT, EXPLAINED_BY_MAX, McpServer, ScorePointSummary, ToolAnswer,
+    ToolFailure, ToolResult, check_limit, default_limit, lax_integer, lax_optional_integer,
+    nullable, only_id, parse, read_only, score_points,
 };
 
 /// The tool's name on the wire.
@@ -103,7 +103,7 @@ pub(super) fn call(server: &McpServer, arguments: Value) -> BoxFuture<'_, ToolRe
         else {
             return Err(ToolFailure::Tool(format!("No job with id {job_id}.")));
         };
-        Answer::object(&JobDetail {
+        ToolAnswer::object(&JobDetail {
             job: history.job,
             unexplained_failures: history.unexplained_failures,
             explained_failures: history.explained_failures,

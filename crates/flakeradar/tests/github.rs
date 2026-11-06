@@ -1824,12 +1824,7 @@ async fn a_token_the_header_cannot_carry_goes_out_with_no_credentials() {
     // header at all: the request still goes out, carrying no credentials.
     let api = Api::new(Secret::new("tok\nen"), &server.uri()).expect("the HTTP client builds");
 
-    let logged = logged_from(github::close_issues_for_deleted_repo(
-        "acme/app",
-        &[123],
-        &api,
-    ))
-    .await;
+    let logged = logged_from(github::close_issues_after_removal("acme/app", &[123], &api)).await;
 
     let requests = server
         .received_requests()
@@ -4462,7 +4457,7 @@ async fn deleting_a_repo_comments_then_closes_each_issue() {
         mount_close(&server, number, 200, true).await;
     }
 
-    github::close_issues_for_deleted_repo("acme/app", &[123, 456], &api(&server)).await;
+    github::close_issues_after_removal("acme/app", &[123, 456], &api(&server)).await;
     let requests = server.received_requests().await.expect("a record");
     let calls: Vec<(String, String)> = requests
         .iter()
@@ -4497,8 +4492,8 @@ async fn deleting_a_repo_comments_then_closes_each_issue() {
 
     // No numbers and no token are both silent.
     let empty = MockServer::start().await;
-    github::close_issues_for_deleted_repo("acme/app", &[], &api(&empty)).await;
-    github::close_issues_for_deleted_repo(
+    github::close_issues_after_removal("acme/app", &[], &api(&empty)).await;
+    github::close_issues_after_removal(
         "acme/app",
         &[123],
         &Api::new(Secret::new(""), &empty.uri()).expect("the HTTP client builds"),
@@ -4517,7 +4512,7 @@ async fn deleting_a_repo_comments_then_closes_each_issue() {
     mount_close(&gone, 123, 404, false).await;
     mount_close(&gone, 456, 201, false).await;
     mount_close(&gone, 456, 200, true).await;
-    github::close_issues_for_deleted_repo("acme/app", &[123, 456], &api(&gone)).await;
+    github::close_issues_after_removal("acme/app", &[123, 456], &api(&gone)).await;
     assert_eq!(
         requested_paths(&gone).await,
         vec![
@@ -4536,7 +4531,7 @@ async fn a_failed_post_delete_request_costs_only_that_issue() {
     mount_close(&failed_comment, 123, 500, false).await;
     mount_close(&failed_comment, 456, 201, false).await;
     mount_close(&failed_comment, 456, 200, true).await;
-    github::close_issues_for_deleted_repo("acme/app", &[123, 456], &api(&failed_comment)).await;
+    github::close_issues_after_removal("acme/app", &[123, 456], &api(&failed_comment)).await;
     assert_eq!(
         requested_paths(&failed_comment).await,
         vec![
@@ -4552,7 +4547,7 @@ async fn a_failed_post_delete_request_costs_only_that_issue() {
     mount_close(&gone_close, 123, 404, true).await;
     mount_close(&gone_close, 456, 201, false).await;
     mount_close(&gone_close, 456, 200, true).await;
-    let logged = logged_from(github::close_issues_for_deleted_repo(
+    let logged = logged_from(github::close_issues_after_removal(
         "acme/app",
         &[123, 456],
         &api(&gone_close),
@@ -4578,7 +4573,7 @@ async fn a_failed_post_delete_request_costs_only_that_issue() {
     mount_close(&failed_close, 123, 500, true).await;
     mount_close(&failed_close, 456, 201, false).await;
     mount_close(&failed_close, 456, 200, true).await;
-    let logged = logged_from(github::close_issues_for_deleted_repo(
+    let logged = logged_from(github::close_issues_after_removal(
         "acme/app",
         &[123, 456],
         &api(&failed_close),
@@ -4604,12 +4599,7 @@ async fn a_failed_post_delete_request_costs_only_that_issue() {
 async fn the_post_delete_close_never_raises_when_github_is_unreachable() {
     // Nothing listens on this port.
     let api = Api::new(Secret::new(TOKEN), "http://127.0.0.1:1").expect("the HTTP client builds");
-    let logged = logged_from(github::close_issues_for_deleted_repo(
-        "acme/app",
-        &[123],
-        &api,
-    ))
-    .await;
+    let logged = logged_from(github::close_issues_after_removal("acme/app", &[123], &api)).await;
     assert_eq!(
         lines_with(&logged, "close skipped for one issue").len(),
         1,
@@ -4622,7 +4612,7 @@ async fn a_rate_limit_on_either_post_delete_request_stops_the_batch() {
     let comment_limit = MockServer::start().await;
     mount_close(&comment_limit, 123, 429, false).await;
     mount_close(&comment_limit, 456, 201, false).await;
-    github::close_issues_for_deleted_repo("acme/app", &[123, 456], &api(&comment_limit)).await;
+    github::close_issues_after_removal("acme/app", &[123, 456], &api(&comment_limit)).await;
     assert_eq!(
         requested_paths(&comment_limit).await,
         vec!["/repos/acme/app/issues/123/comments"],
@@ -4637,7 +4627,7 @@ async fn a_rate_limit_on_either_post_delete_request_stops_the_batch() {
         .mount(&close_limit)
         .await;
     mount_close(&close_limit, 456, 201, false).await;
-    let logged = logged_from(github::close_issues_for_deleted_repo(
+    let logged = logged_from(github::close_issues_after_removal(
         "acme/app",
         &[123, 456],
         &api(&close_limit),
@@ -4867,12 +4857,7 @@ async fn a_body_that_dies_after_the_status_line_is_a_transport_error() {
     let loopback = Loopback::answering(TRUNCATED.to_owned()).await;
     let api = Api::new(Secret::new(TOKEN), &loopback.base).expect("the HTTP client builds");
 
-    let logged = logged_from(github::close_issues_for_deleted_repo(
-        "acme/app",
-        &[123],
-        &api,
-    ))
-    .await;
+    let logged = logged_from(github::close_issues_after_removal("acme/app", &[123], &api)).await;
 
     assert_eq!(
         loopback.accepted(),
@@ -4901,12 +4886,7 @@ async fn a_post_delete_close_whose_connection_dies_costs_that_issue() {
     let loopback = Loopback::answering(CREATED.to_owned()).await;
     let api = Api::new(Secret::new(TOKEN), &loopback.base).expect("the HTTP client builds");
 
-    let logged = logged_from(github::close_issues_for_deleted_repo(
-        "acme/app",
-        &[123],
-        &api,
-    ))
-    .await;
+    let logged = logged_from(github::close_issues_after_removal("acme/app", &[123], &api)).await;
 
     assert_eq!(
         loopback.accepted(),

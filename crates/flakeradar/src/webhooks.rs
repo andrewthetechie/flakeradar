@@ -373,7 +373,7 @@ mod tests {
             name: "test_total".to_owned(),
             flakiness_score: 0.42,
             tier: Tier::Flaky,
-            confirmed_flake_count: 2,
+            proven_flake_count: 2,
             classname: Some("tests.test_cart".to_owned()),
             pipeline: None,
             failure_category: None,

@@ -15,7 +15,7 @@ use flakeradar_db::entities::{projects, reports};
 use flakeradar_db::{
     DbError, NewJunitReport, NewPipelineReport, REPORT_FAILED, REPORT_PENDING, REPORT_PROCESSED,
     complete_report, fail_report, find_junit_duplicate, get_or_create_project, requeue_report,
-    retry_failed_report, stored_attempt, stored_junit_body, stored_pipeline_payload,
+    reset_for_retry, stored_ci_run_attempt, stored_junit_body, stored_pipeline_report,
 };
 use flakeradar_test_support::{TestDb, make_junit, make_report};
 use sea_orm::entity::prelude::DateTimeWithTimeZone;
@@ -461,7 +461,7 @@ async fn the_stored_junit_body_reads_a_null_line_base_as_one() {
 }
 
 #[tokio::test]
-async fn the_stored_pipeline_payload_is_the_inverse_of_the_body() {
+async fn the_stored_pipeline_report_is_the_inverse_of_the_body() {
     let db = TestDb::new().await.expect("a migrated test database");
     let project = project(&db).await;
     let payload = pipeline_payload();
@@ -472,7 +472,7 @@ async fn the_stored_pipeline_payload_is_the_inverse_of_the_body() {
         .await
         .expect("a Pipeline Report");
     assert_eq!(
-        stored_pipeline_payload(&stored).expect("the stored payload"),
+        stored_pipeline_report(&stored).expect("the stored payload"),
         payload
     );
 }
@@ -487,8 +487,8 @@ async fn a_stored_body_that_is_not_a_payload_is_reported() {
         .build(db.connection())
         .await
         .expect("a Pipeline Report");
-    let error = stored_pipeline_payload(&stored).expect_err("the body is not a payload");
-    assert!(matches!(error, DbError::StoredPayload { .. }), "{error}");
+    let error = stored_pipeline_report(&stored).expect_err("the body is not a payload");
+    assert!(matches!(error, DbError::StoredReportBody { .. }), "{error}");
     assert!(error.to_string().contains("not its payload"), "{error}");
 }
 
@@ -549,7 +549,7 @@ async fn a_manual_retry_starts_the_budget_again() {
     stored.error = Some("boom".to_owned());
     stored.processed_at = Some(at());
     stored.retry_count = 3;
-    retry_failed_report(&mut stored);
+    reset_for_retry(&mut stored);
     assert_eq!(stored.status, REPORT_PENDING);
     assert_eq!(stored.retry_count, 0);
     assert_eq!(stored.error, None);
@@ -558,10 +558,10 @@ async fn a_manual_retry_starts_the_budget_again() {
 
 #[tokio::test]
 async fn an_absurd_attempt_number_saturates() {
-    assert_eq!(stored_attempt(2), 2);
-    assert_eq!(stored_attempt(1), 1);
-    assert_eq!(stored_attempt(i64::MAX), i32::MAX);
-    assert_eq!(stored_attempt(i64::from(i32::MAX) + 1), i32::MAX);
+    assert_eq!(stored_ci_run_attempt(2), 2);
+    assert_eq!(stored_ci_run_attempt(1), 1);
+    assert_eq!(stored_ci_run_attempt(i64::MAX), i32::MAX);
+    assert_eq!(stored_ci_run_attempt(i64::from(i32::MAX) + 1), i32::MAX);
 }
 
 #[tokio::test]

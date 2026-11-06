@@ -94,8 +94,8 @@ pub use reads::{
 pub use report_intake::{
     NewJunitReport, NewPipelineReport, REPORT_FAILED, REPORT_KIND_JUNIT, REPORT_KIND_PIPELINE,
     REPORT_PENDING, REPORT_PROCESSED, REPORT_STATUSES, StoredReport, complete_report, fail_report,
-    find_junit_duplicate, list_reports, report_summary, requeue_report, retry_failed_report,
-    stored_attempt, stored_junit_body, stored_pipeline_payload, stored_report,
+    find_junit_duplicate, list_reports, report_summary, requeue_report, reset_for_retry,
+    stored_ci_run_attempt, stored_junit_body, stored_pipeline_report, stored_report,
 };
 #[doc(inline)]
 pub use retention::{PruneResult, RetentionSettings, prune, run_prune};

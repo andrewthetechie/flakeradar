@@ -14,7 +14,7 @@ use serde_json::{Map, Number, Value};
 
 use crate::dto::lax_bool::{self, Refusal};
 use crate::dto::{LocSegment, ValidationIssue};
-use crate::py::py_strip;
+use crate::py::strip_wire_whitespace;
 
 /// `2^63`, the first whole number above `i64::MAX`. Pydantic's float-to-integer
 /// conversion accepts a float at or above the negative bound and below this one,
@@ -172,7 +172,7 @@ fn whole_integer(float: f64) -> i64 {
 /// although Python's `int` holds it.
 #[must_use]
 pub fn python_int(text: &str) -> Option<i64> {
-    let text = py_strip(text);
+    let text = strip_wire_whitespace(text);
     let (negative, rest) = match text.strip_prefix('-') {
         Some(rest) => (true, rest),
         None => (false, text.strip_prefix('+').unwrap_or(text)),

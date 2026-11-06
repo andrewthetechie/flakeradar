@@ -10,7 +10,7 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-use crate::py::py_strip;
+use crate::py::strip_wire_whitespace;
 
 /// The Project name used when a Report names none.
 pub const DEFAULT_PROJECT: &str = "default";
@@ -79,7 +79,7 @@ pub enum IdentityError {
 /// );
 /// ```
 pub fn normalize_repo(raw: &str) -> Result<String, IdentityError> {
-    let value = py_strip(raw).to_lowercase();
+    let value = strip_wire_whitespace(raw).to_lowercase();
     if value.chars().count() > 255 || !REPO_RE.is_match(&value) {
         return Err(IdentityError::Repo {
             raw: raw.to_owned(),
@@ -103,7 +103,7 @@ pub fn normalize_repo(raw: &str) -> Result<String, IdentityError> {
 /// ```
 pub fn normalize_project(raw: Option<&str>) -> Result<String, IdentityError> {
     let given = raw.unwrap_or_default();
-    let value = py_strip(given).to_lowercase();
+    let value = strip_wire_whitespace(given).to_lowercase();
     let value = if value.is_empty() {
         DEFAULT_PROJECT.to_owned()
     } else {
@@ -140,7 +140,7 @@ pub fn normalize_root(raw: Option<&str>) -> Result<Option<String>, IdentityError
     let Some(raw) = raw else {
         return Ok(None);
     };
-    let mut value = py_strip(raw);
+    let mut value = strip_wire_whitespace(raw);
     while let Some(rest) = value.strip_prefix("./") {
         value = rest;
     }
@@ -166,7 +166,7 @@ pub fn normalize_root(raw: Option<&str>) -> Result<Option<String>, IdentityError
 /// assert_eq!(flakeradar_core::normalize_provider(" GitHub ").unwrap(), "github");
 /// ```
 pub fn normalize_provider(raw: &str) -> Result<String, IdentityError> {
-    let value = py_strip(raw).to_lowercase();
+    let value = strip_wire_whitespace(raw).to_lowercase();
     if !PROVIDER_RE.is_match(&value) {
         return Err(IdentityError::Provider {
             raw: raw.to_owned(),

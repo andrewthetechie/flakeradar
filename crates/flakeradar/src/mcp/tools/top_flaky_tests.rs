@@ -12,9 +12,9 @@ use serde_json::{Value, json};
 use flakeradar_db::reads::{self, ListOptions, TestListFilters};
 
 use crate::mcp::{
-    Answer, BoxFuture, DEFAULT_LIMIT, McpServer, ToolResult, check_limit, check_new_within_days,
-    default_limit, default_true, lax_boolean, lax_integer, lax_optional_integer, nullable, parse,
-    parse_category, read_only, scope,
+    BoxFuture, DEFAULT_LIMIT, McpServer, ToolAnswer, ToolResult, check_limit,
+    check_new_within_days, default_limit, default_true, lax_boolean, lax_integer,
+    lax_optional_integer, nullable, parse, parse_category, read_only, scope,
 };
 
 /// The tool's name on the wire.
@@ -115,6 +115,6 @@ pub(super) fn call(server: &McpServer, arguments: Value) -> BoxFuture<'_, ToolRe
             &server.read_settings(),
         )
         .await?;
-        Answer::list(&page.items)
+        ToolAnswer::list(&page.items)
     })
 }

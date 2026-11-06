@@ -26,7 +26,7 @@ use roxmltree::{Document, Node, ParsingOptions};
 use sha1::{Digest as _, Sha1};
 
 use crate::model::ExecutionStatus;
-use crate::py::{cap, py_splitlines, py_strip};
+use crate::py::{cap, py_splitlines, strip_wire_whitespace};
 
 /// The longest Failure message kept, in code points.
 ///
@@ -711,7 +711,7 @@ fn outcome(case: Node<'_, '_>) -> (ExecutionStatus, String, String) {
     }) else {
         return (ExecutionStatus::Passed, String::new(), String::new());
     };
-    let message_attribute = py_strip(attribute(result, "message").unwrap_or_default());
+    let message_attribute = strip_wire_whitespace(attribute(result, "message").unwrap_or_default());
     if is_tag(result, "skipped") {
         return (
             ExecutionStatus::Skipped,
@@ -725,7 +725,7 @@ fn outcome(case: Node<'_, '_>) -> (ExecutionStatus, String, String) {
         ExecutionStatus::Error
     };
     let body = leading_text(result).unwrap_or_default();
-    let body = py_strip(&body);
+    let body = strip_wire_whitespace(&body);
     let message = if message_attribute.is_empty() {
         first_line(body)
     } else {
@@ -751,8 +751,8 @@ fn retry_outcome(elem: Node<'_, '_>) -> Result<(ExecutionStatus, String, String,
         ExecutionStatus::Error
     };
     let stack = child_text(elem, "stackTrace").unwrap_or_default();
-    let stack = py_strip(&stack);
-    let message_attribute = py_strip(attribute(elem, "message").unwrap_or_default());
+    let stack = strip_wire_whitespace(&stack);
+    let message_attribute = strip_wire_whitespace(attribute(elem, "message").unwrap_or_default());
     let message = if message_attribute.is_empty() {
         first_line(stack)
     } else {
@@ -766,7 +766,7 @@ fn retry_outcome(elem: Node<'_, '_>) -> Result<(ExecutionStatus, String, String,
     let raw = attribute(elem, "time").unwrap_or_default();
     // Python reads a retry's `time` with a bare `float()`, so a value it cannot
     // parse is 0.0 rather than an error.
-    let duration = python_float(raw).unwrap_or(0.0);
+    let duration = parse_seconds(raw).unwrap_or(0.0);
     Ok((
         status,
         cap(&message, MESSAGE_MAX),
@@ -788,7 +788,7 @@ fn joined_details(body: &str, stdout: Option<String>, stderr: Option<String>) ->
     }
     for (label, section) in [("stdout", stdout), ("stderr", stderr)] {
         if let Some(text) = section {
-            let text = py_strip(&text);
+            let text = strip_wire_whitespace(&text);
             if !text.is_empty() {
                 parts.push(format!("--- {label} ---\n{text}"));
             }
@@ -804,7 +804,7 @@ fn first_line(text: &str) -> String {
     }
     py_splitlines(text)
         .first()
-        .map_or_else(String::new, |line| py_strip(line).to_owned())
+        .map_or_else(String::new, |line| strip_wire_whitespace(line).to_owned())
 }
 
 /// The case's own duration; a `time` that is not a finite number is an upload
@@ -817,8 +817,8 @@ fn case_duration(case: Node<'_, '_>) -> Result<f64, ParseError> {
     }
     // junitparser removes every comma before Python's `float()` sees the value.
     let without_commas = raw.replace(',', "");
-    let duration = python_float(&without_commas).ok_or_else(|| ParseError::InvalidTime {
-        value: py_strip(raw).to_owned(),
+    let duration = parse_seconds(&without_commas).ok_or_else(|| ParseError::InvalidTime {
+        value: strip_wire_whitespace(raw).to_owned(),
     })?;
     finite_duration(duration, raw)
 }
@@ -834,7 +834,7 @@ fn finite_duration(duration: f64, raw: &str) -> Result<f64, ParseError> {
         return Ok(duration);
     }
     Err(ParseError::InvalidTime {
-        value: py_strip(raw).to_owned(),
+        value: strip_wire_whitespace(raw).to_owned(),
     })
 }
 
@@ -859,7 +859,7 @@ fn decimal_digit() -> Regex {
 /// parser does none of those, so each rule is applied first. Commas are not
 /// special here: the retry path calls plain `float()` in Python, while the
 /// testcase path removes them before this function, as junitparser does.
-fn python_float(raw: &str) -> Option<f64> {
+fn parse_seconds(raw: &str) -> Option<f64> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return None;
@@ -937,12 +937,12 @@ fn strip_numeric_underscores(text: &str) -> Option<String> {
 
 /// The reported file and line of a case.
 fn location(case: Node<'_, '_>, line_base: i64) -> (Option<String>, Option<i64>) {
-    let mut file = py_strip(attribute(case, "file").unwrap_or_default());
+    let mut file = strip_wire_whitespace(attribute(case, "file").unwrap_or_default());
     while let Some(rest) = file.strip_prefix("./") {
         file = rest;
     }
     let file = (!file.is_empty()).then(|| file.to_owned());
-    let raw_line = py_strip(attribute(case, "line").unwrap_or_default());
+    let raw_line = strip_wire_whitespace(attribute(case, "line").unwrap_or_default());
     let line = if raw_line.is_empty() || !raw_line.chars().all(|ch| ch.is_ascii_digit()) {
         None
     } else {

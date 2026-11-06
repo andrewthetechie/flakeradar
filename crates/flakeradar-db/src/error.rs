@@ -57,7 +57,7 @@ pub enum DbError {
     },
     /// A stored Pipeline Report body is not the payload it was built from.
     #[error("the stored Pipeline Report body is not its payload: {detail}")]
-    StoredPayload {
+    StoredReportBody {
         /// What the parser rejected.
         detail: String,
     },

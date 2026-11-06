@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 
 use flakeradar_db::reads;
 
-use crate::mcp::{Answer, BoxFuture, McpServer, ToolResult, no_arguments, read_only};
+use crate::mcp::{BoxFuture, McpServer, ToolAnswer, ToolResult, no_arguments, read_only};
 
 /// The tool's name on the wire.
 pub(super) const NAME: &str = "list_repos";
@@ -40,6 +40,6 @@ pub(super) fn annotations() -> ToolAnnotations {
 pub(super) fn call(server: &McpServer, arguments: Value) -> BoxFuture<'_, ToolResult> {
     Box::pin(async move {
         no_arguments(&arguments)?;
-        Answer::list(&reads::list_repos(server.pool()).await?)
+        ToolAnswer::list(&reads::list_repos(server.pool()).await?)
     })
 }

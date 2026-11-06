@@ -1249,7 +1249,7 @@ async fn record_filed(
         FiledLink::RowGone => {
             // The row vanished mid-filing: the number is referenced nowhere, so
             // close the issue just created, best effort.
-            let _ = close_issues_for_deleted_repo(&request.repo, &[number], api).await;
+            let _ = close_issues_after_removal(&request.repo, &[number], api).await;
             tracing::warn!(
                 entity,
                 entity_id = request.entity_id,
@@ -1491,7 +1491,7 @@ async fn record_check(
 /// syncs the issue: without this it would stay open forever, pointing at
 /// permalinks that now 404. Never raises; a rate limit stops the batch and any
 /// other failure costs that one issue.
-pub async fn close_issues_for_deleted_repo(repo: &str, numbers: &[i32], api: &Api) -> BatchReport {
+pub async fn close_issues_after_removal(repo: &str, numbers: &[i32], api: &Api) -> BatchReport {
     let mut report = BatchReport::default();
     if !api.configured() || numbers.is_empty() {
         return report;

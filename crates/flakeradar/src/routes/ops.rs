@@ -168,7 +168,7 @@ fn render(snapshot: &Snapshot) -> String {
         "# TYPE flakeradar_oldest_pending_report_age_seconds gauge".to_owned(),
         format!(
             "flakeradar_oldest_pending_report_age_seconds {}",
-            python_float(snapshot.facts.oldest)
+            render_seconds(snapshot.facts.oldest)
         ),
         "# HELP flakeradar_processor_leader 1 when a process holds the Report processor advisory lock."
             .to_owned(),
@@ -202,7 +202,7 @@ fn render(snapshot: &Snapshot) -> String {
     if let Some(value) = snapshot.last_processed {
         lines.push(format!(
             "flakeradar_last_report_processed_timestamp_seconds {}",
-            python_float(value)
+            render_seconds(value)
         ));
     }
     let mut body = lines.join("\n");
@@ -215,7 +215,7 @@ fn render(snapshot: &Snapshot) -> String {
 /// A sample line prints `0.0` for an empty queue, where Rust's own `Display`
 /// would print `0`. Every value here is a number of seconds, so none reaches the
 /// magnitude where Python switches to exponent notation.
-fn python_float(value: f64) -> String {
+fn render_seconds(value: f64) -> String {
     let text = format!("{value}");
     if value.is_finite() && !text.contains('.') && !text.contains('e') && !text.contains('E') {
         return format!("{text}.0");
@@ -244,15 +244,15 @@ fn database_failure(error: &DbError) -> Response {
 mod tests {
     //! The scrape's rendering needs no database.
 
-    use super::{QueueFacts, Snapshot, python_float, render};
+    use super::{QueueFacts, Snapshot, render, render_seconds};
     use std::collections::BTreeMap;
 
     #[test]
     fn a_float_is_printed_the_way_python_prints_it() {
-        assert_eq!(python_float(0.0), "0.0");
-        assert_eq!(python_float(90.0), "90.0");
-        assert_eq!(python_float(0.125), "0.125");
-        assert_eq!(python_float(1_700_000_000.5), "1700000000.5");
+        assert_eq!(render_seconds(0.0), "0.0");
+        assert_eq!(render_seconds(90.0), "90.0");
+        assert_eq!(render_seconds(0.125), "0.125");
+        assert_eq!(render_seconds(1_700_000_000.5), "1700000000.5");
     }
 
     #[test]

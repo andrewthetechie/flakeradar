@@ -8,7 +8,7 @@
 //!
 //! Each tool lives in its own file under [`tools`], which also holds the order
 //! `tools/list` answers; this module is what the tools share: the server they
-//! borrow the pool and the settings from, the one [`Answer`] a tool produces,
+//! borrow the pool and the settings from, the one [`ToolAnswer`] a tool produces,
 //! the one refusal a call can be, and the helpers several tools read. The
 //! transport — the router, the bearer check and the JSON-body guard — is
 //! [`transport`].
@@ -35,7 +35,7 @@ use std::sync::Arc;
 use chrono::NaiveDate;
 use flakeradar_core::{
     DEFAULT_PROJECT, FailureCategory, IdentityError, ScorePointOut, TRUNCATION_MARKER, lax,
-    normalize_project, normalize_repo, py_strip,
+    normalize_project, normalize_repo, strip_wire_whitespace,
 };
 use flakeradar_db::DbError;
 use flakeradar_db::issue_links::{LinkError, LinkTarget, LinkedOut};
@@ -60,7 +60,7 @@ mod transport;
 pub use transport::{MCP_PATH, router};
 
 /// What one tool's answer is, as the framework carries it.
-pub(crate) type ToolResult = Result<Answer, ToolFailure>;
+pub(crate) type ToolResult = Result<ToolAnswer, ToolFailure>;
 
 /// A future a tool's handler answers with.
 pub(crate) type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -207,16 +207,16 @@ impl From<IdentityError> for ToolFailure {
 /// shows the model.
 ///
 /// The variant is the tool's shape, so the framework derives the rest of the
-/// wire from it: a [`Answer::List`] carries the `{"result": …}` wrap, the
+/// wire from it: a [`ToolAnswer::List`] carries the `{"result": …}` wrap, the
 /// `_meta` that announces it, and no content block when it is empty, while an
-/// [`Answer::Object`] is the structured content itself. No name is consulted.
+/// [`ToolAnswer::Object`] is the structured content itself. No name is consulted.
 ///
 /// The text is produced from the typed value rather than from the structured
 /// content, because a `serde_json::Value` object is a sorted map: the frozen
 /// server wrote its fields in the order its schema declared them, and the text
 /// it sent carries that order.
 #[derive(Debug)]
-pub(crate) enum Answer {
+pub(crate) enum ToolAnswer {
     /// A list-returning tool: the array, which the wire wraps in `{"result": …}`.
     List {
         /// The JSON text content block.
@@ -233,7 +233,7 @@ pub(crate) enum Answer {
     },
 }
 
-impl Answer {
+impl ToolAnswer {
     /// A list-returning tool's answer.
     pub(crate) fn list<T: Serialize + ?Sized>(items: &T) -> Result<Self, ToolFailure> {
         Ok(Self::List {
@@ -351,9 +351,9 @@ fn capabilities() -> ServerCapabilities {
 /// A list keeps the frozen server's wrap: the array under `{"result": …}`, the
 /// wrap announced in `_meta`, and no content block at all when the array is
 /// empty. An object is its own structured content and carries no `_meta`.
-fn success(answer: Answer) -> CallToolResult {
+fn success(answer: ToolAnswer) -> CallToolResult {
     match answer {
-        Answer::List { text, items } => {
+        ToolAnswer::List { text, items } => {
             // A wrapped answer with nothing in it sends no content block at all,
             // so the block is replaced rather than added to.
             let empty = items.as_array().is_some_and(Vec::is_empty);
@@ -366,7 +366,7 @@ fn success(answer: Answer) -> CallToolResult {
             result.meta = Some(wrap_meta());
             result
         }
-        Answer::Object { text, value } => {
+        ToolAnswer::Object { text, value } => {
             let mut result = CallToolResult::structured(value);
             result.content = vec![ContentBlock::text(text)];
             result
@@ -519,7 +519,7 @@ fn parse_category(text: &str) -> Result<FailureCategory, ToolFailure> {
 
 /// The query a search tool uses, refusing one that is blank.
 fn checked_query(query: &str) -> Result<&str, ToolFailure> {
-    let stripped = py_strip(query);
+    let stripped = strip_wire_whitespace(query);
     if stripped.is_empty() {
         return Err(ToolFailure::Tool("query must not be empty".to_owned()));
     }
@@ -611,10 +611,10 @@ fn cap_details(text: &str) -> String {
 }
 
 /// A linked Test or Job, in the shape its leaderboard serves.
-fn linked_answer(linked: &LinkedOut) -> Result<Answer, ToolFailure> {
+fn linked_answer(linked: &LinkedOut) -> Result<ToolAnswer, ToolFailure> {
     match linked {
-        LinkedOut::Test(test) => Answer::object(test),
-        LinkedOut::Job(job) => Answer::object(job),
+        LinkedOut::Test(test) => ToolAnswer::object(test),
+        LinkedOut::Job(job) => ToolAnswer::object(job),
     }
 }
 

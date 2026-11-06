@@ -19,7 +19,7 @@ use utoipa::ToSchema;
 use crate::identity::{IdentityError, normalize_provider, normalize_repo};
 use crate::lax;
 use crate::model::{FailedJobOutcome, JobOutcome, JobStatus, Tier, Trend};
-use crate::py::py_strip;
+use crate::py::strip_wire_whitespace;
 
 /// The timestamp shape every response uses.
 ///
@@ -850,7 +850,7 @@ fn read_defaulted_bool(
 
 /// Trims text the way Pydantic's `str_strip_whitespace` does.
 fn stripped(text: &str) -> String {
-    py_strip(text).to_owned()
+    strip_wire_whitespace(text).to_owned()
 }
 
 /// Checks a string's NUL and length bounds, returning the stripped value.
@@ -954,7 +954,7 @@ pub fn read_ci_run_attempt(value: &Value) -> AttemptIn {
     // A run of digits past `i64` is a number past the column whatever it spells,
     // where any other unreadable value is Pydantic's `int_parsing`.
     if let Value::String(text) = value {
-        let trimmed = py_strip(text);
+        let trimmed = strip_wire_whitespace(text);
         if lax::python_int(text).is_none()
             && !trimmed.is_empty()
             && trimmed.bytes().all(|byte| byte.is_ascii_digit())

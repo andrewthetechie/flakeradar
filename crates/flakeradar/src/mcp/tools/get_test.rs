@@ -16,7 +16,7 @@ use flakeradar_core::{
 use flakeradar_db::reads;
 
 use crate::mcp::{
-    Answer, BoxFuture, DEFAULT_LIMIT, McpServer, ScorePointSummary, ToolFailure, ToolResult,
+    BoxFuture, DEFAULT_LIMIT, McpServer, ScorePointSummary, ToolAnswer, ToolFailure, ToolResult,
     cap_details, check_limit, default_limit, default_project, lax_integer, lax_optional_integer,
     nullable, only_id, parse, read_only, scope, score_points,
 };
@@ -128,7 +128,7 @@ pub(super) fn call(server: &McpServer, arguments: Value) -> BoxFuture<'_, ToolRe
             return Err(ToolFailure::Tool(format!("No test with id {test_id}.")));
         };
         let failure = reads::latest_failure(server.pool(), test_id).await?;
-        Answer::object(&TestDetail {
+        ToolAnswer::object(&TestDetail {
             test: history.test,
             location: history.location,
             last_failing_sha: history.last_failing_sha,

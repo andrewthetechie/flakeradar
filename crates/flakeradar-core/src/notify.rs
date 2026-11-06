@@ -67,7 +67,7 @@ pub struct TierChange {
     /// The tier the entity is in now.
     pub tier: Tier,
     /// How many commit SHAs recorded both outcomes.
-    pub confirmed_flake_count: usize,
+    pub proven_flake_count: usize,
     /// The Test's classname, or `None` for a Job.
     pub classname: Option<String>,
     /// The Job's Pipeline, or `None` for a Test.
@@ -117,11 +117,11 @@ fn dashboard_url(change: &TierChange, public_url: &str) -> Option<String> {
     if base.is_empty() {
         return None;
     }
-    let repo = python_quote(&change.repo);
+    let repo = percent_encode(&change.repo);
     match change.kind {
         Kind::Job => Some(format!("{base}/?view=jobs&repo={repo}&job={}", change.id)),
         Kind::Test => {
-            let project = python_quote(change.project.as_deref().unwrap_or_default());
+            let project = percent_encode(change.project.as_deref().unwrap_or_default());
             Some(format!(
                 "{base}/?repo={repo}&project={project}&test={}",
                 change.id
@@ -134,7 +134,7 @@ fn dashboard_url(change: &TierChange, public_url: &str) -> Option<String> {
 ///
 /// Python always keeps the ASCII letters, digits and `_.-~`, and writes every
 /// other byte of the UTF-8 encoding as uppercase `%XX`.
-fn python_quote(text: &str) -> String {
+fn percent_encode(text: &str) -> String {
     let mut encoded = String::with_capacity(text.len());
     for byte in text.bytes() {
         if byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'-' | b'~') {
@@ -172,7 +172,7 @@ fn json_payload(change: &TierChange, public_url: &str) -> Value {
     let _ = entity.insert("tier".to_owned(), Value::from(change.tier.as_str()));
     let _ = entity.insert(
         "confirmed_flake_count".to_owned(),
-        Value::from(change.confirmed_flake_count),
+        Value::from(change.proven_flake_count),
     );
     if change.kind == Kind::Test {
         let _ = entity.insert(
@@ -281,7 +281,7 @@ mod tests {
             name: "test_login".to_owned(),
             flakiness_score: 0.5,
             tier: Tier::Flaky,
-            confirmed_flake_count: 2,
+            proven_flake_count: 2,
             classname: Some("tests.login".to_owned()),
             pipeline: None,
             failure_category: Some(FailureCategory::Assertion),
@@ -297,7 +297,7 @@ mod tests {
             name: "test (ubuntu)".to_owned(),
             flakiness_score: 0.125,
             tier: Tier::Stable,
-            confirmed_flake_count: 0,
+            proven_flake_count: 0,
             classname: None,
             pipeline: Some("ci.yml".to_owned()),
             failure_category: None,
@@ -410,7 +410,7 @@ mod tests {
             name: "test_login".to_owned(),
             flakiness_score: 0.42,
             tier: Tier::Flaky,
-            confirmed_flake_count: 2,
+            proven_flake_count: 2,
             classname: Some("tests.test_auth".to_owned()),
             pipeline: None,
             failure_category: Some(FailureCategory::Timing),
@@ -427,7 +427,7 @@ mod tests {
             name: "test (ubuntu, 3.12)".to_owned(),
             flakiness_score: 0.51,
             tier: Tier::Flaky,
-            confirmed_flake_count: 1,
+            proven_flake_count: 1,
             classname: None,
             pipeline: Some(".github/workflows/ci.yml".to_owned()),
             failure_category: None,

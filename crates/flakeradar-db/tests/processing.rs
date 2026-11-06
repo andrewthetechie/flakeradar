@@ -151,7 +151,7 @@ async fn apply_manual_retry(db: &TestDb, id: i32) -> reports::Model {
         .await
         .expect("the Report")
         .expect("the Report exists");
-    flakeradar_db::retry_failed_report(&mut stored);
+    flakeradar_db::reset_for_retry(&mut stored);
     reports::Entity::update(reports::ActiveModel {
         id: sea_orm::Set(stored.id),
         retry_count: sea_orm::Set(stored.retry_count),
@@ -1169,7 +1169,7 @@ async fn an_upward_tier_crossing_is_reported() {
     assert_eq!(change.flakiness_score, row.flakiness_score);
     assert_eq!(change.tier, tier_for(row.flakiness_score, 0.05));
     assert_eq!(
-        change.confirmed_flake_count,
+        change.proven_flake_count,
         usize::try_from(row.confirmed_flake_count).expect("a count")
     );
     assert_eq!(change.pipeline, None);
@@ -1462,7 +1462,7 @@ async fn a_new_test_above_the_threshold_is_flaky() {
         .expect("a Report");
     let change = outcome.tier_changes.first().expect("a tier change");
     assert_eq!(change.event(), "test.flaky");
-    assert_eq!(change.confirmed_flake_count, 1);
+    assert_eq!(change.proven_flake_count, 1);
 }
 
 #[tokio::test]

@@ -9,12 +9,12 @@ use rmcp::model::ToolAnnotations;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use flakeradar_core::{normalize_repo, py_strip};
+use flakeradar_core::{normalize_repo, strip_wire_whitespace};
 use flakeradar_db::reads::{self, FAILURES_LIMIT};
 
 use crate::mcp::{
-    Answer, BoxFuture, McpServer, ToolFailure, ToolResult, lax_optional_integer, nullable, parse,
-    read_only,
+    BoxFuture, McpServer, ToolAnswer, ToolFailure, ToolResult, lax_optional_integer, nullable,
+    parse, read_only,
 };
 
 /// The tool's name on the wire.
@@ -76,7 +76,7 @@ pub(super) fn call(server: &McpServer, arguments: Value) -> BoxFuture<'_, ToolRe
                 "ci_run_attempt must be 1 or more".to_owned(),
             ));
         }
-        if py_strip(&args.ci_run_id).is_empty() {
+        if strip_wire_whitespace(&args.ci_run_id).is_empty() {
             return Err(ToolFailure::Tool("ci_run_id must not be empty".to_owned()));
         }
         let name = normalize_repo(&args.repo)?;
@@ -89,6 +89,6 @@ pub(super) fn call(server: &McpServer, arguments: Value) -> BoxFuture<'_, ToolRe
             FAILURES_LIMIT,
         )
         .await?;
-        Answer::object(&result)
+        ToolAnswer::object(&result)
     })
 }

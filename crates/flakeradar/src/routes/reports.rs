@@ -20,14 +20,14 @@ use chrono::Utc;
 use flakeradar_core::{
     AttemptIn, IngestAccepted, ParseError, PipelineReportIn, ReportOut, ReportSummaryOut,
     ValidationIssue, ci_run_attempt_too_large, lax, normalize_project, normalize_repo,
-    normalize_root, parse_junit_xml, pipeline_body, py_strip, read_ci_run_attempt,
+    normalize_root, parse_junit_xml, pipeline_body, read_ci_run_attempt, strip_wire_whitespace,
 };
 use flakeradar_db::entities::reports;
 use flakeradar_db::list_reports as report_queue;
 use flakeradar_db::{
     NewJunitReport, NewPipelineReport, REPORT_FAILED, REPORT_PENDING, REPORT_STATUSES,
     find_junit_duplicate, get_or_create_project, get_or_create_repo, report_summary,
-    retry_failed_report, stored_attempt, stored_report,
+    reset_for_retry, stored_ci_run_attempt, stored_report,
 };
 use sea_orm::{EntityTrait, Set, TransactionTrait as _};
 use serde::Deserialize;
@@ -240,11 +240,16 @@ fn too_large_attempt() -> ApiError {
 }
 
 /// The attempt to store, once `Validate` has accepted the upload.
-fn stored_ci_run_attempt(attempt: Option<&AttemptQuery>) -> Option<i32> {
+fn accepted_ci_run_attempt(attempt: Option<&AttemptQuery>) -> Option<i32> {
     match attempt {
         Some(AttemptQuery(AttemptIn::Number(number))) => Some(*number),
         _ => None,
     }
+}
+
+/// The `line_base` column value, which `Validate` has already bounded to 0 or 1.
+fn line_base_value(line_base: i64) -> i32 {
+    i32::try_from(line_base).unwrap_or(1)
 }
 
 /// Records a NUL or a maximum-length failure for `field`.
@@ -383,10 +388,10 @@ pub async fn ingest(
         normalize_project(query.project.as_deref()).map_err(|error| named_error(&error))?;
     let root = normalize_root(query.root.as_deref()).map_err(|error| named_error(&error))?;
     let line_base = query.line_base;
-    parse_upload(content.clone(), line_base).await?;
+    parse_report_body(content.clone(), line_base).await?;
     // Checked here, where Python's insert failed on the same value, so every
     // refusal before this one answers exactly as it did.
-    let ci_run_attempt = stored_ci_run_attempt(query.ci_run_attempt.as_ref());
+    let ci_run_attempt = accepted_ci_run_attempt(query.ci_run_attempt.as_ref());
 
     let now = Utc::now().fixed_offset();
     // The Repo, Project and Report are one unit of work: Python committed them
@@ -402,7 +407,7 @@ pub async fn ingest(
         branch: query.branch,
         ci_run_id: query.ci_run_id,
         root,
-        line_base: Some(stored_attempt(line_base)),
+        line_base: Some(line_base_value(line_base)),
         ci_job_id: blank_to_none(query.ci_job_id),
         ci_run_attempt,
         pipeline: blank_to_none(query.pipeline),
@@ -448,7 +453,7 @@ async fn report_body(request: Request) -> Result<Vec<u8>, ApiError> {
         .unwrap_or_default();
     let bytes = Bytes::from_request(request, &())
         .await
-        .map_err(|rejection| upload_error(&rejection))?;
+        .map_err(|rejection| report_body_error(&rejection))?;
     if !content_type.starts_with("multipart/form-data") {
         return Ok(bytes.to_vec());
     }
@@ -480,7 +485,7 @@ async fn report_body(request: Request) -> Result<Vec<u8>, ApiError> {
 /// The route's own limit is what a body over [`INGEST_BODY_LIMIT`] hits, so the
 /// frozen server's "Report exceeds 20 MB limit" is the answer rather than Axum's
 /// generic one.
-fn upload_error(rejection: &axum::extract::rejection::BytesRejection) -> ApiError {
+fn report_body_error(rejection: &axum::extract::rejection::BytesRejection) -> ApiError {
     use axum::extract::rejection::{BytesRejection, FailedToBufferBody};
 
     match rejection {
@@ -499,7 +504,7 @@ fn upload_error(rejection: &axum::extract::rejection::BytesRejection) -> ApiErro
 /// Parsing is CPU-bound, and the frozen server ran it in a worker thread for the
 /// same reason. A `<testcase time>` that is not a number answers 400, and every
 /// other parse failure answers 422.
-async fn parse_upload(content: Vec<u8>, line_base: i64) -> ApiResult<()> {
+async fn parse_report_body(content: Vec<u8>, line_base: i64) -> ApiResult<()> {
     let parsed = tokio::task::spawn_blocking(move || parse_junit_xml(&content, line_base))
         .await
         .map_err(|error| {
@@ -532,7 +537,7 @@ fn named_error(error: &flakeradar_core::IdentityError) -> ApiError {
 /// strip, so a value that is only whitespace becomes NULL in the database.
 fn blank_to_none(value: Option<String>) -> Option<String> {
     value
-        .map(|value| py_strip(&value).to_owned())
+        .map(|value| strip_wire_whitespace(&value).to_owned())
         .filter(|value| !value.is_empty())
 }
 
@@ -572,7 +577,7 @@ pub async fn ingest_pipeline(
         commit_sha: payload.commit_sha.clone(),
         branch: payload.branch.clone(),
         ci_run_id: payload.ci_run_id.clone(),
-        ci_run_attempt: stored_attempt(payload.ci_run_attempt),
+        ci_run_attempt: stored_ci_run_attempt(payload.ci_run_attempt),
         pipeline: Some(payload.pipeline.clone()),
         default_branch: payload.default_branch.clone(),
     };
@@ -695,7 +700,7 @@ pub async fn retry_report(
             ApiError::new(StatusCode::CONFLICT, "Only failed reports can be retried").into(),
         );
     }
-    retry_failed_report(&mut stored.report);
+    reset_for_retry(&mut stored.report);
     reports::Entity::update(reports::ActiveModel {
         id: Set(stored.report.id),
         retry_count: Set(stored.report.retry_count),

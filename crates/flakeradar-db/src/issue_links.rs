@@ -15,7 +15,7 @@
 // Rust guideline compliant 2026-07-21
 
 use chrono::{DateTime, FixedOffset, Utc};
-use flakeradar_core::{JobOut, MAX_ISSUE_NUMBER, TestOut, issue_url, py_strip};
+use flakeradar_core::{JobOut, MAX_ISSUE_NUMBER, TestOut, issue_url, strip_wire_whitespace};
 use sea_orm::{ConnectionTrait, DbBackend, Statement, TransactionSession, TransactionTrait, Value};
 
 use crate::error::DbError;
@@ -157,7 +157,9 @@ fn check_link(
     }
     let expected = issue_url(repo, Some(number)).unwrap_or_default();
     if let Some(url) = url {
-        let normalized = py_strip(url).trim_end_matches('/').to_lowercase();
+        let normalized = strip_wire_whitespace(url)
+            .trim_end_matches('/')
+            .to_lowercase();
         if normalized != expected {
             return Err(IssueLinkError::NotLinkable(format!(
                 "url must be {expected}: the issue must be in the {}'s own Repo",

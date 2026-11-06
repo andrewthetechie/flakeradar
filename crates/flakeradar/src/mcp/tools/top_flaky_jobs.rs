@@ -13,9 +13,9 @@ use flakeradar_core::normalize_repo;
 use flakeradar_db::reads::{self, JobListFilters, ListOptions};
 
 use crate::mcp::{
-    Answer, BoxFuture, DEFAULT_LIMIT, McpServer, ToolResult, check_limit, check_new_within_days,
-    default_limit, default_true, lax_boolean, lax_integer, lax_optional_integer, nullable, parse,
-    read_only,
+    BoxFuture, DEFAULT_LIMIT, McpServer, ToolAnswer, ToolResult, check_limit,
+    check_new_within_days, default_limit, default_true, lax_boolean, lax_integer,
+    lax_optional_integer, nullable, parse, read_only,
 };
 
 /// The tool's name on the wire.
@@ -91,6 +91,6 @@ pub(super) fn call(server: &McpServer, arguments: Value) -> BoxFuture<'_, ToolRe
             &server.read_settings(),
         )
         .await?;
-        Answer::list(&page.items)
+        ToolAnswer::list(&page.items)
     })
 }

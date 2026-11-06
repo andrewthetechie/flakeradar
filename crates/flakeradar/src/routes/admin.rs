@@ -90,7 +90,7 @@ pub async fn delete_repo(
     let Some(deleted) = flakeradar_db::delete_repo(state.pool(), &name).await? else {
         return Err(ApiError::new(StatusCode::NOT_FOUND, "Repo not found").into());
     };
-    let _ = crate::github::close_issues_for_deleted_repo(
+    let _ = crate::github::close_issues_after_removal(
         &deleted.out.repo,
         &deleted.filed,
         state.github(),
@@ -138,7 +138,7 @@ pub async fn delete_project(
             return Err(ApiError::new(StatusCode::NOT_FOUND, "Project not found").into());
         }
     };
-    let _ = crate::github::close_issues_for_deleted_repo(
+    let _ = crate::github::close_issues_after_removal(
         &deleted.out.repo,
         &deleted.filed,
         state.github(),

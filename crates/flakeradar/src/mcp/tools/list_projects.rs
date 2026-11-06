@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 use flakeradar_core::normalize_repo;
 use flakeradar_db::reads;
 
-use crate::mcp::{Answer, BoxFuture, McpServer, ToolFailure, ToolResult, parse, read_only};
+use crate::mcp::{BoxFuture, McpServer, ToolAnswer, ToolFailure, ToolResult, parse, read_only};
 
 /// The tool's name on the wire.
 pub(super) const NAME: &str = "list_projects";
@@ -58,7 +58,7 @@ pub(super) fn call(server: &McpServer, arguments: Value) -> BoxFuture<'_, ToolRe
         let name = normalize_repo(&repo)?;
         for found in reads::list_repos(server.pool()).await? {
             if found.name == name {
-                return Answer::list(&found.projects);
+                return ToolAnswer::list(&found.projects);
             }
         }
         Err(ToolFailure::Tool(format!(
