@@ -15,6 +15,8 @@
     reason = "one shared module is compiled into every test binary, and each uses a subset"
 )]
 
+pub(crate) mod allowances;
+
 use std::borrow::Cow;
 use std::sync::Arc;
 

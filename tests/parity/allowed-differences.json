@@ -6,11 +6,15 @@
     "allows": [
       {
         "file": "golden/junit/invalid-time.line_base1.json",
-        "field": "error"
+        "field": "error",
+        "pythonValue": "unhandled ValueError: could not convert string to float: 'abc'",
+        "rustValue": "Not a valid JUnit XML report: testcase time 'abc' is not a number"
       },
       {
         "file": "golden/junit/invalid-time.line_base0.json",
-        "field": "error"
+        "field": "error",
+        "pythonValue": "unhandled ValueError: could not convert string to float: 'abc'",
+        "rustValue": "Not a valid JUnit XML report: testcase time 'abc' is not a number"
       },
       {
         "file": "golden/ingest-junit/07.json",
@@ -42,74 +46,56 @@
       {
         "file": "golden/junit/bad-empty.line_base0.json",
         "field": "error",
-        "match": {
-          "kind": "prefix",
-          "value": "Not a valid JUnit XML report: "
-        }
+        "pythonValue": "Not a valid JUnit XML report: no element found: line 1, column 0",
+        "rustValue": "Not a valid JUnit XML report: the document does not have a root node"
       },
       {
         "file": "golden/junit/bad-empty.line_base1.json",
         "field": "error",
-        "match": {
-          "kind": "prefix",
-          "value": "Not a valid JUnit XML report: "
-        }
+        "pythonValue": "Not a valid JUnit XML report: no element found: line 1, column 0",
+        "rustValue": "Not a valid JUnit XML report: the document does not have a root node"
       },
       {
         "file": "golden/junit/bad-not-xml.line_base0.json",
         "field": "error",
-        "match": {
-          "kind": "prefix",
-          "value": "Not a valid JUnit XML report: "
-        }
+        "pythonValue": "Not a valid JUnit XML report: syntax error: line 1, column 0",
+        "rustValue": "Not a valid JUnit XML report: unknown token at 1:1"
       },
       {
         "file": "golden/junit/bad-not-xml.line_base1.json",
         "field": "error",
-        "match": {
-          "kind": "prefix",
-          "value": "Not a valid JUnit XML report: "
-        }
+        "pythonValue": "Not a valid JUnit XML report: syntax error: line 1, column 0",
+        "rustValue": "Not a valid JUnit XML report: unknown token at 1:1"
       },
       {
         "file": "golden/junit/bad-external-entity.line_base0.json",
         "field": "error",
-        "match": {
-          "kind": "prefix",
-          "value": "Not a valid JUnit XML report: "
-        }
+        "pythonValue": "Not a valid JUnit XML report: undefined entity &secret;: line 3, column 101",
+        "rustValue": "Not a valid JUnit XML report: unknown entity reference 'secret' at 3:102"
       },
       {
         "file": "golden/junit/bad-external-entity.line_base1.json",
         "field": "error",
-        "match": {
-          "kind": "prefix",
-          "value": "Not a valid JUnit XML report: "
-        }
+        "pythonValue": "Not a valid JUnit XML report: undefined entity &secret;: line 3, column 101",
+        "rustValue": "Not a valid JUnit XML report: unknown entity reference 'secret' at 3:102"
       },
       {
         "file": "golden/junit/bad-nested-entities.line_base0.json",
         "field": "error",
-        "match": {
-          "kind": "prefix",
-          "value": "Not a valid JUnit XML report: "
-        }
+        "pythonValue": "Not a valid JUnit XML report: limit on input amplification factor (from DTD and entities) breached: line 14, column 108",
+        "rustValue": "Not a valid JUnit XML report: a possible entity reference loop is detected at 4:25"
       },
       {
         "file": "golden/junit/bad-nested-entities.line_base1.json",
         "field": "error",
-        "match": {
-          "kind": "prefix",
-          "value": "Not a valid JUnit XML report: "
-        }
+        "pythonValue": "Not a valid JUnit XML report: limit on input amplification factor (from DTD and entities) breached: line 14, column 108",
+        "rustValue": "Not a valid JUnit XML report: a possible entity reference loop is detected at 4:25"
       },
       {
         "file": "golden/ingest-junit/05.json",
         "field": "body.detail",
-        "match": {
-          "kind": "prefix",
-          "value": "Not a valid JUnit XML report: "
-        }
+        "pythonValue": "Not a valid JUnit XML report: syntax error: line 1, column 0",
+        "rustValue": "Not a valid JUnit XML report: unknown token at 1:1"
       }
     ]
   },
@@ -572,16 +558,19 @@
       {
         "file": "golden/mcp/06.json",
         "field": "resultType",
+        "pythonValue": null,
         "rustValue": "complete"
       },
       {
         "file": "golden/mcp/06.json",
         "field": "ttlMs",
+        "pythonValue": null,
         "rustValue": 0
       },
       {
         "file": "golden/mcp/06.json",
         "field": "cacheScope",
+        "pythonValue": null,
         "rustValue": "private"
       },
       {

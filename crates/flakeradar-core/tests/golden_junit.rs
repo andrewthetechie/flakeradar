@@ -36,8 +36,6 @@ struct Allowance {
     python_value: Option<Value>,
     /// The exact Rust value, when the allowance names one.
     rust_value: Option<Value>,
-    /// The prefix the Rust value must start with, when the allowance requires it.
-    prefix: Option<String>,
 }
 
 /// Every allowance the repository records, loaded once.
@@ -64,11 +62,6 @@ static ALLOWANCES: LazyLock<Vec<Allowance>> = LazyLock::new(|| {
                     .to_owned(),
                 python_value: allow.get("pythonValue").cloned(),
                 rust_value: allow.get("rustValue").cloned(),
-                prefix: allow
-                    .get("match")
-                    .filter(|matcher| matcher["kind"] == "prefix")
-                    .and_then(|matcher| matcher["value"].as_str())
-                    .map(ToOwned::to_owned),
             });
         }
     }
@@ -89,10 +82,6 @@ fn is_allowed(golden: &str, field: &str, python: &Value, rust: &Value) -> bool {
                 .rust_value
                 .as_ref()
                 .is_none_or(|value| value == rust)
-            && allowance
-                .prefix
-                .as_ref()
-                .is_none_or(|prefix| rust.as_str().is_some_and(|text| text.starts_with(prefix)))
     })
 }
 
