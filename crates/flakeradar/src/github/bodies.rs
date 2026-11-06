@@ -94,9 +94,12 @@ pub fn fixed_comment(
     format!("{body}\n\n{link}")
 }
 
-/// The first ten characters of a commit SHA, as Python's slice did.
+/// How much of a commit SHA a body's table prints.
+const SHORT_SHA_CHARS: usize = 10;
+
+/// The first characters of a commit SHA, as Python's slice did.
 fn short_sha(sha: &str) -> String {
-    sha.chars().take(10).collect()
+    sha.chars().take(SHORT_SHA_CHARS).collect()
 }
 
 /// The newest failing Execution of a Test, as an issue body reports it.
@@ -143,6 +146,88 @@ fn newest_failure(recent: &[RecentExecution]) -> Option<NewestFailure> {
     })
 }
 
+/// Builds an issue body one block at a time.
+///
+/// Both bodies are a heading, a bullet list, a paragraph and the execution
+/// table, and a Test adds a sample failure. The block order, and the blank line
+/// between two blocks, are stated here rather than at each call site.
+#[derive(Debug)]
+struct Body {
+    lines: Vec<String>,
+}
+
+impl Body {
+    /// A body whose first line is `heading`.
+    fn new(heading: String) -> Self {
+        Self {
+            lines: vec![heading],
+        }
+    }
+
+    /// One line, as given.
+    fn line(&mut self, line: impl Into<String>) {
+        self.lines.push(line.into());
+    }
+
+    /// The blank line that separates two blocks.
+    fn blank(&mut self) {
+        self.line(String::new());
+    }
+
+    /// One bullet, with `text` after the marker.
+    fn bullet(&mut self, text: impl Into<String>) {
+        self.line(format!("- {}", text.into()));
+    }
+
+    /// One bullet indented under the bullet above it.
+    fn nested_bullet(&mut self, text: impl Into<String>) {
+        self.line(format!("  - {}", text.into()));
+    }
+
+    /// The score and Proven flake bullets, which both bodies carry.
+    fn filing_gate(&mut self, score: f64, proven_flakes: i32, filed_at: f64) {
+        self.bullet(format!(
+            "**Flakiness score:** {score:.2} (filed at ≥ {filed_at:.2})"
+        ));
+        self.bullet(format!(
+            "**Proven flakes (same commit failed *and* passed):** {proven_flakes}"
+        ));
+    }
+
+    /// Prose, one line of `lines` per entry.
+    fn prose(&mut self, lines: &[&str]) {
+        self.lines
+            .extend(lines.iter().map(|line| (*line).to_owned()));
+    }
+
+    /// A `###` section: the blank line before it, the heading, and one after.
+    fn section(&mut self, heading: &str) {
+        self.blank();
+        self.line(format!("### {heading}"));
+        self.blank();
+    }
+
+    /// A fenced code block holding `text`.
+    fn code(&mut self, text: &str) {
+        self.line("```");
+        self.line(text);
+        self.line("```");
+    }
+
+    /// The executions section: its heading, its columns and its rows.
+    fn executions(&mut self, columns: &str, rule: &str, rows: impl IntoIterator<Item = String>) {
+        self.section(&format!("Last {BODY_EXECUTIONS} executions"));
+        self.line(columns);
+        self.line(rule);
+        self.lines.extend(rows);
+    }
+
+    /// The body as GitHub receives it.
+    fn render(self) -> String {
+        self.lines.join("\n")
+    }
+}
+
 /// Renders a self-contained issue body an engineer or agent can act on.
 #[must_use]
 pub fn test_issue_body(
@@ -153,103 +238,106 @@ pub fn test_issue_body(
     root: &str,
     settings: &Settings,
 ) -> String {
-    let mut lines = vec![
-        format!(
-            "FlakeRadar detected a flaky test: `{}::{}`",
-            test.classname, test.name
-        ),
-        String::new(),
-        format!("- **Repo / project:** `{repo}` / `{project}`"),
-    ];
+    let mut body = Body::new(format!(
+        "FlakeRadar detected a flaky test: `{}::{}`",
+        test.classname, test.name
+    ));
+    body.blank();
+    body.bullet(format!("**Repo / project:** `{repo}` / `{project}`"));
     let path = test.file.as_ref().map(|file| repo_path(root, file));
-    let location = match (&path, test.line) {
-        (Some(path), Some(line)) => format!("`{path}` line {line}"),
-        (Some(path), None) => format!("`{path}`"),
-        (None, _) => "(not reported by the test runner)".to_owned(),
-    };
-    lines.push(format!("- **Location:** {location}"));
+    body.bullet(format!(
+        "**Location:** {}",
+        location(path.as_deref(), test.line)
+    ));
     let failing = newest_failure(recent);
-    let last_fail_sha = failing.as_ref().map(|failure| failure.commit_sha.clone());
-    let last_fail_branch = failing.as_ref().map(|failure| failure.branch.clone());
-    let sample_failure = failing.map(|failure| failure.sample).unwrap_or_default();
-    let permalink = match (&test.file, &last_fail_sha) {
-        (Some(file), Some(sha)) => {
-            Some(flakeradar_core::permalink(&flakeradar_core::LocationRef {
-                repo,
-                commit_sha: sha,
-                project_root: root,
-                file,
-                line: test.line.map(i64::from),
-            }))
-        }
-        _ => None,
-    };
-    if let Some(permalink) = permalink {
-        lines.push(format!(
-            "- **Permalink (last failing commit):** {permalink}"
-        ));
+    if let Some(permalink) = permalink(test, repo, root, failing.as_ref()) {
+        body.bullet(format!("**Permalink (last failing commit):** {permalink}"));
     }
-    let hint = run_hint(path.as_deref(), &test.classname, &test.name);
-    lines.push(format!(
-        "- **Flakiness score:** {:.2} (filed at ≥ {:.2})",
-        test.flakiness_score, settings.github_issue_min_score
-    ));
-    lines.push(format!(
-        "- **Proven flakes (same commit failed *and* passed):** {}",
-        test.confirmed_flake_count
-    ));
+    body.filing_gate(
+        test.flakiness_score,
+        test.confirmed_flake_count,
+        settings.github_issue_min_score,
+    );
     let suite = if test.suite.is_empty() {
         "(none)"
     } else {
         test.suite.as_str()
     };
-    lines.push(format!(
-        "- **Suite / classname:** `{suite}` / `{}`",
+    body.bullet(format!(
+        "**Suite / classname:** `{suite}` / `{}`",
         test.classname
     ));
-    if let Some(sha) = &last_fail_sha {
-        let branch = match last_fail_branch.as_deref() {
-            Some(branch) if !branch.is_empty() => format!(" on branch `{branch}`"),
-            _ => String::new(),
-        };
-        lines.push(format!("- **Last failing commit:** `{sha}`{branch}"));
+    if let Some(failure) = &failing {
+        body.bullet(last_failing_commit(failure));
     }
-    lines.extend([
-        String::new(),
-        "FlakeRadar flags this test because it reports nondeterministic results (a failure gives way to a"
-            .to_owned(),
-        "pass on identical code). To reproduce it locally:".to_owned(),
-        String::new(),
-        "```".to_owned(),
-        hint,
-        "```".to_owned(),
-        String::new(),
-        "Then look in the traceback below for a shared resource the test depends on: timing, execution"
-            .to_owned(),
-        "order, shared/global state, or the network. Re-run the test several times to confirm.".to_owned(),
-        String::new(),
-        "### Last 10 executions".to_owned(),
-        String::new(),
-        "| Status | Commit | Branch | When (UTC) |".to_owned(),
-        "|---|---|---|---|".to_owned(),
+    body.blank();
+    body.prose(&[
+        "FlakeRadar flags this test because it reports nondeterministic results (a failure gives way to a",
+        "pass on identical code). To reproduce it locally:",
     ]);
-    lines.extend(execution_table(recent));
-    if !sample_failure.is_empty() {
-        let sample: String = sample_failure.chars().take(SAMPLE_FAILURE_MAX).collect();
-        lines.extend([
-            String::new(),
-            "### Sample failure".to_owned(),
-            String::new(),
-            "```".to_owned(),
-            sample,
-            "```".to_owned(),
-        ]);
+    body.blank();
+    body.code(&run_hint(path.as_deref(), &test.classname, &test.name));
+    body.blank();
+    body.prose(&[
+        "Then look in the traceback below for a shared resource the test depends on: timing, execution",
+        "order, shared/global state, or the network. Re-run the test several times to confirm.",
+    ]);
+    body.executions(
+        "| Status | Commit | Branch | When (UTC) |",
+        "|---|---|---|---|",
+        execution_table(recent),
+    );
+    if let Some(sample) = failing
+        .as_ref()
+        .map(|failure| failure.sample.as_str())
+        .filter(|sample| !sample.is_empty())
+    {
+        body.section("Sample failure");
+        body.code(&sample.chars().take(SAMPLE_FAILURE_MAX).collect::<String>());
     }
-    lines.extend([
-        String::new(),
-        format!("_Fingerprint: `{}`_", test.fingerprint),
-    ]);
-    lines.join("\n")
+    body.blank();
+    body.line(format!("_Fingerprint: `{}`_", test.fingerprint));
+    body.render()
+}
+
+/// How a body names a Test's Location, or says the runner reported none.
+fn location(path: Option<&str>, line: Option<i32>) -> String {
+    match (path, line) {
+        (Some(path), Some(line)) => format!("`{path}` line {line}"),
+        (Some(path), None) => format!("`{path}`"),
+        (None, _) => "(not reported by the test runner)".to_owned(),
+    }
+}
+
+/// The bullet naming the newest failing commit, and its branch when one was
+/// reported.
+fn last_failing_commit(failure: &NewestFailure) -> String {
+    if failure.branch.is_empty() {
+        format!("**Last failing commit:** `{}`", failure.commit_sha)
+    } else {
+        format!(
+            "**Last failing commit:** `{}` on branch `{}`",
+            failure.commit_sha, failure.branch
+        )
+    }
+}
+
+/// The permalink to the newest failing commit, when the Test reports a file.
+fn permalink(
+    test: &TestRow,
+    repo: &str,
+    root: &str,
+    failing: Option<&NewestFailure>,
+) -> Option<String> {
+    let file = test.file.as_ref()?;
+    let commit_sha = &failing?.commit_sha;
+    Some(flakeradar_core::permalink(&flakeradar_core::LocationRef {
+        repo,
+        commit_sha,
+        project_root: root,
+        file,
+        line: test.line.map(i64::from),
+    }))
 }
 
 /// The Test body's table: one row per recent Execution, newest first.
@@ -277,81 +365,78 @@ pub fn job_issue_body(
     history: Option<&JobHistoryOut>,
     settings: &Settings,
 ) -> String {
-    let mut lines = vec![
-        format!(
-            "FlakeRadar detected a flaky CI job: `{pipeline}` / `{}`",
-            job.name
-        ),
-        String::new(),
-        format!("- **Repo:** `{repo}`"),
-        format!("- **Pipeline:** `{pipeline}`"),
-        format!("- **Job:** `{}`", job.name),
-        format!(
-            "- **Flakiness score:** {:.2} (filed at ≥ {:.2})",
-            job.flakiness_score, settings.github_issue_min_score
-        ),
-        format!(
-            "- **Proven flakes (same commit failed *and* passed):** {}",
-            job.confirmed_flake_count
-        ),
-    ];
+    let mut body = Body::new(format!(
+        "FlakeRadar detected a flaky CI job: `{pipeline}` / `{}`",
+        job.name
+    ));
+    body.blank();
+    body.bullet(format!("**Repo:** `{repo}`"));
+    body.bullet(format!("**Pipeline:** `{pipeline}`"));
+    body.bullet(format!("**Job:** `{}`", job.name));
+    body.filing_gate(
+        job.flakiness_score,
+        job.confirmed_flake_count,
+        settings.github_issue_min_score,
+    );
     if let Some(history) = history {
-        lines.push(format!(
-            "- **Unexplained failures:** {} (failures with no failing test in the job)",
-            history.unexplained_failures
-        ));
-        lines.push(format!(
-            "- **Explained by tests:** {}",
-            history.explained_failures
-        ));
-        let top_runners: Vec<_> = history
-            .runners
-            .iter()
-            .filter(|runner| runner.unexplained_failures > 0)
-            .take(BODY_RUNNERS)
-            .collect();
-        if !top_runners.is_empty() {
-            lines.push("- **Failures by runner:**".to_owned());
-            for runner in top_runners {
-                let label = runner
-                    .runner_name
-                    .clone()
-                    .filter(|name| !name.is_empty())
-                    .unwrap_or_else(|| {
-                        if runner.labels.iter().any(|label| !label.is_empty()) {
-                            runner.labels.join(", ")
-                        } else {
-                            "(no labels)".to_owned()
-                        }
-                    });
-                lines.push(format!(
-                    "  - `{label}`: {} unexplained of {} executions",
-                    runner.unexplained_failures, runner.executions
-                ));
-            }
-        }
+        failure_counts(&mut body, history);
     }
-    lines.extend([
-        String::new(),
-        "Job scores count only **unexplained** failures — a failure that a failing Test in the same job"
-            .to_owned(),
-        "explains is not counted. An unexplained failure points at setup, network, runner capacity,"
-            .to_owned(),
-        "timeouts, or a crash before the tests run. If the failures cluster on one runner, that runner"
-            .to_owned(),
-        "may be the cause. Open the job and fix the failing step, then re-run.".to_owned(),
-        String::new(),
-        "### Last 10 executions".to_owned(),
-        String::new(),
-        "| Outcome | Commit | Branch | Attempt | Runner | Job |".to_owned(),
-        "|---|---|---|---|---|---|".to_owned(),
+    body.blank();
+    body.prose(&[
+        "Job scores count only **unexplained** failures — a failure that a failing Test in the same job",
+        "explains is not counted. An unexplained failure points at setup, network, runner capacity,",
+        "timeouts, or a crash before the tests run. If the failures cluster on one runner, that runner",
+        "may be the cause. Open the job and fix the failing step, then re-run.",
     ]);
-    if let Some(history) = history {
-        for execution in &history.executions {
-            lines.push(execution_line(execution));
-        }
+    let rows: Vec<String> = history
+        .map(|history| history.executions.iter().map(execution_line).collect())
+        .unwrap_or_default();
+    body.executions(
+        "| Outcome | Commit | Branch | Attempt | Runner | Job |",
+        "|---|---|---|---|---|---|",
+        rows,
+    );
+    body.render()
+}
+
+/// The bullets that say what a Job's failures were and which runners they
+/// clustered on.
+fn failure_counts(body: &mut Body, history: &JobHistoryOut) {
+    body.bullet(format!(
+        "**Unexplained failures:** {} (failures with no failing test in the job)",
+        history.unexplained_failures
+    ));
+    body.bullet(format!(
+        "**Explained by tests:** {}",
+        history.explained_failures
+    ));
+    let top_runners: Vec<_> = history
+        .runners
+        .iter()
+        .filter(|runner| runner.unexplained_failures > 0)
+        .take(BODY_RUNNERS)
+        .collect();
+    if top_runners.is_empty() {
+        return;
     }
-    lines.join("\n")
+    body.bullet("**Failures by runner:**");
+    for runner in top_runners {
+        let label = runner
+            .runner_name
+            .clone()
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| {
+                if runner.labels.iter().any(|label| !label.is_empty()) {
+                    runner.labels.join(", ")
+                } else {
+                    "(no labels)".to_owned()
+                }
+            });
+        body.nested_bullet(format!(
+            "`{label}`: {} unexplained of {} executions",
+            runner.unexplained_failures, runner.executions
+        ));
+    }
 }
 
 /// One row of the Job body's execution table.

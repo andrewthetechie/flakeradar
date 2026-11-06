@@ -150,6 +150,40 @@ fn the_body_matches_the_reference_byte_for_byte() {
     assert_eq!(body, S7_BODY);
 }
 
+#[test]
+fn both_bodies_name_the_executions_the_filing_reads() {
+    // The heading was a literal in each body. Both now state `BODY_EXECUTIONS`,
+    // which is also the count the filer asks for, so the promise and the read
+    // cannot drift apart.
+    let test = TestRow {
+        id: 1,
+        classname: "tests.test_cart".to_owned(),
+        name: "test_total".to_owned(),
+        suite: "unit".to_owned(),
+        file: Some("tests/test_cart.py".to_owned()),
+        line: Some(12),
+        fingerprint: "abc".to_owned(),
+        flakiness_score: 0.5,
+        confirmed_flake_count: 0,
+    };
+    let job = JobRow {
+        id: 2,
+        name: "unit".to_owned(),
+        flakiness_score: 0.5,
+        confirmed_flake_count: 0,
+    };
+    let heading = format!("### Last {} executions", github::BODY_EXECUTIONS);
+    let test_body =
+        github::test_issue_body(&test, &[], "acme/app", "backend", "", &gh_settings(&[]));
+    let job_body = github::job_issue_body(&job, "ci", "acme/app", None, &gh_settings(&[]));
+    for body in [test_body, job_body] {
+        assert!(
+            body.lines().any(|line| line == heading),
+            "both bodies name `{heading}`: {body}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn the_run_hint_follows_the_file_extension() {
     for (path, expected) in [
