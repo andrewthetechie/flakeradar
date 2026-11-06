@@ -784,19 +784,16 @@ fn check_new_within_days(days: i64) -> Result<(), ToolFailure> {
 
 /// The Failure category a `category` argument names.
 fn parse_category(text: &str) -> Result<FailureCategory, ToolFailure> {
-    FailureCategory::ALL
-        .into_iter()
-        .find(|category| category.as_str() == text)
-        .ok_or_else(|| {
-            ToolFailure::Tool(format!(
-                "category must be one of: {}",
-                FailureCategory::ALL
-                    .iter()
-                    .map(|category| category.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ))
-        })
+    FailureCategory::from_wire(text).ok_or_else(|| {
+        ToolFailure::Tool(format!(
+            "category must be one of: {}",
+            FailureCategory::ALL
+                .iter()
+                .map(|category| category.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))
+    })
 }
 
 /// The query a search tool uses, refusing one that is blank.

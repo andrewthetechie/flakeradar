@@ -13,7 +13,7 @@ use axum::extract::State;
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use flakeradar_core::ReadinessOut;
-use flakeradar_db::WORKER_LOCK_KEY;
+use flakeradar_db::{REPORT_STATUSES, WORKER_LOCK_KEY};
 use sea_orm::{ConnectionTrait, DbBackend, Statement};
 use serde::Serialize;
 use utoipa::ToSchema;
@@ -26,9 +26,6 @@ pub const PROMETHEUS_MEDIA_TYPE: &str = "text/plain; version=0.0.4; charset=utf-
 
 /// The tiers the scrape reports, in the order it lists them.
 const TIER_ORDER: [&str; 3] = ["flaky", "suspect", "stable"];
-
-/// The Report statuses the scrape reports, in the order it lists them.
-const REPORT_STATUSES: [&str; 3] = ["pending", "processed", "failed"];
 
 // One roundtrip for the queue facts.
 //

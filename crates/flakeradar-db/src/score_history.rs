@@ -11,6 +11,7 @@
 use chrono::NaiveDate;
 use sea_orm::{ConnectionTrait, DbBackend, Statement, Value};
 
+use crate::attribution::int_array;
 use crate::batching::chunks;
 use crate::error::DbError;
 use crate::sql::{get, rows, value_row};
@@ -105,23 +106,12 @@ pub async fn past_scores(
                 WHERE {owner} = ANY($1::INTEGER[]) AND day <= $2::DATE \
              ) ranked WHERE rn = 1"
         );
-        let query = values_of(chunk, cutoff);
+        let query = vec![int_array(chunk), Value::from(cutoff)];
         for row in rows(db, sql, query).await? {
             found.insert(get::<i32>(&row, "entity_id")?, get::<f64>(&row, "score")?);
         }
     }
     Ok(found)
-}
-
-/// The `$1` array and `$2` day a history read binds.
-fn values_of(ids: &[i32], cutoff: NaiveDate) -> Vec<Value> {
-    vec![
-        Value::Array(
-            sea_orm::sea_query::ArrayType::Int,
-            Some(Box::new(ids.iter().copied().map(Value::from).collect())),
-        ),
-        Value::from(cutoff),
-    ]
 }
 
 /// A per-row lateral subquery: the owner row's newest Score history at least

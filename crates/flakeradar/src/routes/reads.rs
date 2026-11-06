@@ -356,11 +356,10 @@ impl TestsQuery {
     fn parts(&self) -> (TestListFilters, ListOptions) {
         let filters = TestListFilters {
             file: self.file.clone(),
-            category: self.category.as_deref().and_then(|name| {
-                FailureCategory::ALL
-                    .into_iter()
-                    .find(|category| category.as_str() == name)
-            }),
+            category: self
+                .category
+                .as_deref()
+                .and_then(FailureCategory::from_wire),
             quarantined: self.quarantined,
             broken: self.broken.unwrap_or(false),
         };

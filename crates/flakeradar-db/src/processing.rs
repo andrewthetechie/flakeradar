@@ -1100,7 +1100,7 @@ pub async fn rescore(
             categories.entry(id).or_default().push(
                 get::<Option<String>>(&row, "failure_category")?
                     .as_deref()
-                    .and_then(category_from_wire),
+                    .and_then(FailureCategory::from_wire),
             );
             default_branch.insert(id, get(&row, "default_branch")?);
         }
@@ -1170,19 +1170,6 @@ pub async fn rescore(
 fn status_of(text: &str) -> Result<ExecutionStatus, DbError> {
     ExecutionStatus::from_wire(text)
         .ok_or_else(|| DbError::Database(DbErr::Custom(format!("unknown Execution status {text}"))))
-}
-
-/// Parses a stored Failure category.
-fn category_from_wire(text: &str) -> Option<FailureCategory> {
-    [
-        FailureCategory::Network,
-        FailureCategory::Environment,
-        FailureCategory::Timing,
-        FailureCategory::Assertion,
-        FailureCategory::Other,
-    ]
-    .into_iter()
-    .find(|category| category.as_str() == text)
 }
 
 /// The scores a Test rescore is about to replace, read before the update.

@@ -806,10 +806,7 @@ async fn category_counts(
     }
     for row in rows(db, categories_sql, categories.into_values()).await? {
         let category: String = get(&row, "category")?;
-        if FailureCategory::ALL
-            .iter()
-            .any(|known| known.as_str() == category)
-        {
+        if FailureCategory::from_wire(&category).is_some() {
             let _ = category_counts.insert(category, get(&row, "count")?);
         }
     }

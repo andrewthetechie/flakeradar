@@ -65,7 +65,6 @@
 
 use std::collections::BTreeSet;
 use std::fmt;
-use std::fmt::Write as _;
 use std::ops::ControlFlow;
 
 use anyhow::Context as _;
@@ -889,16 +888,14 @@ pub fn test_issue_body(
     let last_fail_sha = failing.as_ref().map(|failure| failure.commit_sha.clone());
     let last_fail_branch = failing.as_ref().map(|failure| failure.branch.clone());
     let sample_failure = failing.map(|failure| failure.sample).unwrap_or_default();
-    let permalink = match (&path, &last_fail_sha) {
-        (Some(path), Some(sha)) => {
-            let mut permalink = format!("https://github.com/{repo}/blob/{sha}/{path}");
-            if let Some(line) = test.line
-                && line >= 1
-            {
-                let _ = write!(permalink, "#L{line}");
-            }
-            Some(permalink)
-        }
+    let permalink = match (&test.file, &last_fail_sha) {
+        (Some(file), Some(sha)) => Some(flakeradar_core::permalink(
+            repo,
+            sha,
+            root,
+            file,
+            test.line.map(i64::from),
+        )),
         _ => None,
     };
     if let Some(permalink) = permalink {

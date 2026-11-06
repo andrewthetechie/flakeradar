@@ -43,6 +43,14 @@ impl FailureCategory {
         Self::Other,
     ];
 
+    /// The category a stored or requested spelling names, if one does.
+    #[must_use]
+    pub fn from_wire(text: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|category| category.as_str() == text)
+    }
+
     /// The category as the Python server spelled it.
     #[must_use]
     pub fn as_str(self) -> &'static str {
