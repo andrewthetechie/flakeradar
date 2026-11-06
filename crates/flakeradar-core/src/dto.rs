@@ -299,6 +299,7 @@ pub struct ValidationIssue {
     pub input: Option<Value>,
     /// The constraint that failed, when Pydantic would report it.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<Object>)]
     pub ctx: Option<Value>,
 }
 
@@ -1255,6 +1256,7 @@ pub struct ReportOut {
     /// Why processing failed, when it did.
     pub error: Option<String>,
     /// The Executions the Report produced, when it was processed.
+    #[schema(value_type = Option<Object>)]
     pub counts: Option<Value>,
     /// The Run the Report became, when it was processed.
     pub run_id: Option<i64>,

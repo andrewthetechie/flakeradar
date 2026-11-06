@@ -916,7 +916,10 @@ fn schema_fields(schema: &Value) -> Vec<String> {
     names
 }
 
-/// Compares the field names of every component schema the reference declares.
+/// Compares every component schema the reference declares against the port's.
+///
+/// A schema is compared by the three promises a client reads: its field names,
+/// the type of each field, and which fields the answer always carries.
 fn compare_openapi_schemas(
     expected: &Value,
     actual: &Value,
@@ -966,6 +969,258 @@ fn compare_openapi_schemas(
                 "the openapi schema {name} and its port {answered_name} both exist"
             )));
         }
+        compare_openapi_fields(
+            answered_name,
+            schema,
+            answered,
+            &recorded_schemas,
+            &answered_schemas,
+            describe,
+            failures,
+        );
+    }
+}
+
+/// Compares each field's type and each schema's required list.
+///
+/// The type is compared as the JSON Schema type a client codes against: the
+/// two documents spell nullability differently (`anyOf` with a `null` member
+/// here, `oneOf` there, a two-entry `type` list in the port) and the port names
+/// a string enumeration with a `$ref` where the reference writes `string`, so
+/// both spellings are canonicalised rather than compared as text.
+///
+/// The required list is compared with one recorded difference: the reference
+/// marks every nullable field required, because Pydantic serializes an absent
+/// `Optional` field as an explicit `null`, and the port documents a nullable
+/// field as optional. So a field the reference requires and the port does not
+/// must be nullable in the port — the mismatch is that one rule and nothing
+/// else. `differences.md` records it under the `/openapi.json` row.
+fn compare_openapi_fields(
+    name: &str,
+    recorded: &Value,
+    answered: &Value,
+    recorded_schemas: &Map<String, Value>,
+    answered_schemas: &Map<String, Value>,
+    describe: &dyn Fn(String) -> String,
+    failures: &mut Mismatches,
+) {
+    let properties = |schema: &Value| {
+        schema
+            .get("properties")
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default()
+    };
+    let (recorded_properties, answered_properties) = (properties(recorded), properties(answered));
+    for (field, recorded_property) in &recorded_properties {
+        let Some(answered_property) = answered_properties.get(field) else {
+            continue; // Reported by the field-name comparison.
+        };
+        let recorded_type = openapi_type(recorded_property, recorded_schemas);
+        let answered_type = openapi_type(answered_property, answered_schemas);
+        let recorded_text = recorded_type.to_string();
+        let answered_text = answered_type.to_string();
+        let named = OPENAPI_TYPE_DIFFERENCES
+            .iter()
+            .any(|(schema, named_field, port, reference)| {
+                *schema == name
+                    && *named_field == field
+                    && *port == answered_text
+                    && *reference == recorded_text
+            });
+        if recorded_type != answered_type && !named {
+            failures.push(describe(format!(
+                "the openapi field {name}.{field} is {answered_type} where it is {recorded_type}"
+            )));
+        }
+    }
+    let required = |schema: &Value| -> Vec<String> {
+        schema
+            .get("required")
+            .and_then(Value::as_array)
+            .map(|names| {
+                names
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let (recorded_required, answered_required) = (required(recorded), required(answered));
+    for field in &recorded_required {
+        if answered_required.contains(field) {
+            continue;
+        }
+        let nullable = answered_properties
+            .get(field)
+            .is_some_and(|property| openapi_type(property, answered_schemas).nullable());
+        if !nullable {
+            failures.push(describe(format!(
+                "the openapi schema {name} does not require {field}, and nothing makes it \
+                 optional"
+            )));
+        }
+    }
+    for field in &answered_required {
+        if recorded_required.contains(field)
+            || OPENAPI_REQUIRED_ONLY_IN_THE_PORT
+                .iter()
+                .any(|(schema, optional)| *schema == name && *optional == field)
+        {
+            continue;
+        }
+        failures.push(describe(format!(
+            "the openapi schema {name} requires {field} where the reference does not"
+        )));
+    }
+}
+
+/// The fields whose documented type differs, and what each side says.
+///
+/// `ValidationIssue.ctx` is the only one: Pydantic's own model declares it
+/// `dict[str, Any]`, so FastAPI's document calls it an object and requires it,
+/// while this port declares it `Option<Value>`, omits it from the answer when it
+/// is absent and documents `object | null`. The port's document is the truthful
+/// one — a validation issue with no `ctx` is what both servers answer — and no
+/// golden compares it, because the 422 goldens' issues carry `ctx` or not by
+/// case. Each entry is the schema, the field, and the two canonical types, so a
+/// new difference cannot hide behind this one.
+const OPENAPI_TYPE_DIFFERENCES: &[(&str, &str, &str, &str)] = &[(
+    "ValidationIssue",
+    "ctx",
+    "object|null",
+    "object",
+)];
+
+/// The fields the port documents as required where the reference leaves them
+/// optional.
+///
+/// `IngestAccepted.duplicate` is Python's `duplicate: bool = False`, which
+/// Pydantic documents with a default rather than as required, while this port
+/// always answers it. The value is on the wire in both, so the port's document
+/// says more than the reference's and never less.
+const OPENAPI_REQUIRED_ONLY_IN_THE_PORT: &[(&str, &str)] = &[("IngestAccepted", "duplicate")];
+
+/// A field's JSON Schema type, in the one spelling both documents reduce to.
+#[derive(Debug, PartialEq, Eq)]
+struct OpenapiType {
+    /// The non-null types the field may hold, sorted and deduplicated; empty
+    /// means the document names no type at all, which is any value.
+    kinds: Vec<String>,
+    /// Whether the field also accepts `null`.
+    nullable: bool,
+}
+
+impl OpenapiType {
+    /// Whether `null` is one of the values the field accepts.
+    fn nullable(&self) -> bool {
+        self.nullable
+    }
+}
+
+impl std::fmt::Display for OpenapiType {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.kinds.is_empty() {
+            write!(formatter, "any")?;
+        } else {
+            write!(formatter, "{}", self.kinds.join("|"))?;
+        }
+        if self.nullable {
+            write!(formatter, "|null")?;
+        }
+        Ok(())
+    }
+}
+
+/// The canonical type of one schema member.
+fn openapi_type(schema: &Value, schemas: &Map<String, Value>) -> OpenapiType {
+    let mut kinds = Vec::new();
+    let mut nullable = false;
+    collect_types(schema, schemas, &mut Vec::new(), &mut kinds, &mut nullable);
+    kinds.sort();
+    kinds.dedup();
+    OpenapiType { kinds, nullable }
+}
+
+/// Collects the types one schema member declares, resolving unions and `$ref`s.
+fn collect_types(
+    schema: &Value,
+    schemas: &Map<String, Value>,
+    visited: &mut Vec<String>,
+    kinds: &mut Vec<String>,
+    nullable: &mut bool,
+) {
+    if let Some(reference) = schema.get("$ref").and_then(Value::as_str) {
+        let target = reference.rsplit('/').next().unwrap_or(reference);
+        let names_no_object = schemas.get(target).is_some_and(|component| {
+            component.get("properties").is_none()
+                && component.get("type").and_then(Value::as_str) != Some("object")
+        });
+        // A `$ref` to a schema that names no object of its own is what it names:
+        // the port spells its string enumerations and its untagged unions as
+        // components where the reference writes the union inline. A `$ref` to an
+        // object stays a `$ref`, so a field pointed at the wrong object still
+        // fails. `visited` ends a component that only refs another.
+        if names_no_object && !visited.iter().any(|seen| seen == target) {
+            visited.push(target.to_owned());
+            if let Some(component) = schemas.get(target) {
+                collect_types(component, schemas, visited, kinds, nullable);
+            }
+            let _ = visited.pop();
+            return;
+        }
+        kinds.push(format!("ref:{target}"));
+        return;
+    }
+    for member in ["anyOf", "oneOf", "allOf"]
+        .iter()
+        .filter_map(|key| schema.get(*key).and_then(Value::as_array))
+        .flatten()
+    {
+        collect_types(member, schemas, visited, kinds, nullable);
+    }
+    if is_scalar(schema) {
+        for kind in schema_type_names(schema.get("type")) {
+            if kind == "null" {
+                *nullable = true;
+            } else {
+                kinds.push(kind);
+            }
+        }
+    }
+    if schema
+        .get("type")
+        .is_some_and(|kind| kind_names(kind).iter().any(|name| name == "array"))
+    {
+        let items = schema.get("items").map_or_else(
+            || "any".to_owned(),
+            |items| openapi_type(items, schemas).to_string(),
+        );
+        kinds.push(format!("array<{items}>"));
+    }
+}
+
+/// Whether a schema declares a nameable type.
+fn is_scalar(schema: &Value) -> bool {
+    schema.get("type").is_some()
+}
+
+/// The type names one `type` member holds, as a list.
+fn schema_type_names(kind: Option<&Value>) -> Vec<String> {
+    kind.map(kind_names).unwrap_or_default()
+}
+
+/// The type names a `type` member holds, whether it is one name or a list.
+fn kind_names(kind: &Value) -> Vec<String> {
+    match kind {
+        Value::String(name) => vec![name.clone()],
+        Value::Array(names) => names
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect(),
+        _ => Vec::new(),
     }
 }
 
