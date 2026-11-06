@@ -264,3 +264,33 @@ row above already names, plus `extract.rs`'s two join-error lines. The suite is 
 (377 missed) and 94.65% of branches (71 missed), so `coverage-floor.json` stays `{96, 94}`.
 
 The re-measured ingest and processing figures are in `docs/perf/22-rust-vs-python.md`.
+
+## Task 31: the recount at the handoff head
+
+Re-measured three times at `e8563b1` with the command CI runs
+(`cargo +nightly-2026-10-25 llvm-cov nextest --branch --all-features --profile ci`, then
+`cargo +nightly-2026-10-25 llvm-cov report --branch --json --summary-only`, against a local
+`postgres:17-alpine` with `FLAKERADAR_TEST_DATABASE_URL` set): **lines 96.87%** (15445/15944, 499
+missed) and **branches 94.62%** (1283/1356, 73 missed), regions 93.38% (16863/18059) and
+functions 97.46% (1999/2051). The three runs agree on every one of those figures; only the
+`instantiations` count moved, by two (6321 and 6323 in the first two runs against 6323 in the
+third), which is a generic-instantiation count and not a line or branch figure.
+
+`coverage-floor.json` stays `{"lines": 96, "branches": 94}`, both rounded down from those totals
+(96.87 → 96, 94.61 → 94), so this measurement raises no floor and both stay above the `{95, 80}`
+minimum the plan sets. Nothing was lowered.
+
+**The list is 87 rows.** Task 15 left 78; task 18 added five (the client-build arms) and task 20
+added four (the lax and multipart guards), and no task removed one. Rows 1–78 of the table are the
+rows task 15 drafted an issue for; the nine later rows have no draft in
+`coverage-follow-ups.md`, because task 15 was the last task that drafted them. The nine are:
+`github_client` and `webhook_client` (`crates/flakeradar/src/github/client.rs` and
+`webhooks.rs`), `AppState::new` (`app.rs`), `Server::start`/`webhook_task` (`server.rs`) and the
+test helper `logged_from`'s `Sink` (`crates/flakeradar/tests/ops.rs`) from task 18, and
+`integer_from_number` and `epoch_instant` (`crates/flakeradar-core/src/lax.rs`) with `file_field`
+and `part_field` (`crates/flakeradar/src/multipart.rs`) from task 20.
+
+The 499 missed lines and 73 missed branches are these rows and no others. The gap between the two
+counts is the same one the earlier sections describe: a row can be a branch, an arm inside a
+covered line, or a group of `tracing` field-argument lines that `llvm-cov` counts zero although
+the event fires.

@@ -16,6 +16,12 @@ should be deleted.
 Labels for every draft: `coverage`, and `flakeradar` only if you also want them
 in the scout's view.
 
+**This file holds 78 drafts, and `coverage-gaps.md` now lists 87 rows.** Task 15 drafted one
+issue per row it left; task 18 added five rows (the client-build arms) and task 20 added four (the
+lax and multipart guards), and neither drafted one, because drafting was task 15's. Those nine
+are named in `coverage-gaps.md`'s "Task 31" section, and filing them means writing nine drafts
+of the same shape as the ones below.
+
 ## 1. coverage: cover or remove flakeradar/src/main.rs — main
 
 **File:** `crates/flakeradar/src/main.rs` **Function:** `main` **Kind:** `coverage(off)`

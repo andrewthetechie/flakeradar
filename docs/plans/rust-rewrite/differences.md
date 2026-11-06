@@ -127,3 +127,25 @@ plan, or the finding `review-135/ledger.md` names.
 | 23 | The `Content-Type` of a 204 answer | FastAPI labelled every 204 `application/json` and sent no body | Sends no `Content-Type` with a 204, which is what the status means: no body, so no media type | `D3` in `review-135/ledger.md`, logged only. RFC 9110 gives a 204 no content, and no consumer reads the header of a delete: `frontend/src/api.ts` checks only the status |
 | 25 | A `reports` row whose stored `status` or `kind` is a spelling this version never writes | Both columns are free text, so a row written by hand could hold anything; the reference served the word as it found it | The three `ReportStatus` and two `ReportKind` variants are the only values the domain has, so an unknown stored spelling is `DbError::UnknownReportStatus`/`UnknownReportKind`, which the route answers as its plain-text 500. Pinned by `a_report_whose_stored_status_this_version_never_wrote_is_a_server_error` and `a_report_whose_stored_kind_this_version_never_wrote_is_a_server_error` | `B4` in `review-135/ledger.md`. Only this server writes a `reports` row, so an unknown status or kind means something else wrote it: answering with a guessed status would hide that, and there is no truthful value to serve. No route of this server can produce such a row |
 | 25 | A `failure_category` the five Failure categories do not name | `failure_category` is free text in the baseline schema and the reference echoed the stored word into `TestOut`, `ExecutionOut` and the CI-run failure listing | Reads as no category (`null`) in those responses, the same rule the summary's per-category counts already applied | `B4` in `review-135/ledger.md`: the word is not a category, and the summary already counts it under none of the five (`a_summary_ignores_a_category_the_enum_does_not_know`). Only a hand-written row can hold one; no route of this server writes one |
+
+## Recount at the handoff head (task 31)
+
+The counts above were re-derived rather than trusted, at `e8563b1`:
+
+- **52 rows**: 12 pre-approved, 14 added during the port, and 26 added by the review fixes
+  (tasks 16, 17, 19, 20, 21, 23 and 25 — the structure-only tasks 18, 22 and 24 and the
+  review-fix refactors 26–30 added none). Counted from the three tables, one row each.
+- **5 allowance entries holding 196 field allowances** (`tests/parity/allowed-differences.json`):
+  `mcp-result-envelope` 179, `junit-parse-error-suffix` 9, `unparsable-testcase-time` 5,
+  `junit-unicode-digit-line` 2, `openapi-document` 1.
+- **183 of the 196 are read by `crates/flakeradar/tests/parity.rs`** on a replay: the 179 MCP
+  envelope fields, the status/body/content-type of `ingest-junit/07`, and the `body.detail`
+  prefix of `ingest-junit/05`. **12 are read by `crates/flakeradar-core/tests/golden_junit.rs`**:
+  the `error` of `invalid-time` and of the four parse-error goldens at both `line_base` values,
+  and the `line` of `non-numeric-line` at both. **1 is the `openapi` contract** on
+  `trailing-slash/09`.
+
+Nothing was stale, so no row and no allowance changed. What task 31 cannot repeat is the
+measurement the deleted `record.py --verify` made — that every allowance names a row here and a
+golden or field that exists — because the recorder went with `backend/`; the counts above are a
+count of the file, and the reconciliation is the manual one described in the section before this.

@@ -176,12 +176,12 @@ samples/    CI snippets and a demo-data simulator
 How the 1.x modules map onto it: `app/routers/*` became
 `crates/flakeradar/src/routes/*` with the queries in `flakeradar-db`'s `reads.rs`;
 `app/queries.py` (the read services REST and MCP shared) became `reads.rs`, and
-`mcp.rs` calls it rather than the routes; `app/processing.py`, `attribution.py`,
+`mcp/` calls it rather than the routes; `app/processing.py`, `attribution.py`,
 `score_history.py`, `retention.py` and `issue_links.py` moved to the same-named
 `flakeradar-db` modules; `app/parsing.py`, `classify.py`, `scoring.py` and
 `notify.py` became `flakeradar-core` modules; `app/worker.py`,
 `github_integration.py` and `notify.py`'s delivery became `worker.rs`,
-`github.rs`/`github_worker.rs` and `webhooks.rs`; `app/config.py` became
+`github/` and `github_worker.rs`, and `webhooks.rs`; `app/config.py` became
 `settings.rs`.
 
 ## Building with the embedded frontend
