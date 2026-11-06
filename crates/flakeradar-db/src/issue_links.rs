@@ -218,10 +218,8 @@ async fn write_link(
          github_issue_fixed_noted_at = $6 WHERE id = $1",
         link_table(target)
     );
-    let filed = match target {
-        // A front door linked this one, so FlakeRadar must not close it.
-        EntityKind::Test | EntityKind::Job => state.number.map(|_| false),
-    };
+    // A front door linked this one, so FlakeRadar must not close it.
+    let filed = state.number.map(|_| false);
     db.execute_raw(Statement::from_sql_and_values(
         DbBackend::Postgres,
         sql,
@@ -267,7 +265,7 @@ pub async fn link_issue(
         transaction.rollback().await?;
         return Err(IssueLinkError::NotFound(format!("{} not found", target.name())).into());
     };
-    let repo = repo_of(target, &row)?;
+    let repo: String = get(&row, "repo_name")?;
     if github_provider_only(target) {
         let provider: String = get(&row, "provider")?;
         if provider != "github" {
@@ -332,7 +330,7 @@ pub async fn unlink_issue(
         transaction.rollback().await?;
         return Err(IssueLinkError::NotFound(format!("{} not found", target.name())).into());
     };
-    let repo = repo_of(target, &row)?;
+    let repo: String = get(&row, "repo_name")?;
     let previous = link_state(&row)?.number;
     // Both halves go unconditionally: with no number there is nothing for the
     // rotation to look up, so a stamp left behind only misleads.
@@ -358,11 +356,6 @@ pub async fn unlink_issue(
         &repo,
         cleared,
     ))
-}
-
-/// The Repo name a locked row belongs to.
-fn repo_of(_target: EntityKind, row: &sea_orm::QueryResult) -> Result<String, DbError> {
-    get(row, "repo_name")
 }
 
 /// A number the `INTEGER` column can hold.
