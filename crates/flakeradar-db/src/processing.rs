@@ -305,26 +305,23 @@ impl Counts {
     }
 }
 
-/// One Test's rescore result.
+/// One entity's rescore result: the row a bulk update writes.
+///
+/// A Test and a Job write the same Flakiness score, Proven flake count, Clean
+/// streak and fixed-note reset. A Test also writes its Fail streak and its
+/// dominant Failure category, which a Job has no column for, so [`TEST_TABLE`]
+/// writes those and [`JOB_TABLE`] leaves them out.
 #[derive(Debug, Clone, Copy)]
-struct TestUpdate {
+struct Update {
     id: i32,
     flakiness_score: f64,
     confirmed_flake_count: i32,
-    failure_category: Option<FailureCategory>,
     clean_streak: i32,
+    clear_fixed_note: bool,
+    /// The Fail streak. Only a Test scores one.
     fail_streak: i32,
-    clear_fixed_note: bool,
-}
-
-/// One Job's rescore result.
-#[derive(Debug, Clone, Copy)]
-struct JobUpdate {
-    id: i32,
-    flakiness_score: f64,
-    confirmed_flake_count: i32,
-    clean_streak: i32,
-    clear_fixed_note: bool,
+    /// The dominant Failure category. Only a Test is categorised.
+    failure_category: Option<FailureCategory>,
 }
 
 /// Claim and process the oldest pending Report; `None` when the queue is empty.
@@ -1133,7 +1130,7 @@ pub async fn rescore(
             .get(id)
             .map(|all| all.iter().take(settings.score_window).copied().collect())
             .unwrap_or_default();
-        updates.push(TestUpdate {
+        updates.push(Update {
             id: *id,
             flakiness_score: score.as_f64(),
             confirmed_flake_count: i32::try_from(proven).unwrap_or(i32::MAX),
@@ -1146,7 +1143,7 @@ pub async fn rescore(
     }
     let old = old_scores(db, EntityKind::Test, test_case_ids).await?;
     let changes = test_tier_changes(db, &updates, &old, settings).await?;
-    write_test_updates(db, &updates).await?;
+    write_updates(db, &TEST_TABLE, &updates).await?;
     if !updates.is_empty() {
         let history_updates: Vec<HistoryUpdate> = updates
             .iter()
@@ -1231,16 +1228,16 @@ struct NamedTest {
 /// so it sends no event.
 async fn test_tier_changes(
     db: &impl ConnectionTrait,
-    updates: &[TestUpdate],
+    updates: &[Update],
     old: &BTreeMap<i32, f64>,
     settings: &ProcessingSettings,
 ) -> Result<Vec<TierChange>, DbError> {
     let threshold = settings.flake_threshold;
-    let scored: Vec<(i32, f64, TestUpdate)> = updates
+    let scored: Vec<(i32, f64, Update)> = updates
         .iter()
         .map(|update| (update.id, update.flakiness_score, *update))
         .collect();
-    let mut crossed: Vec<TestUpdate> = crossed(&scored, old, threshold)
+    let mut crossed: Vec<Update> = crossed(&scored, old, threshold)
         .into_iter()
         .filter(|update| {
             tier_for(update.flakiness_score, threshold) == Tier::Flaky
@@ -1300,45 +1297,138 @@ async fn test_tier_changes(
     Ok(changes)
 }
 
-/// Writes one chunk-set of Test rescores.
-async fn write_test_updates(
+/// One column of a bulk rescore write, and the value it binds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Column {
+    /// The row the update is for.
+    Id,
+    /// The Flakiness score.
+    Score,
+    /// The Proven flake count.
+    Proven,
+    /// The dominant Failure category.
+    Category,
+    /// The Clean streak.
+    CleanStreak,
+    /// The Fail streak.
+    FailStreak,
+    /// Whether the rescore clears the fixed note.
+    ResetNote,
+}
+
+impl Column {
+    /// The stored name of the column this binds.
+    fn name(self) -> &'static str {
+        match self {
+            Self::Id => "id",
+            Self::Score => "flakiness_score",
+            Self::Proven => "confirmed_flake_count",
+            Self::Category => "failure_category",
+            Self::CleanStreak => "clean_streak",
+            Self::FailStreak => "fail_streak",
+            Self::ResetNote => "reset_note",
+        }
+    }
+
+    /// The value this column takes in `update`.
+    fn value(self, update: &Update) -> Value {
+        match self {
+            Self::Id => Value::from(update.id),
+            Self::Score => Value::from(update.flakiness_score),
+            Self::Proven => Value::from(update.confirmed_flake_count),
+            Self::Category => update
+                .failure_category
+                .map_or(Value::String(None), |category| {
+                    Value::from(category.as_str())
+                }),
+            Self::CleanStreak => Value::from(update.clean_streak),
+            Self::FailStreak => Value::from(update.fail_streak),
+            Self::ResetNote => Value::from(update.clear_fixed_note),
+        }
+    }
+}
+
+/// A table a rescore writes, and the columns one row of it binds.
+struct UpdateTable {
+    /// The table's name.
+    table: &'static str,
+    /// The alias the statement gives it.
+    alias: &'static str,
+    /// The columns of one `VALUES` row, in order.
+    columns: &'static [Column],
+}
+
+/// The Tests table, which also holds a Fail streak and a Failure category.
+const TEST_TABLE: UpdateTable = UpdateTable {
+    table: "test_cases",
+    alias: "t",
+    columns: &[
+        Column::Id,
+        Column::Score,
+        Column::Proven,
+        Column::Category,
+        Column::CleanStreak,
+        Column::FailStreak,
+        Column::ResetNote,
+    ],
+};
+
+/// The Jobs table, which scores no Failure category and keeps no Fail streak.
+const JOB_TABLE: UpdateTable = UpdateTable {
+    table: "jobs",
+    alias: "j",
+    columns: &[
+        Column::Id,
+        Column::Score,
+        Column::Proven,
+        Column::CleanStreak,
+        Column::ResetNote,
+    ],
+};
+
+/// Writes one chunk-set of rescores to `table`.
+///
+/// One statement per chunk assigns every column the table holds, and the
+/// fixed-note reset is the same `CASE` for both entities: a Clean streak of 0
+/// clears the note and any other streak leaves it alone.
+async fn write_updates(
     db: &impl ConnectionTrait,
-    updates: &[TestUpdate],
+    table: &UpdateTable,
+    updates: &[Update],
 ) -> Result<(), DbError> {
+    let width = table.columns.len();
+    let names: Vec<&str> = table.columns.iter().map(|column| column.name()).collect();
+    let mut assignments: Vec<String> = table
+        .columns
+        .iter()
+        .filter(|column| !matches!(column, Column::Id | Column::ResetNote))
+        .map(|column| format!("{} = v.{}", column.name(), column.name()))
+        .collect();
+    assignments.push(format!(
+        "github_issue_fixed_noted_at = CASE WHEN v.{} THEN NULL ELSE {}.github_issue_fixed_noted_at END",
+        Column::ResetNote.name(),
+        table.alias
+    ));
+    let statement = |rows: &str| {
+        format!(
+            "UPDATE {} AS {} SET {} FROM (VALUES {rows}) AS v({}) WHERE {}.id = v.id",
+            table.table,
+            table.alias,
+            assignments.join(", "),
+            names.join(", "),
+            table.alias
+        )
+    };
     for chunk in chunks(updates) {
-        let mut values = Vec::with_capacity(chunk.len() * 7);
+        let mut values = Vec::with_capacity(chunk.len() * width);
         let mut placeholders = Vec::with_capacity(chunk.len());
         for (index, update) in chunk.iter().enumerate() {
-            let base = index * 7;
-            placeholders.push(value_row(base + 1, 7));
-            values.extend([
-                Value::from(update.id),
-                Value::from(update.flakiness_score),
-                Value::from(update.confirmed_flake_count),
-                update
-                    .failure_category
-                    .map_or(Value::String(None), |category| {
-                        Value::from(category.as_str())
-                    }),
-                Value::from(update.clean_streak),
-                Value::from(update.fail_streak),
-                Value::from(update.clear_fixed_note),
-            ]);
+            placeholders.push(value_row(index * width + 1, width));
+            values.extend(table.columns.iter().map(|column| column.value(update)));
         }
-        let sql = format!(
-            "UPDATE test_cases AS t SET \
-               flakiness_score = v.flakiness_score, \
-               confirmed_flake_count = v.confirmed_flake_count, \
-               failure_category = v.failure_category, \
-               clean_streak = v.clean_streak, fail_streak = v.fail_streak, \
-               github_issue_fixed_noted_at = CASE WHEN v.reset_note THEN NULL ELSE t.github_issue_fixed_noted_at END \
-             FROM (VALUES {}) AS v(id, flakiness_score, confirmed_flake_count, failure_category, clean_streak, fail_streak, reset_note) \
-             WHERE t.id = v.id",
-            placeholders.join(", ")
-        );
         db.execute_raw(Statement::from_sql_and_values(
             DbBackend::Postgres,
-            sql,
+            statement(&placeholders.join(", ")),
             values,
         ))
         .await?;
@@ -1447,17 +1537,20 @@ pub async fn rescore_jobs(
             settings.score_window,
         );
         let streak = branch_scoped_streak(&entry.executions, branch.as_deref());
-        updates.push(JobUpdate {
+        updates.push(Update {
             id: *id,
             flakiness_score: score.as_f64(),
             confirmed_flake_count: i32::try_from(proven).unwrap_or(i32::MAX),
             clean_streak: i32::try_from(streak).unwrap_or(i32::MAX),
             clear_fixed_note: streak == 0,
+            // A Job scores neither: the two columns are a Test's.
+            fail_streak: 0,
+            failure_category: None,
         });
     }
     let old = old_scores(db, EntityKind::Job, job_ids).await?;
     let changes = job_tier_changes(db, &updates, &old, settings).await?;
-    write_job_updates(db, &updates).await?;
+    write_updates(db, &JOB_TABLE, &updates).await?;
     if !updates.is_empty() {
         let history_updates: Vec<HistoryUpdate> = updates
             .iter()
@@ -1495,16 +1588,16 @@ struct NamedJob {
 /// Notifications for the Jobs whose tier this rescore moves (ADR 0009).
 async fn job_tier_changes(
     db: &impl ConnectionTrait,
-    updates: &[JobUpdate],
+    updates: &[Update],
     old: &BTreeMap<i32, f64>,
     settings: &ProcessingSettings,
 ) -> Result<Vec<TierChange>, DbError> {
     let threshold = settings.flake_threshold;
-    let scored: Vec<(i32, f64, JobUpdate)> = updates
+    let scored: Vec<(i32, f64, Update)> = updates
         .iter()
         .map(|update| (update.id, update.flakiness_score, *update))
         .collect();
-    let mut crossed: Vec<JobUpdate> = crossed(&scored, old, threshold);
+    let mut crossed: Vec<Update> = crossed(&scored, old, threshold);
     if crossed.is_empty() {
         return Ok(Vec::new());
     }
@@ -1554,45 +1647,6 @@ async fn job_tier_changes(
         });
     }
     Ok(changes)
-}
-
-/// Writes one chunk-set of Job rescores.
-async fn write_job_updates(
-    db: &impl ConnectionTrait,
-    updates: &[JobUpdate],
-) -> Result<(), DbError> {
-    for chunk in chunks(updates) {
-        let mut values = Vec::with_capacity(chunk.len() * 5);
-        let mut placeholders = Vec::with_capacity(chunk.len());
-        for (index, update) in chunk.iter().enumerate() {
-            let base = index * 5;
-            placeholders.push(value_row(base + 1, 5));
-            values.extend([
-                Value::from(update.id),
-                Value::from(update.flakiness_score),
-                Value::from(update.confirmed_flake_count),
-                Value::from(update.clean_streak),
-                Value::from(update.clear_fixed_note),
-            ]);
-        }
-        let sql = format!(
-            "UPDATE jobs AS j SET \
-               flakiness_score = v.flakiness_score, \
-               confirmed_flake_count = v.confirmed_flake_count, \
-               clean_streak = v.clean_streak, \
-               github_issue_fixed_noted_at = CASE WHEN v.reset_note THEN NULL ELSE j.github_issue_fixed_noted_at END \
-             FROM (VALUES {}) AS v(id, flakiness_score, confirmed_flake_count, clean_streak, reset_note) \
-             WHERE j.id = v.id",
-            placeholders.join(", ")
-        );
-        db.execute_raw(Statement::from_sql_and_values(
-            DbBackend::Postgres,
-            sql,
-            values,
-        ))
-        .await?;
-    }
-    Ok(())
 }
 
 /// Rescales every Job that carries this `ci_job_id` in the Repo.
