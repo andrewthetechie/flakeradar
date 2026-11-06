@@ -1103,11 +1103,11 @@ pub async fn rescore(
         ];
         for row in rows(db, sql, values).await? {
             let id: i32 = get(&row, "test_case_id")?;
-            history.entry(id).or_default().push(ScoredExecution::new(
-                get::<String>(&row, "commit_sha")?,
-                get::<String>(&row, "branch")?,
-                execution_status(&get::<String>(&row, "status")?)?,
-            ));
+            history.entry(id).or_default().push(ScoredExecution {
+                commit_sha: get::<String>(&row, "commit_sha")?,
+                branch: get::<String>(&row, "branch")?,
+                status: execution_status(&get::<String>(&row, "status")?)?,
+            });
             categories.entry(id).or_default().push(
                 get::<Option<String>>(&row, "failure_category")?
                     .as_deref()
@@ -1391,11 +1391,11 @@ pub async fn job_history(
             if explained && status == ExecutionStatus::Failed {
                 status = ExecutionStatus::Skipped;
             }
-            history.entry(id).or_default().push(ScoredExecution::new(
-                get::<String>(&row, "commit_sha")?,
-                get::<String>(&row, "branch")?,
+            history.entry(id).or_default().push(ScoredExecution {
+                commit_sha: get::<String>(&row, "commit_sha")?,
+                branch: get::<String>(&row, "branch")?,
                 status,
-            ));
+            });
             branches.insert(id, get(&row, "default_branch")?);
         }
     }

@@ -29,22 +29,6 @@ pub struct ScoredExecution {
     pub status: ExecutionStatus,
 }
 
-impl ScoredExecution {
-    /// One stored Execution row.
-    #[must_use]
-    pub fn new(
-        commit_sha: impl Into<String>,
-        branch: impl Into<String>,
-        status: ExecutionStatus,
-    ) -> Self {
-        Self {
-            commit_sha: commit_sha.into(),
-            branch: branch.into(),
-            status,
-        }
-    }
-}
-
 /// The lowest score a Proven flake can have.
 ///
 /// One commit SHA that both passed and failed is a Proven flake: proof of
@@ -343,7 +327,11 @@ mod tests {
     /// A history from `(commit_sha, branch, status)` rows, newest first.
     fn history(rows: &[(&str, &str, ExecutionStatus)]) -> Vec<ScoredExecution> {
         rows.iter()
-            .map(|(sha, branch, status)| ScoredExecution::new(*sha, *branch, *status))
+            .map(|(sha, branch, status)| ScoredExecution {
+                commit_sha: (*sha).to_owned(),
+                branch: (*branch).to_owned(),
+                status: *status,
+            })
             .collect()
     }
 
@@ -599,9 +587,13 @@ mod tests {
 
     #[test]
     fn a_commit_and_a_branch_are_named_apart() {
-        // The row is a struct, so `ScoredExecution { branch: "abc", .. }` does not
-        // compile: a caller cannot pass one where the other belongs.
-        let row = ScoredExecution::new("abc", "main", Failed);
+        // The row has no positional constructor, so a caller says which value is
+        // which instead of counting arguments.
+        let row = ScoredExecution {
+            commit_sha: "abc".to_owned(),
+            branch: "main".to_owned(),
+            status: Failed,
+        };
         assert_eq!(row.commit_sha, "abc");
         assert_eq!(row.branch, "main");
     }

@@ -944,11 +944,11 @@ async fn a_rescore_matches_the_branch_scoped_score_over_all_rows() {
             .build(db.connection())
             .await
             .expect("an Execution");
-        history.push(ScoredExecution::new(
-            format!("m{index}"),
-            "main",
-            ExecutionStatus::from_wire(status).expect("a status"),
-        ));
+        history.push(ScoredExecution {
+            commit_sha: format!("m{index}"),
+            branch: "main".to_owned(),
+            status: ExecutionStatus::from_wire(status).expect("a status"),
+        });
     }
     for index in 0..10 {
         let run = flakeradar_test_support::make_run(&project)
@@ -961,11 +961,11 @@ async fn a_rescore_matches_the_branch_scoped_score_over_all_rows() {
             .build(db.connection())
             .await
             .expect("an Execution");
-        history.push(ScoredExecution::new(
-            format!("f{index}"),
-            "feat",
-            ExecutionStatus::Passed,
-        ));
+        history.push(ScoredExecution {
+            commit_sha: format!("f{index}"),
+            branch: "feat".to_owned(),
+            status: ExecutionStatus::Passed,
+        });
     }
     rescore(db.connection(), &[row.id], None, &settings)
         .await
