@@ -1125,10 +1125,28 @@ pub async fn test_job_links(
     Ok(links)
 }
 
+/// A human's quarantine decision for one Test.
+///
+/// The body states a flag beside two values that only mean something when it is
+/// set, so the decision is one value: what the person decided, and what they said
+/// and for how long when they quarantined.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QuarantineDecision {
+    /// Quarantine the Test, with the reason and the expiry the person gave.
+    Quarantine {
+        /// Why the person quarantined it.
+        reason: Option<String>,
+        /// How many days the quarantine lasts, when they set an expiry.
+        expires_in_days: Option<i64>,
+    },
+    /// Release the Test: clear the flag, the reason and the expiry.
+    Release,
+}
+
 /// Stores a human's quarantine decision for one Test.
 ///
-/// Every write stores the body's values, so re-quarantining without a reason or
-/// an expiry clears the old ones instead of keeping a stale decision.
+/// Every write stores the decision's values, so re-quarantining without a reason
+/// or an expiry clears the old ones instead of keeping a stale decision.
 ///
 /// # Errors
 ///
@@ -1136,9 +1154,7 @@ pub async fn test_job_links(
 pub async fn set_quarantine(
     db: &impl ConnectionTrait,
     test_id: i64,
-    quarantined: bool,
-    reason: Option<&str>,
-    expires_in_days: Option<i64>,
+    decision: QuarantineDecision,
     settings: &ReadSettings,
 ) -> Result<Option<TestOut>, DbError> {
     let sql = format!("{TESTS_SELECT} {TESTS_FROM} WHERE t.id = $1");
@@ -1147,11 +1163,17 @@ pub async fn set_quarantine(
     };
     let stored_id: i32 = get(&row, "id")?;
     let now = settings.clock.now();
-    let quarantined_at = quarantined.then_some(now);
-    let reason = if quarantined { reason } else { None };
-    let expires_at = match (quarantined, expires_in_days) {
-        (true, Some(days)) => Some(now + Duration::days(days)),
-        _ => None,
+    let (quarantined, quarantined_at, reason, expires_at) = match decision {
+        QuarantineDecision::Quarantine {
+            reason,
+            expires_in_days,
+        } => (
+            true,
+            Some(now),
+            reason,
+            expires_in_days.map(|days| now + Duration::days(days)),
+        ),
+        QuarantineDecision::Release => (false, None, None, None),
     };
     let statement = Statement::from_sql_and_values(
         DbBackend::Postgres,
@@ -1161,7 +1183,7 @@ pub async fn set_quarantine(
             Value::from(stored_id),
             Value::from(quarantined),
             Value::from(quarantined_at),
-            Value::from(reason.map(str::to_owned)),
+            Value::from(reason.clone()),
             Value::from(expires_at),
         ],
     );
@@ -1169,7 +1191,7 @@ pub async fn set_quarantine(
     let mut test = test_out(&row, settings.flake_threshold, settings.broken_streak, None)?;
     test.quarantined = quarantined;
     test.quarantined_at = quarantined_at.map(|at| at.with_timezone(&Utc));
-    test.quarantine_reason = reason.map(str::to_owned);
+    test.quarantine_reason = reason;
     test.quarantine_expires_at = expires_at.map(|at| at.with_timezone(&Utc));
     Ok(Some(test))
 }

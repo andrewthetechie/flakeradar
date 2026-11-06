@@ -21,8 +21,9 @@ use flakeradar_core::{
 };
 use flakeradar_db::{
     DEFAULT_EXECUTIONS_LIMIT, FAILURES_LIMIT, JobListFilters, ListOptions, MAX_EXECUTIONS_LIMIT,
-    ReadSettings, Scope, SortKey, TestListFilters, ci_run_failures, get_job, get_test, job_summary,
-    list_jobs, list_repos, list_tests, quarantine_list, set_quarantine, summary,
+    QuarantineDecision, ReadSettings, Scope, SortKey, TestListFilters, ci_run_failures, get_job,
+    get_test, job_summary, list_jobs, list_repos, list_tests, quarantine_list, set_quarantine,
+    summary,
 };
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
@@ -561,15 +562,18 @@ pub async fn quarantine_test(
     ApiPath(path): ApiPath<TestPath>,
     ApiJson(body): ApiJson<QuarantineIn>,
 ) -> RouteResult<Json<TestOut>> {
-    let stored = set_quarantine(
-        state.pool(),
-        path.test_id,
-        body.quarantined,
-        body.reason.as_deref(),
-        body.expires_in_days,
-        &read_settings(&state),
-    )
-    .await?;
+    // The body states a flag and the two values that belong to it; the engine
+    // takes the decision they describe, so it never sees a flag.
+    let decision = if body.quarantined {
+        QuarantineDecision::Quarantine {
+            reason: body.reason,
+            expires_in_days: body.expires_in_days,
+        }
+    } else {
+        QuarantineDecision::Release
+    };
+    let stored =
+        set_quarantine(state.pool(), path.test_id, decision, &read_settings(&state)).await?;
     match stored {
         Some(test) => Ok(Json(test)),
         None => Err(RouteError::NotFound("Test not found".to_owned())),
