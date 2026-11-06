@@ -475,7 +475,9 @@ pub(crate) fn test_out(
         flakiness_score: score,
         tier: tier_for(score, threshold),
         confirmed_flake_count: i64::from(get::<i32>(row, "confirmed_flake_count")?),
-        failure_category: get(row, "failure_category")?,
+        failure_category: stored_category(
+            get::<Option<String>>(row, "failure_category")?.as_deref(),
+        ),
         clean_streak: i64::from(get::<i32>(row, "clean_streak")?),
         fail_streak,
         broken: is_broken(fail_streak, broken_streak),
@@ -868,7 +870,7 @@ async fn window_sums(
 async fn category_counts(
     db: &impl ConnectionTrait,
     scope: &Scope,
-) -> Result<BTreeMap<String, i64>, DbError> {
+) -> Result<BTreeMap<FailureCategory, i64>, DbError> {
     let mut categories = Binds::after(1);
     categories.raw("t.flakiness_score > 0");
     categories.raw("t.failure_category IS NOT NULL");
@@ -881,17 +883,26 @@ async fn category_counts(
           GROUP BY t.failure_category",
         categories.suffix()
     );
-    let mut category_counts: BTreeMap<String, i64> = BTreeMap::new();
+    let mut category_counts: BTreeMap<FailureCategory, i64> = BTreeMap::new();
     for category in FailureCategory::ALL {
-        let _ = category_counts.insert(category.as_str().to_owned(), 0);
+        let _ = category_counts.insert(category, 0);
     }
     for row in rows(db, categories_sql, categories.into_values()).await? {
-        let category: String = get(&row, "category")?;
-        if FailureCategory::from_wire(&category).is_some() {
+        let category = stored_category(get::<Option<String>>(&row, "category")?.as_deref());
+        if let Some(category) = category {
             let _ = category_counts.insert(category, get(&row, "count")?);
         }
     }
     Ok(category_counts)
+}
+
+/// The Failure category one stored spelling names.
+///
+/// `failure_category` is free text in the baseline schema, so a row can hold a
+/// word the five categories do not name. It reads as no category, which is the
+/// same rule the summary's per-category counts apply.
+fn stored_category(text: Option<&str>) -> Option<FailureCategory> {
+    text.and_then(FailureCategory::from_wire)
 }
 
 /// One Execution in a Test's history, with the Run facts it carries.
@@ -907,7 +918,9 @@ fn execution_out(row: &QueryResult) -> Result<ExecutionOut, DbError> {
         branch: get(row, "branch")?,
         ci_run_id: get(row, "ci_run_id")?,
         attempt: i64::from(get::<i32>(row, "attempt")?),
-        failure_category: get(row, "failure_category")?,
+        failure_category: stored_category(
+            get::<Option<String>>(row, "failure_category")?.as_deref(),
+        ),
     })
 }
 
@@ -1765,7 +1778,7 @@ pub async fn find_job_ids(
 #[derive(Debug, Clone)]
 struct PairExecution {
     status: ExecutionStatus,
-    failure_category: Option<String>,
+    failure_category: Option<FailureCategory>,
     message: String,
 }
 
@@ -1988,7 +2001,9 @@ async fn pair_executions(
         );
         by_pair.entry(key).or_default().push(PairExecution {
             status: execution_status(&get::<String>(&row, "status")?)?,
-            failure_category: get(&row, "failure_category")?,
+            failure_category: stored_category(
+                get::<Option<String>>(&row, "failure_category")?.as_deref(),
+            ),
             message: get(&row, "message")?,
         });
     }
@@ -2031,7 +2046,7 @@ fn ci_run_failure_item(
         ci_job_id: get(row, "ci_job_id")?,
         status: last.status,
         failed_attempts: i64::try_from(failing.len()).unwrap_or(i64::MAX),
-        failure_category: last_failing.failure_category.clone(),
+        failure_category: last_failing.failure_category,
         message: last_failing
             .message
             .chars()

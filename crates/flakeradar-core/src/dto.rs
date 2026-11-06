@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use utoipa::ToSchema;
 
+use crate::classify::FailureCategory;
 use crate::identity::{IdentityError, normalize_provider, normalize_repo};
 use crate::lax;
 use crate::model::{
@@ -1381,7 +1382,7 @@ pub struct TestOut {
     /// How many commit SHAs recorded both outcomes.
     pub confirmed_flake_count: i64,
     /// The most common Failure category among recent failures.
-    pub failure_category: Option<String>,
+    pub failure_category: Option<FailureCategory>,
     /// Non-skipped Executions since the newest failure.
     pub clean_streak: i64,
     /// Consecutive failures, newest first.
@@ -1449,7 +1450,7 @@ pub struct SummaryOut {
     /// The configured Flake threshold.
     pub flake_threshold: f64,
     /// Failing Executions per Failure category.
-    pub category_counts: BTreeMap<String, i64>,
+    pub category_counts: BTreeMap<FailureCategory, i64>,
 }
 
 /// One Execution in a Test's history.
@@ -1477,7 +1478,7 @@ pub struct ExecutionOut {
     /// Which retry inside the Run this is, numbered from 0.
     pub attempt: i64,
     /// The Failure category, when the Execution failed.
-    pub failure_category: Option<String>,
+    pub failure_category: Option<FailureCategory>,
 }
 
 /// Where a Test is defined.
@@ -1859,7 +1860,7 @@ pub struct CiRunTestFailureOut {
     /// How many failing Executions this Run had.
     pub failed_attempts: i64,
     /// The last failing Execution's category.
-    pub failure_category: Option<String>,
+    pub failure_category: Option<FailureCategory>,
     /// The last failing Execution's message, first 1024 characters.
     pub message: String,
     /// The tier the score falls in.

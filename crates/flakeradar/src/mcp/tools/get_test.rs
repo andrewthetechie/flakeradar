@@ -11,8 +11,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use flakeradar_core::{
-    DEFAULT_PROJECT, ExecutionOut, ExecutionStatus, LocationOut, TestJobLinkOut, TestOut,
-    dto::timestamp,
+    DEFAULT_PROJECT, ExecutionOut, ExecutionStatus, FailureCategory, LocationOut, TestJobLinkOut,
+    TestOut, dto::timestamp,
 };
 use flakeradar_db::reads;
 
@@ -160,7 +160,7 @@ struct LatestFailure {
     /// The branch the commit is on.
     branch: String,
     /// The Failure category.
-    failure_category: Option<String>,
+    failure_category: Option<FailureCategory>,
     /// When the Execution was recorded.
     #[serde(with = "timestamp")]
     created_at: DateTime<Utc>,
@@ -174,7 +174,7 @@ impl From<&ExecutionOut> for LatestFailure {
             details: cap_details(&failure.details),
             commit_sha: failure.commit_sha.clone(),
             branch: failure.branch.clone(),
-            failure_category: failure.failure_category.clone(),
+            failure_category: failure.failure_category,
             created_at: failure.created_at,
         }
     }
@@ -202,7 +202,7 @@ struct ExecutionSummary {
     /// Which retry inside the Run this is, numbered from 0.
     attempt: i64,
     /// The Failure category, when the Execution failed.
-    failure_category: Option<String>,
+    failure_category: Option<FailureCategory>,
 }
 
 impl From<&ExecutionOut> for ExecutionSummary {
@@ -216,7 +216,7 @@ impl From<&ExecutionOut> for ExecutionSummary {
             duration: execution.duration,
             message: execution.message.clone(),
             attempt: execution.attempt,
-            failure_category: execution.failure_category.clone(),
+            failure_category: execution.failure_category,
         }
     }
 }
