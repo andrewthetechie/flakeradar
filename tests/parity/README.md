@@ -170,7 +170,11 @@ the Score history tables.
 ## Comparing a replay
 
 A later task compares the Rust server's response with the golden file. The
-rules:
+replay binds a loopback port and speaks HTTP to `axum::serve`, as the recorder
+spoke to `uvicorn`, so the framing, the headers and the connection behaviour a
+client meets are part of what a recording proves; the writers-app CI upload
+(`POST /api/ingest` with a raw `application/xml` body and its query parameters)
+is the `consumers` scenario's first step. The rules:
 
 - **JSON is compared by value**, ignoring key order and whitespace.
 - **Numbers compare numerically**: `1`, `1.0` and `1e0` are the same value.

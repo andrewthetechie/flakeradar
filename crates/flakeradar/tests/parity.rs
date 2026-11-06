@@ -11,6 +11,11 @@
 //! scenario file is replayed by [`every_scenario_replays_identically`] without
 //! being registered anywhere, and a step without a golden fails the test that
 //! checks the fixtures before any server is started.
+//!
+//! The replay speaks HTTP to a bound socket, as the recorder did, rather than
+//! calling the router in process: the socket is what a client actually meets, and
+//! the writers-app CI path (`POST /api/ingest` with a raw body and
+//! `Content-Type: application/xml`) is one of the steps it carries.
 
 #![expect(
     clippy::expect_used,
@@ -29,8 +34,7 @@ use std::time::Duration;
 
 use axum::Json;
 use axum::Router;
-use axum::body::Body;
-use axum::http::{HeaderMap, Method, Request, StatusCode};
+use axum::http::{HeaderMap, StatusCode};
 use axum::routing::get;
 use chrono::DateTime;
 use common::allowances::{Allowances, AllowedField, allowed, contract_for};
@@ -42,7 +46,6 @@ use flakeradar_test_support::TestDb;
 use sea_orm::{ConnectionTrait, DbBackend, EntityTrait, JsonValue, Statement};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
-use tower::ServiceExt as _;
 
 /// The token every scenario's requests present, as the recorder used it.
 const TOKEN: &str = "parity-token";
@@ -158,6 +161,55 @@ fn parity_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/parity")
 }
 
+/// The app one scenario is replayed against, served on a real socket.
+///
+/// The recorder spoke HTTP to a running `uvicorn`, so the replay speaks HTTP to a
+/// running `axum::serve`. A call straight into the router would skip the socket,
+/// and the framing, the `Host` header and the connection behaviour a client meets
+/// are part of what a recording proves.
+struct Listener {
+    /// The base URL, such as `http://127.0.0.1:53211`.
+    base: String,
+    /// The client every step sends with. It never follows a redirect: a
+    /// redirect's target is what the golden records.
+    client: reqwest::Client,
+    /// The serving task, stopped when the scenario ends.
+    handle: tokio::task::JoinHandle<()>,
+}
+
+impl Listener {
+    /// Binds a loopback port and serves `app` on it.
+    async fn start(app: Router) -> Self {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("a loopback port is available");
+        let address = listener.local_addr().expect("the bound address");
+        let handle = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("the replay's client builds");
+        Self {
+            base: format!("http://{address}"),
+            client,
+            handle,
+        }
+    }
+
+    /// The URL of a path the step names, query included.
+    fn url(&self, path_and_query: &str) -> String {
+        format!("{}{path_and_query}", self.base)
+    }
+
+    /// Stops serving.
+    async fn stop(self) {
+        self.handle.abort();
+        let _ = self.handle.await;
+    }
+}
+
 /// Loads a scenario by name.
 fn scenario(name: &str) -> ScenarioFile {
     let path = parity_root().join("scenarios").join(format!("{name}.json"));
@@ -266,14 +318,17 @@ async fn every_scenario_replays_identically() {
         );
         Arc::clone(&worker).start().await;
         wait_for_leadership(&worker).await;
+        let server = Listener::start(app).await;
         for (index, spec) in scenario.steps.iter().enumerate() {
             let step = index + 1;
             let recorded = golden(&name, step);
             if spec.get("wait_processed").is_some() {
                 gate.open();
             }
-            failures.extend(replay_step(&app, &db, &settings, &name, step, spec, &recorded).await);
+            failures
+                .extend(replay_step(&server, &db, &settings, &name, step, spec, &recorded).await);
         }
+        server.stop().await;
         worker.stop().await;
     }
     assert!(failures.is_empty(), "\n{}", failures.join("\n"));
@@ -301,7 +356,7 @@ fn processing_of(settings: &Settings) -> ProcessingSettings {
 
 /// Replays one step and reports every difference from its golden.
 async fn replay_step(
-    app: &Router,
+    server: &Listener,
     db: &TestDb,
     settings: &Settings,
     scenario: &str,
@@ -310,7 +365,7 @@ async fn replay_step(
     recorded: &Value,
 ) -> Mismatches {
     if spec.get("http").is_some() {
-        replay_http(app, scenario, step, spec, recorded).await
+        replay_http(server, scenario, step, spec, recorded).await
     } else if spec.get("dump_db").is_some() {
         let tables = spec
             .get("dump_db")
@@ -320,10 +375,10 @@ async fn replay_step(
         let dump = dump_db(db, &tables).await;
         compare_recorded(scenario, step, recorded, &dump)
     } else if spec.get("wait_processed").is_some() {
-        let drained = wait_processed(app, db, settings).await;
+        let drained = wait_processed(server, db, settings).await;
         compare_recorded(scenario, step, recorded, &drained)
     } else if spec.get("mcp").is_some() {
-        replay_mcp(app, scenario, step, spec, recorded).await
+        replay_mcp(server, scenario, step, spec, recorded).await
     } else {
         vec![format!(
             "{scenario} step {step}: the step is neither http, dump_db, wait_processed nor mcp"
@@ -346,7 +401,7 @@ const MCP_VERSION: &str = "2026-07-28";
 /// golden holds the result object itself, because the recorder dumped the
 /// client's tool models rather than the envelope.
 async fn replay_mcp(
-    app: &Router,
+    server: &Listener,
     scenario: &str,
     step: usize,
     spec: &Value,
@@ -399,10 +454,9 @@ async fn replay_mcp(
             }),
         );
     }
-    let mut builder = Request::builder()
-        .method(Method::POST)
-        .uri("/mcp/")
-        .header("host", "localhost")
+    let mut builder = server
+        .client
+        .post(server.url("/mcp/"))
         .header("content-type", "application/json")
         .header("accept", "application/json, text/event-stream")
         .header("authorization", format!("Bearer {TOKEN}"))
@@ -412,17 +466,12 @@ async fn replay_mcp(
         builder = builder.header("mcp-name", tool);
     }
     let body = json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params});
-    let request = builder
-        .body(Body::from(body.to_string()))
-        .unwrap_or_else(|error| panic!("{scenario} step {step}: the request builds: {error}"));
-    let response = app
-        .clone()
-        .oneshot(request)
+    let response = builder
+        .body(body.to_string())
+        .send()
         .await
-        .expect("the app answers every request");
-    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("the body reads to the end");
+        .expect("the server answers every request");
+    let bytes = response.bytes().await.expect("the body reads to the end");
     let Ok(answer) = serde_json::from_slice::<Value>(&bytes) else {
         return vec![format!(
             "{scenario} step {step}: the answer is not JSON-RPC: {}",
@@ -447,7 +496,7 @@ async fn replay_mcp(
 
 /// Replays one `http` step.
 async fn replay_http(
-    app: &Router,
+    server: &Listener,
     scenario: &str,
     step: usize,
     spec: &Value,
@@ -485,32 +534,27 @@ async fn replay_http(
         uri.push_str(&encoded.join("&"));
     }
 
-    let mut builder = Request::builder()
-        .method(Method::from_bytes(method.as_bytes()).expect("the method is valid"))
-        .uri(&uri);
+    let mut builder = server.client.request(
+        reqwest::Method::from_bytes(method.as_bytes()).expect("the method is valid"),
+        server.url(&uri),
+    );
     if let Some(headers) = request.get("headers").and_then(Value::as_object) {
         for (name, value) in headers {
             builder = builder.header(name, substitute(value.as_str().unwrap_or_default()));
         }
     }
-    let (body, content_type) = body_of(request);
+    let (payload, content_type) = body_of(request);
     if let Some(content_type) = content_type {
         builder = builder.header("content-type", content_type);
     }
-    let request = builder
-        .body(body)
-        .unwrap_or_else(|error| panic!("{scenario} step {step}: the request builds: {error}"));
-
-    let response = app
-        .clone()
-        .oneshot(request)
+    let response = builder
+        .body(payload)
+        .send()
         .await
-        .expect("the app answers every request");
-    let status = response.status();
+        .expect("the server answers every request");
+    let status = StatusCode::from_u16(response.status().as_u16()).expect("a status code");
     let headers = response.headers().clone();
-    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("the body reads to the end");
+    let bytes = response.bytes().await.expect("the body reads to the end");
 
     let stored = Allowances::load();
     let allowances = stored.for_step(scenario, step);
@@ -533,7 +577,7 @@ fn substitute(value: &str) -> String {
 }
 
 /// The body a step asks for, and the content type it implies.
-fn body_of(request: &Value) -> (Body, Option<String>) {
+fn body_of(request: &Value) -> (Vec<u8>, Option<String>) {
     if let Some(file) = request.get("multipart_file") {
         let field = file
             .get("field")
@@ -554,29 +598,29 @@ fn body_of(request: &Value) -> (Body, Option<String>) {
     if let Some(name) = request.get("body_file").and_then(Value::as_str) {
         let payload =
             std::fs::read(parity_root().join(name)).expect("the fixture body is readable");
-        return (Body::from(payload), None);
+        return (payload, None);
     }
     if let Some(value) = request.get("body_json") {
         // The recorder sent these bytes with no content type, and only a step
         // that names one sends it: `json.dumps` text is the body, not a typed
         // document, which is why Python read it as raw text.
         let payload = serde_json::to_vec(value).expect("the fixture body serializes");
-        return (Body::from(payload), None);
+        return (payload, None);
     }
     if let Some(text) = request.get("body_text").and_then(Value::as_str) {
-        return (Body::from(text.to_owned()), None);
+        return (text.as_bytes().to_vec(), None);
     }
     if let Some(size) = request.get("body_size").and_then(Value::as_u64) {
         return (
-            Body::from(vec![b'a'; usize::try_from(size).expect("a body size")]),
+            vec![b'a'; usize::try_from(size).expect("a body size")],
             None,
         );
     }
-    (Body::empty(), None)
+    (Vec::new(), None)
 }
 
 /// One file field, in the multipart framing httpx wrote.
-fn multipart(field: &str, filename: &str, payload: &[u8]) -> (Body, Option<String>) {
+fn multipart(field: &str, filename: &str, payload: &[u8]) -> (Vec<u8>, Option<String>) {
     const BOUNDARY: &str = "flakeradar-parity-boundary";
     let mut body = Vec::new();
     body.extend_from_slice(format!("--{BOUNDARY}\r\n").as_bytes());
@@ -588,7 +632,7 @@ fn multipart(field: &str, filename: &str, payload: &[u8]) -> (Body, Option<Strin
     body.extend_from_slice(payload);
     body.extend_from_slice(format!("\r\n--{BOUNDARY}--\r\n").as_bytes());
     (
-        Body::from(body),
+        body,
         Some(format!("multipart/form-data; boundary={BOUNDARY}")),
     )
 }
@@ -1679,29 +1723,24 @@ fn test_settings() -> Settings {
 }
 
 /// Polls `GET /api/reports/summary` until the running worker has drained the queue.
-async fn wait_processed(app: &Router, _db: &TestDb, _settings: &Settings) -> Value {
-    wait_for_drain(app).await
+async fn wait_processed(server: &Listener, _db: &TestDb, _settings: &Settings) -> Value {
+    wait_for_drain(server).await
 }
 
 /// Polls `GET /api/reports/summary` until nothing is pending.
 ///
 /// This is the only waiting a scenario does; the interval and the deadline are
 /// constants so a replay fails rather than hangs.
-async fn wait_for_drain(app: &Router) -> Value {
+async fn wait_for_drain(server: &Listener) -> Value {
     let deadline = tokio::time::Instant::now() + WAIT_PROCESSED_DEADLINE;
     loop {
-        let request = Request::builder()
-            .uri("/api/reports/summary")
-            .body(Body::empty())
-            .expect("the fixture request builds");
-        let response = app
-            .clone()
-            .oneshot(request)
+        let response = server
+            .client
+            .get(server.url("/api/reports/summary"))
+            .send()
             .await
-            .expect("the app answers every request");
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("the body reads to the end");
+            .expect("the server answers every request");
+        let bytes = response.bytes().await.expect("the body reads to the end");
         let summary = decode_body(&bytes, Some("application/json"));
         if summary.get("pending").and_then(Value::as_u64) == Some(0) {
             return serde_json::json!({"processed": true, "reports": summary});
@@ -2138,22 +2177,24 @@ fn summary_app(body: Value) -> Router {
 #[tokio::test]
 async fn a_wait_processed_step_answers_a_drained_queue() {
     let db = TestDb::new().await.expect("a test database is available");
-    let app = summary_app(json!({"pending": 0, "failed": 0}));
+    let server = Listener::start(summary_app(json!({"pending": 0, "failed": 0}))).await;
     assert_eq!(
-        wait_processed(&app, &db, &test_settings()).await,
+        wait_processed(&server, &db, &test_settings()).await,
         json!({"processed": true, "reports": {"pending": 0, "failed": 0}})
     );
+    server.stop().await;
 }
 
 #[tokio::test(start_paused = true)]
 async fn a_wait_processed_step_gives_up_on_a_queue_that_never_drains() {
     // The clock is paused, so the deadline passes without waiting for it: the
     // step must report the queue rather than hang the replay.
-    let app = summary_app(json!({"pending": 2, "failed": 1}));
+    let server = Listener::start(summary_app(json!({"pending": 2, "failed": 1}))).await;
     assert_eq!(
-        wait_for_drain(&app).await,
+        wait_for_drain(&server).await,
         json!({"processed": false, "reports": {"pending": 2, "failed": 1}})
     );
+    server.stop().await;
 }
 
 #[tokio::test]
@@ -2163,14 +2204,14 @@ async fn an_mcp_step_replays_the_recorded_protocol_result() {
     // are the wire, so the golden must replay clean and one changed description
     // must fail.
     let db = TestDb::new().await.expect("a test database is available");
-    let app = common::app(&db, &[("FLAKERADAR_API_TOKEN", TOKEN)]);
+    let server = Listener::start(common::app(&db, &[("FLAKERADAR_API_TOKEN", TOKEN)])).await;
     let spec = scenario("mcp")
         .steps
         .get(5)
         .cloned()
         .expect("the mcp scenario has a sixth step");
     let recorded = golden("mcp", 6);
-    let failures = replay_mcp(&app, "mcp", 6, &spec, &recorded).await;
+    let failures = replay_mcp(&server, "mcp", 6, &spec, &recorded).await;
     assert!(
         failures
             .iter()
@@ -2192,13 +2233,14 @@ async fn an_mcp_step_replays_the_recorded_protocol_result() {
         .and_then(|tools| tools.first_mut())
         .expect("the golden lists its tools");
     first["description"] = json!("List every Repo.");
-    let failures = replay_mcp(&app, "mcp", 6, &spec, &tampered).await;
+    let failures = replay_mcp(&server, "mcp", 6, &spec, &tampered).await;
     assert!(
         failures
             .iter()
             .any(|failure| failure.contains("description")),
         "{failures:?}"
     );
+    server.stop().await;
 }
 
 /// The app the `mcp` scenario's `tools/call` steps answer on, over a database
@@ -2207,7 +2249,7 @@ async fn an_mcp_step_replays_the_recorded_protocol_result() {
 /// A tool answer is data those rows produced, so a control that tampers one has
 /// to replay the ingests and the drain first — the setup
 /// [`every_enabled_scenario_replays_identically`] does inline for every scenario.
-async fn seeded_mcp_app() -> (TestDb, Router) {
+async fn seeded_mcp_app() -> (TestDb, Listener) {
     let db = TestDb::new().await.expect("a test database is available");
     let file = scenario("mcp");
     let settings = settings_for(&file, &db);
@@ -2230,6 +2272,7 @@ async fn seeded_mcp_app() -> (TestDb, Router) {
         .with_processor(processor),
     );
     Arc::clone(&worker).start().await;
+    let server = Listener::start(app).await;
     for step in 1..=4 {
         let recorded = golden("mcp", step);
         let spec = file
@@ -2239,11 +2282,11 @@ async fn seeded_mcp_app() -> (TestDb, Router) {
         if spec.get("wait_processed").is_some() {
             gate.open();
         }
-        let failures = replay_step(&app, &db, &settings, "mcp", step, spec, &recorded).await;
+        let failures = replay_step(&server, &db, &settings, "mcp", step, spec, &recorded).await;
         assert!(failures.is_empty(), "mcp step {step}: {failures:?}");
     }
     worker.stop().await;
-    (db, app)
+    (db, server)
 }
 
 /// The recorded `tools/call` answer with one substring of its content text
@@ -2276,7 +2319,7 @@ async fn a_changed_mcp_tool_answer_fails_the_replay() {
     // a wrong Test name, score, permalink, Issue number and failure message, so
     // the recorded answer is proved non-vacuous field by field rather than only
     // by the `tools/list` control above.
-    let (_db, app) = seeded_mcp_app().await;
+    let (_db, server) = seeded_mcp_app().await;
     let file = scenario("mcp");
     let get_test = file
         .steps
@@ -2285,7 +2328,7 @@ async fn a_changed_mcp_tool_answer_fails_the_replay() {
         .expect("the mcp scenario has an eighteenth step");
     let recorded = golden("mcp", 19);
     assert_eq!(
-        replay_mcp(&app, "mcp", 19, &get_test, &recorded).await,
+        replay_mcp(&server, "mcp", 19, &get_test, &recorded).await,
         Vec::<String>::new(),
         "the recorded get_test answer must replay clean before a control alters it"
     );
@@ -2313,7 +2356,7 @@ async fn a_changed_mcp_tool_answer_fails_the_replay() {
         ),
     ] {
         let tampered = with_tampered_text(&recorded, from, to);
-        let failures = replay_mcp(&app, "mcp", 19, &get_test, &tampered).await;
+        let failures = replay_mcp(&server, "mcp", 19, &get_test, &tampered).await;
         assert_eq!(failures.len(), 1, "{what}: {failures:?}");
         assert!(
             failures[0].contains("result.content.0.text"),
@@ -2331,7 +2374,7 @@ async fn a_changed_mcp_tool_answer_fails_the_replay() {
         .and_then(Value::as_object_mut)
         .expect("the recorded answer carries the Test")
         .insert("flakiness_score".to_owned(), json!(0.1668));
-    let failures = replay_mcp(&app, "mcp", 19, &get_test, &rescored).await;
+    let failures = replay_mcp(&server, "mcp", 19, &get_test, &rescored).await;
     assert_eq!(failures.len(), 1, "{failures:?}");
     assert!(
         failures[0].contains("result.structuredContent.test.flakiness_score"),
@@ -2346,7 +2389,7 @@ async fn a_changed_mcp_tool_answer_fails_the_replay() {
         .expect("the mcp scenario has a thirty-eighth step");
     let recorded = golden("mcp", 38);
     assert_eq!(
-        replay_mcp(&app, "mcp", 38, &link, &recorded).await,
+        replay_mcp(&server, "mcp", 38, &link, &recorded).await,
         Vec::<String>::new(),
         "the recorded link_issue answer must replay clean before a control alters it"
     );
@@ -2355,7 +2398,7 @@ async fn a_changed_mcp_tool_answer_fails_the_replay() {
         "\"github_issue_number\":31",
         "\"github_issue_number\":32",
     );
-    let failures = replay_mcp(&app, "mcp", 38, &link, &tampered).await;
+    let failures = replay_mcp(&server, "mcp", 38, &link, &tampered).await;
     assert_eq!(failures.len(), 1, "an Issue number: {failures:?}");
     assert!(
         failures[0].contains("result.content.0.text"),
@@ -2369,7 +2412,7 @@ async fn an_enabled_step_that_answers_something_else_fails_loudly() {
     // proves a wrong answer becomes one: the same step and spec replay clean
     // against the recorded golden and fail once the recorded status is changed.
     let db = TestDb::new().await.expect("a test database is available");
-    let app = common::app(&db, &[]);
+    let server = Listener::start(common::app(&db, &[])).await;
     let spec = scenario("health")
         .steps
         .first()
@@ -2377,7 +2420,7 @@ async fn an_enabled_step_that_answers_something_else_fails_loudly() {
         .expect("the health scenario has a first step");
     let recorded = golden("health", 1);
     assert_eq!(
-        replay_http(&app, "health", 1, &spec, &recorded).await,
+        replay_http(&server, "health", 1, &spec, &recorded).await,
         Vec::<String>::new()
     );
 
@@ -2386,9 +2429,32 @@ async fn an_enabled_step_that_answers_something_else_fails_loudly() {
         .as_object_mut()
         .expect("a golden is an object")
         .insert("status".to_owned(), json!(500));
-    let failures = replay_http(&app, "health", 1, &spec, &tampered).await;
+    let failures = replay_http(&server, "health", 1, &spec, &tampered).await;
     assert_eq!(failures.len(), 1, "{failures:?}");
     assert!(failures[0].contains("status"), "{failures:?}");
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn a_step_travels_over_the_socket_rather_than_the_router() {
+    // The replay binds a port and speaks HTTP to it, so a server that answers
+    // something else is what the step compares against. Reaching the router in
+    // process would have compared the golden with the real app and matched: this
+    // proves the answer the step sees is the one a client would get.
+    let wrong = Router::new().route(
+        "/api/health",
+        get(|| async { Json(json!({"status": "not ok"})) }),
+    );
+    let server = Listener::start(wrong).await;
+    let spec = scenario("health")
+        .steps
+        .first()
+        .cloned()
+        .expect("the health scenario has a first step");
+    let failures = replay_http(&server, "health", 1, &spec, &golden("health", 1)).await;
+    assert_eq!(failures.len(), 1, "{failures:?}");
+    assert!(failures[0].contains("body.status"), "{failures:?}");
+    server.stop().await;
 }
 
 /// The golden directory that holds the JUnit parser's corpus, not a scenario.
