@@ -1,0 +1,33 @@
+{
+  "name": "failed-report",
+  "steps": [
+    {
+      "http": {
+        "method": "POST",
+        "path": "/api/ingest",
+        "query": {
+          "repo": "o/r",
+          "commit_sha": "bbb1",
+          "ci_run_id": "run1"
+        },
+        "headers": {
+          "X-API-Key": "$TOKEN",
+          "Content-Type": "application/xml"
+        },
+        "body_text": "<testsuite name=\"unit\"><testcase classname=\"tests.test_cart\" name=\"test_line_past_the_column\" time=\"0.01\" file=\"tests/test_cart.py\" line=\"3000000000\"></testcase></testsuite>"
+      }
+    },
+    {
+      "wait_processed": true
+    },
+    {
+      "http": {
+        "method": "GET",
+        "path": "/api/ci-runs/run1/failures",
+        "query": {
+          "repo": "o/r"
+        }
+      }
+    }
+  ]
+}

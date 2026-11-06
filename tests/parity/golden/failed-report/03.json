@@ -1,0 +1,27 @@
+{
+  "body": {
+    "ci_run_attempt": 1,
+    "ci_run_id": "run1",
+    "failed_jobs": [],
+    "failures": [],
+    "flake_threshold": 0.3,
+    "repo": "o/r",
+    "reports": {
+      "failed": 1,
+      "pending": 0,
+      "processed": 0
+    },
+    "total_failures": 0,
+    "truncated": false
+  },
+  "content-type": "application/json",
+  "request": {
+    "method": "GET",
+    "path": "/api/ci-runs/run1/failures",
+    "query": {
+      "repo": "o/r"
+    }
+  },
+  "status": 200,
+  "step": 3
+}
