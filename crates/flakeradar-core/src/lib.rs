@@ -11,7 +11,6 @@
 #![cfg_attr(
     test,
     expect(
-        clippy::unwrap_used,
         clippy::expect_used,
         reason = "a unit test fails loudly when the rule under test is wrong"
     )

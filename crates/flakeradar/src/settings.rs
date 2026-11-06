@@ -925,6 +925,10 @@ mod tests {
 
     #[test]
     fn every_setting_defaults_to_the_frozen_servers_value() {
+        // The expected values are `backend/app/config.py`'s defaults at 86c98804,
+        // not a second copy of `Settings::default`: this test is the contract with
+        // the frozen server, so a literal here is the requirement and not a
+        // restatement of the code under it.
         let settings = Settings::default();
         assert_eq!(settings.api_token.expose(), DEFAULT_INSECURE_TOKEN);
         assert_eq!(settings.database_url.expose(), DEFAULT_DATABASE_URL);
