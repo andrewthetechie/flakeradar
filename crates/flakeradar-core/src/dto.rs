@@ -1290,7 +1290,7 @@ fn body_loc(field: &str) -> Vec<LocSegment> {
     ]
 }
 
-/// Normalizes a required name that passed its length rule.
+/// Normalizes a required name, recording the length or NUL issue it finds.
 fn normalized_name(
     raw: &str,
     max: usize,
@@ -1522,7 +1522,7 @@ pub struct SummaryOut {
     pub flaky_tests: i64,
     /// How many are above zero but below the threshold.
     pub suspect_tests: i64,
-    /// How many flew at least one Proven flake.
+    /// How many have at least one Proven flake.
     pub confirmed_flaky_tests: i64,
     /// How many became flaky in the last seven days.
     pub new_flaky_7d: i64,
@@ -1781,7 +1781,7 @@ pub struct JobSummaryOut {
     pub flaky_jobs: i64,
     /// How many are above zero but below the threshold.
     pub suspect_jobs: i64,
-    /// How many flew at least one Proven flake.
+    /// How many have at least one Proven flake.
     pub confirmed_flaky_jobs: i64,
     /// How many became flaky in the last seven days.
     pub new_flaky_7d: i64,

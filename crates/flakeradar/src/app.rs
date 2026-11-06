@@ -28,8 +28,8 @@ use crate::settings::Settings;
 ///
 /// Axum's own default is 2 MB, which is under a Pipeline report for a large
 /// matrix, so it is raised to the 20 MiB `POST /api/ingest` already allows. The
-/// ingest route lifts the limit entirely and enforces its own while reading, so
-/// an oversized upload is cut off rather than buffered.
+/// ingest route replaces it with its own limit for the length of one request, so
+/// an oversized upload is cut off rather than buffered whole.
 pub const JSON_BODY_LIMIT: usize = 20 * 1024 * 1024;
 
 /// How long a browser may keep a file under `assets/` without asking again.
