@@ -29,6 +29,7 @@ pub mod notify;
 pub mod parsing;
 pub mod py;
 pub mod scoring;
+pub mod types;
 
 #[doc(inline)]
 pub use classify::{FailureCategory, classify_failure, dominant_category};
@@ -70,3 +71,5 @@ pub use scoring::{
     branch_scoped_score, branch_scoped_streak, clean_streak, combined_score, count_proven_flakes,
     fail_streak, flip_score,
 };
+#[doc(inline)]
+pub use types::{Fingerprint, FingerprintError};

@@ -282,7 +282,7 @@ fn check_cases(golden: &Golden, parsed: &Result<Vec<ParsedCase>, ParseError>) {
             name,
             &field("fingerprint"),
             &want["fingerprint"],
-            Value::from(fingerprint(&case.suite, &case.classname, &case.name)),
+            Value::from(fingerprint(&case.suite, &case.classname, &case.name).as_str()),
         );
         let category = matches!(
             case.status,

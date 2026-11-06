@@ -24,7 +24,7 @@ fn one(xml: &str) -> ParsedCase {
 fn fingerprint_is_stable() {
     // Byte-identical to the pre-fork fingerprint, so identities never drift.
     assert_eq!(
-        fingerprint("unit", "tests.test_mod", "t1"),
+        fingerprint("unit", "tests.test_mod", "t1").as_str(),
         "2b8823c6c55be0a19a34111f08b687028f5273df"
     );
     assert_eq!(
@@ -702,7 +702,7 @@ fn iso_8859_1_is_true_latin_1() {
     let case = &parse_junit_xml(xml, 1).unwrap()[0];
     assert_eq!(case.name.as_str(), "na\u{80}me");
     assert_eq!(
-        fingerprint(&case.suite, &case.classname, &case.name),
+        fingerprint(&case.suite, &case.classname, &case.name).as_str(),
         "cb0ac818afbfe66855742dd391f8a4354ac90181"
     );
 }
@@ -715,7 +715,7 @@ fn us_ascii_falls_back_to_utf_8_as_python_does() {
     let case = &parse_junit_xml(xml, 1).unwrap()[0];
     assert_eq!(case.name.as_str(), "té");
     assert_eq!(
-        fingerprint(&case.suite, &case.classname, &case.name),
+        fingerprint(&case.suite, &case.classname, &case.name).as_str(),
         "d88f048c1c68cc494cd4fd9997accfda5166e2fb"
     );
 }
@@ -727,7 +727,7 @@ fn a_namespaced_attribute_is_not_the_identity() {
     let case = &parse_junit_xml(xml.as_bytes(), 1).unwrap()[0];
     assert_eq!(case.name.as_str(), "u");
     assert_eq!(
-        fingerprint(&case.suite, &case.classname, &case.name),
+        fingerprint(&case.suite, &case.classname, &case.name).as_str(),
         "f747ebcc1a2706ed5a71f59cd5aa984eb2f411e2"
     );
 }

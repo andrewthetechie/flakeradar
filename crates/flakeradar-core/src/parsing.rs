@@ -27,6 +27,7 @@ use sha1::{Digest as _, Sha1};
 
 use crate::model::ExecutionStatus;
 use crate::py::{cap, py_splitlines, strip_wire_whitespace};
+use crate::types::Fingerprint;
 
 /// The longest Failure message kept, in code points.
 ///
@@ -157,14 +158,14 @@ pub enum ParseError {
 ///
 /// ```
 /// assert_eq!(
-///     flakeradar_core::fingerprint("unit", "tests.test_mod", "t1"),
+///     flakeradar_core::fingerprint("unit", "tests.test_mod", "t1").as_str(),
 ///     "2b8823c6c55be0a19a34111f08b687028f5273df"
 /// );
 /// ```
 #[must_use]
-pub fn fingerprint(suite: &str, classname: &str, name: &str) -> String {
+pub fn fingerprint(suite: &str, classname: &str, name: &str) -> Fingerprint {
     let raw = format!("{suite}::{classname}::{name}");
-    hex_lower(Sha1::digest(raw.as_bytes()))
+    Fingerprint::from_digest(hex_lower(Sha1::digest(raw.as_bytes())))
 }
 
 /// Renders bytes as lowercase hex.

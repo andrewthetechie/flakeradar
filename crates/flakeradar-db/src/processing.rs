@@ -552,7 +552,7 @@ fn build_test_executions(
     let mut day_counts: BTreeMap<i32, DayCounts> = BTreeMap::new();
     for (case, category) in classified {
         let fingerprint = flakeradar_core::fingerprint(&case.suite, &case.classname, &case.name);
-        let test_case_id = ids.get(&fingerprint).copied().ok_or_else(|| {
+        let test_case_id = ids.get(fingerprint.as_str()).copied().ok_or_else(|| {
             ProcessError::permanent(format!("DataError: Test {fingerprint} vanished"))
         })?;
         let attempt = attempts.get(&test_case_id).copied().unwrap_or(0);
@@ -638,9 +638,10 @@ async fn upsert_test_cases(
     let mut first: BTreeMap<String, &ParsedCase> = BTreeMap::new();
     for case in parsed {
         let fingerprint = flakeradar_core::fingerprint(&case.suite, &case.classname, &case.name);
-        if let std::collections::btree_map::Entry::Vacant(entry) = first.entry(fingerprint.clone())
+        if let std::collections::btree_map::Entry::Vacant(entry) =
+            first.entry(fingerprint.to_string())
         {
-            order.push(fingerprint);
+            order.push(fingerprint.to_string());
             entry.insert(case);
         }
     }
@@ -653,7 +654,8 @@ async fn upsert_test_cases(
                 &case.suite,
                 &case.classname,
                 &case.name,
-            )),
+            )
+            .to_string()),
             suite: Set(case.suite.clone()),
             classname: Set(case.classname.clone()),
             name: Set(case.name.clone()),
