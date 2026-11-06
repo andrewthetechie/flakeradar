@@ -11,7 +11,6 @@
 use axum::Json;
 use axum::extract::{FromRequest, Request, State};
 use axum::http::{StatusCode, header};
-use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Router, middleware};
 use flakeradar_core::{
@@ -20,78 +19,17 @@ use flakeradar_core::{
     normalize_project, normalize_repo,
 };
 use flakeradar_db::{
-    DEFAULT_EXECUTIONS_LIMIT, DbError, FAILURES_LIMIT, JobListFilters, ListOptions,
-    MAX_EXECUTIONS_LIMIT, ReadError, ReadSettings, Scope, SortKey, TestListFilters,
-    ci_run_failures, get_job, get_test, job_summary, list_jobs, list_repos, list_tests,
-    quarantine_list, set_quarantine, summary,
+    DEFAULT_EXECUTIONS_LIMIT, FAILURES_LIMIT, JobListFilters, ListOptions, MAX_EXECUTIONS_LIMIT,
+    ReadSettings, Scope, SortKey, TestListFilters, ci_run_failures, get_job, get_test, job_summary,
+    list_jobs, list_repos, list_tests, quarantine_list, set_quarantine, summary,
 };
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
 
 use crate::app::AppState;
-use crate::error::{ApiError, ApiResult};
+use crate::error::{ApiError, ApiResult, RouteError, RouteResult};
 use crate::extract::{ApiPath, ApiQuery, Validate, body_error, parse_json_object, query_loc};
 use crate::middleware::require_token;
-
-/// A read route's answer.
-pub type ReadResult<T> = Result<T, ReadRouteError>;
-
-/// The ways a read route can fail.
-#[derive(Debug)]
-pub enum ReadRouteError {
-    /// A request the route rejected, in the usual `detail` shape.
-    Rejected(ApiError),
-    /// A resource an id names is unknown; the text is the 404 detail.
-    NotFound(String),
-    /// A database call the route did not expect to fail.
-    Internal(DbError),
-}
-
-impl From<ApiError> for ReadRouteError {
-    fn from(error: ApiError) -> Self {
-        Self::Rejected(error)
-    }
-}
-
-impl From<DbError> for ReadRouteError {
-    fn from(error: DbError) -> Self {
-        Self::Internal(error)
-    }
-}
-
-impl From<sea_orm::DbErr> for ReadRouteError {
-    fn from(error: sea_orm::DbErr) -> Self {
-        Self::Internal(DbError::Database(error))
-    }
-}
-
-impl From<ReadError> for ReadRouteError {
-    fn from(error: ReadError) -> Self {
-        match error {
-            ReadError::Database(error) => Self::Internal(error),
-            ReadError::NotFound(detail) => Self::NotFound(detail),
-        }
-    }
-}
-
-impl IntoResponse for ReadRouteError {
-    fn into_response(self) -> Response {
-        match self {
-            Self::Rejected(error) => error.into_response(),
-            Self::NotFound(detail) => ApiError::new(StatusCode::NOT_FOUND, detail).into_response(),
-            Self::Internal(error) => {
-                // A database error names a statement, never what a caller asked for.
-                tracing::error!(error = %error, "a read route's query failed");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
-                    "Internal Server Error",
-                )
-                    .into_response()
-            }
-        }
-    }
-}
 
 /// The dashboard's read routes.
 ///
@@ -268,7 +206,7 @@ impl Validate for ScopeQuery {
 }
 
 /// Builds the Scope a query names, normalizing both names.
-fn scope_of(repo: Option<String>, project: Option<String>) -> ReadResult<Scope> {
+fn scope_of(repo: Option<String>, project: Option<String>) -> RouteResult<Scope> {
     let repo = match repo {
         Some(raw) => Some(normalize_repo(&raw).map_err(|error| identity_error(&error))?),
         None => None,
@@ -558,7 +496,7 @@ where
     tag = "reads",
     responses((status = 200, body = Vec<RepoOut>))
 )]
-pub async fn repos(State(state): State<AppState>) -> ReadResult<Json<Vec<RepoOut>>> {
+pub async fn repos(State(state): State<AppState>) -> RouteResult<Json<Vec<RepoOut>>> {
     Ok(Json(list_repos(state.pool()).await?))
 }
 
@@ -591,7 +529,7 @@ pub async fn repos(State(state): State<AppState>) -> ReadResult<Json<Vec<RepoOut
 pub async fn tests(
     State(state): State<AppState>,
     ApiQuery(query): ApiQuery<TestsQuery>,
-) -> ReadResult<Json<TestPage>> {
+) -> RouteResult<Json<TestPage>> {
     let scope = scope_of(query.repo.clone(), query.project.clone())?;
     let (filters, options) = query.parts();
     Ok(Json(
@@ -624,7 +562,7 @@ pub async fn tests(
 pub async fn test_summary(
     State(state): State<AppState>,
     ApiQuery(query): ApiQuery<SummaryQuery>,
-) -> ReadResult<Json<SummaryOut>> {
+) -> RouteResult<Json<SummaryOut>> {
     let scope = scope_of(query.repo, query.project)?;
     Ok(Json(
         summary(state.pool(), &scope, &read_settings(&state)).await?,
@@ -654,7 +592,7 @@ pub async fn test_history(
     State(state): State<AppState>,
     ApiPath(path): ApiPath<TestPath>,
     ApiQuery(query): ApiQuery<HistoryQuery>,
-) -> ReadResult<Json<HistoryOut>> {
+) -> RouteResult<Json<HistoryOut>> {
     let history = get_test(
         state.pool(),
         path.test_id,
@@ -664,7 +602,7 @@ pub async fn test_history(
     .await?;
     match history {
         Some(history) => Ok(Json(history)),
-        None => Err(ReadRouteError::NotFound("Test not found".to_owned())),
+        None => Err(RouteError::NotFound("Test not found".to_owned())),
     }
 }
 
@@ -690,7 +628,7 @@ pub async fn quarantine_test(
     State(state): State<AppState>,
     ApiPath(path): ApiPath<QuarantinePath>,
     QuarantineBody(body): QuarantineBody,
-) -> ReadResult<Json<TestOut>> {
+) -> RouteResult<Json<TestOut>> {
     let stored = set_quarantine(
         state.pool(),
         path.test_id,
@@ -702,7 +640,7 @@ pub async fn quarantine_test(
     .await?;
     match stored {
         Some(test) => Ok(Json(test)),
-        None => Err(ReadRouteError::NotFound("Test not found".to_owned())),
+        None => Err(RouteError::NotFound("Test not found".to_owned())),
     }
 }
 
@@ -726,7 +664,7 @@ pub async fn quarantine_test(
 pub async fn quarantine(
     State(state): State<AppState>,
     ApiQuery(query): ApiQuery<QuarantineQuery>,
-) -> ReadResult<Json<Vec<QuarantineItem>>> {
+) -> RouteResult<Json<Vec<QuarantineItem>>> {
     let repo = normalize_repo(&query.repo).map_err(|error| identity_error(&error))?;
     let project =
         normalize_project(query.project.as_deref()).map_err(|error| identity_error(&error))?;
@@ -758,7 +696,7 @@ pub async fn quarantine(
 pub async fn jobs(
     State(state): State<AppState>,
     ApiQuery(query): ApiQuery<JobsQuery>,
-) -> ReadResult<Json<JobPage>> {
+) -> RouteResult<Json<JobPage>> {
     let repo = match &query.repo {
         Some(raw) => Some(normalize_repo(raw).map_err(|error| identity_error(&error))?),
         None => None,
@@ -807,7 +745,7 @@ pub async fn jobs(
 pub async fn jobs_summary(
     State(state): State<AppState>,
     ApiQuery(query): ApiQuery<ScopeQuery>,
-) -> ReadResult<Json<JobSummaryOut>> {
+) -> RouteResult<Json<JobSummaryOut>> {
     let repo = match query.repo {
         Some(raw) => Some(normalize_repo(&raw).map_err(|error| identity_error(&error))?),
         None => None,
@@ -840,7 +778,7 @@ pub async fn job_history(
     State(state): State<AppState>,
     ApiPath(path): ApiPath<JobPath>,
     ApiQuery(query): ApiQuery<HistoryQuery>,
-) -> ReadResult<Json<JobHistoryOut>> {
+) -> RouteResult<Json<JobHistoryOut>> {
     let history = get_job(
         state.pool(),
         path.job_id,
@@ -850,7 +788,7 @@ pub async fn job_history(
     .await?;
     match history {
         Some(history) => Ok(Json(history)),
-        None => Err(ReadRouteError::NotFound("Job not found".to_owned())),
+        None => Err(RouteError::NotFound("Job not found".to_owned())),
     }
 }
 
@@ -878,11 +816,11 @@ pub async fn ci_run(
     State(state): State<AppState>,
     ApiPath(path): ApiPath<CiRunPath>,
     ApiQuery(query): ApiQuery<CiRunFailuresQuery>,
-) -> ReadResult<Json<CiRunFailuresOut>> {
+) -> RouteResult<Json<CiRunFailuresOut>> {
     // `/api/ci-runs//failures` never matched the frozen server's route, so it
     // answered the 404 body rather than FastAPI's `min_length=1` 422.
     if path.ci_run_id.is_empty() {
-        return Err(ReadRouteError::NotFound("Not Found".to_owned()));
+        return Err(RouteError::NotFound("Not Found".to_owned()));
     }
     let mut issues = Vec::new();
     let length = path.ci_run_id.chars().count();

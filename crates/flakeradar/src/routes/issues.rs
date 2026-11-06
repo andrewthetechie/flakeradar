@@ -8,89 +8,19 @@
 
 use axum::Json;
 use axum::extract::{FromRequest, Request, State};
-use axum::http::{StatusCode, header};
-use axum::response::{IntoResponse, Response};
+use axum::http::header;
 use axum::routing::put;
 use axum::{Router, middleware};
 use flakeradar_core::dto::lax_bool;
 use flakeradar_core::{IssueLinkIn, JobOut, TestOut};
 use flakeradar_db::issue_links::{self, IssueLinkError, LinkTarget, LinkedOut};
-use flakeradar_db::{DbError, LinkError};
+
 use serde::Deserialize;
 
 use crate::app::AppState;
-use crate::error::{ApiError, ApiResult};
+use crate::error::{ApiError, ApiResult, RouteError, RouteResult};
 use crate::extract::{ApiPath, ApiQuery, Validate, body_error, parse_json_object};
 use crate::middleware::require_token;
-
-/// A link route's answer.
-pub type IssueResult<T> = Result<T, IssueRouteError>;
-
-/// The ways a link route can fail.
-#[derive(Debug)]
-pub enum IssueRouteError {
-    /// A request the link rules refused, with its own status.
-    Refused(IssueLinkError),
-    /// A request the extractors rejected, in the usual `detail` shape.
-    Rejected(ApiError),
-    /// A database call the route did not expect to fail.
-    Internal(DbError),
-}
-
-impl From<ApiError> for IssueRouteError {
-    fn from(error: ApiError) -> Self {
-        Self::Rejected(error)
-    }
-}
-
-impl From<DbError> for IssueRouteError {
-    fn from(error: DbError) -> Self {
-        Self::Internal(error)
-    }
-}
-
-impl From<sea_orm::DbErr> for IssueRouteError {
-    fn from(error: sea_orm::DbErr) -> Self {
-        Self::Internal(DbError::Database(error))
-    }
-}
-
-impl From<LinkError> for IssueRouteError {
-    fn from(error: LinkError) -> Self {
-        match error {
-            LinkError::Refused(error) => Self::Refused(error),
-            LinkError::Database(error) => Self::Internal(error),
-        }
-    }
-}
-
-impl From<IssueLinkError> for IssueRouteError {
-    fn from(error: IssueLinkError) -> Self {
-        Self::Refused(error)
-    }
-}
-
-impl IntoResponse for IssueRouteError {
-    fn into_response(self) -> Response {
-        match self {
-            Self::Refused(error) => {
-                let status = StatusCode::from_u16(error.status())
-                    .unwrap_or(StatusCode::UNPROCESSABLE_ENTITY);
-                ApiError::new(status, error.detail().to_owned()).into_response()
-            }
-            Self::Rejected(error) => error.into_response(),
-            Self::Internal(error) => {
-                tracing::error!(error = %error, "an Issue link route's query failed");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
-                    "Internal Server Error",
-                )
-                    .into_response()
-            }
-        }
-    }
-}
 
 /// The two Issue link routes of a Test or a Job.
 pub fn router(state: AppState) -> Router<AppState> {
@@ -185,7 +115,7 @@ pub async fn link_test(
     ApiPath(path): ApiPath<TestPath>,
     ApiQuery(query): ApiQuery<LinkQuery>,
     LinkBody(body): LinkBody,
-) -> IssueResult<Json<TestOut>> {
+) -> RouteResult<Json<TestOut>> {
     let out = issue_links::link_issue(
         state.pool(),
         LinkTarget::Test,
@@ -198,7 +128,7 @@ pub async fn link_test(
     .await?;
     match out {
         LinkedOut::Test(test) => Ok(Json(test)),
-        LinkedOut::Job(_) => Err(IssueRouteError::Refused(IssueLinkError::NotFound(
+        LinkedOut::Job(_) => Err(RouteError::Refused(IssueLinkError::NotFound(
             "Test not found".to_owned(),
         ))),
     }
@@ -225,7 +155,7 @@ pub async fn link_test(
 pub async fn unlink_test(
     State(state): State<AppState>,
     ApiPath(path): ApiPath<TestPath>,
-) -> IssueResult<Json<TestOut>> {
+) -> RouteResult<Json<TestOut>> {
     let out = issue_links::unlink_issue(
         state.pool(),
         LinkTarget::Test,
@@ -235,7 +165,7 @@ pub async fn unlink_test(
     .await?;
     match out {
         LinkedOut::Test(test) => Ok(Json(test)),
-        LinkedOut::Job(_) => Err(IssueRouteError::Refused(IssueLinkError::NotFound(
+        LinkedOut::Job(_) => Err(RouteError::Refused(IssueLinkError::NotFound(
             "Test not found".to_owned(),
         ))),
     }
@@ -270,7 +200,7 @@ pub async fn link_job(
     ApiPath(path): ApiPath<JobPath>,
     ApiQuery(query): ApiQuery<LinkQuery>,
     LinkBody(body): LinkBody,
-) -> IssueResult<Json<JobOut>> {
+) -> RouteResult<Json<JobOut>> {
     let out = issue_links::link_issue(
         state.pool(),
         LinkTarget::Job,
@@ -283,7 +213,7 @@ pub async fn link_job(
     .await?;
     match out {
         LinkedOut::Job(job) => Ok(Json(job)),
-        LinkedOut::Test(_) => Err(IssueRouteError::Refused(IssueLinkError::NotFound(
+        LinkedOut::Test(_) => Err(RouteError::Refused(IssueLinkError::NotFound(
             "Job not found".to_owned(),
         ))),
     }
@@ -310,7 +240,7 @@ pub async fn link_job(
 pub async fn unlink_job(
     State(state): State<AppState>,
     ApiPath(path): ApiPath<JobPath>,
-) -> IssueResult<Json<JobOut>> {
+) -> RouteResult<Json<JobOut>> {
     let out = issue_links::unlink_issue(
         state.pool(),
         LinkTarget::Job,
@@ -320,7 +250,7 @@ pub async fn unlink_job(
     .await?;
     match out {
         LinkedOut::Job(job) => Ok(Json(job)),
-        LinkedOut::Test(_) => Err(IssueRouteError::Refused(IssueLinkError::NotFound(
+        LinkedOut::Test(_) => Err(RouteError::Refused(IssueLinkError::NotFound(
             "Job not found".to_owned(),
         ))),
     }

@@ -37,7 +37,7 @@ use serde::Deserialize;
 use serde_json::Value as JsonValue;
 
 use crate::app::AppState;
-use crate::error::{ApiError, ApiResult};
+use crate::error::{ApiError, ApiResult, RouteError, RouteResult};
 use crate::extract::{ApiPath, ApiQuery, Validate, query_loc};
 use crate::middleware::require_token;
 use crate::multipart::{MalformedHeaders, REPORT_FIELD, file_field};
@@ -123,56 +123,6 @@ pub fn router(state: AppState) -> Router<AppState> {
             post(retry_report).layer(token),
         )
 }
-
-/// A failed Report request: the JSON `detail` a rejected request gets, or the
-/// plain text the frozen server's unhandled error became.
-#[derive(Debug)]
-pub enum ReportError {
-    /// A request the route rejected, in the usual `detail` shape.
-    Rejected(ApiError),
-    /// A database call the route did not expect to fail.
-    Internal(DbError),
-}
-
-impl From<ApiError> for ReportError {
-    fn from(error: ApiError) -> Self {
-        Self::Rejected(error)
-    }
-}
-
-impl From<DbError> for ReportError {
-    fn from(error: DbError) -> Self {
-        Self::Internal(error)
-    }
-}
-
-impl From<DbErr> for ReportError {
-    fn from(error: DbErr) -> Self {
-        Self::Internal(DbError::Database(error))
-    }
-}
-
-impl IntoResponse for ReportError {
-    fn into_response(self) -> Response {
-        match self {
-            Self::Rejected(error) => error.into_response(),
-            Self::Internal(error) => {
-                // Never log the body or a Failure detail: a database error names
-                // a statement, not what CI uploaded.
-                tracing::error!(error = %error, "a Report route's query failed");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
-                    "Internal Server Error",
-                )
-                    .into_response()
-            }
-        }
-    }
-}
-
-/// A Report route's answer.
-pub type ReportResult<T> = Result<T, ReportError>;
 
 /// The query parameters of `POST /api/ingest`.
 #[derive(Debug, Clone, Deserialize)]
@@ -471,7 +421,7 @@ pub async fn ingest(
     State(state): State<AppState>,
     ApiQuery(query): ApiQuery<IngestQuery>,
     request: Request,
-) -> ReportResult<Response> {
+) -> RouteResult<Response> {
     let content = report_body(request).await?;
     if content.is_empty() {
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "Empty report body").into());
@@ -663,7 +613,7 @@ fn blank_to_none(value: Option<String>) -> Option<String> {
 pub async fn ingest_pipeline(
     State(state): State<AppState>,
     PipelineBody(payload): PipelineBody,
-) -> ReportResult<Response> {
+) -> RouteResult<Response> {
     let now = Utc::now().fixed_offset();
     // The Repo and the Report are one unit of work, as they were for Python's
     // single `commit`: a failed insert leaves no Repo behind.
@@ -701,7 +651,7 @@ pub async fn ingest_pipeline(
     tag = "reports",
     responses((status = 200, body = ReportSummaryOut))
 )]
-pub async fn summary(State(state): State<AppState>) -> ReportResult<Json<ReportSummaryOut>> {
+pub async fn summary(State(state): State<AppState>) -> RouteResult<Json<ReportSummaryOut>> {
     // One row, one column per status the queue reports: a database that holds
     // no Report of a status counts zero rather than leaving it out.
     let statement = Statement::from_sql_and_values(
@@ -741,7 +691,7 @@ pub async fn summary(State(state): State<AppState>) -> ReportResult<Json<ReportS
 pub async fn list_reports(
     State(state): State<AppState>,
     ApiQuery(query): ApiQuery<ListQuery>,
-) -> ReportResult<Json<Vec<ReportOut>>> {
+) -> RouteResult<Json<Vec<ReportOut>>> {
     if let Some(status) = &query.status
         && !REPORT_STATUSES.contains(&status.as_str())
     {
@@ -787,7 +737,7 @@ pub async fn list_reports(
 pub async fn get_report(
     State(state): State<AppState>,
     ApiPath(path): ApiPath<ReportPath>,
-) -> ReportResult<Json<ReportOut>> {
+) -> RouteResult<Json<ReportOut>> {
     let stored = stored_report(state.pool(), path.report_id).await?;
     match stored {
         Some(stored) => Ok(Json(stored.into_out())),
@@ -821,7 +771,7 @@ pub async fn get_report(
 pub async fn retry_report(
     State(state): State<AppState>,
     ApiPath(path): ApiPath<ReportPath>,
-) -> ReportResult<Json<ReportOut>> {
+) -> RouteResult<Json<ReportOut>> {
     let Some(mut stored) = stored_report(state.pool(), path.report_id).await? else {
         return Err(not_found());
     };
@@ -867,7 +817,7 @@ pub async fn retry_report(
 pub async fn delete_report(
     State(state): State<AppState>,
     ApiPath(path): ApiPath<ReportPath>,
-) -> ReportResult<StatusCode> {
+) -> RouteResult<StatusCode> {
     let Some(stored) = stored_report(state.pool(), path.report_id).await? else {
         return Err(not_found());
     };
@@ -883,7 +833,7 @@ pub async fn delete_report(
 }
 
 /// The 404 a Report route answers for an id that names no Report.
-fn not_found() -> ReportError {
+fn not_found() -> RouteError {
     ApiError::new(StatusCode::NOT_FOUND, "Report not found").into()
 }
 

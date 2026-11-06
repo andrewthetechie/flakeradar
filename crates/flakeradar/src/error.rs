@@ -1,16 +1,23 @@
-//! The `detail` body every failed request carries.
+//! The `detail` body every failed request carries, and the one error a route
+//! answers with.
 //!
 //! FastAPI renders a failure as `{"detail": ...}`: a hand-written message for
 //! the errors the routes raise themselves, and a list of issues for a request
 //! that failed validation. Both consumers of the API read `detail`, so the shape
-//! stays whatever else changes.
+//! stays whatever else changes. A query that fails outside those cases is the
+//! plain-text 500 Starlette answered with, written in one place here.
 
 // Rust guideline compliant 2026-07-21
 
+use std::error::Error;
+use std::fmt;
+
 use axum::Json;
-use axum::http::StatusCode;
+use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use flakeradar_core::ValidationIssue;
+use flakeradar_db::issue_links::IssueLinkError;
+use flakeradar_db::{DbError, DeleteError, LinkError, ReadError};
 use serde::Serialize;
 
 /// What a failed request says about itself.
@@ -84,6 +91,144 @@ impl IntoResponse for ApiError {
     }
 }
 
+/// A route's answer, when it can fail.
+pub type RouteResult<T> = Result<T, RouteError>;
+
+/// The ways a route can fail.
+///
+/// One type for every route: the status and body a failure answers with are
+/// decided here, so no route module carries its own copy of the plain-text 500.
+#[derive(Debug)]
+pub enum RouteError {
+    /// A request the route rejected, in the usual `detail` shape.
+    Rejected(ApiError),
+    /// A resource an id names is unknown; the text is the 404 detail.
+    NotFound(String),
+    /// The link rules refused the request, with the status they give it.
+    Refused(IssueLinkError),
+    /// The delete raced the processor and the caller may retry.
+    Raced,
+    /// A database call the route did not expect to fail.
+    Internal(DbError),
+}
+
+impl RouteError {
+    /// The status code the response carries.
+    #[must_use]
+    pub fn status(&self) -> StatusCode {
+        match self {
+            Self::Rejected(error) => error.status(),
+            Self::NotFound(_) => StatusCode::NOT_FOUND,
+            Self::Refused(error) => {
+                StatusCode::from_u16(error.status()).unwrap_or(StatusCode::UNPROCESSABLE_ENTITY)
+            }
+            Self::Raced => StatusCode::SERVICE_UNAVAILABLE,
+            Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        }
+    }
+}
+
+impl fmt::Display for RouteError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Rejected(error) => write!(f, "a rejected request, {}", error.status()),
+            Self::NotFound(detail) => f.write_str(detail),
+            Self::Refused(error) => f.write_str(error.detail()),
+            Self::Raced => f.write_str("the delete raced the report processor"),
+            Self::Internal(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl Error for RouteError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Internal(error) => Some(error),
+            Self::Rejected(_) | Self::NotFound(_) | Self::Refused(_) | Self::Raced => None,
+        }
+    }
+}
+
+impl IntoResponse for RouteError {
+    fn into_response(self) -> Response {
+        match self {
+            Self::Rejected(error) => error.into_response(),
+            Self::NotFound(detail) => ApiError::new(StatusCode::NOT_FOUND, detail).into_response(),
+            Self::Refused(error) => {
+                let status = StatusCode::from_u16(error.status())
+                    .unwrap_or(StatusCode::UNPROCESSABLE_ENTITY);
+                ApiError::new(status, error.detail().to_owned()).into_response()
+            }
+            Self::Raced => ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Delete raced with the report processor; retry.",
+            )
+            .into_response(),
+            Self::Internal(error) => {
+                // A database error names a statement, never what a caller asked for.
+                tracing::error!(error = %error, "a route's query failed");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+                    "Internal Server Error",
+                )
+                    .into_response()
+            }
+        }
+    }
+}
+
+impl From<ApiError> for RouteError {
+    fn from(error: ApiError) -> Self {
+        Self::Rejected(error)
+    }
+}
+
+impl From<DbError> for RouteError {
+    fn from(error: DbError) -> Self {
+        Self::Internal(error)
+    }
+}
+
+impl From<sea_orm::DbErr> for RouteError {
+    fn from(error: sea_orm::DbErr) -> Self {
+        Self::Internal(DbError::Database(error))
+    }
+}
+
+impl From<ReadError> for RouteError {
+    fn from(error: ReadError) -> Self {
+        match error {
+            ReadError::Database(error) => Self::Internal(error),
+            ReadError::NotFound(detail) => Self::NotFound(detail),
+        }
+    }
+}
+
+impl From<IssueLinkError> for RouteError {
+    fn from(error: IssueLinkError) -> Self {
+        Self::Refused(error)
+    }
+}
+
+impl From<LinkError> for RouteError {
+    fn from(error: LinkError) -> Self {
+        match error {
+            LinkError::Refused(error) => Self::Refused(error),
+            LinkError::Database(error) => Self::Internal(error),
+        }
+    }
+}
+
+impl From<DeleteError> for RouteError {
+    fn from(error: DeleteError) -> Self {
+        match error {
+            DeleteError::Deadlock => Self::Raced,
+            DeleteError::Database(error) => Self::Internal(error),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     //! The two bodies a failed request can carry.
@@ -93,7 +238,7 @@ mod tests {
     use axum::response::IntoResponse as _;
     use serde_json::{Value, json};
 
-    use super::ApiError;
+    use super::{ApiError, RouteError};
 
     /// The status and the body of a rendered error.
     async fn rendered(error: ApiError) -> (StatusCode, Value) {
@@ -131,5 +276,50 @@ mod tests {
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
         assert_eq!(body["detail"][0]["type"], json!("int_parsing"));
         assert_eq!(body["detail"][0]["loc"], json!(["limit"]));
+    }
+
+    #[test]
+    fn a_route_error_is_an_error_that_names_its_case() {
+        let database =
+            flakeradar_db::DbError::Database(sea_orm::DbErr::RecordNotFound("a row".to_owned()));
+        let internal = RouteError::Internal(database);
+        assert!(internal.to_string().contains("a row"));
+        let boxed: Box<dyn std::error::Error> = Box::new(internal);
+        assert!(
+            boxed.source().is_some(),
+            "the database failure is the source"
+        );
+        assert_eq!(
+            RouteError::NotFound("Test not found".to_owned()).to_string(),
+            "Test not found"
+        );
+        assert_eq!(RouteError::Raced.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            RouteError::Refused(flakeradar_db::issue_links::IssueLinkError::Conflict(
+                "already linked".to_owned()
+            ))
+            .status(),
+            StatusCode::CONFLICT
+        );
+    }
+
+    #[tokio::test]
+    async fn an_internal_route_error_is_the_plain_text_500() {
+        let error = RouteError::Internal(flakeradar_db::DbError::Database(
+            sea_orm::DbErr::RecordNotFound("a row".to_owned()),
+        ));
+        let response = error.into_response();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            response
+                .headers()
+                .get(axum::http::header::CONTENT_TYPE)
+                .expect("a content type"),
+            "text/plain; charset=utf-8"
+        );
+        let bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("the body reads to the end");
+        assert_eq!(bytes.as_ref(), b"Internal Server Error");
     }
 }
