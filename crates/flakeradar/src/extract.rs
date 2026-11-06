@@ -26,7 +26,7 @@ use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
 use serde_path_to_error::{Path as ErrorPath, Segment};
 
-use crate::error::{ApiError, ApiResult};
+use crate::error::{ApiError, ApiResult, Detail};
 
 impl From<BodyRefusal> for ApiError {
     fn from(refusal: BodyRefusal) -> Self {
@@ -74,11 +74,8 @@ where
         parts: &mut Parts,
         _state: &S,
     ) -> impl Future<Output = Result<Self, Self::Rejection>> + Send {
-        let parsed = parse_query::<T>(parts.uri.query().unwrap_or_default()).and_then(|value| {
-            value.validate()?;
-            Ok(Self(value))
-        });
-        ready(parsed)
+        let pairs = last_value_per_name(parts.uri.query().unwrap_or_default());
+        ready(parse_query::<T>(&pairs).map(Self))
     }
 }
 
@@ -136,22 +133,42 @@ where
     }
 }
 
-/// Parses `query` into `T`, reporting the failing field the way FastAPI did.
+/// Parses `query` into `T` and checks its own rules, reporting the failing field
+/// the way FastAPI did.
 ///
 /// A parameter sent more than once keeps its last value, which is the one
-/// Starlette's `request.query_params` read and Pydantic validated.
-fn parse_query<T: DeserializeOwned>(query: &str) -> ApiResult<T> {
-    let collapsed = last_value_per_name(query);
+/// Starlette's `request.query_params` read and Pydantic validated. A refused
+/// value's issue echoes the text the request sent, as Pydantic's `input` did —
+/// including when the value parsed and broke a declared range.
+fn parse_query<T: DeserializeOwned + Validate>(pairs: &[(String, String)]) -> ApiResult<T> {
+    let collapsed = serialised(pairs);
     let deserializer =
         serde_urlencoded::Deserializer::new(form_urlencoded::parse(collapsed.as_bytes()));
-    serde_path_to_error::deserialize(deserializer).map_err(|error| {
-        let issue = issue_for("query", error.path(), &error.inner().to_string());
+    let value: T = serde_path_to_error::deserialize(deserializer).map_err(|error| {
+        let mut issue = issue_for("query", error.path(), &error.inner().to_string());
+        attach_query_input(&mut issue, pairs);
         ApiError::unprocessable(vec![issue])
-    })
+    })?;
+    value
+        .validate()
+        .map_err(|error| with_query_input(error, pairs))?;
+    Ok(value)
+}
+
+/// `error` with the text each issue's parameter carried, as Pydantic echoed it.
+fn with_query_input(error: ApiError, pairs: &[(String, String)]) -> ApiError {
+    let Detail::Issues(issues) = error.detail() else {
+        return error;
+    };
+    let mut issues = issues.clone();
+    for issue in &mut issues {
+        attach_query_input(issue, pairs);
+    }
+    ApiError::unprocessable(issues)
 }
 
 /// The query with one pair per name, each keeping the last value the query gave it.
-fn last_value_per_name(query: &str) -> String {
+fn last_value_per_name(query: &str) -> Vec<(String, String)> {
     let mut pairs: Vec<(String, String)> = Vec::new();
     for (name, value) in form_urlencoded::parse(query.as_bytes()) {
         match pairs.iter_mut().find(|(seen, _)| *seen == name) {
@@ -159,11 +176,33 @@ fn last_value_per_name(query: &str) -> String {
             None => pairs.push((name.into_owned(), value.into_owned())),
         }
     }
+    pairs
+}
+
+/// The collapsed query, re-encoded for the deserializer.
+fn serialised(pairs: &[(String, String)]) -> String {
     let mut serialiser = form_urlencoded::Serializer::new(String::new());
-    for (name, value) in &pairs {
+    for (name, value) in pairs {
         let _ = serialiser.append_pair(name, value);
     }
     serialiser.finish()
+}
+
+/// Puts the text the request sent into `issue`'s `input`, as Pydantic echoed it.
+///
+/// Pydantic reported the raw query text for every query value it refused,
+/// including one that broke a declared range, so the issue carries the string
+/// even where the port held the parsed number when the rule failed.
+fn attach_query_input(issue: &mut ValidationIssue, pairs: &[(String, String)]) {
+    if issue.r#type == "missing" {
+        return;
+    }
+    let Some(LocSegment::Field(name)) = issue.loc.last() else {
+        return;
+    };
+    if let Some((_, value)) = pairs.iter().find(|(seen, _)| seen == name) {
+        issue.input = Some(Value::String(value.clone()));
+    }
 }
 
 /// Parses a request body into `T` by the rule FastAPI applied.
@@ -296,6 +335,9 @@ fn issue_for(scope: &str, path: &ErrorPath, message: &str) -> ValidationIssue {
         && let Some(field) = missing_field(message)
     {
         loc.push(LocSegment::Field(field));
+    }
+    if kind == "missing" {
+        return ValidationIssue::missing(loc);
     }
     ValidationIssue {
         r#type: kind.to_owned(),

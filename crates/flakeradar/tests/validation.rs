@@ -551,6 +551,80 @@ async fn a_query_integer_takes_the_forms_pydantic_took() {
 }
 
 #[tokio::test]
+async fn a_query_issue_carries_the_value_pydantic_echoed() {
+    // Measured from the reference at 86c98804: a refused query value's issue
+    // echoes the raw text Pydantic read (`input`), a value outside a declared
+    // range carries the constraint it broke (`ctx`), and a required parameter
+    // that is absent is Pydantic's own `missing` issue, `input: null`.
+    let db = TestDb::new().await.expect("a test database is available");
+    let app = test_app(&db);
+    for (uri, expected) in [
+        (
+            "/api/tests?include_stable=maybe",
+            json!([{
+                "type": "bool_parsing",
+                "loc": ["query", "include_stable"],
+                "msg": "Input should be a valid boolean, unable to interpret input",
+                "input": "maybe",
+            }]),
+        ),
+        (
+            "/api/tests?page=abc",
+            json!([{
+                "type": "int_parsing",
+                "loc": ["query", "page"],
+                "msg": "Input should be a valid integer, unable to parse string as an integer",
+                "input": "abc",
+            }]),
+        ),
+        (
+            "/api/tests?page=0",
+            json!([{
+                "type": "greater_than_equal",
+                "loc": ["query", "page"],
+                "msg": "Input should be greater than or equal to 1",
+                "input": "0",
+                "ctx": {"ge": 1},
+            }]),
+        ),
+        (
+            "/api/tests?page_size=101",
+            json!([{
+                "type": "less_than_equal",
+                "loc": ["query", "page_size"],
+                "msg": "Input should be less than or equal to 100",
+                "input": "101",
+                "ctx": {"le": 100},
+            }]),
+        ),
+        (
+            "/api/tests?page=%201%20&page_size=x",
+            json!([{
+                "type": "int_parsing",
+                "loc": ["query", "page_size"],
+                "msg": "Input should be a valid integer, unable to parse string as an integer",
+                "input": "x",
+            }]),
+        ),
+    ] {
+        let reply = get(&app, uri).await;
+        assert_eq!(reply.status, StatusCode::UNPROCESSABLE_ENTITY, "{uri}");
+        assert_eq!(reply.json()["detail"], expected, "{uri}");
+    }
+    let reply = authorised_get(&app, "/api/quarantine").await;
+    assert_eq!(reply.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        reply.json()["detail"],
+        json!([{
+            "type": "missing",
+            "loc": ["query", "repo"],
+            "msg": "Field required",
+            "input": null,
+        }])
+    );
+}
+
+#[tokio::test]
 async fn a_repeated_query_parameter_takes_the_last_value() {
     let db = TestDb::new().await.expect("a test database is available");
     let app = test_app(&db);
