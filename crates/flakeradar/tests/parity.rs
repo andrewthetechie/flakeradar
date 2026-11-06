@@ -46,7 +46,7 @@ use flakeradar::{
 };
 use flakeradar_db::entities::repos;
 use flakeradar_db::{DbSettings, processing::ProcessingSettings};
-use flakeradar_test_support::{FIXTURE_INSTANT, TestDb, app, system_clock};
+use flakeradar_test_support::{FIXTURE_INSTANT, TestDb, app, system_clock, wait_until};
 
 use sea_orm::{ConnectionTrait, DbBackend, EntityTrait, JsonValue, Statement};
 use serde::Deserialize;
@@ -2527,11 +2527,14 @@ async fn a_scenario_with_a_github_token_webhooks_and_gates_files_only_the_test_t
         "the server presents the token its settings name"
     );
 
-    assert_eq!(
-        stored_issue(&replay.db, "test_proven").await,
-        Some(100),
-        "the filing's Issue number is stored on the Test"
-    );
+    // The mock records a `POST` when the request arrives, which is before the
+    // answer the filing reads and before the link it stores, so the row is waited
+    // for rather than assumed. The wait is also what makes the negative assertion
+    // below a claim about a batch that finished.
+    wait_until("the filing stores its Issue number on the Test", || async {
+        stored_issue(&replay.db, "test_proven").await == Some(100)
+    })
+    .await;
     assert_eq!(
         stored_issue(&replay.db, "test_flaky").await,
         None,

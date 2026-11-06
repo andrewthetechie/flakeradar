@@ -9,9 +9,10 @@ publish = false
 [lib]
 path = "src/lib.rs"
 
+# The proof files are copied into `tests/` of this scratch crate, and
+# `release_depth_main.rs` becomes its one binary. `<repo>` is the checkout under
+# test: replace it with that path before running (see `review-135/README.md`).
 [dependencies]
-
-[dev-dependencies]
 flakeradar = { path = "<repo>/crates/flakeradar" }
 flakeradar-core = { path = "<repo>/crates/flakeradar-core" }
 flakeradar-db = { path = "<repo>/crates/flakeradar-db" }
@@ -20,6 +21,10 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 tower = { version = "0.5", features = ["util"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
 serde_json = "1"
+
+[[bin]]
+name = "release_depth_main"
+path = "release_depth_main.rs"
 
 # The release profile leaves overflow checks off; this mirrors that for the wrap proof.
 [profile.relproof]
