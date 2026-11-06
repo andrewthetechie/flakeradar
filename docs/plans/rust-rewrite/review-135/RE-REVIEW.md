@@ -10,8 +10,11 @@ documentation only — this file, `HANDOFF.md` and `STATUS.md`'s row for task 31
 `git diff 150bcd4..HEAD --stat` names only those files. The path from the reviewed head is
 `f9330fd` → `e8563b1` (the parity test's race) → `04bc0ac` (the conditional import) → `46c244d`
 (the merge of `main`'s #129) → `150bcd4` (the branch floor), with documentation commits between
-them. **The run on the pushed head is the CI evidence**; the run before it, on `04bc0ac`, passed
-17 of its 19 checks and failed only `Rust coverage`, on the floor this head changes.
+them. **CI is green on the pushed head `bcabc16`** (documentation only): CI run `42276295751` and
+Docker run `42276295719` are both `success`, and `gh pr checks 135` lists 18 `pass` and one
+`skipping` (`Merge the manifest list`, correct on a PR), `Rust coverage (lines + branches)` among
+the passes at 93.95% of branches and 96.48% of lines. The run before it, on `04bc0ac`, passed 17
+of its 19 checks and failed only the coverage floor this head changes.
 
 **The coverage floor is 93 branches, by the owner's decision of 2026-11-06.** The first CI run
 after the fixes failed `Rust coverage (lines + branches)` on `branches 1274 / 1356 = 93.95%` against
