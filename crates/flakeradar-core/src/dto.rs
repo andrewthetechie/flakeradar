@@ -1169,25 +1169,25 @@ fn read_jobs(fields: &lax::Fields<'_>, issues: &mut Vec<ValidationIssue>) -> Vec
     jobs
 }
 
-/// The stored body of a Pipeline Report: the validated payload, canonically
+/// The stored body of a Pipeline Report: the validated Report, canonically
 /// serialized.
 ///
-/// A Pipeline Report keeps its payload so the processor reads back exactly what
-/// was validated, so this and `PipelineReportIn`'s deserializer are inverses.
+/// A Pipeline Report keeps its body so the processor reads back exactly what was
+/// validated, so this and `PipelineReportIn`'s deserializer are inverses.
 ///
 /// # Panics
 ///
-/// Panics only if the payload cannot be serialized, which a payload that
+/// Panics only if the body cannot be serialized, which a Report that
 /// deserialized from JSON cannot do: every field is a string, a bool, an
 /// integer, a list or an optional value.
 #[must_use]
 #[expect(
     clippy::expect_used,
-    reason = "a payload that deserialized from JSON always serializes back: every field is a \
+    reason = "a Report that deserialized from JSON always serializes back: every field is a \
               string, a bool, an integer, a list or an optional value, none of which can fail"
 )]
-pub fn pipeline_body(payload: &PipelineReportIn) -> Vec<u8> {
-    serde_json::to_vec(payload).expect("a validated Pipeline payload always serializes")
+pub fn pipeline_body(report: &PipelineReportIn) -> Vec<u8> {
+    serde_json::to_vec(report).expect("a validated Pipeline Report always serializes")
 }
 
 /// Where one field of the Pipeline report's body sits.

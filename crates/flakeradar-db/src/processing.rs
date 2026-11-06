@@ -763,17 +763,17 @@ async fn process_pipeline_report(
     report: &mut reports::Model,
     settings: &ProcessingSettings,
 ) -> Result<ProcessOutcome, ProcessError> {
-    let payload = stored_pipeline_report(report)
+    let pipeline = stored_pipeline_report(report)
         .map_err(|error| ProcessError::permanent(format!("ValidationError: {error}")))?;
     let now = settings.clock.now();
     let branch_changed =
-        apply_default_branch(db, report.repo_id, payload.default_branch.as_deref())
+        apply_default_branch(db, report.repo_id, pipeline.default_branch.as_deref())
             .await
             .map_err(ProcessError::from)?;
-    let (job_ids, flag_changed) = upsert_pipeline_jobs(db, report.repo_id, &payload, now).await?;
+    let (job_ids, flag_changed) = upsert_pipeline_jobs(db, report.repo_id, &pipeline, now).await?;
     let (mut new_counts, jobs_with_new_exec, day_counts) =
-        insert_pipeline_job_executions(db, &payload, &job_ids, now).await?;
-    update_job_last_status(db, &payload, &job_ids, &jobs_with_new_exec, now).await?;
+        insert_pipeline_job_executions(db, &pipeline, &job_ids, now).await?;
+    update_job_last_status(db, &pipeline, &job_ids, &jobs_with_new_exec, now).await?;
 
     let touched: Vec<i32> = jobs_with_new_exec.union(&flag_changed).copied().collect();
     let mut tier_changes = rescore_jobs(db, &touched, Some(&day_counts), settings)
@@ -785,7 +785,7 @@ async fn process_pipeline_report(
             .map_err(ProcessError::from)?;
         tier_changes = Vec::new();
     }
-    new_counts.duplicate = i64::try_from(payload.jobs.len()).unwrap_or(i64::MAX)
+    new_counts.duplicate = i64::try_from(pipeline.jobs.len()).unwrap_or(i64::MAX)
         - (new_counts.passed + new_counts.failed + new_counts.skipped);
     let counts_json = new_counts.pipeline_json();
     complete_report(report, now, None, counts_json.clone());
