@@ -365,15 +365,24 @@ impl Needle {
     /// An empty needle is never found, and neither is one longer than what is
     /// left of the haystack.
     fn find(&self, haystack: &[u8], from: usize) -> Option<usize> {
+        self.search(haystack, from).0
+    }
+
+    /// [`Needle::find`], with the byte comparisons the scan made.
+    ///
+    /// The count is what lets a test assert the scan stays linear without timing
+    /// anything. `find` drops it, so a build that never asks pays nothing: the
+    /// counter is a value the compiler removes with the rest of the unused tuple.
+    fn search(&self, haystack: &[u8], from: usize) -> (Option<usize>, usize) {
         let mut matched = 0;
         let mut at = from;
+        let mut comparisons = 0;
         while let Some(byte) = haystack.get(at).copied() {
-            #[cfg(test)]
-            comparisons::record();
+            comparisons += 1;
             if self.bytes.get(matched).copied() == Some(byte) {
                 matched += 1;
                 if matched == self.bytes.len() {
-                    return Some(at + 1 - matched);
+                    return (Some(at + 1 - matched), comparisons);
                 }
             } else if matched == 0 {
                 // Nothing of the needle is matched, so this byte is a plain miss.
@@ -381,43 +390,12 @@ impl Needle {
                 // Resume inside the needle, and try this byte against the
                 // shorter prefix before moving on.
                 matched = self.failure.get(matched - 1).copied().unwrap_or_default();
-                #[cfg(test)]
-                comparisons::record();
+                comparisons += 1;
                 continue;
             }
             at += 1;
         }
-        None
-    }
-}
-
-/// A count of the byte comparisons the scan made, so a test can assert its work
-/// stays linear without timing anything.
-///
-/// Every search the parser runs goes through [`Needle::find`], which is the one
-/// place a byte of the body is compared with a byte of the boundary.
-#[cfg(test)]
-mod comparisons {
-    use std::cell::Cell;
-
-    thread_local! {
-        /// The comparisons the current test thread's scans made.
-        static COUNT: Cell<usize> = const { Cell::new(0) };
-    }
-
-    /// Adds one comparison to the current thread's count.
-    pub(super) fn record() {
-        COUNT.with(|count| count.set(count.get() + 1));
-    }
-
-    /// The comparisons the current thread made since [`reset`].
-    pub(super) fn count() -> usize {
-        COUNT.with(Cell::get)
-    }
-
-    /// Sets the current thread's count back to zero.
-    pub(super) fn reset() {
-        COUNT.with(|count| count.set(0));
+        (None, comparisons)
     }
 }
 
@@ -874,22 +852,23 @@ mod tests {
         let mut carrying = body.clone();
         body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
 
-        super::comparisons::reset();
-        assert_eq!(field_of(&body, &content_type), None);
-        let near_misses = super::comparisons::count();
+        // The scan the parser runs for every part, over the body as it arrives.
+        let end_marker = super::Framing::new(boundary.as_bytes()).end_marker;
+        let (found, near_misses) = end_marker.search(&carrying, 0);
+        assert_eq!(found, None, "no end marker is in the body of near misses");
         assert!(
-            near_misses < 3 * body.len(),
+            near_misses < 3 * carrying.len(),
             "{near_misses} comparisons for a {} byte body of near misses",
-            body.len()
+            carrying.len()
         );
 
         // The same shape, with the upload behind it, still finds the field.
         carrying.extend_from_slice(b"\r\n");
         carrying.extend_from_slice(&file_part(&boundary, REPORT_FIELD, b"<x/>"));
         carrying.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
-        super::comparisons::reset();
         assert_eq!(field_of(&carrying, &content_type), Some(&b"<x/>"[..]));
-        let comparisons = super::comparisons::count();
+        let (found, comparisons) = end_marker.search(&carrying, 0);
+        assert!(found.is_some(), "the end marker is in the carrying body");
         assert!(
             comparisons < 3 * carrying.len(),
             "{comparisons} comparisons for a {} byte body that carries the field",
