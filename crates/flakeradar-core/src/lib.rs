@@ -32,14 +32,14 @@ pub mod scoring;
 pub use classify::{FailureCategory, classify_failure, dominant_category};
 #[doc(inline)]
 pub use dto::{
-    ATTEMPT_MAX, AttemptReading, BodyRefusal, CiRunFailedJobOut, CiRunFailuresOut,
-    CiRunTestFailureOut, DeletedCountsOut, ExecutionOut, ExplainingJobOut, ExplainingTestOut,
-    HistoryOut, IngestAccepted, IssueLinkIn, JobExecutionOut, JobHistoryOut, JobOut, JobPage,
-    JobResultIn, JobSummaryOut, LocSegment, LocationOut, MAX_ISSUE_NUMBER, PipelineReportIn,
-    ProjectDeleteOut, ProjectOut, QuarantineIn, QuarantineItem, ReadinessOut, RepoDeleteOut,
-    RepoOut, ReportCountsOut, ReportOut, ReportSummaryOut, RunnerStatOut, ScorePointOut,
-    SummaryOut, TestJobLinkOut, TestOut, TestPage, ValidationIssue, attempt_too_large,
-    pipeline_body, read_attempt,
+    ATTEMPT_MAX, AttemptIn, BodyRefusal, CiRunFailedJobOut, CiRunFailuresOut, CiRunTestFailureOut,
+    DeletedCountsOut, ExecutionOut, ExplainingJobOut, ExplainingTestOut, HistoryOut,
+    IngestAccepted, IssueLinkIn, JobExecutionOut, JobHistoryOut, JobOut, JobPage, JobResultIn,
+    JobSummaryOut, LocSegment, LocationOut, MAX_ISSUE_NUMBER, PipelineReportIn, ProjectDeleteOut,
+    ProjectOut, QuarantineIn, QuarantineItem, ReadinessOut, RepoDeleteOut, RepoOut,
+    ReportCountsOut, ReportOut, ReportSummaryOut, RunnerStatOut, ScorePointOut, SummaryOut,
+    TestJobLinkOut, TestOut, TestPage, ValidationIssue, ci_run_attempt_too_large, pipeline_body,
+    read_ci_run_attempt,
 };
 #[doc(inline)]
 pub use helpers::{

@@ -21,7 +21,7 @@ use axum::http::request::Parts;
 use axum::http::{StatusCode, header};
 use flakeradar_core::dto::lax_bool;
 use flakeradar_core::lax;
-use flakeradar_core::{BodyRefusal, LocSegment, ValidationIssue, attempt_too_large};
+use flakeradar_core::{BodyRefusal, LocSegment, ValidationIssue, ci_run_attempt_too_large};
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
 use serde_path_to_error::{Path as ErrorPath, Segment};
@@ -33,7 +33,7 @@ impl From<BodyRefusal> for ApiError {
         match refusal {
             BodyRefusal::Issues(issues) => Self::unprocessable(issues),
             BodyRefusal::AttemptPastColumn => {
-                Self::new(StatusCode::BAD_REQUEST, attempt_too_large())
+                Self::new(StatusCode::BAD_REQUEST, ci_run_attempt_too_large())
             }
         }
     }

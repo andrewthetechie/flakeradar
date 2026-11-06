@@ -902,9 +902,9 @@ pub enum BodyRefusal {
     reason = "the reading keeps the JSON value the caller sent, which holds floats"
 )]
 #[derive(Debug, Clone, PartialEq)]
-pub enum AttemptReading {
+pub enum AttemptIn {
     /// The attempt the value names, inside the column's range.
-    Attempt(i32),
+    Number(i32),
     /// A number below 1, as the caller sent it.
     BelowMinimum(Value),
     /// A number past the `int4` column, however it is spelled.
@@ -920,7 +920,7 @@ pub enum AttemptReading {
     },
 }
 
-impl AttemptReading {
+impl AttemptIn {
     /// The issue this reading reports at `loc`, or `None` when it reports none.
     ///
     /// The two ingest routes place the same value at a query and at a body
@@ -928,7 +928,7 @@ impl AttemptReading {
     #[must_use]
     pub fn issue(&self, loc: Vec<LocSegment>) -> Option<ValidationIssue> {
         match self {
-            Self::Attempt(_) | Self::PastColumn => None,
+            Self::Number(_) | Self::PastColumn => None,
             Self::BelowMinimum(input) => {
                 Some(ValidationIssue::greater_than_equal(loc, input.clone(), 1))
             }
@@ -949,7 +949,7 @@ impl AttemptReading {
 /// inside the `int4` column. The issue's `loc` is the route's to place, so the
 /// reading is built without one.
 #[must_use]
-pub fn read_attempt(value: &Value) -> AttemptReading {
+pub fn read_ci_run_attempt(value: &Value) -> AttemptIn {
     // A run of digits past `i64` is a number past the column whatever it spells,
     // where any other unreadable value is Pydantic's `int_parsing`.
     if let Value::String(text) = value {
@@ -958,15 +958,13 @@ pub fn read_attempt(value: &Value) -> AttemptReading {
             && !trimmed.is_empty()
             && trimmed.bytes().all(|byte| byte.is_ascii_digit())
         {
-            return AttemptReading::PastColumn;
+            return AttemptIn::PastColumn;
         }
     }
     match lax::integer(value, Vec::new()) {
-        Ok(number) if number < 1 => AttemptReading::BelowMinimum(value.clone()),
-        Ok(number) => {
-            i32::try_from(number).map_or(AttemptReading::PastColumn, AttemptReading::Attempt)
-        }
-        Err(issue) => AttemptReading::NotAnInteger {
+        Ok(number) if number < 1 => AttemptIn::BelowMinimum(value.clone()),
+        Ok(number) => i32::try_from(number).map_or(AttemptIn::PastColumn, AttemptIn::Number),
+        Err(issue) => AttemptIn::NotAnInteger {
             kind: issue.r#type,
             msg: issue.msg,
             input: value.clone(),
@@ -976,7 +974,7 @@ pub fn read_attempt(value: &Value) -> AttemptReading {
 
 /// The `detail` both ingest routes answer for an attempt past the column.
 #[must_use]
-pub fn attempt_too_large() -> String {
+pub fn ci_run_attempt_too_large() -> String {
     format!("ci_run_attempt must be at most {ATTEMPT_MAX}")
 }
 
@@ -1034,13 +1032,13 @@ impl PipelineReportIn {
         let mut ci_run_attempt = default_attempt();
         let mut attempt_past_column = false;
         if let Some(value) = fields.field("ci_run_attempt") {
-            let reading = read_attempt(value);
+            let reading = read_ci_run_attempt(value);
             if let Some(issue) = reading.issue(fields.loc("ci_run_attempt")) {
                 issues.push(issue);
             }
             match reading {
-                AttemptReading::Attempt(number) => ci_run_attempt = i64::from(number),
-                AttemptReading::PastColumn => attempt_past_column = true,
+                AttemptIn::Number(number) => ci_run_attempt = i64::from(number),
+                AttemptIn::PastColumn => attempt_past_column = true,
                 _ => {}
             }
         }

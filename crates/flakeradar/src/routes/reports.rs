@@ -18,9 +18,9 @@ use axum::routing::{get, post};
 use axum::{Router, middleware};
 use chrono::Utc;
 use flakeradar_core::{
-    AttemptReading, IngestAccepted, ParseError, PipelineReportIn, ReportOut, ReportSummaryOut,
-    ValidationIssue, attempt_too_large, lax, normalize_project, normalize_repo, normalize_root,
-    parse_junit_xml, pipeline_body, py_strip, read_attempt,
+    AttemptIn, IngestAccepted, ParseError, PipelineReportIn, ReportOut, ReportSummaryOut,
+    ValidationIssue, ci_run_attempt_too_large, lax, normalize_project, normalize_repo,
+    normalize_root, parse_junit_xml, pipeline_body, py_strip, read_ci_run_attempt,
 };
 use flakeradar_db::entities::reports;
 use flakeradar_db::{
@@ -271,7 +271,7 @@ impl Validate for IngestQuery {
                 if let Some(issue) = reading.issue(query_loc("ci_run_attempt")) {
                     issues.push(issue);
                 }
-                *reading == AttemptReading::PastColumn
+                *reading == AttemptIn::PastColumn
             }
             None => false,
         };
@@ -295,7 +295,7 @@ impl Validate for IngestQuery {
 
 /// The `ci_run_attempt` an upload named, parsed once.
 #[derive(Debug, Clone)]
-struct AttemptQuery(AttemptReading);
+struct AttemptQuery(AttemptIn);
 
 /// Reads a query `ci_run_attempt` as the value it spells.
 ///
@@ -306,18 +306,18 @@ fn read_attempt_query<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Option<AttemptQuery>, D::Error> {
     let text = Option::<String>::deserialize(deserializer)?;
-    Ok(text.map(|text| AttemptQuery(read_attempt(&JsonValue::from(text)))))
+    Ok(text.map(|text| AttemptQuery(read_ci_run_attempt(&JsonValue::from(text)))))
 }
 
 /// The 400 for a `ci_run_attempt` the `int4` column cannot hold.
 fn too_large_attempt() -> ApiError {
-    ApiError::new(StatusCode::BAD_REQUEST, attempt_too_large())
+    ApiError::new(StatusCode::BAD_REQUEST, ci_run_attempt_too_large())
 }
 
 /// The attempt to store, once `Validate` has accepted the upload.
 fn stored_ci_run_attempt(attempt: Option<&AttemptQuery>) -> Option<i32> {
     match attempt {
-        Some(AttemptQuery(AttemptReading::Attempt(number))) => Some(*number),
+        Some(AttemptQuery(AttemptIn::Number(number))) => Some(*number),
         _ => None,
     }
 }
