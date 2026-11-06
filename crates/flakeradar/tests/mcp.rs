@@ -1480,6 +1480,109 @@ async fn link_issue_refuses_a_conflict_unless_it_may_replace() {
 }
 
 #[tokio::test]
+async fn a_tool_argument_takes_the_spellings_pydantic_took() {
+    // Measured from the reference at 86c98804 through a real MCP client: a
+    // tool's arguments are validated by Pydantic in its lax mode, so `"2"`,
+    // `2.0` and `true` are all the integer 2, `1`, `1.0` and `"TRUE"` are all
+    // `true`, and an argument the tool does not declare is a validation error
+    // rather than something to ignore. The refusal's text is a recorded
+    // difference; what is asserted here is whether the call ran at all.
+    let db = TestDb::new().await.expect("a test database is available");
+    let app = mcp_app(&db);
+    let accepted = [
+        ("top_flaky_tests", json!({"repo": "acme/app", "limit": "2"})),
+        ("top_flaky_tests", json!({"repo": "acme/app", "limit": 2.0})),
+        (
+            "top_flaky_tests",
+            json!({"repo": "acme/app", "limit": true}),
+        ),
+        (
+            "top_flaky_tests",
+            json!({"repo": "acme/app", "include_suspect": 1}),
+        ),
+        (
+            "top_flaky_tests",
+            json!({"repo": "acme/app", "include_suspect": 0}),
+        ),
+        (
+            "top_flaky_tests",
+            json!({"repo": "acme/app", "include_suspect": 1.0}),
+        ),
+        (
+            "top_flaky_tests",
+            json!({"repo": "acme/app", "include_suspect": "TRUE"}),
+        ),
+        (
+            "top_flaky_tests",
+            json!({"repo": "acme/app", "new_within_days": "7"}),
+        ),
+        (
+            "top_flaky_tests",
+            json!({"repo": "acme/app", "new_within_days": null}),
+        ),
+        ("top_flaky_jobs", json!({"repo": "acme/app", "limit": "2"})),
+        (
+            "search_tests",
+            json!({"repo": "acme/app", "query": "x", "limit": "2"}),
+        ),
+        (
+            "search_jobs",
+            json!({"repo": "acme/app", "query": "x", "limit": 2.0}),
+        ),
+        (
+            "ci_run_failures",
+            json!({"repo": "acme/app", "ci_run_id": "1", "ci_run_attempt": "1"}),
+        ),
+        (
+            "link_issue",
+            json!({"number": "7", "test_id": "1", "replace": "true"}),
+        ),
+        ("unlink_issue", json!({"test_id": "1"})),
+        ("get_job", json!({"job_id": "1", "executions_limit": 2.0})),
+        ("get_test", json!({"test_id": "1", "executions_limit": "2"})),
+    ];
+    for (tool, arguments) in accepted {
+        let result = call_result(&app, tool, arguments.clone()).await;
+        assert!(
+            !text(&result).starts_with("1 validation error for call"),
+            "{tool} {arguments} was validated as Pydantic read it: {}",
+            text(&result)
+        );
+    }
+    let refused = [
+        ("top_flaky_tests", json!({"repo": "acme/app", "limit": 2.5})),
+        (
+            "top_flaky_tests",
+            json!({"repo": "acme/app", "limit": "many"}),
+        ),
+        (
+            "top_flaky_tests",
+            json!({"repo": "acme/app", "include_suspect": null}),
+        ),
+        (
+            "top_flaky_tests",
+            json!({"repo": "acme/app", "include_suspect": 2}),
+        ),
+        ("list_repos", json!({"extra": 1})),
+        ("list_projects", json!({"repo": "acme/app", "extra": 1})),
+        ("top_flaky_tests", json!({"repo": "acme/app", "unknown": 1})),
+    ];
+    for (tool, arguments) in refused {
+        let result = call_result(&app, tool, arguments.clone()).await;
+        assert_eq!(
+            result.get("isError"),
+            Some(&Value::Bool(true)),
+            "{tool} {arguments} must be refused"
+        );
+        assert!(
+            text(&result).starts_with("1 validation error for call"),
+            "{tool} {arguments} was not a validation error: {}",
+            text(&result)
+        );
+    }
+}
+
+#[tokio::test]
 async fn an_unknown_tool_and_an_unreadable_argument_are_error_results() {
     // Both are HTTP 200 `isError` results in the reference: the request routed
     // and its JSON-RPC was well formed, so only the tool could not be run.
@@ -1505,9 +1608,12 @@ async fn an_unknown_tool_and_an_unreadable_argument_are_error_results() {
         text.starts_with("1 validation error for call[top_flaky_tests]\nlimit\n  "),
         "the reference opens with Pydantic's header and the field: {text:?}"
     );
+    // The reference's diagnosis is Pydantic's own sentence, followed by its
+    // `[type=…, input_value=…, input_type=…]` tail and a link, which
+    // `differences.md` records as not reproduced.
     assert!(
-        text.contains("\"many\""),
-        "the refused value is named: {text:?}"
+        text.ends_with("Input should be a valid integer, unable to parse string as an integer"),
+        "the diagnosis is Pydantic's: {text:?}"
     );
     let missing = rpc(
         &app,

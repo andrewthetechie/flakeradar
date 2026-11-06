@@ -33,6 +33,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::any;
 use chrono::{DateTime, NaiveDate, Utc};
 use flakeradar_core::dto::timestamp;
+use flakeradar_core::lax;
 use flakeradar_core::{
     DEFAULT_PROJECT, ExecutionOut, ExplainingJobOut, ExplainingTestOut, FailureCategory,
     JobExecutionOut, JobOut, JobOutcome, LocationOut, RunnerStatOut, ScorePointOut,
@@ -538,7 +539,10 @@ impl McpServer {
     async fn call(&self, name: &str, arguments: Option<JsonObject>) -> ToolResult {
         let arguments = Value::Object(arguments.unwrap_or_default());
         match name {
-            LIST_REPOS => self.list_repos().await,
+            LIST_REPOS => {
+                no_arguments(&arguments)?;
+                self.list_repos().await
+            }
             LIST_PROJECTS => {
                 self.list_projects(&parse::<ListProjectsArgs>(arguments)?.repo)
                     .await
@@ -695,11 +699,43 @@ fn invalid_arguments(name: &str, path: &str, detail: &str) -> CallToolResult {
 }
 
 /// Deserializes one tool's arguments, keeping the field `serde` failed at.
+///
+/// An unknown field is reported at the root of the argument object, so its own
+/// name is taken from the diagnosis, where Pydantic named it too.
 fn parse<T: serde::de::DeserializeOwned>(arguments: Value) -> Result<T, ToolFailure> {
-    serde_path_to_error::deserialize(arguments).map_err(|error| ToolFailure::InvalidArguments {
-        path: error.path().to_string(),
-        detail: error.into_inner().to_string(),
+    serde_path_to_error::deserialize(arguments).map_err(|error| {
+        let path = error.path().to_string();
+        let detail = error.into_inner().to_string();
+        let path = match path.as_str() {
+            "." => unknown_field(&detail).unwrap_or(path.as_str()).to_owned(),
+            _ => path,
+        };
+        ToolFailure::InvalidArguments { path, detail }
     })
+}
+
+/// Refuses an argument a tool that takes none was given.
+///
+/// Pydantic answered an argument the tool does not declare with a validation
+/// error naming it, so a client with a stale schema learns it is stale instead of
+/// having its argument quietly ignored.
+fn no_arguments(arguments: &Value) -> Result<(), ToolFailure> {
+    match arguments
+        .as_object()
+        .and_then(|object| object.keys().next())
+    {
+        None => Ok(()),
+        Some(field) => Err(ToolFailure::InvalidArguments {
+            path: field.clone(),
+            detail: "Unexpected keyword argument".to_owned(),
+        }),
+    }
+}
+
+/// The field name in serde's own "unknown field" message.
+fn unknown_field(message: &str) -> Option<&str> {
+    let rest = message.split_once("unknown field `")?.1;
+    rest.split_once('`').map(|(field, _)| field)
 }
 
 /// The scope a Repo and an optional Project name.
@@ -1514,6 +1550,7 @@ fn unauthorized() -> Response {
 
 /// The arguments `list_projects` takes.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ListProjectsArgs {
     /// The Repo's `owner/name`.
     repo: String,
@@ -1521,6 +1558,7 @@ struct ListProjectsArgs {
 
 /// The arguments `top_flaky_tests` takes.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct TopFlakyTestsArgs {
     /// The Repo's `owner/name`.
     repo: String,
@@ -1528,10 +1566,10 @@ struct TopFlakyTestsArgs {
     #[serde(default)]
     project: Option<String>,
     /// How many Tests to answer.
-    #[serde(default = "default_limit")]
+    #[serde(default = "default_limit", deserialize_with = "lax_integer")]
     limit: i64,
     /// Whether `suspect` tier Tests are listed.
-    #[serde(default = "default_true")]
+    #[serde(default = "default_true", deserialize_with = "lax_boolean")]
     include_suspect: bool,
     /// A literal substring of the Test's file.
     #[serde(default)]
@@ -1540,12 +1578,13 @@ struct TopFlakyTestsArgs {
     #[serde(default)]
     category: Option<String>,
     /// The "became flaky recently" window, in days.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lax_optional_integer")]
     new_within_days: Option<i64>,
 }
 
 /// The arguments `search_tests` takes.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct SearchTestsArgs {
     /// The Repo's `owner/name`.
     repo: String,
@@ -1555,15 +1594,16 @@ struct SearchTestsArgs {
     #[serde(default)]
     project: Option<String>,
     /// How many Tests to answer.
-    #[serde(default = "default_limit")]
+    #[serde(default = "default_limit", deserialize_with = "lax_integer")]
     limit: i64,
 }
 
 /// The arguments `get_test` takes.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct GetTestArgs {
     /// The Test's id, when the caller has one.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lax_optional_integer")]
     test_id: Option<i64>,
     /// The Repo's `owner/name`, for a lookup by name.
     #[serde(default)]
@@ -1578,43 +1618,46 @@ struct GetTestArgs {
     #[serde(default)]
     classname: Option<String>,
     /// How many Executions to answer.
-    #[serde(default = "default_limit")]
+    #[serde(default = "default_limit", deserialize_with = "lax_integer")]
     executions_limit: i64,
 }
 
 /// The arguments `top_flaky_jobs` takes.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct TopFlakyJobsArgs {
     /// The Repo's `owner/name`.
     repo: String,
     /// How many Jobs to answer.
-    #[serde(default = "default_limit")]
+    #[serde(default = "default_limit", deserialize_with = "lax_integer")]
     limit: i64,
     /// Whether `suspect` tier Jobs are listed.
-    #[serde(default = "default_true")]
+    #[serde(default = "default_true", deserialize_with = "lax_boolean")]
     include_suspect: bool,
     /// The "became flaky recently" window, in days.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lax_optional_integer")]
     new_within_days: Option<i64>,
 }
 
 /// The arguments `search_jobs` takes.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct SearchJobsArgs {
     /// The Repo's `owner/name`.
     repo: String,
     /// The text to look for.
     query: String,
     /// How many Jobs to answer.
-    #[serde(default = "default_limit")]
+    #[serde(default = "default_limit", deserialize_with = "lax_integer")]
     limit: i64,
 }
 
 /// The arguments `get_job` takes.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct GetJobArgs {
     /// The Job's id, when the caller has one.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lax_optional_integer")]
     job_id: Option<i64>,
     /// The Repo's `owner/name`, for a lookup by name.
     #[serde(default)]
@@ -1626,47 +1669,81 @@ struct GetJobArgs {
     #[serde(default)]
     pipeline: Option<String>,
     /// How many executions to answer.
-    #[serde(default = "default_limit")]
+    #[serde(default = "default_limit", deserialize_with = "lax_integer")]
     executions_limit: i64,
 }
 
 /// The arguments `ci_run_failures` takes.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct CiRunFailuresArgs {
     /// The Repo's `owner/name`.
     repo: String,
     /// The CI provider's run id.
     ci_run_id: String,
     /// Which attempt to read; the newest when absent.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lax_optional_integer")]
     ci_run_attempt: Option<i64>,
 }
 
 /// The arguments `link_issue` takes.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct LinkIssueArgs {
     /// The GitHub issue number.
+    #[serde(deserialize_with = "lax_integer")]
     number: i64,
     /// The Test to link, when the target is a Test.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lax_optional_integer")]
     test_id: Option<i64>,
     /// The Job to link, when the target is a Job.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lax_optional_integer")]
     job_id: Option<i64>,
     /// Whether a different linked issue may be replaced.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lax_boolean")]
     replace: bool,
 }
 
 /// The arguments `unlink_issue` takes.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct UnlinkIssueArgs {
     /// The Test to unlink, when the target is a Test.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lax_optional_integer")]
     test_id: Option<i64>,
     /// The Job to unlink, when the target is a Job.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lax_optional_integer")]
     job_id: Option<i64>,
+}
+
+/// Pydantic's lax read of a tool argument, which is how the reference validated one.
+///
+/// A tool's arguments are a Pydantic model in the reference, so its lax mode
+/// applied: `"2"`, `2.0` and `true` are the integer 2, `1`, `1.0` and `"TRUE"`
+/// are `true`, and an `Option<i64>` also takes `null`. The readers are the ones
+/// the request bodies use, so a client that sends one of those spellings is
+/// answered a result rather than a validation error.
+fn lax_integer<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<i64, D::Error> {
+    let value = Value::deserialize(deserializer)?;
+    lax::integer(&value, Vec::new()).map_err(|issue| serde::de::Error::custom(issue.msg))
+}
+
+/// [`lax_integer`] for an argument a tool may leave out, where `null` is none.
+fn lax_optional_integer<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<i64>, D::Error> {
+    match Value::deserialize(deserializer)? {
+        Value::Null => Ok(None),
+        value => lax::integer(&value, Vec::new())
+            .map(Some)
+            .map_err(|issue| serde::de::Error::custom(issue.msg)),
+    }
+}
+
+/// Pydantic's lax read of a boolean tool argument.
+fn lax_boolean<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<bool, D::Error> {
+    let value = Value::deserialize(deserializer)?;
+    lax::boolean(&value, Vec::new()).map_err(|issue| serde::de::Error::custom(issue.msg))
 }
 
 /// The default `limit` and `executions_limit` a tool applies.
