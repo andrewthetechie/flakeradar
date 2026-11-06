@@ -5,9 +5,21 @@ This page is for the owner's second review of `feat/rust-rewrite`. The first rev
 `ledger.md` that tracks every finding — and it was written against `f9330fd`. The fixes are tasks
 16–31 of `docs/plans/rust-rewrite/`, whose shared contract is `00-fixes-context.md`.
 
-**Head: `e8563b1`.** The commits after it are documentation only — this file, `HANDOFF.md` and
-`STATUS.md`'s row for task 31 — so `git diff e8563b1..HEAD --stat` should name only those files.
-`gh pr checks 135` on the pushed head is the CI evidence.
+**Head: `e8563b1`** for the code, plus the documentation commits after it — this file,
+`HANDOFF.md` and `STATUS.md`'s row for task 31 — so `git diff e8563b1..HEAD --stat` names only
+those files, and one test fix (`04bc0ac`, below).
+
+**CI on `04bc0ac`: 17 checks pass, one skips, and `Rust coverage (lines + branches)` fails.** Its
+own words: `branches 1274 / 1356 = 93.95%` against the floor of `94%`, with `lines 15369 / 15929 =
+96.48%` clearing `96%`. The floor is the one task 15 set from a local measurement; CI's
+configuration (Linux, no `frontend/dist`, `FLAKERADAR_TEST_DATABASE_URL` set) measures 9 branches
+fewer than any run on a machine that takes the test-support Docker path, and every one of the nine
+is in `flakeradar-test-support/src/postgres.rs` and `db.rs` — the path `coverage-gaps.md` already
+logs as unreachable in CI. With `FLAKERADAR_TEST_DATABASE_URL` unset for the coverage command only,
+the same tree measures **1283 / 1356 = 94.62%** of branches and 96.87% of lines. Lowering the floor
+and moving the coverage job onto the Docker path are both the owner's decision under
+`00-fixes-context.md`'s "Coverage floors only rise"; the floor is unchanged and the question is
+open when this file was written.
 
 ## 1. The ledger is closed
 
@@ -147,6 +159,15 @@ the read could see `None`: it did once in the three instrumented coverage runs, 
 `flakeradar_test_support::wait_until` — the bounded wait the code standard names for a row the
 code under test writes — which also makes the negative assertion beside it a claim about a batch
 that finished (`e8563b1`).
+
+Two CI failures were fixed at this leg, both found only because CI had not run since the reviewed
+head. `tests/frontend.rs` imported `flakeradar_test_support::settings` at the top of the file and
+used it inside a `#[cfg(has_frontend)]` test, so `cargo clippy -D warnings` failed on CI's build,
+which has no `frontend/dist`; the import moved into that test (`04bc0ac`). And the PR had been
+CONFLICTING with `main` since `c911fdb` (#129 changes `backend/app/processing.py`, which this
+branch deletes), which is why GitHub created no `pull_request` runs for any push after
+2026-11-05T18:21; merging `main` in with the deletion winning (`46c244d`) made the PR mergeable and
+started the runs, and `git diff` against the previous head is empty, so the tree is unchanged.
 
 One number in the record was wrong and is corrected: the `E6` row of the ledger said twelve
 allowances used the `prefix` match rule, and the file held nine before `E6` removed the rule (196
