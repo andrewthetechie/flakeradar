@@ -17,7 +17,7 @@
 // Rust guideline compliant 2026-07-21
 
 use chrono::{NaiveDate, TimeDelta};
-use flakeradar_core::defaults;
+use flakeradar_core::{ReportStatus, defaults};
 use sea_orm::entity::prelude::DateTimeWithTimeZone;
 use sea_orm::sea_query::{Expr, ExprTrait as _, Order, Query};
 use sea_orm::{
@@ -33,7 +33,6 @@ use crate::entities::{
 };
 use crate::error::DbError;
 use crate::processing::{ProcessingSettings, rescore, rescore_jobs};
-use crate::report_intake::{REPORT_FAILED, REPORT_PROCESSED};
 
 /// The largest retention window a setting may ask for, in days.
 ///
@@ -215,7 +214,7 @@ async fn delete_processed_reports(
                 Query::select()
                     .column(reports::Column::Id)
                     .from(reports::Entity)
-                    .and_where(reports::Column::Status.eq(REPORT_PROCESSED))
+                    .and_where(reports::Column::Status.eq(ReportStatus::Processed.as_str()))
                     .and_where(reports::Column::ProcessedAt.lt(cutoff))
                     .order_by(reports::Column::Id, Order::Asc)
                     .limit(batch)
@@ -242,7 +241,7 @@ async fn delete_failed_reports(
                 Query::select()
                     .column(reports::Column::Id)
                     .from(reports::Entity)
-                    .and_where(reports::Column::Status.eq(REPORT_FAILED))
+                    .and_where(reports::Column::Status.eq(ReportStatus::Failed.as_str()))
                     .and_where(Expr::cust_with_values(
                         "COALESCE(processed_at, created_at) < $1",
                         [cutoff],

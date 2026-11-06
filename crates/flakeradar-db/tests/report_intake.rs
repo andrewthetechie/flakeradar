@@ -10,12 +10,12 @@
     reason = "a test fails loudly when report intake misbehaves"
 )]
 
-use flakeradar_core::{PipelineReportIn, pipeline_body};
+use flakeradar_core::{PipelineReportIn, ReportStatus, pipeline_body};
 use flakeradar_db::entities::{projects, reports};
 use flakeradar_db::{
-    DbError, NewJunitReport, NewPipelineReport, REPORT_FAILED, REPORT_PENDING, REPORT_PROCESSED,
-    complete_report, fail_report, find_junit_duplicate, get_or_create_project, requeue_report,
-    reset_for_retry, stored_ci_run_attempt, stored_junit_body, stored_pipeline_report,
+    DbError, NewJunitReport, NewPipelineReport, complete_report, fail_report, find_junit_duplicate,
+    get_or_create_project, requeue_report, reset_for_retry, stored_ci_run_attempt,
+    stored_junit_body, stored_pipeline_report,
 };
 use flakeradar_test_support::{TestDb, make_junit, make_report};
 use sea_orm::entity::prelude::DateTimeWithTimeZone;
@@ -125,7 +125,10 @@ fn the_junit_row_carries_the_body_and_its_digest() {
     assert_eq!(row.project_id, sea_orm::Set(Some(0)));
     assert_eq!(row.body, sea_orm::Set(body()));
     assert_eq!(row.body_sha256, sea_orm::Set(Some(digest)));
-    assert_eq!(row.status, sea_orm::Set(REPORT_PENDING.to_owned()));
+    assert_eq!(
+        row.status,
+        sea_orm::Set(ReportStatus::Pending.as_str().to_owned())
+    );
     assert_eq!(row.created_at, sea_orm::Set(at()));
     assert_eq!(row.retry_count, sea_orm::Set(0));
     // The ids stay unset, so the database assigns them.
@@ -155,7 +158,10 @@ fn the_pipeline_row_has_no_project_and_no_digest() {
     assert_eq!(row.repo_id, sea_orm::Set(3));
     // Only the JUnit duplicate check reads a digest; Pipeline rows never get one.
     assert_eq!(row.body_sha256, sea_orm::Set(None));
-    assert_eq!(row.status, sea_orm::Set(REPORT_PENDING.to_owned()));
+    assert_eq!(
+        row.status,
+        sea_orm::Set(ReportStatus::Pending.as_str().to_owned())
+    );
 }
 
 #[test]
@@ -498,7 +504,7 @@ async fn completing_a_report_records_its_counts_and_its_run() {
     let project = project(&db).await;
     let mut stored = seed(&db, with_project(&project, identity())).await;
     complete_report(&mut stored, at(), Some(7), serde_json::json!({"passed": 1}));
-    assert_eq!(stored.status, REPORT_PROCESSED);
+    assert_eq!(stored.status, ReportStatus::Processed.as_str());
     assert_eq!(stored.counts, Some(serde_json::json!({"passed": 1})));
     assert_eq!(stored.run_id, Some(7));
     assert_eq!(stored.error, None);
@@ -513,7 +519,7 @@ async fn failing_a_report_records_the_error_and_no_retry() {
     let project = project(&db).await;
     let mut stored = seed(&db, with_project(&project, identity())).await;
     fail_report(&mut stored, at(), "ValidationError: bad body");
-    assert_eq!(stored.status, REPORT_FAILED);
+    assert_eq!(stored.status, ReportStatus::Failed.as_str());
     assert_eq!(stored.error.as_deref(), Some("ValidationError: bad body"));
     assert_eq!(stored.processed_at, Some(at()));
     assert_eq!(stored.retry_count, 0);
@@ -529,7 +535,7 @@ async fn requeueing_a_report_spends_one_retry() {
     stored.error = Some("old".to_owned());
     stored.processed_at = Some(at());
     requeue_report(&mut stored, Some("transient"));
-    assert_eq!(stored.status, REPORT_PENDING);
+    assert_eq!(stored.status, ReportStatus::Pending.as_str());
     assert_eq!(stored.retry_count, 1);
     assert_eq!(stored.error.as_deref(), Some("transient"));
     assert_eq!(stored.processed_at, None);
@@ -545,12 +551,12 @@ async fn a_manual_retry_starts_the_budget_again() {
     let db = TestDb::new().await.expect("a migrated test database");
     let project = project(&db).await;
     let mut stored = seed(&db, with_project(&project, identity())).await;
-    stored.status = REPORT_FAILED.to_owned();
+    stored.status = ReportStatus::Failed.as_str().to_owned();
     stored.error = Some("boom".to_owned());
     stored.processed_at = Some(at());
     stored.retry_count = 3;
     reset_for_retry(&mut stored);
-    assert_eq!(stored.status, REPORT_PENDING);
+    assert_eq!(stored.status, ReportStatus::Pending.as_str());
     assert_eq!(stored.retry_count, 0);
     assert_eq!(stored.error, None);
     assert_eq!(stored.processed_at, None);
@@ -577,7 +583,7 @@ async fn the_transitions_never_commit_anything_themselves() {
         .await
         .expect("the Report query")
         .expect("the Report");
-    assert_eq!(reread.status, REPORT_PENDING);
+    assert_eq!(reread.status, ReportStatus::Pending.as_str());
     assert_eq!(reread.run_id, None);
     assert_eq!(
         reports::Entity::find()

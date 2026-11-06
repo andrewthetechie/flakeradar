@@ -12,10 +12,10 @@ use axum::Json;
 use axum::extract::State;
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use flakeradar_core::ReadinessOut;
+use flakeradar_core::{ReadinessOut, ReportStatus};
 use flakeradar_db::{
-    DbError, QueueFacts, REPORT_STATUSES, WORKER_LOCK_KEY, job_tier_counts, last_processed_at,
-    queue_facts, reachable, report_status_counts, test_tier_counts,
+    DbError, QueueFacts, WORKER_LOCK_KEY, job_tier_counts, last_processed_at, queue_facts,
+    reachable, report_status_counts, test_tier_counts,
 };
 use sea_orm::DatabaseConnection;
 use serde::Serialize;
@@ -159,7 +159,7 @@ fn render(snapshot: &Snapshot) -> String {
         "# HELP flakeradar_reports Reports by current status.".to_owned(),
         "# TYPE flakeradar_reports gauge".to_owned(),
     ];
-    for status in REPORT_STATUSES {
+    for status in ReportStatus::ALL.map(ReportStatus::as_str) {
         let count = snapshot.statuses.get(status).copied().unwrap_or_default();
         lines.push(format!("flakeradar_reports{{status=\"{status}\"}} {count}"));
     }

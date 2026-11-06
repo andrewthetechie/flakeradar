@@ -18,16 +18,17 @@ use axum::routing::{get, post};
 use axum::{Router, middleware};
 use chrono::Utc;
 use flakeradar_core::{
-    AttemptIn, IngestAccepted, ParseError, PipelineReportIn, ReportOut, ReportSummaryOut,
-    ValidationIssue, ci_run_attempt_too_large, lax, normalize_project, normalize_repo,
-    normalize_root, parse_junit_xml, pipeline_body, read_ci_run_attempt, strip_wire_whitespace,
+    AttemptIn, IngestAccepted, ParseError, PipelineReportIn, ReportOut, ReportStatus,
+    ReportSummaryOut, ValidationIssue, ci_run_attempt_too_large, lax, normalize_project,
+    normalize_repo, normalize_root, parse_junit_xml, pipeline_body, read_ci_run_attempt,
+    strip_wire_whitespace,
 };
 use flakeradar_db::entities::reports;
 use flakeradar_db::list_reports as report_queue;
 use flakeradar_db::{
-    NewJunitReport, NewPipelineReport, REPORT_FAILED, REPORT_PENDING, REPORT_STATUSES,
-    find_junit_duplicate, get_or_create_project, get_or_create_repo, report_summary,
-    reset_for_retry, stored_ci_run_attempt, stored_report,
+    NewJunitReport, NewPipelineReport, find_junit_duplicate, get_or_create_project,
+    get_or_create_repo, report_status, report_summary, reset_for_retry, stored_ci_run_attempt,
+    stored_report,
 };
 use sea_orm::{EntityTrait, Set, TransactionTrait as _};
 use serde::Deserialize;
@@ -292,7 +293,7 @@ pub struct ReportPath {
 /// The query parameters of `GET /api/reports`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ListQuery {
-    /// The status to filter by, out of [`REPORT_STATUSES`].
+    /// The status to filter by, one of the three [`ReportStatus`] spellings.
     #[serde(default)]
     status: Option<String>,
     /// How many Reports to return.
@@ -420,7 +421,7 @@ pub async fn ingest(
         txn.rollback().await?;
         return Ok(accepted(IngestAccepted {
             report_id: i64::from(existing.id),
-            status: existing.status,
+            status: report_status(&existing.status)?,
             duplicate: true,
         }));
     }
@@ -430,7 +431,7 @@ pub async fn ingest(
     txn.commit().await?;
     Ok(accepted(IngestAccepted {
         report_id: i64::from(inserted.id),
-        status: REPORT_PENDING.to_owned(),
+        status: ReportStatus::Pending,
         duplicate: false,
     }))
 }
@@ -587,7 +588,7 @@ pub async fn ingest_pipeline(
     txn.commit().await?;
     Ok(accepted(IngestAccepted {
         report_id: i64::from(inserted.id),
-        status: REPORT_PENDING.to_owned(),
+        status: ReportStatus::Pending,
         duplicate: false,
     }))
 }
@@ -611,7 +612,7 @@ pub async fn summary(State(state): State<AppState>) -> RouteResult<Json<ReportSu
 ///
 /// # Errors
 ///
-/// Answers 422 for a `status` that is not one of [`REPORT_STATUSES`] and for a
+/// Answers 422 for a `status` that is not one of [`ReportStatus`]'s spellings and for a
 /// `limit` outside 1–200, and 500 when the query fails.
 #[utoipa::path(
     get,
@@ -628,11 +629,14 @@ pub async fn list_reports(
     ApiQuery(query): ApiQuery<ListQuery>,
 ) -> RouteResult<Json<Vec<ReportOut>>> {
     if let Some(status) = &query.status
-        && !REPORT_STATUSES.contains(&status.as_str())
+        && ReportStatus::from_wire(status).is_none()
     {
         return Err(ApiError::new(
             StatusCode::UNPROCESSABLE_ENTITY,
-            format!("status must be one of {}", REPORT_STATUSES.join(", ")),
+            format!(
+                "status must be one of {}",
+                ReportStatus::ALL.map(ReportStatus::as_str).join(", ")
+            ),
         )
         .into());
     }
@@ -660,7 +664,7 @@ pub async fn get_report(
 ) -> RouteResult<Json<ReportOut>> {
     let stored = stored_report(state.pool(), path.report_id).await?;
     match stored {
-        Some(stored) => Ok(Json(stored.into_out())),
+        Some(stored) => Ok(Json(stored.into_out()?)),
         None => Err(not_found()),
     }
 }
@@ -695,7 +699,7 @@ pub async fn retry_report(
     let Some(mut stored) = stored_report(state.pool(), path.report_id).await? else {
         return Err(not_found());
     };
-    if stored.report.status != REPORT_FAILED {
+    if stored.report.status != ReportStatus::Failed.as_str() {
         return Err(
             ApiError::new(StatusCode::CONFLICT, "Only failed reports can be retried").into(),
         );
@@ -711,7 +715,7 @@ pub async fn retry_report(
     })
     .exec(state.pool())
     .await?;
-    Ok(Json(stored.into_out()))
+    Ok(Json(stored.into_out()?))
 }
 
 /// Dismisses a failed Report by deleting it.
@@ -741,7 +745,7 @@ pub async fn delete_report(
     let Some(stored) = stored_report(state.pool(), path.report_id).await? else {
         return Err(not_found());
     };
-    if stored.report.status != REPORT_FAILED {
+    if stored.report.status != ReportStatus::Failed.as_str() {
         return Err(
             ApiError::new(StatusCode::CONFLICT, "Only failed reports can be deleted").into(),
         );

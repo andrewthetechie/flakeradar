@@ -20,8 +20,9 @@ use flakeradar_core::{
     CiRunFailedJobOut, CiRunFailuresOut, CiRunTestFailureOut, ExecutionOut, ExplainingTestOut,
     FailedJobOutcome, FailureCategory, HistoryOut, JobExecutionOut, JobHistoryOut, JobOut,
     JobOutcome, JobPage, JobSummaryOut, LocationOut, LocationRef, QuarantineItem, RepoOut,
-    ReportCountsOut, RunnerStatOut, ScorePointOut, SummaryOut, TestJobLinkOut, TestOut, TestPage,
-    Trend, defaults, escape_like, is_broken, issue_url, permalink, repo_path, tier_for, trend_for,
+    ReportCountsOut, ReportStatus, RunnerStatOut, ScorePointOut, SummaryOut, TestJobLinkOut,
+    TestOut, TestPage, Trend, defaults, escape_like, is_broken, issue_url, permalink, repo_path,
+    tier_for, trend_for,
 };
 use sea_orm::{ConnectionTrait, DbBackend, QueryResult, Statement, Value};
 use serde_json::Value as JsonValue;
@@ -1887,11 +1888,11 @@ async fn ci_run_report_counts(
     {
         let status: String = get(&row, "status")?;
         let count: i64 = get(&row, "count")?;
-        match status.as_str() {
-            "pending" => counts.pending = count,
-            "processed" => counts.processed = count,
-            "failed" => counts.failed = count,
-            _ => {}
+        match ReportStatus::from_wire(&status) {
+            Some(ReportStatus::Pending) => counts.pending = count,
+            Some(ReportStatus::Processed) => counts.processed = count,
+            Some(ReportStatus::Failed) => counts.failed = count,
+            None => {}
         }
     }
     Ok(counts)

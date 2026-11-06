@@ -55,7 +55,9 @@ pub use identity::{
     normalize_root,
 };
 #[doc(inline)]
-pub use model::{ExecutionStatus, FailedJobOutcome, JobOutcome, JobStatus, Tier, Trend};
+pub use model::{
+    ExecutionStatus, FailedJobOutcome, JobOutcome, JobStatus, ReportStatus, Tier, Trend,
+};
 #[doc(inline)]
 pub use notify::{Kind, TierChange, WebhookFormat, parse_urls, render, render_json, render_slack};
 #[doc(inline)]

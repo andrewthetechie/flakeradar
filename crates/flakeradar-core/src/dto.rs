@@ -18,7 +18,7 @@ use utoipa::ToSchema;
 
 use crate::identity::{IdentityError, normalize_provider, normalize_repo};
 use crate::lax;
-use crate::model::{FailedJobOutcome, JobOutcome, JobStatus, Tier, Trend};
+use crate::model::{FailedJobOutcome, JobOutcome, JobStatus, ReportStatus, Tier, Trend};
 use crate::py::strip_wire_whitespace;
 use crate::types::CiRunId;
 
@@ -631,7 +631,7 @@ pub struct IngestAccepted {
     /// The new Report's id, or the stored duplicate's.
     pub report_id: i64,
     /// The Report's status: pending for a new one, else the stored status.
-    pub status: String,
+    pub status: ReportStatus,
     /// Whether the upload repeated a stored Report.
     pub duplicate: bool,
 }
@@ -1256,7 +1256,7 @@ pub struct ReportOut {
     /// The CI provider's run id.
     pub ci_run_id: String,
     /// `pending`, `processed` or `failed`.
-    pub status: String,
+    pub status: ReportStatus,
     /// Why processing failed, when it did.
     pub error: Option<String>,
     /// The Executions the Report produced, when it was processed.

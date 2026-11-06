@@ -25,10 +25,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
+use flakeradar_core::ReportStatus;
 use flakeradar_db::{
-    DbError, DbSettings, ProcessOutcome, ProcessingSettings, PruneResult, REPORT_PENDING,
-    RetentionSettings, SharedMonotonic, SystemMonotonic, WORKER_LOCK_KEY, connect_session,
-    process_next, run_prune,
+    DbError, DbSettings, ProcessOutcome, ProcessingSettings, PruneResult, RetentionSettings,
+    SharedMonotonic, SystemMonotonic, WORKER_LOCK_KEY, connect_session, process_next, run_prune,
 };
 use sea_orm::{ConnectionTrait, DatabaseConnection, DbBackend, Statement};
 use tokio::task::JoinHandle;
@@ -682,7 +682,7 @@ impl ReportWorker {
                 tracing::error!("{message}");
             }
         }
-        if outcome.status == REPORT_PENDING {
+        if outcome.status == ReportStatus::Pending {
             self.sleep(self.backoff(outcome.retry_count)).await;
         }
     }

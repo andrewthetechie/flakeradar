@@ -13,9 +13,9 @@ use std::fmt;
 
 use flakeradar_core::{
     ExecutionStatus, FailureCategory, JobStatus, ParseError, ParsedCase, PipelineReportIn,
-    ScoredExecution, Tier, TierChange, branch_scoped_fail_streak, branch_scoped_score,
-    branch_scoped_streak, classify_failure, defaults, dominant_category, is_broken,
-    parse_junit_xml, tier_for,
+    ReportStatus, ScoredExecution, Tier, TierChange, branch_scoped_fail_streak,
+    branch_scoped_score, branch_scoped_streak, classify_failure, defaults, dominant_category,
+    is_broken, parse_junit_xml, tier_for,
 };
 use sea_orm::entity::prelude::DateTimeWithTimeZone;
 use sea_orm::{
@@ -32,8 +32,8 @@ use crate::clock::{SharedClock, SystemClock};
 use crate::entities::{jobs, pipelines, reports, repos, test_cases, test_executions, test_runs};
 use crate::error::DbError;
 use crate::report_intake::{
-    REPORT_FAILED, REPORT_KIND_PIPELINE, REPORT_PENDING, REPORT_PROCESSED, complete_report,
-    fail_report, requeue_report, stored_junit_body, stored_pipeline_report,
+    REPORT_KIND_PIPELINE, complete_report, fail_report, requeue_report, stored_junit_body,
+    stored_pipeline_report,
 };
 use crate::score_history::{HistoryKind, HistoryUpdate, write_today_history};
 use crate::sql::{get, placeholder_list, rows, value_row};
@@ -97,8 +97,8 @@ impl fmt::Debug for ProcessingSettings {
 pub struct ProcessOutcome {
     /// The Report that was claimed.
     pub report_id: i32,
-    /// `processed`, `failed` or `pending` (requeued for a retry).
-    pub status: String,
+    /// Where the Report stands: `processed`, `failed`, or `pending` after a requeue.
+    pub status: ReportStatus,
     /// The Run a JUnit Report became.
     pub run_id: Option<i32>,
     /// The counts stored on a processed Report.
@@ -217,7 +217,7 @@ pub async fn claim_next_report(
     let statement = Statement::from_sql_and_values(
         DbBackend::Postgres,
         "SELECT * FROM reports WHERE status = $1 ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED",
-        [Value::from(REPORT_PENDING)],
+        [Value::from(ReportStatus::Pending.as_str())],
     );
     match db.query_one_raw(statement).await? {
         Some(row) => Ok(Some(reports::Model::from_query_result(&row, "")?)),
@@ -367,7 +367,7 @@ pub async fn process_next(
                 transaction.commit().await?;
                 return Ok(Some(ProcessOutcome {
                     report_id: report.id,
-                    status: REPORT_PENDING.to_owned(),
+                    status: ReportStatus::Pending,
                     run_id: None,
                     counts: None,
                     touched_test_ids: Vec::new(),
@@ -383,7 +383,7 @@ pub async fn process_next(
             transaction.commit().await?;
             Ok(Some(ProcessOutcome {
                 report_id: report.id,
-                status: REPORT_FAILED.to_owned(),
+                status: ReportStatus::Failed,
                 run_id: None,
                 counts: None,
                 touched_test_ids: Vec::new(),
@@ -500,7 +500,7 @@ async fn process_report(
     write_report(report, db).await.map_err(ProcessError::from)?;
     Ok(ProcessOutcome {
         report_id: report.id,
-        status: REPORT_PROCESSED.to_owned(),
+        status: ReportStatus::Processed,
         run_id: Some(run.id),
         counts: Some(counts_json),
         touched_test_ids: touched,
@@ -794,7 +794,7 @@ async fn process_pipeline_report(
     write_report(report, db).await.map_err(ProcessError::from)?;
     Ok(ProcessOutcome {
         report_id: report.id,
-        status: REPORT_PROCESSED.to_owned(),
+        status: ReportStatus::Processed,
         run_id: None,
         counts: Some(counts_json),
         touched_test_ids: Vec::new(),

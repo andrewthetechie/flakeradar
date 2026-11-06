@@ -15,7 +15,7 @@ use chrono::{DateTime, NaiveDate, TimeZone as _, Utc};
 use flakeradar_core::dto::lax_bool;
 use flakeradar_core::{
     BodyRefusal, IssueLinkIn, JobResultIn, LocSegment, PipelineReportIn, QuarantineIn, ReportOut,
-    ScorePointOut, TestOut, Tier, Trend, ValidationIssue,
+    ReportStatus, ScorePointOut, TestOut, Tier, Trend, ValidationIssue,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -64,7 +64,7 @@ fn a_report_out_writes_timestamps_in_the_one_accepted_shape() {
         commit_sha: "abc".to_owned(),
         branch: "main".to_owned(),
         ci_run_id: String::new(),
-        status: "pending".to_owned(),
+        status: ReportStatus::Pending,
         error: None,
         counts: None,
         run_id: None,

@@ -15,6 +15,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use flakeradar::Settings;
 use flakeradar::github::{self, Api};
 use flakeradar::settings::Secret;
+use flakeradar_core::ReportStatus;
 use flakeradar_db::filing::{JobRow, RecentExecution, TestRow};
 use flakeradar_db::issue_links::{self, LinkTarget, linked_for_check};
 use flakeradar_db::{ProcessOutcome, ReadSettings};
@@ -184,7 +185,7 @@ async fn stamp_link(db: &TestDb, id: i32, number: i32, checked: bool, closed: bo
 fn processed(tests: &[i32], jobs: &[i32]) -> ProcessOutcome {
     ProcessOutcome {
         report_id: 1,
-        status: "processed".to_owned(),
+        status: ReportStatus::Processed,
         run_id: Some(1),
         counts: None,
         touched_test_ids: tests.to_vec(),
@@ -1427,7 +1428,7 @@ async fn a_failed_report_is_never_filed_and_a_processed_one_is() {
     .await;
 
     let mut failed = processed(&[test], &[]);
-    failed.status = "failed".to_owned();
+    failed.status = ReportStatus::Failed;
     github::on_report_processed(
         db.connection(),
         &failed,

@@ -196,9 +196,58 @@ pub enum FailedJobOutcome {
     Unexplained,
 }
 
+/// A Report's place in the ingest queue.
+///
+/// A Report is queued [`Pending`](Self::Pending) and leaves the queue as
+/// [`Processed`](Self::Processed) or [`Failed`](Self::Failed). A transient
+/// failure requeues it, so a Report that failed once is `Pending` again while a
+/// retry is still allowed.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, ToSchema,
+)]
+#[serde(rename_all = "lowercase")]
+#[schema(rename_all = "lowercase")]
+pub enum ReportStatus {
+    /// Queued and not processed yet.
+    Pending,
+    /// The processor turned it into a Run or Job executions.
+    Processed,
+    /// Processing failed for good.
+    Failed,
+}
+
+impl ReportStatus {
+    /// Every status a stored Report may hold, in the order the queue filter lists them.
+    pub const ALL: [Self; 3] = [Self::Pending, Self::Processed, Self::Failed];
+
+    /// The status as the frozen server stored it.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Processed => "processed",
+            Self::Failed => "failed",
+        }
+    }
+
+    /// The status one stored spelling names, or `None` when nothing does.
+    #[must_use]
+    pub fn from_wire(text: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|status| status.as_str() == text)
+    }
+}
+
+impl fmt::Display for ReportStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{ExecutionStatus, FailedJobOutcome, JobOutcome, JobStatus, Tier, Trend};
+    use super::{
+        ExecutionStatus, FailedJobOutcome, JobOutcome, JobStatus, ReportStatus, Tier, Trend,
+    };
 
     #[test]
     fn statuses_keep_their_wire_spelling() {
@@ -242,6 +291,32 @@ mod tests {
         assert_eq!(Trend::Steady.to_string(), "steady");
         assert_eq!(JobStatus::Passed.to_string(), "passed");
         assert_eq!(JobStatus::Skipped.to_string(), "skipped");
+    }
+
+    #[test]
+    fn a_report_status_is_one_of_the_three_stored_spellings() {
+        assert_eq!(
+            ReportStatus::ALL.map(ReportStatus::as_str),
+            ["pending", "processed", "failed"]
+        );
+        assert_eq!(ReportStatus::Failed.to_string(), "failed");
+        assert_eq!(
+            ReportStatus::from_wire("pending"),
+            Some(ReportStatus::Pending)
+        );
+        assert_eq!(
+            ReportStatus::from_wire("processed"),
+            Some(ReportStatus::Processed)
+        );
+        assert_eq!(
+            ReportStatus::from_wire("failed"),
+            Some(ReportStatus::Failed)
+        );
+        assert_eq!(ReportStatus::from_wire("retrying"), None);
+        assert_eq!(
+            serde_json::to_string(&ReportStatus::Processed).unwrap(),
+            "\"processed\""
+        );
     }
 
     #[test]

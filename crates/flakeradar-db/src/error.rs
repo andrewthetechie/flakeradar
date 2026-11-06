@@ -61,6 +61,16 @@ pub enum DbError {
         /// What the parser rejected.
         detail: String,
     },
+    /// A stored Report holds a status this version does not write.
+    ///
+    /// A Report row is only ever written by this server, so an unknown status
+    /// means something else wrote the row: serving it as a guessed status would
+    /// hide that.
+    #[error("stored Report status {value:?} is not one of pending, processed or failed")]
+    UnknownReportStatus {
+        /// The status the row holds, printed as it was read.
+        value: String,
+    },
     /// The session that held the processor lock is gone, so this process can no longer lead.
     ///
     /// A session lock belongs to the backend that took it. A connection the

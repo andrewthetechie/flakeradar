@@ -18,6 +18,7 @@ use axum::http::StatusCode;
 use common::{Reply, app, get};
 use flakeradar::AppState;
 use flakeradar::build_app;
+use flakeradar_core::ReportStatus;
 use flakeradar_db::WORKER_LOCK_KEY;
 use flakeradar_db::entities::projects;
 use flakeradar_test_support::{
@@ -265,7 +266,7 @@ async fn metrics_names_every_series_with_its_labels() {
         ))
         .await
         .expect("the processed Report is stamped");
-    assert_eq!(failed.status, "failed");
+    assert_eq!(failed.status, ReportStatus::Failed.as_str());
 
     // Cached tiers: at or above the 0.30 threshold is flaky, above 0 suspect, 0 stable.
     for (name, score) in [("t_flaky", 0.5), ("t_suspect", 0.1), ("t_stable", 0.0)] {

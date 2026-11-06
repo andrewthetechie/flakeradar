@@ -15,6 +15,7 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{Method, StatusCode};
 use common::{Reply, get, post, request, send, settings};
+use flakeradar_core::ReportStatus;
 use flakeradar_db::entities::{projects, reports, repos};
 use flakeradar_test_support::{TestDb, make_junit};
 use sea_orm::{
@@ -120,7 +121,7 @@ async fn ingest_queues_report() {
     let stored = stored_reports(&db).await;
     assert_eq!(stored.len(), 1);
     let report = stored.first().expect("one Report");
-    assert_eq!(report.status, "pending");
+    assert_eq!(report.status, ReportStatus::Pending.as_str());
     assert_eq!(report.commit_sha, "sha1");
     assert_eq!(report.branch, "feat");
     assert_eq!(report.ci_run_id, "42-1");
@@ -356,7 +357,7 @@ async fn ingest_defaults_branch_and_ci_run_id() {
         (report.branch.as_str(), report.ci_run_id.as_str()),
         ("main", "")
     );
-    assert_eq!(report.status, "pending");
+    assert_eq!(report.status, ReportStatus::Pending.as_str());
     assert_eq!(
         (report.ci_job_id.as_deref(), report.ci_run_attempt),
         (None, None)

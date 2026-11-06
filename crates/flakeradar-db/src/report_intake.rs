@@ -12,25 +12,13 @@
 // Rust guideline compliant 2026-07-21
 
 use chrono::Utc;
-use flakeradar_core::{PipelineReportIn, ReportOut, ReportSummaryOut, body_digest};
+use flakeradar_core::{PipelineReportIn, ReportOut, ReportStatus, ReportSummaryOut, body_digest};
 use sea_orm::entity::prelude::DateTimeWithTimeZone;
 use sea_orm::{ConnectionTrait, DbBackend, FromQueryResult as _, JsonValue, Set, Statement, Value};
 
 use crate::entities::reports;
 use crate::error::DbError;
 use crate::sql::{Binds, get, one, required_one, rows};
-
-/// A Report that has been queued and not processed yet.
-pub const REPORT_PENDING: &str = "pending";
-
-/// A Report the processor turned into a Run.
-pub const REPORT_PROCESSED: &str = "processed";
-
-/// A Report whose processing failed for good.
-pub const REPORT_FAILED: &str = "failed";
-
-/// Every status a Report can hold, in the order the frozen server listed them.
-pub const REPORT_STATUSES: [&str; 3] = [REPORT_PENDING, REPORT_PROCESSED, REPORT_FAILED];
 
 /// A Report holding one uploaded JUnit XML file.
 pub const REPORT_KIND_JUNIT: &str = "junit";
@@ -117,7 +105,7 @@ impl NewJunitReport {
             ci_run_attempt: Set(self.ci_run_attempt),
             pipeline: Set(self.pipeline),
             default_branch: Set(self.default_branch),
-            status: Set(REPORT_PENDING.to_owned()),
+            status: Set(ReportStatus::Pending.as_str().to_owned()),
             created_at: Set(now),
             retry_count: Set(0),
             ..Default::default()
@@ -163,7 +151,7 @@ impl NewPipelineReport {
             ci_run_attempt: Set(Some(self.ci_run_attempt)),
             pipeline: Set(self.pipeline),
             default_branch: Set(self.default_branch),
-            status: Set(REPORT_PENDING.to_owned()),
+            status: Set(ReportStatus::Pending.as_str().to_owned()),
             created_at: Set(now),
             retry_count: Set(0),
             ..Default::default()
@@ -244,7 +232,9 @@ pub fn complete_report(
     run_id: Option<i32>,
     counts: JsonValue,
 ) {
-    REPORT_PROCESSED.clone_into(&mut report.status);
+    ReportStatus::Processed
+        .as_str()
+        .clone_into(&mut report.status);
     report.counts = Some(counts);
     report.run_id = run_id;
     report.error = None;
@@ -254,7 +244,7 @@ pub fn complete_report(
 /// The permanent-failure transition. A permanent failure spends no retry budget,
 /// so `retry_count` is untouched. Field-only; the caller owns the transaction.
 pub fn fail_report(report: &mut reports::Model, now: DateTimeWithTimeZone, error: &str) {
-    REPORT_FAILED.clone_into(&mut report.status);
+    ReportStatus::Failed.as_str().clone_into(&mut report.status);
     report.error = Some(error.to_owned());
     report.processed_at = Some(now);
 }
@@ -264,7 +254,9 @@ pub fn fail_report(report: &mut reports::Model, now: DateTimeWithTimeZone, error
 /// transaction.
 pub fn requeue_report(report: &mut reports::Model, error: Option<&str>) {
     report.retry_count += 1;
-    REPORT_PENDING.clone_into(&mut report.status);
+    ReportStatus::Pending
+        .as_str()
+        .clone_into(&mut report.status);
     report.error = error.map(str::to_owned);
     report.processed_at = None;
 }
@@ -274,7 +266,9 @@ pub fn requeue_report(report: &mut reports::Model, error: Option<&str>) {
 /// transaction.
 pub fn reset_for_retry(report: &mut reports::Model) {
     report.retry_count = 0;
-    REPORT_PENDING.clone_into(&mut report.status);
+    ReportStatus::Pending
+        .as_str()
+        .clone_into(&mut report.status);
     report.error = None;
     report.processed_at = None;
 }
@@ -307,9 +301,13 @@ pub struct StoredReport {
 
 impl StoredReport {
     /// The Report as the API serves it.
-    #[must_use]
-    pub fn into_out(self) -> ReportOut {
-        ReportOut {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::UnknownReportStatus`] when the row holds a status this
+    /// version does not write, which means the row was not written by this server.
+    pub fn into_out(self) -> Result<ReportOut, DbError> {
+        Ok(ReportOut {
             id: i64::from(self.report.id),
             kind: self.report.kind,
             repo: self.repo,
@@ -317,14 +315,14 @@ impl StoredReport {
             commit_sha: self.report.commit_sha,
             branch: self.report.branch,
             ci_run_id: self.report.ci_run_id,
-            status: self.report.status,
+            status: report_status(&self.report.status)?,
             error: self.report.error,
             counts: self.report.counts,
             run_id: self.report.run_id.map(i64::from),
             retry_count: i64::from(self.report.retry_count),
             created_at: self.report.created_at.with_timezone(&Utc),
             processed_at: self.report.processed_at.map(|at| at.with_timezone(&Utc)),
-        }
+        })
     }
 }
 
@@ -367,7 +365,10 @@ pub async fn report_summary(db: &impl ConnectionTrait) -> Result<ReportSummaryOu
     let row = required_one(
         db,
         sql.to_owned(),
-        vec![Value::from(REPORT_PENDING), Value::from(REPORT_FAILED)],
+        vec![
+            Value::from(ReportStatus::Pending.as_str()),
+            Value::from(ReportStatus::Failed.as_str()),
+        ],
         "report summary",
     )
     .await?;
@@ -405,6 +406,18 @@ pub async fn list_reports(
     Ok(out)
 }
 
+/// The status one stored spelling names, refusing what this version never writes.
+///
+/// # Errors
+///
+/// Returns [`DbError::UnknownReportStatus`] for a spelling the three
+/// [`ReportStatus`] variants do not cover.
+pub fn report_status(text: &str) -> Result<ReportStatus, DbError> {
+    ReportStatus::from_wire(text).ok_or_else(|| DbError::UnknownReportStatus {
+        value: text.to_owned(),
+    })
+}
+
 /// One Report of the list, from its row.
 fn report_out(row: &sea_orm::QueryResult) -> Result<ReportOut, DbError> {
     let created_at: DateTimeWithTimeZone = get(row, "created_at")?;
@@ -417,7 +430,7 @@ fn report_out(row: &sea_orm::QueryResult) -> Result<ReportOut, DbError> {
         commit_sha: get(row, "commit_sha")?,
         branch: get(row, "branch")?,
         ci_run_id: get(row, "ci_run_id")?,
-        status: get(row, "status")?,
+        status: report_status(&get::<String>(row, "status")?)?,
         error: get(row, "error")?,
         counts: get(row, "counts")?,
         run_id: get::<Option<i32>>(row, "run_id")?.map(i64::from),

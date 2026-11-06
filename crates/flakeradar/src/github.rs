@@ -69,10 +69,10 @@ use std::ops::ControlFlow;
 
 use anyhow::Context as _;
 use chrono::{DateTime, Utc};
-use flakeradar_core::{JobExecutionOut, JobHistoryOut, MAX_ISSUE_NUMBER, repo_path};
+use flakeradar_core::{JobExecutionOut, JobHistoryOut, MAX_ISSUE_NUMBER, ReportStatus, repo_path};
 use flakeradar_db::filing::{self, FilingGate, JobRow, NoteCandidate, RecentExecution, TestRow};
 use flakeradar_db::issue_links::{self, LinkTarget, NoteRowState};
-use flakeradar_db::{DbError, ProcessOutcome, REPORT_PROCESSED, get_job};
+use flakeradar_db::{DbError, ProcessOutcome, get_job};
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
 use reqwest::{Client, Method};
 use sea_orm::{ConnectionTrait, TransactionSession, TransactionTrait};
@@ -1865,7 +1865,7 @@ pub async fn on_report_processed(
     api: &Api,
     stop: &CancellationToken,
 ) {
-    if outcome.status != REPORT_PROCESSED || !api.configured() {
+    if outcome.status != ReportStatus::Processed || !api.configured() {
         return;
     }
     let filed = file_issues_for(db, &outcome.touched_test_ids, settings, api, stop).await;

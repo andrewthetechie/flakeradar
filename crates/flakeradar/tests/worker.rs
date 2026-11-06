@@ -23,7 +23,7 @@ use flakeradar::worker::{
     WorkerSettings,
 };
 use flakeradar::{LeaderTask, WebhookWorker};
-use flakeradar_core::{TierChange, WebhookFormat};
+use flakeradar_core::{ReportStatus, TierChange, WebhookFormat};
 use flakeradar_db::entities::{projects, reports};
 use flakeradar_db::{
     DbError, DbSettings, FixedClock, MonotonicClock, ProcessOutcome, ProcessingSettings,
@@ -542,7 +542,7 @@ impl ScriptedProcessor {
             .into_iter()
             .map(|retry_count| ProcessOutcome {
                 report_id: 1,
-                status: flakeradar_db::REPORT_PENDING.to_owned(),
+                status: ReportStatus::Pending,
                 run_id: None,
                 counts: None,
                 touched_test_ids: Vec::new(),

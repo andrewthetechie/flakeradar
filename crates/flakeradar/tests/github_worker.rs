@@ -21,6 +21,7 @@ use flakeradar::worker::{
 };
 use flakeradar::{Api, Settings, settings::Secret};
 use flakeradar::{GitHubWorker, LeaderTask};
+use flakeradar_core::ReportStatus;
 use flakeradar_db::entities::{projects, reports};
 use flakeradar_db::{
     DbError, DbSettings, ProcessOutcome, ProcessingSettings, WORKER_LOCK_KEY, connect,
@@ -121,7 +122,7 @@ async fn flaky_job(db: &TestDb) -> i32 {
 fn processed(tests: &[i32]) -> ProcessOutcome {
     ProcessOutcome {
         report_id: 1,
-        status: "processed".to_owned(),
+        status: ReportStatus::Processed,
         run_id: Some(1),
         counts: None,
         touched_test_ids: tests.to_vec(),
@@ -1866,7 +1867,7 @@ async fn a_sync_holds_no_row_lock_across_its_get() {
         .expect("the Report is queued");
     assert_eq!(
         outcome.status,
-        "processed",
+        ReportStatus::Processed,
         "{}",
         outcome.error.clone().unwrap_or_default()
     );

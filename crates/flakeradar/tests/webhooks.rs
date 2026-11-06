@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use flakeradar::LeaderTask;
 use flakeradar::WebhookWorker;
-use flakeradar_core::{Kind, Tier, TierChange, WebhookFormat};
+use flakeradar_core::{Kind, ReportStatus, Tier, TierChange, WebhookFormat};
 use flakeradar_db::ProcessOutcome;
 use serde_json::{Value, json};
 use wiremock::matchers::{method, path};
@@ -67,7 +67,7 @@ fn job_change() -> TierChange {
 fn outcome(changes: Vec<TierChange>) -> ProcessOutcome {
     ProcessOutcome {
         report_id: 1,
-        status: "processed".to_owned(),
+        status: ReportStatus::Processed,
         run_id: Some(1),
         counts: None,
         touched_test_ids: Vec::new(),

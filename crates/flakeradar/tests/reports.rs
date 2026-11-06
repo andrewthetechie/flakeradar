@@ -12,6 +12,7 @@ mod common;
 
 use axum::http::{Method, StatusCode};
 use common::{Reply, app, get, request};
+use flakeradar_core::ReportStatus;
 use flakeradar_db::entities::reports;
 use flakeradar_test_support::{TestDb, make_project, make_report};
 use sea_orm::{EntityTrait, PaginatorTrait as _};
@@ -194,7 +195,7 @@ async fn retry() {
         .await
         .expect("the Report query")
         .expect("the Report");
-    assert_eq!(stored.status, "pending");
+    assert_eq!(stored.status, ReportStatus::Pending.as_str());
     assert_eq!(stored.retry_count, 0);
     assert_eq!(stored.error, None);
 }
@@ -286,6 +287,27 @@ async fn an_id_no_row_can_hold_is_not_found() {
     let reply = get(&test_app(&db), "/api/reports/9999999999").await;
     assert_eq!(reply.status, StatusCode::NOT_FOUND);
     assert_eq!(reply.json(), json!({"detail": "Report not found"}));
+}
+
+#[tokio::test]
+async fn a_report_whose_stored_status_this_version_never_wrote_is_a_server_error() {
+    // Only this server writes a `reports` row, so an unknown status means
+    // another writer made it: the route reports that rather than serve a value
+    // its own queue filter and counter would ignore.
+    let db = TestDb::new().await.expect("a test database is available");
+    let project = make_project()
+        .build(db.connection())
+        .await
+        .expect("a Project");
+    let report = make_report(&project, project.repo_id)
+        .commit_sha("a")
+        .status("retrying")
+        .build(db.connection())
+        .await
+        .expect("a Report");
+    let reply = get(&test_app(&db), &format!("/api/reports/{}", report.id)).await;
+    assert_eq!(reply.status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(reply.text(), "Internal Server Error");
 }
 
 #[tokio::test]

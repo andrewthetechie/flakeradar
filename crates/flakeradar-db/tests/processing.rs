@@ -14,8 +14,8 @@ use std::sync::Arc;
 
 use chrono::{DateTime, FixedOffset};
 use flakeradar_core::{
-    CiRunId, ExecutionStatus, JobResultIn, JobStatus, PipelineReportIn, ScoredExecution,
-    pipeline_body, tier_for,
+    CiRunId, ExecutionStatus, JobResultIn, JobStatus, PipelineReportIn, ReportStatus,
+    ScoredExecution, pipeline_body, tier_for,
 };
 use flakeradar_db::entities::{
     job_executions, job_score_history, jobs, pipelines, projects, reports, repos, test_cases,
@@ -263,7 +263,7 @@ async fn a_report_becomes_a_run_with_its_counts() {
         .await
         .expect("the processor runs")
         .expect("a Report");
-    assert_eq!(outcome.status, "processed");
+    assert_eq!(outcome.status, ReportStatus::Processed);
     assert_eq!(outcome.report_id, report.id);
     assert_eq!(
         outcome.counts,
@@ -488,7 +488,7 @@ async fn a_line_past_the_column_without_a_file_does_not_fail_the_report() {
         .await
         .expect("the processor runs")
         .expect("a Report was processed");
-    assert_eq!(outcome.status, "processed");
+    assert_eq!(outcome.status, ReportStatus::Processed);
     let row = test(&db).await;
     assert_eq!((row.file.as_deref(), row.line), (None, None));
 }
@@ -536,7 +536,7 @@ async fn a_bad_report_fails_and_the_queue_moves_on() {
         .await
         .expect("the processor runs")
         .expect("a Report");
-    assert_eq!(first.status, "failed");
+    assert_eq!(first.status, ReportStatus::Failed);
     assert_eq!(first.report_id, bad.id);
     assert!(
         first
@@ -580,7 +580,7 @@ async fn a_transient_failure_is_retried_then_capped() {
             .await
             .expect("the processor runs")
             .expect("a Report");
-        assert_eq!(outcome.status, "pending");
+        assert_eq!(outcome.status, ReportStatus::Pending);
         assert_eq!(outcome.retry_count, expected);
         let stored = reports::Entity::find_by_id(report.id)
             .one(db.connection())
@@ -602,7 +602,7 @@ async fn a_transient_failure_is_retried_then_capped() {
         .await
         .expect("the processor runs")
         .expect("a Report");
-    assert_eq!(outcome.status, "failed");
+    assert_eq!(outcome.status, ReportStatus::Failed);
     let stored = reports::Entity::find_by_id(report.id)
         .one(db.connection())
         .await
@@ -627,7 +627,7 @@ async fn a_permanent_error_fails_without_spending_the_retry_budget() {
         .await
         .expect("the processor runs")
         .expect("a Report");
-    assert_eq!(outcome.status, "failed");
+    assert_eq!(outcome.status, ReportStatus::Failed);
     assert!(outcome.error.expect("an error").starts_with("DBAPIError:"));
     let stored = reports::Entity::find_by_id(report.id)
         .one(db.connection())
@@ -718,7 +718,7 @@ async fn a_manual_retry_gives_a_fresh_budget() {
         .await
         .expect("the processor runs")
         .expect("a Report");
-    assert_eq!(outcome.status, "pending");
+    assert_eq!(outcome.status, ReportStatus::Pending);
     let stored = reports::Entity::find_by_id(manual.id)
         .one(db.connection())
         .await
@@ -775,7 +775,7 @@ async fn a_large_report_crosses_chunk_boundaries() {
         .await
         .expect("the processor runs")
         .expect("a Report");
-    assert_eq!(outcome.status, "processed");
+    assert_eq!(outcome.status, ReportStatus::Processed);
     assert_eq!(outcome.touched_test_ids.len(), 2500);
     assert_eq!(
         test_executions::Entity::find()
@@ -1532,7 +1532,7 @@ async fn one_pipeline_creates_its_pipeline_jobs_and_executions() {
         .await
         .expect("the processor runs")
         .expect("a Report");
-    assert_eq!(outcome.status, "processed");
+    assert_eq!(outcome.status, ReportStatus::Processed);
     assert_eq!(
         outcome.counts,
         Some(serde_json::json!({"passed": 1, "failed": 1, "skipped": 0, "duplicate": 0}))
@@ -2089,7 +2089,7 @@ async fn a_report_rewrites_no_project_root_it_does_not_change() {
         .await
         .expect("the processor runs")
         .expect("a Report");
-    assert_eq!(outcome.status, "processed");
+    assert_eq!(outcome.status, ReportStatus::Processed);
     let stored = projects::Entity::find_by_id(project.id)
         .one(db.connection())
         .await
@@ -2241,7 +2241,7 @@ async fn a_line_too_large_for_its_column_fails_the_report() {
         .await
         .expect("the processor runs")
         .expect("a Report");
-    assert_eq!(outcome.status, "failed");
+    assert_eq!(outcome.status, ReportStatus::Failed);
     assert!(
         outcome
             .error
