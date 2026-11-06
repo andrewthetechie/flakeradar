@@ -14,6 +14,10 @@ resolver = "3"
 version = "2.0.0"
 edition = "2024"
 license = "Apache-2.0"
+# The toolchain `rust-toolchain.toml` pins, and the one CI builds and tests
+# with. Claiming an older minimum would promise a compiler nothing here has run
+# on; a 1.85 or 1.90 floor might hold, but it would be a guess.
+rust-version = "1.99"
 
 [workspace.dependencies]
 # Versions live here and nowhere else; each member turns a dependency on with
@@ -25,14 +29,21 @@ chrono = { version = "0.4", default-features = false }
 clap = { version = "4", default-features = false }
 dotenvy = { version = "0.15", default-features = false }
 encoding_rs = { version = "0.8", default-features = false }
+# The sibling crates are declared here too, so a member links one through the
+# workspace and every member resolves the same version (M-CRATES-IN-WORKSPACE).
+flakeradar = { path = "crates/flakeradar", version = "2.0.0" }
+flakeradar-core = { path = "crates/flakeradar-core", version = "2.0.0" }
+flakeradar-db = { path = "crates/flakeradar-db", version = "2.0.0" }
+flakeradar-test-support = { path = "crates/flakeradar-test-support", version = "2.0.0" }
 form_urlencoded = { version = "1", default-features = false }
+futures-util = { version = "0.3", default-features = false }
 mime_guess = { version = "2", default-features = false }
+mimalloc = { version = "0.1", default-features = false }
 regex = { version = "1", default-features = false }
 reqwest = { version = "0.13", default-features = false }
 rmcp = { version = "3", default-features = false }
 roxmltree = { version = "0.21", default-features = false }
 rust-embed = { version = "8", default-features = false }
-schemars = { version = "1", default-features = false }
 sea-orm = { version = "2", default-features = false }
 sea-orm-migration = { version = "2", default-features = false }
 serde = { version = "1", default-features = false }
@@ -52,7 +63,6 @@ utoipa = { version = "6", default-features = false }
 utoipa-redoc = { version = "7", default-features = false }
 url = { version = "2", default-features = false }
 # Test-only. Members name these under `[dev-dependencies]`.
-testcontainers = { version = "0.28", default-features = false }
 wiremock = { version = "0.6", default-features = false }
 
 [profile.release]

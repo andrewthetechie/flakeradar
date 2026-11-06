@@ -15,8 +15,8 @@ axum = { workspace = true, features = ["http1", "json", "macros", "query", "toki
 chrono = { workspace = true, features = ["clock", "std"] }
 clap = { workspace = true, features = ["derive", "error-context", "help", "std", "suggestions", "usage"] }
 dotenvy.workspace = true
-flakeradar-core = { path = "../flakeradar-core" }
-flakeradar-db = { path = "../flakeradar-db" }
+flakeradar-core.workspace = true
+flakeradar-db.workspace = true
 form_urlencoded.workspace = true
 mime_guess.workspace = true
 reqwest = { workspace = true, features = ["json", "rustls"] }
@@ -37,13 +37,13 @@ utoipa = { workspace = true, features = ["macros"] }
 utoipa-redoc.workspace = true
 
 [target.'cfg(all(target_os = "linux", target_env = "musl"))'.dependencies]
-mimalloc = { version = "0.1", default-features = false }
+mimalloc.workspace = true
 
 [dev-dependencies]
 chrono = { workspace = true, features = ["clock", "std"] }
 clap.workspace = true
-flakeradar-test-support = { path = "../flakeradar-test-support" }
-futures-util = { version = "0.3", default-features = false }
+flakeradar-test-support.workspace = true
+futures-util.workspace = true
 # The MCP client half of the SDK, for the one test that drives `/mcp/` with a
 # real client. It stays out of `[dependencies]`: the binary serves and never
 # calls out as an MCP client.

@@ -1158,7 +1158,7 @@ run) and `failure_category`.
 ## Development
 
 ```bash
-cargo nextest run --all-features --profile ci   # needs Docker: testcontainers starts Postgres
+cargo nextest run --all-features --profile ci   # needs Docker, or FLAKERADAR_TEST_DATABASE_URL
 # or point it at an existing, throwaway database:
 # FLAKERADAR_TEST_DATABASE_URL=postgresql://... cargo nextest run --all-features --profile ci
 cd frontend && npm test                         # Vitest

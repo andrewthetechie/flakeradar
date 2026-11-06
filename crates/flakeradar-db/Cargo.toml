@@ -11,7 +11,7 @@ workspace = true
 
 [dependencies]
 chrono = { workspace = true, features = ["clock", "std"] }
-flakeradar-core = { path = "../flakeradar-core" }
+flakeradar-core.workspace = true
 sea-orm = { workspace = true, features = [
   "macros",
   "runtime-tokio-rustls",
@@ -30,6 +30,6 @@ tracing = { workspace = true }
 url = { workspace = true }
 
 [dev-dependencies]
-flakeradar-test-support = { path = "../flakeradar-test-support" }
+flakeradar-test-support.workspace = true
 tracing-subscriber = { workspace = true, features = ["fmt"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

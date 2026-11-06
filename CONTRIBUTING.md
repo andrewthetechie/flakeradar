@@ -40,15 +40,19 @@ and `frontend` jobs of `.github/workflows/ci.yml`.
 ```bash
 cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
-cargo nextest run --all-features --profile ci   # needs Docker: testcontainers starts Postgres
+cargo nextest run --all-features --profile ci   # needs Docker or FLAKERADAR_TEST_DATABASE_URL
 cargo test --doc --all-features
 cargo audit
 cd frontend && npm run typecheck && npm run lint && npm run format:check && npm test
 ```
 
-Set `FLAKERADAR_TEST_DATABASE_URL=postgresql://…` to run the Rust tests
-against an existing (throwaway!) database instead of a testcontainers one; its
-tables are truncated between tests. `scripts/smoke.sh <binary> <database-url>`
+The Rust tests need a PostgreSQL server. Without a `FLAKERADAR_TEST_DATABASE_URL`
+they start one with the `docker` command line: `flakeradar-test-support` runs one
+`postgres:17-alpine` container named `flakeradar-test-postgres`, reuses it across
+runs and across every test process, and every test then clones a migrated
+template database of its own. Set `FLAKERADAR_TEST_DATABASE_URL=postgresql://…`
+to run them against an existing (throwaway!) server instead, with no Docker at
+all; their databases are created and dropped per test. `scripts/smoke.sh <binary> <database-url>`
 exercises a built binary end to end — every route, an ingest that reaches
 `processed`, `/docs`, MCP `tools/list` and the `/metrics` series — and is what
 the release matrix runs on each of the five targets.
