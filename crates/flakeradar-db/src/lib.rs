@@ -69,7 +69,7 @@ pub use filing::{
 #[doc(inline)]
 pub use identity::{get_or_create_project, get_or_create_repo};
 #[doc(inline)]
-pub use issue_links::{LinkError, LinkTarget, LinkedIssue, LinkedOut, NoteStamp};
+pub use issue_links::{LinkError, LinkTarget, LinkedIssue, LinkedOut, NoteRowState, NoteStamp};
 #[doc(inline)]
 pub use metrics::{
     QueueFacts, job_tier_counts, last_processed_at, queue_facts, reachable, report_status_counts,

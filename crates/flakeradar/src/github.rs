@@ -71,7 +71,7 @@ use anyhow::Context as _;
 use chrono::{DateTime, Utc};
 use flakeradar_core::{JobExecutionOut, JobHistoryOut, MAX_ISSUE_NUMBER, repo_path};
 use flakeradar_db::filing::{self, FilingGate, JobRow, NoteCandidate, RecentExecution, TestRow};
-use flakeradar_db::issue_links::{self, LinkTarget};
+use flakeradar_db::issue_links::{self, LinkTarget, NoteRowState};
 use flakeradar_db::{DbError, ProcessOutcome, REPORT_PROCESSED, get_job};
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
 use reqwest::{Client, Method};
@@ -1764,7 +1764,7 @@ async fn stamp_note(
 }
 
 /// Logs why a note's stamp did not land: the row vanished or stopped being noteable.
-fn log_note_stamp_failure(state: Option<(i32, Option<i32>)>, entity: &str, row: &NoteCandidate) {
+fn log_note_stamp_failure(state: Option<NoteRowState>, entity: &str, row: &NoteCandidate) {
     match state {
         None => tracing::warn!(
             entity,
@@ -1773,11 +1773,11 @@ fn log_note_stamp_failure(state: Option<(i32, Option<i32>)>, entity: &str, row: 
             number = row.number,
             "row deleted (admin delete) while noting its issue"
         ),
-        Some((streak, linked)) => tracing::warn!(
+        Some(state) => tracing::warn!(
             entity,
             entity_id = row.entity_id,
-            streak,
-            number = ?linked,
+            streak = state.clean_streak,
+            number = ?state.issue_number,
             "row stopped being noteable while its comment was posted"
         ),
     }

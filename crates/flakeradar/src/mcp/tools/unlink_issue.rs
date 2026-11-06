@@ -67,10 +67,9 @@ pub(super) fn annotations() -> ToolAnnotations {
 pub(super) fn call(server: &McpServer, arguments: Value) -> BoxFuture<'_, ToolResult> {
     Box::pin(async move {
         let args: UnlinkIssueArgs = parse(arguments)?;
-        let target = one_target(args.test_id, args.job_id)?;
+        let (kind, id) = one_target(args.test_id, args.job_id)?;
         let linked =
-            issue_links::unlink_issue(server.pool(), target.0, target.1, &server.read_settings())
-                .await?;
+            issue_links::unlink_issue(server.pool(), kind, id, &server.read_settings()).await?;
         linked_answer(&linked)
     })
 }

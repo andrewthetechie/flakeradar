@@ -561,9 +561,20 @@ pub async fn record_check(
 pub struct NoteStamp {
     /// Whether the stamp landed.
     pub stamped: bool,
-    /// The row's Clean streak and issue number when the stamp did not land, or
-    /// `None` when the row is gone.
-    pub state: Option<(i32, Option<i32>)>,
+    /// The row's state when the stamp did not land, or `None` when the row is gone.
+    pub state: Option<NoteRowState>,
+}
+
+/// The two row values a refused fixed-note stamp reports.
+///
+/// A named pair, so a caller cannot read the issue number as the streak: the two
+/// are both integers, so swapping them in a tuple would compile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NoteRowState {
+    /// The Clean streak the row held when the stamp was refused.
+    pub clean_streak: i32,
+    /// The issue the row is linked to, when it still holds one.
+    pub issue_number: Option<i32>,
 }
 
 /// Lands the fixed-note stamp only while the row is still noteable.
@@ -615,10 +626,10 @@ pub async fn stamp_fixed_note(
     );
     let state = one(db, sql, vec![Value::from(target_id)]).await?;
     let state = match state {
-        Some(row) => Some((
-            get::<i32>(&row, "clean_streak")?,
-            get(&row, "github_issue_number")?,
-        )),
+        Some(row) => Some(NoteRowState {
+            clean_streak: get(&row, "clean_streak")?,
+            issue_number: get(&row, "github_issue_number")?,
+        }),
         None => None,
     };
     Ok(NoteStamp {
