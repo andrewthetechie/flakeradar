@@ -222,8 +222,8 @@ pub(crate) fn id(value: i32) -> i64 {
     i64::from(value)
 }
 
-/// The leaderboard descriptor: what the one engine needs to know about an entity.
-struct Board<'a> {
+/// What the one leaderboard engine needs to know about an entity to query it.
+struct EntityBoard {
     /// The Score-history table the past-score lookups use.
     kind: HistoryKind,
     /// The entity's table alias in `select`.
@@ -232,30 +232,72 @@ struct Board<'a> {
     select: &'static str,
     /// The `FROM` clause, joining the entity to its parents.
     from: &'static str,
-    /// The conditions the wrapper scoped and filtered with.
-    filter: Binds,
     /// The search condition, given the pattern bind's placeholder.
     search: fn(&str) -> String,
     /// The entity's GitHub issue column.
     issue_column: &'static str,
-    /// Whether the entity's listing keeps stable rows for its own filters.
-    keeps_stable_rows: bool,
-    /// Whether the caller asked for stable rows.
-    include_stable: bool,
-    /// Whether only flaky rows may be returned (the MCP "flaky only" listing).
-    flaky_only: bool,
-    /// The sort order.
-    sort: SortKey,
-    /// The page number, from 1.
-    page: i64,
-    /// How many rows a page holds.
-    page_size: i64,
-    /// The search text, when the caller gave a non-empty one.
-    q: Option<&'a str>,
-    /// Whether the caller filtered on having a linked issue.
-    has_issue: Option<bool>,
-    /// The window, in days, of the "became flaky recently" filter.
-    new_within_days: Option<i64>,
+}
+
+/// The Tests leaderboard's descriptor.
+const TESTS_BOARD: EntityBoard = EntityBoard {
+    kind: HistoryKind::Test,
+    alias: "t",
+    select: TESTS_SELECT,
+    from: TESTS_FROM,
+    search: test_search,
+    issue_column: "t.github_issue_number",
+};
+
+/// The Jobs leaderboard's descriptor.
+const JOBS_BOARD: EntityBoard = EntityBoard {
+    kind: HistoryKind::Job,
+    alias: "j",
+    select: JOBS_SELECT,
+    from: JOBS_FROM,
+    search: job_search,
+    issue_column: "j.github_issue_number",
+};
+
+/// Which tiers a leaderboard listing may return.
+///
+/// The three cases are the engine's whole tier rule, decided once by
+/// [`TierFilter::of`], so `flaky_only` and `include_stable` cannot be combined
+/// into a state the query has to guess about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TierFilter {
+    /// At or above the Flake threshold: the MCP flaky-only listing and the
+    /// "became flaky recently" window.
+    FlakyOnly,
+    /// Above a zero score: the stable-hiding default.
+    AboveZero,
+    /// Every row.
+    All,
+}
+
+impl TierFilter {
+    /// The tier a listing returns, from the options and the entity's own filters.
+    fn of(options: &ListOptions, keeps_stable_rows: bool) -> Self {
+        let searching = options.q.as_deref().is_some_and(|text| !text.is_empty());
+        if options.flaky_only || options.new_within_days.is_some() {
+            Self::FlakyOnly
+        } else if !options.include_stable && !searching && !keeps_stable_rows {
+            Self::AboveZero
+        } else {
+            Self::All
+        }
+    }
+}
+
+/// One leaderboard request: the entity, the caller's options and the extra filters.
+struct Board<'a> {
+    /// The entity being listed.
+    entity: &'a EntityBoard,
+    /// The sort, paging, search and filter options.
+    options: &'a ListOptions,
+    /// The conditions the wrapper scoped and filtered with.
+    filter: Binds,
+    /// The tier the listing returns, decided by the caller.
+    tier: TierFilter,
     /// The Flake threshold.
     threshold: f64,
     /// The UTC day the history cut-offs are relative to.
@@ -275,29 +317,39 @@ impl Board<'_> {
         let mut conditions = self.filter;
 
         let mut joins = String::new();
-        if self.flaky_only || self.new_within_days.is_some() {
-            let placeholder = conditions.bind(Value::from(self.threshold));
-            conditions.raw(format!("{}.flakiness_score >= {placeholder}", self.alias));
-        } else if !self.include_stable && self.q.is_none() && !self.keeps_stable_rows {
-            // The stable-hiding default. Kept as descriptor data by the caller.
-            conditions.raw(format!("{}.flakiness_score > 0", self.alias));
+        match self.tier {
+            TierFilter::FlakyOnly => {
+                let placeholder = conditions.bind(Value::from(self.threshold));
+                conditions.raw(format!(
+                    "{}.flakiness_score >= {placeholder}",
+                    self.entity.alias
+                ));
+            }
+            TierFilter::AboveZero => {
+                conditions.raw(format!("{}.flakiness_score > 0", self.entity.alias));
+            }
+            TierFilter::All => {}
         }
 
-        if let Some(text) = self.q {
+        if let Some(text) = self.options.q.as_deref().filter(|text| !text.is_empty()) {
             let placeholder = conditions.bind(Value::from(format!("%{}%", escape_like(text))));
-            conditions.raw((self.search)(&placeholder));
+            conditions.raw((self.entity.search)(&placeholder));
         }
 
-        if let Some(wanted) = self.has_issue {
+        if let Some(wanted) = self.options.has_issue {
             conditions.raw(if wanted {
-                format!("{} IS NOT NULL", self.issue_column)
+                format!("{} IS NOT NULL", self.entity.issue_column)
             } else {
-                format!("{} IS NULL", self.issue_column)
+                format!("{} IS NULL", self.entity.issue_column)
             });
         }
 
-        if let Some(days) = self.new_within_days {
-            joins = newest_history_join(self.kind, self.alias, self.today - Duration::days(days));
+        if let Some(days) = self.options.new_within_days {
+            joins = newest_history_join(
+                self.entity.kind,
+                self.entity.alias,
+                self.today - Duration::days(days),
+            );
             let placeholder = conditions.bind(Value::from(self.threshold));
             conditions.raw(format!(
                 "(past.score IS NULL OR past.score < {placeholder})"
@@ -306,8 +358,8 @@ impl Board<'_> {
 
         let base = format!(
             "{} {}{}{}",
-            self.select,
-            self.from,
+            self.entity.select,
+            self.entity.from,
             joins,
             conditions.suffix()
         );
@@ -318,23 +370,21 @@ impl Board<'_> {
             None => 0,
         };
 
-        let order = match self.sort {
+        let order = match self.options.sort {
             SortKey::Score => "flakiness_score DESC, last_seen_at DESC, id",
             SortKey::LastSeen => "last_seen_at DESC, id DESC",
             SortKey::Proven => "confirmed_flake_count DESC, flakiness_score DESC, id",
         };
-        let limit = conditions.bind(Value::from(self.page_size));
+        let page = self.options.page;
+        let page_size = self.options.page_size;
+        let limit = conditions.bind(Value::from(page_size));
         // A page whose offset does not fit is an error rather than a wrapped
         // offset: the route refuses such a page, and a caller building the
         // options itself is told instead of being answered another page's rows.
-        let offset_rows = self
-            .page
+        let offset_rows = page
             .saturating_sub(1)
-            .checked_mul(self.page_size)
-            .ok_or(DbError::PageOffsetTooLarge {
-                page: self.page,
-                page_size: self.page_size,
-            })?;
+            .checked_mul(page_size)
+            .ok_or(DbError::PageOffsetTooLarge { page, page_size })?;
         let offset = conditions.bind(Value::from(offset_rows));
         let values = conditions.into_values();
         let page_sql = format!("{base} ORDER BY {order} LIMIT {limit} OFFSET {offset}");
@@ -482,6 +532,24 @@ fn job_issue_url(repo: &str, provider: &str, number: Option<i64>) -> Option<Stri
     }
 }
 
+impl ListOptions {
+    /// The MCP "top flaky" listing: score order, one page, and flaky-only unless
+    /// the caller asked for suspect rows too.
+    #[must_use]
+    pub fn top_flaky(page_size: i64, include_suspect: bool, new_within_days: Option<i64>) -> Self {
+        Self {
+            include_stable: false,
+            flaky_only: !include_suspect,
+            sort: SortKey::Score,
+            page: 1,
+            page_size,
+            q: None,
+            has_issue: None,
+            new_within_days,
+        }
+    }
+}
+
 /// The Tests-only listing filters the engine must not know about.
 #[derive(Debug, Clone, Default)]
 pub struct TestListFilters {
@@ -559,23 +627,13 @@ pub async fn list_tests(
             filter.raw("FALSE");
         }
     }
+    // A quarantine or broken filter keeps the stable rows it selected by.
+    let keeps_stable_rows = filters.quarantined == Some(true) || filters.broken;
     let board = Board {
-        kind: HistoryKind::Test,
-        alias: "t",
-        select: TESTS_SELECT,
-        from: TESTS_FROM,
+        entity: &TESTS_BOARD,
+        options,
         filter,
-        search: test_search,
-        issue_column: "t.github_issue_number",
-        keeps_stable_rows: filters.quarantined == Some(true) || filters.broken,
-        include_stable: options.include_stable,
-        flaky_only: options.flaky_only,
-        sort: options.sort,
-        page: options.page,
-        page_size: options.page_size,
-        q: options.q.as_deref().filter(|text| !text.is_empty()),
-        has_issue: options.has_issue,
-        new_within_days: options.new_within_days,
+        tier: TierFilter::of(options, keeps_stable_rows),
         threshold: settings.flake_threshold,
         today: settings.today(),
     };
@@ -624,24 +682,12 @@ pub async fn list_jobs(
     if let Some(pipeline) = &filters.pipeline {
         filter.eq("p.name", Value::from(pipeline.clone()));
     }
+    // ADR 0004: Jobs have no Quarantine, so no Job listing keeps stable rows.
     let board = Board {
-        kind: HistoryKind::Job,
-        alias: "j",
-        select: JOBS_SELECT,
-        from: JOBS_FROM,
+        entity: &JOBS_BOARD,
+        options,
         filter,
-        search: job_search,
-        issue_column: "j.github_issue_number",
-        // ADR 0004: Jobs have no Quarantine, so no Job listing keeps stable rows.
-        keeps_stable_rows: false,
-        include_stable: options.include_stable,
-        flaky_only: options.flaky_only,
-        sort: options.sort,
-        page: options.page,
-        page_size: options.page_size,
-        q: options.q.as_deref().filter(|text| !text.is_empty()),
-        has_issue: options.has_issue,
-        new_within_days: options.new_within_days,
+        tier: TierFilter::of(options, false),
         threshold: settings.flake_threshold,
         today: settings.today(),
     };
@@ -2080,8 +2126,8 @@ mod tests {
     )]
 
     use super::{
-        Binds, HistoryKind, NEW_FLAKY_DAYS, ReadError, ReadSettings, SortKey, newest_history_join,
-        scope_conditions,
+        Binds, HistoryKind, ListOptions, NEW_FLAKY_DAYS, ReadError, ReadSettings, SortKey,
+        TierFilter, newest_history_join, scope_conditions,
     };
 
     #[test]
@@ -2101,6 +2147,62 @@ mod tests {
         scope_conditions(&scope, "r.name", "p.name", &mut binds);
         assert_eq!(binds.suffix(), " WHERE r.name = $3 AND p.name = $4");
         assert_eq!(binds.values().len(), 2);
+    }
+
+    #[test]
+    fn the_tier_filter_table_names_every_state_the_options_can_be_in() {
+        let options = |change: fn(&mut ListOptions)| {
+            let mut options = ListOptions::default();
+            change(&mut options);
+            options
+        };
+        // The stable-hiding default.
+        assert_eq!(
+            TierFilter::of(&options(|_| {}), false),
+            TierFilter::AboveZero
+        );
+        // `include_stable` shows everything.
+        assert_eq!(
+            TierFilter::of(&options(|options| options.include_stable = true), false),
+            TierFilter::All
+        );
+        // A search shows everything, because the caller narrowed it already.
+        assert_eq!(
+            TierFilter::of(
+                &options(|options| options.q = Some("checkout".to_owned())),
+                false
+            ),
+            TierFilter::All
+        );
+        // An empty search is no search: the default still hides stable rows.
+        assert_eq!(
+            TierFilter::of(&options(|options| options.q = Some(String::new())), false),
+            TierFilter::AboveZero
+        );
+        // Quarantine and broken filters keep the stable rows they selected.
+        assert_eq!(TierFilter::of(&options(|_| {}), true), TierFilter::All);
+        // The flaky-only listing needs no stable rows and outranks every other rule.
+        assert_eq!(
+            TierFilter::of(
+                &options(|options| {
+                    options.flaky_only = true;
+                    options.include_stable = true;
+                }),
+                true
+            ),
+            TierFilter::FlakyOnly
+        );
+        // The "became flaky recently" window is flaky-only too.
+        assert_eq!(
+            TierFilter::of(
+                &options(|options| {
+                    options.new_within_days = Some(NEW_FLAKY_DAYS);
+                    options.include_stable = true;
+                }),
+                false
+            ),
+            TierFilter::FlakyOnly
+        );
     }
 
     #[test]

@@ -10,7 +10,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use flakeradar_core::normalize_repo;
-use flakeradar_db::reads::{self, JobListFilters, ListOptions, SortKey};
+use flakeradar_db::reads::{self, JobListFilters, ListOptions};
 
 use crate::mcp::{
     Answer, BoxFuture, DEFAULT_LIMIT, McpServer, ToolResult, check_limit, check_new_within_days,
@@ -81,16 +81,8 @@ pub(super) fn call(server: &McpServer, arguments: Value) -> BoxFuture<'_, ToolRe
         }
         let name = normalize_repo(&args.repo)?;
         let filters = JobListFilters { pipeline: None };
-        let options = ListOptions {
-            include_stable: false,
-            flaky_only: !args.include_suspect,
-            sort: SortKey::Score,
-            page: 1,
-            page_size: args.limit,
-            q: None,
-            has_issue: None,
-            new_within_days: args.new_within_days,
-        };
+        let options =
+            ListOptions::top_flaky(args.limit, args.include_suspect, args.new_within_days);
         let page = reads::list_jobs(
             server.pool(),
             Some(&name),

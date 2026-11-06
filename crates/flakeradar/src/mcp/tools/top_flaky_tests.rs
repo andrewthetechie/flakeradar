@@ -9,7 +9,7 @@ use rmcp::model::ToolAnnotations;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use flakeradar_db::reads::{self, ListOptions, SortKey, TestListFilters};
+use flakeradar_db::reads::{self, ListOptions, TestListFilters};
 
 use crate::mcp::{
     Answer, BoxFuture, DEFAULT_LIMIT, McpServer, ToolResult, check_limit, check_new_within_days,
@@ -105,16 +105,8 @@ pub(super) fn call(server: &McpServer, arguments: Value) -> BoxFuture<'_, ToolRe
             quarantined: None,
             broken: false,
         };
-        let options = ListOptions {
-            include_stable: false,
-            flaky_only: !args.include_suspect,
-            sort: SortKey::Score,
-            page: 1,
-            page_size: args.limit,
-            q: None,
-            has_issue: None,
-            new_within_days: args.new_within_days,
-        };
+        let options =
+            ListOptions::top_flaky(args.limit, args.include_suspect, args.new_within_days);
         let page = reads::list_tests(
             server.pool(),
             &scope,
