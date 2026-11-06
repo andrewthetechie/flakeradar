@@ -39,8 +39,7 @@ Task 14 works through this list and closes what it can. Task 15 files a follow-o
 | 07 | `crates/flakeradar-db/src/processing.rs` | `upsert_pipeline_jobs` | unreached arm | `DataError: the Pipeline vanished`, the read-back after the `ON CONFLICT` upsert in the same transaction. Same shape as the Test arm above | — |
 | 07 | `crates/flakeradar-db/src/processing.rs` | `insert_pipeline_job_executions` | unreached arm | `DataError: Job {name} vanished`, the id lookup for a name `upsert_pipeline_jobs` has just inserted. Same shape | — |
 | 07 | `crates/flakeradar-db/src/processing.rs` | `insert_pipeline_job_executions` | unreached arm | `DataError: unknown Job status {other}`. The status comes back from rows this function just inserted from [`JobStatus`](flakeradar_core::JobStatus), so only a value the schema accepted and the enum does not know reaches it; `job_history`'s copy of that guard is covered by `a_job_execution_with_an_unknown_status_refuses_to_score`, which writes the row directly | — |
-| 07 | `crates/flakeradar-db/src/processing.rs` | `test_tier_changes` | unreached arm (branch) | The `continue` for a Test deleted between the score write and the naming read in the same transaction. A single-connection test cannot delete between them both | — |
-| 07 | `crates/flakeradar-db/src/processing.rs` | `job_tier_changes` | unreached arm (branch) | The same `continue` for a Job, with the same reason | — |
+| 07 | `crates/flakeradar-db/src/processing.rs` | `tier_changes` | unreached arm (branch) | The `continue` for a row the naming read returns that the crossing list does not hold. The statement names exactly the ids that list holds, so the arm cannot run; task 27 merged the Test and Job copies of it into this one | — |
 | 07 | `crates/flakeradar-db/src/attribution.rs` | `get` | unreached arm | The `.map_err` for a driver error on a column read, the same shape as `processing.rs`'s `get` | — |
 | 07 | `crates/flakeradar-db/src/score_history.rs` | `get` | unreached arm | The `.map_err` for a driver error on a column read, the same shape again | — |
 | 08 | `crates/flakeradar/src/worker.rs` | `AdvisoryLock::try_lock`, `AdvisoryLock::check` | unreached arm | The `None` for a lock query that answered no row, and for a liveness query that answered no row. `SELECT pg_try_advisory_lock($1) AS locked, pg_backend_pid() AS backend_pid` and `SELECT pg_backend_pid() = $1 AS same_session` have no `FROM` clause, so PostgreSQL always answers exactly one row; the arms mean "not locked" and "cannot prove the lock" rather than a panic, for a driver that ever answers none. They are the file's only missed lines (370-371 after task 16 moved them) and its only missed branch | — |
@@ -224,3 +223,21 @@ One row moved with its code rather than being re-homed here: `github.rs`'s own `
 `flakeradar_db::sql::get` in task 24, so its row now names `crates/flakeradar-db/src/sql.rs`.
 The line numbers in the rows this task touched are gone rather than corrected: the split moves
 every one of them, and a function name survives a move.
+
+## Task 27: no new row, and the two tier-change rows became one
+
+Task 27 merged the Test and Job copies of the rescore, the bulk write, the Tier change, the
+old-score read, the two leaderboard reads and the retention steps. The rows above whose code
+moved keep their reason: the two `test_tier_changes`/`job_tier_changes` `continue` rows are the
+one `tier_changes` row, because there is one arm now.
+
+Nothing this task adds is uncovered, measured with
+`cargo +nightly-2026-10-25 llvm-cov nextest --branch --all-features --profile ci`:
+`crates/flakeradar-db/src/retention.rs` is 100% of lines (300) and of branches (14),
+`sql.rs` 100% of both (`bigint_array` is the id batch both expiry steps bind), and the new
+descriptors are all reached — `Column::value` for all seven columns by the two bulk writes,
+`Notices::recovered` by both entities, `Tally`'s two filters by `summary` and `job_summary`,
+and `Window::push`/`window_binds` by both window reads. `processing.rs` is 97.86% of lines and
+95.59% of branches and `reads.rs` 99.12% and 93.44%; the lines they miss are the ones the rows
+above already name, and the suite is 97.67% of lines (364 missed) and 94.71% of branches
+(70 missed), so `coverage-floor.json` stays `{96, 94}`.
