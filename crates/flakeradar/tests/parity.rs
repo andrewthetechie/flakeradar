@@ -373,7 +373,9 @@ async fn replay_step(
             .cloned()
             .unwrap_or_default();
         let dump = dump_db(db, &tables).await;
-        compare_recorded(scenario, step, recorded, &dump)
+        let mut failures = compare_recorded(scenario, step, recorded, &dump);
+        failures.extend(clock_relations(scenario, step, &dump));
+        failures
     } else if spec.get("wait_processed").is_some() {
         let drained = wait_processed(server, db, settings).await;
         compare_recorded(scenario, step, recorded, &drained)
@@ -1702,6 +1704,106 @@ fn is_timestamp(value: &str) -> bool {
     }
 }
 
+/// The instant a clock value names, in either spelling `differences.md` allows.
+fn instant(value: &Value) -> Option<DateTime<chrono::FixedOffset>> {
+    DateTime::parse_from_rfc3339(value.as_str()?).ok()
+}
+
+/// Every way a dump's clock values disagree with the order the reference writes them in.
+///
+/// A `<timestamp>` placeholder proves a field holds a clock value and nothing
+/// more: two placeholders accept any two timestamps, so a replay could order or
+/// reuse them wrongly and still match its golden. The reference's own processing
+/// gives the values a shape the goldens show as placeholders, so a `dump_db` step
+/// checks it:
+///
+/// - `created_at` never decreases down a table listed by `id`, because each
+///   Report is processed after the one before it;
+/// - a row's `processed_at` is never before its own `created_at`;
+/// - every Execution of one Report carries the same `created_at`, because
+///   `processing.rs` takes a single `now` per Report and stamps the Run, the
+///   Test or Job bookkeeping and each Execution with it — an equality between
+///   clock values that a placeholder would otherwise hide.
+fn clock_relations(scenario: &str, step: usize, answered: &Value) -> Mismatches {
+    let mut failures = Vec::new();
+    let Some(tables) = answered.get("tables").and_then(Value::as_object) else {
+        return failures;
+    };
+    for (table, rows) in tables {
+        let Some(rows) = rows.as_array() else {
+            continue;
+        };
+        // The dump orders a table by `id`; a table with no `id` was ordered by
+        // something else, and its ids say nothing about processing order.
+        if rows.iter().any(|row| row.get("id").is_none()) {
+            continue;
+        }
+        let mut previous: Option<DateTime<chrono::FixedOffset>> = None;
+        for row in rows {
+            let Some(created) = instant(&row["created_at"]) else {
+                continue;
+            };
+            if let Some(previous) = previous
+                && created < previous
+            {
+                failures.push(format!(
+                    "{scenario} step {step}: {table}.{}.created_at {} is before the row before it, \
+                     though Reports are processed oldest first",
+                    row["id"], row["created_at"]
+                ));
+            }
+            previous = Some(created);
+            if let Some(processed) = instant(&row["processed_at"])
+                && processed < created
+            {
+                failures.push(format!(
+                    "{scenario} step {step}: {table}.{}.processed_at {} is before its created_at {}",
+                    row["id"], row["processed_at"], row["created_at"]
+                ));
+            }
+        }
+        let keys: &[&str] = match table.as_str() {
+            "test_executions" => &["test_run_id"],
+            "job_executions" => &["ci_run_id", "ci_run_attempt"],
+            _ => continue,
+        };
+        // One clock value per Report, so every row of one group names the same
+        // instant; the rows' own ids keep the report a reader would follow.
+        let mut seen: BTreeMap<String, (String, Value)> = BTreeMap::new();
+        for row in rows {
+            let group = keys
+                .iter()
+                .map(|key| row[*key].to_string())
+                .collect::<Vec<_>>()
+                .join("/");
+            let Some(row_instant) = instant(&row["created_at"]) else {
+                continue;
+            };
+            match seen.get(&group) {
+                None => {
+                    let _ = seen.insert(
+                        group,
+                        (row["created_at"].to_string(), row["created_at"].clone()),
+                    );
+                }
+                Some((_, first)) => {
+                    if instant(first) != Some(row_instant) {
+                        failures.push(format!(
+                            "{scenario} step {step}: {table}.{}.created_at {} does not equal {} of \
+                             the same Report ({} {group}), which one Report writes once",
+                            row["id"],
+                            row["created_at"],
+                            first,
+                            keys.join("/")
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    failures
+}
+
 /// Whether `value` is a `YYYY-MM-DD` date.
 fn is_date(value: &str) -> bool {
     let widths = [4, 2, 2];
@@ -2135,6 +2237,93 @@ mod tests {
         );
         assert_eq!(failures.len(), 1, "{failures:?}");
         assert!(failures[0].contains("note"), "{failures:?}");
+    }
+
+    #[test]
+    fn the_clock_values_of_a_dump_keep_the_order_the_reference_writes_them_in() {
+        // Two Reports, processed oldest first, each completed after it was made.
+        let mut dump = json!({"tables": {"reports": [
+            {"id": 1, "created_at": "2026-10-20T09:00:00.000000Z", "processed_at": "2026-10-20T09:00:01.000000Z"},
+            {"id": 2, "created_at": "2026-10-20T09:00:02.000000Z", "processed_at": "2026-10-20T09:00:03.000000Z"},
+        ]}});
+        assert_eq!(super::clock_relations("s", 1, &dump), Vec::<String>::new());
+
+        // A second Report created before the first breaks the order Reports are
+        // processed in.
+        dump["tables"]["reports"][1]["created_at"] = json!("2026-10-20T08:59:59.000000Z");
+        let failures = super::clock_relations("s", 1, &dump);
+        assert_eq!(failures.len(), 1, "{failures:?}");
+        assert!(failures[0].contains("created_at"), "{failures:?}");
+        assert!(failures[0].contains("reports.2"), "{failures:?}");
+
+        // A Report completed before it was created is impossible.
+        dump["tables"]["reports"][1]["created_at"] = json!("2026-10-20T09:00:02.000000Z");
+        dump["tables"]["reports"][0]["processed_at"] = json!("2026-10-20T08:00:00.000000Z");
+        let failures = super::clock_relations("s", 1, &dump);
+        assert_eq!(failures.len(), 1, "{failures:?}");
+        assert!(failures[0].contains("processed_at"), "{failures:?}");
+    }
+
+    #[test]
+    fn the_executions_of_one_report_name_one_instant() {
+        // One Report, so one clock value on every Execution it wrote.
+        let mut dump = json!({"tables": {"test_executions": [
+            {"id": 1, "test_run_id": 7, "created_at": "2026-10-20T09:00:00.000000Z"},
+            {"id": 2, "test_run_id": 7, "created_at": "2026-10-20T09:00:00Z"},
+            {"id": 3, "test_run_id": 8, "created_at": "2026-10-20T09:05:00.000000Z"},
+        ]}});
+        assert_eq!(super::clock_relations("s", 1, &dump), Vec::<String>::new());
+
+        // The third Execution of the same Run belongs to another Report's clock,
+        // which no placeholder would have caught.
+        dump["tables"]["test_executions"][1]["created_at"] = json!("2026-10-20T09:01:00.000000Z");
+        let failures = super::clock_relations("s", 1, &dump);
+        assert_eq!(failures.len(), 1, "{failures:?}");
+        assert!(failures[0].contains("test_executions.2"), "{failures:?}");
+        assert!(failures[0].contains("test_run_id 7"), "{failures:?}");
+    }
+
+    #[test]
+    fn the_recorded_dumps_carry_the_clock_relations_this_checks() {
+        // The rule is only worth its lines where the corpus has the shape it
+        // describes: the recorded `flaky-tests` dump lists Executions several to
+        // a Run, so the equality is checked on real rows and not on an empty set.
+        let recorded = super::golden("flaky-tests", 48);
+        let mut answered = recorded
+            .get("tables")
+            .cloned()
+            .expect("the golden dumps its tables");
+        resolve_placeholders(&mut answered);
+        let answered = json!({"tables": answered});
+        assert_eq!(
+            super::clock_relations("flaky-tests", 48, &answered),
+            Vec::<String>::new()
+        );
+
+        let runs = answered["tables"]["test_executions"]
+            .as_array()
+            .expect("the dump lists Executions")
+            .iter()
+            .filter_map(|row| row["test_run_id"].as_i64())
+            .fold(std::collections::BTreeMap::new(), |mut counts, run| {
+                *counts.entry(run).or_insert(0) += 1;
+                counts
+            });
+        assert!(
+            runs.values().any(|count| *count > 1),
+            "the corpus has no Run with two Executions: {runs:?}"
+        );
+
+        // One Execution moved to another instant is a failure the placeholder
+        // comparison accepts, so this check is what catches it.
+        let mut broken = answered;
+        let row = broken["tables"]["test_executions"]
+            .as_array_mut()
+            .and_then(|rows| rows.first_mut())
+            .expect("the dump lists Executions");
+        row["created_at"] = json!("2026-10-20T09:59:00.000000Z");
+        let failures = super::clock_relations("flaky-tests", 48, &broken);
+        assert!(!failures.is_empty(), "the moved Execution was accepted");
     }
 }
 

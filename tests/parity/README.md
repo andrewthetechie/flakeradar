@@ -183,6 +183,12 @@ is the `consumers` scenario's first step. The rules:
   **`"<date>"`** matches any `YYYY-MM-DD`. A timestamp the scenario itself
   supplied is compared as an instant, not as text, so `Z` and `+00:00` are
   interchangeable there.
+- **A `dump_db` step's clock values keep the order the reference writes them
+  in**, which a placeholder alone cannot show: `created_at` never decreases down
+  a table listed by `id` (Reports are processed oldest first), a row's
+  `processed_at` is never before its own `created_at`, and every Execution of one
+  Report carries one `created_at`, because the reference takes a single clock
+  value per Report.
 - **`status` and the recorded headers** (`content-type`, `location`) must match
   exactly.
 - **Framework 422 messages** are compared loosely: the `{"detail": [{...}]}`
