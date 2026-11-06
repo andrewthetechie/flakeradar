@@ -139,9 +139,11 @@ crates/
     py.rs, helpers.rs     the Python string/cap/round rules behaviour depends on
   flakeradar-db/          baseline migration, entities, queries, processing
     migration.rs          the baseline SQL and the old-database refusal
-    report_intake.rs      queue a Report, duplicate detection, the summary
+    report_intake.rs      queue a Report, duplicate detection, the queue reads
     processing.rs         one Report -> one Run (or Job executions), rescoring
     attribution.rs        explained vs unexplained Job failures
+    filing.rs             the rows the issue filer selects
+    metrics.rs            the readiness probe's and the scrape's reads
     score_history.rs      daily Score history, trend
     reads.rs              every read: leaderboards, summaries, detail, failures
     issue_links.rs        set or clear a Test's or Job's Issue link
@@ -153,7 +155,7 @@ crates/
     app.rs                the router and the 404/405/trailing-slash rules
     routes/               reports (ingest, queue), reads, issues, admin, ops
     extract.rs            the 422 query/path/JSON extractors
-    mcp.rs                the MCP server (rmcp): eleven tools, stateless
+    mcp/                  the MCP server (rmcp): the transport, one file per tool
     worker.rs             the single Report processor (Postgres advisory lock)
     github.rs, github_worker.rs   the GitHub client and the issue-filing task
     webhooks.rs           the Notification delivery task

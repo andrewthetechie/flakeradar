@@ -129,13 +129,20 @@ pub async fn job_tier_counts(
 
 /// The Unix time of the most recently processed Report still retained.
 ///
+/// The aggregate answers one row whether or not a Report was processed, so the
+/// value is `None` only while the table holds none that was.
+///
 /// # Errors
 ///
-/// Returns [`DbError::Database`] when the statement fails.
+/// Returns [`DbError::Database`] when the statement fails or answers no row.
 pub async fn last_processed_at(db: &impl ConnectionTrait) -> Result<Option<f64>, DbError> {
-    let Some(row) = one(db, LAST_PROCESSED_SQL.to_owned(), Vec::new()).await? else {
-        return Ok(None);
-    };
+    let row = required_one(
+        db,
+        LAST_PROCESSED_SQL.to_owned(),
+        Vec::new(),
+        "last processed",
+    )
+    .await?;
     get(&row, "last_processed")
 }
 
