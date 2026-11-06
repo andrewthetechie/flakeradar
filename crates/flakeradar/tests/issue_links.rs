@@ -902,9 +902,19 @@ async fn the_link_engine_refuses_with_its_status_and_links() {
         error,
         IssueLinkError::NotLinkable("number must be between 1 and 2147483647".to_owned())
     );
-    assert_eq!(error.status(), 422);
-    assert_eq!(IssueLinkError::NotFound(String::new()).status(), 404);
-    assert_eq!(IssueLinkError::Conflict(String::new()).status(), 409);
+    // The refusal's kind decides the status at the front door, not in the engine.
+    assert_eq!(
+        flakeradar::RouteError::Refused(error).status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        flakeradar::RouteError::Refused(IssueLinkError::NotFound(String::new())).status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        flakeradar::RouteError::Refused(IssueLinkError::Conflict(String::new())).status(),
+        StatusCode::CONFLICT
+    );
 
     let linked = link_issue(
         db.connection(),

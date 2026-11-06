@@ -70,16 +70,12 @@ use std::ops::ControlFlow;
 use anyhow::Context as _;
 use chrono::{DateTime, Utc};
 use flakeradar_core::{JobExecutionOut, JobHistoryOut, MAX_ISSUE_NUMBER, repo_path};
-use flakeradar_db::attribution::{int_array, test_window_ids_overall_sql};
+use flakeradar_db::filing::{self, FilingGate, JobRow, NoteCandidate, RecentExecution, TestRow};
 use flakeradar_db::issue_links::{self, LinkTarget};
-use flakeradar_db::sql::{get, rows};
-use flakeradar_db::{
-    DbError, ProcessOutcome, REPORT_PROCESSED, chunks, get_job, unexplained_failure_counts,
-};
+use flakeradar_db::{DbError, ProcessOutcome, REPORT_PROCESSED, get_job};
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
 use reqwest::{Client, Method};
-use sea_orm::sea_query::Value as QueryValue;
-use sea_orm::{ConnectionTrait, QueryResult, TransactionSession, TransactionTrait};
+use sea_orm::{ConnectionTrait, TransactionSession, TransactionTrait};
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
@@ -185,32 +181,16 @@ pub fn fixed_comment(
     format!("{body}\n\n{link}")
 }
 
-/// The issue-filing gate, as one value.
-#[derive(Debug, Clone, Copy)]
-pub struct FilingGate {
-    /// The Flakiness score every row must reach.
-    pub min_score: f64,
-    /// The Proven flake count every row must reach.
-    pub min_proven_flakes: i64,
-    /// The recent failure count every row must reach; `0` skips the check.
-    pub min_failures: i64,
-    /// The Clean streak at which a fix holds rather than files; `None` disables it.
-    pub fixed_streak: Option<i64>,
-}
-
-impl FilingGate {
-    /// The gate the configuration states.
-    #[must_use]
-    pub fn from_settings(settings: &Settings) -> Self {
-        let fixed_streak =
-            (settings.github_fixed_streak > 0).then_some(settings.github_fixed_streak);
-        Self {
-            min_score: settings.github_issue_min_score,
-            min_proven_flakes: settings.github_issue_min_proven_flakes,
-            min_failures: settings.github_issue_min_failures,
-            fixed_streak,
-        }
-    }
+/// The issue-filing gate the configuration states.
+#[must_use]
+pub fn filing_gate(settings: &Settings) -> FilingGate {
+    let fixed_streak = (settings.github_fixed_streak > 0).then_some(settings.github_fixed_streak);
+    FilingGate::new(
+        settings.github_issue_min_score,
+        settings.github_issue_min_proven_flakes,
+        settings.github_issue_min_failures,
+        fixed_streak,
+    )
 }
 
 /// One HTTP answer, whatever its status.
@@ -707,109 +687,6 @@ fn is_failing(status: &str) -> bool {
     matches!(status, "failed" | "error")
 }
 
-/// One Test as the issue body reads it.
-#[derive(Debug, Clone)]
-pub struct TestRow {
-    /// The Test's id.
-    pub id: i32,
-    /// The classname the runner reported.
-    pub classname: String,
-    /// The Test's name.
-    pub name: String,
-    /// The suite the runner reported.
-    pub suite: String,
-    /// The file the Test is defined in.
-    pub file: Option<String>,
-    /// The line the Test is defined on.
-    pub line: Option<i32>,
-    /// The Test's stable identity hash.
-    pub fingerprint: String,
-    /// The Flakiness score.
-    pub flakiness_score: f64,
-    /// The Proven flake count.
-    pub confirmed_flake_count: i32,
-}
-
-/// One Job as the issue body reads it.
-#[derive(Debug, Clone)]
-pub struct JobRow {
-    /// The Job's id.
-    pub id: i32,
-    /// The Job's name within its Pipeline.
-    pub name: String,
-    /// The Flakiness score.
-    pub flakiness_score: f64,
-    /// The Proven flake count.
-    pub confirmed_flake_count: i32,
-}
-
-/// Reads the columns an issue body needs from one Test row.
-fn test_row(row: &QueryResult) -> Result<TestRow, DbError> {
-    Ok(TestRow {
-        id: get(row, "id")?,
-        classname: get(row, "classname")?,
-        name: get(row, "name")?,
-        suite: get(row, "suite")?,
-        file: get(row, "file")?,
-        line: get(row, "line")?,
-        fingerprint: get(row, "fingerprint")?,
-        flakiness_score: get(row, "flakiness_score")?,
-        confirmed_flake_count: get(row, "confirmed_flake_count")?,
-    })
-}
-
-/// Reads the columns a Job issue body needs.
-fn job_row(row: &QueryResult) -> Result<JobRow, DbError> {
-    Ok(JobRow {
-        id: get(row, "id")?,
-        name: get(row, "name")?,
-        flakiness_score: get(row, "flakiness_score")?,
-        confirmed_flake_count: get(row, "confirmed_flake_count")?,
-    })
-}
-
-/// One recent Execution of a Test, with the Run it is in.
-#[derive(Debug, Clone)]
-pub struct RecentExecution {
-    /// The Execution's outcome.
-    pub status: String,
-    /// The Failure message.
-    pub message: String,
-    /// The Failure details.
-    pub details: Option<String>,
-    /// The Run's commit.
-    pub commit_sha: String,
-    /// The Run's branch.
-    pub branch: String,
-    /// When the Execution ran.
-    pub created_at: DateTime<Utc>,
-}
-
-/// The newest Executions of one Test, newest first.
-async fn recent_executions(
-    db: &impl ConnectionTrait,
-    test_id: i32,
-) -> Result<Vec<RecentExecution>, DbError> {
-    let sql = format!(
-        "SELECT e.status, e.message, e.details, e.created_at, r.commit_sha, r.branch \
-         FROM test_executions e JOIN test_runs r ON r.id = e.test_run_id \
-         WHERE e.test_case_id = $1 ORDER BY e.id DESC LIMIT {BODY_EXECUTIONS}"
-    );
-    let mut recent = Vec::new();
-    for row in rows(db, sql, vec![QueryValue::from(test_id)]).await? {
-        let created: DateTime<chrono::FixedOffset> = get(&row, "created_at")?;
-        recent.push(RecentExecution {
-            status: get(&row, "status")?,
-            message: get(&row, "message")?,
-            details: get(&row, "details")?,
-            commit_sha: get(&row, "commit_sha")?,
-            branch: get(&row, "branch")?,
-            created_at: created.with_timezone(&Utc),
-        });
-    }
-    Ok(recent)
-}
-
 /// The first ten characters of a commit SHA, as Python's slice did.
 fn short_sha(sha: &str) -> String {
     sha.chars().take(10).collect()
@@ -1101,160 +978,6 @@ fn outcome_word(execution: &JobExecutionOut) -> &'static str {
     }
 }
 
-/// The failed/error Executions per Test over its newest `window` Executions.
-///
-/// The window is the overall one, with no Default-branch arm: the reference's
-/// `_window_failures` passes no `include_default_branch`, so older Default-branch
-/// failures that the newest `window` Executions no longer reach do not count.
-async fn window_failures(
-    db: &impl ConnectionTrait,
-    test_ids: &[i32],
-    window: usize,
-) -> Result<std::collections::BTreeMap<i32, i64>, DbError> {
-    let mut counts = std::collections::BTreeMap::new();
-    for chunk in chunks(test_ids) {
-        let sql = format!(
-            "SELECT e.test_case_id, e.status FROM test_executions e \
-             WHERE e.id IN (SELECT w.id FROM ({}) AS w)",
-            test_window_ids_overall_sql()
-        );
-        let window = i64::try_from(window).unwrap_or(i64::MAX);
-        let values = vec![int_array(chunk), QueryValue::from(window)];
-        for row in rows(db, sql, values).await? {
-            let status: String = get(&row, "status")?;
-            if is_failing(&status) {
-                *counts.entry(get::<i32>(&row, "test_case_id")?).or_insert(0) += 1;
-            }
-        }
-    }
-    Ok(counts)
-}
-
-/// One Test that meets the filing gate and still has no open issue.
-#[derive(Debug, Clone)]
-struct TestCandidate {
-    test: TestRow,
-    repo: String,
-    project: String,
-    root: String,
-}
-
-/// One Job that meets the filing gate and still has no open issue.
-#[derive(Debug, Clone)]
-struct JobCandidate {
-    job: JobRow,
-    pipeline: String,
-    repo: String,
-}
-
-/// The Tests that meet the configured filing gate and still have no open issue.
-async fn test_candidates(
-    db: &impl ConnectionTrait,
-    test_ids: &[i32],
-    settings: &Settings,
-) -> Result<Vec<TestCandidate>, DbError> {
-    let gate = FilingGate::from_settings(settings);
-    let mut candidates = Vec::new();
-    for chunk in chunks(test_ids) {
-        let fixed = if gate.fixed_streak.is_some() {
-            " AND t.clean_streak < $4"
-        } else {
-            ""
-        };
-        let sql = format!(
-            "SELECT t.*, p.name AS project_name, p.root AS root, r.name AS repo_name \
-             FROM test_cases t JOIN projects p ON p.id = t.project_id \
-             JOIN repos r ON r.id = p.repo_id \
-             WHERE t.id = ANY($1::INTEGER[]) AND t.flakiness_score >= $2 \
-               AND t.confirmed_flake_count >= $3 AND t.github_issue_number IS NULL{fixed} \
-             ORDER BY t.id"
-        );
-        let mut values = vec![
-            int_array(chunk),
-            QueryValue::from(gate.min_score),
-            QueryValue::from(i32::try_from(gate.min_proven_flakes).unwrap_or(i32::MAX)),
-        ];
-        if let Some(streak) = gate.fixed_streak {
-            values.push(QueryValue::from(i32::try_from(streak).unwrap_or(i32::MAX)));
-        }
-        for row in rows(db, sql, values).await? {
-            candidates.push(TestCandidate {
-                test: test_row(&row)?,
-                repo: get(&row, "repo_name")?,
-                project: get(&row, "project_name")?,
-                root: get(&row, "root")?,
-            });
-        }
-    }
-    if gate.min_failures > 0 {
-        let ids: Vec<i32> = candidates
-            .iter()
-            .map(|candidate| candidate.test.id)
-            .collect();
-        let failures = window_failures(db, &ids, settings.score_window).await?;
-        candidates.retain(|candidate| {
-            failures
-                .get(&candidate.test.id)
-                .is_some_and(|count| *count >= gate.min_failures)
-        });
-    }
-    Ok(candidates)
-}
-
-/// The github-provider Jobs that meet the gate and still have no open issue.
-async fn job_candidates(
-    db: &impl ConnectionTrait,
-    job_ids: &[i32],
-    settings: &Settings,
-) -> Result<Vec<JobCandidate>, DbError> {
-    let gate = FilingGate::from_settings(settings);
-    let mut candidates = Vec::new();
-    for chunk in chunks(job_ids) {
-        let fixed = if gate.fixed_streak.is_some() {
-            " AND j.clean_streak < $4"
-        } else {
-            ""
-        };
-        let sql = format!(
-            "SELECT j.*, p.name AS pipeline_name, r.name AS repo_name \
-             FROM jobs j JOIN pipelines p ON p.id = j.pipeline_id \
-             JOIN repos r ON r.id = p.repo_id \
-             WHERE j.id = ANY($1::INTEGER[]) AND p.provider = 'github' \
-               AND j.flakiness_score >= $2 AND j.confirmed_flake_count >= $3 \
-               AND j.github_issue_number IS NULL{fixed} \
-             ORDER BY j.id"
-        );
-        let mut values = vec![
-            int_array(chunk),
-            QueryValue::from(gate.min_score),
-            QueryValue::from(i32::try_from(gate.min_proven_flakes).unwrap_or(i32::MAX)),
-        ];
-        if let Some(streak) = gate.fixed_streak {
-            values.push(QueryValue::from(i32::try_from(streak).unwrap_or(i32::MAX)));
-        }
-        for row in rows(db, sql, values).await? {
-            candidates.push(JobCandidate {
-                job: job_row(&row)?,
-                pipeline: get(&row, "pipeline_name")?,
-                repo: get(&row, "repo_name")?,
-            });
-        }
-    }
-    if gate.min_failures > 0 {
-        let ids: Vec<i32> = candidates
-            .iter()
-            .map(|candidate| candidate.job.id)
-            .collect();
-        let failures = unexplained_failure_counts(db, &ids, settings.score_window).await?;
-        candidates.retain(|candidate| {
-            failures
-                .get(&candidate.job.id)
-                .is_some_and(|count| i64::from(*count) >= gate.min_failures)
-        });
-    }
-    Ok(candidates)
-}
-
 /// Files issues for Tests that now meet the filing gate. Never raises.
 ///
 /// The report names the Test ids it linked, so the caller can keep the fixed-note
@@ -1269,7 +992,14 @@ pub async fn file_issues_for(
     if !api.configured() || test_ids.is_empty() {
         return BatchReport::default();
     }
-    let candidates = match test_candidates(db, test_ids, settings).await {
+    let candidates = match filing::test_candidates(
+        db,
+        test_ids,
+        &filing_gate(settings),
+        settings.score_window,
+    )
+    .await
+    {
         Ok(candidates) => candidates,
         Err(error) => {
             tracing::warn!(error = %error, "GitHub issue filing could not read its Test candidates");
@@ -1281,7 +1011,7 @@ pub async fn file_issues_for(
     }
     let mut batch = Vec::new();
     for candidate in candidates {
-        let recent = match recent_executions(db, candidate.test.id).await {
+        let recent = match filing::recent_executions(db, candidate.test.id, BODY_EXECUTIONS).await {
             Ok(recent) => recent,
             Err(error) => {
                 tracing::warn!(error = %error, "GitHub issue filing could not read a Test's Executions");
@@ -1321,7 +1051,14 @@ pub async fn file_job_issues_for(
     if !api.configured() || job_ids.is_empty() {
         return BatchReport::default();
     }
-    let candidates = match job_candidates(db, job_ids, settings).await {
+    let candidates = match filing::job_candidates(
+        db,
+        job_ids,
+        &filing_gate(settings),
+        settings.score_window,
+    )
+    .await
+    {
         Ok(candidates) => candidates,
         Err(error) => {
             tracing::warn!(error = %error, "GitHub issue filing could not read its Job candidates");
@@ -1850,93 +1587,6 @@ fn already_gone(answer: &Answer) -> bool {
     matches!(answer.status, 404 | 410)
 }
 
-/// One linked row the fixed-note step selected.
-#[derive(Debug, Clone)]
-struct NoteCandidate {
-    target: LinkTarget,
-    entity_id: i32,
-    repo: String,
-    default_branch: Option<String>,
-    clean_streak: i32,
-    score: f64,
-    number: i32,
-}
-
-/// The linked Tests at the note threshold whose fix has not been noted yet.
-async fn note_test_candidates(
-    db: &impl ConnectionTrait,
-    test_ids: &[i32],
-    settings: &Settings,
-) -> Result<Vec<NoteCandidate>, DbError> {
-    let mut candidates = Vec::new();
-    for chunk in chunks(test_ids) {
-        let sql = "SELECT t.id AS id, t.github_issue_number AS number, t.clean_streak, \
-                   t.flakiness_score, r.name AS repo_name, r.default_branch \
-                   FROM test_cases t JOIN projects p ON p.id = t.project_id \
-                   JOIN repos r ON r.id = p.repo_id \
-                   WHERE t.id = ANY($1::INTEGER[]) AND t.github_issue_number IS NOT NULL \
-                     AND t.github_issue_fixed_noted_at IS NULL AND t.github_issue_closed IS FALSE \
-                     AND t.clean_streak >= $2 ORDER BY t.id";
-        let threshold = i32::try_from(settings.github_fixed_streak).unwrap_or(i32::MAX);
-        for row in rows(
-            db,
-            sql.to_owned(),
-            vec![int_array(chunk), QueryValue::from(threshold)],
-        )
-        .await?
-        {
-            candidates.push(NoteCandidate {
-                target: LinkTarget::Test,
-                entity_id: get(&row, "id")?,
-                repo: get(&row, "repo_name")?,
-                default_branch: get(&row, "default_branch")?,
-                clean_streak: get(&row, "clean_streak")?,
-                score: get(&row, "flakiness_score")?,
-                number: get(&row, "number")?,
-            });
-        }
-    }
-    Ok(candidates)
-}
-
-/// The linked github-provider Jobs at the note threshold.
-async fn note_job_candidates(
-    db: &impl ConnectionTrait,
-    job_ids: &[i32],
-    settings: &Settings,
-) -> Result<Vec<NoteCandidate>, DbError> {
-    let mut candidates = Vec::new();
-    for chunk in chunks(job_ids) {
-        let sql = "SELECT j.id AS id, j.github_issue_number AS number, j.clean_streak, \
-                   j.flakiness_score, r.name AS repo_name, r.default_branch \
-                   FROM jobs j JOIN pipelines p ON p.id = j.pipeline_id \
-                   JOIN repos r ON r.id = p.repo_id \
-                   WHERE j.id = ANY($1::INTEGER[]) AND p.provider = 'github' \
-                     AND j.github_issue_number IS NOT NULL \
-                     AND j.github_issue_fixed_noted_at IS NULL AND j.github_issue_closed IS FALSE \
-                     AND j.clean_streak >= $2 ORDER BY j.id";
-        let threshold = i32::try_from(settings.github_fixed_streak).unwrap_or(i32::MAX);
-        for row in rows(
-            db,
-            sql.to_owned(),
-            vec![int_array(chunk), QueryValue::from(threshold)],
-        )
-        .await?
-        {
-            candidates.push(NoteCandidate {
-                target: LinkTarget::Job,
-                entity_id: get(&row, "id")?,
-                repo: get(&row, "repo_name")?,
-                default_branch: get(&row, "default_branch")?,
-                clean_streak: get(&row, "clean_streak")?,
-                score: get(&row, "flakiness_score")?,
-                number: get(&row, "number")?,
-            });
-        }
-    }
-    Ok(candidates)
-}
-
 /// Comments once on the linked issue of each Test whose fix appears to hold.
 ///
 /// Disabled while `github_fixed_streak` is 0. Never raises.
@@ -1950,7 +1600,7 @@ pub async fn note_fixed_issues_for(
     if !api.configured() || settings.github_fixed_streak <= 0 || test_ids.is_empty() {
         return BatchReport::default();
     }
-    match note_test_candidates(db, test_ids, settings).await {
+    match filing::note_test_candidates(db, test_ids, settings.github_fixed_streak).await {
         Ok(candidates) if !candidates.is_empty() => {
             let report = note_batch(db, candidates, "test", settings, api, stop).await;
             report.log(Operation::Note);
@@ -1975,7 +1625,7 @@ pub async fn note_fixed_job_issues_for(
     if !api.configured() || settings.github_fixed_streak <= 0 || job_ids.is_empty() {
         return BatchReport::default();
     }
-    match note_job_candidates(db, job_ids, settings).await {
+    match filing::note_job_candidates(db, job_ids, settings.github_fixed_streak).await {
         Ok(candidates) if !candidates.is_empty() => {
             let report = note_batch(db, candidates, "job", settings, api, stop).await;
             report.log(Operation::Note);

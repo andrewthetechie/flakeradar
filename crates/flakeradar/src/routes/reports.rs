@@ -23,16 +23,13 @@ use flakeradar_core::{
     normalize_root, parse_junit_xml, pipeline_body, py_strip, read_ci_run_attempt,
 };
 use flakeradar_db::entities::reports;
+use flakeradar_db::list_reports as report_queue;
 use flakeradar_db::{
-    DbError, NewJunitReport, NewPipelineReport, REPORT_FAILED, REPORT_PENDING, REPORT_STATUSES,
-    find_junit_duplicate, get_or_create_project, get_or_create_repo, retry_failed_report,
-    stored_attempt,
+    NewJunitReport, NewPipelineReport, REPORT_FAILED, REPORT_PENDING, REPORT_STATUSES,
+    find_junit_duplicate, get_or_create_project, get_or_create_repo, report_summary,
+    retry_failed_report, stored_attempt, stored_report,
 };
-use sea_orm::entity::prelude::DateTimeWithTimeZone;
-use sea_orm::{
-    ConnectionTrait, DbBackend, DbErr, EntityTrait, FromQueryResult as _, QueryResult, Set,
-    Statement, TransactionTrait as _, Value,
-};
+use sea_orm::{EntityTrait, Set, TransactionTrait as _};
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
 
@@ -70,31 +67,6 @@ const DEFAULT_REPORT_LIMIT: i64 = 50;
 
 /// The most Reports one list request returns.
 const MAX_REPORT_LIMIT: i64 = 200;
-
-/// One Report with the names the response spells it by.
-///
-/// `stored` is the row, and the two names come from the join the frozen server's
-/// query did: the Repo is always there (`repo_id` is NOT NULL), and a Pipeline
-/// Report has no Project.
-const STORED_SQL: &str = "
-    SELECT reports.*, repos.name AS repo_name, projects.name AS project_name
-      FROM reports
-      JOIN repos ON reports.repo_id = repos.id
-      LEFT JOIN projects ON reports.project_id = projects.id
-     WHERE reports.id = $1
-";
-
-/// The Report columns the list serves, without the uploaded body.
-const LIST_SQL_HEAD: &str = "
-    SELECT reports.id, reports.kind, repos.name AS repo_name,
-           projects.name AS project_name, reports.commit_sha, reports.branch,
-           reports.ci_run_id, reports.status, reports.error, reports.counts,
-           reports.run_id, reports.retry_count, reports.created_at,
-           reports.processed_at
-      FROM reports
-      JOIN repos ON reports.repo_id = repos.id
-      LEFT JOIN projects ON reports.project_id = projects.id
-";
 
 /// The Report routes.
 pub fn router(state: AppState) -> Router<AppState> {
@@ -627,24 +599,7 @@ pub async fn ingest_pipeline(
     responses((status = 200, body = ReportSummaryOut))
 )]
 pub async fn summary(State(state): State<AppState>) -> RouteResult<Json<ReportSummaryOut>> {
-    // One row, one column per status the queue reports: a database that holds
-    // no Report of a status counts zero rather than leaving it out.
-    let statement = Statement::from_sql_and_values(
-        DbBackend::Postgres,
-        "SELECT count(*) FILTER (WHERE status = $1) AS pending, \
-                count(*) FILTER (WHERE status = $2) AS failed \
-           FROM reports",
-        [Value::from(REPORT_PENDING), Value::from(REPORT_FAILED)],
-    );
-    let row = state
-        .pool()
-        .query_one_raw(statement)
-        .await?
-        .ok_or_else(|| DbErr::RecordNotFound("the summary query returned no row".to_owned()))?;
-    Ok(Json(ReportSummaryOut {
-        pending: row.try_get("", "pending")?,
-        failed: row.try_get("", "failed")?,
-    }))
+    Ok(Json(report_summary(state.pool()).await?))
 }
 
 /// The Report queue, newest first.
@@ -676,24 +631,9 @@ pub async fn list_reports(
         )
         .into());
     }
-    let mut sql = LIST_SQL_HEAD.to_owned();
-    let mut values = Vec::new();
-    if let Some(status) = query.status {
-        sql.push_str(" WHERE reports.status = $1");
-        values.push(Value::from(status));
-    }
-    sql.push_str(if values.is_empty() {
-        " ORDER BY reports.id DESC LIMIT $1"
-    } else {
-        " ORDER BY reports.id DESC LIMIT $2"
-    });
-    values.push(Value::from(query.limit));
-    let statement = Statement::from_sql_and_values(DbBackend::Postgres, sql, values);
-    let mut out = Vec::new();
-    for row in state.pool().query_all_raw(statement).await? {
-        out.push(report_out(&row)?);
-    }
-    Ok(Json(out))
+    Ok(Json(
+        report_queue(state.pool(), query.status.as_deref(), query.limit).await?,
+    ))
 }
 
 /// One Report, by its id.
@@ -810,76 +750,4 @@ pub async fn delete_report(
 /// The 404 a Report route answers for an id that names no Report.
 fn not_found() -> RouteError {
     ApiError::new(StatusCode::NOT_FOUND, "Report not found").into()
-}
-
-/// One stored Report with the names the response spells it by.
-#[derive(Debug)]
-struct StoredReport {
-    /// The row itself.
-    report: reports::Model,
-    /// The Repo's `owner/name`.
-    repo: String,
-    /// The Project's name, or `None` for a Pipeline Report.
-    project: Option<String>,
-}
-
-impl StoredReport {
-    /// The Report as the API serves it.
-    fn into_out(self) -> ReportOut {
-        ReportOut {
-            id: i64::from(self.report.id),
-            kind: self.report.kind,
-            repo: self.repo,
-            project: self.project,
-            commit_sha: self.report.commit_sha,
-            branch: self.report.branch,
-            ci_run_id: self.report.ci_run_id,
-            status: self.report.status,
-            error: self.report.error,
-            counts: self.report.counts,
-            run_id: self.report.run_id.map(i64::from),
-            retry_count: i64::from(self.report.retry_count),
-            created_at: self.report.created_at.with_timezone(&Utc),
-            processed_at: self.report.processed_at.map(|at| at.with_timezone(&Utc)),
-        }
-    }
-}
-
-/// The stored Report `report_id` names, with its Repo and Project names.
-async fn stored_report(
-    pool: &impl ConnectionTrait,
-    report_id: i64,
-) -> Result<Option<StoredReport>, DbError> {
-    let statement =
-        Statement::from_sql_and_values(DbBackend::Postgres, STORED_SQL, [Value::from(report_id)]);
-    let Some(row) = pool.query_one_raw(statement).await? else {
-        return Ok(None);
-    };
-    Ok(Some(StoredReport {
-        report: reports::Model::from_query_result(&row, "")?,
-        repo: row.try_get("", "repo_name")?,
-        project: row.try_get("", "project_name")?,
-    }))
-}
-
-/// One Report of the list, from its row.
-fn report_out(row: &QueryResult) -> Result<ReportOut, DbErr> {
-    let created_at: DateTimeWithTimeZone = row.try_get("", "created_at")?;
-    let processed_at: Option<DateTimeWithTimeZone> = row.try_get("", "processed_at")?;
-    Ok(ReportOut {
-        id: i64::from(row.try_get::<i32>("", "id")?),
-        kind: row.try_get("", "kind")?,
-        repo: row.try_get("", "repo_name")?,
-        project: row.try_get("", "project_name")?,
-        commit_sha: row.try_get("", "commit_sha")?,
-        branch: row.try_get("", "branch")?,
-        ci_run_id: row.try_get("", "ci_run_id")?,
-        status: row.try_get("", "status")?,
-        error: row.try_get("", "error")?,
-        counts: row.try_get("", "counts")?,
-        run_id: row.try_get::<Option<i32>>("", "run_id")?.map(i64::from),
-        retry_count: i64::from(row.try_get::<i32>("", "retry_count")?),
-        created_at: created_at.with_timezone(&Utc),
-        processed_at: processed_at.map(|at| at.with_timezone(&Utc)),
-    })
 }

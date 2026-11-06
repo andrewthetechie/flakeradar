@@ -26,7 +26,7 @@ pub const SIBLING_MAX: usize = 20;
 /// server's `unnest(bindparam(...))` did, so the statement keeps the measured
 /// lateral shape in `docs/perf/20-test-rescore-explain.md`.
 #[must_use]
-pub fn int_array(ids: &[i32]) -> Value {
+pub(crate) fn int_array(ids: &[i32]) -> Value {
     Value::Array(
         sea_orm::sea_query::ArrayType::Int,
         Some(Box::new(ids.iter().copied().map(Value::from).collect())),
@@ -42,7 +42,7 @@ pub fn int_array(ids: &[i32]) -> Value {
 /// rarely runs CI is the accepted worst case). Binds: `$1` ids, `$2` window,
 /// `$3` ids, `$4` window.
 #[must_use]
-pub fn test_window_ids_sql() -> &'static str {
+pub(crate) fn test_window_ids_sql() -> &'static str {
     "SELECT w.test_case_id, w.id FROM (\
        SELECT u.test_case_id, l.id \
          FROM unnest($1::INTEGER[]) AS u(test_case_id) \
@@ -69,7 +69,7 @@ pub fn test_window_ids_sql() -> &'static str {
 /// The newest `window` Test-execution ids per Test, any branch: the first arm of
 /// [`test_window_ids_sql`] alone. Binds `$1` ids and `$2` window.
 #[must_use]
-pub fn test_window_ids_overall_sql() -> &'static str {
+pub(crate) fn test_window_ids_overall_sql() -> &'static str {
     "SELECT u.test_case_id, l.id \
        FROM unnest($1::INTEGER[]) AS u(test_case_id) \
        JOIN LATERAL ( \
@@ -83,7 +83,7 @@ pub fn test_window_ids_overall_sql() -> &'static str {
 /// [`test_window_ids_sql`] and the statement measured in
 /// `docs/perf/21-job-rescore-explain.md`. Binds are the same four.
 #[must_use]
-pub fn job_window_ids_sql() -> &'static str {
+pub(crate) fn job_window_ids_sql() -> &'static str {
     "SELECT w.job_id, w.id FROM (\
        SELECT u.job_id, l.id \
          FROM unnest($1::INTEGER[]) AS u(job_id) \
@@ -110,7 +110,7 @@ pub fn job_window_ids_sql() -> &'static str {
 /// The newest `window` Job-execution ids per Job, any branch: the first arm of
 /// [`job_window_ids_sql`] alone. Binds `$1` ids and `$2` window.
 #[must_use]
-pub fn job_window_ids_overall_sql() -> &'static str {
+pub(crate) fn job_window_ids_overall_sql() -> &'static str {
     "SELECT u.job_id, l.id \
        FROM unnest($1::INTEGER[]) AS u(job_id) \
        JOIN LATERAL ( \
@@ -122,7 +122,7 @@ pub fn job_window_ids_overall_sql() -> &'static str {
 
 /// A failing Test run with this `ci_job_id` in the Repo explains the failure.
 #[must_use]
-pub fn test_explained_sql(exec: &str, pipeline: &str) -> String {
+pub(crate) fn test_explained_sql(exec: &str, pipeline: &str) -> String {
     format!(
         "EXISTS (SELECT 1 FROM test_runs tr \
            JOIN projects tp ON tp.id = tr.project_id \
@@ -139,7 +139,7 @@ pub fn test_explained_sql(exec: &str, pipeline: &str) -> String {
 /// run onto one attempt, and an unrelated older failure would explain the
 /// Summary Job forever.
 #[must_use]
-pub fn summary_explained_sql(exec: &str, job: &str, pipeline: &str) -> String {
+pub(crate) fn summary_explained_sql(exec: &str, job: &str, pipeline: &str) -> String {
     format!(
         "{exec}.ci_run_id <> '' AND {job}.summary AND EXISTS ( \
            SELECT 1 FROM job_executions sje \
@@ -156,7 +156,7 @@ pub fn summary_explained_sql(exec: &str, job: &str, pipeline: &str) -> String {
 /// The whole attribution rule for a query that joins `job_executions`,
 /// `jobs` and `pipelines` under those names.
 #[must_use]
-pub fn job_execution_explained_sql() -> String {
+pub(crate) fn job_execution_explained_sql() -> String {
     format!(
         "({} OR {})",
         test_explained_sql("job_executions", "pipelines"),

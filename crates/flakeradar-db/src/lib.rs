@@ -12,14 +12,16 @@
 
 // Rust guideline compliant 2026-07-21
 
-pub mod attribution;
+mod attribution;
 mod batching;
 pub mod clock;
 mod connect;
 mod deletes;
 mod error;
+pub mod filing;
 mod identity;
 pub mod issue_links;
+mod metrics;
 mod migration;
 pub mod processing;
 pub mod reads;
@@ -60,9 +62,19 @@ pub use deletes::{
 #[doc(inline)]
 pub use error::DbError;
 #[doc(inline)]
+pub use filing::{
+    FilingGate, JobCandidate, JobRow, NoteCandidate, RecentExecution, TestCandidate, TestRow,
+    job_candidates, note_job_candidates, note_test_candidates, recent_executions, test_candidates,
+};
+#[doc(inline)]
 pub use identity::{get_or_create_project, get_or_create_repo};
 #[doc(inline)]
 pub use issue_links::{LinkError, LinkTarget, LinkedIssue, LinkedOut, NoteStamp};
+#[doc(inline)]
+pub use metrics::{
+    QueueFacts, job_tier_counts, last_processed_at, queue_facts, reachable, report_status_counts,
+    test_tier_counts,
+};
 #[doc(inline)]
 pub use migration::{BASELINE_SQL, Migrator, run_migrations, split_statements};
 #[doc(inline)]
@@ -81,9 +93,9 @@ pub use reads::{
 #[doc(inline)]
 pub use report_intake::{
     NewJunitReport, NewPipelineReport, REPORT_FAILED, REPORT_KIND_JUNIT, REPORT_KIND_PIPELINE,
-    REPORT_PENDING, REPORT_PROCESSED, REPORT_STATUSES, complete_report, fail_report,
-    find_junit_duplicate, requeue_report, retry_failed_report, stored_attempt, stored_junit_body,
-    stored_pipeline_payload,
+    REPORT_PENDING, REPORT_PROCESSED, REPORT_STATUSES, StoredReport, complete_report, fail_report,
+    find_junit_duplicate, list_reports, report_summary, requeue_report, retry_failed_report,
+    stored_attempt, stored_junit_body, stored_pipeline_payload, stored_report,
 };
 #[doc(inline)]
 pub use retention::{PruneResult, RetentionSettings, prune, run_prune};

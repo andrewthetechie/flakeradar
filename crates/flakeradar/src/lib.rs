@@ -51,7 +51,7 @@ pub use error::{ApiError, ApiResult, Detail, RouteError, RouteResult};
 #[doc(inline)]
 pub use extract::{ApiJson, ApiPath, ApiQuery, FromJsonObject, Validate, body_loc, query_loc};
 #[doc(inline)]
-pub use github::{Answer, Api, FilingGate, JobRow, RecentExecution, TestRow};
+pub use github::{Answer, Api};
 #[doc(inline)]
 pub use github_worker::GitHubWorker;
 #[doc(inline)]

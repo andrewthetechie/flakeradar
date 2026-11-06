@@ -14,7 +14,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use flakeradar::Settings;
 use flakeradar::github::{self, Api};
-use flakeradar::{FilingGate, JobRow, RecentExecution, TestRow, settings::Secret};
+use flakeradar::settings::Secret;
+use flakeradar_db::filing::{JobRow, RecentExecution, TestRow};
 use flakeradar_db::issue_links::{self, LinkTarget, linked_for_check};
 use flakeradar_db::{ProcessOutcome, ReadSettings};
 use flakeradar_test_support::{
@@ -1965,11 +1966,11 @@ fn a_job_body_names_every_outcome_runner_and_link_it_has() {
 #[tokio::test]
 async fn the_filing_gate_reads_the_configured_minimums() {
     let settings = fixed_settings(&[("FLAKERADAR_GITHUB_ISSUE_MIN_SCORE", "0.75")]);
-    let gate = FilingGate::from_settings(&settings);
+    let gate = github::filing_gate(&settings);
     assert!((gate.min_score - 0.75).abs() < f64::EPSILON);
     assert_eq!(gate.fixed_streak, Some(3));
 
-    let off = FilingGate::from_settings(&gh_settings(&[]));
+    let off = github::filing_gate(&gh_settings(&[]));
     assert_eq!(off.fixed_streak, None, "0 disables the fixed-note signal");
 }
 

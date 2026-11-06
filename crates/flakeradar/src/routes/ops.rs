@@ -13,8 +13,11 @@ use axum::extract::State;
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use flakeradar_core::ReadinessOut;
-use flakeradar_db::{REPORT_STATUSES, WORKER_LOCK_KEY};
-use sea_orm::{ConnectionTrait, DbBackend, Statement};
+use flakeradar_db::{
+    DbError, QueueFacts, REPORT_STATUSES, WORKER_LOCK_KEY, job_tier_counts, last_processed_at,
+    queue_facts, reachable, report_status_counts, test_tier_counts,
+};
+use sea_orm::DatabaseConnection;
 use serde::Serialize;
 use utoipa::ToSchema;
 
@@ -26,47 +29,6 @@ pub const PROMETHEUS_MEDIA_TYPE: &str = "text/plain; version=0.0.4; charset=utf-
 
 /// The tiers the scrape reports, in the order it lists them.
 const TIER_ORDER: [&str; 3] = ["flaky", "suspect", "stable"];
-
-// One roundtrip for the queue facts.
-//
-// A one-argument session advisory lock (the form the Report processor holds)
-// appears in pg_locks as classid = 0, objid = key, which is distinct from the
-// transaction-scoped migration lock on another key. The probe is scoped to the
-// current database because pg_locks is a cluster-wide view: the same key in
-// another database of the cluster belongs to that environment's leader.
-const QUEUE_SQL: &str = "
-    SELECT
-      EXISTS(SELECT 1 FROM pg_locks
-             WHERE locktype = 'advisory' AND classid = 0 AND objid::bigint = $1
-               AND database = (SELECT oid FROM pg_database WHERE datname = current_database())) AS leader,
-      (SELECT count(*) FROM reports WHERE status = 'pending') AS pending,
-      (SELECT coalesce(extract(epoch FROM (now() - min(created_at))), 0)::double precision
-         FROM reports WHERE status = 'pending') AS oldest
-";
-
-// The tiers are the cached score columns, classified exactly as
-// `flakeradar_core::tier_for` does: at or above the Flake threshold is flaky,
-// above 0 suspect, otherwise stable.
-const TEST_TIERS_SQL: &str = "
-    SELECT CASE WHEN flakiness_score >= $1 THEN 'flaky'
-                WHEN flakiness_score > 0 THEN 'suspect'
-                ELSE 'stable' END AS tier,
-           count(*) AS count
-    FROM test_cases GROUP BY 1
-";
-
-const JOB_TIERS_SQL: &str = "
-    SELECT CASE WHEN flakiness_score >= $1 THEN 'flaky'
-                WHEN flakiness_score > 0 THEN 'suspect'
-                ELSE 'stable' END AS tier,
-           count(*) AS count
-    FROM jobs GROUP BY 1
-";
-
-const REPORT_STATUSES_SQL: &str = "SELECT status, count(*) AS count FROM reports GROUP BY status";
-
-const LAST_PROCESSED_SQL: &str =
-    "SELECT extract(epoch FROM max(processed_at))::double precision AS last_processed FROM reports";
 
 // Long HELP lines, kept as named constants so the render below stays readable.
 const OLDEST_PENDING_HELP: &str = "# HELP flakeradar_oldest_pending_report_age_seconds Age in seconds of the oldest pending Report; 0 when the queue is empty.";
@@ -112,14 +74,10 @@ pub async fn health() -> Json<HealthOut> {
 pub async fn ready(State(state): State<AppState>) -> ApiResult<Response> {
     let pool = state.pool();
     // Nothing else is knowable without a database.
-    if pool
-        .query_one_raw(Statement::from_string(DbBackend::Postgres, "SELECT 1"))
-        .await
-        .is_err()
-    {
+    if !reachable(pool).await {
         return Ok(unavailable());
     }
-    let facts = match queue_facts(pool).await {
+    let facts = match queue_facts(pool, WORKER_LOCK_KEY).await {
         Ok(facts) => facts,
         Err(error) => return Ok(database_failure(&error)),
     };
@@ -174,30 +132,6 @@ fn unavailable() -> Response {
         .into_response()
 }
 
-/// The queue facts one roundtrip returns.
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct QueueFacts {
-    leader: bool,
-    pending: i64,
-    oldest: f64,
-}
-
-/// Reads the queue facts.
-async fn queue_facts(pool: &sea_orm::DatabaseConnection) -> Result<QueueFacts, sea_orm::DbErr> {
-    let statement =
-        Statement::from_sql_and_values(DbBackend::Postgres, QUEUE_SQL, [WORKER_LOCK_KEY.into()]);
-    // The query has no FROM clause, so it always returns exactly one row; the
-    // arm for a missing one cannot run and is logged in coverage-gaps.md.
-    let row = pool.query_one_raw(statement).await?.ok_or_else(|| {
-        sea_orm::DbErr::RecordNotFound("the queue query returned no row".to_owned())
-    })?;
-    Ok(QueueFacts {
-        leader: row.try_get("", "leader")?,
-        pending: row.try_get("", "pending")?,
-        oldest: row.try_get("", "oldest")?,
-    })
-}
-
 /// Every number one scrape reports.
 #[derive(Debug, Clone, PartialEq)]
 struct Snapshot {
@@ -209,60 +143,14 @@ struct Snapshot {
 }
 
 /// Reads every number one scrape reports.
-async fn collect(
-    pool: &sea_orm::DatabaseConnection,
-    threshold: f64,
-) -> Result<Snapshot, sea_orm::DbErr> {
-    let facts = queue_facts(pool).await?;
-    let statuses = count_by(pool, REPORT_STATUSES_SQL, "status", None).await?;
-    let tests = count_by(pool, TEST_TIERS_SQL, "tier", Some(threshold)).await?;
-    let jobs = count_by(pool, JOB_TIERS_SQL, "tier", Some(threshold)).await?;
-    let last_processed = last_processed(pool).await?;
+async fn collect(pool: &DatabaseConnection, threshold: f64) -> Result<Snapshot, DbError> {
     Ok(Snapshot {
-        facts,
-        statuses,
-        tests,
-        jobs,
-        last_processed,
+        facts: queue_facts(pool, WORKER_LOCK_KEY).await?,
+        statuses: report_status_counts(pool).await?,
+        tests: test_tier_counts(pool, threshold).await?,
+        jobs: job_tier_counts(pool, threshold).await?,
+        last_processed: last_processed_at(pool).await?,
     })
-}
-
-/// Runs a `GROUP BY` count query into a map keyed by its `key` column.
-async fn count_by(
-    pool: &sea_orm::DatabaseConnection,
-    sql: &str,
-    key: &str,
-    threshold: Option<f64>,
-) -> Result<BTreeMap<String, i64>, sea_orm::DbErr> {
-    let statement = match threshold {
-        Some(value) => Statement::from_sql_and_values(DbBackend::Postgres, sql, [value.into()]),
-        None => Statement::from_string(DbBackend::Postgres, sql),
-    };
-    let rows = pool.query_all_raw(statement).await?;
-    let mut counts = BTreeMap::new();
-    for row in rows {
-        let group: String = row.try_get("", key)?;
-        let count: i64 = row.try_get("", "count")?;
-        let _ = counts.insert(group, count);
-    }
-    Ok(counts)
-}
-
-/// The Unix time of the most recently processed Report still retained.
-async fn last_processed(pool: &sea_orm::DatabaseConnection) -> Result<Option<f64>, sea_orm::DbErr> {
-    let row = pool
-        .query_one_raw(Statement::from_string(
-            DbBackend::Postgres,
-            LAST_PROCESSED_SQL,
-        ))
-        .await?;
-    match row {
-        Some(row) => {
-            let value: Option<f64> = row.try_get("", "last_processed")?;
-            Ok(value)
-        }
-        None => Ok(None),
-    }
 }
 
 /// Renders one scrape.
@@ -342,7 +230,7 @@ fn python_float(value: f64) -> String {
 /// 500, not the `{"detail": ...}` document every other failure carries. The
 /// scrape answers 503 instead, because its whole query block was inside the
 /// `try`.
-fn database_failure(error: &sea_orm::DbErr) -> Response {
+fn database_failure(error: &DbError) -> Response {
     tracing::error!(error = %error, "readiness query failed");
     (
         StatusCode::INTERNAL_SERVER_ERROR,
@@ -354,12 +242,9 @@ fn database_failure(error: &sea_orm::DbErr) -> Response {
 
 #[cfg(test)]
 mod tests {
-    //! The scrape's rendering and the query text need no database.
+    //! The scrape's rendering needs no database.
 
-    use super::{
-        JOB_TIERS_SQL, LAST_PROCESSED_SQL, QUEUE_SQL, QueueFacts, REPORT_STATUSES_SQL, Snapshot,
-        TEST_TIERS_SQL, python_float, render,
-    };
+    use super::{QueueFacts, Snapshot, python_float, render};
     use std::collections::BTreeMap;
 
     #[test]
@@ -428,29 +313,5 @@ mod tests {
         ] {
             assert_eq!(body.matches(&format!("# TYPE {metric} gauge")).count(), 1);
         }
-    }
-
-    #[test]
-    fn the_ops_queries_stay_off_the_execution_tables() {
-        // The probe and the scrape read the queue and the cached score columns;
-        // a query here that reached the Execution tables would make every scrape
-        // and every readiness check as expensive as the whole history.
-        for sql in [
-            QUEUE_SQL,
-            TEST_TIERS_SQL,
-            JOB_TIERS_SQL,
-            REPORT_STATUSES_SQL,
-            LAST_PROCESSED_SQL,
-        ] {
-            let lowered = sql.to_lowercase();
-            for table in ["test_executions", "test_runs", "job_executions"] {
-                assert!(!lowered.contains(table), "{table} in {sql}");
-            }
-        }
-        // The capture really sees the ops queries themselves.
-        assert!(QUEUE_SQL.contains("pg_locks"));
-        assert!(QUEUE_SQL.contains("reports"));
-        assert!(TEST_TIERS_SQL.contains("test_cases"));
-        assert!(JOB_TIERS_SQL.contains("jobs"));
     }
 }

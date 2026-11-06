@@ -119,9 +119,7 @@ impl RouteError {
         match self {
             Self::Rejected(error) => error.status(),
             Self::NotFound(_) => StatusCode::NOT_FOUND,
-            Self::Refused(error) => {
-                StatusCode::from_u16(error.status()).unwrap_or(StatusCode::UNPROCESSABLE_ENTITY)
-            }
+            Self::Refused(error) => refused_status(error),
             Self::Raced => StatusCode::SERVICE_UNAVAILABLE,
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
@@ -155,9 +153,7 @@ impl IntoResponse for RouteError {
             Self::Rejected(error) => error.into_response(),
             Self::NotFound(detail) => ApiError::new(StatusCode::NOT_FOUND, detail).into_response(),
             Self::Refused(error) => {
-                let status = StatusCode::from_u16(error.status())
-                    .unwrap_or(StatusCode::UNPROCESSABLE_ENTITY);
-                ApiError::new(status, error.detail().to_owned()).into_response()
+                ApiError::new(refused_status(&error), error.detail().to_owned()).into_response()
             }
             Self::Raced => ApiError::new(
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -175,6 +171,18 @@ impl IntoResponse for RouteError {
                     .into_response()
             }
         }
+    }
+}
+
+/// The status an Issue-link refusal answers with.
+///
+/// The database layer states the refusal's kind and its text; which HTTP status a
+/// kind becomes belongs to the front door, so the mapping lives here.
+fn refused_status(error: &IssueLinkError) -> StatusCode {
+    match error {
+        IssueLinkError::NotFound(_) => StatusCode::NOT_FOUND,
+        IssueLinkError::Conflict(_) => StatusCode::CONFLICT,
+        IssueLinkError::NotLinkable(_) => StatusCode::UNPROCESSABLE_ENTITY,
     }
 }
 

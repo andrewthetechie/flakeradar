@@ -4,17 +4,21 @@
 //! `report_intake.py`: this module owns how a pending Report row looks per kind
 //! (body and its digest) and the JUnit duplicate identity, reads a stored body
 //! back per kind — including the rule that a NULL `line_base` reads as 1 — and
-//! holds the queue transitions a processor applies to a row. Nothing here
-//! inserts, flushes or commits: the caller owns the transaction.
+//! holds the queue transitions a processor applies to a row. It also serves the
+//! queue reads: one Report with its names, the pending and failed counts, and the
+//! newest Reports a page lists. Nothing here inserts, flushes or commits: the
+//! caller owns the transaction.
 
 // Rust guideline compliant 2026-07-21
 
-use flakeradar_core::{PipelineReportIn, body_digest};
+use chrono::Utc;
+use flakeradar_core::{PipelineReportIn, ReportOut, ReportSummaryOut, body_digest};
 use sea_orm::entity::prelude::DateTimeWithTimeZone;
 use sea_orm::{ConnectionTrait, DbBackend, FromQueryResult as _, JsonValue, Set, Statement, Value};
 
 use crate::entities::reports;
 use crate::error::DbError;
+use crate::sql::{Binds, get, one, required_one, rows};
 
 /// A Report that has been queued and not processed yet.
 pub const REPORT_PENDING: &str = "pending";
@@ -273,4 +277,152 @@ pub fn retry_failed_report(report: &mut reports::Model) {
     REPORT_PENDING.clone_into(&mut report.status);
     report.error = None;
     report.processed_at = None;
+}
+
+/// The columns one queue row serves, with the names the response spells them by.
+///
+/// `repo_name` is always there, because `repo_id` is NOT NULL; `project_name` is
+/// `NULL` for a Pipeline Report.
+const QUEUE_SELECT: &str = "
+    SELECT reports.id, reports.kind, repos.name AS repo_name,
+           projects.name AS project_name, reports.commit_sha, reports.branch,
+           reports.ci_run_id, reports.status, reports.error, reports.counts,
+           reports.run_id, reports.retry_count, reports.created_at,
+           reports.processed_at
+      FROM reports
+      JOIN repos ON reports.repo_id = repos.id
+      LEFT JOIN projects ON reports.project_id = projects.id
+";
+
+/// One stored Report with the names the response spells it by.
+#[derive(Debug)]
+pub struct StoredReport {
+    /// The row itself.
+    pub report: reports::Model,
+    /// The Repo's `owner/name`.
+    pub repo: String,
+    /// The Project's name, or `None` for a Pipeline Report.
+    pub project: Option<String>,
+}
+
+impl StoredReport {
+    /// The Report as the API serves it.
+    #[must_use]
+    pub fn into_out(self) -> ReportOut {
+        ReportOut {
+            id: i64::from(self.report.id),
+            kind: self.report.kind,
+            repo: self.repo,
+            project: self.project,
+            commit_sha: self.report.commit_sha,
+            branch: self.report.branch,
+            ci_run_id: self.report.ci_run_id,
+            status: self.report.status,
+            error: self.report.error,
+            counts: self.report.counts,
+            run_id: self.report.run_id.map(i64::from),
+            retry_count: i64::from(self.report.retry_count),
+            created_at: self.report.created_at.with_timezone(&Utc),
+            processed_at: self.report.processed_at.map(|at| at.with_timezone(&Utc)),
+        }
+    }
+}
+
+/// The stored Report `report_id` names, with its Repo and Project names.
+///
+/// # Errors
+///
+/// Returns [`DbError::Database`] when the statement fails or a row cannot be read.
+pub async fn stored_report(
+    db: &impl ConnectionTrait,
+    report_id: i64,
+) -> Result<Option<StoredReport>, DbError> {
+    let sql = "SELECT reports.*, repos.name AS repo_name, projects.name AS project_name \
+           FROM reports \
+           JOIN repos ON reports.repo_id = repos.id \
+           LEFT JOIN projects ON reports.project_id = projects.id \
+          WHERE reports.id = $1";
+    let Some(row) = one(db, sql.to_owned(), vec![Value::from(report_id)]).await? else {
+        return Ok(None);
+    };
+    Ok(Some(StoredReport {
+        report: reports::Model::from_query_result(&row, "")?,
+        repo: get(&row, "repo_name")?,
+        project: get(&row, "project_name")?,
+    }))
+}
+
+/// How many Reports are pending and how many failed.
+///
+/// A database that holds no Report of a status counts zero rather than leaving
+/// the status out, which is what one filtered `count(*)` per status gives.
+///
+/// # Errors
+///
+/// Returns [`DbError::Database`] when the statement fails.
+pub async fn report_summary(db: &impl ConnectionTrait) -> Result<ReportSummaryOut, DbError> {
+    let sql = "SELECT count(*) FILTER (WHERE status = $1) AS pending, \
+                      count(*) FILTER (WHERE status = $2) AS failed \
+                 FROM reports";
+    let row = required_one(
+        db,
+        sql.to_owned(),
+        vec![Value::from(REPORT_PENDING), Value::from(REPORT_FAILED)],
+        "report summary",
+    )
+    .await?;
+    Ok(ReportSummaryOut {
+        pending: get(&row, "pending")?,
+        failed: get(&row, "failed")?,
+    })
+}
+
+/// The queue, newest first, optionally only one status.
+///
+/// `limit` is the route's own bound; the caller validates it.
+///
+/// # Errors
+///
+/// Returns [`DbError::Database`] when the statement fails or a row cannot be read.
+pub async fn list_reports(
+    db: &impl ConnectionTrait,
+    status: Option<&str>,
+    limit: i64,
+) -> Result<Vec<ReportOut>, DbError> {
+    let mut sql = QUEUE_SELECT.to_owned();
+    let mut binds = Binds::new();
+    if let Some(status) = status {
+        binds.eq("reports.status", Value::from(status));
+    }
+    let limit = binds.bind(Value::from(limit));
+    sql.push_str(&binds.suffix());
+    sql.push_str(" ORDER BY reports.id DESC LIMIT ");
+    sql.push_str(&limit);
+    let mut out = Vec::new();
+    for row in rows(db, sql, binds.into_values()).await? {
+        out.push(report_out(&row)?);
+    }
+    Ok(out)
+}
+
+/// One Report of the list, from its row.
+fn report_out(row: &sea_orm::QueryResult) -> Result<ReportOut, DbError> {
+    let created_at: DateTimeWithTimeZone = get(row, "created_at")?;
+    let processed_at: Option<DateTimeWithTimeZone> = get(row, "processed_at")?;
+    Ok(ReportOut {
+        id: i64::from(get::<i32>(row, "id")?),
+        kind: get(row, "kind")?,
+        repo: get(row, "repo_name")?,
+        project: get(row, "project_name")?,
+        commit_sha: get(row, "commit_sha")?,
+        branch: get(row, "branch")?,
+        ci_run_id: get(row, "ci_run_id")?,
+        status: get(row, "status")?,
+        error: get(row, "error")?,
+        counts: get(row, "counts")?,
+        run_id: get::<Option<i32>>(row, "run_id")?.map(i64::from),
+        retry_count: i64::from(get::<i32>(row, "retry_count")?),
+        created_at: created_at.with_timezone(&Utc),
+        processed_at: processed_at.map(|at| at.with_timezone(&Utc)),
+    })
 }

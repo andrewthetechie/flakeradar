@@ -95,16 +95,6 @@ pub enum IssueLinkError {
 }
 
 impl IssueLinkError {
-    /// The status code the refusal answers with.
-    #[must_use]
-    pub fn status(&self) -> u16 {
-        match self {
-            Self::NotFound(_) => 404,
-            Self::Conflict(_) => 409,
-            Self::NotLinkable(_) => 422,
-        }
-    }
-
     /// The response `detail` text.
     #[must_use]
     pub fn detail(&self) -> &str {
