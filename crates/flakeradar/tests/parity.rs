@@ -1020,14 +1020,15 @@ fn compare_openapi_fields(
         let answered_type = openapi_type(answered_property, answered_schemas);
         let recorded_text = recorded_type.to_string();
         let answered_text = answered_type.to_string();
-        let named = OPENAPI_TYPE_DIFFERENCES
-            .iter()
-            .any(|(schema, named_field, port, reference)| {
-                *schema == name
-                    && *named_field == field
-                    && *port == answered_text
-                    && *reference == recorded_text
-            });
+        let named =
+            OPENAPI_TYPE_DIFFERENCES
+                .iter()
+                .any(|(schema, named_field, port, reference)| {
+                    *schema == name
+                        && *named_field == field
+                        && *port == answered_text
+                        && *reference == recorded_text
+                });
         if recorded_type != answered_type && !named {
             failures.push(describe(format!(
                 "the openapi field {name}.{field} is {answered_type} where it is {recorded_type}"
@@ -1086,12 +1087,8 @@ fn compare_openapi_fields(
 /// golden compares it, because the 422 goldens' issues carry `ctx` or not by
 /// case. Each entry is the schema, the field, and the two canonical types, so a
 /// new difference cannot hide behind this one.
-const OPENAPI_TYPE_DIFFERENCES: &[(&str, &str, &str, &str)] = &[(
-    "ValidationIssue",
-    "ctx",
-    "object|null",
-    "object",
-)];
+const OPENAPI_TYPE_DIFFERENCES: &[(&str, &str, &str, &str)] =
+    &[("ValidationIssue", "ctx", "object|null", "object")];
 
 /// The fields the port documents as required where the reference leaves them
 /// optional.
@@ -1120,14 +1117,14 @@ impl OpenapiType {
 }
 
 impl std::fmt::Display for OpenapiType {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if self.kinds.is_empty() {
-            write!(formatter, "any")?;
+            write!(f, "any")?;
         } else {
-            write!(formatter, "{}", self.kinds.join("|"))?;
+            write!(f, "{}", self.kinds.join("|"))?;
         }
         if self.nullable {
-            write!(formatter, "|null")?;
+            write!(f, "|null")?;
         }
         Ok(())
     }
