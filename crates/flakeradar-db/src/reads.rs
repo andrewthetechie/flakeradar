@@ -106,10 +106,8 @@ impl ReadSettings {
 /// Repos; a caller that gives only a Project is refused before any query runs.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Scope {
-    /// The Repo's `owner/name`, when the scope names one.
-    pub repo: Option<String>,
-    /// The Project's name, which needs `repo`.
-    pub project: Option<String>,
+    repo: Option<String>,
+    project: Option<String>,
 }
 
 impl Scope {
@@ -124,6 +122,18 @@ impl Scope {
             return Err(ScopeError::ProjectWithoutRepo);
         }
         Ok(Self { repo, project })
+    }
+
+    /// The Repo's `owner/name`, when the scope names one.
+    #[must_use]
+    pub fn repo(&self) -> Option<&str> {
+        self.repo.as_deref()
+    }
+
+    /// The Project's name, which a scope only holds beside a Repo.
+    #[must_use]
+    pub fn project(&self) -> Option<&str> {
+        self.project.as_deref()
     }
 }
 
@@ -177,11 +187,11 @@ pub enum ReadError {
 
 /// Adds the Scope's conditions against the given Repo and Project aliases.
 fn scope_conditions(scope: &Scope, repo_column: &str, project_column: &str, filter: &mut Binds) {
-    if let Some(repo) = &scope.repo {
-        filter.eq(repo_column, Value::from(repo.clone()));
+    if let Some(repo) = scope.repo() {
+        filter.eq(repo_column, Value::from(repo.to_owned()));
     }
-    if let Some(project) = &scope.project {
-        filter.eq(project_column, Value::from(project.clone()));
+    if let Some(project) = scope.project() {
+        filter.eq(project_column, Value::from(project.to_owned()));
     }
 }
 
@@ -2091,6 +2101,23 @@ mod tests {
         scope_conditions(&scope, "r.name", "p.name", &mut binds);
         assert_eq!(binds.suffix(), " WHERE r.name = $3 AND p.name = $4");
         assert_eq!(binds.values().len(), 2);
+    }
+
+    #[test]
+    fn a_scope_reads_back_only_what_its_constructor_accepted() {
+        let scope = super::Scope::new(Some("acme/app".to_owned()), Some("backend".to_owned()))
+            .expect("a scope");
+        assert_eq!(scope.repo(), Some("acme/app"));
+        assert_eq!(scope.project(), Some("backend"));
+        let empty = super::Scope::default();
+        assert_eq!(empty.repo(), None);
+        assert_eq!(empty.project(), None);
+        // Test and Job flows build a scope from a Repo and a Project name, and the
+        // fields are private, so a Project cannot be set without a Repo from outside
+        // this module.
+        let repo_only = super::Scope::new(Some("acme/app".to_owned()), None).expect("a scope");
+        assert_eq!(repo_only.repo(), Some("acme/app"));
+        assert_eq!(repo_only.project(), None);
     }
 
     #[test]

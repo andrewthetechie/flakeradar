@@ -480,10 +480,7 @@ fn scope(repo: &str, project: Option<&str>) -> Result<Scope, ToolFailure> {
         ),
         None => None,
     };
-    Ok(Scope {
-        repo: Some(repo),
-        project,
-    })
+    Scope::new(Some(repo), project).map_err(|error| ToolFailure::Tool(error.to_string()))
 }
 
 /// Refuses a `limit` outside 1 to [`MAX_LIMIT`].

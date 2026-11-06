@@ -99,8 +99,8 @@ pub(super) fn call(server: &McpServer, arguments: Value) -> BoxFuture<'_, ToolRe
             let scope = scope(repo, Some(args.project.as_str()))?;
             let ids = reads::find_test_ids(
                 server.pool(),
-                scope.repo.as_deref().unwrap_or_default(),
-                scope.project.as_deref().unwrap_or(DEFAULT_PROJECT),
+                scope.repo().unwrap_or_default(),
+                scope.project().unwrap_or(DEFAULT_PROJECT),
                 name,
                 args.classname.as_deref(),
             )
@@ -111,8 +111,8 @@ pub(super) fn call(server: &McpServer, arguments: Value) -> BoxFuture<'_, ToolRe
                 name,
                 &format!(
                     "{} / {}",
-                    scope.repo.as_deref().unwrap_or_default(),
-                    scope.project.as_deref().unwrap_or(DEFAULT_PROJECT)
+                    scope.repo().unwrap_or_default(),
+                    scope.project().unwrap_or(DEFAULT_PROJECT)
                 ),
                 "classname",
             )?
