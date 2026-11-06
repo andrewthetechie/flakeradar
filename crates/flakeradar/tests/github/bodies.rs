@@ -16,8 +16,8 @@ use serde_json::{Value as Json, json};
 use wiremock::{MockServer, ResponseTemplate};
 
 use crate::support::{
-    S7_BODY, api, explain_job_execution, flaky_job_in, flaky_test_in, gh_settings, mount_create,
-    test_link, unstopped,
+    S7_BODY, api, explain_job_execution, flaky_job_in, flaky_test_in, gh_settings, link_of,
+    mount_create, unstopped,
 };
 
 #[tokio::test]
@@ -441,7 +441,10 @@ async fn a_test_with_only_passed_executions_gets_no_failure_evidence() {
         "the body is not empty, it only lacks a failure: {text}"
     );
     assert!(text.contains("| passed | `deadbeef` | main |"), "{text}");
-    assert_eq!(test_link(&db, quiet.id).await.0, Some(77));
+    assert_eq!(
+        link_of(&db, EntityKind::Test, quiet.id).await.number,
+        Some(77)
+    );
 }
 
 /// The body of the one issue a job filing posted to `path`.

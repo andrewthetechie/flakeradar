@@ -18,6 +18,7 @@ mod doubles;
 mod error;
 mod factories;
 mod junit;
+mod links;
 mod monotonic;
 mod postgres;
 mod wait;
@@ -49,6 +50,8 @@ pub use factories::{
 };
 #[doc(inline)]
 pub use junit::make_junit;
+#[doc(inline)]
+pub use links::{IssueLink, Stamp, clear_note, link_of, link_table, stamp, stamp_link, stamp_note};
 #[doc(inline)]
 pub use monotonic::ScriptedMonotonic;
 #[doc(inline)]

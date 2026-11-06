@@ -21,10 +21,9 @@ use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
 use crate::support::{
     CREATED, Loopback, TOKEN, api, clean_streak_of, fixed_settings, flaky_job, flaky_test,
-    flaky_test_in, gh_settings, job_checked, job_link, lines_with, link_of, link_table,
-    logged_from, mount_comment, mount_create, mount_issue, mount_patch, mount_state, note_row,
-    noted, requested_calls, requested_paths, set_clean_streak, stage_mid_request, stamp_job_link,
-    stamp_link, stamp_note, test_link, unstopped,
+    flaky_test_in, gh_settings, lines_with, link_of, link_table, logged_from, mount_comment,
+    mount_create, mount_issue, mount_patch, mount_state, note_row, noted, requested_calls,
+    requested_paths, set_clean_streak, stage_mid_request, stamp, stamp_link, stamp_note, unstopped,
 };
 
 /// One Test's stored fixed-note stamp.
@@ -47,7 +46,7 @@ async fn noted_at(db: &TestDb, id: i32) -> Option<DateTime<FixedOffset>> {
 async fn a_fixed_note_is_stamped_with_the_clock_it_was_given() {
     let db = TestDb::new().await.expect("a test database");
     let test = flaky_test(&db).await;
-    stamp_link(&db, test, 12, true, false).await;
+    stamp_link(&db, EntityKind::Test, test, stamp().number(12).checked()).await;
     set_clean_streak(&db, "test_cases", test, 5).await;
     let server = MockServer::start().await;
     mount_comment(&server, "acme/app", 12, ResponseTemplate::new(201)).await;
@@ -79,7 +78,7 @@ async fn a_fixed_note_is_stamped_with_the_clock_it_was_given() {
 async fn the_fixed_note_comments_once_with_the_configured_sentence() {
     let db = TestDb::new().await.expect("a test database");
     let test = flaky_test(&db).await;
-    stamp_link(&db, test, 12, true, false).await;
+    stamp_link(&db, EntityKind::Test, test, stamp().number(12).checked()).await;
     db.connection()
         .execute_raw(Statement::from_sql_and_values(
             DbBackend::Postgres,
@@ -154,7 +153,7 @@ async fn the_fixed_note_comments_once_with_the_configured_sentence() {
 async fn the_fixed_note_names_the_default_branch_when_it_is_known() {
     let db = TestDb::new().await.expect("a test database");
     let test = flaky_test(&db).await;
-    stamp_link(&db, test, 12, true, false).await;
+    stamp_link(&db, EntityKind::Test, test, stamp().number(12).checked()).await;
     db.connection()
         .execute_raw(Statement::from_sql_and_values(
             DbBackend::Postgres,
@@ -201,7 +200,7 @@ async fn the_fixed_note_names_the_default_branch_when_it_is_known() {
 async fn the_fixed_note_closes_the_issue_only_when_asked() {
     let db = TestDb::new().await.expect("a test database");
     let test = flaky_test(&db).await;
-    stamp_link(&db, test, 12, true, false).await;
+    stamp_link(&db, EntityKind::Test, test, stamp().number(12).checked()).await;
     db.connection()
         .execute_raw(Statement::from_sql_and_values(
             DbBackend::Postgres,
@@ -281,7 +280,7 @@ async fn the_fixed_note_closes_the_issue_only_when_asked() {
 async fn the_fixed_note_is_disabled_while_the_streak_is_zero() {
     let db = TestDb::new().await.expect("a test database");
     let test = flaky_test(&db).await;
-    stamp_link(&db, test, 12, true, false).await;
+    stamp_link(&db, EntityKind::Test, test, stamp().number(12).checked()).await;
     db.connection()
         .execute_raw(Statement::from_sql_and_values(
             DbBackend::Postgres,
@@ -314,7 +313,7 @@ async fn the_fixed_note_is_disabled_while_the_streak_is_zero() {
 async fn a_job_issue_is_noted_and_closed_with_the_same_wording() {
     let db = TestDb::new().await.expect("a test database");
     let job = flaky_job(&db).await;
-    stamp_job_link(&db, job, 77, true).await;
+    stamp_link(&db, EntityKind::Job, job, stamp().number(77).checked()).await;
     set_clean_streak(&db, "jobs", job, 3).await;
     let server = MockServer::start().await;
     mount_comment(&server, "acme/app", 77, ResponseTemplate::new(201)).await;
@@ -354,19 +353,25 @@ async fn a_job_issue_is_noted_and_closed_with_the_same_wording() {
         json!({"state": "closed", "state_reason": "completed"})
     );
     assert!(noted(&db, "jobs", job).await);
-    assert_eq!(job_link(&db, job).await.0, Some(77));
+    assert_eq!(link_of(&db, EntityKind::Job, job).await.number, Some(77));
 }
 
 #[tokio::test]
 async fn a_note_ignores_a_row_with_no_live_note() {
     let db = TestDb::new().await.expect("a test database");
     let short = flaky_test_in(&db, "acme/app", "short", "short").await;
-    stamp_link(&db, short, 71, true, false).await;
+    stamp_link(&db, EntityKind::Test, short, stamp().number(71).checked()).await;
     set_clean_streak(&db, "test_cases", short, 2).await;
     let unlinked = flaky_test_in(&db, "acme/app", "unlinked", "unlinked").await;
     set_clean_streak(&db, "test_cases", unlinked, 9).await;
     let declined = flaky_test_in(&db, "acme/app", "declined", "declined").await;
-    stamp_link(&db, declined, 72, true, true).await;
+    stamp_link(
+        &db,
+        EntityKind::Test,
+        declined,
+        stamp().number(72).checked().closed(),
+    )
+    .await;
     set_clean_streak(&db, "test_cases", declined, 9).await;
     let server = MockServer::start().await;
 
@@ -390,7 +395,13 @@ async fn a_note_ignores_a_row_with_no_live_note() {
     assert!(!noted(&db, "test_cases", declined).await);
 
     let at_streak = flaky_test_in(&db, "acme/app", "streak", "streak").await;
-    stamp_link(&db, at_streak, 73, true, false).await;
+    stamp_link(
+        &db,
+        EntityKind::Test,
+        at_streak,
+        stamp().number(73).checked(),
+    )
+    .await;
     set_clean_streak(&db, "test_cases", at_streak, 9).await;
     let off = fixed_settings(&[("FLAKERADAR_GITHUB_FIXED_STREAK", "0")]);
     github::note_fixed_issues_for(
@@ -427,7 +438,7 @@ async fn a_note_skips_a_job_of_another_provider() {
         .build(db.connection())
         .await
         .expect("the Job inserts");
-    stamp_job_link(&db, job.id, 77, true).await;
+    stamp_link(&db, EntityKind::Job, job.id, stamp().number(77).checked()).await;
     set_clean_streak(&db, "jobs", job.id, 3).await;
     let server = MockServer::start().await;
 
@@ -454,7 +465,7 @@ async fn a_note_skips_a_job_of_another_provider() {
 async fn a_note_close_that_fails_keeps_the_stamp() {
     let db = TestDb::new().await.expect("a test database");
     let test = flaky_test_in(&db, "acme/app", "linked", "linked").await;
-    stamp_link(&db, test, 77, true, false).await;
+    stamp_link(&db, EntityKind::Test, test, stamp().number(77).checked()).await;
     set_clean_streak(&db, "test_cases", test, 3).await;
     let server = MockServer::start().await;
     mount_comment(&server, "acme/app", 77, ResponseTemplate::new(201)).await;
@@ -512,8 +523,8 @@ async fn a_note_rate_limit_stops_the_batch() {
         let db = TestDb::new().await.expect("a test database");
         let first = flaky_test_in(&db, "acme/a", "a", "a").await;
         let second = flaky_test_in(&db, "acme/b", "b", "b").await;
-        stamp_link(&db, first, 71, true, false).await;
-        stamp_link(&db, second, 72, true, false).await;
+        stamp_link(&db, EntityKind::Test, first, stamp().number(71).checked()).await;
+        stamp_link(&db, EntityKind::Test, second, stamp().number(72).checked()).await;
         set_clean_streak(&db, "test_cases", first, 3).await;
         set_clean_streak(&db, "test_cases", second, 3).await;
         let server = MockServer::start().await;
@@ -550,8 +561,8 @@ async fn a_note_rate_limit_stops_the_batch() {
     let db = TestDb::new().await.expect("a test database");
     let first = flaky_test_in(&db, "acme/a", "a", "a").await;
     let second = flaky_test_in(&db, "acme/b", "b", "b").await;
-    stamp_link(&db, first, 71, true, false).await;
-    stamp_link(&db, second, 72, true, false).await;
+    stamp_link(&db, EntityKind::Test, first, stamp().number(71).checked()).await;
+    stamp_link(&db, EntityKind::Test, second, stamp().number(72).checked()).await;
     set_clean_streak(&db, "test_cases", first, 3).await;
     set_clean_streak(&db, "test_cases", second, 3).await;
     let server = MockServer::start().await;
@@ -591,9 +602,9 @@ async fn a_note_permission_403_skips_only_that_repo() {
     let a1 = flaky_test_in(&db, "acme/a", "a1", "a1").await;
     let a2 = flaky_test_in(&db, "acme/a", "a2", "a2").await;
     let other = flaky_test_in(&db, "acme/b", "b", "b").await;
-    stamp_link(&db, a1, 71, true, false).await;
-    stamp_link(&db, a2, 73, true, false).await;
-    stamp_link(&db, other, 72, true, false).await;
+    stamp_link(&db, EntityKind::Test, a1, stamp().number(71).checked()).await;
+    stamp_link(&db, EntityKind::Test, a2, stamp().number(73).checked()).await;
+    stamp_link(&db, EntityKind::Test, other, stamp().number(72).checked()).await;
     for id in [a1, a2, other] {
         set_clean_streak(&db, "test_cases", id, 3).await;
     }
@@ -634,8 +645,8 @@ async fn a_note_permission_403_skips_only_that_repo() {
     let db = TestDb::new().await.expect("a test database");
     let a = flaky_test_in(&db, "acme/a", "a", "a").await;
     let b = flaky_test_in(&db, "acme/b", "b", "b").await;
-    stamp_link(&db, a, 71, true, false).await;
-    stamp_link(&db, b, 72, true, false).await;
+    stamp_link(&db, EntityKind::Test, a, stamp().number(71).checked()).await;
+    stamp_link(&db, EntityKind::Test, b, stamp().number(72).checked()).await;
     set_clean_streak(&db, "test_cases", a, 3).await;
     set_clean_streak(&db, "test_cases", b, 3).await;
     let server = MockServer::start().await;
@@ -680,7 +691,7 @@ async fn a_note_permission_403_skips_only_that_repo() {
 async fn a_note_network_error_is_logged_and_never_raises() {
     let db = TestDb::new().await.expect("a test database");
     let test = flaky_test_in(&db, "acme/app", "linked", "linked").await;
-    stamp_link(&db, test, 77, true, false).await;
+    stamp_link(&db, EntityKind::Test, test, stamp().number(77).checked()).await;
     set_clean_streak(&db, "test_cases", test, 3).await;
     // Nothing listens on this port.
     let api = Api::new(Secret::new(TOKEN), "http://127.0.0.1:1").expect("the HTTP client builds");
@@ -707,8 +718,8 @@ async fn a_transport_error_on_a_fixed_note_close_ends_the_batch() {
     let db = TestDb::new().await.expect("a test database");
     let first = flaky_test_in(&db, "acme/a", "linked", "linked").await;
     let second = flaky_test_in(&db, "acme/b", "other", "other").await;
-    stamp_link(&db, first, 71, true, false).await;
-    stamp_link(&db, second, 72, true, false).await;
+    stamp_link(&db, EntityKind::Test, first, stamp().number(71).checked()).await;
+    stamp_link(&db, EntityKind::Test, second, stamp().number(72).checked()).await;
     set_clean_streak(&db, "test_cases", first, 3).await;
     set_clean_streak(&db, "test_cases", second, 3).await;
     // The first comment lands, then every later connection is dropped: the close
@@ -750,7 +761,7 @@ async fn a_transport_error_on_a_fixed_note_close_ends_the_batch() {
 async fn a_fixed_note_close_whose_connection_dies_keeps_the_stamp() {
     let db = TestDb::new().await.expect("a test database");
     let test = flaky_test_in(&db, "acme/app", "linked", "linked").await;
-    stamp_link(&db, test, 77, true, false).await;
+    stamp_link(&db, EntityKind::Test, test, stamp().number(77).checked()).await;
     set_clean_streak(&db, "test_cases", test, 3).await;
     // The comment lands, then the close's connection is dropped before it answers.
     let loopback = Loopback::answering(CREATED.to_owned()).await;
@@ -788,8 +799,8 @@ async fn an_unusable_note_comment_status_leaves_the_row_unstamped() {
     let db = TestDb::new().await.expect("a test database");
     let bad = flaky_test_in(&db, "acme/a", "bad", "bad").await;
     let other = flaky_test_in(&db, "acme/b", "ok", "ok").await;
-    stamp_link(&db, bad, 71, true, false).await;
-    stamp_link(&db, other, 72, true, false).await;
+    stamp_link(&db, EntityKind::Test, bad, stamp().number(71).checked()).await;
+    stamp_link(&db, EntityKind::Test, other, stamp().number(72).checked()).await;
     set_clean_streak(&db, "test_cases", bad, 3).await;
     set_clean_streak(&db, "test_cases", other, 3).await;
     let server = MockServer::start().await;
@@ -874,14 +885,18 @@ async fn link_writes_reset_the_closed_flag() {
     )
     .await
     .expect("the unlink succeeds");
-    assert_eq!(test_link(&db, flagged).await.0, None, "no number is kept");
     assert_eq!(
-        test_link(&db, flagged).await.1,
+        link_of(&db, EntityKind::Test, flagged).await.number,
+        None,
+        "no number is kept"
+    );
+    assert_eq!(
+        link_of(&db, EntityKind::Test, flagged).await.filed,
         None,
         "an unlinked row is nobody's"
     );
     assert!(
-        !test_link(&db, flagged).await.3,
+        !link_of(&db, EntityKind::Test, flagged).await.closed,
         "unlink re-arms filing, so the declined flag goes too"
     );
 
@@ -898,17 +913,17 @@ async fn link_writes_reset_the_closed_flag() {
         .await
         .expect("the fresh link writes");
     assert_eq!(
-        test_link(&db, relinked).await.0,
+        link_of(&db, EntityKind::Test, relinked).await.number,
         Some(44),
         "a fresh link is stored"
     );
     assert_eq!(
-        test_link(&db, relinked).await.1,
+        link_of(&db, EntityKind::Test, relinked).await.filed,
         Some(true),
         "ours to close"
     );
     assert!(
-        !test_link(&db, relinked).await.3,
+        !link_of(&db, EntityKind::Test, relinked).await.closed,
         "a fresh link points at an open issue"
     );
 }
@@ -950,7 +965,7 @@ async fn job_link_change_and_unlink_reset_the_check_stamp() {
     )
     .await;
     assert!(
-        job_checked(&db, job).await,
+        link_of(&db, EntityKind::Job, job).await.checked(),
         "an open issue is still a check"
     );
 
@@ -965,9 +980,9 @@ async fn job_link_change_and_unlink_reset_the_check_stamp() {
     )
     .await
     .expect("the replace succeeds");
-    assert_eq!(job_link(&db, job).await.0, Some(44));
+    assert_eq!(link_of(&db, EntityKind::Job, job).await.number, Some(44));
     assert!(
-        !job_checked(&db, job).await,
+        !link_of(&db, EntityKind::Job, job).await.checked(),
         "a replaced link is checked first"
     );
     github::sync_closed_issues(
@@ -978,14 +993,21 @@ async fn job_link_change_and_unlink_reset_the_check_stamp() {
         &unstopped(),
     )
     .await;
-    assert!(job_checked(&db, job).await, "the new link is checked");
+    assert!(
+        link_of(&db, EntityKind::Job, job).await.checked(),
+        "the new link is checked"
+    );
 
     issue_links::unlink_issue(db.connection(), EntityKind::Job, i64::from(job), &reads)
         .await
         .expect("the unlink succeeds");
-    assert_eq!(job_link(&db, job).await.0, None, "no number is left");
+    assert_eq!(
+        link_of(&db, EntityKind::Job, job).await.number,
+        None,
+        "no number is left"
+    );
     assert!(
-        !job_checked(&db, job).await,
+        !link_of(&db, EntityKind::Job, job).await.checked(),
         "with no number the stamp has nothing to rotate"
     );
 }
@@ -1133,8 +1155,8 @@ async fn an_unlink_clears_both_halves_and_a_rearm_keeps_its_stamp() {
     let db = TestDb::new().await.expect("a test database");
     let unlinked = flaky_test_in(&db, "acme/app", "p1", "t1").await;
     let rearmed = flaky_test_in(&db, "acme/app", "p2", "t2").await;
-    stamp_link(&db, unlinked, 11, false, false).await;
-    stamp_link(&db, rearmed, 22, false, false).await;
+    stamp_link(&db, EntityKind::Test, unlinked, stamp().number(11)).await;
+    stamp_link(&db, EntityKind::Test, rearmed, stamp().number(22)).await;
 
     issue_links::unlink_issue(
         db.connection(),
@@ -1144,7 +1166,8 @@ async fn an_unlink_clears_both_halves_and_a_rearm_keeps_its_stamp() {
     )
     .await
     .expect("the unlink succeeds");
-    let (number, filed, checked, closed) = test_link(&db, unlinked).await;
+    let link = link_of(&db, EntityKind::Test, unlinked).await;
+    let (number, filed, checked, closed) = (link.number, link.filed, link.checked(), link.closed);
     assert_eq!(number, None, "unlink drops the number");
     assert_eq!(filed, None, "and the provenance");
     assert!(!checked, "and the check stamp");
@@ -1170,11 +1193,12 @@ async fn an_unlink_clears_both_halves_and_a_rearm_keeps_its_stamp() {
         vec!["/repos/acme/app/issues/22"],
         "the unlinked row is out of the rotation"
     );
-    let (number, _, checked, _) = test_link(&db, rearmed).await;
+    let link = link_of(&db, EntityKind::Test, rearmed).await;
+    let (number, _, checked, _) = (link.number, link.filed, link.checked(), link.closed);
     assert_eq!(number, None, "the re-arm clears the number");
     assert!(checked, "and keeps the stamp it just wrote");
     assert!(
-        !test_link(&db, unlinked).await.2,
+        !link_of(&db, EntityKind::Test, unlinked).await.checked(),
         "and leaves the unlinked row alone"
     );
 }
@@ -1185,12 +1209,12 @@ async fn an_unlink_after_a_rearm_clears_the_kept_stamp(kind: EntityKind) {
     let (id, number) = match kind {
         EntityKind::Test => {
             let id = flaky_test(&db).await;
-            stamp_link(&db, id, 300, false, false).await;
+            stamp_link(&db, EntityKind::Test, id, stamp().number(300)).await;
             (id, 300)
         }
         EntityKind::Job => {
             let id = flaky_job(&db).await;
-            stamp_job_link(&db, id, 302, false).await;
+            stamp_link(&db, EntityKind::Job, id, stamp().number(302)).await;
             (id, 302)
         }
     };
@@ -1215,7 +1239,7 @@ async fn an_unlink_after_a_rearm_clears_the_kept_stamp(kind: EntityKind) {
     );
     let rearmed = link_of(&db, kind, id).await;
     assert_eq!(rearmed.number, None, "the re-arm clears the number");
-    assert!(rearmed.checked, "the re-arm keeps the stamp it wrote");
+    assert!(rearmed.checked(), "the re-arm keeps the stamp it wrote");
 
     issue_links::unlink_issue(
         db.connection(),
@@ -1228,7 +1252,7 @@ async fn an_unlink_after_a_rearm_clears_the_kept_stamp(kind: EntityKind) {
     let cleared = link_of(&db, kind, id).await;
     assert_eq!(cleared.filed, None, "unlink drops the provenance");
     assert_eq!(cleared.number, None, "unlink drops the number");
-    assert!(!cleared.checked, "unlink drops the stamp the re-arm kept");
+    assert!(!cleared.checked(), "unlink drops the stamp the re-arm kept");
     assert!(
         linked_for_check(db.connection(), kind, 10)
             .await
@@ -1290,7 +1314,8 @@ async fn an_unlink_rearms_a_declined_link_and_the_filer_files_it_again() {
     )
     .await
     .expect("the Test unlink succeeds");
-    let (number, filed, _, closed) = test_link(&db, test).await;
+    let link = link_of(&db, EntityKind::Test, test).await;
+    let (number, filed, _, closed) = (link.number, link.filed, link.checked(), link.closed);
     assert_eq!(number, None);
     assert_eq!(filed, None, "no provenance without a number");
     assert!(!closed, "the declined flag goes with the link");
@@ -1303,7 +1328,8 @@ async fn an_unlink_rearms_a_declined_link_and_the_filer_files_it_again() {
     )
     .await
     .expect("the Job unlink succeeds");
-    let (number, filed) = job_link(&db, job).await;
+    let link = link_of(&db, EntityKind::Job, job).await;
+    let (number, filed) = (link.number, link.filed);
     assert_eq!(number, None);
     assert_eq!(filed, None);
 
@@ -1321,7 +1347,8 @@ async fn an_unlink_rearms_a_declined_link_and_the_filer_files_it_again() {
         &unstopped(),
     )
     .await;
-    let (number, _, _, closed) = test_link(&db, test).await;
+    let link = link_of(&db, EntityKind::Test, test).await;
+    let (number, _, _, closed) = (link.number, link.filed, link.checked(), link.closed);
     assert_eq!(number, Some(77), "the filer files the re-armed Test");
     assert!(!closed, "a fresh link starts unflagged");
 
@@ -1353,12 +1380,12 @@ async fn every_link_write_clears_the_fixed_note_stamp() {
     let relinked = flaky_test_in(&db, "acme/app", "p2", "t2").await;
     let unlinked = flaky_test_in(&db, "acme/app", "p3", "t3").await;
     let job = flaky_job(&db).await;
-    stamp_job_link(&db, job, 40, true).await;
-    for (table, id) in [("test_cases", filed), ("test_cases", relinked)] {
-        stamp_note(&db, table, id).await;
+    stamp_link(&db, EntityKind::Job, job, stamp().number(40).checked()).await;
+    for id in [filed, relinked] {
+        stamp_note(&db, EntityKind::Test, id).await;
     }
-    stamp_note(&db, "test_cases", unlinked).await;
-    stamp_note(&db, "jobs", job).await;
+    stamp_note(&db, EntityKind::Test, unlinked).await;
+    stamp_note(&db, EntityKind::Job, job).await;
 
     issue_links::store_filed_link(db.connection(), EntityKind::Test, i64::from(filed), 11)
         .await
@@ -1389,7 +1416,7 @@ async fn every_link_write_clears_the_fixed_note_stamp() {
     )
     .await
     .expect("the replaced Job link writes");
-    assert_eq!(job_link(&db, job).await.0, Some(41));
+    assert_eq!(link_of(&db, EntityKind::Job, job).await.number, Some(41));
     assert!(!noted(&db, "jobs", job).await);
 
     issue_links::unlink_issue(
@@ -1400,7 +1427,7 @@ async fn every_link_write_clears_the_fixed_note_stamp() {
     )
     .await
     .expect("the unlink succeeds");
-    assert_eq!(test_link(&db, unlinked).await.0, None);
+    assert_eq!(link_of(&db, EntityKind::Test, unlinked).await.number, None);
     assert!(
         !noted(&db, "test_cases", unlinked).await,
         "with no Issue a stamp would note nothing"

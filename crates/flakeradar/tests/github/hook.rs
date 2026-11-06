@@ -10,9 +10,9 @@ use wiremock::matchers::{any, method, path};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
 use crate::support::{
-    api, clean_streak_of, fixed_settings, flaky_test, gh_settings, link_table, mount_comment,
-    mount_create, mount_patch, note_row, noted, number_of, processed, processed_for,
-    requested_calls, stage_mid_request, test_link, unstopped,
+    api, clean_streak_of, fixed_settings, flaky_test, gh_settings, link_of, link_table,
+    mount_comment, mount_create, mount_patch, note_row, noted, number_of, processed, processed_for,
+    requested_calls, stage_mid_request, unstopped,
 };
 
 #[tokio::test]
@@ -54,7 +54,7 @@ async fn a_failed_report_is_never_filed_and_a_processed_one_is() {
         &unstopped(),
     )
     .await;
-    assert_eq!(test_link(&db, test).await.0, Some(7));
+    assert_eq!(link_of(&db, EntityKind::Test, test).await.number, Some(7));
 }
 
 /// The note step skips the link this same pass filed, once per entity.

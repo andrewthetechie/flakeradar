@@ -12,8 +12,8 @@
 use axum::http::{Method, StatusCode};
 use flakeradar_core::EntityKind;
 use flakeradar_test_support::{
-    Reply, TestDb, app, get, make_job, make_pipeline, make_project, make_test_case, post, request,
-    request_with_headers, send, settings, system_clock,
+    Reply, TestDb, app, get, link_of, make_job, make_pipeline, make_project, make_test_case, post,
+    request, request_with_headers, send, settings, system_clock,
 };
 
 use sea_orm::ConnectionTrait as _;
@@ -50,28 +50,6 @@ async fn delete(app: &axum::Router, uri: &str) -> Reply {
 }
 
 /// The `github_issue_*` columns of one Test, as the database stores them.
-async fn test_link(db: &TestDb, id: i32) -> (Option<i32>, Option<bool>, bool, bool, bool) {
-    let row = db
-        .connection()
-        .query_one_raw(Statement::from_sql_and_values(
-            DbBackend::Postgres,
-            "SELECT github_issue_number, github_issue_filed, github_issue_checked_at IS NOT NULL \
-             AS checked, github_issue_closed, github_issue_fixed_noted_at IS NOT NULL AS noted \
-             FROM test_cases WHERE id = $1",
-            [id.into()],
-        ))
-        .await
-        .expect("the row reads")
-        .expect("the Test exists");
-    (
-        row.try_get("", "github_issue_number").expect("a number"),
-        row.try_get("", "github_issue_filed").expect("filed"),
-        row.try_get("", "checked").expect("checked"),
-        row.try_get("", "github_issue_closed").expect("closed"),
-        row.try_get("", "noted").expect("noted"),
-    )
-}
-
 /// A Test whose Repo names the Project, so the derived issue url is `acme/app`.
 async fn one_test(db: &TestDb) -> flakeradar_db::entities::test_cases::Model {
     let project = make_project()
@@ -104,37 +82,6 @@ async fn one_job(db: &TestDb) -> flakeradar_db::entities::jobs::Model {
 }
 
 /// The link columns of one Job, with its exact check stamp.
-async fn job_link(
-    db: &TestDb,
-    id: i32,
-) -> (
-    Option<i32>,
-    Option<bool>,
-    Option<chrono::DateTime<chrono::FixedOffset>>,
-    bool,
-    bool,
-) {
-    let row = db
-        .connection()
-        .query_one_raw(Statement::from_sql_and_values(
-            DbBackend::Postgres,
-            "SELECT github_issue_number, github_issue_filed, github_issue_checked_at, \
-             github_issue_closed, github_issue_fixed_noted_at IS NOT NULL AS noted \
-             FROM jobs WHERE id = $1",
-            [id.into()],
-        ))
-        .await
-        .expect("the row reads")
-        .expect("the Job exists");
-    (
-        row.try_get("", "github_issue_number").expect("a number"),
-        row.try_get("", "github_issue_filed").expect("filed"),
-        row.try_get("", "github_issue_checked_at").expect("a stamp"),
-        row.try_get("", "github_issue_closed").expect("closed"),
-        row.try_get("", "noted").expect("noted"),
-    )
-}
-
 #[tokio::test]
 async fn linking_a_test_issue_stores_the_pair_and_the_url() {
     let db = TestDb::new().await.expect("a test database");
@@ -158,7 +105,14 @@ async fn linking_a_test_issue_stores_the_pair_and_the_url() {
 
     // A front-door link is not FlakeRadar's own, so the admin delete never closes
     // it, and a new link is checked first.
-    let (number, filed, checked, closed, noted) = test_link(&db, test.id).await;
+    let link = link_of(&db, EntityKind::Test, test.id).await;
+    let (number, filed, checked, closed, noted) = (
+        link.number,
+        link.filed,
+        link.checked(),
+        link.closed,
+        link.noted(),
+    );
     assert_eq!(number, Some(12));
     assert_eq!(filed, Some(false));
     assert!(!checked);
@@ -199,7 +153,14 @@ async fn the_same_number_twice_keeps_the_check_stamp() {
     .await;
     assert_eq!(reply.status, StatusCode::OK);
     assert_eq!(reply.json()["github_issue_number"], json!(12));
-    let (_, _, checked, _, _) = test_link(&db, test.id).await;
+    let link = link_of(&db, EntityKind::Test, test.id).await;
+    let (_, _, checked, _, _) = (
+        link.number,
+        link.filed,
+        link.checked(),
+        link.closed,
+        link.noted(),
+    );
     assert!(
         checked,
         "the same number was just checked, so its stamp stays"
@@ -212,7 +173,14 @@ async fn the_same_number_twice_keeps_the_check_stamp() {
     )
     .await;
     assert_eq!(replaced.status, StatusCode::OK);
-    let (number, _, checked, _, _) = test_link(&db, test.id).await;
+    let link = link_of(&db, EntityKind::Test, test.id).await;
+    let (number, _, checked, _, _) = (
+        link.number,
+        link.filed,
+        link.checked(),
+        link.closed,
+        link.noted(),
+    );
     assert_eq!(number, Some(44));
     assert!(!checked, "a different number starts checked-first again");
 }
@@ -253,7 +221,14 @@ async fn re_linking_a_declined_issue_reports_the_stored_closed_flag() {
         json!(true),
         "the answer reports the stored flag"
     );
-    let (_, _, _, closed, _) = test_link(&db, test.id).await;
+    let link = link_of(&db, EntityKind::Test, test.id).await;
+    let (_, _, _, closed, _) = (
+        link.number,
+        link.filed,
+        link.checked(),
+        link.closed,
+        link.noted(),
+    );
     assert!(closed, "the stored flag is untouched by the re-link");
 }
 
@@ -280,7 +255,10 @@ async fn a_different_number_without_replace_is_a_conflict() {
         reply.json()["detail"],
         json!("Test already links issue #12; pass replace=true to replace it")
     );
-    assert_eq!(test_link(&db, test.id).await.0, Some(12));
+    assert_eq!(
+        link_of(&db, EntityKind::Test, test.id).await.number,
+        Some(12)
+    );
 
     let replaced = put(
         &app,
@@ -290,7 +268,10 @@ async fn a_different_number_without_replace_is_a_conflict() {
     .await;
     assert_eq!(replaced.status, StatusCode::OK);
     assert_eq!(replaced.json()["github_issue_number"], json!(13));
-    assert_eq!(test_link(&db, test.id).await.0, Some(13));
+    assert_eq!(
+        link_of(&db, EntityKind::Test, test.id).await.number,
+        Some(13)
+    );
 }
 
 #[tokio::test]
@@ -323,7 +304,14 @@ async fn replace_stores_the_new_number_and_resets_everything_that_went_with_the_
     .await;
     assert_eq!(reply.status, StatusCode::OK);
     assert_eq!(reply.json()["github_issue_number"], json!(13));
-    let (number, filed, checked, closed, noted) = test_link(&db, test.id).await;
+    let link = link_of(&db, EntityKind::Test, test.id).await;
+    let (number, filed, checked, closed, noted) = (
+        link.number,
+        link.filed,
+        link.checked(),
+        link.closed,
+        link.noted(),
+    );
     assert_eq!(number, Some(13));
     assert_eq!(filed, Some(false));
     assert!(
@@ -377,7 +365,7 @@ async fn a_url_must_be_the_issue_in_the_tests_own_repo() {
         )
     );
     assert_eq!(
-        test_link(&db, test.id).await.0,
+        link_of(&db, EntityKind::Test, test.id).await.number,
         Some(14),
         "a refused url leaves the link alone"
     );
@@ -486,7 +474,14 @@ async fn unlinking_clears_both_halves_and_every_flag() {
     assert_eq!(body["github_issue_number"], Value::Null);
     assert_eq!(body["github_issue_url"], Value::Null);
     assert_eq!(body["github_issue_closed"], json!(false));
-    let (number, filed, checked, closed, noted) = test_link(&db, test.id).await;
+    let link = link_of(&db, EntityKind::Test, test.id).await;
+    let (number, filed, checked, closed, noted) = (
+        link.number,
+        link.filed,
+        link.checked(),
+        link.closed,
+        link.noted(),
+    );
     assert_eq!(number, None);
     assert_eq!(filed, None, "an unlinked row carries no provenance");
     assert!(!checked);
@@ -577,7 +572,7 @@ async fn only_a_github_pipelines_job_can_link_an_issue() {
         json!("Only Jobs of GitHub Pipelines can link a GitHub issue")
     );
     assert_eq!(
-        job_link(&db, other.id).await.0,
+        link_of(&db, EntityKind::Job, other.id).await.number,
         Some(3),
         "the refused link leaves the Job alone"
     );
@@ -647,7 +642,7 @@ async fn the_link_routes_need_the_token() {
     )
     .await;
     assert_eq!(wrong.status, StatusCode::UNAUTHORIZED);
-    assert_eq!(test_link(&db, test.id).await.0, None);
+    assert_eq!(link_of(&db, EntityKind::Test, test.id).await.number, None);
 }
 
 #[tokio::test]
@@ -723,10 +718,17 @@ async fn linking_a_job_issue_stores_the_number_and_url() {
         json!("https://github.com/acme/app/issues/42")
     );
 
-    let (number, filed, checked, closed, noted) = job_link(&db, job.id).await;
+    let link = link_of(&db, EntityKind::Job, job.id).await;
+    let (number, filed, checked, closed, noted) = (
+        link.number,
+        link.filed,
+        link.checked(),
+        link.closed,
+        link.noted(),
+    );
     assert_eq!(number, Some(42));
     assert_eq!(filed, Some(false), "a human linked it, not FlakeRadar");
-    assert!(checked.is_none(), "a fresh link is checked first");
+    assert!(!checked, "a fresh link is checked first");
     assert!(!closed);
     assert!(!noted);
 
@@ -768,7 +770,7 @@ async fn a_job_link_conflict_needs_replace() {
     .await;
     assert_eq!(replaced.status, StatusCode::OK);
     assert_eq!(replaced.json()["github_issue_number"], json!(5));
-    assert_eq!(job_link(&db, job.id).await.0, Some(5));
+    assert_eq!(link_of(&db, EntityKind::Job, job.id).await.number, Some(5));
 }
 
 #[tokio::test]
@@ -784,8 +786,8 @@ async fn the_same_job_number_keeps_the_check_stamp() {
         .await
         .expect("the seeded link writes");
     let app = app(&db, &[("FLAKERADAR_API_TOKEN", TOKEN)]);
-    let before = job_link(&db, job.id).await;
-    assert!(before.2.is_some());
+    let before = link_of(&db, EntityKind::Job, job.id).await;
+    assert!(before.checked(), "a seeded link is already checked");
 
     let reply = put(
         &app,
@@ -795,10 +797,10 @@ async fn the_same_job_number_keeps_the_check_stamp() {
     .await;
     assert_eq!(reply.status, StatusCode::OK);
     assert_eq!(reply.json()["github_issue_number"], json!(5));
-    let after = job_link(&db, job.id).await;
-    assert_eq!(after.0, Some(5));
+    let after = link_of(&db, EntityKind::Job, job.id).await;
+    assert_eq!(after.number, Some(5));
     assert_eq!(
-        after.2, before.2,
+        after.checked_at, before.checked_at,
         "a same-number link keeps the stamp it just checked"
     );
 }
@@ -822,7 +824,7 @@ async fn a_job_url_must_be_the_issue_in_its_own_repo() {
             "url must be https://github.com/acme/app/issues/6: the issue must be in the Job's own Repo"
         )
     );
-    assert_eq!(job_link(&db, job.id).await.0, None);
+    assert_eq!(link_of(&db, EntityKind::Job, job.id).await.number, None);
 
     let accepted = put(
         &app,
@@ -853,10 +855,17 @@ async fn unlinking_a_job_clears_both_halves_and_its_provenance() {
     let body = reply.json();
     assert_eq!(body["github_issue_number"], Value::Null);
     assert_eq!(body["github_issue_url"], Value::Null);
-    let (number, filed, checked, closed, noted) = job_link(&db, job.id).await;
+    let link = link_of(&db, EntityKind::Job, job.id).await;
+    let (number, filed, checked, closed, noted) = (
+        link.number,
+        link.filed,
+        link.checked(),
+        link.closed,
+        link.noted(),
+    );
     assert_eq!(number, None);
     assert_eq!(filed, None, "an unlinked row carries no provenance");
-    assert!(checked.is_none());
+    assert!(!checked);
     assert!(!closed);
     assert!(!noted);
 

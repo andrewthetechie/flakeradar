@@ -20,9 +20,8 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use crate::support::{
     CREATED, Held, Loopback, TOKEN, TRUNCATED, api, flaky_job, flaky_test, flaky_test_in,
-    gh_settings, job_checked, job_link, lines_with, link_of, logged_from, mount_close,
-    mount_create, mount_issue, mount_state, noted, requested_paths, stamp_job_link, stamp_link,
-    stamp_note, test_link, unstopped,
+    gh_settings, lines_with, link_of, logged_from, mount_close, mount_create, mount_issue,
+    mount_state, noted, requested_paths, stamp, stamp_link, stamp_note, unstopped,
 };
 
 /// One Test's stored check stamp.
@@ -45,7 +44,7 @@ async fn checked_at(db: &TestDb, id: i32) -> Option<DateTime<FixedOffset>> {
 async fn the_sync_stamps_a_checked_link_with_the_clock_it_was_given() {
     let db = TestDb::new().await.expect("a test database");
     let test = flaky_test(&db).await;
-    stamp_link(&db, test, 11, false, false).await;
+    stamp_link(&db, EntityKind::Test, test, stamp().number(11)).await;
     let server = MockServer::start().await;
     mount_issue(
         &server,
@@ -81,8 +80,14 @@ async fn the_sync_rearms_a_link_whose_issue_closed() {
     let db = TestDb::new().await.expect("a test database");
     let test = flaky_test(&db).await;
     let still_open = flaky_test_in(&db, "acme/keep", "backend", "open").await;
-    stamp_link(&db, test, 12, true, false).await;
-    stamp_link(&db, still_open, 22, true, false).await;
+    stamp_link(&db, EntityKind::Test, test, stamp().number(12).checked()).await;
+    stamp_link(
+        &db,
+        EntityKind::Test,
+        still_open,
+        stamp().number(22).checked(),
+    )
+    .await;
     let server = MockServer::start().await;
     mount_state(
         &server,
@@ -106,7 +111,8 @@ async fn the_sync_rearms_a_link_whose_issue_closed() {
         &unstopped(),
     )
     .await;
-    let (number, filed, _, closed) = test_link(&db, test).await;
+    let link = link_of(&db, EntityKind::Test, test).await;
+    let (number, filed, _, closed) = (link.number, link.filed, link.checked(), link.closed);
     assert_eq!(
         number, None,
         "the number goes, so the next Report may re-file"
@@ -114,7 +120,7 @@ async fn the_sync_rearms_a_link_whose_issue_closed() {
     assert_eq!(filed, None);
     assert!(!closed);
     assert_eq!(
-        test_link(&db, still_open).await.0,
+        link_of(&db, EntityKind::Test, still_open).await.number,
         Some(22),
         "an open issue keeps its link"
     );
@@ -124,7 +130,7 @@ async fn the_sync_rearms_a_link_whose_issue_closed() {
 async fn the_sync_keeps_a_link_closed_as_not_planned() {
     let db = TestDb::new().await.expect("a test database");
     let test = flaky_test(&db).await;
-    stamp_link(&db, test, 12, true, false).await;
+    stamp_link(&db, EntityKind::Test, test, stamp().number(12).checked()).await;
     db.connection()
         .execute_raw(Statement::from_sql_and_values(
             DbBackend::Postgres,
@@ -149,7 +155,8 @@ async fn the_sync_keeps_a_link_closed_as_not_planned() {
         &unstopped(),
     )
     .await;
-    let (number, filed, checked, closed) = test_link(&db, test).await;
+    let link = link_of(&db, EntityKind::Test, test).await;
+    let (number, filed, checked, closed) = (link.number, link.filed, link.checked(), link.closed);
     assert_eq!(
         number,
         Some(12),
@@ -164,7 +171,13 @@ async fn the_sync_keeps_a_link_closed_as_not_planned() {
 async fn the_sync_clears_the_flag_when_a_declined_issue_reopens() {
     let db = TestDb::new().await.expect("a test database");
     let test = flaky_test(&db).await;
-    stamp_link(&db, test, 12, true, true).await;
+    stamp_link(
+        &db,
+        EntityKind::Test,
+        test,
+        stamp().number(12).checked().closed(),
+    )
+    .await;
     db.connection()
         .execute_raw(Statement::from_sql_and_values(
             DbBackend::Postgres,
@@ -189,7 +202,8 @@ async fn the_sync_clears_the_flag_when_a_declined_issue_reopens() {
         &unstopped(),
     )
     .await;
-    let (number, filed, _, closed) = test_link(&db, test).await;
+    let link = link_of(&db, EntityKind::Test, test).await;
+    let (number, filed, _, closed) = (link.number, link.filed, link.checked(), link.closed);
     assert_eq!(number, Some(12));
     assert_eq!(filed, Some(true), "the link is still ours");
     assert!(!closed, "filing is live again");
@@ -199,7 +213,7 @@ async fn the_sync_clears_the_flag_when_a_declined_issue_reopens() {
 async fn the_sync_rearms_a_link_whose_issue_is_gone() {
     let db = TestDb::new().await.expect("a test database");
     let test = flaky_test(&db).await;
-    stamp_link(&db, test, 12, true, false).await;
+    stamp_link(&db, EntityKind::Test, test, stamp().number(12).checked()).await;
     let server = MockServer::start().await;
     mount_state(&server, ResponseTemplate::new(404)).await;
 
@@ -211,7 +225,8 @@ async fn the_sync_rearms_a_link_whose_issue_is_gone() {
         &unstopped(),
     )
     .await;
-    let (number, filed, checked, closed) = test_link(&db, test).await;
+    let link = link_of(&db, EntityKind::Test, test).await;
+    let (number, filed, checked, closed) = (link.number, link.filed, link.checked(), link.closed);
     assert_eq!(number, None);
     assert_eq!(filed, None, "the flag resets with the number");
     assert!(checked, "the row rotates like a checked one");
@@ -223,8 +238,8 @@ async fn the_sync_keeps_a_link_on_a_permission_error_and_stamps_it() {
     let db = TestDb::new().await.expect("a test database");
     let test = flaky_test(&db).await;
     let other = flaky_test_in(&db, "acme/b", "backend", "closed").await;
-    stamp_link(&db, test, 12, false, false).await;
-    stamp_link(&db, other, 22, false, false).await;
+    stamp_link(&db, EntityKind::Test, test, stamp().number(12)).await;
+    stamp_link(&db, EntityKind::Test, other, stamp().number(22)).await;
     let server = MockServer::start().await;
     mount_state(
         &server,
@@ -247,7 +262,8 @@ async fn the_sync_keeps_a_link_on_a_permission_error_and_stamps_it() {
         &unstopped(),
     )
     .await;
-    let (number, _, checked, _) = test_link(&db, test).await;
+    let link = link_of(&db, EntityKind::Test, test).await;
+    let (number, _, checked, _) = (link.number, link.filed, link.checked(), link.closed);
     assert_eq!(
         number,
         Some(12),
@@ -255,7 +271,7 @@ async fn the_sync_keeps_a_link_on_a_permission_error_and_stamps_it() {
     );
     assert!(checked, "but the row was answered for, so it rotates");
     assert_eq!(
-        test_link(&db, other).await.0,
+        link_of(&db, EntityKind::Test, other).await.number,
         None,
         "the other Repo still syncs"
     );
@@ -273,8 +289,8 @@ async fn the_sync_leaves_an_unreadable_body_alone_and_stamps_it() {
         "null",
         r#"{"state": ["closed"]}"#,
     ] {
-        stamp_link(&db, test, 11, false, false).await;
-        stamp_link(&db, other, 22, false, false).await;
+        stamp_link(&db, EntityKind::Test, test, stamp().number(11)).await;
+        stamp_link(&db, EntityKind::Test, other, stamp().number(22)).await;
         let server = MockServer::start().await;
         mount_issue(
             &server,
@@ -304,11 +320,12 @@ async fn the_sync_leaves_an_unreadable_body_alone_and_stamps_it() {
             vec!["/repos/acme/a/issues/11", "/repos/acme/b/issues/22"],
             "raw {raw:?}: the batch goes on"
         );
-        let (number, _, checked, _) = test_link(&db, test).await;
+        let link = link_of(&db, EntityKind::Test, test).await;
+        let (number, _, checked, _) = (link.number, link.filed, link.checked(), link.closed);
         assert_eq!(number, Some(11), "raw {raw:?}: the link survives");
         assert!(checked, "raw {raw:?}: the row rotates");
         assert_eq!(
-            test_link(&db, other).await.0,
+            link_of(&db, EntityKind::Test, other).await.number,
             None,
             "raw {raw:?}: the other Repo still re-arms"
         );
@@ -325,7 +342,7 @@ async fn the_sync_leaves_an_unreadable_body_alone_and_stamps_it() {
 async fn the_sync_stops_on_a_rate_limit_before_stamping_the_row() {
     let db = TestDb::new().await.expect("a test database");
     let test = flaky_test(&db).await;
-    stamp_link(&db, test, 12, false, false).await;
+    stamp_link(&db, EntityKind::Test, test, stamp().number(12)).await;
     let server = MockServer::start().await;
     mount_state(
         &server,
@@ -341,7 +358,8 @@ async fn the_sync_stops_on_a_rate_limit_before_stamping_the_row() {
         &unstopped(),
     )
     .await;
-    let (number, _, checked, _) = test_link(&db, test).await;
+    let link = link_of(&db, EntityKind::Test, test).await;
+    let (number, _, checked, _) = (link.number, link.filed, link.checked(), link.closed);
     assert_eq!(number, Some(12));
     assert!(!checked, "a rate-limited row is retried first next run");
 }
@@ -350,7 +368,7 @@ async fn the_sync_stops_on_a_rate_limit_before_stamping_the_row() {
 async fn nothing_configured_syncs_nothing() {
     let db = TestDb::new().await.expect("a test database");
     let test = flaky_test(&db).await;
-    stamp_link(&db, test, 12, false, false).await;
+    stamp_link(&db, EntityKind::Test, test, stamp().number(12)).await;
     let server = MockServer::start().await;
     let settings = Settings::from_map(&std::collections::BTreeMap::new()).expect("the defaults");
 
@@ -375,7 +393,7 @@ async fn nothing_configured_syncs_nothing() {
 async fn a_sync_whose_rotation_list_cannot_be_read_makes_no_request() {
     let db = TestDb::new().await.expect("a test database");
     let test = flaky_test(&db).await;
-    stamp_link(&db, test, 12, false, false).await;
+    stamp_link(&db, EntityKind::Test, test, stamp().number(12)).await;
     db.connection()
         .execute_unprepared("DROP TABLE test_cases CASCADE")
         .await
@@ -434,7 +452,8 @@ async fn the_sync_leaves_an_unknown_issue_state_alone() {
         &unstopped(),
     )
     .await;
-    let (number, filed, checked, closed) = test_link(&db, test).await;
+    let link = link_of(&db, EntityKind::Test, test).await;
+    let (number, filed, checked, closed) = (link.number, link.filed, link.checked(), link.closed);
     assert_eq!(number, Some(12), "an unknown state says nothing");
     assert_eq!(filed, Some(true));
     assert!(closed, "only a reported reopen clears the flag");
@@ -447,9 +466,9 @@ async fn the_sync_rotates_through_its_links_a_batch_at_a_time() {
     let first = flaky_test_in(&db, "acme/app", "p1", "t1").await;
     let second = flaky_test_in(&db, "acme/app", "p2", "t2").await;
     let third = flaky_test_in(&db, "acme/app", "p3", "t3").await;
-    stamp_link(&db, first, 11, false, false).await;
-    stamp_link(&db, second, 22, false, false).await;
-    stamp_link(&db, third, 33, false, false).await;
+    stamp_link(&db, EntityKind::Test, first, stamp().number(11)).await;
+    stamp_link(&db, EntityKind::Test, second, stamp().number(22)).await;
+    stamp_link(&db, EntityKind::Test, third, stamp().number(33)).await;
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"state": "open"})))
@@ -470,9 +489,9 @@ async fn the_sync_rotates_through_its_links_a_batch_at_a_time() {
         vec!["/repos/acme/app/issues/11", "/repos/acme/app/issues/22"],
         "every stamp is NULL, so the two lowest ids go first"
     );
-    assert_eq!(test_link(&db, first).await.0, Some(11));
+    assert_eq!(link_of(&db, EntityKind::Test, first).await.number, Some(11));
     assert!(
-        test_link(&db, first).await.2,
+        link_of(&db, EntityKind::Test, first).await.checked(),
         "an open issue is still a check"
     );
 
@@ -501,8 +520,8 @@ async fn a_never_checked_link_goes_before_a_stamped_one() {
     let db = TestDb::new().await.expect("a test database");
     let first = flaky_test_in(&db, "acme/app", "p1", "t1").await;
     let second = flaky_test_in(&db, "acme/app", "p2", "t2").await;
-    stamp_link(&db, first, 11, false, false).await;
-    stamp_link(&db, second, 22, false, false).await;
+    stamp_link(&db, EntityKind::Test, first, stamp().number(11)).await;
+    stamp_link(&db, EntityKind::Test, second, stamp().number(22)).await;
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"state": "open"})))
@@ -524,7 +543,7 @@ async fn a_never_checked_link_goes_before_a_stamped_one() {
     );
 
     let fresh = flaky_test_in(&db, "acme/app", "p3", "t3").await;
-    stamp_link(&db, fresh, 33, false, false).await;
+    stamp_link(&db, EntityKind::Test, fresh, stamp().number(33)).await;
     let settings = gh_settings(&[("FLAKERADAR_GITHUB_SYNC_BATCH", "1")]);
     github::sync_closed_issues(
         db.connection(),
@@ -539,7 +558,7 @@ async fn a_never_checked_link_goes_before_a_stamped_one() {
         ["/repos/acme/app/issues/33"],
         "the never-checked link goes first and is stamped"
     );
-    assert!(test_link(&db, fresh).await.2);
+    assert!(link_of(&db, EntityKind::Test, fresh).await.checked());
 }
 
 #[tokio::test]
@@ -547,8 +566,8 @@ async fn a_sync_stops_at_a_transport_error_with_one_request() {
     let db = TestDb::new().await.expect("a test database");
     let first = flaky_test_in(&db, "acme/a", "p1", "a").await;
     let second = flaky_test_in(&db, "acme/b", "p2", "b").await;
-    stamp_link(&db, first, 1, false, false).await;
-    stamp_link(&db, second, 2, false, false).await;
+    stamp_link(&db, EntityKind::Test, first, stamp().number(1)).await;
+    stamp_link(&db, EntityKind::Test, second, stamp().number(2)).await;
     // Every connection is accepted and dropped without an answer at all.
     let loopback = Loopback::dropping().await;
 
@@ -572,11 +591,11 @@ async fn a_sync_stops_at_a_transport_error_with_one_request() {
         "an unreachable GitHub ends the sync at the first call, not after every row"
     );
     assert!(
-        !test_link(&db, first).await.2,
+        !link_of(&db, EntityKind::Test, first).await.checked(),
         "a row GitHub never answered for is not stamped"
     );
     assert!(
-        !test_link(&db, second).await.2,
+        !link_of(&db, EntityKind::Test, second).await.checked(),
         "the batch never reached the second row"
     );
 }
@@ -586,8 +605,8 @@ async fn a_sync_rate_limit_stops_the_batch_and_keeps_the_stamp_it_made() {
     let db = TestDb::new().await.expect("a test database");
     let first = flaky_test_in(&db, "acme/a", "p1", "a").await;
     let second = flaky_test_in(&db, "acme/b", "p2", "b").await;
-    stamp_link(&db, first, 1, false, false).await;
-    stamp_link(&db, second, 2, false, false).await;
+    stamp_link(&db, EntityKind::Test, first, stamp().number(1)).await;
+    stamp_link(&db, EntityKind::Test, second, stamp().number(2)).await;
 
     let server = MockServer::start().await;
     mount_issue(
@@ -623,11 +642,11 @@ async fn a_sync_rate_limit_stops_the_batch_and_keeps_the_stamp_it_made() {
         "the limit is met on the second request and stops the batch"
     );
     assert!(
-        test_link(&db, first).await.2,
+        link_of(&db, EntityKind::Test, first).await.checked(),
         "the checked stamp is written"
     );
     assert!(
-        !test_link(&db, second).await.2,
+        !link_of(&db, EntityKind::Test, second).await.checked(),
         "the rate-limited row is never stamped"
     );
 }
@@ -637,8 +656,8 @@ async fn a_sync_continues_from_the_stamp_a_stopped_run_left() {
     let db = TestDb::new().await.expect("a test database");
     let first = flaky_test_in(&db, "acme/a", "p1", "a").await;
     let second = flaky_test_in(&db, "acme/b", "p2", "b").await;
-    stamp_link(&db, first, 1, false, false).await;
-    stamp_link(&db, second, 2, false, false).await;
+    stamp_link(&db, EntityKind::Test, first, stamp().number(1)).await;
+    stamp_link(&db, EntityKind::Test, second, stamp().number(2)).await;
     // The first run stops on a rate limit at the second row, leaving the first
     // stamped and the second not.
     let server = MockServer::start().await;
@@ -702,9 +721,9 @@ async fn a_permission_403_skips_the_later_rows_of_that_repo() {
     let a1 = flaky_test_in(&db, "acme/a", "p1", "a1").await;
     let a2 = flaky_test_in(&db, "acme/a", "p2", "a2").await;
     let b = flaky_test_in(&db, "acme/b", "p3", "b").await;
-    stamp_link(&db, a1, 11, false, false).await;
-    stamp_link(&db, a2, 12, false, false).await;
-    stamp_link(&db, b, 22, false, false).await;
+    stamp_link(&db, EntityKind::Test, a1, stamp().number(11)).await;
+    stamp_link(&db, EntityKind::Test, a2, stamp().number(12)).await;
+    stamp_link(&db, EntityKind::Test, b, stamp().number(22)).await;
     let server = MockServer::start().await;
     mount_issue(
         &server,
@@ -738,14 +757,16 @@ async fn a_permission_403_skips_the_later_rows_of_that_repo() {
         vec!["/repos/acme/a/issues/11", "/repos/acme/b/issues/22"],
         "the denied Repo is skipped for the rest of the sync"
     );
-    let (a1_number, _, a1_checked, _) = test_link(&db, a1).await;
+    let link = link_of(&db, EntityKind::Test, a1).await;
+    let (a1_number, _, a1_checked, _) = (link.number, link.filed, link.checked(), link.closed);
     assert_eq!(a1_number, Some(11), "a permission 403 clears nothing");
     assert!(a1_checked, "the denied row rotates like a checked one");
-    let (a2_number, _, a2_checked, _) = test_link(&db, a2).await;
+    let link = link_of(&db, EntityKind::Test, a2).await;
+    let (a2_number, _, a2_checked, _) = (link.number, link.filed, link.checked(), link.closed);
     assert_eq!(a2_number, Some(12));
     assert!(a2_checked, "the skipped row rotates too");
     assert_eq!(
-        test_link(&db, b).await.0,
+        link_of(&db, EntityKind::Test, b).await.number,
         None,
         "the other Repo still syncs"
     );
@@ -757,9 +778,9 @@ async fn the_sync_rotates_past_a_denied_repo() {
     let a1 = flaky_test_in(&db, "acme/a", "p1", "a1").await;
     let a2 = flaky_test_in(&db, "acme/a", "p2", "a2").await;
     let b = flaky_test_in(&db, "acme/b", "p3", "b").await;
-    stamp_link(&db, a1, 11, false, false).await;
-    stamp_link(&db, a2, 12, false, false).await;
-    stamp_link(&db, b, 22, false, false).await;
+    stamp_link(&db, EntityKind::Test, a1, stamp().number(11)).await;
+    stamp_link(&db, EntityKind::Test, a2, stamp().number(12)).await;
+    stamp_link(&db, EntityKind::Test, b, stamp().number(22)).await;
     let server = MockServer::start().await;
     mount_issue(
         &server,
@@ -810,10 +831,14 @@ async fn the_sync_rotates_past_a_denied_repo() {
         ],
         "the denied rows were stamped, so the other Repo's link sorts first"
     );
-    assert_eq!(test_link(&db, a1).await.0, Some(11));
-    assert_eq!(test_link(&db, a2).await.0, Some(12));
-    assert_eq!(test_link(&db, b).await.0, None, "rotation reached repo B");
-    assert!(test_link(&db, b).await.2);
+    assert_eq!(link_of(&db, EntityKind::Test, a1).await.number, Some(11));
+    assert_eq!(link_of(&db, EntityKind::Test, a2).await.number, Some(12));
+    assert_eq!(
+        link_of(&db, EntityKind::Test, b).await.number,
+        None,
+        "rotation reached repo B"
+    );
+    assert!(link_of(&db, EntityKind::Test, b).await.checked());
 }
 
 #[tokio::test]
@@ -823,9 +848,9 @@ async fn a_sync_definitive_client_error_keeps_the_link_and_skips_the_repo() {
         let a1 = flaky_test_in(&db, "acme/a", "p1", "a1").await;
         let a2 = flaky_test_in(&db, "acme/a", "p2", "a2").await;
         let b = flaky_test_in(&db, "acme/b", "p3", "closed").await;
-        stamp_link(&db, a1, 11, false, false).await;
-        stamp_link(&db, a2, 12, false, false).await;
-        stamp_link(&db, b, 22, false, false).await;
+        stamp_link(&db, EntityKind::Test, a1, stamp().number(11)).await;
+        stamp_link(&db, EntityKind::Test, a2, stamp().number(12)).await;
+        stamp_link(&db, EntityKind::Test, b, stamp().number(22)).await;
         let server = MockServer::start().await;
         mount_issue(
             &server,
@@ -856,14 +881,25 @@ async fn a_sync_definitive_client_error_keeps_the_link_and_skips_the_repo() {
             vec!["/repos/acme/a/issues/11", "/repos/acme/b/issues/22"],
             "status {status}: the Repo is skipped, the other Repo still syncs"
         );
-        assert_eq!(test_link(&db, a1).await.0, Some(11), "status {status}");
+        assert_eq!(
+            link_of(&db, EntityKind::Test, a1).await.number,
+            Some(11),
+            "status {status}"
+        );
         assert!(
-            test_link(&db, a1).await.2,
+            link_of(&db, EntityKind::Test, a1).await.checked(),
             "status {status}: the row rotates"
         );
-        assert_eq!(test_link(&db, a2).await.0, Some(12));
-        assert!(test_link(&db, a2).await.2, "status {status}");
-        assert_eq!(test_link(&db, b).await.0, None, "status {status}");
+        assert_eq!(link_of(&db, EntityKind::Test, a2).await.number, Some(12));
+        assert!(
+            link_of(&db, EntityKind::Test, a2).await.checked(),
+            "status {status}"
+        );
+        assert_eq!(
+            link_of(&db, EntityKind::Test, b).await.number,
+            None,
+            "status {status}"
+        );
     }
 }
 
@@ -873,9 +909,9 @@ async fn the_sync_rotates_past_an_unreadable_link() {
     let bad = flaky_test_in(&db, "acme/a", "p1", "a").await;
     let second = flaky_test_in(&db, "acme/b", "p2", "b").await;
     let third = flaky_test_in(&db, "acme/c", "p3", "c").await;
-    stamp_link(&db, bad, 11, false, false).await;
-    stamp_link(&db, second, 22, false, false).await;
-    stamp_link(&db, third, 33, false, false).await;
+    stamp_link(&db, EntityKind::Test, bad, stamp().number(11)).await;
+    stamp_link(&db, EntityKind::Test, second, stamp().number(22)).await;
+    stamp_link(&db, EntityKind::Test, third, stamp().number(33)).await;
     let server = MockServer::start().await;
     mount_issue(
         &server,
@@ -912,8 +948,11 @@ async fn the_sync_rotates_past_an_unreadable_link() {
         requested_paths(&server).await,
         vec!["/repos/acme/a/issues/11", "/repos/acme/b/issues/22"]
     );
-    assert_eq!(test_link(&db, bad).await.0, Some(11));
-    assert!(test_link(&db, bad).await.2, "the bad row rotates");
+    assert_eq!(link_of(&db, EntityKind::Test, bad).await.number, Some(11));
+    assert!(
+        link_of(&db, EntityKind::Test, bad).await.checked(),
+        "the bad row rotates"
+    );
 
     github::sync_closed_issues(
         db.connection(),
@@ -928,7 +967,7 @@ async fn the_sync_rotates_past_an_unreadable_link() {
         ["/repos/acme/c/issues/33", "/repos/acme/a/issues/11"],
         "the never-checked Test is reached instead of queueing behind the bad link"
     );
-    assert!(test_link(&db, third).await.2);
+    assert!(link_of(&db, EntityKind::Test, third).await.checked());
 }
 
 /// A gone issue re-arms its link but any other answer keeps it, once per entity.
@@ -937,12 +976,12 @@ async fn a_gone_issue_rearms_its_link_but_any_other_answer_keeps_it(kind: Entity
     let (id, expected) = match kind {
         EntityKind::Test => {
             let id = flaky_test(&db).await;
-            stamp_link(&db, id, 11, false, false).await;
+            stamp_link(&db, EntityKind::Test, id, stamp().number(11)).await;
             (id, 11)
         }
         EntityKind::Job => {
             let id = flaky_job(&db).await;
-            stamp_job_link(&db, id, 5, false).await;
+            stamp_link(&db, EntityKind::Job, id, stamp().number(5)).await;
             (id, 5)
         }
     };
@@ -975,12 +1014,12 @@ async fn a_gone_issue_rearms_its_link_but_any_other_answer_keeps_it(kind: Entity
     assert!(line.contains(kind.as_str()), "{logged}");
     let rearmed = link_of(&db, kind, id).await;
     assert_eq!(rearmed.number, None, "a gone issue re-arms");
-    assert!(rearmed.checked, "and the check stamp is kept");
+    assert!(rearmed.checked(), "and the check stamp is kept");
     assert!(!rearmed.closed, "and the declined flag is not set");
 
     match kind {
-        EntityKind::Test => stamp_link(&db, id, 11, false, false).await,
-        EntityKind::Job => stamp_job_link(&db, id, 5, false).await,
+        EntityKind::Test => stamp_link(&db, EntityKind::Test, id, stamp().number(11)).await,
+        EntityKind::Job => stamp_link(&db, EntityKind::Job, id, stamp().number(5)).await,
     }
     let broken = MockServer::start().await;
     Mock::given(method("GET"))
@@ -1011,7 +1050,7 @@ async fn a_gone_issue_rearms_its_link_but_any_other_answer_keeps_it(kind: Entity
         Some(expected),
         "any other answer keeps the link"
     );
-    assert!(kept.checked, "and its stamp");
+    assert!(kept.checked(), "and its stamp");
 }
 
 #[tokio::test]
@@ -1043,7 +1082,7 @@ async fn the_job_sync_rearms_a_closed_issue_and_the_filer_files_again() {
         &unstopped(),
     )
     .await;
-    assert_eq!(job_link(&db, job).await.0, Some(77));
+    assert_eq!(link_of(&db, EntityKind::Job, job).await.number, Some(77));
 
     let sync_server = MockServer::start().await;
     mount_issue(
@@ -1061,7 +1100,7 @@ async fn the_job_sync_rearms_a_closed_issue_and_the_filer_files_again() {
         &unstopped(),
     )
     .await;
-    assert_eq!(job_link(&db, job).await.0, None);
+    assert_eq!(link_of(&db, EntityKind::Job, job).await.number, None);
 
     let refile = MockServer::start().await;
     mount_create(
@@ -1084,8 +1123,11 @@ async fn the_job_sync_rearms_a_closed_issue_and_the_filer_files_again() {
         1,
         "the re-armed Job is filed again"
     );
-    assert_eq!(job_link(&db, job).await.0, Some(77));
-    assert!(!job_checked(&db, job).await, "a new link is checked first");
+    assert_eq!(link_of(&db, EntityKind::Job, job).await.number, Some(77));
+    assert!(
+        !link_of(&db, EntityKind::Job, job).await.checked(),
+        "a new link is checked first"
+    );
 }
 
 #[tokio::test]
@@ -1290,7 +1332,7 @@ async fn a_rate_limit_on_either_post_delete_request_stops_the_batch() {
 async fn a_link_replaced_during_the_sync_get_survives() {
     let db = TestDb::new().await.expect("a test database");
     let test = flaky_test_in(&db, "acme/app", "linked", "linked").await;
-    stamp_link(&db, test, 11, true, false).await;
+    stamp_link(&db, EntityKind::Test, test, stamp().number(11).checked()).await;
     let (arrived, arrived_rx) = tokio::sync::oneshot::channel();
     let (release, released) = std::sync::mpsc::channel();
     let server = MockServer::start().await;
@@ -1318,7 +1360,8 @@ async fn a_link_replaced_during_the_sync_get_survives() {
         relink
     );
 
-    let (number, _, checked, _) = test_link(&db, test).await;
+    let link = link_of(&db, EntityKind::Test, test).await;
+    let (number, _, checked, _) = (link.number, link.filed, link.checked(), link.closed);
     assert_eq!(
         number,
         Some(99),
@@ -1389,7 +1432,7 @@ async fn a_post_delete_close_whose_connection_dies_costs_that_issue() {
 async fn a_test_sync_rearms_its_closed_issue_and_the_filer_files_again() {
     let db = TestDb::new().await.expect("a test database");
     let test = flaky_test(&db).await;
-    stamp_link(&db, test, 300, true, false).await;
+    stamp_link(&db, EntityKind::Test, test, stamp().number(300).checked()).await;
     let sync_server = MockServer::start().await;
     mount_issue(
         &sync_server,
@@ -1411,7 +1454,7 @@ async fn a_test_sync_rearms_its_closed_issue_and_the_filer_files_again() {
         requested_paths(&sync_server).await,
         vec!["/repos/acme/app/issues/300"]
     );
-    assert_eq!(test_link(&db, test).await.0, None);
+    assert_eq!(link_of(&db, EntityKind::Test, test).await.number, None);
 
     let filing = MockServer::start().await;
     mount_create(
@@ -1428,8 +1471,11 @@ async fn a_test_sync_rearms_its_closed_issue_and_the_filer_files_again() {
     )
     .await;
     assert_eq!(filed.linked.into_iter().collect::<Vec<_>>(), vec![test]);
-    assert_eq!(test_link(&db, test).await.0, Some(77));
-    assert!(!test_link(&db, test).await.2, "a new link is checked first");
+    assert_eq!(link_of(&db, EntityKind::Test, test).await.number, Some(77));
+    assert!(
+        !link_of(&db, EntityKind::Test, test).await.checked(),
+        "a new link is checked first"
+    );
 }
 
 #[tokio::test]
@@ -1439,8 +1485,8 @@ async fn the_sync_rearm_clears_the_fixed_note_stamp_but_a_declined_link_keeps_it
     let gone = flaky_test_in(&db, "acme/app", "p2", "t2").await;
     let declined = flaky_test_in(&db, "acme/app", "p3", "t3").await;
     for (id, number) in [(closed, 11), (gone, 22), (declined, 33)] {
-        stamp_link(&db, id, number, true, false).await;
-        stamp_note(&db, "test_cases", id).await;
+        stamp_link(&db, EntityKind::Test, id, stamp().number(number).checked()).await;
+        stamp_note(&db, EntityKind::Test, id).await;
     }
     let server = MockServer::start().await;
     mount_issue(
@@ -1484,11 +1530,13 @@ async fn the_sync_rearm_clears_the_fixed_note_stamp_but_a_declined_link_keeps_it
         ]
     );
     for id in [closed, gone] {
-        let (number, _, _, _) = test_link(&db, id).await;
+        let link = link_of(&db, EntityKind::Test, id).await;
+        let (number, _, _, _) = (link.number, link.filed, link.checked(), link.closed);
         assert_eq!(number, None, "the closed or gone link re-arms");
         assert!(!noted(&db, "test_cases", id).await);
     }
-    let (number, _, _, is_closed) = test_link(&db, declined).await;
+    let link = link_of(&db, EntityKind::Test, declined).await;
+    let (number, _, _, is_closed) = (link.number, link.filed, link.checked(), link.closed);
     assert_eq!(number, Some(33), "a declined link is kept");
     assert!(is_closed);
     assert!(

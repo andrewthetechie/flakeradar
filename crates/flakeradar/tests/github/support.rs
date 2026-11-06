@@ -10,6 +10,13 @@ use flakeradar::github::Api;
 use flakeradar::settings::Secret;
 use flakeradar_core::{EntityKind, ReportStatus};
 use flakeradar_db::ProcessOutcome;
+#[expect(
+    unused_imports,
+    reason = "the module's own users name these helpers through it"
+)]
+pub(crate) use flakeradar_test_support::{
+    IssueLink as Link, link_of, link_table, stamp, stamp_link, stamp_note,
+};
 use flakeradar_test_support::{
     TestDb, make_execution, make_job, make_job_execution, make_pipeline, make_project, make_run,
     make_test_case,
@@ -132,84 +139,8 @@ pub(crate) async fn mount_create(server: &MockServer, answer: ResponseTemplate) 
 }
 
 /// The `github_issue_*` columns of one Test.
-pub(crate) async fn test_link(db: &TestDb, id: i32) -> (Option<i32>, Option<bool>, bool, bool) {
-    let row = db
-        .connection()
-        .query_one_raw(Statement::from_sql_and_values(
-            DbBackend::Postgres,
-            "SELECT github_issue_number, github_issue_filed, github_issue_checked_at IS NOT NULL \
-             AS checked, github_issue_closed FROM test_cases WHERE id = $1",
-            [Value::from(id)],
-        ))
-        .await
-        .expect("the row reads")
-        .expect("the Test exists");
-    (
-        row.try_get("", "github_issue_number").expect("a number"),
-        row.try_get("", "github_issue_filed").expect("filed"),
-        row.try_get("", "checked").expect("checked"),
-        row.try_get("", "github_issue_closed").expect("closed"),
-    )
-}
-
-/// One Test's or Job's Issue link, as the row stores it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Link {
-    /// The linked issue, if any.
-    pub(crate) number: Option<i32>,
-    /// Who filed the issue: FlakeRadar or somebody else.
-    pub(crate) filed: Option<bool>,
-    /// Whether the issue-state sync has checked it.
-    pub(crate) checked: bool,
-    /// Whether GitHub reported the issue closed as not planned.
-    pub(crate) closed: bool,
-}
-
 /// Reads one Test's or Job's Issue link.
-pub(crate) async fn link_of(db: &TestDb, kind: EntityKind, id: i32) -> Link {
-    let sql = format!(
-        "SELECT github_issue_number, github_issue_filed, \
-                github_issue_checked_at IS NOT NULL AS checked, github_issue_closed \
-           FROM {} WHERE id = $1",
-        link_table(kind)
-    );
-    let row = db
-        .connection()
-        .query_one_raw(Statement::from_sql_and_values(
-            DbBackend::Postgres,
-            sql,
-            [Value::from(id)],
-        ))
-        .await
-        .expect("the row reads")
-        .expect("the row exists");
-    Link {
-        number: row.try_get("", "github_issue_number").expect("a number"),
-        filed: row.try_get("", "github_issue_filed").expect("filed"),
-        checked: row.try_get("", "checked").expect("checked"),
-        closed: row.try_get("", "github_issue_closed").expect("closed"),
-    }
-}
-
 /// Stamps one Test's link columns, as an earlier pass would have.
-pub(crate) async fn stamp_link(db: &TestDb, id: i32, number: i32, checked: bool, closed: bool) {
-    db.connection()
-        .execute_raw(Statement::from_sql_and_values(
-            DbBackend::Postgres,
-            "UPDATE test_cases SET github_issue_number = $2, \
-             github_issue_checked_at = CASE WHEN $3 THEN now() ELSE NULL END, \
-             github_issue_closed = $4 WHERE id = $1",
-            [
-                Value::from(id),
-                Value::from(number),
-                Value::from(checked),
-                Value::from(closed),
-            ],
-        ))
-        .await
-        .expect("the stamp writes");
-}
-
 /// A processed Report outcome for `tests` and `jobs`.
 pub(crate) fn processed(tests: &[i32], jobs: &[i32]) -> ProcessOutcome {
     ProcessOutcome {
@@ -336,23 +267,6 @@ pub(crate) async fn flaky_job_in(db: &TestDb, repo: &str, pipeline: &str, name: 
 }
 
 /// The `github_issue_*` columns of one Job.
-pub(crate) async fn job_link(db: &TestDb, id: i32) -> (Option<i32>, Option<bool>) {
-    let row = db
-        .connection()
-        .query_one_raw(Statement::from_sql_and_values(
-            DbBackend::Postgres,
-            "SELECT github_issue_number, github_issue_filed FROM jobs WHERE id = $1",
-            [Value::from(id)],
-        ))
-        .await
-        .expect("the row reads")
-        .expect("the Job exists");
-    (
-        row.try_get("", "github_issue_number").expect("a number"),
-        row.try_get("", "github_issue_filed").expect("filed"),
-    )
-}
-
 /// The log lines `future` writes, with a subscriber installed for this thread.
 pub(crate) async fn logged_from(future: impl Future) -> String {
     use std::io::Write as _;
@@ -442,34 +356,7 @@ pub(crate) async fn explain_job_execution(db: &TestDb, ci_job_id: &str) {
 }
 
 /// Stamps one Job's link columns, as an earlier pass would have.
-pub(crate) async fn stamp_job_link(db: &TestDb, id: i32, number: i32, checked: bool) {
-    db.connection()
-        .execute_raw(Statement::from_sql_and_values(
-            DbBackend::Postgres,
-            "UPDATE jobs SET github_issue_number = $2, \
-             github_issue_checked_at = CASE WHEN $3 THEN now() ELSE NULL END \
-             WHERE id = $1",
-            [Value::from(id), Value::from(number), Value::from(checked)],
-        ))
-        .await
-        .expect("the stamp writes");
-}
-
 /// Whether one Job's link carries a check stamp.
-pub(crate) async fn job_checked(db: &TestDb, id: i32) -> bool {
-    let row = db
-        .connection()
-        .query_one_raw(Statement::from_sql_and_values(
-            DbBackend::Postgres,
-            "SELECT github_issue_checked_at IS NOT NULL AS checked FROM jobs WHERE id = $1",
-            [Value::from(id)],
-        ))
-        .await
-        .expect("the row reads")
-        .expect("the Job exists");
-    row.try_get("", "checked").expect("checked")
-}
-
 /// Mounts `GET /repos/{repo}/issues/{number}` answering `answer`.
 pub(crate) async fn mount_issue(
     server: &MockServer,
@@ -760,14 +647,6 @@ pub(crate) fn block_on<F: Future>(future: F) -> F::Output {
     }
 }
 
-/// The table that holds one entity's link columns.
-pub(crate) fn link_table(kind: EntityKind) -> &'static str {
-    match kind {
-        EntityKind::Test => "test_cases",
-        EntityKind::Job => "jobs",
-    }
-}
-
 /// A Test or Job named `name` in `repo`, linked to `number` when one is given,
 /// and at `streak` passing runs.
 pub(crate) async fn note_row(
@@ -785,10 +664,7 @@ pub(crate) async fn note_row(
         }
     };
     if let Some(number) = number {
-        match kind {
-            EntityKind::Test => stamp_link(db, id, number, false, false).await,
-            EntityKind::Job => stamp_job_link(db, id, number, false).await,
-        }
+        stamp_link(db, kind, id, stamp().number(number)).await;
     }
     set_clean_streak(db, link_table(kind), id, streak).await;
     id
@@ -846,16 +722,4 @@ pub(crate) async fn number_of(db: &TestDb, table: &str, id: i32) -> Option<i32> 
         .expect("the row reads")
         .expect("the row exists");
     row.try_get("", "github_issue_number").expect("a number")
-}
-
-/// Stamps one Test's or Job's fixed-note stamp, as a note run would have.
-pub(crate) async fn stamp_note(db: &TestDb, table: &str, id: i32) {
-    db.connection()
-        .execute_raw(Statement::from_sql_and_values(
-            DbBackend::Postgres,
-            format!("UPDATE {table} SET github_issue_fixed_noted_at = now() WHERE id = $1"),
-            [Value::from(id)],
-        ))
-        .await
-        .expect("the fixed-note stamp writes");
 }

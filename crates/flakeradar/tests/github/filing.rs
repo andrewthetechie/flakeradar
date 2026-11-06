@@ -5,6 +5,7 @@
 use flakeradar::Settings;
 use flakeradar::github::{self, Api};
 use flakeradar::settings::Secret;
+use flakeradar_core::EntityKind;
 use flakeradar_test_support::{
     TestDb, make_execution, make_job, make_job_execution, make_pipeline, make_project, make_run,
     make_test_case, system_clock,
@@ -18,8 +19,8 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use crate::support::{
     TOKEN, api, explain_job_execution, fixed_settings, flaky_job, flaky_job_in, flaky_test,
-    flaky_test_in, gh_settings, job_link, lines_with, logged_from, mount_create, requested_paths,
-    stamp_job_link, stamp_link, test_link, unstopped,
+    flaky_test_in, gh_settings, lines_with, link_of, logged_from, mount_create, requested_paths,
+    stamp, stamp_link, unstopped,
 };
 
 #[tokio::test]
@@ -33,7 +34,7 @@ async fn no_token_is_a_silent_no_op() {
     let filed =
         github::file_issues_for(db.connection(), &[test], &settings, &api, &unstopped()).await;
     assert!(filed.linked.is_empty());
-    assert_eq!(test_link(&db, test).await.0, None);
+    assert_eq!(link_of(&db, EntityKind::Test, test).await.number, None);
     assert!(
         server
             .received_requests()
@@ -65,7 +66,9 @@ async fn a_flaky_test_is_filed_in_its_own_repo_with_its_evidence() {
     )
     .await;
     assert_eq!(filed.linked.into_iter().collect::<Vec<_>>(), vec![test]);
-    let (number, is_filed, checked, closed) = test_link(&db, test).await;
+    let link = link_of(&db, EntityKind::Test, test).await;
+    let (number, is_filed, checked, closed) =
+        (link.number, link.filed, link.checked(), link.closed);
     assert_eq!(number, Some(7));
     assert_eq!(is_filed, Some(true), "a filed link is FlakeRadar's own");
     assert!(!checked);
@@ -213,7 +216,7 @@ async fn the_proven_flake_gate_and_the_failure_gate_each_withhold_a_filing() {
 async fn a_link_a_human_made_is_never_refiled() {
     let db = TestDb::new().await.expect("a test database");
     let test = flaky_test(&db).await;
-    stamp_link(&db, test, 12, true, false).await;
+    stamp_link(&db, EntityKind::Test, test, stamp().number(12).checked()).await;
     let server = MockServer::start().await;
     let settings = gh_settings(&[]);
 
@@ -277,11 +280,14 @@ async fn a_row_at_the_fixed_note_streak_has_no_live_flake_to_file() {
         vec!["/repos/acme/app/issues"]
     );
     assert_eq!(
-        test_link(&db, at_streak).await.0,
+        link_of(&db, EntityKind::Test, at_streak).await.number,
         None,
         "no Issue to comment the fix on"
     );
-    assert_eq!(test_link(&db, below).await.0, Some(101));
+    assert_eq!(
+        link_of(&db, EntityKind::Test, below).await.number,
+        Some(101)
+    );
 }
 
 #[tokio::test]
@@ -322,7 +328,7 @@ async fn a_rate_limit_stops_the_batch_without_storing_anything() {
         1,
         "a rate limit stops the batch after the first attempt"
     );
-    assert_eq!(test_link(&db, first).await.0, None);
+    assert_eq!(link_of(&db, EntityKind::Test, first).await.number, None);
 }
 
 #[tokio::test]
@@ -367,7 +373,7 @@ async fn a_permission_403_skips_that_repo_and_files_the_other_one() {
         filed.linked.into_iter().collect::<Vec<_>>(),
         vec![allowed.id]
     );
-    assert_eq!(test_link(&db, denied).await.0, None);
+    assert_eq!(link_of(&db, EntityKind::Test, denied).await.number, None);
 }
 
 /// A bad-credentials 401 is Repo-scoped for filing, like a permission 403.
@@ -407,8 +413,8 @@ async fn a_bad_credentials_401_skips_that_repo_and_files_the_other_one() {
     )
     .await;
     assert_eq!(filed.linked.into_iter().collect::<Vec<_>>(), vec![allowed]);
-    assert_eq!(test_link(&db, first).await.0, None);
-    assert_eq!(test_link(&db, second).await.0, None);
+    assert_eq!(link_of(&db, EntityKind::Test, first).await.number, None);
+    assert_eq!(link_of(&db, EntityKind::Test, second).await.number, None);
 }
 
 #[tokio::test]
@@ -430,7 +436,7 @@ async fn issues_disabled_skips_the_rest_of_that_repo() {
         .linked
         .is_empty()
     );
-    assert_eq!(test_link(&db, test).await.0, None);
+    assert_eq!(link_of(&db, EntityKind::Test, test).await.number, None);
 }
 
 #[tokio::test]
@@ -456,7 +462,7 @@ async fn a_201_without_a_number_never_raises_and_stores_nothing() {
         .linked
         .is_empty()
     );
-    assert_eq!(test_link(&db, test).await.0, None);
+    assert_eq!(link_of(&db, EntityKind::Test, test).await.number, None);
 }
 
 #[tokio::test]
@@ -581,8 +587,8 @@ async fn a_store_failure_leaves_the_issue_open_and_stops_the_batch() {
         vec!["/repos/acme/app/issues"],
         "the issue that was created stays open: no comment and no close"
     );
-    assert_eq!(test_link(&db, first).await.0, None);
-    assert_eq!(test_link(&db, second).await.0, None);
+    assert_eq!(link_of(&db, EntityKind::Test, first).await.number, None);
+    assert_eq!(link_of(&db, EntityKind::Test, second).await.number, None);
     let errors = lines_with(&logged, "could not store its link");
     assert_eq!(errors.len(), 1, "{logged}");
     assert!(errors[0].contains("acme/app"), "{logged}");
@@ -610,7 +616,7 @@ async fn a_network_error_never_raises() {
         Some(github::BatchStop::Unreachable),
         "the batch reports that nothing answered"
     );
-    assert_eq!(test_link(&db, test).await.0, None);
+    assert_eq!(link_of(&db, EntityKind::Test, test).await.number, None);
 }
 
 #[tokio::test]
@@ -677,8 +683,8 @@ async fn a_flaky_job_is_filed_with_its_pipeline_and_unexplained_failures() {
         text.contains("| Outcome | Commit | Branch | Attempt | Runner | Job |"),
         "{text}"
     );
-    assert_eq!(job_link(&db, job).await.0, Some(8));
-    assert_eq!(job_link(&db, job).await.1, Some(true));
+    assert_eq!(link_of(&db, EntityKind::Job, job).await.number, Some(8));
+    assert_eq!(link_of(&db, EntityKind::Job, job).await.filed, Some(true));
 }
 
 #[tokio::test]
@@ -806,7 +812,7 @@ async fn a_test_whose_executions_cannot_be_read_is_still_filed_without_them() {
     .await;
 
     assert_eq!(fired.linked.len(), 1, "the Test is filed");
-    assert_eq!(test_link(&db, test).await.0, Some(7));
+    assert_eq!(link_of(&db, EntityKind::Test, test).await.number, Some(7));
 }
 
 #[tokio::test]
@@ -837,7 +843,7 @@ async fn unlink_test(db: &TestDb, id: i32) {
 async fn a_linked_row_and_a_calm_row_are_both_left_alone() {
     let db = TestDb::new().await.expect("a test database");
     let filed = flaky_test_in(&db, "acme/app", "p1", "filed").await;
-    stamp_link(&db, filed, 5, false, false).await;
+    stamp_link(&db, EntityKind::Test, filed, stamp().number(5)).await;
     let calm = flaky_test_in(&db, "acme/other", "p2", "calm").await;
     db.connection()
         .execute_raw(Statement::from_sql_and_values(
@@ -871,7 +877,13 @@ async fn a_linked_row_and_a_calm_row_are_both_left_alone() {
 async fn a_kept_not_planned_link_is_never_refiled() {
     let db = TestDb::new().await.expect("a test database");
     let wont_fix = flaky_test_in(&db, "acme/app", "backend", "wont_fix").await;
-    stamp_link(&db, wont_fix, 11, true, true).await;
+    stamp_link(
+        &db,
+        EntityKind::Test,
+        wont_fix,
+        stamp().number(11).checked().closed(),
+    )
+    .await;
     db.connection()
         .execute_raw(Statement::from_sql_and_values(
             DbBackend::Postgres,
@@ -902,7 +914,8 @@ async fn a_kept_not_planned_link_is_never_refiled() {
             .is_empty(),
         "a kept link is still the dedupe"
     );
-    let (number, filed, _, closed) = test_link(&db, wont_fix).await;
+    let link = link_of(&db, EntityKind::Test, wont_fix).await;
+    let (number, filed, _, closed) = (link.number, link.filed, link.checked(), link.closed);
     assert_eq!(number, Some(11));
     assert_eq!(filed, Some(true));
     assert!(closed);
@@ -1038,9 +1051,9 @@ async fn a_permission_403_costs_only_the_denied_repo() {
         vec!["/repos/acme/a/issues", "/repos/acme/b/issues"],
         "the second Test of the denied Repo is never retried"
     );
-    assert_eq!(test_link(&db, a1).await.0, None);
-    assert_eq!(test_link(&db, a2).await.0, None);
-    assert_eq!(test_link(&db, b).await.0, Some(88));
+    assert_eq!(link_of(&db, EntityKind::Test, a1).await.number, None);
+    assert_eq!(link_of(&db, EntityKind::Test, a2).await.number, None);
+    assert_eq!(link_of(&db, EntityKind::Test, b).await.number, Some(88));
 
     let warnings = lines_with(&logged, "skipped for this Repo");
     assert_eq!(warnings.len(), 1, "{logged}");
@@ -1085,9 +1098,9 @@ async fn a_permission_403_costs_only_the_denied_repo() {
         requested_paths(&jobs).await,
         vec!["/repos/acme/a/issues", "/repos/acme/b/issues"]
     );
-    assert_eq!(job_link(&db, ja1).await.0, None);
-    assert_eq!(job_link(&db, ja2).await.0, None);
-    assert_eq!(job_link(&db, jb).await.0, Some(88));
+    assert_eq!(link_of(&db, EntityKind::Job, ja1).await.number, None);
+    assert_eq!(link_of(&db, EntityKind::Job, ja2).await.number, None);
+    assert_eq!(link_of(&db, EntityKind::Job, jb).await.number, Some(88));
     let warnings = lines_with(&logged, "skipped for this Repo");
     assert_eq!(warnings.len(), 1, "{logged}");
     assert!(warnings[0].contains("acme/a") && warnings[0].contains("403"));
@@ -1132,9 +1145,9 @@ async fn a_repo_whose_issues_are_disabled_is_skipped_for_the_rest_of_the_batch()
             vec!["/repos/acme/a/issues", "/repos/acme/b/issues"],
             "the whole Repo is skipped on {status}"
         );
-        assert_eq!(test_link(&db, a1).await.0, None);
-        assert_eq!(test_link(&db, a2).await.0, None);
-        assert_eq!(test_link(&db, b).await.0, Some(99));
+        assert_eq!(link_of(&db, EntityKind::Test, a1).await.number, None);
+        assert_eq!(link_of(&db, EntityKind::Test, a2).await.number, None);
+        assert_eq!(link_of(&db, EntityKind::Test, b).await.number, Some(99));
         let warnings = lines_with(&logged, "skipped for this Repo");
         assert_eq!(warnings.len(), 1, "{logged}");
         assert!(warnings[0].contains(&status.to_string()), "{logged}");
@@ -1190,9 +1203,9 @@ async fn a_repo_whose_issues_are_disabled_is_skipped_for_the_rest_of_the_batch()
             requested_paths(&jobs).await,
             vec!["/repos/acme/a/issues", "/repos/acme/b/issues"]
         );
-        assert_eq!(job_link(&db, ja1).await.0, None);
-        assert_eq!(job_link(&db, ja2).await.0, None);
-        assert_eq!(job_link(&db, jb).await.0, Some(99));
+        assert_eq!(link_of(&db, EntityKind::Job, ja1).await.number, None);
+        assert_eq!(link_of(&db, EntityKind::Job, ja2).await.number, None);
+        assert_eq!(link_of(&db, EntityKind::Job, jb).await.number, Some(99));
         assert_eq!(
             lines_with(&logged, "skipped for this Repo").len(),
             1,
@@ -1236,8 +1249,8 @@ async fn an_unusable_status_costs_one_issue_and_the_batch_goes_on() {
         vec!["/repos/acme/a/issues", "/repos/acme/a/issues"],
         "a 500 says nothing about the Repo, so the second candidate is still posted"
     );
-    assert_eq!(test_link(&db, a1).await.0, Some(77));
-    assert_eq!(test_link(&db, a2).await.0, None);
+    assert_eq!(link_of(&db, EntityKind::Test, a1).await.number, Some(77));
+    assert_eq!(link_of(&db, EntityKind::Test, a2).await.number, None);
     let failures = lines_with(&logged, "GitHub issue creation failed");
     assert_eq!(failures.len(), 1, "{logged}");
     assert!(failures[0].contains("acme/a") && failures[0].contains("500"));
@@ -1292,8 +1305,16 @@ async fn a_malformed_201_body_keeps_the_batch_and_stores_nothing() {
             vec!["/repos/acme/a/issues", "/repos/acme/b/issues"],
             "{raw}"
         );
-        assert_eq!(test_link(&db, a).await.0, None, "{raw}");
-        assert_eq!(test_link(&db, b).await.0, Some(91), "{raw}");
+        assert_eq!(
+            link_of(&db, EntityKind::Test, a).await.number,
+            None,
+            "{raw}"
+        );
+        assert_eq!(
+            link_of(&db, EntityKind::Test, b).await.number,
+            Some(91),
+            "{raw}"
+        );
         let warnings = lines_with(&logged, "201 with no issue number");
         assert_eq!(warnings.len(), 1, "{raw}: {logged}");
         assert!(warnings[0].contains("acme/a"), "{logged}");
@@ -1489,8 +1510,11 @@ async fn only_the_newest_window_counts_a_failure() {
         vec![new.id],
         "the failures outside the newest window do not count"
     );
-    assert_eq!(test_link(&db, old.id).await.0, None);
-    assert_eq!(test_link(&db, new.id).await.0, Some(91));
+    assert_eq!(link_of(&db, EntityKind::Test, old.id).await.number, None);
+    assert_eq!(
+        link_of(&db, EntityKind::Test, new.id).await.number,
+        Some(91)
+    );
 }
 
 #[tokio::test]
@@ -1645,7 +1669,7 @@ async fn a_huge_id_list_stays_under_the_bind_limit() {
         1,
         "a huge id list is read in chunks instead of one oversized bind"
     );
-    assert_eq!(test_link(&db, test).await.0, Some(77));
+    assert_eq!(link_of(&db, EntityKind::Test, test).await.number, Some(77));
 }
 
 /// Installs a trigger that makes an `UPDATE` of `table` row `id` affect no row.
@@ -1719,8 +1743,9 @@ async fn a_row_deleted_while_filing_leaves_the_rest_of_the_batch_filed() {
         ],
         "the raced filing costs only itself"
     );
-    assert_eq!(test_link(&db, a).await.0, None);
-    let (number, is_filed, _, _) = test_link(&db, b).await;
+    assert_eq!(link_of(&db, EntityKind::Test, a).await.number, None);
+    let link = link_of(&db, EntityKind::Test, b).await;
+    let (number, is_filed, _, _) = (link.number, link.filed, link.checked(), link.closed);
     assert_eq!(number, Some(88));
     assert_eq!(is_filed, Some(true));
 }
@@ -1768,7 +1793,7 @@ async fn the_job_row_deleted_while_filing_closes_the_new_issue() {
             "/repos/acme/app/issues/77",
         ]
     );
-    assert_eq!(job_link(&db, job).await.0, None);
+    assert_eq!(link_of(&db, EntityKind::Job, job).await.number, None);
     let warnings = lines_with(&logged, "closed the new issue");
     assert_eq!(warnings.len(), 1, "{logged}");
     assert!(warnings[0].contains("77"), "{logged}");
@@ -1840,7 +1865,7 @@ async fn a_job_filing_without_a_token_is_silent() {
         requested_paths(&server).await.is_empty(),
         "no token is a silent no-op"
     );
-    assert_eq!(job_link(&db, job).await.0, None);
+    assert_eq!(link_of(&db, EntityKind::Job, job).await.number, None);
 }
 
 #[tokio::test]
@@ -1997,9 +2022,9 @@ async fn a_linked_test_and_a_linked_job_are_never_filed() {
     let db = TestDb::new().await.expect("a test database");
     let linked = flaky_test(&db).await;
     let other = flaky_test_in(&db, "acme/other", "backend", "other").await;
-    stamp_link(&db, linked, 300, true, false).await;
+    stamp_link(&db, EntityKind::Test, linked, stamp().number(300).checked()).await;
     let job = flaky_job(&db).await;
-    stamp_job_link(&db, job, 301, true).await;
+    stamp_link(&db, EntityKind::Job, job, stamp().number(301).checked()).await;
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/repos/acme/other/issues"))
@@ -2021,7 +2046,10 @@ async fn a_linked_test_and_a_linked_job_are_never_filed() {
         vec!["/repos/acme/other/issues"],
         "the linked Test is skipped and the other Repo is filed"
     );
-    assert_eq!(test_link(&db, linked).await.0, Some(300));
+    assert_eq!(
+        link_of(&db, EntityKind::Test, linked).await.number,
+        Some(300)
+    );
 
     let jobs = github::file_job_issues_for(
         db.connection(),
@@ -2037,5 +2065,5 @@ async fn a_linked_test_and_a_linked_job_are_never_filed() {
         server.received_requests().await.expect("a record").len() == 1,
         "no request for the linked Job"
     );
-    assert_eq!(job_link(&db, job).await.0, Some(301));
+    assert_eq!(link_of(&db, EntityKind::Job, job).await.number, Some(301));
 }

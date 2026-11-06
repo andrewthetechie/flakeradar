@@ -84,7 +84,7 @@ async fn pipeline_body(app: &axum::Router, body: &[u8]) -> Reply {
 }
 
 /// The `ci_run_attempt` of the newest stored Report, and its stored payload.
-async fn stored_pipeline(db: &TestDb) -> (Option<i32>, Value) {
+async fn stored_pipeline(db: &TestDb) -> StoredPipeline {
     use flakeradar_db::entities::reports;
     use sea_orm::{EntityTrait, QueryOrder};
 
@@ -94,10 +94,16 @@ async fn stored_pipeline(db: &TestDb) -> (Option<i32>, Value) {
         .await
         .expect("the Report query")
         .expect("a Report is stored");
-    (
-        row.ci_run_attempt,
-        serde_json::from_slice(&row.body).expect("the stored payload is JSON"),
-    )
+    StoredPipeline {
+        attempt: row.ci_run_attempt,
+        body: serde_json::from_slice(&row.body).expect("the stored payload is JSON"),
+    }
+}
+
+/// The newest stored Pipeline Report: the attempt it kept and its body.
+struct StoredPipeline {
+    attempt: Option<i32>,
+    body: Value,
 }
 
 /// The `ci_run_attempt` of the newest stored Report.
@@ -273,7 +279,7 @@ async fn the_pipeline_body_reads_the_attempt_as_pydantic_did() {
             "{value}: {}",
             reply.text()
         );
-        assert_eq!(stored_pipeline(&db).await.0, Some(attempt), "{value}");
+        assert_eq!(stored_pipeline(&db).await.attempt, Some(attempt), "{value}");
     }
     // Refused spellings, with the reference's own kind.
     for (value, kind) in [
@@ -352,7 +358,7 @@ async fn the_pipeline_body_reads_a_timestamp_the_way_pydantic_did() {
             reply.text()
         );
         assert_eq!(
-            stored_pipeline(&db).await.1["jobs"][0]["started_at"],
+            stored_pipeline(&db).await.body["jobs"][0]["started_at"],
             json!(instant),
             "{value}"
         );
@@ -410,7 +416,7 @@ async fn the_pipeline_body_reads_a_bool_as_pydantic_did() {
             reply.text()
         );
         assert_eq!(
-            stored_pipeline(&db).await.1["jobs"][0]["summary"],
+            stored_pipeline(&db).await.body["jobs"][0]["summary"],
             json!(summary),
             "{value}"
         );
