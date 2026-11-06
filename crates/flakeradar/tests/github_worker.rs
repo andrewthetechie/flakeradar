@@ -391,11 +391,8 @@ async fn database_name(db: &TestDb) -> String {
     row.try_get("", "name").expect("a database name")
 }
 
-/// The backend id that holds the processor lock for `database`.
-///
-/// Read while the worker leads and nothing else has been changed, so the answer
-/// cannot race the loss the caller stages next.
-async fn lock_holder(db: &TestDb, database: &str) -> i32 {
+/// The backend id that holds the processor lock for `database`, when one does.
+async fn lock_holder_pid(db: &TestDb, database: &str) -> Option<i32> {
     let admin = connect(db.maintenance_url(), DbSettings::default())
         .await
         .expect("the maintenance connection");
@@ -409,14 +406,63 @@ async fn lock_holder(db: &TestDb, database: &str) -> i32 {
     let row = admin
         .query_one_raw(statement)
         .await
-        .expect("the lock query runs")
-        .expect("the worker that leads holds the processor lock");
-    let pid: i32 = row.try_get("", "pid").expect("a backend id");
+        .expect("the lock query runs");
+    let pid: Option<i32> = row.map(|row| row.try_get("", "pid").expect("a backend id"));
     admin
         .close()
         .await
         .expect("the maintenance connection closes");
     pid
+}
+
+/// The backend id that holds the processor lock for `database`.
+///
+/// Read while the worker leads and nothing else has been changed, so the answer
+/// cannot race the loss the caller stages next.
+async fn lock_holder(db: &TestDb, database: &str) -> i32 {
+    lock_holder_pid(db, database)
+        .await
+        .expect("the worker that leads holds the processor lock")
+}
+
+/// Restarts the server under `db`, as far as a client can tell: every backend on
+/// the database dies at once, which is what a restarted PostgreSQL hands its
+/// clients. The lock session goes with them, so the worker has to earn leadership
+/// again from a new session, and every pooled connection has to be replaced.
+///
+/// Answers how many sessions the restart ended. This is the reachable form of a
+/// `docker restart`: a CI job's `postgres` service container cannot be restarted
+/// from inside the test process without stopping the tests running beside it.
+async fn restart(db: &TestDb) -> i64 {
+    let database = database_name(db).await;
+    let admin = connect(db.maintenance_url(), DbSettings::default())
+        .await
+        .expect("the maintenance connection");
+    let row = admin
+        .query_one_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "SELECT count(pg_terminate_backend(pid)) AS ended FROM pg_stat_activity \
+             WHERE datname = $1 AND pid <> pg_backend_pid()",
+            [database.into()],
+        ))
+        .await
+        .expect("the terminate query runs")
+        .expect("the terminate query answers");
+    let ended: i64 = row.try_get("", "ended").expect("a count");
+    admin
+        .close()
+        .await
+        .expect("the maintenance connection closes");
+    ended
+}
+
+/// How many issue reads the stub has answered, which is what a sync does.
+async fn issue_reads(server: &MockServer) -> usize {
+    requested_calls(server)
+        .await
+        .iter()
+        .filter(|(method, path)| method == "GET" && path.starts_with("/repos/acme/app/issues/"))
+        .count()
 }
 
 /// Ends the backend `pid`, answering whether it was still there.
@@ -1374,11 +1420,14 @@ async fn a_database_that_drops_the_leader_files_the_next_proven_flake() {
         .mount(&server)
         .await;
     mount_open_issue(&server, 7).await;
+    // The sync interval is short because a restart leaves dead connections in the
+    // pool: the run that begins with the new leadership may lose its first read,
+    // as the reference's does, and the next attempt is one interval away.
     let github = Arc::new(GitHubWorker::new(
         db.connection().clone(),
         Arc::new(settings()),
         Api::new(Secret::new(TOKEN), &server.uri()).expect("the HTTP client builds"),
-        Duration::from_secs(3600),
+        Duration::from_millis(20),
     ));
     let processor = Arc::new(HandsOver::default());
     let leader: Arc<dyn LeaderTask> = Arc::clone(&github) as Arc<dyn LeaderTask>;
@@ -1435,6 +1484,92 @@ async fn a_database_that_drops_the_leader_files_the_next_proven_flake() {
     .await;
     worker.stop().await;
     assert_eq!(stored_number(&db, second).await, Some(7));
+}
+
+#[tokio::test]
+async fn a_database_restart_under_the_leader_files_a_real_issue_and_syncs_again() {
+    // A restart ends every session the server had, so the worker loses the
+    // processor lock it held, has to take it again from a new session, and files
+    // the next Proven flake through GitHub with a link it really stores. The
+    // linked Test beside it proves the sync runs again too.
+    let db = TestDb::new().await.expect("a test database");
+    let before = flaky_test(&db).await;
+    let after = flaky_test_in(&db, "second").await;
+    let linked = linked_test(&db, 12).await;
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/repos/acme/app/issues"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({"number": 7})))
+        .mount(&server)
+        .await;
+    mount_open_issue(&server, 7).await;
+    mount_open_issue(&server, 12).await;
+    // The sync interval is short because a restart leaves dead connections in the
+    // pool: the run that begins with the new leadership may lose its first read,
+    // as the reference's does, and the next attempt is one interval away.
+    let github = Arc::new(GitHubWorker::new(
+        db.connection().clone(),
+        Arc::new(settings()),
+        Api::new(Secret::new(TOKEN), &server.uri()).expect("the HTTP client builds"),
+        Duration::from_millis(20),
+    ));
+    let processor = Arc::new(HandsOver::default());
+    let leader: Arc<dyn LeaderTask> = Arc::clone(&github) as Arc<dyn LeaderTask>;
+    let report_processor: Arc<dyn ReportProcessor> =
+        Arc::clone(&processor) as Arc<dyn ReportProcessor>;
+    let worker = Arc::new(
+        ReportWorker::new(
+            db.connection().clone(),
+            Arc::new(AdvisoryLock::new(db.url(), DbSettings::default())),
+            ProcessingSettings::default(),
+            worker_settings(),
+        )
+        .with_leader_task(leader)
+        .with_processor(report_processor),
+    );
+
+    Arc::clone(&worker).start().await;
+    wait_until("the worker leads", || async { worker.is_leader() }).await;
+    processor.hand_over(processed(&[before]));
+    wait_until("the first Proven flake is filed", || async {
+        stored_number(&db, before).await == Some(7)
+    })
+    .await;
+
+    let database = database_name(&db).await;
+    let holder = lock_holder(&db, &database).await;
+    let reads = issue_reads(&server).await;
+    assert!(
+        restart(&db).await > 0,
+        "the restart ended the sessions that were there"
+    );
+
+    // The lock the old session held is gone, so the worker can only lead again
+    // from a backend the restart did not end.
+    wait_until("the worker leads from a new session", || async {
+        worker.is_leader()
+            && lock_holder_pid(&db, &database)
+                .await
+                .is_some_and(|pid| pid != holder)
+    })
+    .await;
+
+    processor.hand_over(processed(&[after]));
+    wait_until("the new leader files the next Proven flake", || async {
+        stored_number(&db, after).await == Some(7)
+    })
+    .await;
+    assert_eq!(
+        stored_number(&db, linked).await,
+        Some(12),
+        "the sync leaves an open link alone"
+    );
+    wait_until(
+        "the sync after the restart reads a linked issue",
+        || async { issue_reads(&server).await > reads },
+    )
+    .await;
+    worker.stop().await;
 }
 
 #[tokio::test]
