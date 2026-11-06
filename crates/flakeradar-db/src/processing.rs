@@ -12,9 +12,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use flakeradar_core::{
-    ExecutionStatus, FailureCategory, JobStatus, ParseError, ParsedCase, PipelineReportIn, Tier,
-    TierChange, branch_scoped_fail_streak, branch_scoped_score, branch_scoped_streak,
-    classify_failure, defaults, dominant_category, is_broken, parse_junit_xml, tier_for,
+    ExecutionStatus, FailureCategory, JobStatus, ParseError, ParsedCase, PipelineReportIn,
+    ScoredExecution, Tier, TierChange, branch_scoped_fail_streak, branch_scoped_score,
+    branch_scoped_streak, classify_failure, defaults, dominant_category, is_broken,
+    parse_junit_xml, tier_for,
 };
 use sea_orm::entity::prelude::DateTimeWithTimeZone;
 use sea_orm::{
@@ -520,7 +521,16 @@ struct RecordedTests {
     counts: Counts,
     executions: Vec<test_executions::ActiveModel>,
     latest: Vec<LatestTest>,
-    day_counts: BTreeMap<i32, (i32, i32)>,
+    day_counts: BTreeMap<i32, DayCounts>,
+}
+
+/// Executions and failures one day added to a Test's or Job's Score history.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DayCounts {
+    /// Executions the day recorded.
+    pub executions: i32,
+    /// How many of them failed.
+    pub failures: i32,
 }
 
 /// Builds one Report's Executions in report order.
@@ -539,7 +549,7 @@ fn record_test_executions(
     let mut executions: Vec<test_executions::ActiveModel> = Vec::with_capacity(classified.len());
     let mut latest: Vec<LatestTest> = Vec::new();
     let mut latest_by_id: BTreeMap<i32, usize> = BTreeMap::new();
-    let mut day_counts: BTreeMap<i32, (i32, i32)> = BTreeMap::new();
+    let mut day_counts: BTreeMap<i32, DayCounts> = BTreeMap::new();
     for (case, category) in classified {
         let fingerprint = flakeradar_core::fingerprint(&case.suite, &case.classname, &case.name);
         let test_case_id = ids.get(&fingerprint).copied().ok_or_else(|| {
@@ -548,10 +558,10 @@ fn record_test_executions(
         let attempt = attempts.get(&test_case_id).copied().unwrap_or(0);
         attempts.insert(test_case_id, attempt + 1);
         counts.add(case.status);
-        let entry = day_counts.entry(test_case_id).or_insert((0, 0));
-        entry.0 += 1;
+        let entry = day_counts.entry(test_case_id).or_default();
+        entry.executions += 1;
         if case.status.is_failing() {
-            entry.1 += 1;
+            entry.failures += 1;
         }
         // The reference writes a Location only when the report gave a file, so a
         // line without one is never stored and never has to fit the column.
@@ -896,7 +906,7 @@ async fn insert_pipeline_job_executions(
     payload: &PipelineReportIn,
     job_ids: &BTreeMap<String, i32>,
     now: DateTimeWithTimeZone,
-) -> Result<(Counts, BTreeSet<i32>, BTreeMap<i32, (i32, i32)>), ProcessError> {
+) -> Result<(Counts, BTreeSet<i32>, BTreeMap<i32, DayCounts>), ProcessError> {
     let mut exec_rows: Vec<PipelineExecution> = Vec::with_capacity(payload.jobs.len());
     for job in &payload.jobs {
         let job_id = job_ids.get(&job.name).copied().ok_or_else(|| {
@@ -919,7 +929,7 @@ async fn insert_pipeline_job_executions(
     }
     let mut new_counts = Counts::default();
     let mut jobs_with_new_exec: BTreeSet<i32> = BTreeSet::new();
-    let mut day_counts: BTreeMap<i32, (i32, i32)> = BTreeMap::new();
+    let mut day_counts: BTreeMap<i32, DayCounts> = BTreeMap::new();
     for chunk in chunks(&exec_rows) {
         let (sql, values) = insert_job_executions_sql(chunk, now);
         for row in rows(db, sql, values).await.map_err(ProcessError::from)? {
@@ -936,10 +946,10 @@ async fn insert_pipeline_job_executions(
                     )));
                 }
             }
-            let entry = day_counts.entry(job_id).or_insert((0, 0));
-            entry.0 += 1;
+            let entry = day_counts.entry(job_id).or_default();
+            entry.executions += 1;
             if status == "failed" {
-                entry.1 += 1;
+                entry.failures += 1;
             }
         }
     }
@@ -1067,10 +1077,10 @@ struct PipelineExecution {
 pub async fn rescore(
     db: &impl ConnectionTrait,
     test_case_ids: &[i32],
-    day_counts: Option<&BTreeMap<i32, (i32, i32)>>,
+    day_counts: Option<&BTreeMap<i32, DayCounts>>,
     settings: &ProcessingSettings,
 ) -> Result<Vec<TierChange>, DbError> {
-    let mut history: BTreeMap<i32, Vec<(String, String, ExecutionStatus)>> = BTreeMap::new();
+    let mut history: BTreeMap<i32, Vec<ScoredExecution>> = BTreeMap::new();
     let mut categories: BTreeMap<i32, Vec<Option<FailureCategory>>> = BTreeMap::new();
     let mut default_branch: BTreeMap<i32, Option<String>> = BTreeMap::new();
     for chunk in chunks(test_case_ids) {
@@ -1092,9 +1102,9 @@ pub async fn rescore(
         ];
         for row in rows(db, sql, values).await? {
             let id: i32 = get(&row, "test_case_id")?;
-            history.entry(id).or_default().push((
-                get(&row, "commit_sha")?,
-                get(&row, "branch")?,
+            history.entry(id).or_default().push(ScoredExecution::new(
+                get::<String>(&row, "commit_sha")?,
+                get::<String>(&row, "branch")?,
                 status_of(&get::<String>(&row, "status")?)?,
             ));
             categories.entry(id).or_default().push(
@@ -1111,17 +1121,13 @@ pub async fn rescore(
         let empty = Vec::new();
         let executions = history.get(id).unwrap_or(&empty);
         let branch = default_branch.get(id).cloned().flatten();
-        let history_refs: Vec<(&str, &str, ExecutionStatus)> = executions
-            .iter()
-            .map(|(sha, branch, status)| (sha.as_str(), branch.as_str(), *status))
-            .collect();
         let (score, confirmed) = branch_scoped_score(
-            &history_refs,
+            executions,
             branch.as_deref(),
             settings.score_decay,
             settings.score_window,
         );
-        let streak = branch_scoped_streak(&history_refs, branch.as_deref());
+        let streak = branch_scoped_streak(executions, branch.as_deref());
         let window_categories: Vec<Option<FailureCategory>> = categories
             .get(id)
             .map(|all| all.iter().take(settings.score_window).copied().collect())
@@ -1132,7 +1138,7 @@ pub async fn rescore(
             confirmed_flake_count: i32::try_from(confirmed).unwrap_or(i32::MAX),
             failure_category: dominant_category(&window_categories),
             clean_streak: i32::try_from(streak).unwrap_or(i32::MAX),
-            fail_streak: i32::try_from(branch_scoped_fail_streak(&history_refs, branch.as_deref()))
+            fail_streak: i32::try_from(branch_scoped_fail_streak(executions, branch.as_deref()))
                 .unwrap_or(i32::MAX),
             clear_fixed_note: streak == 0,
         });
@@ -1149,10 +1155,10 @@ pub async fn rescore(
                 confirmed_flake_count: update.confirmed_flake_count,
                 executions: day_counts
                     .and_then(|counts| counts.get(&update.id))
-                    .map_or(0, |(executions, _)| *executions),
+                    .map_or(0, |counts| counts.executions),
                 failures: day_counts
                     .and_then(|counts| counts.get(&update.id))
-                    .map_or(0, |(_, failures)| *failures),
+                    .map_or(0, |counts| counts.failures),
             })
             .collect();
         write_today_history(
@@ -1204,6 +1210,15 @@ fn crossed<T: Copy>(updates: &[(i32, f64, T)], old: &BTreeMap<i32, f64>, thresho
         .collect()
 }
 
+/// The names a tier-change event gives a Test.
+#[derive(Debug, Clone)]
+struct NamedTest {
+    repo: String,
+    project: String,
+    classname: String,
+    name: String,
+}
+
 /// Notifications for the Tests whose tier this rescore moves (ADR 0009).
 ///
 /// A Test that leaves the flaky tier because it is now broken has not recovered,
@@ -1233,7 +1248,7 @@ async fn test_tier_changes(
     // out in id order whatever order the caller listed the ids in.
     crossed.sort_unstable_by_key(|update| update.id);
     let ids: Vec<i32> = crossed.iter().map(|update| update.id).collect();
-    let mut named: BTreeMap<i32, (String, String, String, String)> = BTreeMap::new();
+    let mut named: BTreeMap<i32, NamedTest> = BTreeMap::new();
     for chunk in chunks(&ids) {
         let placeholders = placeholder_list(1, chunk.len());
         let sql = format!(
@@ -1247,31 +1262,31 @@ async fn test_tier_changes(
         for row in rows(db, sql, values).await? {
             named.insert(
                 get(&row, "id")?,
-                (
-                    get(&row, "repo")?,
-                    get(&row, "project")?,
-                    get(&row, "classname")?,
-                    get(&row, "name")?,
-                ),
+                NamedTest {
+                    repo: get(&row, "repo")?,
+                    project: get(&row, "project")?,
+                    classname: get(&row, "classname")?,
+                    name: get(&row, "name")?,
+                },
             );
         }
     }
     let mut changes = Vec::with_capacity(crossed.len());
     for update in crossed {
-        let Some((repo, project, classname, name)) = named.get(&update.id) else {
+        let Some(named) = named.get(&update.id) else {
             // A Test deleted before this read names nothing, so it sends nothing.
             continue;
         };
         changes.push(TierChange {
             kind: flakeradar_core::Kind::Test,
             id: i64::from(update.id),
-            repo: repo.clone(),
-            project: Some(project.clone()),
-            name: name.clone(),
+            repo: named.repo.clone(),
+            project: Some(named.project.clone()),
+            name: named.name.clone(),
             flakiness_score: update.flakiness_score,
             tier: tier_for(update.flakiness_score, threshold),
             confirmed_flake_count: usize::try_from(update.confirmed_flake_count).unwrap_or(0),
-            classname: Some(classname.clone()),
+            classname: Some(named.classname.clone()),
             pipeline: None,
             failure_category: update.failure_category,
         });
@@ -1330,9 +1345,9 @@ async fn write_test_updates(
 pub struct JobHistory {
     /// The Default branch of the Job's Repo, or `None` while it is unknown.
     pub default_branch: Option<String>,
-    /// Executions as `(commit_sha, branch, status)`, newest first, with explained
-    /// failures already turned into `skipped` so they never break a streak.
-    pub executions: Vec<(String, String, ExecutionStatus)>,
+    /// Executions, newest first, with explained failures already turned into
+    /// `skipped` so they never break a streak.
+    pub executions: Vec<ScoredExecution>,
 }
 
 /// Newest-first Job-execution history for each Job, plus its Repo's Default branch.
@@ -1347,7 +1362,7 @@ pub async fn job_history(
     job_ids: &[i32],
     settings: &ProcessingSettings,
 ) -> Result<BTreeMap<i32, JobHistory>, DbError> {
-    let mut history: BTreeMap<i32, Vec<(String, String, ExecutionStatus)>> = BTreeMap::new();
+    let mut history: BTreeMap<i32, Vec<ScoredExecution>> = BTreeMap::new();
     let mut branches: BTreeMap<i32, Option<String>> = BTreeMap::new();
     for id in job_ids {
         history.entry(*id).or_default();
@@ -1381,9 +1396,9 @@ pub async fn job_history(
             if explained && status == ExecutionStatus::Failed {
                 status = ExecutionStatus::Skipped;
             }
-            history.entry(id).or_default().push((
-                get(&row, "commit_sha")?,
-                get(&row, "branch")?,
+            history.entry(id).or_default().push(ScoredExecution::new(
+                get::<String>(&row, "commit_sha")?,
+                get::<String>(&row, "branch")?,
                 status,
             ));
             branches.insert(id, get(&row, "default_branch")?);
@@ -1411,7 +1426,7 @@ pub async fn job_history(
 pub async fn rescore_jobs(
     db: &impl ConnectionTrait,
     job_ids: &[i32],
-    day_counts: Option<&BTreeMap<i32, (i32, i32)>>,
+    day_counts: Option<&BTreeMap<i32, DayCounts>>,
     settings: &ProcessingSettings,
 ) -> Result<Vec<TierChange>, DbError> {
     let history = job_history(db, job_ids, settings).await?;
@@ -1419,18 +1434,13 @@ pub async fn rescore_jobs(
     for id in job_ids {
         let entry = history.get(id).cloned().unwrap_or_default();
         let branch = entry.default_branch;
-        let history_refs: Vec<(&str, &str, ExecutionStatus)> = entry
-            .executions
-            .iter()
-            .map(|(sha, branch, status)| (sha.as_str(), branch.as_str(), *status))
-            .collect();
         let (score, confirmed) = branch_scoped_score(
-            &history_refs,
+            &entry.executions,
             branch.as_deref(),
             settings.score_decay,
             settings.score_window,
         );
-        let streak = branch_scoped_streak(&history_refs, branch.as_deref());
+        let streak = branch_scoped_streak(&entry.executions, branch.as_deref());
         updates.push(JobUpdate {
             id: *id,
             flakiness_score: score,
@@ -1451,10 +1461,10 @@ pub async fn rescore_jobs(
                 confirmed_flake_count: update.confirmed_flake_count,
                 executions: day_counts
                     .and_then(|counts| counts.get(&update.id))
-                    .map_or(0, |(executions, _)| *executions),
+                    .map_or(0, |counts| counts.executions),
                 failures: day_counts
                     .and_then(|counts| counts.get(&update.id))
-                    .map_or(0, |(_, failures)| *failures),
+                    .map_or(0, |counts| counts.failures),
             })
             .collect();
         write_today_history(
@@ -1486,6 +1496,14 @@ async fn old_job_scores(
     Ok(scores)
 }
 
+/// The names a tier-change event gives a Job.
+#[derive(Debug, Clone)]
+struct NamedJob {
+    repo: String,
+    pipeline: String,
+    name: String,
+}
+
 /// Notifications for the Jobs whose tier this rescore moves (ADR 0009).
 async fn job_tier_changes(
     db: &impl ConnectionTrait,
@@ -1506,7 +1524,7 @@ async fn job_tier_changes(
     // out in id order whatever order the caller listed the ids in.
     crossed.sort_unstable_by_key(|update| update.id);
     let ids: Vec<i32> = crossed.iter().map(|update| update.id).collect();
-    let mut named: BTreeMap<i32, (String, String, String)> = BTreeMap::new();
+    let mut named: BTreeMap<i32, NamedJob> = BTreeMap::new();
     for chunk in chunks(&ids) {
         let placeholders = placeholder_list(1, chunk.len());
         let sql = format!(
@@ -1520,30 +1538,30 @@ async fn job_tier_changes(
         for row in rows(db, sql, values).await? {
             named.insert(
                 get(&row, "id")?,
-                (
-                    get(&row, "repo")?,
-                    get(&row, "pipeline")?,
-                    get(&row, "name")?,
-                ),
+                NamedJob {
+                    repo: get(&row, "repo")?,
+                    pipeline: get(&row, "pipeline")?,
+                    name: get(&row, "name")?,
+                },
             );
         }
     }
     let mut changes = Vec::with_capacity(crossed.len());
     for update in crossed {
-        let Some((repo, pipeline, name)) = named.get(&update.id) else {
+        let Some(named) = named.get(&update.id) else {
             continue;
         };
         changes.push(TierChange {
             kind: flakeradar_core::Kind::Job,
             id: i64::from(update.id),
-            repo: repo.clone(),
+            repo: named.repo.clone(),
             project: None,
-            name: name.clone(),
+            name: named.name.clone(),
             flakiness_score: update.flakiness_score,
             tier: tier_for(update.flakiness_score, threshold),
             confirmed_flake_count: usize::try_from(update.confirmed_flake_count).unwrap_or(0),
             classname: None,
-            pipeline: Some(pipeline.clone()),
+            pipeline: Some(named.pipeline.clone()),
             failure_category: None,
         });
     }

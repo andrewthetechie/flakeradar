@@ -766,13 +766,15 @@ pub fn test_issue_body(
     let last_fail_branch = failing.as_ref().map(|failure| failure.branch.clone());
     let sample_failure = failing.map(|failure| failure.sample).unwrap_or_default();
     let permalink = match (&test.file, &last_fail_sha) {
-        (Some(file), Some(sha)) => Some(flakeradar_core::permalink(
-            repo,
-            sha,
-            root,
-            file,
-            test.line.map(i64::from),
-        )),
+        (Some(file), Some(sha)) => {
+            Some(flakeradar_core::permalink(&flakeradar_core::LocationRef {
+                repo,
+                commit_sha: sha,
+                project_root: root,
+                file,
+                line: test.line.map(i64::from),
+            }))
+        }
         _ => None,
     };
     if let Some(permalink) = permalink {

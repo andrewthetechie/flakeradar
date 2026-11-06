@@ -79,8 +79,8 @@ pub use metrics::{
 pub use migration::{BASELINE_SQL, Migrator, run_migrations, split_statements};
 #[doc(inline)]
 pub use processing::{
-    ERROR_MAX, JobHistory, ProcessOutcome, ProcessingSettings, claim_next_report, job_history,
-    process_next, rescore, rescore_jobs,
+    DayCounts, ERROR_MAX, JobHistory, ProcessOutcome, ProcessingSettings, claim_next_report,
+    job_history, process_next, rescore, rescore_jobs,
 };
 #[doc(inline)]
 pub use reads::{

@@ -19,9 +19,9 @@ use chrono::{DateTime, Duration, FixedOffset, NaiveDate, Utc};
 use flakeradar_core::{
     CiRunFailedJobOut, CiRunFailuresOut, CiRunTestFailureOut, ExecutionOut, ExplainingTestOut,
     FailedJobOutcome, FailureCategory, HistoryOut, JobExecutionOut, JobHistoryOut, JobOut,
-    JobOutcome, JobPage, JobSummaryOut, LocationOut, QuarantineItem, RepoOut, ReportCountsOut,
-    RunnerStatOut, ScorePointOut, SummaryOut, TestJobLinkOut, TestOut, TestPage, Trend, defaults,
-    escape_like, is_broken, issue_url, permalink, repo_path, tier_for, trend_for,
+    JobOutcome, JobPage, JobSummaryOut, LocationOut, LocationRef, QuarantineItem, RepoOut,
+    ReportCountsOut, RunnerStatOut, ScorePointOut, SummaryOut, TestJobLinkOut, TestOut, TestPage,
+    Trend, defaults, escape_like, is_broken, issue_url, permalink, repo_path, tier_for, trend_for,
 };
 use sea_orm::{ConnectionTrait, DbBackend, QueryResult, Statement, Value};
 use serde_json::Value as JsonValue;
@@ -676,12 +676,12 @@ pub async fn summary(
     let new_flaky = new_flaky_count(db, scope, threshold, today).await?;
     let (executions_30d, failures_30d) = window_sums(db, scope, today).await?;
     Ok(SummaryOut {
-        total_tests: counts.0,
-        flaky_tests: counts.1,
-        suspect_tests: counts.2,
-        confirmed_flaky_tests: counts.3,
+        total_tests: counts.total,
+        flaky_tests: counts.flaky,
+        suspect_tests: counts.suspect,
+        confirmed_flaky_tests: counts.proven,
         new_flaky_7d: new_flaky,
-        total_runs: counts.4,
+        total_runs: counts.total_runs,
         executions_30d,
         failures_30d,
         flake_threshold: threshold,
@@ -689,12 +689,27 @@ pub async fn summary(
     })
 }
 
+/// The dashboard's tile counts and the Run count.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct TestCounts {
+    /// Every Test in scope.
+    total: i64,
+    /// Tests at or above the Flake threshold.
+    flaky: i64,
+    /// Tests above zero but below the threshold.
+    suspect: i64,
+    /// Tests with at least one Proven flake.
+    proven: i64,
+    /// Runs in scope.
+    total_runs: i64,
+}
+
 /// The five dashboard tile counts and the Run count, in one statement.
 async fn test_counts(
     db: &impl ConnectionTrait,
     scope: &Scope,
     threshold: f64,
-) -> Result<(i64, i64, i64, i64, i64), DbError> {
+) -> Result<TestCounts, DbError> {
     // `$1` is the threshold everywhere; the Runs subquery and the scope follow.
     let mut runs = Binds::after(2);
     scope_conditions(scope, "trr.name", "tp.name", &mut runs);
@@ -721,13 +736,13 @@ async fn test_counts(
         counts.suffix()
     );
     let row = required_one(db, counts_sql, values, "summary").await?;
-    Ok((
-        get(&row, "total")?,
-        get(&row, "flaky")?,
-        get(&row, "suspect")?,
-        get(&row, "confirmed")?,
-        get(&row, "total_runs")?,
-    ))
+    Ok(TestCounts {
+        total: get(&row, "total")?,
+        flaky: get(&row, "flaky")?,
+        suspect: get(&row, "suspect")?,
+        proven: get(&row, "confirmed")?,
+        total_runs: get(&row, "total_runs")?,
+    })
 }
 
 /// How many Tests in scope became flaky inside [`NEW_FLAKY_DAYS`].
@@ -756,6 +771,15 @@ async fn new_flaky_count(
     new_binds.extend(new_flaky.into_values());
     let row = required_one(db, new_sql, new_binds, "new-flaky").await?;
     get(&row, "new_flaky")
+}
+
+/// One runner's Executions and the failures nothing explained.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct RunnerCounts {
+    /// Executions the runner reported.
+    executions: i64,
+    /// Failed Executions no failing Test explained.
+    unexplained: i64,
 }
 
 /// The Executions and failures of the last [`SUMMARY_WINDOW_DAYS`] in scope.
@@ -913,9 +937,15 @@ pub async fn get_test(
         Some(file) => Some(LocationOut {
             path: repo_path(&root, file),
             line: test.line,
-            url: last_failing_sha
-                .as_deref()
-                .map(|sha| permalink(&test.repo, sha, &root, file, test.line)),
+            url: last_failing_sha.as_deref().map(|sha| {
+                permalink(&LocationRef {
+                    repo: &test.repo,
+                    commit_sha: sha,
+                    project_root: &root,
+                    file,
+                    line: test.line,
+                })
+            }),
         }),
         None => None,
     };
@@ -1419,8 +1449,8 @@ pub async fn runner_stats(
         int_array(&[job_id]),
         Value::from(i32::try_from(window).unwrap_or(i32::MAX)),
     ];
-    let mut label_counts: BTreeMap<Vec<String>, [i64; 2]> = BTreeMap::new();
-    let mut name_counts: BTreeMap<String, [i64; 2]> = BTreeMap::new();
+    let mut label_counts: BTreeMap<Vec<String>, RunnerCounts> = BTreeMap::new();
+    let mut name_counts: BTreeMap<String, RunnerCounts> = BTreeMap::new();
     let mut name_labels: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for row in rows(db, sql, values).await? {
         let runner_name: String = get(&row, "runner_name")?;
@@ -1429,12 +1459,12 @@ pub async fn runner_stats(
         let explained: bool = get(&row, "explained")?;
         let unexplained = i64::from(status == "failed" && !explained);
         let counts = label_counts.entry(labels.clone()).or_default();
-        counts[0] += 1;
-        counts[1] += unexplained;
+        counts.executions += 1;
+        counts.unexplained += unexplained;
         if !runner_name.is_empty() {
             let counts = name_counts.entry(runner_name.clone()).or_default();
-            counts[0] += 1;
-            counts[1] += unexplained;
+            counts.executions += 1;
+            counts.unexplained += unexplained;
             name_labels.entry(runner_name).or_default().extend(labels);
         }
     }
@@ -1443,12 +1473,12 @@ pub async fn runner_stats(
         stats.push(RunnerStat {
             labels,
             name: None,
-            executions: counts[0],
-            unexplained: counts[1],
+            executions: counts.executions,
+            unexplained: counts.unexplained,
         });
     }
     for (name, counts) in name_counts {
-        if counts[0] < 2 {
+        if counts.executions < 2 {
             continue;
         }
         stats.push(RunnerStat {
@@ -1457,8 +1487,8 @@ pub async fn runner_stats(
                 .map(|labels| labels.iter().cloned().collect())
                 .unwrap_or_default(),
             name: Some(name),
-            executions: counts[0],
-            unexplained: counts[1],
+            executions: counts.executions,
+            unexplained: counts.unexplained,
         });
     }
     stats.sort_by(|left, right| {
@@ -1726,7 +1756,7 @@ pub async fn ci_run_failures(
     let (failures, total) =
         ci_run_test_failures(db, repo_id, &repo_name, ci_run_id, attempt, settings, limit).await?;
     let failed_jobs =
-        ci_run_failed_jobs(db, repo_id, ci_run_id, attempt, &repo_name, settings).await?;
+        ci_run_failed_jobs(db, repo_id, &repo_name, ci_run_id, attempt, settings).await?;
     Ok(CiRunFailuresOut {
         repo: repo_name,
         ci_run_id: ci_run_id.to_owned(),
@@ -1967,9 +1997,9 @@ fn ci_run_failure_item(
 async fn ci_run_failed_jobs(
     db: &impl ConnectionTrait,
     repo_id: i32,
+    repo_name: &str,
     ci_run_id: &str,
     attempt: i32,
-    repo_name: &str,
     settings: &ReadSettings,
 ) -> Result<Vec<CiRunFailedJobOut>, DbError> {
     let sql = "SELECT e.ci_job_id AS ci_job_id, e.url AS url, j.id AS job_id, \

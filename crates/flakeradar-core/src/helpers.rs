@@ -116,16 +116,37 @@ pub fn repo_path(root: &str, file: &str) -> String {
     }
 }
 
+/// A Test's Location and the commit to link it at.
+///
+/// Every field is named because a permalink joins a Repo, a commit and a path:
+/// four bare strings in a row would let a caller pass the root where the file
+/// belongs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LocationRef<'a> {
+    /// The Repo's `owner/name`.
+    pub repo: &'a str,
+    /// The commit SHA the path is read at.
+    pub commit_sha: &'a str,
+    /// The Project root the file is relative to.
+    pub project_root: &'a str,
+    /// The file, relative to the Project root.
+    pub file: &'a str,
+    /// The line, when the report gave one.
+    pub line: Option<i64>,
+}
+
 /// A GitHub permalink to a Test's Location at one commit SHA.
 ///
 /// The line anchor is added for a 1-based line only.
 #[must_use]
-pub fn permalink(repo: &str, sha: &str, root: &str, file: &str, line: Option<i64>) -> String {
+pub fn permalink(location: &LocationRef<'_>) -> String {
     let url = format!(
-        "https://github.com/{repo}/blob/{sha}/{}",
-        repo_path(root, file)
+        "https://github.com/{}/blob/{}/{}",
+        location.repo,
+        location.commit_sha,
+        repo_path(location.project_root, location.file)
     );
-    match line {
+    match location.line {
         Some(line) if line >= 1 => format!("{url}#L{line}"),
         _ => url,
     }
@@ -148,7 +169,8 @@ pub fn body_digest(content: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        body_digest, escape_like, is_broken, issue_url, permalink, repo_path, tier_for, trend_for,
+        LocationRef, body_digest, escape_like, is_broken, issue_url, permalink, repo_path,
+        tier_for, trend_for,
     };
     use crate::model::{Tier, Trend};
 
@@ -198,16 +220,25 @@ mod tests {
 
     #[test]
     fn permalink_anchors_only_a_positive_line() {
+        let at = |project_root: &'static str, line: Option<i64>| {
+            permalink(&LocationRef {
+                repo: "acme/app",
+                commit_sha: "abc",
+                project_root,
+                file: "src/a.ts",
+                line,
+            })
+        };
         assert_eq!(
-            permalink("acme/app", "abc", "frontend", "src/a.ts", Some(12)),
+            at("frontend", Some(12)),
             "https://github.com/acme/app/blob/abc/frontend/src/a.ts#L12"
         );
         assert_eq!(
-            permalink("acme/app", "abc", "", "src/a.ts", Some(0)),
+            at("", Some(0)),
             "https://github.com/acme/app/blob/abc/src/a.ts"
         );
         assert_eq!(
-            permalink("acme/app", "abc", "", "src/a.ts", None),
+            at("", None),
             "https://github.com/acme/app/blob/abc/src/a.ts"
         );
     }

@@ -13,6 +13,37 @@ use std::collections::BTreeMap;
 use crate::model::ExecutionStatus;
 use crate::py::round4;
 
+/// One Execution as the branch-scoped rules read it.
+///
+/// The commit SHA and the branch are named fields rather than two bare strings in a
+/// row, so a caller cannot pass the branch where the commit belongs. The strings
+/// are owned because they come straight from a database read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScoredExecution {
+    /// The commit the Execution ran.
+    pub commit_sha: String,
+    /// The branch the commit is on.
+    pub branch: String,
+    /// What the Execution did.
+    pub status: ExecutionStatus,
+}
+
+impl ScoredExecution {
+    /// One stored Execution row.
+    #[must_use]
+    pub fn new(
+        commit_sha: impl Into<String>,
+        branch: impl Into<String>,
+        status: ExecutionStatus,
+    ) -> Self {
+        Self {
+            commit_sha: commit_sha.into(),
+            branch: branch.into(),
+            status,
+        }
+    }
+}
+
 /// The lowest score a Proven flake can have.
 ///
 /// A same-SHA flip is proof of nondeterminism, so the score jumps to at least
@@ -175,26 +206,25 @@ fn proof_floor(confirmed: usize) -> f64 {
 
 /// Flips on the Default branch only; Proven flakes on every branch.
 ///
-/// `history` is `(commit_sha, branch, status)` newest first and must hold at
-/// least the newest `window` rows overall and on the Default branch (see the
-/// processor's rescore). `default_branch` of `None` means unknown, which counts
-/// every branch.
+/// `history` is newest first and must hold at least the newest `window` rows
+/// overall and on the Default branch (see the processor's rescore).
+/// `default_branch` of `None` means unknown, which counts every branch.
 #[must_use]
 pub fn branch_scoped_score(
-    history: &[(&str, &str, ExecutionStatus)],
+    history: &[ScoredExecution],
     default_branch: Option<&str>,
     decay: f64,
     window: usize,
 ) -> (f64, usize) {
     let flips: Vec<ExecutionStatus> = history
         .iter()
-        .filter(|(_, branch, _)| default_branch.is_none_or(|default| branch == &default))
-        .map(|(_, _, status)| *status)
+        .filter(|execution| default_branch.is_none_or(|default| execution.branch == *default))
+        .map(|execution| execution.status)
         .collect();
     let proven: Vec<(&str, ExecutionStatus)> = history
         .iter()
         .take(window)
-        .map(|(sha, _, status)| (*sha, *status))
+        .map(|execution| (execution.commit_sha.as_str(), execution.status))
         .collect();
     combined_score(&flips, &proven, decay, window)
 }
@@ -226,16 +256,8 @@ pub fn clean_streak(statuses: &[ExecutionStatus]) -> usize {
 
 /// The Clean streak over Default-branch rows only.
 #[must_use]
-pub fn branch_scoped_streak(
-    history: &[(&str, &str, ExecutionStatus)],
-    default_branch: Option<&str>,
-) -> usize {
-    let statuses: Vec<ExecutionStatus> = history
-        .iter()
-        .filter(|(_, branch, _)| default_branch.is_none_or(|default| branch == &default))
-        .map(|(_, _, status)| *status)
-        .collect();
-    clean_streak(&statuses)
+pub fn branch_scoped_streak(history: &[ScoredExecution], default_branch: Option<&str>) -> usize {
+    clean_streak(&default_branch_statuses(history, default_branch))
 }
 
 /// Consecutive non-skipped failures, newest first, the reverse of a Clean streak.
@@ -266,23 +288,30 @@ pub fn fail_streak(statuses: &[ExecutionStatus]) -> usize {
 /// The Fail streak over Default-branch rows only.
 #[must_use]
 pub fn branch_scoped_fail_streak(
-    history: &[(&str, &str, ExecutionStatus)],
+    history: &[ScoredExecution],
     default_branch: Option<&str>,
 ) -> usize {
-    let statuses: Vec<ExecutionStatus> = history
+    fail_streak(&default_branch_statuses(history, default_branch))
+}
+
+/// The statuses on the Default branch, or on every branch while it is unknown.
+fn default_branch_statuses(
+    history: &[ScoredExecution],
+    default_branch: Option<&str>,
+) -> Vec<ExecutionStatus> {
+    history
         .iter()
-        .filter(|(_, branch, _)| default_branch.is_none_or(|default| branch == &default))
-        .map(|(_, _, status)| *status)
-        .collect();
-    fail_streak(&statuses)
+        .filter(|execution| default_branch.is_none_or(|default| execution.branch == *default))
+        .map(|execution| execution.status)
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        FULL_CONFIDENCE_SAMPLES, SAME_SHA_FLOOR, branch_scoped_fail_streak, branch_scoped_score,
-        branch_scoped_streak, clean_streak, combined_score, count_same_sha_flips, fail_streak,
-        flip_score,
+        FULL_CONFIDENCE_SAMPLES, SAME_SHA_FLOOR, ScoredExecution, branch_scoped_fail_streak,
+        branch_scoped_score, branch_scoped_streak, clean_streak, combined_score,
+        count_same_sha_flips, fail_streak, flip_score,
     };
     use crate::model::ExecutionStatus::{self, Error, Failed, Passed, Skipped};
 
@@ -293,6 +322,13 @@ mod tests {
     fn alternation(count: usize) -> Vec<ExecutionStatus> {
         (0..count)
             .map(|index| if index % 2 == 0 { Passed } else { Failed })
+            .collect()
+    }
+
+    /// A history from `(commit_sha, branch, status)` rows, newest first.
+    fn history(rows: &[(&str, &str, ExecutionStatus)]) -> Vec<ScoredExecution> {
+        rows.iter()
+            .map(|(sha, branch, status)| ScoredExecution::new(*sha, *branch, *status))
             .collect()
     }
 
@@ -462,11 +498,11 @@ mod tests {
 
     #[test]
     fn branch_scoped_none_equals_legacy() {
-        let history = [
+        let history = history(&[
             ("a", "main", Passed),
             ("a", "feat", Failed),
             ("b", "main", Passed),
-        ];
+        ]);
         let got = branch_scoped_score(&history, None, 0.85, 50);
         let want = combined_score(
             &[Passed, Failed, Passed],
@@ -479,12 +515,12 @@ mod tests {
 
     #[test]
     fn branch_scoped_ignores_feature_branch_flips() {
-        let history = [
+        let history = history(&[
             ("c", "main", Passed),
             ("d", "main", Passed),
             ("a", "feat", Failed),
             ("b", "feat", Passed),
-        ];
+        ]);
         assert_eq!(
             branch_scoped_score(&history, Some("main"), 0.85, 50),
             (0.0, 0)
@@ -493,7 +529,7 @@ mod tests {
 
     #[test]
     fn branch_scoped_same_sha_flip_on_feature_branch_still_counts() {
-        let history = [("x", "feat", Passed), ("x", "feat", Failed)];
+        let history = history(&[("x", "feat", Passed), ("x", "feat", Failed)]);
         let (score, confirmed) = branch_scoped_score(&history, Some("main"), 0.85, 50);
         assert_eq!(confirmed, 1);
         assert!(score >= SAME_SHA_FLOOR);
@@ -501,35 +537,35 @@ mod tests {
 
     #[test]
     fn branch_scoped_history_slicing() {
-        let history = [
+        let history = history(&[
             ("a", "main", Passed),
             ("a", "main", Passed),
             ("a", "main", Passed),
             ("x", "main", Failed),
             ("x", "main", Passed),
-        ];
+        ]);
         let (_, confirmed) = branch_scoped_score(&history, Some("main"), 0.85, 3);
         assert_eq!(confirmed, 0);
     }
 
     #[test]
     fn branch_scoped_streak_filters_by_default_branch() {
-        let history = [
+        let history = history(&[
             ("a", "feat", Failed),
             ("b", "main", Passed),
             ("c", "main", Passed),
-        ];
+        ]);
         assert_eq!(branch_scoped_streak(&history, Some("main")), 2);
         assert_eq!(branch_scoped_streak(&history, None), 0);
     }
 
     #[test]
     fn branch_scoped_fail_streak_filters_by_default_branch() {
-        let history = [
+        let history = history(&[
             ("a", "feat", Passed),
             ("b", "main", Failed),
             ("c", "main", Failed),
-        ];
+        ]);
         assert_eq!(branch_scoped_fail_streak(&history, Some("main")), 2);
         // The newest row is a feat pass: on an unknown branch it stops the count.
         assert_eq!(branch_scoped_fail_streak(&history, None), 0);
@@ -537,12 +573,21 @@ mod tests {
 
     #[test]
     fn branch_scoped_fail_streak_unknown_branch_counts_every_row() {
-        let history = [
+        let history = history(&[
             ("a", "main", Failed),
             ("b", "main", Failed),
             ("c", "dev", Failed),
-        ];
+        ]);
         assert_eq!(branch_scoped_fail_streak(&history, None), 3);
         assert_eq!(branch_scoped_fail_streak(&history, Some("main")), 2);
+    }
+
+    #[test]
+    fn a_commit_and_a_branch_are_named_apart() {
+        // The row is a struct, so `ScoredExecution { branch: "abc", .. }` does not
+        // compile: a caller cannot pass one where the other belongs.
+        let row = ScoredExecution::new("abc", "main", Failed);
+        assert_eq!(row.commit_sha, "abc");
+        assert_eq!(row.branch, "main");
     }
 }

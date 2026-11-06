@@ -45,8 +45,8 @@ pub use dto::{
 };
 #[doc(inline)]
 pub use helpers::{
-    TREND_DAYS, TREND_DELTA, body_digest, escape_like, is_broken, issue_url, permalink, repo_path,
-    tier_for, trend_for,
+    LocationRef, TREND_DAYS, TREND_DELTA, body_digest, escape_like, is_broken, issue_url,
+    permalink, repo_path, tier_for, trend_for,
 };
 #[doc(inline)]
 pub use identity::{
@@ -66,7 +66,7 @@ pub use parsing::{
 pub use py::{TRUNCATION_MARKER, cap, py_splitlines, py_strip, round4};
 #[doc(inline)]
 pub use scoring::{
-    FULL_CONFIDENCE_SAMPLES, SAME_SHA_FLOOR, branch_scoped_fail_streak, branch_scoped_score,
-    branch_scoped_streak, clean_streak, combined_score, count_same_sha_flips, fail_streak,
-    flip_score,
+    FULL_CONFIDENCE_SAMPLES, SAME_SHA_FLOOR, ScoredExecution, branch_scoped_fail_streak,
+    branch_scoped_score, branch_scoped_streak, clean_streak, combined_score, count_same_sha_flips,
+    fail_streak, flip_score,
 };

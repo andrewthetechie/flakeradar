@@ -169,7 +169,7 @@ async fn history_statuses(db: &TestDb, job_id: i32) -> Vec<String> {
         .expect("the Job's history")
         .executions
         .iter()
-        .map(|(_, _, status)| status.as_str().to_owned())
+        .map(|execution| execution.status.as_str().to_owned())
         .collect()
 }
 

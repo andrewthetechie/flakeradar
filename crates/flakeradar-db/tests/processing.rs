@@ -14,7 +14,8 @@ use std::sync::Arc;
 
 use chrono::{DateTime, FixedOffset};
 use flakeradar_core::{
-    ExecutionStatus, JobResultIn, JobStatus, PipelineReportIn, pipeline_body, tier_for,
+    ExecutionStatus, JobResultIn, JobStatus, PipelineReportIn, ScoredExecution, pipeline_body,
+    tier_for,
 };
 use flakeradar_db::entities::{
     job_executions, job_score_history, jobs, pipelines, projects, reports, repos, test_cases,
@@ -927,7 +928,7 @@ async fn a_rescore_matches_the_branch_scoped_score_over_all_rows() {
         .await
         .expect("a Test");
     // Oldest first, so reversing the list gives the newest-first history Python reads.
-    let mut history: Vec<(String, String, ExecutionStatus)> = Vec::new();
+    let mut history: Vec<ScoredExecution> = Vec::new();
     for (index, status) in ["failed", "passed", "failed", "passed", "failed"]
         .iter()
         .enumerate()
@@ -943,9 +944,9 @@ async fn a_rescore_matches_the_branch_scoped_score_over_all_rows() {
             .build(db.connection())
             .await
             .expect("an Execution");
-        history.push((
+        history.push(ScoredExecution::new(
             format!("m{index}"),
-            "main".to_owned(),
+            "main",
             ExecutionStatus::from_wire(status).expect("a status"),
         ));
     }
@@ -960,9 +961,9 @@ async fn a_rescore_matches_the_branch_scoped_score_over_all_rows() {
             .build(db.connection())
             .await
             .expect("an Execution");
-        history.push((
+        history.push(ScoredExecution::new(
             format!("f{index}"),
-            "feat".to_owned(),
+            "feat",
             ExecutionStatus::Passed,
         ));
     }
@@ -971,12 +972,9 @@ async fn a_rescore_matches_the_branch_scoped_score_over_all_rows() {
         .expect("the rescore");
     let stored = test(&db).await;
     history.reverse();
-    let refs: Vec<(&str, &str, ExecutionStatus)> = history
-        .iter()
-        .map(|(sha, branch, status)| (sha.as_str(), branch.as_str(), *status))
-        .collect();
+    let history = history;
     let (expected, confirmed) = flakeradar_core::branch_scoped_score(
-        &refs,
+        &history,
         Some("main"),
         settings.score_decay,
         settings.score_window,
@@ -990,13 +988,16 @@ async fn a_rescore_matches_the_branch_scoped_score_over_all_rows() {
     );
     assert_eq!(
         stored.clean_streak,
-        i32::try_from(flakeradar_core::branch_scoped_streak(&refs, Some("main")))
-            .expect("a streak")
+        i32::try_from(flakeradar_core::branch_scoped_streak(
+            &history,
+            Some("main")
+        ))
+        .expect("a streak")
     );
     assert_eq!(
         stored.fail_streak,
         i32::try_from(flakeradar_core::branch_scoped_fail_streak(
-            &refs,
+            &history,
             Some("main")
         ))
         .expect("a streak")
