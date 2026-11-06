@@ -853,7 +853,7 @@ impl<R: std::io::BufRead> std::io::Read for LineCounted<R> {
             .position(|byte| *byte == b'\n')
             .map_or(available.len(), |index| index.saturating_add(1));
         let read = up_to_break.min(buf.len());
-        for (slot, byte) in buf.iter_mut().zip(available.iter()) {
+        for (slot, byte) in buf.iter_mut().zip(available.iter().take(read)) {
             *slot = *byte;
         }
         self.breaks += available
