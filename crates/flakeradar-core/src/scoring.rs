@@ -12,6 +12,7 @@ use std::collections::BTreeMap;
 
 use crate::model::ExecutionStatus;
 use crate::py::round4;
+use crate::types::Score;
 
 /// One Execution as the branch-scoped rules read it.
 ///
@@ -165,15 +166,22 @@ pub fn count_proven_flakes(executions: &[(&str, ExecutionStatus)]) -> usize {
 ///
 /// let statuses = [ExecutionStatus::Passed, ExecutionStatus::Failed];
 /// let executions = [("abc", ExecutionStatus::Passed), ("abc", ExecutionStatus::Failed)];
-/// assert_eq!(combined_score(&statuses, &executions, 0.85, 50), (0.6, 1));
+/// let (score, proven) = combined_score(&statuses, &executions, 0.85, 50);
+/// assert_eq!((score.as_f64(), proven), (0.6, 1));
 /// ```
+///
+/// # Panics
+///
+/// Panics only if [`Score::new`] refuses the rate this function just capped at 1
+/// and rounded to four decimals, which cannot happen: a capped, rounded rate is
+/// finite and falls inside 0 to 1.
 #[must_use]
 pub fn combined_score(
     statuses: &[ExecutionStatus],
     executions: &[(&str, ExecutionStatus)],
     decay: f64,
     window: usize,
-) -> (f64, usize) {
+) -> (Score, usize) {
     let flips = flip_score(statuses, decay, window);
     let proven = count_proven_flakes(executions);
     let mut score = flips;
@@ -184,12 +192,18 @@ pub fn combined_score(
     }
     // A rate that is not a number scores nothing: `min` answers the other side
     // for NaN, so an undefined rate would otherwise be served as a perfect one.
-    let score = if score.is_finite() {
+    let score = round4(if score.is_finite() {
         score.min(1.0)
     } else {
         0.0
-    };
-    (round4(score), proven)
+    });
+    #[expect(
+        clippy::expect_used,
+        reason = "a rounded rate capped at 1 is a score: it is finite and in 0 to 1, \
+                  which is exactly what Score::new refuses to accept otherwise"
+    )]
+    let score = Score::new(score).expect("a capped, rounded rate is a score");
+    (score, proven)
 }
 /// The score floor repeated proof of nondeterminism earns.
 ///
@@ -216,7 +230,7 @@ pub fn branch_scoped_score(
     default_branch: Option<&str>,
     decay: f64,
     window: usize,
-) -> (f64, usize) {
+) -> (Score, usize) {
     let flips: Vec<ExecutionStatus> = history
         .iter()
         .filter(|execution| default_branch.is_none_or(|default| execution.branch == *default))
@@ -310,9 +324,9 @@ fn default_branch_statuses(
 #[cfg(test)]
 mod tests {
     use super::{
-        FULL_CONFIDENCE_SAMPLES, PROVEN_FLAKE_FLOOR, ScoredExecution, branch_scoped_fail_streak,
-        branch_scoped_score, branch_scoped_streak, clean_streak, combined_score,
-        count_proven_flakes, fail_streak, flip_score,
+        FULL_CONFIDENCE_SAMPLES, PROVEN_FLAKE_FLOOR, Score, ScoredExecution,
+        branch_scoped_fail_streak, branch_scoped_score, branch_scoped_streak, clean_streak,
+        combined_score, count_proven_flakes, fail_streak, flip_score,
     };
     use crate::model::ExecutionStatus::{self, Error, Failed, Passed, Skipped};
 
@@ -341,7 +355,7 @@ mod tests {
         let statuses = repeat(Passed, 4);
         for decay in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
             let (score, proven) = combined_score(&statuses, &[], decay, 50);
-            assert_eq!(score, 0.0, "decay {decay}");
+            assert_eq!(score.as_f64(), 0.0, "decay {decay}");
             assert_eq!(proven, 0);
         }
     }
@@ -443,7 +457,7 @@ mod tests {
         let (score, proven) = combined_score(&statuses, &with_sha, 0.85, 50);
         assert_eq!(proven, 1);
         assert!(
-            (score - PROVEN_FLAKE_FLOOR).abs() < 1e-12,
+            (score.as_f64() - PROVEN_FLAKE_FLOOR).abs() < 1e-12,
             "score {score} is not the floor"
         );
     }
@@ -455,7 +469,7 @@ mod tests {
         let with_sha = [("abc", Passed), ("abc", Failed)];
         let (score, proven) = combined_score(&statuses, &with_sha, 0.85, 50);
         assert_eq!(proven, 1);
-        assert!(score >= PROVEN_FLAKE_FLOOR);
+        assert!(score.as_f64() >= PROVEN_FLAKE_FLOOR);
     }
 
     #[test]
@@ -471,8 +485,8 @@ mod tests {
             with_sha.push(("dup", Failed));
         }
         let (score, _) = combined_score(&statuses, &with_sha, 0.85, 50);
-        assert!(score <= 1.0);
-        assert_eq!(score, 1.0);
+        assert!(score <= Score::ONE);
+        assert_eq!(score, Score::ONE);
     }
 
     #[test]
@@ -524,7 +538,7 @@ mod tests {
         ]);
         assert_eq!(
             branch_scoped_score(&history, Some("main"), 0.85, 50),
-            (0.0, 0)
+            (Score::ZERO, 0)
         );
     }
 
@@ -533,7 +547,7 @@ mod tests {
         let history = history(&[("x", "feat", Passed), ("x", "feat", Failed)]);
         let (score, proven) = branch_scoped_score(&history, Some("main"), 0.85, 50);
         assert_eq!(proven, 1);
-        assert!(score >= PROVEN_FLAKE_FLOOR);
+        assert!(score.as_f64() >= PROVEN_FLAKE_FLOOR);
     }
 
     #[test]

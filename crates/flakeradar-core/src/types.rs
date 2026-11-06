@@ -92,9 +92,73 @@ pub enum FingerprintError {
     NotHex,
 }
 
+/// A Flakiness score: a finite number from 0 to 1.
+///
+/// A Test's or Job's score carries this, so a number that is not a score cannot
+/// leave the rules that compute one. The column and the wire keep the plain
+/// number: `Score` is transparent.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, ToSchema)]
+#[serde(transparent)]
+#[schema(value_type = f64)]
+pub struct Score(f64);
+
+impl Score {
+    /// The lowest score there is: a Stable test or Job.
+    pub const ZERO: Self = Self(0.0);
+
+    /// The highest score there is: a Test or Job that always flips.
+    pub const ONE: Self = Self(1.0);
+
+    /// The score `value` names.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ScoreError`] when `value` is not finite or falls outside 0 to 1,
+    /// which no rule can compute and no response may carry.
+    pub fn new(value: f64) -> Result<Self, ScoreError> {
+        if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+            return Err(ScoreError { value });
+        }
+        Ok(Self(value))
+    }
+
+    /// The score as the number the column and the wire carry.
+    #[must_use]
+    pub fn as_f64(self) -> f64 {
+        self.0
+    }
+}
+
+impl fmt::Display for Score {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.0, f)
+    }
+}
+
+impl PartialOrd for Score {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        self.0.partial_cmp(&other.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for Score {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = f64::deserialize(deserializer)?;
+        Self::new(value).map_err(serde::de::Error::custom)
+    }
+}
+
+/// Why a [`Score`] cannot be built.
+#[derive(Debug, Clone, Copy, PartialEq, thiserror::Error)]
+#[error("a Flakiness score is a finite number from 0 to 1, got {value}")]
+pub struct ScoreError {
+    /// The refused value.
+    pub value: f64,
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Fingerprint, FingerprintError};
+    use super::{Fingerprint, FingerprintError, Score};
 
     const EXAMPLE: &str = "2b8823c6c55be0a19a34111f08b687028f5273df";
 
@@ -144,6 +208,45 @@ mod tests {
         assert!(
             serde_json::from_str::<Fingerprint>("\"abc\"").is_err(),
             "a short fingerprint never deserializes"
+        );
+    }
+
+    #[test]
+    fn a_score_refuses_what_is_not_a_score() {
+        for value in [
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            -0.000_001,
+            1.000_001,
+            f64::MAX,
+        ] {
+            let error = Score::new(value).expect_err("a value outside 0 to 1 is refused");
+            assert_eq!(error.value.to_bits(), value.to_bits(), "value {value}");
+        }
+        assert_eq!(Score::new(0.0).expect("zero is a score").as_f64(), 0.0);
+        assert_eq!(Score::new(1.0).expect("one is a score").as_f64(), 1.0);
+        assert_eq!(Score::new(0.6).expect("a score").to_string(), "0.6");
+        assert_eq!(Score::ZERO.as_f64(), 0.0);
+        assert_eq!(Score::ONE.as_f64(), 1.0);
+    }
+
+    #[test]
+    fn a_score_travels_as_the_number_it_wraps() {
+        let score = Score::new(0.6).expect("a score");
+        assert_eq!(
+            serde_json::to_string(&score).expect("a number"),
+            "0.6".to_owned()
+        );
+        let back: Score = serde_json::from_str("0.6").expect("a score");
+        assert_eq!(back, score);
+        assert!(
+            serde_json::from_str::<Score>("1.5").is_err(),
+            "a score above one never deserializes"
+        );
+        assert!(
+            serde_json::from_str::<Score>("null").is_err(),
+            "a missing score is not zero"
         );
     }
 }

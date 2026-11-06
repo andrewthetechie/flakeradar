@@ -1136,7 +1136,7 @@ pub async fn rescore(
             .unwrap_or_default();
         updates.push(TestUpdate {
             id: *id,
-            flakiness_score: score,
+            flakiness_score: score.as_f64(),
             confirmed_flake_count: i32::try_from(proven).unwrap_or(i32::MAX),
             failure_category: dominant_category(&window_categories),
             clean_streak: i32::try_from(streak).unwrap_or(i32::MAX),
@@ -1445,7 +1445,7 @@ pub async fn rescore_jobs(
         let streak = branch_scoped_streak(&entry.executions, branch.as_deref());
         updates.push(JobUpdate {
             id: *id,
-            flakiness_score: score,
+            flakiness_score: score.as_f64(),
             confirmed_flake_count: i32::try_from(proven).unwrap_or(i32::MAX),
             clean_streak: i32::try_from(streak).unwrap_or(i32::MAX),
             clear_fixed_note: streak == 0,

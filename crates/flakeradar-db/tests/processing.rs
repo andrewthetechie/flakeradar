@@ -980,8 +980,8 @@ async fn a_rescore_matches_the_branch_scoped_score_over_all_rows() {
         settings.score_window,
     );
     // The newest Default-branch flips still count despite ten newer feature rows.
-    assert!(expected > 0.0);
-    assert_eq!(stored.flakiness_score, expected);
+    assert!(expected.as_f64() > 0.0);
+    assert_eq!(stored.flakiness_score, expected.as_f64());
     assert_eq!(
         stored.confirmed_flake_count,
         i32::try_from(confirmed).expect("a count")
