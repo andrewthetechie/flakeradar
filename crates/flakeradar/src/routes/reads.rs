@@ -277,7 +277,7 @@ fn scope_of(repo: Option<String>, project: Option<String>) -> ReadResult<Scope> 
         Some(raw) => Some(normalize_project(Some(&raw)).map_err(|error| identity_error(&error))?),
         None => None,
     };
-    Scope::new(repo, project).map_err(|detail| detail_error(detail).into())
+    Scope::new(repo, project).map_err(|error| detail_error(error.to_string()).into())
 }
 
 /// The query parameters of `GET /api/summary`.

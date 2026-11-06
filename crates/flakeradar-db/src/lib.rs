@@ -66,16 +66,16 @@ pub use issue_links::{LinkError, LinkTarget, LinkedIssue, LinkedOut, NoteStamp};
 pub use migration::{BASELINE_SQL, Migrator, run_migrations, split_statements};
 #[doc(inline)]
 pub use processing::{
-    ERROR_MAX, JobHistory, ProcessError, ProcessOutcome, ProcessingSettings, claim_next_report,
-    job_history, process_next, rescore, rescore_jobs,
+    ERROR_MAX, JobHistory, ProcessOutcome, ProcessingSettings, claim_next_report, job_history,
+    process_next, rescore, rescore_jobs,
 };
 #[doc(inline)]
 pub use reads::{
     DEFAULT_EXECUTIONS_LIMIT, FAILURES_LIMIT, JobListFilters, ListOptions, MAX_EXECUTIONS_LIMIT,
-    NEW_FLAKY_DAYS, ReadError, ReadSettings, Scope, SortKey, TestListFilters, ci_run_failures,
-    find_job_ids, find_test_ids, get_job, get_test, job_summary, latest_failure, list_jobs,
-    list_repos, list_tests, quarantine_list, search_jobs, search_tests, set_quarantine, summary,
-    test_job_links,
+    NEW_FLAKY_DAYS, ReadError, ReadSettings, Scope, ScopeError, SortKey, TestListFilters,
+    ci_run_failures, find_job_ids, find_test_ids, get_job, get_test, job_summary, latest_failure,
+    list_jobs, list_repos, list_tests, quarantine_list, search_jobs, search_tests, set_quarantine,
+    summary, test_job_links,
 };
 #[doc(inline)]
 pub use report_intake::{

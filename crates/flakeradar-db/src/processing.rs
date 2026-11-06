@@ -115,8 +115,11 @@ pub struct ProcessOutcome {
 }
 
 /// A processing failure: whether a retry could succeed, and the text to store.
+///
+/// Only `process_next` reads it, so it stays inside this module; the caller sees
+/// the failure as a stored Report status and message.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProcessError {
+pub(crate) struct ProcessError {
     /// True for a failure that may succeed on a later attempt.
     pub transient: bool,
     /// `TypeName: message`, capped at [`ERROR_MAX`].

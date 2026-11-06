@@ -116,14 +116,22 @@ impl Scope {
     ///
     /// # Errors
     ///
-    /// Returns the message the frozen server's `Scope.__post_init__` raised when
-    /// a Project is given without a Repo.
-    pub fn new(repo: Option<String>, project: Option<String>) -> Result<Self, String> {
+    /// Returns [`ScopeError::ProjectWithoutRepo`] when a Project is given
+    /// without a Repo, which is the rule the REST and MCP filters share.
+    pub fn new(repo: Option<String>, project: Option<String>) -> Result<Self, ScopeError> {
         if project.is_some() && repo.is_none() {
-            return Err("project filter requires repo".to_owned());
+            return Err(ScopeError::ProjectWithoutRepo);
         }
         Ok(Self { repo, project })
     }
+}
+
+/// Why a [`Scope`] cannot be built.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum ScopeError {
+    /// A Project name is unique only within its Repo, so a Project needs one.
+    #[error("project filter requires repo")]
+    ProjectWithoutRepo,
 }
 
 /// The sort orders both leaderboards share.
@@ -2225,7 +2233,10 @@ mod tests {
     fn a_scope_without_a_repo_refuses_a_project() {
         let error = super::Scope::new(None, Some("backend".to_owned()))
             .expect_err("a Project without a Repo is refused");
-        assert_eq!(error, "project filter requires repo");
+        assert_eq!(error, super::ScopeError::ProjectWithoutRepo);
+        assert_eq!(error.to_string(), "project filter requires repo");
+        let boxed: Box<dyn std::error::Error> = Box::new(error);
+        assert_eq!(boxed.to_string(), "project filter requires repo");
     }
 
     #[test]
