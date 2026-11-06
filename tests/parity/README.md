@@ -116,7 +116,10 @@ A scenario is a JSON file in `scenarios/`:
 - `name` names the directory under `golden/`. It may not be `junit`, which
   owns `golden/junit/`.
 - `settings`, optional, overrides the recorder's pinned `FLAKERADAR_*` settings
-  for this scenario's server only.
+  for this scenario's server only. A value holding `$WEBHOOK` gets the URL of
+  the Webhook stand-in on each side, because the recorder's port is not the
+  replay's and no golden holds it; `github` is the scenario that sets it, beside
+  a token and two filing gates that are not the defaults.
 - Every step writes `golden/<scenario>/<nn>.json`, numbered from 1 in step
   order, so a golden file always names the step that produced it.
 
@@ -217,12 +220,27 @@ is the `consumers` scenario's first step. The rules:
 
 ## What a scenario cannot reach, and where it is covered instead
 
-- **A failed Report.** Only the public API seeds data, and every request the
-  API accepts is one the processor can parse, so no upload produces a `failed`
-  Report. `POST /api/reports/{id}/retry` and `DELETE /api/reports/{id}` are
-  recorded for their hand-written errors (404 and 409); their success paths are
-  covered by the ported tests (`crates/flakeradar/tests/reports.rs`'s `retry`
-  and `delete`, task 06).
+- **A Report that fails in the processor, not in the parser.** `failed-report`
+  reaches the `failed` state itself: its one case carries a `line` past the
+  `int4` column beside a `file`, which the reference stores only with a `file`
+  and fails the Report on. Its `wait_processed` and `/api/ci-runs/{id}/failures`
+  goldens hold the reference's `failed: 1`. A Report that fails for a reason the
+  public API can still express is therefore reachable; one that needs a
+  statement to fail mid-Report is not. `POST /api/reports/{id}/retry` and
+  `DELETE /api/reports/{id}` are recorded for their hand-written errors (404 and
+  409); their success paths are covered by the ported tests
+  (`crates/flakeradar/tests/reports.rs`'s `retry` and `delete`, task 06).
+- **A background tick a step cannot wait for.** A sync, a filing and a
+  Notification run on the leader's own loop, and a step can only wait for the
+  queue to drain (`wait_processed`), not for one tick of that loop. `github`
+  therefore records what the *service* answers and leaves the calls to the
+  GitHub and Webhook stand-ins to the Rust test that replays it
+  (`a_scenario_with_a_github_token_webhooks_and_gates_files_only_the_test_that_qualifies`
+  in `crates/flakeradar/tests/parity.rs`), and the tick itself is owned by
+  `crates/flakeradar/tests/github_worker.rs` — including
+  `a_database_restart_under_the_leader_files_a_real_issue_and_syncs_again`,
+  which ends every session of the database under a leading worker and asserts the
+  new leader files a real issue and syncs again.
 - **A database that is down.** `GET /api/health/ready` and `GET /metrics`
   answer 503 only when a query fails, which a scenario cannot arrange without
   stopping its own database mid-request. `crates/flakeradar/src/ops.rs`'s tests
@@ -238,5 +256,9 @@ is the `consumers` scenario's first step. The rules:
 - **Time.** Trends, retention and `new_within_days` depend on the clock; the
   scenarios record their current-day values with `<date>`/`<timestamp>`
   placeholders, and the ported unit tests own the time-dependent behaviour.
-- **GitHub.** No scenario talks to GitHub: `FLAKERADAR_GITHUB_TOKEN` is empty,
-  so filing and syncing are no-ops. Task 10 covers GitHub with `wiremock`.
+- **A real GitHub or Webhook endpoint.** `github` is the one scenario that sets
+  a token, so a replay of it points `FLAKERADAR_GITHUB_TOKEN` at a `wiremock`
+  server and `$WEBHOOK` at a second one, at both ends: the recorder started the
+  `review-135/repro/fake-github` stand-ins, and the replay starts its own. A
+  scenario whose `FLAKERADAR_GITHUB_TOKEN` is empty files and syncs nothing, as
+  the default does.
