@@ -461,7 +461,7 @@ async fn a_nextest_flaky_fail_is_a_proven_flake_in_its_ci_run() {
         .body(&pipeline_body(&payload))
         .commit_sha(&payload.commit_sha)
         .branch(&payload.branch)
-        .ci_run_id(&payload.ci_run_id)
+        .ci_run_id(payload.ci_run_id.as_str())
         .build(db.connection())
         .await
         .expect("the pipeline report");

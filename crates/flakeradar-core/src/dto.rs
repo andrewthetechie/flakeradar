@@ -20,6 +20,7 @@ use crate::identity::{IdentityError, normalize_provider, normalize_repo};
 use crate::lax;
 use crate::model::{FailedJobOutcome, JobOutcome, JobStatus, Tier, Trend};
 use crate::py::strip_wire_whitespace;
+use crate::types::CiRunId;
 
 /// The timestamp shape every response uses.
 ///
@@ -997,7 +998,7 @@ pub struct PipelineReportIn {
     pub default_branch: Option<String>,
     /// The CI provider's run id.
     #[serde(default)]
-    pub ci_run_id: String,
+    pub ci_run_id: CiRunId,
     /// Which attempt of the CI run this is, numbered from 1.
     #[serde(default = "default_attempt")]
     pub ci_run_attempt: i64,
@@ -1028,8 +1029,11 @@ impl PipelineReportIn {
         let commit_sha = read_string(&fields, "commit_sha", 1, 64, &mut issues).unwrap_or_default();
         let branch = read_string(&fields, "branch", 1, 255, &mut issues).unwrap_or_default();
         let default_branch = read_default_branch(&fields, &mut issues);
-        let ci_run_id =
-            read_defaulted_string(&fields, "ci_run_id", 255, &mut issues).unwrap_or_default();
+        // A refused id is the reason the whole body is refused, so the fallback
+        // value never reaches a row.
+        let ci_run_id = read_defaulted_string(&fields, "ci_run_id", 255, &mut issues)
+            .and_then(|text| CiRunId::new(&text).ok())
+            .unwrap_or_else(CiRunId::empty);
         let mut ci_run_attempt = default_attempt();
         let mut attempt_past_column = false;
         if let Some(value) = fields.field("ci_run_attempt") {

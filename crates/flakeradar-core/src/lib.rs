@@ -72,4 +72,4 @@ pub use scoring::{
     fail_streak, flip_score,
 };
 #[doc(inline)]
-pub use types::{Fingerprint, FingerprintError};
+pub use types::{CiRunId, CiRunIdError, Fingerprint, FingerprintError, Score, ScoreError};

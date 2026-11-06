@@ -576,7 +576,7 @@ pub async fn ingest_pipeline(
         body: pipeline_body(&payload),
         commit_sha: payload.commit_sha.clone(),
         branch: payload.branch.clone(),
-        ci_run_id: payload.ci_run_id.clone(),
+        ci_run_id: payload.ci_run_id.clone().into_string(),
         ci_run_attempt: stored_ci_run_attempt(payload.ci_run_attempt),
         pipeline: Some(payload.pipeline.clone()),
         default_branch: payload.default_branch.clone(),

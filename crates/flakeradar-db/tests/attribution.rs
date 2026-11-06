@@ -13,7 +13,7 @@
 use std::sync::Arc;
 
 use chrono::{DateTime, FixedOffset};
-use flakeradar_core::{JobResultIn, JobStatus, PipelineReportIn, pipeline_body};
+use flakeradar_core::{CiRunId, JobResultIn, JobStatus, PipelineReportIn, pipeline_body};
 use flakeradar_db::entities::{job_executions, jobs, projects, repos, test_runs};
 use flakeradar_db::{
     FixedClock, ProcessingSettings, SIBLING_MAX, explained_ci_job_ids, get_or_create_project,
@@ -78,7 +78,7 @@ fn payload(jobs: Vec<JobResultIn>) -> PipelineReportIn {
         commit_sha: "s".to_owned(),
         branch: "main".to_owned(),
         default_branch: Some("main".to_owned()),
-        ci_run_id: "1".to_owned(),
+        ci_run_id: CiRunId::new("1").expect("an id"),
         ci_run_attempt: 1,
         jobs,
     }
@@ -91,7 +91,7 @@ async fn queue_pipeline(db: &TestDb, project: &projects::Model, payload: &Pipeli
         .body(&pipeline_body(payload))
         .commit_sha(&payload.commit_sha)
         .branch(&payload.branch)
-        .ci_run_id(&payload.ci_run_id)
+        .ci_run_id(payload.ci_run_id.as_str())
         .build(db.connection())
         .await
         .expect("a queued Pipeline Report")
@@ -726,7 +726,7 @@ async fn summary_job_is_not_explained_by_another_attempt() {
         job_in("J1", "test", JobStatus::Failed),
         summary_job("J2", "alls-green", JobStatus::Failed),
     ]);
-    first.ci_run_id = "100".to_owned();
+    first.ci_run_id = CiRunId::new("100").expect("an id");
     first.ci_run_attempt = 1;
     queue_pipeline(&db, &project, &first).await;
     process(&db, &settings()).await;
@@ -734,7 +734,7 @@ async fn summary_job_is_not_explained_by_another_attempt() {
         job_in("J3", "test", JobStatus::Passed),
         summary_job("J4", "alls-green", JobStatus::Failed),
     ]);
-    second.ci_run_id = "100".to_owned();
+    second.ci_run_id = CiRunId::new("100").expect("an id");
     second.ci_run_attempt = 2;
     queue_pipeline(&db, &project, &second).await;
     process(&db, &settings()).await;
@@ -819,11 +819,11 @@ async fn summary_job_with_an_empty_ci_run_id_is_unexplained() {
     let db = TestDb::new().await.expect("a test database");
     let project = project(&db, "acme/app", "backend").await;
     let mut first = payload(vec![job_in("J1", "test", JobStatus::Failed)]);
-    first.ci_run_id = String::new();
+    first.ci_run_id = CiRunId::empty();
     queue_pipeline(&db, &project, &first).await;
     process(&db, &settings()).await;
     let mut second = payload(vec![summary_job("J2", "alls-green", JobStatus::Failed)]);
-    second.ci_run_id = String::new();
+    second.ci_run_id = CiRunId::empty();
     queue_pipeline(&db, &project, &second).await;
     process(&db, &settings()).await;
 

@@ -156,9 +156,83 @@ pub struct ScoreError {
     pub value: f64,
 }
 
+/// A CI run's id, as the provider gave it.
+///
+/// The `ci_run_id` columns hold at most 255 characters and a JUnit upload that
+/// names no CI run stores the empty id, which is a real value here.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, ToSchema)]
+#[serde(transparent)]
+#[schema(value_type = String)]
+pub struct CiRunId(String);
+
+impl CiRunId {
+    /// The longest id the `ci_run_id` columns accept.
+    pub const MAX_LEN: usize = 255;
+
+    /// The id `text` spells.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CiRunIdError`] when `text` is longer than [`CiRunId::MAX_LEN`]
+    /// characters, which the column cannot hold.
+    pub fn new(text: &str) -> Result<Self, CiRunIdError> {
+        let length = text.chars().count();
+        if length > Self::MAX_LEN {
+            return Err(CiRunIdError { length });
+        }
+        Ok(Self(text.to_owned()))
+    }
+
+    /// An id no upload gave.
+    #[must_use]
+    pub fn empty() -> Self {
+        Self(String::new())
+    }
+
+    /// The id as the column and the wire spell it.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// The id as an owned string, which is what the columns take.
+    #[must_use]
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+
+impl Default for CiRunId {
+    /// The id no upload gave, which is what `#[serde(default)]` reads.
+    fn default() -> Self {
+        Self::empty()
+    }
+}
+
+impl fmt::Display for CiRunId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for CiRunId {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        Self::new(&text).map_err(serde::de::Error::custom)
+    }
+}
+
+/// Why a [`CiRunId`] cannot be built.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("a CI run id is at most 255 characters, got {length}")]
+pub struct CiRunIdError {
+    /// How many characters the refused id had.
+    pub length: usize,
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Fingerprint, FingerprintError, Score};
+    use super::{CiRunId, Fingerprint, FingerprintError, Score};
 
     const EXAMPLE: &str = "2b8823c6c55be0a19a34111f08b687028f5273df";
 
@@ -247,6 +321,46 @@ mod tests {
         assert!(
             serde_json::from_str::<Score>("null").is_err(),
             "a missing score is not zero"
+        );
+    }
+
+    #[test]
+    fn a_ci_run_id_is_at_most_two_hundred_and_fifty_five_characters() {
+        assert_eq!(
+            CiRunId::new(&"a".repeat(CiRunId::MAX_LEN))
+                .expect("the longest id")
+                .as_str()
+                .len(),
+            CiRunId::MAX_LEN
+        );
+        assert_eq!(
+            CiRunId::new(&"a".repeat(CiRunId::MAX_LEN + 1)).expect_err("too long"),
+            super::CiRunIdError {
+                length: CiRunId::MAX_LEN + 1
+            }
+        );
+        // The column counts characters, so 255 two-byte characters fit.
+        assert!(
+            CiRunId::new(&"é".repeat(CiRunId::MAX_LEN)).is_ok(),
+            "the column counts characters, not bytes"
+        );
+        assert_eq!(CiRunId::empty().as_str(), "");
+        assert_eq!(CiRunId::new("42-1").expect("an id").into_string(), "42-1");
+        assert_eq!(CiRunId::new("42-1").expect("an id").to_string(), "42-1");
+    }
+
+    #[test]
+    fn a_ci_run_id_travels_as_the_string_it_wraps() {
+        let id = CiRunId::new("42-1").expect("an id");
+        assert_eq!(
+            serde_json::to_string(&id).expect("a string"),
+            "\"42-1\"".to_owned()
+        );
+        let back: CiRunId = serde_json::from_str("\"42-1\"").expect("an id");
+        assert_eq!(back, id);
+        assert!(
+            serde_json::from_str::<CiRunId>(&format!("\"{}\"", "a".repeat(256))).is_err(),
+            "an id past the column never deserializes"
         );
     }
 }

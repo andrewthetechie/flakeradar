@@ -14,8 +14,8 @@ use std::sync::Arc;
 
 use chrono::{DateTime, FixedOffset};
 use flakeradar_core::{
-    ExecutionStatus, JobResultIn, JobStatus, PipelineReportIn, ScoredExecution, pipeline_body,
-    tier_for,
+    CiRunId, ExecutionStatus, JobResultIn, JobStatus, PipelineReportIn, ScoredExecution,
+    pipeline_body, tier_for,
 };
 use flakeradar_db::entities::{
     job_executions, job_score_history, jobs, pipelines, projects, reports, repos, test_cases,
@@ -113,7 +113,7 @@ async fn queue_pipeline(
         .body(&pipeline_body(payload))
         .commit_sha(&payload.commit_sha)
         .branch(&payload.branch)
-        .ci_run_id(&payload.ci_run_id)
+        .ci_run_id(payload.ci_run_id.as_str())
         .build(db.connection())
         .await
         .expect("a queued Pipeline Report")
@@ -231,7 +231,7 @@ fn payload(jobs: Vec<JobResultIn>) -> PipelineReportIn {
         commit_sha: "sha1".to_owned(),
         branch: "main".to_owned(),
         default_branch: Some("main".to_owned()),
-        ci_run_id: "1".to_owned(),
+        ci_run_id: CiRunId::new("1").expect("an id"),
         ci_run_attempt: 1,
         jobs,
     }
@@ -1824,7 +1824,7 @@ async fn same_day_pipeline_reports_share_one_history_row() {
         ("2", JobStatus::Passed, "r2"),
     ] {
         let mut report = payload(vec![job_in(ci_job_id, "e2e", status)]);
-        report.ci_run_id = run_id.to_owned();
+        report.ci_run_id = CiRunId::new(run_id).expect("an id");
         queue_pipeline(&db, &project, &report).await;
         process_next(db.connection(), &settings())
             .await
@@ -1892,7 +1892,7 @@ async fn a_job_tier_crossing_reports_job_flaky() {
     ] {
         let mut report = payload(vec![job_in(ci_job_id, "test (ubuntu, 3.12)", status)]);
         report.commit_sha = sha.to_owned();
-        report.ci_run_id = run_id.to_owned();
+        report.ci_run_id = CiRunId::new(run_id).expect("an id");
         queue_pipeline(&db, &project, &report).await;
         let outcome = process_next(db.connection(), &notify_settings())
             .await
@@ -1936,7 +1936,7 @@ async fn a_job_recovery_reports_job_recovered() {
     ] {
         let mut report = payload(vec![job_in(ci_job_id, "lint", status)]);
         report.commit_sha = sha.to_owned();
-        report.ci_run_id = run_id.to_owned();
+        report.ci_run_id = CiRunId::new(run_id).expect("an id");
         queue_pipeline(&db, &project, &report).await;
         process_next(db.connection(), &notify_settings())
             .await
@@ -1944,7 +1944,7 @@ async fn a_job_recovery_reports_job_recovered() {
     }
     let mut report = payload(vec![job_in("3", "lint", JobStatus::Passed)]);
     report.commit_sha = "c".to_owned();
-    report.ci_run_id = "3".to_owned();
+    report.ci_run_id = CiRunId::new("3").expect("an id");
     queue_pipeline(&db, &project, &report).await;
     let outcome = process_next(db.connection(), &notify_settings())
         .await
@@ -1965,7 +1965,7 @@ async fn a_default_branch_change_silences_the_pipeline_reports_own_crossings() {
     ] {
         let mut report = payload(vec![job_in(ci_job_id, "lint", status)]);
         report.commit_sha = sha.to_owned();
-        report.ci_run_id = run_id.to_owned();
+        report.ci_run_id = CiRunId::new(run_id).expect("an id");
         report.branch = "feat".to_owned();
         report.default_branch = Some("feat".to_owned());
         queue_pipeline(&db, &project, &report).await;
@@ -1975,7 +1975,7 @@ async fn a_default_branch_change_silences_the_pipeline_reports_own_crossings() {
     }
     let mut report = payload(vec![job_in("3", "lint", JobStatus::Passed)]);
     report.commit_sha = "c".to_owned();
-    report.ci_run_id = "3".to_owned();
+    report.ci_run_id = CiRunId::new("3").expect("an id");
     queue_pipeline(&db, &project, &report).await;
     let outcome = process_next(db.connection(), &notify_settings())
         .await
@@ -2165,7 +2165,7 @@ async fn a_default_branch_change_silences_a_linked_junit_reports_job_crossings()
         for (ci_job_id, status) in [(failed, JobStatus::Failed), (passed, JobStatus::Passed)] {
             let mut report = payload(vec![job_in(ci_job_id, "lint", status)]);
             report.commit_sha = ci_job_id.to_owned();
-            report.ci_run_id = ci_job_id.to_owned();
+            report.ci_run_id = CiRunId::new(ci_job_id).expect("an id");
             report.branch = branch.to_owned();
             queue_pipeline(&db, &project, &report).await;
             process_next(db.connection(), &notify_settings())
@@ -2306,7 +2306,7 @@ async fn a_job_whose_execution_is_a_duplicate_keeps_its_row() {
         job_in("2", "gate", JobStatus::Failed),
     ]);
     second.commit_sha = "sha2".to_owned();
-    second.ci_run_id = "2".to_owned();
+    second.ci_run_id = CiRunId::new("2").expect("an id");
     queue_pipeline(&db, &project, &second).await;
     let outcome = process_next(db.connection(), &settings())
         .await

@@ -917,7 +917,7 @@ async fn insert_pipeline_job_executions(
         exec_rows.push(PipelineExecution {
             job_id,
             ci_job_id: job.ci_job_id.clone(),
-            ci_run_id: payload.ci_run_id.clone(),
+            ci_run_id: payload.ci_run_id.as_str().to_owned(),
             ci_run_attempt: crate::report_intake::stored_ci_run_attempt(payload.ci_run_attempt),
             commit_sha: payload.commit_sha.clone(),
             branch: payload.branch.clone(),
