@@ -78,13 +78,7 @@ pub async fn reachable(db: &impl ConnectionTrait) -> bool {
 ///
 /// Returns [`DbError::Database`] when the statement fails or answers no row.
 pub async fn queue_facts(db: &impl ConnectionTrait, lock_key: i64) -> Result<QueueFacts, DbError> {
-    let row = required_one(
-        db,
-        QUEUE_SQL.to_owned(),
-        vec![Value::from(lock_key)],
-        "queue",
-    )
-    .await?;
+    let row = required_one(db, QUEUE_SQL, vec![Value::from(lock_key)], "queue").await?;
     Ok(QueueFacts {
         leader: get(&row, "leader")?,
         pending: get(&row, "pending")?,
@@ -136,13 +130,7 @@ pub async fn job_tier_counts(
 ///
 /// Returns [`DbError::Database`] when the statement fails or answers no row.
 pub async fn last_processed_at(db: &impl ConnectionTrait) -> Result<Option<f64>, DbError> {
-    let row = required_one(
-        db,
-        LAST_PROCESSED_SQL.to_owned(),
-        Vec::new(),
-        "last processed",
-    )
-    .await?;
+    let row = required_one(db, LAST_PROCESSED_SQL, Vec::new(), "last processed").await?;
     get(&row, "last_processed")
 }
 
@@ -155,7 +143,7 @@ async fn counts(
 ) -> Result<BTreeMap<String, i64>, DbError> {
     let values = threshold.map(Value::from).into_iter().collect();
     let mut counts = BTreeMap::new();
-    for row in rows(db, sql.to_owned(), values).await? {
+    for row in rows(db, sql, values).await? {
         let group: String = get(&row, key)?;
         let count: i64 = get(&row, "count")?;
         let _ = counts.insert(group, count);

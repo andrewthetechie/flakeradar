@@ -382,13 +382,7 @@ pub async fn note_test_candidates(
                      AND t.github_issue_fixed_noted_at IS NULL AND t.github_issue_closed IS FALSE \
                      AND t.clean_streak >= $2 ORDER BY t.id";
         let threshold = i32::try_from(fixed_streak).unwrap_or(i32::MAX);
-        for row in rows(
-            db,
-            sql.to_owned(),
-            vec![int_array(chunk), Value::from(threshold)],
-        )
-        .await?
-        {
+        for row in rows(db, sql, vec![int_array(chunk), Value::from(threshold)]).await? {
             candidates.push(NoteCandidate {
                 target: EntityKind::Test,
                 entity_id: get(&row, "id")?,
@@ -424,13 +418,7 @@ pub async fn note_job_candidates(
                      AND j.github_issue_fixed_noted_at IS NULL AND j.github_issue_closed IS FALSE \
                      AND j.clean_streak >= $2 ORDER BY j.id";
         let threshold = i32::try_from(fixed_streak).unwrap_or(i32::MAX);
-        for row in rows(
-            db,
-            sql.to_owned(),
-            vec![int_array(chunk), Value::from(threshold)],
-        )
-        .await?
-        {
+        for row in rows(db, sql, vec![int_array(chunk), Value::from(threshold)]).await? {
             candidates.push(NoteCandidate {
                 target: EntityKind::Job,
                 entity_id: get(&row, "id")?,

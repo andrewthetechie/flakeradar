@@ -240,7 +240,7 @@ async fn file_batch(
             Action::SkipRepo => {
                 tracing::warn!(
                     repo = %request.repo,
-                    status = answer.status,
+                    status = answer.status(),
                     body = %answer.short_text(),
                     "GitHub issue creation skipped for this Repo"
                 );
@@ -251,7 +251,7 @@ async fn file_batch(
                     entity = entity.as_str(),
                     entity_id = request.entity_id,
                     repo = %request.repo,
-                    status = answer.status,
+                    status = answer.status(),
                     body = %answer.short_text(),
                     "GitHub issue creation failed"
                 );

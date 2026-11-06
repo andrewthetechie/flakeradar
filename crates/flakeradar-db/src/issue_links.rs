@@ -421,7 +421,7 @@ pub async fn linked_for_check(
         }
     };
     let mut linked = Vec::new();
-    for row in rows(db, sql.to_owned(), vec![Value::from(batch)]).await? {
+    for row in rows(db, sql, vec![Value::from(batch)]).await? {
         linked.push(LinkedIssue {
             entity_id: get(&row, "id")?,
             repo: get(&row, "repo_name")?,

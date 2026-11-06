@@ -11,11 +11,11 @@ use crate::support::{TOKEN, logged_from, mount_close, requested_paths};
 
 #[test]
 fn an_issue_state_reason_that_is_not_text_reads_as_none() {
-    let answer = github::Answer {
-        status: 200,
-        headers: wiremock::http::HeaderMap::new(),
-        text: json!({"state": "closed", "state_reason": 42}).to_string(),
-    };
+    let answer = github::Answer::new(
+        200,
+        wiremock::http::HeaderMap::new(),
+        json!({"state": "closed", "state_reason": 42}).to_string(),
+    );
     assert_eq!(answer.state_reason(), None);
     assert_eq!(answer.issue_state().as_deref(), Some("closed"));
 }
@@ -92,11 +92,7 @@ async fn a_rate_limit_classifies_only_throttling() {
                 reqwest::header::HeaderValue::from_str(value).expect("a header value"),
             );
         }
-        github::Answer {
-            status,
-            headers: map,
-            text: text.to_owned(),
-        }
+        github::Answer::new(status, map, text.to_owned())
     };
 
     assert!(answer(429, &[], "").rate_limited());

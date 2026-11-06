@@ -43,7 +43,7 @@ pub fn get<T: TryGetable>(row: &QueryResult, column: &str) -> Result<T, DbError>
 /// Returns [`DbError::Database`] when the statement fails.
 pub async fn rows(
     db: &impl ConnectionTrait,
-    sql: String,
+    sql: impl Into<String>,
     values: Vec<Value>,
 ) -> Result<Vec<QueryResult>, DbError> {
     Ok(db
@@ -62,7 +62,7 @@ pub async fn rows(
 /// Returns [`DbError::Database`] when the statement fails.
 pub async fn one(
     db: &impl ConnectionTrait,
-    sql: String,
+    sql: impl Into<String>,
     values: Vec<Value>,
 ) -> Result<Option<QueryResult>, DbError> {
     Ok(db
@@ -83,7 +83,7 @@ pub async fn one(
 /// Returns [`DbError::Database`] when the statement fails or answers no row.
 pub async fn required_one(
     db: &impl ConnectionTrait,
-    sql: String,
+    sql: impl Into<String>,
     values: Vec<Value>,
     what: &str,
 ) -> Result<QueryResult, DbError> {

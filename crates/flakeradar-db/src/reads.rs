@@ -432,7 +432,7 @@ pub async fn list_repos(db: &impl ConnectionTrait) -> Result<Vec<RepoOut>, DbErr
                  FROM projects p JOIN repos r ON r.id = p.repo_id \
                 ORDER BY r.name, p.name";
     let mut repos: Vec<RepoOut> = Vec::new();
-    for row in rows(db, sql.to_owned(), Vec::new()).await? {
+    for row in rows(db, sql, Vec::new()).await? {
         let repo: String = get(&row, "repo")?;
         let project = flakeradar_core::ProjectOut {
             name: get(&row, "project")?,
@@ -1046,7 +1046,7 @@ pub async fn get_test(
          FROM test_executions e JOIN test_runs r ON r.id = e.test_run_id \
         WHERE e.test_case_id = $1 AND e.status IN ('failed', 'error') \
         ORDER BY e.id DESC LIMIT 1";
-    let failing = one(db, failing_sql.to_owned(), vec![Value::from(stored_id)]).await?;
+    let failing = one(db, failing_sql, vec![Value::from(stored_id)]).await?;
     let (last_failing_sha, last_failing_branch) = match failing {
         Some(row) => (
             Some(get::<String>(&row, "commit_sha")?),
@@ -1192,7 +1192,7 @@ pub async fn quarantine_list(
     let mut items = Vec::new();
     for row in rows(
         db,
-        sql.to_owned(),
+        sql,
         vec![
             Value::from(repo.to_owned()),
             Value::from(project.to_owned()),
@@ -1328,7 +1328,7 @@ pub async fn get_job(
          ORDER BY id DESC LIMIT $2";
     let exec_rows = rows(
         db,
-        exec_sql.to_owned(),
+        exec_sql,
         vec![Value::from(stored_id), Value::from(executions_limit)],
     )
     .await?;
@@ -1801,7 +1801,7 @@ pub async fn ci_run_failures(
     let Some(repo_row) = one(
         db,
         "SELECT id, name FROM repos WHERE name = $1".to_owned(),
-        vec![Value::from(repo.to_owned())],
+        vec![Value::from(repo)],
     )
     .await?
     else {
@@ -1862,7 +1862,7 @@ async fn ci_run_attempts(
     for sql in statements {
         for row in rows(
             db,
-            sql.to_owned(),
+            sql,
             vec![Value::from(repo_id), Value::from(ci_run_id.to_owned())],
         )
         .await?
@@ -1890,7 +1890,7 @@ async fn ci_run_report_counts(
     };
     for row in rows(
         db,
-        sql.to_owned(),
+        sql,
         vec![
             Value::from(repo_id),
             Value::from(ci_run_id.to_owned()),
@@ -1935,13 +1935,7 @@ async fn ci_run_test_failures(
             AND coalesce(tr.ci_run_attempt, 1) = $3 \
             AND e.status IN ('failed', 'error') \
           GROUP BY e.test_case_id, e.test_run_id) AS pairs";
-    let count = required_one(
-        db,
-        total_sql.to_owned(),
-        values.clone(),
-        "CI run failure count",
-    )
-    .await?;
+    let count = required_one(db, total_sql, values.clone(), "CI run failure count").await?;
     let total: i64 = get(&count, "total")?;
     if total == 0 {
         return Ok((Vec::new(), 0));
@@ -1963,7 +1957,7 @@ async fn ci_run_test_failures(
        JOIN projects p ON p.id = t.project_id \
       ORDER BY p.name, t.suite, t.classname, t.name, tr.id \
       LIMIT $4";
-    let page = rows(db, page_sql.to_owned(), values).await?;
+    let page = rows(db, page_sql, values).await?;
     let run_ids: Vec<i32> = page
         .iter()
         .map(|row| get::<i32>(row, "run_id"))
@@ -1994,7 +1988,7 @@ async fn pair_executions(
         AND e.test_case_id = ANY($2::INTEGER[]) \
       ORDER BY e.attempt, e.id";
     let mut by_pair: BTreeMap<(i32, i32), Vec<PairExecution>> = BTreeMap::new();
-    for row in rows(db, exec_sql.to_owned(), values).await? {
+    for row in rows(db, exec_sql, values).await? {
         let key = (
             get::<i32>(&row, "test_case_id")?,
             get::<i32>(&row, "test_run_id")?,
@@ -2019,7 +2013,11 @@ fn ci_run_failure_item(
 ) -> Result<Option<CiRunTestFailureOut>, DbError> {
     let test_id: i32 = get(row, "test_id")?;
     let run_id: i32 = get(row, "run_id")?;
-    let executions = by_pair.get(&(test_id, run_id)).cloned().unwrap_or_default();
+    // The listing reads the pair's Executions; borrowing them keeps a 16 KB
+    // Failure detail list where the map already holds it.
+    let Some(executions) = by_pair.get(&(test_id, run_id)) else {
+        return Ok(None);
+    };
     let Some(last) = executions.last() else {
         // The pair was failing when it was counted, so it has at least one
         // Execution; a row deleted between the two reads is left out.
@@ -2088,7 +2086,7 @@ async fn ci_run_failed_jobs(
       ORDER BY p.name, j.name, e.id";
     let found = rows(
         db,
-        sql.to_owned(),
+        sql,
         vec![
             Value::from(repo_id),
             Value::from(ci_run_id.to_owned()),

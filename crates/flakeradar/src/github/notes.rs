@@ -139,7 +139,7 @@ async fn note_batch(
             Action::SkipRepo => {
                 tracing::warn!(
                     repo = %row.repo,
-                    status = comment.status,
+                    status = comment.status(),
                     body = %comment.short_text(),
                     "GitHub fixed-note skipped for this Repo"
                 );
@@ -150,7 +150,7 @@ async fn note_batch(
                     entity = entity.as_str(),
                     entity_id = row.entity_id,
                     repo = %row.repo,
-                    status = comment.status,
+                    status = comment.status(),
                     body = %comment.short_text(),
                     "GitHub fixed-note comment failed"
                 );
@@ -269,7 +269,7 @@ async fn close_note(
         Action::SkipRepo => {
             tracing::warn!(
                 repo = %row.repo,
-                status = close.status,
+                status = close.status(),
                 body = %close.short_text(),
                 "GitHub issue close skipped for this Repo"
             );
@@ -280,7 +280,7 @@ async fn close_note(
             tracing::warn!(
                 repo = %row.repo,
                 number = row.number,
-                status = close.status,
+                status = close.status(),
                 body = %close.short_text(),
                 "GitHub close after noting the fix failed"
             );

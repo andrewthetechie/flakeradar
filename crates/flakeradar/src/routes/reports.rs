@@ -403,7 +403,8 @@ pub async fn ingest(
     let candidate = NewJunitReport {
         project_id: project.id,
         repo_id: project.repo_id,
-        body: content,
+        // The row takes the bytes as they are: the parse above borrowed them.
+        body: content.to_vec(),
         commit_sha: query.commit_sha,
         branch: query.branch,
         ci_run_id: query.ci_run_id,
@@ -445,7 +446,8 @@ fn accepted(body: IngestAccepted) -> Response {
 ///
 /// The `Content-Type` decides, and nothing else: `application/x-www-form-urlencoded`
 /// carries raw XML too, because that is curl's default for `--data-binary`.
-async fn report_body(request: Request) -> Result<Vec<u8>, ApiError> {
+/// The body stays a [`Bytes`] so the parse and the store copy it at most once.
+async fn report_body(request: Request) -> Result<Bytes, ApiError> {
     let content_type = request
         .headers()
         .get(header::CONTENT_TYPE)
@@ -456,7 +458,7 @@ async fn report_body(request: Request) -> Result<Vec<u8>, ApiError> {
         .await
         .map_err(|rejection| report_body_error(&rejection))?;
     if !content_type.starts_with("multipart/form-data") {
-        return Ok(bytes.to_vec());
+        return Ok(bytes);
     }
     // Finding the field reads the whole body, which can be 20 MiB, so it runs
     // on a blocking thread rather than on the one serving every other request.
@@ -471,7 +473,7 @@ async fn report_body(request: Request) -> Result<Vec<u8>, ApiError> {
         )
     })?;
     match found {
-        Ok(found) => Ok(found.unwrap_or_default()),
+        Ok(found) => Ok(found.map_or_else(Bytes::new, Bytes::from)),
         // The reference handed the body to Starlette's form parser, which
         // refused a part whose headers are no headers with this detail.
         Err(MalformedHeaders) => Err(ApiError::new(
@@ -505,7 +507,7 @@ fn report_body_error(rejection: &axum::extract::rejection::BytesRejection) -> Ap
 /// Parsing is CPU-bound, and the frozen server ran it in a worker thread for the
 /// same reason. A `<testcase time>` that is not a number answers 400, and every
 /// other parse failure answers 422.
-async fn parse_report_body(content: Vec<u8>, line_base: i64) -> ApiResult<()> {
+async fn parse_report_body(content: Bytes, line_base: i64) -> ApiResult<()> {
     let parsed = tokio::task::spawn_blocking(move || parse_junit_xml(&content, line_base))
         .await
         .map_err(|error| {

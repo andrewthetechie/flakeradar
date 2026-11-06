@@ -114,7 +114,7 @@ async fn clear_if_closed(
         Action::SkipRepo => {
             tracing::warn!(
                 repo = %row.repo,
-                status = answer.status,
+                status = answer.status(),
                 body = %answer.short_text(),
                 "GitHub issue-state sync skipped for this Repo"
             );
@@ -235,7 +235,7 @@ pub async fn close_issues_after_removal(repo: &str, numbers: &[i32], api: &Api) 
                     tracing::warn!(
                         repo = %repo,
                         number,
-                        status = comment.status,
+                        status = comment.status(),
                         body = %comment.short_text(),
                         "GitHub comment after an admin delete failed"
                     );
@@ -277,7 +277,7 @@ pub async fn close_issues_after_removal(repo: &str, numbers: &[i32], api: &Api) 
                     tracing::warn!(
                         repo = %repo,
                         number,
-                        status = close.status,
+                        status = close.status(),
                         body = %close.short_text(),
                         "GitHub close after an admin delete failed"
                     );
@@ -294,5 +294,5 @@ pub async fn close_issues_after_removal(repo: &str, numbers: &[i32], api: &Api) 
 /// That is the outcome this batch wanted: it costs that one number and the next is
 /// still tried, exactly as a failure other than a rate limit does.
 fn already_gone(answer: &Answer) -> bool {
-    matches!(answer.status, 404 | 410)
+    matches!(answer.status(), 404 | 410)
 }

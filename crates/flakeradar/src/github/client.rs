@@ -35,14 +35,15 @@ pub const TIMEOUT_SECONDS: u64 = 15;
 pub const RESPONSE_TEXT_MAX: usize = 300;
 
 /// One HTTP answer, whatever its status.
+///
+/// The body is read as text and as the JSON object it holds, and only
+/// [`Answer::new`] can build one, so the two always describe the same answer.
 #[derive(Debug, Clone)]
 pub struct Answer {
-    /// The status code.
-    pub status: u16,
-    /// The response headers.
-    pub headers: HeaderMap,
-    /// The body as text.
-    pub text: String,
+    status: u16,
+    headers: HeaderMap,
+    text: String,
+    body: Option<Value>,
 }
 
 /// A request that never reached GitHub.
@@ -54,6 +55,26 @@ pub struct TransportError {
 }
 
 impl Answer {
+    /// One answer, with its body parsed the single time every accessor reads it.
+    #[must_use]
+    pub fn new(status: u16, headers: HeaderMap, text: String) -> Self {
+        let body = serde_json::from_str::<Value>(&text)
+            .ok()
+            .filter(Value::is_object);
+        Self {
+            status,
+            headers,
+            text,
+            body,
+        }
+    }
+
+    /// The status code the answer carried.
+    #[must_use]
+    pub fn status(&self) -> u16 {
+        self.status
+    }
+
     /// Classifies this answer into the one verdict every operation reads.
     ///
     /// `success` is the status this call's success carries: a `201` for a create or
@@ -83,11 +104,10 @@ impl Answer {
         }
     }
 
-    /// The body parsed as a JSON object, or `None` when it is not one.
+    /// The body as the JSON object it holds, or `None` when it is not one.
     #[must_use]
-    pub fn json_object(&self) -> Option<Value> {
-        let value: Value = serde_json::from_str(&self.text).ok()?;
-        value.is_object().then_some(value)
+    pub fn json_object(&self) -> Option<&Value> {
+        self.body.as_ref()
     }
 
     /// The number of a created issue, or `None` when the body does not carry one.
@@ -141,7 +161,7 @@ impl Answer {
         }
         let message = self
             .json_object()
-            .and_then(|body| body.get("message").cloned())
+            .and_then(|body| body.get("message"))
             .map(|message| message.to_string().to_lowercase())
             .unwrap_or_default();
         message.contains("rate limit")
@@ -307,11 +327,7 @@ impl Api {
         let text = response.text().await.map_err(|error| TransportError {
             message: error.without_url().to_string(),
         })?;
-        Ok(Answer {
-            status,
-            headers,
-            text,
-        })
+        Ok(Answer::new(status, headers, text))
     }
 
     /// Creates one issue in `repo`.

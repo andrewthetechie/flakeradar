@@ -336,7 +336,7 @@ pub async fn stored_report(
            JOIN repos ON reports.repo_id = repos.id \
            LEFT JOIN projects ON reports.project_id = projects.id \
           WHERE reports.id = $1";
-    let Some(row) = one(db, sql.to_owned(), vec![Value::from(report_id)]).await? else {
+    let Some(row) = one(db, sql, vec![Value::from(report_id)]).await? else {
         return Ok(None);
     };
     Ok(Some(StoredReport {
@@ -360,7 +360,7 @@ pub async fn report_summary(db: &impl ConnectionTrait) -> Result<ReportSummaryOu
                  FROM reports";
     let row = required_one(
         db,
-        sql.to_owned(),
+        sql,
         vec![
             Value::from(ReportStatus::Pending.as_str()),
             Value::from(ReportStatus::Failed.as_str()),

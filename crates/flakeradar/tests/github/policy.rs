@@ -13,12 +13,7 @@ fn classified(status: u16, headers: &[(&str, &str)], success: github::Success) -
             reqwest::header::HeaderValue::from_str(value).expect("a header value"),
         );
     }
-    github::Answer {
-        status,
-        headers: map,
-        text: String::new(),
-    }
-    .classify(success)
+    github::Answer::new(status, map, String::new()).classify(success)
 }
 
 #[test]

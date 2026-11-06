@@ -86,7 +86,7 @@ pub async fn delete_repo(
     let locked = one(
         &transaction,
         "SELECT id, name FROM repos WHERE name = $1 FOR UPDATE".to_owned(),
-        vec![Value::from(repo.to_owned())],
+        vec![Value::from(repo)],
     )
     .await?;
     let Some(row) = locked else {
@@ -124,7 +124,7 @@ pub async fn delete_project(
     let repo_row = one(
         &transaction,
         "SELECT id, name FROM repos WHERE name = $1".to_owned(),
-        vec![Value::from(repo.to_owned())],
+        vec![Value::from(repo)],
     )
     .await?;
     let Some(row) = repo_row else {
@@ -136,7 +136,7 @@ pub async fn delete_project(
     let project_row = one(
         &transaction,
         "SELECT id, name FROM projects WHERE repo_id = $1 AND name = $2 FOR UPDATE".to_owned(),
-        vec![Value::from(repo_id), Value::from(project.to_owned())],
+        vec![Value::from(repo_id), Value::from(project)],
     )
     .await?;
     let Some(row) = project_row else {
@@ -281,7 +281,7 @@ async fn project_counts(
 
 /// One `count(*)` statement.
 async fn count(db: &impl ConnectionTrait, sql: &str, parameter: i32) -> Result<i64, DeleteError> {
-    let Some(row) = one(db, sql.to_owned(), vec![Value::from(parameter)]).await? else {
+    let Some(row) = one(db, sql, vec![Value::from(parameter)]).await? else {
         return Ok(0);
     };
     let value: i64 = get(&row, "value")?;
