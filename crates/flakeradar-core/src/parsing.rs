@@ -49,7 +49,7 @@ pub const SUITE_DEPTH_MAX: usize = 990;
 /// The most XML nodes (elements and text) one report may hold.
 ///
 /// Each node costs the parser a node record, so the arena is bounded by this
-/// alone. A failure-heavy report at the 20 MiB ingest limit carries about 100,000
+/// alone. A failure-heavy report at the 20 MiB ingest limit carries about 200,000
 /// nodes; a million small cases would carry a million, and that many Executions
 /// is more than any real JUnit report holds.
 const NODES_MAX: u32 = 1_000_000;
@@ -60,7 +60,7 @@ const NODES_MAX: u32 = 1_000_000;
 /// attribute repeated across many cases is the quadratic case: a 10 MiB suite
 /// name with 500,000 cases asks for terabytes. A real report copies about as
 /// many bytes as its own size (a retry copies its case's identity once more per
-/// attempt), so four times the ingest limit refuses the amplification and
+/// attempt), so three times the ingest limit refuses the amplification and
 /// admits every report that fits.
 const IDENTITY_BYTES_MAX: usize = 64 * 1024 * 1024;
 
