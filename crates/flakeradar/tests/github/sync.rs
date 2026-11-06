@@ -16,9 +16,9 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use crate::support::{
     CREATED, Held, Loopback, TOKEN, TRUNCATED, api, flaky_job, flaky_test, flaky_test_in,
-    gh_settings, job_checked, job_link, lines_with, logged_from, mount_close, mount_create,
-    mount_issue, mount_state, noted, requested_paths, stamp_job_link, stamp_link, stamp_note,
-    test_link, unstopped,
+    gh_settings, job_checked, job_link, lines_with, link_of, logged_from, mount_close,
+    mount_create, mount_issue, mount_state, noted, requested_paths, stamp_job_link, stamp_link,
+    stamp_note, test_link, unstopped,
 };
 
 #[tokio::test]
@@ -810,83 +810,95 @@ async fn the_sync_rotates_past_an_unreadable_link() {
     assert!(test_link(&db, third).await.2);
 }
 
-#[tokio::test]
-async fn a_gone_issue_rearms_its_link_but_any_other_answer_keeps_it() {
-    for entity in ["test", "job"] {
-        let db = TestDb::new().await.expect("a test database");
-        let (id, expected) = if entity == "test" {
+/// A gone issue re-arms its link but any other answer keeps it, once per entity.
+async fn a_gone_issue_rearms_its_link_but_any_other_answer_keeps_it(kind: EntityKind) {
+    let db = TestDb::new().await.expect("a test database");
+    let (id, expected) = match kind {
+        EntityKind::Test => {
             let id = flaky_test(&db).await;
             stamp_link(&db, id, 11, false, false).await;
             (id, 11)
-        } else {
+        }
+        EntityKind::Job => {
             let id = flaky_job(&db).await;
             stamp_job_link(&db, id, 5, false).await;
             (id, 5)
-        };
-        let route = format!("/repos/acme/app/issues/{expected}");
+        }
+    };
+    let route = format!("/repos/acme/app/issues/{expected}");
 
-        let gone = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path(route.as_str()))
-            .respond_with(ResponseTemplate::new(404).set_body_json(json!({"message": "Gone"})))
-            .mount(&gone)
-            .await;
-        let logged = logged_from(github::sync_closed_issues(
-            db.connection(),
-            &gh_settings(&[]),
-            &api(&gone),
-            &unstopped(),
-        ))
+    let gone = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(route.as_str()))
+        .respond_with(ResponseTemplate::new(404).set_body_json(json!({"message": "Gone"})))
+        .mount(&gone)
         .await;
-        assert_eq!(requested_paths(&gone).await, vec![route.clone()]);
-        let only = lines_with(&logged, "issue gone");
-        assert_eq!(only.len(), 1, "{entity}: {logged}");
-        assert!(only[0].contains("repo=acme/app"), "{logged}");
-        assert!(only[0].contains(&format!("number={expected}")), "{logged}");
-        assert!(only[0].contains(entity), "{logged}");
-        if entity == "test" {
-            let (number, _, checked, closed) = test_link(&db, id).await;
-            assert_eq!(number, None, "a gone issue re-arms");
-            assert!(checked);
-            assert!(!closed);
-        } else {
-            assert_eq!(job_link(&db, id).await.0, None);
-            assert!(job_checked(&db, id).await);
-        }
+    let logged = logged_from(github::sync_closed_issues(
+        db.connection(),
+        &gh_settings(&[]),
+        &api(&gone),
+        &unstopped(),
+    ))
+    .await;
+    assert_eq!(
+        requested_paths(&gone).await,
+        vec![route.clone()],
+        "the linked issue is the only one checked"
+    );
+    let only = lines_with(&logged, "issue gone");
+    assert_eq!(only.len(), 1, "{kind}: {logged}");
+    let line = only.first().expect("one line names the gone issue");
+    assert!(line.contains("repo=acme/app"), "{logged}");
+    assert!(line.contains(&format!("number={expected}")), "{logged}");
+    assert!(line.contains(kind.as_str()), "{logged}");
+    let rearmed = link_of(&db, kind, id).await;
+    assert_eq!(rearmed.number, None, "a gone issue re-arms");
+    assert!(rearmed.checked, "and the check stamp is kept");
+    assert!(!rearmed.closed, "and the declined flag is not set");
 
-        if entity == "test" {
-            stamp_link(&db, id, 11, false, false).await;
-        } else {
-            stamp_job_link(&db, id, 5, false).await;
-        }
-        let broken = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path(route.as_str()))
-            .respond_with(
-                ResponseTemplate::new(500).set_body_json(json!({"message": "Server error"})),
-            )
-            .mount(&broken)
-            .await;
-        let logged = logged_from(github::sync_closed_issues(
-            db.connection(),
-            &gh_settings(&[]),
-            &api(&broken),
-            &unstopped(),
-        ))
-        .await;
-        assert_eq!(requested_paths(&broken).await, vec![route]);
-        assert!(
-            lines_with(&logged, "acme/app").is_empty(),
-            "{entity}: an unexpected status is nobody's fault: {logged}"
-        );
-        if entity == "test" {
-            assert_eq!(test_link(&db, id).await.0, Some(expected));
-            assert!(test_link(&db, id).await.2);
-        } else {
-            assert_eq!(job_link(&db, id).await.0, Some(expected));
-            assert!(job_checked(&db, id).await);
-        }
+    match kind {
+        EntityKind::Test => stamp_link(&db, id, 11, false, false).await,
+        EntityKind::Job => stamp_job_link(&db, id, 5, false).await,
     }
+    let broken = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(route.as_str()))
+        .respond_with(ResponseTemplate::new(500).set_body_json(json!({"message": "Server error"})))
+        .mount(&broken)
+        .await;
+    let logged = logged_from(github::sync_closed_issues(
+        db.connection(),
+        &gh_settings(&[]),
+        &api(&broken),
+        &unstopped(),
+    ))
+    .await;
+    assert_eq!(
+        requested_paths(&broken).await,
+        vec![route],
+        "the same issue is checked again"
+    );
+    assert!(
+        lines_with(&logged, "acme/app").is_empty(),
+        "{kind}: an unexpected status is nobody's fault: {logged}"
+    );
+    let kept = link_of(&db, kind, id).await;
+    assert_eq!(
+        kept.number,
+        Some(expected),
+        "any other answer keeps the link"
+    );
+    assert!(kept.checked, "and its stamp");
+}
+
+#[tokio::test]
+async fn a_gone_issue_rearms_its_link_but_any_other_answer_keeps_it_for_a_test() {
+    a_gone_issue_rearms_its_link_but_any_other_answer_keeps_it(EntityKind::Test).await;
+}
+
+#[tokio::test]
+async fn a_gone_issue_rearms_its_link_but_any_other_answer_keeps_it_for_a_job() {
+    a_gone_issue_rearms_its_link_but_any_other_answer_keeps_it(EntityKind::Job).await;
 }
 
 #[tokio::test]

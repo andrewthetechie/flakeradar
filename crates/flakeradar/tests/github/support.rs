@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use flakeradar::Settings;
 use flakeradar::github::Api;
 use flakeradar::settings::Secret;
-use flakeradar_core::ReportStatus;
+use flakeradar_core::{EntityKind, ReportStatus};
 use flakeradar_db::ProcessOutcome;
 use flakeradar_test_support::{
     TestDb, make_execution, make_job, make_job_execution, make_pipeline, make_project, make_run,
@@ -150,6 +150,45 @@ pub(crate) async fn test_link(db: &TestDb, id: i32) -> (Option<i32>, Option<bool
         row.try_get("", "checked").expect("checked"),
         row.try_get("", "github_issue_closed").expect("closed"),
     )
+}
+
+/// One Test's or Job's Issue link, as the row stores it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Link {
+    /// The linked issue, if any.
+    pub(crate) number: Option<i32>,
+    /// Who filed the issue: FlakeRadar or somebody else.
+    pub(crate) filed: Option<bool>,
+    /// Whether the issue-state sync has checked it.
+    pub(crate) checked: bool,
+    /// Whether GitHub reported the issue closed as not planned.
+    pub(crate) closed: bool,
+}
+
+/// Reads one Test's or Job's Issue link.
+pub(crate) async fn link_of(db: &TestDb, kind: EntityKind, id: i32) -> Link {
+    let sql = format!(
+        "SELECT github_issue_number, github_issue_filed, \
+                github_issue_checked_at IS NOT NULL AS checked, github_issue_closed \
+           FROM {} WHERE id = $1",
+        link_table(kind)
+    );
+    let row = db
+        .connection()
+        .query_one_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            sql,
+            [Value::from(id)],
+        ))
+        .await
+        .expect("the row reads")
+        .expect("the row exists");
+    Link {
+        number: row.try_get("", "github_issue_number").expect("a number"),
+        filed: row.try_get("", "github_issue_filed").expect("filed"),
+        checked: row.try_get("", "checked").expect("checked"),
+        closed: row.try_get("", "github_issue_closed").expect("closed"),
+    }
 }
 
 /// Stamps one Test's link columns, as an earlier pass would have.
@@ -722,37 +761,36 @@ pub(crate) fn block_on<F: Future>(future: F) -> F::Output {
 }
 
 /// The table that holds one entity's link columns.
-pub(crate) fn link_table(entity: &str) -> &'static str {
-    if entity == "test" {
-        "test_cases"
-    } else {
-        "jobs"
+pub(crate) fn link_table(kind: EntityKind) -> &'static str {
+    match kind {
+        EntityKind::Test => "test_cases",
+        EntityKind::Job => "jobs",
     }
 }
 
-/// A Test (`test`) or Job (`job`) named `name` in `repo`, linked to `number`
-/// when one is given, and at `streak` passing runs.
+/// A Test or Job named `name` in `repo`, linked to `number` when one is given,
+/// and at `streak` passing runs.
 pub(crate) async fn note_row(
     db: &TestDb,
-    entity: &str,
+    kind: EntityKind,
     repo: &str,
     name: &str,
     number: Option<i32>,
     streak: i32,
 ) -> i32 {
-    let id = if entity == "test" {
-        flaky_test_in(db, repo, name, name).await
-    } else {
-        flaky_job_in(db, repo, &format!(".github/workflows/{name}.yml"), name).await
+    let id = match kind {
+        EntityKind::Test => flaky_test_in(db, repo, name, name).await,
+        EntityKind::Job => {
+            flaky_job_in(db, repo, &format!(".github/workflows/{name}.yml"), name).await
+        }
     };
     if let Some(number) = number {
-        if entity == "test" {
-            stamp_link(db, id, number, false, false).await;
-        } else {
-            stamp_job_link(db, id, number, false).await;
+        match kind {
+            EntityKind::Test => stamp_link(db, id, number, false, false).await,
+            EntityKind::Job => stamp_job_link(db, id, number, false).await,
         }
     }
-    set_clean_streak(db, link_table(entity), id, streak).await;
+    set_clean_streak(db, link_table(kind), id, streak).await;
     id
 }
 
@@ -770,6 +808,14 @@ pub(crate) async fn requested_calls(server: &MockServer) -> Vec<(String, String)
             )
         })
         .collect()
+}
+
+/// The Report outcome that touches `ids` of `kind`, and nothing else.
+pub(crate) fn processed_for(kind: EntityKind, ids: &[i32]) -> ProcessOutcome {
+    match kind {
+        EntityKind::Test => processed(ids, &[]),
+        EntityKind::Job => processed(&[], ids),
+    }
 }
 
 /// One Test's or Job's Clean streak.

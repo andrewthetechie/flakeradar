@@ -17,9 +17,9 @@ use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
 use crate::support::{
     CREATED, Loopback, TOKEN, api, clean_streak_of, fixed_settings, flaky_job, flaky_test,
-    flaky_test_in, gh_settings, job_checked, job_link, lines_with, link_table, logged_from,
-    mount_comment, mount_create, mount_issue, mount_patch, mount_state, note_row, noted,
-    requested_calls, requested_paths, set_clean_streak, stage_mid_request, stamp_job_link,
+    flaky_test_in, gh_settings, job_checked, job_link, lines_with, link_of, link_table,
+    logged_from, mount_comment, mount_create, mount_issue, mount_patch, mount_state, note_row,
+    noted, requested_calls, requested_paths, set_clean_streak, stage_mid_request, stamp_job_link,
     stamp_link, stamp_note, test_link, unstopped,
 };
 
@@ -752,11 +752,15 @@ async fn an_unusable_note_comment_status_leaves_the_row_unstamped() {
 }
 
 /// The fixed-note entry point of one entity.
-async fn note_entity(db: &TestDb, entity: &str, ids: &[i32], settings: &Settings, api: &Api) {
-    if entity == "test" {
-        github::note_fixed_issues_for(db.connection(), ids, settings, api, &unstopped()).await;
-    } else {
-        github::note_fixed_job_issues_for(db.connection(), ids, settings, api, &unstopped()).await;
+async fn note_entity(db: &TestDb, kind: EntityKind, ids: &[i32], settings: &Settings, api: &Api) {
+    match kind {
+        EntityKind::Test => {
+            github::note_fixed_issues_for(db.connection(), ids, settings, api, &unstopped()).await;
+        }
+        EntityKind::Job => {
+            github::note_fixed_job_issues_for(db.connection(), ids, settings, api, &unstopped())
+                .await;
+        }
     }
 }
 
@@ -884,125 +888,142 @@ async fn job_link_change_and_unlink_reset_the_check_stamp() {
     );
 }
 
-#[tokio::test]
-async fn a_deleted_row_costs_only_that_fixed_note() {
-    for entity in ["test", "job"] {
-        let db = TestDb::new().await.expect("a test database");
-        let doomed = note_row(&db, entity, "acme/app", "doomed", Some(77), 3).await;
-        let kept = note_row(&db, entity, "acme/b", "kept", Some(78), 3).await;
-        let server = MockServer::start().await;
-        let table = link_table(entity);
-        let connection = db.connection().clone();
-        Mock::given(any())
-            .respond_with(move |request: &Request| {
-                if request.url.path() == "/repos/acme/app/issues/77/comments" {
-                    stage_mid_request(
-                        &connection,
-                        format!("DELETE FROM {table} WHERE id = {doomed}"),
-                    );
-                }
-                ResponseTemplate::new(201).set_body_json(json!({"number": 99}))
-            })
-            .mount(&server)
-            .await;
-        let settings = fixed_settings(&[]);
-
-        let logged = logged_from(note_entity(
-            &db,
-            entity,
-            &[doomed, kept],
-            &settings,
-            &api(&server),
-        ))
+/// The scenario of `a_deleted_row_costs_only_that_fixed_note`, once per entity.
+async fn a_deleted_row_costs_only_that_fixed_note(kind: EntityKind) {
+    let db = TestDb::new().await.expect("a test database");
+    let doomed = note_row(&db, kind, "acme/app", "doomed", Some(77), 3).await;
+    let kept = note_row(&db, kind, "acme/b", "kept", Some(78), 3).await;
+    let server = MockServer::start().await;
+    let table = link_table(kind);
+    let connection = db.connection().clone();
+    Mock::given(any())
+        .respond_with(move |request: &Request| {
+            if request.url.path() == "/repos/acme/app/issues/77/comments" {
+                stage_mid_request(
+                    &connection,
+                    format!("DELETE FROM {table} WHERE id = {doomed}"),
+                );
+            }
+            ResponseTemplate::new(201).set_body_json(json!({"number": 99}))
+        })
+        .mount(&server)
         .await;
-        assert_eq!(
-            requested_paths(&server).await,
-            vec![
-                "/repos/acme/app/issues/77/comments",
-                "/repos/acme/b/issues/78/comments"
-            ],
-            "the vanished row costs one note, not the batch"
-        );
-        assert!(noted(&db, table, kept).await, "the surviving note lands");
-        assert!(
-            lines_with(&logged, "deleted (admin delete) while noting").len() == 1,
-            "the lost note is reported: {logged}"
-        );
-    }
+    let settings = fixed_settings(&[]);
+
+    let logged = logged_from(note_entity(
+        &db,
+        kind,
+        &[doomed, kept],
+        &settings,
+        &api(&server),
+    ))
+    .await;
+    assert_eq!(
+        requested_paths(&server).await,
+        vec![
+            "/repos/acme/app/issues/77/comments",
+            "/repos/acme/b/issues/78/comments"
+        ],
+        "the vanished row costs one note, not the batch"
+    );
+    assert!(noted(&db, table, kept).await, "the surviving note lands");
+    assert!(
+        lines_with(&logged, "deleted (admin delete) while noting").len() == 1,
+        "the lost note is reported: {logged}"
+    );
 }
 
 #[tokio::test]
-async fn a_clean_streak_reset_mid_post_is_not_undone_by_the_stamp() {
-    for entity in ["test", "job"] {
-        let db = TestDb::new().await.expect("a test database");
-        let obj = note_row(&db, entity, "acme/app", "linked", Some(77), 3).await;
-        let server = MockServer::start().await;
-        let table = link_table(entity);
-        let connection = db.connection().clone();
-        Mock::given(any())
-            .respond_with(move |request: &Request| {
-                if request.method.as_str() == "POST" {
-                    stage_mid_request(
-                        &connection,
-                        format!(
-                            "UPDATE {table} SET clean_streak = 0, \
-                             github_issue_fixed_noted_at = NULL WHERE id = {obj}"
-                        ),
-                    );
-                }
-                ResponseTemplate::new(201).set_body_json(json!({"number": 99}))
-            })
-            .mount(&server)
-            .await;
-        let settings = fixed_settings(&[("FLAKERADAR_GITHUB_CLOSE_FIXED", "true")]);
+async fn a_deleted_row_costs_only_that_fixed_note_for_a_test() {
+    a_deleted_row_costs_only_that_fixed_note(EntityKind::Test).await;
+}
 
-        let logged = logged_from(note_entity(&db, entity, &[obj], &settings, &api(&server))).await;
-        assert_eq!(
-            requested_calls(&server).await,
-            vec![(
+#[tokio::test]
+async fn a_deleted_row_costs_only_that_fixed_note_for_a_job() {
+    a_deleted_row_costs_only_that_fixed_note(EntityKind::Job).await;
+}
+
+/// The scenario of `a_clean_streak_reset_mid_post_is_not_undone_by_the_stamp`, once per entity.
+async fn a_clean_streak_reset_mid_post_is_not_undone_by_the_stamp(kind: EntityKind) {
+    let db = TestDb::new().await.expect("a test database");
+    let obj = note_row(&db, kind, "acme/app", "linked", Some(77), 3).await;
+    let server = MockServer::start().await;
+    let table = link_table(kind);
+    let connection = db.connection().clone();
+    Mock::given(any())
+        .respond_with(move |request: &Request| {
+            if request.method.as_str() == "POST" {
+                stage_mid_request(
+                    &connection,
+                    format!(
+                        "UPDATE {table} SET clean_streak = 0, \
+                         github_issue_fixed_noted_at = NULL WHERE id = {obj}"
+                    ),
+                );
+            }
+            ResponseTemplate::new(201).set_body_json(json!({"number": 99}))
+        })
+        .mount(&server)
+        .await;
+    let settings = fixed_settings(&[("FLAKERADAR_GITHUB_CLOSE_FIXED", "true")]);
+
+    let logged = logged_from(note_entity(&db, kind, &[obj], &settings, &api(&server))).await;
+    assert_eq!(
+        requested_calls(&server).await,
+        vec![(
+            "POST".to_owned(),
+            "/repos/acme/app/issues/77/comments".to_owned()
+        )],
+        "a fix that did not hold is neither noted twice nor closed"
+    );
+    assert_eq!(
+        clean_streak_of(&db, table, obj).await,
+        0,
+        "the reset stands"
+    );
+    assert!(
+        !noted(&db, table, obj).await,
+        "the reset must not be undone by a stamp"
+    );
+    assert!(
+        lines_with(&logged, "stopped being noteable").len() == 1,
+        "the skipped stamp is reported: {logged}"
+    );
+
+    // The re-armed note really does come once the streak is back.
+    set_clean_streak(&db, table, obj, 3).await;
+    let second = MockServer::start().await;
+    mount_comment(
+        &second,
+        "acme/app",
+        77,
+        ResponseTemplate::new(201).set_body_json(json!({"number": 99})),
+    )
+    .await;
+    mount_patch(&second, "acme/app", 77, ResponseTemplate::new(200)).await;
+    note_entity(&db, kind, &[obj], &settings, &api(&second)).await;
+    assert_eq!(
+        requested_calls(&second).await,
+        vec![
+            (
                 "POST".to_owned(),
                 "/repos/acme/app/issues/77/comments".to_owned()
-            )],
-            "a fix that did not hold is neither noted twice nor closed"
-        );
-        assert_eq!(
-            clean_streak_of(&db, table, obj).await,
-            0,
-            "the reset stands"
-        );
-        assert!(
-            !noted(&db, table, obj).await,
-            "the reset must not be undone by a stamp"
-        );
-        assert!(
-            lines_with(&logged, "stopped being noteable").len() == 1,
-            "the skipped stamp is reported: {logged}"
-        );
+            ),
+            ("PATCH".to_owned(), "/repos/acme/app/issues/77".to_owned())
+        ],
+        "the re-armed note is commented on and closed once"
+    );
+    assert!(noted(&db, table, obj).await, "the fresh note stamps");
+}
 
-        // The re-armed note really does come once the streak is back.
-        set_clean_streak(&db, table, obj, 3).await;
-        let second = MockServer::start().await;
-        mount_comment(
-            &second,
-            "acme/app",
-            77,
-            ResponseTemplate::new(201).set_body_json(json!({"number": 99})),
-        )
-        .await;
-        mount_patch(&second, "acme/app", 77, ResponseTemplate::new(200)).await;
-        note_entity(&db, entity, &[obj], &settings, &api(&second)).await;
-        assert_eq!(
-            requested_calls(&second).await,
-            vec![
-                (
-                    "POST".to_owned(),
-                    "/repos/acme/app/issues/77/comments".to_owned()
-                ),
-                ("PATCH".to_owned(), "/repos/acme/app/issues/77".to_owned())
-            ]
-        );
-        assert!(noted(&db, table, obj).await, "the fresh note stamps");
-    }
+#[tokio::test]
+async fn a_clean_streak_reset_mid_post_is_not_undone_by_the_stamp_for_a_test() {
+    a_clean_streak_reset_mid_post_is_not_undone_by_the_stamp(EntityKind::Test).await;
+}
+
+#[tokio::test]
+async fn a_clean_streak_reset_mid_post_is_not_undone_by_the_stamp_for_a_job() {
+    a_clean_streak_reset_mid_post_is_not_undone_by_the_stamp(EntityKind::Job).await;
 }
 
 #[tokio::test]
@@ -1055,86 +1076,86 @@ async fn an_unlink_clears_both_halves_and_a_rearm_keeps_its_stamp() {
     );
 }
 
-#[tokio::test]
-async fn an_unlink_after_a_rearm_clears_the_kept_stamp_on_a_test_and_a_job() {
-    for entity in ["test", "job"] {
-        let db = TestDb::new().await.expect("a test database");
-        let (id, number, target) = if entity == "test" {
+/// The scenario of `an_unlink_after_a_rearm_clears_the_kept_stamp`, once per entity.
+async fn an_unlink_after_a_rearm_clears_the_kept_stamp(kind: EntityKind) {
+    let db = TestDb::new().await.expect("a test database");
+    let (id, number) = match kind {
+        EntityKind::Test => {
             let id = flaky_test(&db).await;
             stamp_link(&db, id, 300, false, false).await;
-            (id, 300, EntityKind::Test)
-        } else {
+            (id, 300)
+        }
+        EntityKind::Job => {
             let id = flaky_job(&db).await;
             stamp_job_link(&db, id, 302, false).await;
-            (id, 302, EntityKind::Job)
-        };
-        let server = MockServer::start().await;
-        mount_state(
-            &server,
-            ResponseTemplate::new(200).set_body_json(json!({"state": "closed"})),
-        )
-        .await;
-        github::sync_closed_issues(
-            db.connection(),
-            &gh_settings(&[]),
-            &api(&server),
-            &unstopped(),
-        )
-        .await;
-        assert_eq!(
-            requested_paths(&server).await,
-            vec![format!("/repos/acme/app/issues/{number}")]
-        );
-        let rearmed = if entity == "test" {
-            let (number, _, checked, _) = test_link(&db, id).await;
-            assert_eq!(number, None);
-            checked
-        } else {
-            assert_eq!(job_link(&db, id).await.0, None);
-            job_checked(&db, id).await
-        };
-        assert!(rearmed, "the re-arm keeps the stamp it wrote");
+            (id, 302)
+        }
+    };
+    let server = MockServer::start().await;
+    mount_state(
+        &server,
+        ResponseTemplate::new(200).set_body_json(json!({"state": "closed"})),
+    )
+    .await;
+    github::sync_closed_issues(
+        db.connection(),
+        &gh_settings(&[]),
+        &api(&server),
+        &unstopped(),
+    )
+    .await;
+    assert_eq!(
+        requested_paths(&server).await,
+        vec![format!("/repos/acme/app/issues/{number}")],
+        "the linked {kind} is what the sync checks"
+    );
+    let rearmed = link_of(&db, kind, id).await;
+    assert_eq!(rearmed.number, None, "the re-arm clears the number");
+    assert!(rearmed.checked, "the re-arm keeps the stamp it wrote");
 
-        issue_links::unlink_issue(
-            db.connection(),
-            target,
-            i64::from(id),
-            &ReadSettings::default(),
-        )
-        .await
-        .expect("the unlink succeeds");
-        let cleared = if entity == "test" {
-            let (number, filed, checked, _) = test_link(&db, id).await;
-            assert_eq!(filed, None);
-            assert_eq!(number, None);
-            checked
-        } else {
-            assert_eq!(job_link(&db, id).await.0, None);
-            job_checked(&db, id).await
-        };
-        assert!(!cleared, "unlink drops the stamp the re-arm kept");
-        assert!(
-            linked_for_check(db.connection(), target, 10)
-                .await
-                .expect("the rotation reads")
-                .is_empty(),
-            "the pair is fully reset"
-        );
+    issue_links::unlink_issue(
+        db.connection(),
+        kind,
+        i64::from(id),
+        &ReadSettings::default(),
+    )
+    .await
+    .expect("the unlink succeeds");
+    let cleared = link_of(&db, kind, id).await;
+    assert_eq!(cleared.filed, None, "unlink drops the provenance");
+    assert_eq!(cleared.number, None, "unlink drops the number");
+    assert!(!cleared.checked, "unlink drops the stamp the re-arm kept");
+    assert!(
+        linked_for_check(db.connection(), kind, 10)
+            .await
+            .expect("the rotation reads")
+            .is_empty(),
+        "the pair is fully reset"
+    );
 
-        let before = requested_paths(&server).await.len();
-        github::sync_closed_issues(
-            db.connection(),
-            &gh_settings(&[]),
-            &api(&server),
-            &unstopped(),
-        )
-        .await;
-        assert_eq!(
-            requested_paths(&server).await.len(),
-            before,
-            "the unlinked {entity} is out of the rotation for good"
-        );
-    }
+    let before = requested_paths(&server).await.len();
+    github::sync_closed_issues(
+        db.connection(),
+        &gh_settings(&[]),
+        &api(&server),
+        &unstopped(),
+    )
+    .await;
+    assert_eq!(
+        requested_paths(&server).await.len(),
+        before,
+        "the unlinked {kind} is out of the rotation for good"
+    );
+}
+
+#[tokio::test]
+async fn an_unlink_after_a_rearm_clears_the_kept_stamp_for_a_test() {
+    an_unlink_after_a_rearm_clears_the_kept_stamp(EntityKind::Test).await;
+}
+
+#[tokio::test]
+async fn an_unlink_after_a_rearm_clears_the_kept_stamp_for_a_job() {
+    an_unlink_after_a_rearm_clears_the_kept_stamp(EntityKind::Job).await;
 }
 
 #[tokio::test]
