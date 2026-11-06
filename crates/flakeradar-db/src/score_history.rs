@@ -9,10 +9,11 @@
 // Rust guideline compliant 2026-07-21
 
 use chrono::NaiveDate;
-use sea_orm::{ConnectionTrait, DbBackend, DbErr, Statement, TryGetable, Value};
+use sea_orm::{ConnectionTrait, DbBackend, Statement, Value};
 
 use crate::batching::chunks;
 use crate::error::DbError;
+use crate::sql::{get, rows, value_row};
 
 /// How many days of history the detail responses embed.
 pub const HISTORY_DAYS: i64 = 90;
@@ -74,27 +75,6 @@ pub struct HistoryUpdate {
     pub executions: i32,
     /// Failures to add to today's row.
     pub failures: i32,
-}
-
-/// Reads one column of a raw row.
-fn get<T: TryGetable>(row: &sea_orm::QueryResult, column: &str) -> Result<T, DbError> {
-    row.try_get("", column)
-        .map_err(|error: DbErr| DbError::Database(error))
-}
-
-/// Runs a raw statement and returns its rows.
-async fn rows(
-    db: &impl ConnectionTrait,
-    sql: String,
-    values: Vec<Value>,
-) -> Result<Vec<sea_orm::QueryResult>, DbError> {
-    Ok(db
-        .query_all_raw(Statement::from_sql_and_values(
-            DbBackend::Postgres,
-            sql,
-            values,
-        ))
-        .await?)
 }
 
 /// Score of each owner's newest history row at least `TREND_DAYS` old.
@@ -217,15 +197,7 @@ pub async fn write_today_history(
         let mut values = Vec::with_capacity(chunk.len() * 6);
         for (index, update) in chunk.iter().enumerate() {
             let base = index * 6;
-            placeholders.push(format!(
-                "(${}, ${}, ${}, ${}, ${}, ${})",
-                base + 1,
-                base + 2,
-                base + 3,
-                base + 4,
-                base + 5,
-                base + 6
-            ));
+            placeholders.push(value_row(base + 1, 6));
             values.extend([
                 Value::from(update.id),
                 Value::from(today),

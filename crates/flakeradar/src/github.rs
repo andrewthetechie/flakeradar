@@ -73,16 +73,14 @@ use chrono::{DateTime, Utc};
 use flakeradar_core::{JobExecutionOut, JobHistoryOut, MAX_ISSUE_NUMBER, repo_path};
 use flakeradar_db::attribution::{int_array, test_window_ids_overall_sql};
 use flakeradar_db::issue_links::{self, LinkTarget};
+use flakeradar_db::sql::{get, rows};
 use flakeradar_db::{
     DbError, ProcessOutcome, REPORT_PROCESSED, chunks, get_job, unexplained_failure_counts,
 };
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
 use reqwest::{Client, Method};
 use sea_orm::sea_query::Value as QueryValue;
-use sea_orm::{
-    ConnectionTrait, DbBackend, DbErr, QueryResult, Statement, TransactionSession,
-    TransactionTrait, TryGetable,
-};
+use sea_orm::{ConnectionTrait, QueryResult, TransactionSession, TransactionTrait};
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
@@ -708,27 +706,6 @@ impl Api {
 /// Whether a stored status counts as a failure.
 fn is_failing(status: &str) -> bool {
     matches!(status, "failed" | "error")
-}
-
-/// Reads one column of a raw row.
-fn get<T: TryGetable>(row: &QueryResult, column: &str) -> Result<T, DbError> {
-    row.try_get("", column)
-        .map_err(|error: DbErr| DbError::Database(error))
-}
-
-/// Runs one raw statement.
-async fn rows(
-    db: &impl ConnectionTrait,
-    sql: String,
-    values: Vec<QueryValue>,
-) -> Result<Vec<QueryResult>, DbError> {
-    Ok(db
-        .query_all_raw(Statement::from_sql_and_values(
-            DbBackend::Postgres,
-            sql,
-            values,
-        ))
-        .await?)
 }
 
 /// One Test as the issue body reads it.

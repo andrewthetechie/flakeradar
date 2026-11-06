@@ -11,10 +11,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use flakeradar_core::ExplainingJobOut;
-use sea_orm::{ConnectionTrait, DbBackend, DbErr, Statement, TryGetable, Value};
+use sea_orm::{ConnectionTrait, Value};
 
 use crate::batching::chunks;
 use crate::error::DbError;
+use crate::sql::{get, rows, value_row};
 
 /// Most explaining sibling Jobs listed per `(ci_run_id, ci_run_attempt)` pair.
 pub const SIBLING_MAX: usize = 20;
@@ -163,27 +164,6 @@ pub fn job_execution_explained_sql() -> String {
     )
 }
 
-/// Reads one column of a raw row, converting the driver error.
-fn get<T: TryGetable>(row: &sea_orm::QueryResult, column: &str) -> Result<T, DbError> {
-    row.try_get("", column)
-        .map_err(|error: DbErr| DbError::Database(error))
-}
-
-/// Runs a raw statement and reads every row.
-async fn rows(
-    db: &impl ConnectionTrait,
-    sql: String,
-    values: Vec<Value>,
-) -> Result<Vec<sea_orm::QueryResult>, DbError> {
-    Ok(db
-        .query_all_raw(Statement::from_sql_and_values(
-            DbBackend::Postgres,
-            sql,
-            values,
-        ))
-        .await?)
-}
-
 /// The `IN ($1, $2, ...)` placeholder list for a text bind, starting at `start`.
 ///
 /// Text binds are spelled one by one because `= ANY(array)` would plan
@@ -278,7 +258,7 @@ pub async fn summary_explaining_siblings(
         return Ok(BTreeMap::new());
     }
     let placeholders = (0..wanted.len())
-        .map(|index| format!("(${}, ${})", index * 2 + 1, index * 2 + 2))
+        .map(|index| value_row(index * 2 + 1, 2))
         .collect::<Vec<_>>()
         .join(", ");
     let sql = format!(

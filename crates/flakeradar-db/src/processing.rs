@@ -19,8 +19,7 @@ use flakeradar_core::{
 use sea_orm::entity::prelude::DateTimeWithTimeZone;
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, ConnectionTrait, DbBackend, DbErr, EntityTrait, FromQueryResult,
-    IntoActiveModel, QueryFilter, Set, Statement, TransactionSession, TransactionTrait, TryGetable,
-    Value,
+    IntoActiveModel, QueryFilter, Set, Statement, TransactionSession, TransactionTrait, Value,
 };
 use serde_json::{Value as JsonValue, json};
 
@@ -36,6 +35,7 @@ use crate::report_intake::{
     fail_report, requeue_report, stored_junit_body, stored_pipeline_payload,
 };
 use crate::score_history::{HistoryKind, HistoryUpdate, write_today_history};
+use crate::sql::{get, placeholder_list, rows, value_row};
 
 /// The longest error text a failed Report keeps.
 pub const ERROR_MAX: usize = 2000;
@@ -200,35 +200,6 @@ fn transient_db_error(error: &DbErr) -> bool {
             .is_some_and(|code| transient_sqlstate(code.as_ref())),
         _ => false,
     }
-}
-
-/// Reads one column of a raw row.
-fn get<T: TryGetable>(row: &sea_orm::QueryResult, column: &str) -> Result<T, DbError> {
-    row.try_get("", column)
-        .map_err(|error: DbErr| DbError::Database(error))
-}
-
-/// Runs a raw statement and returns its rows.
-async fn rows(
-    db: &impl ConnectionTrait,
-    sql: String,
-    values: Vec<Value>,
-) -> Result<Vec<sea_orm::QueryResult>, DbError> {
-    Ok(db
-        .query_all_raw(Statement::from_sql_and_values(
-            DbBackend::Postgres,
-            sql,
-            values,
-        ))
-        .await?)
-}
-
-/// The `IN (...)` list of text placeholders starting at `start`.
-fn quotes(start: usize, count: usize) -> String {
-    (start..start + count)
-        .map(|index| format!("${index}"))
-        .collect::<Vec<_>>()
-        .join(", ")
 }
 
 /// Locks the oldest pending Report for this transaction (`FOR UPDATE SKIP LOCKED`).
@@ -663,7 +634,7 @@ async fn upsert_test_cases(
             entry.insert(case);
         }
     }
-    let rows: Vec<test_cases::ActiveModel> = order
+    let inserted: Vec<test_cases::ActiveModel> = order
         .iter()
         .filter_map(|fingerprint| first.get(fingerprint).copied())
         .map(|case| test_cases::ActiveModel {
@@ -680,7 +651,7 @@ async fn upsert_test_cases(
             ..Default::default()
         })
         .collect();
-    for chunk in chunks(&rows) {
+    for chunk in chunks(&inserted) {
         test_cases::Entity::insert_many(chunk.to_vec())
             // Python's bare `ON CONFLICT DO NOTHING` skips a conflict on *any*
             // constraint; SeaORM's target-less `OnConflict` is that statement,
@@ -695,7 +666,7 @@ async fn upsert_test_cases(
     }
     let mut ids = BTreeMap::new();
     for chunk in chunks(&order) {
-        let placeholders = quotes(2, chunk.len());
+        let placeholders = placeholder_list(2, chunk.len());
         let sql = format!(
             "SELECT fingerprint, id FROM test_cases WHERE project_id = $1 AND fingerprint IN ({placeholders})"
         );
@@ -706,7 +677,7 @@ async fn upsert_test_cases(
                 .iter()
                 .map(|fingerprint| Value::from(fingerprint.clone())),
         );
-        for row in rows_of(db, sql, values).await? {
+        for row in rows(db, sql, values).await? {
             ids.insert(get::<String>(&row, "fingerprint")?, get::<i32>(&row, "id")?);
         }
     }
@@ -724,15 +695,7 @@ async fn update_latest_tests(
         let mut placeholders = Vec::with_capacity(chunk.len());
         for (index, row) in chunk.iter().enumerate() {
             let base = index * 6;
-            placeholders.push(format!(
-                "(${}, ${}, ${}, ${}, ${}, ${})",
-                base + 1,
-                base + 2,
-                base + 3,
-                base + 4,
-                base + 5,
-                base + 6
-            ));
+            placeholders.push(value_row(base + 1, 6));
             values.extend([
                 Value::from(row.id),
                 Value::from(row.last_status.clone()),
@@ -877,13 +840,7 @@ async fn upsert_pipeline_jobs(
         let mut placeholders = Vec::with_capacity(chunk.len());
         for (index, name) in chunk.iter().enumerate() {
             let base = index * 4;
-            placeholders.push(format!(
-                "(${}, ${}, ${}, ${})",
-                base + 1,
-                base + 2,
-                base + 3,
-                base + 4
-            ));
+            placeholders.push(value_row(base + 1, 4));
             values.extend([
                 Value::from(pipeline.id),
                 Value::from(name.clone()),
@@ -907,21 +864,21 @@ async fn upsert_pipeline_jobs(
             placeholders.join(", ")
         );
         values.push(Value::from(now));
-        for row in rows_of(db, sql, values).await.map_err(ProcessError::from)? {
+        for row in rows(db, sql, values).await.map_err(ProcessError::from)? {
             flag_changed.insert(get(&row, "id").map_err(ProcessError::from)?);
         }
     }
 
     let mut job_ids: BTreeMap<String, i32> = BTreeMap::new();
     for chunk in chunks(&job_names) {
-        let placeholders = quotes(2, chunk.len());
+        let placeholders = placeholder_list(2, chunk.len());
         let sql = format!(
             "SELECT name, id FROM jobs WHERE pipeline_id = $1 AND name IN ({placeholders})"
         );
         let mut values = Vec::with_capacity(chunk.len() + 1);
         values.push(Value::from(pipeline.id));
         values.extend(chunk.iter().map(|name| Value::from(name.clone())));
-        for row in rows_of(db, sql, values).await.map_err(ProcessError::from)? {
+        for row in rows(db, sql, values).await.map_err(ProcessError::from)? {
             job_ids.insert(
                 get(&row, "name").map_err(ProcessError::from)?,
                 get(&row, "id").map_err(ProcessError::from)?,
@@ -965,7 +922,7 @@ async fn insert_pipeline_job_executions(
     let mut day_counts: BTreeMap<i32, (i32, i32)> = BTreeMap::new();
     for chunk in chunks(&exec_rows) {
         let (sql, values) = insert_job_executions_sql(chunk, now);
-        for row in rows_of(db, sql, values).await.map_err(ProcessError::from)? {
+        for row in rows(db, sql, values).await.map_err(ProcessError::from)? {
             let job_id: i32 = get(&row, "job_id").map_err(ProcessError::from)?;
             let status: String = get(&row, "status").map_err(ProcessError::from)?;
             jobs_with_new_exec.insert(job_id);
@@ -999,22 +956,7 @@ fn insert_job_executions_sql(
     let mut placeholders = Vec::with_capacity(chunk.len());
     for (index, row) in chunk.iter().enumerate() {
         let base = index * 13;
-        placeholders.push(format!(
-            "(${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${})",
-            base + 1,
-            base + 2,
-            base + 3,
-            base + 4,
-            base + 5,
-            base + 6,
-            base + 7,
-            base + 8,
-            base + 9,
-            base + 10,
-            base + 11,
-            base + 12,
-            base + 13
-        ));
+        placeholders.push(value_row(base + 1, 13));
         values.extend([
             Value::from(row.job_id),
             Value::from(row.ci_job_id.clone()),
@@ -1071,7 +1013,7 @@ async fn update_job_last_status(
         let mut placeholders = Vec::with_capacity(chunk.len());
         for (index, (job_id, status)) in chunk.iter().enumerate() {
             let base = index * 3;
-            placeholders.push(format!("(${}, ${}, ${})", base + 1, base + 2, base + 3));
+            placeholders.push(value_row(base + 1, 3));
             values.extend([
                 Value::from(*job_id),
                 Value::from(status.as_str()),
@@ -1109,20 +1051,6 @@ struct PipelineExecution {
     runner_labels: Vec<String>,
     started_at: Option<DateTimeWithTimeZone>,
     completed_at: Option<DateTimeWithTimeZone>,
-}
-
-/// Runs a raw statement and returns its rows, with the driver error as-is.
-async fn rows_of(
-    db: &impl ConnectionTrait,
-    sql: String,
-    values: Vec<Value>,
-) -> Result<Vec<sea_orm::QueryResult>, DbErr> {
-    db.query_all_raw(Statement::from_sql_and_values(
-        DbBackend::Postgres,
-        sql,
-        values,
-    ))
-    .await
 }
 
 /// Recomputes flakiness for the given Tests from their score window.
@@ -1320,7 +1248,7 @@ async fn test_tier_changes(
     let ids: Vec<i32> = crossed.iter().map(|update| update.id).collect();
     let mut named: BTreeMap<i32, (String, String, String, String)> = BTreeMap::new();
     for chunk in chunks(&ids) {
-        let placeholders = quotes(1, chunk.len());
+        let placeholders = placeholder_list(1, chunk.len());
         let sql = format!(
             "SELECT t.id, t.classname, t.name, p.name AS project, r.name AS repo \
                FROM test_cases t \
@@ -1374,16 +1302,7 @@ async fn write_test_updates(
         let mut placeholders = Vec::with_capacity(chunk.len());
         for (index, update) in chunk.iter().enumerate() {
             let base = index * 7;
-            placeholders.push(format!(
-                "(${}, ${}, ${}, ${}, ${}, ${}, ${})",
-                base + 1,
-                base + 2,
-                base + 3,
-                base + 4,
-                base + 5,
-                base + 6,
-                base + 7
-            ));
+            placeholders.push(value_row(base + 1, 7));
             values.extend([
                 Value::from(update.id),
                 Value::from(update.flakiness_score),
@@ -1602,7 +1521,7 @@ async fn job_tier_changes(
     let ids: Vec<i32> = crossed.iter().map(|update| update.id).collect();
     let mut named: BTreeMap<i32, (String, String, String)> = BTreeMap::new();
     for chunk in chunks(&ids) {
-        let placeholders = quotes(1, chunk.len());
+        let placeholders = placeholder_list(1, chunk.len());
         let sql = format!(
             "SELECT j.id, j.name, p.name AS pipeline, r.name AS repo \
                FROM jobs j \
@@ -1654,14 +1573,7 @@ async fn write_job_updates(
         let mut placeholders = Vec::with_capacity(chunk.len());
         for (index, update) in chunk.iter().enumerate() {
             let base = index * 5;
-            placeholders.push(format!(
-                "(${}, ${}, ${}, ${}, ${})",
-                base + 1,
-                base + 2,
-                base + 3,
-                base + 4,
-                base + 5
-            ));
+            placeholders.push(value_row(base + 1, 5));
             values.extend([
                 Value::from(update.id),
                 Value::from(update.flakiness_score),

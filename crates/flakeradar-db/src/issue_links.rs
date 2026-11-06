@@ -20,9 +20,10 @@ use sea_orm::{ConnectionTrait, DbBackend, Statement, TransactionSession, Transac
 
 use crate::error::DbError;
 use crate::reads::{
-    JOBS_FROM, JOBS_SELECT, ReadSettings, TESTS_FROM, TESTS_SELECT, get, job_out, one,
-    optional_timestamp, rows, test_out,
+    JOBS_FROM, JOBS_SELECT, ReadSettings, TESTS_FROM, TESTS_SELECT, job_out, optional_timestamp,
+    test_out,
 };
+use crate::sql::{get, one, rows};
 
 /// The two entities that can hold an Issue link.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

@@ -24,7 +24,7 @@ use sea_orm::{
 };
 
 use crate::error::DbError;
-use crate::reads::{get, one};
+use crate::sql::{get, one};
 
 /// Everything a delete can fail with.
 #[derive(Debug, thiserror::Error)]

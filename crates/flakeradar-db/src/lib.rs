@@ -26,6 +26,7 @@ pub mod reads;
 mod report_intake;
 pub mod retention;
 pub mod score_history;
+pub mod sql;
 
 /// The `SeaORM` entities, generated from the baseline schema by `sea-orm-cli`.
 ///

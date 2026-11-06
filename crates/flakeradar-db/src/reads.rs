@@ -23,7 +23,7 @@ use flakeradar_core::{
     RunnerStatOut, ScorePointOut, SummaryOut, TestJobLinkOut, TestOut, TestPage, Trend, defaults,
     escape_like, is_broken, issue_url, permalink, repo_path, tier_for, trend_for,
 };
-use sea_orm::{ConnectionTrait, DbBackend, DbErr, QueryResult, Statement, TryGetable, Value};
+use sea_orm::{ConnectionTrait, DbBackend, QueryResult, Statement, Value};
 use serde_json::Value as JsonValue;
 
 use crate::attribution::{
@@ -33,6 +33,7 @@ use crate::attribution::{
 use crate::clock::SharedClock;
 use crate::error::DbError;
 use crate::score_history::{self, HistoryKind};
+use crate::sql::{Binds, get, one, required_one, rows};
 
 /// The dashboard tiles' "became flaky recently" window.
 pub const NEW_FLAKY_DAYS: i64 = 7;
@@ -174,79 +175,8 @@ pub enum ReadError {
     NotFound(String),
 }
 
-/// Reads one column of a raw row.
-pub(crate) fn get<T: TryGetable>(row: &QueryResult, column: &str) -> Result<T, DbError> {
-    row.try_get("", column)
-        .map_err(|error: DbErr| DbError::Database(error))
-}
-
-/// Runs a statement and reads every row.
-pub(crate) async fn rows(
-    db: &impl ConnectionTrait,
-    sql: String,
-    values: Vec<Value>,
-) -> Result<Vec<QueryResult>, DbError> {
-    Ok(db
-        .query_all_raw(Statement::from_sql_and_values(
-            DbBackend::Postgres,
-            sql,
-            values,
-        ))
-        .await?)
-}
-
-/// Runs a statement and reads its first row.
-pub(crate) async fn one(
-    db: &impl ConnectionTrait,
-    sql: String,
-    values: Vec<Value>,
-) -> Result<Option<QueryResult>, DbError> {
-    Ok(db
-        .query_one_raw(Statement::from_sql_and_values(
-            DbBackend::Postgres,
-            sql,
-            values,
-        ))
-        .await?)
-}
-
-/// The WHERE conditions of one statement, with the binds they need.
-#[derive(Debug, Default)]
-struct Where {
-    conditions: Vec<String>,
-    values: Vec<Value>,
-}
-
-impl Where {
-    /// The placeholder the next bind uses.
-    fn next(&self) -> String {
-        format!("${}", self.values.len() + 1)
-    }
-
-    /// Adds a condition with no bind of its own.
-    fn raw(&mut self, condition: impl Into<String>) {
-        self.conditions.push(condition.into());
-    }
-
-    /// Adds `column = $n` and binds the value.
-    fn eq(&mut self, column: &str, value: Value) {
-        let placeholder = self.next();
-        self.conditions.push(format!("{column} = {placeholder}"));
-        self.values.push(value);
-    }
-
-    /// The ` WHERE ...` suffix, or nothing when no condition was added.
-    fn suffix(&self) -> String {
-        if self.conditions.is_empty() {
-            String::new()
-        } else {
-            format!(" WHERE {}", self.conditions.join(" AND "))
-        }
-    }
-}
-
 /// Adds the Scope's conditions against the given Repo and Project aliases.
-fn scope_conditions(scope: &Scope, repo_column: &str, project_column: &str, filter: &mut Where) {
+fn scope_conditions(scope: &Scope, repo_column: &str, project_column: &str, filter: &mut Binds) {
     if let Some(repo) = &scope.repo {
         filter.eq(repo_column, Value::from(repo.clone()));
     }
@@ -293,9 +223,9 @@ struct Board<'a> {
     /// The `FROM` clause, joining the entity to its parents.
     from: &'static str,
     /// The conditions the wrapper scoped and filtered with.
-    filter: Where,
-    /// The search condition, with `$P` standing for the pattern bind.
-    search: &'static str,
+    filter: Binds,
+    /// The search condition, given the pattern bind's placeholder.
+    search: fn(&str) -> String,
     /// The entity's GitHub issue column.
     issue_column: &'static str,
     /// Whether the entity's listing keeps stable rows for its own filters.
@@ -336,20 +266,16 @@ impl Board<'_> {
 
         let mut joins = String::new();
         if self.flaky_only || self.new_within_days.is_some() {
-            let placeholder = conditions.next();
+            let placeholder = conditions.bind(Value::from(self.threshold));
             conditions.raw(format!("{}.flakiness_score >= {placeholder}", self.alias));
-            conditions.values.push(Value::from(self.threshold));
         } else if !self.include_stable && self.q.is_none() && !self.keeps_stable_rows {
             // The stable-hiding default. Kept as descriptor data by the caller.
             conditions.raw(format!("{}.flakiness_score > 0", self.alias));
         }
 
         if let Some(text) = self.q {
-            let placeholder = conditions.next();
-            conditions.raw(self.search.replace("$P", &placeholder));
-            conditions
-                .values
-                .push(Value::from(format!("%{}%", escape_like(text))));
+            let placeholder = conditions.bind(Value::from(format!("%{}%", escape_like(text))));
+            conditions.raw((self.search)(&placeholder));
         }
 
         if let Some(wanted) = self.has_issue {
@@ -362,11 +288,10 @@ impl Board<'_> {
 
         if let Some(days) = self.new_within_days {
             joins = newest_history_join(self.kind, self.alias, self.today - Duration::days(days));
-            let placeholder = conditions.next();
+            let placeholder = conditions.bind(Value::from(self.threshold));
             conditions.raw(format!(
                 "(past.score IS NULL OR past.score < {placeholder})"
             ));
-            conditions.values.push(Value::from(self.threshold));
         }
 
         let base = format!(
@@ -377,7 +302,7 @@ impl Board<'_> {
             conditions.suffix()
         );
         let count_sql = format!("SELECT count(*) AS total FROM ({base}) AS matches");
-        let count = one(db, count_sql, conditions.values.clone()).await?;
+        let count = one(db, count_sql, conditions.values().to_vec()).await?;
         let total: i64 = match count {
             Some(row) => get(&row, "total")?,
             None => 0,
@@ -388,10 +313,7 @@ impl Board<'_> {
             SortKey::LastSeen => "last_seen_at DESC, id DESC",
             SortKey::Proven => "confirmed_flake_count DESC, flakiness_score DESC, id",
         };
-        let limit = conditions.next();
-        let mut values = conditions.values;
-        values.push(Value::from(self.page_size));
-        let offset = format!("${}", values.len() + 1);
+        let limit = conditions.bind(Value::from(self.page_size));
         // A page whose offset does not fit is an error rather than a wrapped
         // offset: the route refuses such a page, and a caller building the
         // options itself is told instead of being answered another page's rows.
@@ -403,7 +325,8 @@ impl Board<'_> {
                 page: self.page,
                 page_size: self.page_size,
             })?;
-        values.push(Value::from(offset_rows));
+        let offset = conditions.bind(Value::from(offset_rows));
+        let values = conditions.into_values();
         let page_sql = format!("{base} ORDER BY {order} LIMIT {limit} OFFSET {offset}");
         let page = rows(db, page_sql, values).await?;
         Ok(BoardPage { rows: page, total })
@@ -423,12 +346,20 @@ pub(crate) const JOBS_FROM: &str = "FROM jobs j \
      JOIN repos r ON r.id = p.repo_id";
 
 /// The case-insensitive literal substring search over a Test's identity.
-const TEST_SEARCH: &str = "(t.name ILIKE $P ESCAPE '\\' \
-     OR t.classname ILIKE $P ESCAPE '\\' \
-     OR t.file ILIKE $P ESCAPE '\\')";
+///
+/// One pattern bind covers every column, so `pattern` is repeated.
+fn test_search(pattern: &str) -> String {
+    format!(
+        "(t.name ILIKE {pattern} ESCAPE '\\' \
+         OR t.classname ILIKE {pattern} ESCAPE '\\' \
+         OR t.file ILIKE {pattern} ESCAPE '\\')"
+    )
+}
 
 /// The case-insensitive literal substring search over a Job's name and Pipeline.
-const JOB_SEARCH: &str = "(j.name ILIKE $P ESCAPE '\\' OR p.name ILIKE $P ESCAPE '\\')";
+fn job_search(pattern: &str) -> String {
+    format!("(j.name ILIKE {pattern} ESCAPE '\\' OR p.name ILIKE {pattern} ESCAPE '\\')")
+}
 
 /// Every Repo with its Projects, ordered by Repo name then Project name.
 ///
@@ -594,14 +525,11 @@ pub async fn list_tests(
     options: &ListOptions,
     settings: &ReadSettings,
 ) -> Result<TestPage, DbError> {
-    let mut filter = Where::default();
+    let mut filter = Binds::default();
     scope_conditions(scope, "r.name", "p.name", &mut filter);
     if let Some(file) = filters.file.as_deref().filter(|file| !file.is_empty()) {
-        let placeholder = filter.next();
+        let placeholder = filter.bind(Value::from(format!("%{}%", escape_like(file))));
         filter.raw(format!("t.file ILIKE {placeholder} ESCAPE '\\'"));
-        filter
-            .values
-            .push(Value::from(format!("%{}%", escape_like(file))));
     }
     if let Some(category) = filters.category {
         filter.eq(
@@ -614,9 +542,8 @@ pub async fn list_tests(
     }
     if filters.broken {
         if settings.broken_streak > 0 {
-            let placeholder = filter.next();
+            let placeholder = filter.bind(Value::from(settings.broken_streak));
             filter.raw(format!("t.fail_streak >= {placeholder}"));
-            filter.values.push(Value::from(settings.broken_streak));
         } else {
             // Detection disabled: `is_broken` is false for every row, so nothing is broken.
             filter.raw("FALSE");
@@ -628,7 +555,7 @@ pub async fn list_tests(
         select: TESTS_SELECT,
         from: TESTS_FROM,
         filter,
-        search: TEST_SEARCH,
+        search: test_search,
         issue_column: "t.github_issue_number",
         keeps_stable_rows: filters.quarantined == Some(true) || filters.broken,
         include_stable: options.include_stable,
@@ -680,7 +607,7 @@ pub async fn list_jobs(
     options: &ListOptions,
     settings: &ReadSettings,
 ) -> Result<JobPage, DbError> {
-    let mut filter = Where::default();
+    let mut filter = Binds::default();
     if let Some(repo) = repo {
         filter.eq("r.name", Value::from(repo.to_owned()));
     }
@@ -693,7 +620,7 @@ pub async fn list_jobs(
         select: JOBS_SELECT,
         from: JOBS_FROM,
         filter,
-        search: JOB_SEARCH,
+        search: job_search,
         issue_column: "j.github_issue_number",
         // ADR 0004: Jobs have no Quarantine, so no Job listing keeps stable rows.
         keeps_stable_rows: false,
@@ -733,35 +660,6 @@ pub async fn list_jobs(
     })
 }
 
-/// The scope's conditions for one statement, with placeholders from `start`.
-fn scope_filters(
-    scope: &Scope,
-    repo_column: &str,
-    project_column: &str,
-    start: usize,
-) -> (Vec<String>, Vec<Value>) {
-    let mut conditions = Vec::new();
-    let mut values: Vec<Value> = Vec::new();
-    if let Some(repo) = &scope.repo {
-        conditions.push(format!("{repo_column} = ${}", start + values.len()));
-        values.push(Value::from(repo.clone()));
-    }
-    if let Some(project) = &scope.project {
-        conditions.push(format!("{project_column} = ${}", start + values.len()));
-        values.push(Value::from(project.clone()));
-    }
-    (conditions, values)
-}
-
-/// A `WHERE` suffix over already-built conditions.
-fn where_suffix(conditions: &[String]) -> String {
-    if conditions.is_empty() {
-        String::new()
-    } else {
-        format!(" WHERE {}", conditions.join(" AND "))
-    }
-}
-
 /// The dashboard's headline counts for the Tests in scope.
 ///
 /// # Errors
@@ -798,17 +696,19 @@ async fn test_counts(
     threshold: f64,
 ) -> Result<(i64, i64, i64, i64, i64), DbError> {
     // `$1` is the threshold everywhere; the Runs subquery and the scope follow.
-    let (runs_conditions, runs_values) = scope_filters(scope, "trr.name", "tp.name", 2);
+    let mut runs = Binds::after(2);
+    scope_conditions(scope, "trr.name", "tp.name", &mut runs);
     let runs_sql = format!(
         "SELECT count(*) FROM test_runs tr \
            JOIN projects tp ON tp.id = tr.project_id \
            JOIN repos trr ON trr.id = tp.repo_id{}",
-        where_suffix(&runs_conditions)
+        runs.suffix()
     );
-    let (scope_sql, scope_values) = scope_filters(scope, "r.name", "p.name", 2 + runs_values.len());
+    let mut counts = Binds::after(2 + runs.values().len());
+    scope_conditions(scope, "r.name", "p.name", &mut counts);
     let mut values = vec![Value::from(threshold)];
-    values.extend(runs_values);
-    values.extend(scope_values);
+    values.extend(runs.into_values());
+    values.extend(counts.clone().into_values());
     let counts_sql = format!(
         "SELECT count(*) AS total, \
                 count(*) FILTER (WHERE t.flakiness_score >= $1) AS flaky, \
@@ -818,13 +718,9 @@ async fn test_counts(
            FROM test_cases t \
            JOIN projects p ON p.id = t.project_id \
            JOIN repos r ON r.id = p.repo_id{}",
-        where_suffix(&scope_sql)
+        counts.suffix()
     );
-    let row = one(db, counts_sql, values).await?.ok_or_else(|| {
-        DbError::Database(DbErr::RecordNotFound(
-            "the summary query returned no row".to_owned(),
-        ))
-    })?;
+    let row = required_one(db, counts_sql, values, "summary").await?;
     Ok((
         get(&row, "total")?,
         get(&row, "flaky")?,
@@ -845,24 +741,20 @@ async fn new_flaky_count(
     // The lateral subquery's cut-off is a literal day, so the binds stay simple.
     let old_point = score_history::newest_history_before(HistoryKind::Test, "t")
         .replace("$1::DATE", &format!("DATE '{}'", cutoff.format("%Y-%m-%d")));
-    let (new_conditions, new_values) = scope_filters(scope, "r.name", "p.name", 2);
-    let mut new_where = new_conditions;
-    new_where.push("(past.score IS NULL OR past.score < $1)".to_owned());
+    let mut new_flaky = Binds::after(2);
+    new_flaky.raw("(past.score IS NULL OR past.score < $1)");
+    scope_conditions(scope, "r.name", "p.name", &mut new_flaky);
     let new_sql = format!(
         "SELECT count(*) FILTER (WHERE t.flakiness_score >= $1) AS new_flaky \
            FROM test_cases t \
            JOIN projects p ON p.id = t.project_id \
            JOIN repos r ON r.id = p.repo_id \
            LEFT JOIN LATERAL ({old_point}) AS past ON true{}",
-        where_suffix(&new_where)
+        new_flaky.suffix()
     );
     let mut new_binds = vec![Value::from(threshold)];
-    new_binds.extend(new_values);
-    let row = one(db, new_sql, new_binds).await?.ok_or_else(|| {
-        DbError::Database(DbErr::RecordNotFound(
-            "the new-flaky query returned no row".to_owned(),
-        ))
-    })?;
+    new_binds.extend(new_flaky.into_values());
+    let row = required_one(db, new_sql, new_binds, "new-flaky").await?;
     get(&row, "new_flaky")
 }
 
@@ -873,9 +765,9 @@ async fn window_sums(
     today: NaiveDate,
 ) -> Result<(i64, i64), DbError> {
     let cutoff = today - Duration::days(SUMMARY_WINDOW_DAYS);
-    let (sum_conditions, sum_values) = scope_filters(scope, "r.name", "p.name", 2);
-    let mut sum_where = vec!["h.day > $1".to_owned()];
-    sum_where.extend(sum_conditions);
+    let mut sums = Binds::after(2);
+    sums.raw("h.day > $1");
+    scope_conditions(scope, "r.name", "p.name", &mut sums);
     let sums_sql = format!(
         "SELECT coalesce(sum(h.executions), 0) AS executions, \
                 coalesce(sum(h.failures), 0) AS failures \
@@ -883,15 +775,11 @@ async fn window_sums(
            JOIN test_cases t ON t.id = h.test_case_id \
            JOIN projects p ON p.id = t.project_id \
            JOIN repos r ON r.id = p.repo_id{}",
-        where_suffix(&sum_where)
+        sums.suffix()
     );
     let mut sum_binds = vec![Value::from(cutoff)];
-    sum_binds.extend(sum_values);
-    let row = one(db, sums_sql, sum_binds).await?.ok_or_else(|| {
-        DbError::Database(DbErr::RecordNotFound(
-            "the thirty-day sums query returned no row".to_owned(),
-        ))
-    })?;
+    sum_binds.extend(sums.into_values());
+    let row = required_one(db, sums_sql, sum_binds, "thirty-day sums").await?;
     Ok((get(&row, "executions")?, get(&row, "failures")?))
 }
 
@@ -900,25 +788,23 @@ async fn category_counts(
     db: &impl ConnectionTrait,
     scope: &Scope,
 ) -> Result<BTreeMap<String, i64>, DbError> {
-    let (category_conditions, category_values) = scope_filters(scope, "r.name", "p.name", 1);
-    let mut category_where = vec![
-        "t.flakiness_score > 0".to_owned(),
-        "t.failure_category IS NOT NULL".to_owned(),
-    ];
-    category_where.extend(category_conditions);
+    let mut categories = Binds::after(1);
+    categories.raw("t.flakiness_score > 0");
+    categories.raw("t.failure_category IS NOT NULL");
+    scope_conditions(scope, "r.name", "p.name", &mut categories);
     let categories_sql = format!(
         "SELECT t.failure_category AS category, count(*) AS count \
            FROM test_cases t \
            JOIN projects p ON p.id = t.project_id \
            JOIN repos r ON r.id = p.repo_id{} \
           GROUP BY t.failure_category",
-        where_suffix(&category_where)
+        categories.suffix()
     );
     let mut category_counts: BTreeMap<String, i64> = BTreeMap::new();
     for category in FailureCategory::ALL {
         let _ = category_counts.insert(category.as_str().to_owned(), 0);
     }
-    for row in rows(db, categories_sql, category_values).await? {
+    for row in rows(db, categories_sql, categories.into_values()).await? {
         let category: String = get(&row, "category")?;
         if FailureCategory::ALL
             .iter()
@@ -1211,17 +1097,16 @@ pub async fn search_tests(
     settings: &ReadSettings,
     limit: i64,
 ) -> Result<Vec<TestOut>, DbError> {
-    let (scope_sql, scope_values) = scope_filters(scope, "r.name", "p.name", 2);
-    let mut conditions = scope_sql;
-    conditions.push(TEST_SEARCH.replace("$P", "$1"));
-    let mut values = vec![Value::from(format!("%{}%", escape_like(query)))];
-    values.extend(scope_values);
-    let limit_placeholder = format!("${}", values.len() + 1);
-    values.push(Value::from(limit));
+    let mut binds = Binds::after(2);
+    binds.raw(test_search("$1"));
+    scope_conditions(scope, "r.name", "p.name", &mut binds);
+    let limit_placeholder = binds.bind(Value::from(limit));
     let sql = format!(
         "{TESTS_SELECT} {TESTS_FROM}{} ORDER BY t.flakiness_score DESC, t.id LIMIT {limit_placeholder}",
-        where_suffix(&conditions)
+        binds.suffix()
     );
+    let mut values = vec![Value::from(format!("%{}%", escape_like(query)))];
+    values.extend(binds.into_values());
     let rows = rows(db, sql, values).await?;
     let ids: Vec<i32> = rows
         .iter()
@@ -1254,29 +1139,22 @@ pub async fn find_test_ids(
     name: &str,
     classname: Option<&str>,
 ) -> Result<Vec<i64>, DbError> {
-    let mut conditions = vec![
-        "r.name = $1".to_owned(),
-        "p.name = $2".to_owned(),
-        "t.name = $3".to_owned(),
-    ];
-    let mut values = vec![
-        Value::from(repo.to_owned()),
-        Value::from(project.to_owned()),
-        Value::from(name.to_owned()),
-    ];
+    let mut binds = Binds::new();
+    binds.eq("r.name", Value::from(repo.to_owned()));
+    binds.eq("p.name", Value::from(project.to_owned()));
+    binds.eq("t.name", Value::from(name.to_owned()));
     if let Some(classname) = classname {
-        conditions.push(format!("t.classname = ${}", values.len() + 1));
-        values.push(Value::from(classname.to_owned()));
+        binds.eq("t.classname", Value::from(classname.to_owned()));
     }
     let sql = format!(
         "SELECT t.id FROM test_cases t \
            JOIN projects p ON p.id = t.project_id \
            JOIN repos r ON r.id = p.repo_id{} \
           ORDER BY t.id",
-        where_suffix(&conditions)
+        binds.suffix()
     );
     let mut found = Vec::new();
-    for row in rows(db, sql, values).await? {
+    for row in rows(db, sql, binds.into_values()).await? {
         found.push(id(get::<i32>(&row, "id")?));
     }
     Ok(found)
@@ -1634,7 +1512,10 @@ pub async fn job_summary(
     settings: &ReadSettings,
 ) -> Result<JobSummaryOut, DbError> {
     let threshold = settings.flake_threshold;
-    let (count_conditions, count_values) = repo_filters(repo, "r.name", 2);
+    let mut counts = Binds::after(2);
+    if let Some(repo) = repo {
+        counts.eq("r.name", Value::from(repo.to_owned()));
+    }
     let counts_sql = format!(
         "SELECT count(*) AS total, \
                 count(*) FILTER (WHERE j.flakiness_score >= $1) AS flaky, \
@@ -1643,15 +1524,11 @@ pub async fn job_summary(
            FROM jobs j \
            JOIN pipelines p ON p.id = j.pipeline_id \
            JOIN repos r ON r.id = p.repo_id{}",
-        where_suffix(&count_conditions)
+        counts.suffix()
     );
     let mut values = vec![Value::from(threshold)];
-    values.extend(count_values);
-    let row = one(db, counts_sql, values).await?.ok_or_else(|| {
-        DbError::Database(DbErr::RecordNotFound(
-            "the job summary query returned no row".to_owned(),
-        ))
-    })?;
+    values.extend(counts.into_values());
+    let row = required_one(db, counts_sql, values, "job summary").await?;
     let total: i64 = get(&row, "total")?;
     let flaky: i64 = get(&row, "flaky")?;
     let suspect: i64 = get(&row, "suspect")?;
@@ -1661,30 +1538,30 @@ pub async fn job_summary(
     let cutoff = today - Duration::days(NEW_FLAKY_DAYS);
     let old_point = score_history::newest_history_before(HistoryKind::Job, "j")
         .replace("$1::DATE", &format!("DATE '{}'", cutoff.format("%Y-%m-%d")));
-    let (new_conditions, new_values) = repo_filters(repo, "r.name", 2);
-    let mut new_where = new_conditions;
-    new_where.push("(past.score IS NULL OR past.score < $1)".to_owned());
+    let mut new_flaky = Binds::after(2);
+    new_flaky.raw("(past.score IS NULL OR past.score < $1)");
+    if let Some(repo) = repo {
+        new_flaky.eq("r.name", Value::from(repo.to_owned()));
+    }
     let new_sql = format!(
         "SELECT count(*) FILTER (WHERE j.flakiness_score >= $1) AS new_flaky \
            FROM jobs j \
            JOIN pipelines p ON p.id = j.pipeline_id \
            JOIN repos r ON r.id = p.repo_id \
            LEFT JOIN LATERAL ({old_point}) AS past ON true{}",
-        where_suffix(&new_where)
+        new_flaky.suffix()
     );
     let mut new_binds = vec![Value::from(threshold)];
-    new_binds.extend(new_values);
-    let row = one(db, new_sql, new_binds).await?.ok_or_else(|| {
-        DbError::Database(DbErr::RecordNotFound(
-            "the job new-flaky query returned no row".to_owned(),
-        ))
-    })?;
+    new_binds.extend(new_flaky.into_values());
+    let row = required_one(db, new_sql, new_binds, "job new-flaky").await?;
     let new_flaky: i64 = get(&row, "new_flaky")?;
 
     let window_cutoff = today - Duration::days(SUMMARY_WINDOW_DAYS);
-    let (sum_conditions, sum_values) = repo_filters(repo, "r.name", 2);
-    let mut sum_where = vec!["h.day > $1".to_owned()];
-    sum_where.extend(sum_conditions);
+    let mut sums = Binds::after(2);
+    sums.raw("h.day > $1");
+    if let Some(repo) = repo {
+        sums.eq("r.name", Value::from(repo.to_owned()));
+    }
     let sums_sql = format!(
         "SELECT coalesce(sum(h.executions), 0) AS executions, \
                 coalesce(sum(h.failures), 0) AS failures \
@@ -1692,27 +1569,26 @@ pub async fn job_summary(
            JOIN jobs j ON j.id = h.job_id \
            JOIN pipelines p ON p.id = j.pipeline_id \
            JOIN repos r ON r.id = p.repo_id{}",
-        where_suffix(&sum_where)
+        sums.suffix()
     );
     let mut sum_binds = vec![Value::from(window_cutoff)];
-    sum_binds.extend(sum_values);
-    let row = one(db, sums_sql, sum_binds).await?.ok_or_else(|| {
-        DbError::Database(DbErr::RecordNotFound(
-            "the job thirty-day sums query returned no row".to_owned(),
-        ))
-    })?;
+    sum_binds.extend(sums.into_values());
+    let row = required_one(db, sums_sql, sum_binds, "job thirty-day sums").await?;
     let executions_30d: i64 = get(&row, "executions")?;
     let failures_30d: i64 = get(&row, "failures")?;
 
-    let (pipe_conditions, pipe_values) = repo_filters(repo, "r.name", 1);
+    let mut pipelines_in = Binds::after(1);
+    if let Some(repo) = repo {
+        pipelines_in.eq("r.name", Value::from(repo.to_owned()));
+    }
     let pipelines_sql = format!(
         "SELECT DISTINCT p.name AS pipeline \
            FROM pipelines p JOIN repos r ON r.id = p.repo_id{} \
           ORDER BY p.name",
-        where_suffix(&pipe_conditions)
+        pipelines_in.suffix()
     );
     let mut pipelines = Vec::new();
-    for row in rows(db, pipelines_sql, pipe_values).await? {
+    for row in rows(db, pipelines_sql, pipelines_in.into_values()).await? {
         pipelines.push(get::<String>(&row, "pipeline")?);
     }
 
@@ -1727,17 +1603,6 @@ pub async fn job_summary(
         flake_threshold: threshold,
         pipelines,
     })
-}
-
-/// A Repo's conditions for one statement, with placeholders from `start`.
-fn repo_filters(repo: Option<&str>, repo_column: &str, start: usize) -> (Vec<String>, Vec<Value>) {
-    match repo {
-        Some(repo) => (
-            vec![format!("{repo_column} = ${start}")],
-            vec![Value::from(repo.to_owned())],
-        ),
-        None => (Vec::new(), Vec::new()),
-    }
 }
 
 /// Case-insensitive literal substring over a Job's and its Pipeline's name; worst first.
@@ -1755,7 +1620,7 @@ pub async fn search_jobs(
     let sql = format!(
         "{JOBS_SELECT} {JOBS_FROM} WHERE r.name = $2 AND {} \
           ORDER BY j.flakiness_score DESC, j.id LIMIT $3",
-        JOB_SEARCH.replace("$P", "$1")
+        job_search("$1")
     );
     let values = vec![
         Value::from(format!("%{}%", escape_like(query))),
@@ -1792,21 +1657,21 @@ pub async fn find_job_ids(
     name: &str,
     pipeline: Option<&str>,
 ) -> Result<Vec<i64>, DbError> {
-    let mut conditions = vec!["r.name = $1".to_owned(), "j.name = $2".to_owned()];
-    let mut values = vec![Value::from(repo.to_owned()), Value::from(name.to_owned())];
+    let mut binds = Binds::new();
+    binds.eq("r.name", Value::from(repo.to_owned()));
+    binds.eq("j.name", Value::from(name.to_owned()));
     if let Some(pipeline) = pipeline {
-        conditions.push(format!("p.name = ${}", values.len() + 1));
-        values.push(Value::from(pipeline.to_owned()));
+        binds.eq("p.name", Value::from(pipeline.to_owned()));
     }
     let sql = format!(
         "SELECT j.id FROM jobs j \
            JOIN pipelines p ON p.id = j.pipeline_id \
            JOIN repos r ON r.id = p.repo_id{} \
           ORDER BY j.id",
-        where_suffix(&conditions)
+        binds.suffix()
     );
     let mut found = Vec::new();
-    for row in rows(db, sql, values).await? {
+    for row in rows(db, sql, binds.into_values()).await? {
         found.push(id(get::<i32>(&row, "id")?));
     }
     Ok(found)
@@ -1973,13 +1838,13 @@ async fn ci_run_test_failures(
             AND coalesce(tr.ci_run_attempt, 1) = $3 \
             AND e.status IN ('failed', 'error') \
           GROUP BY e.test_case_id, e.test_run_id) AS pairs";
-    let count = one(db, total_sql.to_owned(), values.clone())
-        .await?
-        .ok_or_else(|| {
-            DbError::Database(DbErr::RecordNotFound(
-                "the CI run failure count returned no row".to_owned(),
-            ))
-        })?;
+    let count = required_one(
+        db,
+        total_sql.to_owned(),
+        values.clone(),
+        "CI run failure count",
+    )
+    .await?;
     let total: i64 = get(&count, "total")?;
     if total == 0 {
         return Ok((Vec::new(), 0));
@@ -2178,8 +2043,8 @@ mod tests {
     )]
 
     use super::{
-        HistoryKind, NEW_FLAKY_DAYS, ReadError, ReadSettings, SortKey, Where, newest_history_join,
-        repo_filters, scope_conditions, scope_filters, where_suffix,
+        Binds, HistoryKind, NEW_FLAKY_DAYS, ReadError, ReadSettings, SortKey, newest_history_join,
+        scope_conditions,
     };
 
     #[test]
@@ -2192,41 +2057,13 @@ mod tests {
     }
 
     #[test]
-    fn the_where_suffix_is_empty_without_conditions() {
-        let filter = Where::default();
-        assert_eq!(filter.suffix(), "");
-        assert_eq!(where_suffix(&[]), "");
-    }
-
-    #[test]
-    fn the_where_suffix_joins_every_condition() {
-        let mut filter = Where::default();
-        filter.eq("r.name", sea_orm::Value::from("acme/app"));
-        filter.raw("t.flakiness_score > 0");
-        assert_eq!(
-            filter.suffix(),
-            " WHERE r.name = $1 AND t.flakiness_score > 0"
-        );
-    }
-
-    #[test]
-    fn a_scope_and_a_repo_filter_bind_in_order() {
+    fn a_scope_binds_from_the_number_the_statement_reserved() {
         let scope = super::Scope::new(Some("acme/app".to_owned()), Some("backend".to_owned()))
             .expect("a scope");
-        let mut filter = Where::default();
-        scope_conditions(&scope, "r.name", "p.name", &mut filter);
-        assert_eq!(filter.suffix(), " WHERE r.name = $1 AND p.name = $2");
-        assert_eq!(filter.values.len(), 2);
-
-        let (conditions, values) = scope_filters(&scope, "r.name", "p.name", 3);
-        assert_eq!(conditions, ["r.name = $3", "p.name = $4"]);
-        assert_eq!(values.len(), 2);
-        let (conditions, values) = repo_filters(Some("acme/app"), "r.name", 1);
-        assert_eq!(conditions, ["r.name = $1"]);
-        assert_eq!(values.len(), 1);
-        let (conditions, values) = repo_filters(None, "r.name", 1);
-        assert_eq!(conditions, Vec::<String>::new());
-        assert_eq!(values, Vec::<sea_orm::Value>::new());
+        let mut binds = Binds::after(3);
+        scope_conditions(&scope, "r.name", "p.name", &mut binds);
+        assert_eq!(binds.suffix(), " WHERE r.name = $3 AND p.name = $4");
+        assert_eq!(binds.values().len(), 2);
     }
 
     #[test]
