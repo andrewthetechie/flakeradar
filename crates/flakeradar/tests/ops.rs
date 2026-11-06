@@ -443,9 +443,10 @@ async fn metrics_reports_a_missing_database_with_an_empty_body() {
 }
 
 #[tokio::test]
+/// The metrics scrape's unreadable-table failure, which only the log can carry.
 async fn metrics_logs_the_error_it_answers_503_for() {
-    // The scrape answers an empty 503, which alone cannot be told from a quiet
-    // failure; the error behind it names the table that could not be read.
+    // This one is a log requirement, not a log scrape: the 503 body is empty by
+    // contract, so the reason the scrape failed has no carrier a test could read.
     let db = TestDb::new().await.expect("a test database is available");
     db.connection()
         .execute_raw(Statement::from_string(

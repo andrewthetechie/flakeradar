@@ -1630,6 +1630,8 @@ async fn a_job_history_that_cannot_be_read_is_logged_and_the_issue_still_files()
         );
     })
     .await;
+    // J13's requirement is that the dropped error is not swallowed, and a log line
+    // is the only place it can appear: nothing in the answer carries it.
     let warnings = lines_with(&logged, "could not read a Job's Executions");
     assert_eq!(warnings.len(), 1, "the dropped error is logged: {logged}");
     assert!(warnings[0].contains("acme/app"), "{logged}");

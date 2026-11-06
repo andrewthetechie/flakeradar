@@ -2,11 +2,12 @@
 //!
 //! One classifier turns an answer into a [`Verdict`], and one table — [`action`] —
 //! states what each [`Operation`] does with each verdict. A batch reports what it
-//! did as a [`BatchReport`], so a caller asserts the outcome instead of a log line.
+//! did as a [`BatchReport`], or as a [`RemovalReport`] for the post-delete close,
+//! so a caller asserts the outcome instead of a log line.
 
 // Rust guideline compliant 2026-07-21
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// What GitHub said, as one verdict every operation reads the same way.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,6 +95,34 @@ impl BatchReport {
             operation = ?operation,
             linked = self.linked.len(),
             skipped_repos = self.skipped.len(),
+            stopped = ?self.stopped,
+            "GitHub batch finished"
+        );
+    }
+}
+
+/// What the post-delete close did, as a value a caller can assert on.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RemovalReport {
+    /// The issue numbers whose comment landed and which were then closed.
+    pub closed: BTreeSet<i32>,
+    /// The issue numbers nothing was closed for, with GitHub's answer.
+    ///
+    /// A [`Verdict::NotFound`] or [`Verdict::Gone`] here is the issue already
+    /// being gone, which is the outcome this batch wanted; anything else left the
+    /// issue open.
+    pub refused: BTreeMap<i32, Verdict>,
+    /// Why the batch ended before its last number, when it did.
+    pub stopped: Option<BatchStop>,
+}
+
+impl RemovalReport {
+    /// Logs this batch's summary once, at the edge that owns it.
+    pub(super) fn log(&self) {
+        tracing::info!(
+            operation = ?Operation::CloseDeleted,
+            closed = self.closed.len(),
+            refused = self.refused.len(),
             stopped = ?self.stopped,
             "GitHub batch finished"
         );

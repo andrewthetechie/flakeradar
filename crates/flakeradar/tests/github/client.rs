@@ -74,6 +74,8 @@ async fn a_token_the_header_cannot_carry_goes_out_with_no_credentials() {
             .is_some_and(|request| request.headers.get("authorization").is_none()),
         "the request carries no authorization header"
     );
+    // Not a log scrape: that a credential never reaches a log line is the rule this
+    // test exists for, so the line is the outcome and not a proxy for one.
     assert!(
         !logged.contains("tok"),
         "a token never reaches a log line: {logged}"

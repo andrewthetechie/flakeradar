@@ -3,10 +3,11 @@
 // Rust guideline compliant 2026-07-21
 
 use flakeradar::Settings;
-use flakeradar::github::{self, Api};
+use flakeradar::github::{self, Api, Verdict};
 use flakeradar::settings::Secret;
 use flakeradar_core::EntityKind;
 use flakeradar_db::issue_links;
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use chrono::{DateTime, FixedOffset, TimeZone as _, Utc};
@@ -20,8 +21,8 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use crate::support::{
     CREATED, Held, Loopback, TOKEN, TRUNCATED, api, flaky_job, flaky_test, flaky_test_in,
-    gh_settings, lines_with, link_of, logged_from, mount_close, mount_create, mount_issue,
-    mount_state, noted, requested_paths, stamp, stamp_link, stamp_note, unstopped,
+    gh_settings, link_of, mount_close, mount_create, mount_issue, mount_state, noted,
+    requested_paths, stamp, stamp_link, stamp_note, unstopped,
 };
 
 /// One Test's stored check stamp.
@@ -1126,7 +1127,7 @@ async fn deleting_a_repo_comments_then_closes_each_issue() {
         mount_close(&server, number, 200, true).await;
     }
 
-    github::close_issues_after_removal("acme/app", &[123, 456], &api(&server)).await;
+    let report = github::close_issues_after_removal("acme/app", &[123, 456], &api(&server)).await;
     let requests = server.received_requests().await.expect("a record");
     let calls: Vec<(String, String)> = requests
         .iter()
@@ -1153,6 +1154,15 @@ async fn deleting_a_repo_comments_then_closes_each_issue() {
         ],
         "each issue is commented on, then closed"
     );
+    assert_eq!(
+        report.closed,
+        BTreeSet::from([123, 456]),
+        "the batch reports both issues closed"
+    );
+    assert!(
+        report.refused.is_empty() && report.stopped.is_none(),
+        "nothing was refused and nothing ended the batch: {report:?}"
+    );
     let comment: Json = serde_json::from_slice(&requests[0].body).expect("the body is JSON");
     let text = comment["body"].as_str().expect("a body");
     assert!(text.contains("admin") && text.contains("delet"), "{text}");
@@ -1161,8 +1171,8 @@ async fn deleting_a_repo_comments_then_closes_each_issue() {
 
     // No numbers and no token are both silent.
     let empty = MockServer::start().await;
-    github::close_issues_after_removal("acme/app", &[], &api(&empty)).await;
-    github::close_issues_after_removal(
+    let silent = github::close_issues_after_removal("acme/app", &[], &api(&empty)).await;
+    let unconfigured = github::close_issues_after_removal(
         "acme/app",
         &[123],
         &Api::new(Secret::new(""), &empty.uri()).expect("the HTTP client builds"),
@@ -1175,13 +1185,21 @@ async fn deleting_a_repo_comments_then_closes_each_issue() {
             .expect("a record")
             .is_empty()
     );
+    assert_eq!(
+        (silent, unconfigured),
+        (
+            github::RemovalReport::default(),
+            github::RemovalReport::default()
+        ),
+        "a batch with nothing to do reports nothing"
+    );
 
     // A gone issue is not closed: the comment's 404 ends that issue.
     let gone = MockServer::start().await;
     mount_close(&gone, 123, 404, false).await;
     mount_close(&gone, 456, 201, false).await;
     mount_close(&gone, 456, 200, true).await;
-    github::close_issues_after_removal("acme/app", &[123, 456], &api(&gone)).await;
+    let report = github::close_issues_after_removal("acme/app", &[123, 456], &api(&gone)).await;
     assert_eq!(
         requested_paths(&gone).await,
         vec![
@@ -1190,6 +1208,16 @@ async fn deleting_a_repo_comments_then_closes_each_issue() {
             "/repos/acme/app/issues/456",
         ],
         "the gone issue gets no close PATCH"
+    );
+    assert_eq!(
+        report.closed,
+        BTreeSet::from([456]),
+        "only the issue that still existed was closed"
+    );
+    assert_eq!(
+        report.refused.get(&123),
+        Some(&Verdict::NotFound),
+        "the 404 says the issue is gone: {report:?}"
     );
 }
 
@@ -1200,7 +1228,8 @@ async fn a_failed_post_delete_request_costs_only_that_issue() {
     mount_close(&failed_comment, 123, 500, false).await;
     mount_close(&failed_comment, 456, 201, false).await;
     mount_close(&failed_comment, 456, 200, true).await;
-    github::close_issues_after_removal("acme/app", &[123, 456], &api(&failed_comment)).await;
+    let report =
+        github::close_issues_after_removal("acme/app", &[123, 456], &api(&failed_comment)).await;
     assert_eq!(
         requested_paths(&failed_comment).await,
         vec![
@@ -1209,19 +1238,25 @@ async fn a_failed_post_delete_request_costs_only_that_issue() {
             "/repos/acme/app/issues/456",
         ]
     );
+    assert_eq!(
+        report.closed,
+        BTreeSet::from([456]),
+        "the issue whose comment failed is the only one left open"
+    );
+    assert_eq!(
+        report.refused.get(&123),
+        Some(&Verdict::Other),
+        "a 500 is one issue's failure, not the Repo's: {report:?}"
+    );
 
-    // An issue deleted between the comment and the close PATCH is skipped, with a log line.
+    // An issue deleted between the comment and the close PATCH is skipped.
     let gone_close = MockServer::start().await;
     mount_close(&gone_close, 123, 201, false).await;
     mount_close(&gone_close, 123, 404, true).await;
     mount_close(&gone_close, 456, 201, false).await;
     mount_close(&gone_close, 456, 200, true).await;
-    let logged = logged_from(github::close_issues_after_removal(
-        "acme/app",
-        &[123, 456],
-        &api(&gone_close),
-    ))
-    .await;
+    let report =
+        github::close_issues_after_removal("acme/app", &[123, 456], &api(&gone_close)).await;
     assert_eq!(
         requested_paths(&gone_close).await,
         vec![
@@ -1231,9 +1266,15 @@ async fn a_failed_post_delete_request_costs_only_that_issue() {
             "/repos/acme/app/issues/456",
         ]
     );
-    assert!(
-        !lines_with(&logged, "already gone after an admin delete").is_empty(),
-        "{logged}"
+    assert_eq!(
+        report.closed,
+        BTreeSet::from([456]),
+        "an issue deleted before its close is not reported closed"
+    );
+    assert_eq!(
+        report.refused.get(&123),
+        Some(&Verdict::NotFound),
+        "the close's 404 says the issue is already gone: {report:?}"
     );
 
     // A 5xx on the close PATCH is a warning, and the batch goes on.
@@ -1242,12 +1283,8 @@ async fn a_failed_post_delete_request_costs_only_that_issue() {
     mount_close(&failed_close, 123, 500, true).await;
     mount_close(&failed_close, 456, 201, false).await;
     mount_close(&failed_close, 456, 200, true).await;
-    let logged = logged_from(github::close_issues_after_removal(
-        "acme/app",
-        &[123, 456],
-        &api(&failed_close),
-    ))
-    .await;
+    let report =
+        github::close_issues_after_removal("acme/app", &[123, 456], &api(&failed_close)).await;
     assert_eq!(
         requested_paths(&failed_close).await,
         vec![
@@ -1258,9 +1295,14 @@ async fn a_failed_post_delete_request_costs_only_that_issue() {
         ]
     );
     assert_eq!(
-        lines_with(&logged, "close after an admin delete failed").len(),
-        1,
-        "{logged}"
+        report.closed,
+        BTreeSet::from([456]),
+        "a failed close costs its own issue and the batch goes on"
+    );
+    assert_eq!(
+        report.refused.get(&123),
+        Some(&Verdict::Other),
+        "{report:?}"
     );
 }
 
@@ -1268,11 +1310,15 @@ async fn a_failed_post_delete_request_costs_only_that_issue() {
 async fn the_post_delete_close_never_raises_when_github_is_unreachable() {
     // Nothing listens on this port.
     let api = Api::new(Secret::new(TOKEN), "http://127.0.0.1:1").expect("the HTTP client builds");
-    let logged = logged_from(github::close_issues_after_removal("acme/app", &[123], &api)).await;
+    let report = github::close_issues_after_removal("acme/app", &[123], &api).await;
     assert_eq!(
-        lines_with(&logged, "close skipped for one issue").len(),
-        1,
-        "{logged}"
+        report.refused.get(&123),
+        Some(&Verdict::Unreachable),
+        "the issue whose comment got no answer is the one it lost: {report:?}"
+    );
+    assert!(
+        report.closed.is_empty(),
+        "nothing is reported closed for an endpoint nothing answered"
     );
 }
 
@@ -1281,11 +1327,21 @@ async fn a_rate_limit_on_either_post_delete_request_stops_the_batch() {
     let comment_limit = MockServer::start().await;
     mount_close(&comment_limit, 123, 429, false).await;
     mount_close(&comment_limit, 456, 201, false).await;
-    github::close_issues_after_removal("acme/app", &[123, 456], &api(&comment_limit)).await;
+    let report =
+        github::close_issues_after_removal("acme/app", &[123, 456], &api(&comment_limit)).await;
     assert_eq!(
         requested_paths(&comment_limit).await,
         vec!["/repos/acme/app/issues/123/comments"],
         "a throttled comment stops the batch"
+    );
+    assert_eq!(
+        report.stopped,
+        Some(github::BatchStop::RateLimited),
+        "a throttled comment ends the batch: {report:?}"
+    );
+    assert!(
+        report.closed.is_empty(),
+        "nothing is closed when the first comment is throttled"
     );
 
     let close_limit = MockServer::start().await;
@@ -1296,12 +1352,8 @@ async fn a_rate_limit_on_either_post_delete_request_stops_the_batch() {
         .mount(&close_limit)
         .await;
     mount_close(&close_limit, 456, 201, false).await;
-    let logged = logged_from(github::close_issues_after_removal(
-        "acme/app",
-        &[123, 456],
-        &api(&close_limit),
-    ))
-    .await;
+    let report =
+        github::close_issues_after_removal("acme/app", &[123, 456], &api(&close_limit)).await;
     assert_eq!(
         requested_paths(&close_limit).await,
         vec![
@@ -1310,9 +1362,14 @@ async fn a_rate_limit_on_either_post_delete_request_stops_the_batch() {
         ],
         "a throttled close PATCH stops the batch"
     );
+    assert_eq!(
+        report.stopped,
+        Some(github::BatchStop::RateLimited),
+        "a throttled close ends the batch: {report:?}"
+    );
     assert!(
-        !lines_with(&logged, "stopping the post-delete close batch").is_empty(),
-        "{logged}"
+        report.closed.is_empty(),
+        "the throttled close itself is not reported closed"
     );
 }
 
@@ -1369,25 +1426,21 @@ async fn a_body_that_dies_after_the_status_line_is_a_transport_error() {
     let loopback = Loopback::answering(TRUNCATED.to_owned()).await;
     let api = Api::new(Secret::new(TOKEN), &loopback.base).expect("the HTTP client builds");
 
-    let logged = logged_from(github::close_issues_after_removal("acme/app", &[123], &api)).await;
+    let report = github::close_issues_after_removal("acme/app", &[123], &api).await;
 
     assert_eq!(
         loopback.accepted(),
         1,
         "a dead body costs the issue before a close is attempted"
     );
-    let skipped = lines_with(&logged, "post-delete close skipped for one issue");
-    assert_eq!(skipped.len(), 1, "{logged}");
-    assert!(
-        skipped
-            .first()
-            .is_some_and(|line| line.contains("GitHub request failed")),
-        "the mapped failure is the transport error: {logged}"
+    assert_eq!(
+        report.refused.get(&123),
+        Some(&Verdict::Unreachable),
+        "the answer without a body is the transport error, not a status: {report:?}"
     );
     assert!(
-        lines_with(&logged, "comment after an admin delete failed").is_empty()
-            && lines_with(&logged, "closed an issue after an admin delete").is_empty(),
-        "neither a status failure nor a success is reported: {logged}"
+        report.closed.is_empty() && report.stopped.is_none(),
+        "neither a close nor an end of the batch came of it: {report:?}"
     );
 }
 
@@ -1398,7 +1451,7 @@ async fn a_post_delete_close_whose_connection_dies_costs_that_issue() {
     let loopback = Loopback::answering(CREATED.to_owned()).await;
     let api = Api::new(Secret::new(TOKEN), &loopback.base).expect("the HTTP client builds");
 
-    let logged = logged_from(github::close_issues_after_removal("acme/app", &[123], &api)).await;
+    let report = github::close_issues_after_removal("acme/app", &[123], &api).await;
 
     assert_eq!(
         loopback.accepted(),
@@ -1406,13 +1459,13 @@ async fn a_post_delete_close_whose_connection_dies_costs_that_issue() {
         "the comment landed and the close was attempted"
     );
     assert_eq!(
-        lines_with(&logged, "post-delete close skipped for one issue").len(),
-        1,
-        "{logged}"
+        report.refused.get(&123),
+        Some(&Verdict::Unreachable),
+        "the dead close is the one issue the batch lost: {report:?}"
     );
     assert!(
-        lines_with(&logged, "closed an issue after an admin delete").is_empty(),
-        "a close that died is never reported as done: {logged}"
+        report.closed.is_empty(),
+        "a close that died is never reported as done: {report:?}"
     );
 }
 

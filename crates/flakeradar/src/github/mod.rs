@@ -98,7 +98,7 @@ pub use filing::{file_issues_for, file_job_issues_for, filing_gate};
 #[doc(inline)]
 pub use notes::{note_fixed_issues_for, note_fixed_job_issues_for};
 #[doc(inline)]
-pub use policy::{Action, BatchReport, BatchStop, Operation, Verdict, action};
+pub use policy::{Action, BatchReport, BatchStop, Operation, RemovalReport, Verdict, action};
 #[doc(inline)]
 pub use sync::{CLOSE_COMMENT, close_issues_after_removal, sync_closed_issues};
 

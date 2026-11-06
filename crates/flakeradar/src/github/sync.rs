@@ -16,7 +16,9 @@ use sea_orm::ConnectionTrait;
 use tokio_util::sync::CancellationToken;
 
 use super::client::{Answer, Api, Success};
-use super::policy::{Action, BatchReport, BatchStop, Operation, Verdict, action, batch_stop};
+use super::policy::{
+    Action, BatchReport, BatchStop, Operation, RemovalReport, Verdict, action, batch_stop,
+};
 use crate::settings::Settings;
 use crate::worker::until_stopped;
 
@@ -200,8 +202,12 @@ async fn record_check(
 /// syncs the issue: without this it would stay open forever, pointing at
 /// permalinks that now 404. Never raises; a rate limit stops the batch and any
 /// other failure costs that one issue.
-pub async fn close_issues_after_removal(repo: &str, numbers: &[i32], api: &Api) -> BatchReport {
-    let mut report = BatchReport::default();
+///
+/// Answers what became of each number — the issues it closed, and the numbers
+/// nothing was closed for with GitHub's answer — so a caller reads the outcome
+/// rather than the batch's log.
+pub async fn close_issues_after_removal(repo: &str, numbers: &[i32], api: &Api) -> RemovalReport {
+    let mut report = RemovalReport::default();
     if !api.configured() || numbers.is_empty() {
         return report;
     }
@@ -215,6 +221,7 @@ pub async fn close_issues_after_removal(repo: &str, numbers: &[i32], api: &Api) 
                     number,
                     "GitHub post-delete close skipped for one issue"
                 );
+                report.refused.insert(*number, Verdict::Unreachable);
                 continue;
             }
         };
@@ -241,6 +248,7 @@ pub async fn close_issues_after_removal(repo: &str, numbers: &[i32], api: &Api) 
                         "GitHub comment after an admin delete failed"
                     );
                 }
+                report.refused.insert(*number, verdict);
                 continue;
             }
         }
@@ -253,6 +261,7 @@ pub async fn close_issues_after_removal(repo: &str, numbers: &[i32], api: &Api) 
                     number,
                     "GitHub post-delete close skipped for one issue"
                 );
+                report.refused.insert(*number, Verdict::Unreachable);
                 continue;
             }
         };
@@ -260,6 +269,7 @@ pub async fn close_issues_after_removal(repo: &str, numbers: &[i32], api: &Api) 
         match action(Operation::CloseDeleted, verdict) {
             Action::Use => {
                 tracing::info!(repo = %repo, number, "closed an issue after an admin delete");
+                report.closed.insert(*number);
             }
             Action::Stop => {
                 tracing::warn!(
@@ -283,10 +293,11 @@ pub async fn close_issues_after_removal(repo: &str, numbers: &[i32], api: &Api) 
                         "GitHub close after an admin delete failed"
                     );
                 }
+                report.refused.insert(*number, verdict);
             }
         }
     }
-    report.log(Operation::CloseDeleted);
+    report.log();
     report
 }
 
