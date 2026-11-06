@@ -15,7 +15,7 @@
 
 use axum::http::{Method, StatusCode};
 use flakeradar_test_support::{
-    Reply, TestDb, app, app_serving, get, request, request_with_headers, settings,
+    Reply, TestDb, app, app_serving, get, request, request_with_headers,
 };
 
 use serde_json::json;
@@ -301,6 +301,7 @@ async fn the_embedded_frontend_is_in_the_binary() {
 
     use flakeradar::assets::embedded;
     use flakeradar::{app::AppState, app::build_app};
+    use flakeradar_test_support::settings;
 
     let db = TestDb::new().await.expect("a test database is available");
     let state = AppState::new(db.connection().clone(), Arc::new(settings(&[])))
