@@ -54,7 +54,10 @@ pub use model::{ExecutionStatus, FailedJobOutcome, JobOutcome, JobStatus, Tier, 
 #[doc(inline)]
 pub use notify::{Kind, TierChange, WebhookFormat, parse_urls, render, render_json, render_slack};
 #[doc(inline)]
-pub use parsing::{DETAILS_MAX, MESSAGE_MAX, ParseError, ParsedCase, fingerprint, parse_junit_xml};
+pub use parsing::{
+    DETAILS_MAX, MESSAGE_MAX, PARSE_BYTES_MAX, ParseError, ParsedCase, SUITE_DEPTH_MAX,
+    fingerprint, parse_junit_xml,
+};
 #[doc(inline)]
 pub use py::{TRUNCATION_MARKER, cap, py_splitlines, py_strip, round4};
 #[doc(inline)]

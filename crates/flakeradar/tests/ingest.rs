@@ -632,6 +632,66 @@ async fn ingest_rejects_empty_and_garbage() {
 }
 
 #[tokio::test]
+async fn a_deeply_nested_report_is_refused_and_the_server_stays_up() {
+    // The reference's parser recursed per level, and 5,000 nested suites aborted
+    // the Rust process (H0). Both depths answer the 422 a bad report gets, and
+    // the next upload is served, so the parser neither overflowed nor stopped.
+    let db = TestDb::new().await.expect("a test database is available");
+    let app = test_app(&db);
+    for depth in [5_000_usize, 200_000] {
+        let mut body = Vec::new();
+        for _ in 0..depth {
+            body.extend_from_slice(b"<testsuite name=\"s\">");
+        }
+        body.extend_from_slice(b"<testcase classname=\"c\" name=\"t\"/>");
+        for _ in 0..depth {
+            body.extend_from_slice(b"</testsuite>");
+        }
+        let reply = ingest(&app, &[], body).await;
+        assert_eq!(reply.status, StatusCode::UNPROCESSABLE_ENTITY, "{depth}");
+        let detail = reply.json()["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
+        assert!(
+            detail.starts_with("Not a valid JUnit XML report: "),
+            "{depth}: {detail}"
+        );
+        // The server still answers health, and the next upload is still judged.
+        let healthy = get(&app, "/api/health").await;
+        assert_eq!(healthy.status, StatusCode::OK, "{depth}");
+        let refused = ingest(&app, &[], b"not xml at all".to_vec()).await;
+        assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY, "{depth}");
+    }
+    // Nothing was queued for a refused parse, and a good upload still is.
+    assert_eq!(stored_reports(&db).await.len(), 0);
+    let queued = ingest(&app, &[], passing_report()).await;
+    assert_eq!(queued.status, StatusCode::ACCEPTED);
+    assert_eq!(stored_reports(&db).await.len(), 1);
+}
+
+#[tokio::test]
+async fn ingest_refuses_a_report_whose_identities_exceed_the_budget() {
+    // H3: one long suite name copied once per case is the quadratic case.
+    let db = TestDb::new().await.expect("a test database is available");
+    let mut body = b"<testsuite name=\"".to_vec();
+    body.extend(std::iter::repeat_n(b'n', 10 * 1024 * 1024));
+    body.extend_from_slice(b"\">");
+    for _ in 0..10 {
+        body.extend_from_slice(b"<testcase name=\"a\"/>");
+    }
+    body.extend_from_slice(b"</testsuite>");
+    let reply = ingest(&test_app(&db), &[], body).await;
+    assert_eq!(reply.status, StatusCode::UNPROCESSABLE_ENTITY);
+    let detail = reply.json()["detail"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    assert!(detail.contains("byte budget"), "{detail}");
+    assert_eq!(stored_reports(&db).await.len(), 0);
+}
+
+#[tokio::test]
 async fn ingest_rejects_a_report_with_no_test_cases() {
     let db = TestDb::new().await.expect("a test database is available");
     let reply = ingest(

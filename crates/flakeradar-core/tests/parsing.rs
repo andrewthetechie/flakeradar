@@ -629,3 +629,380 @@ fn an_external_entity_is_never_fetched() {
         "{error}"
     );
 }
+
+// The review of PR #135 found the reference and this parser disagreeing on the
+// inputs below. Each expected value was recorded by running the frozen parser
+// (`backend/app/parsing.py` at 86c98804) over the same bytes.
+
+/// A failing case's details, as the reference parses them.
+fn details(xml: &str) -> String {
+    one(xml).details
+}
+
+#[test]
+fn a_comment_inside_a_failure_body_merges_its_text() {
+    // ElementTree drops the comment, so `<failure>a<!-- c -->b` is the body `ab`.
+    assert_eq!(
+        details(
+            r#"<testsuite name="s"><testcase classname="c" name="t"><failure message="m">a<!-- c -->b</failure></testcase></testsuite>"#
+        ),
+        "ab"
+    );
+}
+
+#[test]
+fn a_comment_before_a_failure_body_keeps_the_body() {
+    assert_eq!(
+        details(
+            r#"<testsuite name="s"><testcase classname="c" name="t"><failure message="m"><!-- c -->body</failure></testcase></testsuite>"#
+        ),
+        "body"
+    );
+}
+
+#[test]
+fn a_processing_instruction_inside_a_failure_body_merges_its_text() {
+    assert_eq!(
+        details(
+            r#"<testsuite name="s"><testcase classname="c" name="t"><failure message="m">a<?pi x?>b</failure></testcase></testsuite>"#
+        ),
+        "ab"
+    );
+}
+
+#[test]
+fn a_comment_before_captured_output_keeps_the_output() {
+    assert_eq!(
+        details(
+            r#"<testsuite name="s"><testcase classname="c" name="t"><failure message="m">body</failure><system-out><!-- c -->out text</system-out></testcase></testsuite>"#
+        ),
+        "body\n\n--- stdout ---\nout text"
+    );
+}
+
+#[test]
+fn a_comment_before_a_stack_trace_keeps_the_message_and_details() {
+    let cases = parse_junit_xml(
+        br#"<testsuite name="s"><testcase classname="c" name="t"><rerunFailure time="1"><stackTrace><!-- c -->stack line</stackTrace></rerunFailure></testcase></testsuite>"#,
+        1,
+    )
+    .unwrap();
+    assert_eq!(
+        (cases[1].message.as_str(), cases[1].details.as_str()),
+        ("stack line", "stack line")
+    );
+}
+
+#[test]
+fn iso_8859_1_is_true_latin_1() {
+    // Python decodes the label with its own codec, so 0x80 is U+0080 rather than
+    // the euro sign WHATWG's alias for the label would give it. The fingerprint
+    // is the reference's.
+    let xml = b"<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?><testsuite name=\"s\"><testcase classname=\"c\" name=\"na\x80me\"/></testsuite>";
+    let case = &parse_junit_xml(xml, 1).unwrap()[0];
+    assert_eq!(case.name.as_str(), "na\u{80}me");
+    assert_eq!(
+        fingerprint(&case.suite, &case.classname, &case.name),
+        "cb0ac818afbfe66855742dd391f8a4354ac90181"
+    );
+}
+
+#[test]
+fn us_ascii_falls_back_to_utf_8_as_python_does() {
+    // Python's ASCII parse refuses the byte, and its lenient UTF-8 retry then
+    // reads the name as `té`.
+    let xml = b"<?xml version=\"1.0\" encoding=\"US-ASCII\"?><testsuite name=\"s\"><testcase classname=\"c\" name=\"t\xc3\xa9\"/></testsuite>";
+    let case = &parse_junit_xml(xml, 1).unwrap()[0];
+    assert_eq!(case.name.as_str(), "té");
+    assert_eq!(
+        fingerprint(&case.suite, &case.classname, &case.name),
+        "d88f048c1c68cc494cd4fd9997accfda5166e2fb"
+    );
+}
+
+#[test]
+fn a_namespaced_attribute_is_not_the_identity() {
+    // ElementTree looks `name` up by its exact key, so `j:name` is not the name.
+    let xml = r#"<testsuite name="s" xmlns:j="urn:x"><testcase j:name="x" name="u" classname="c"/></testsuite>"#;
+    let case = &parse_junit_xml(xml.as_bytes(), 1).unwrap()[0];
+    assert_eq!(case.name.as_str(), "u");
+    assert_eq!(
+        fingerprint(&case.suite, &case.classname, &case.name),
+        "f747ebcc1a2706ed5a71f59cd5aa984eb2f411e2"
+    );
+}
+
+#[test]
+fn a_namespaced_element_is_not_a_junit_element() {
+    // `<j:failure>` is not a `<failure>`, and neither a `<j:testcase>` nor a
+    // `<j:flakyFailure>` is the JUnit element of that name.
+    let cases = parse_junit_xml(
+        br#"<testsuite name="s" xmlns:j="urn:x"><testcase classname="c" name="t"><j:failure message="m">body</j:failure></testcase><j:testcase classname="c" name="skipped"/><testcase classname="c" name="r"><j:flakyFailure message="m"/></testcase></testsuite>"#,
+        1,
+    )
+    .unwrap();
+    assert_eq!(
+        cases
+            .iter()
+            .map(|case| (case.name.as_str(), case.status))
+            .collect::<Vec<_>>(),
+        [
+            ("t", ExecutionStatus::Passed),
+            ("r", ExecutionStatus::Passed)
+        ]
+    );
+}
+
+#[test]
+fn a_namespaced_suite_is_refused() {
+    // Python's parser compares the fully qualified root tag, so a default
+    // namespace on `<testsuite>` is `Invalid format.` rather than a report.
+    for xml in [
+        r#"<testsuite xmlns="urn:x" name="s"><testcase classname="c" name="t"/></testsuite>"#,
+        r#"<testsuites xmlns="urn:x"><testsuite name="s"><testcase classname="c" name="t"/></testsuite></testsuites>"#,
+    ] {
+        assert_eq!(
+            parse_junit_xml(xml.as_bytes(), 1),
+            Err(ParseError::InvalidXml {
+                detail: "Invalid format.".to_owned()
+            })
+        );
+    }
+}
+
+#[test]
+fn a_doctype_is_accepted() {
+    // The reference's parser accepts a `DOCTYPE`; the approved rule restores it.
+    for xml in [
+        "<!DOCTYPE testsuite>\n<testsuite name=\"s\"><testcase classname=\"c\" name=\"t\"/></testsuite>",
+        "<!DOCTYPE testsuite SYSTEM \"http://example.invalid/x.dtd\">\n<testsuite name=\"s\"><testcase classname=\"c\" name=\"t\"/></testsuite>",
+        "<!DOCTYPE testsuite []>\n<testsuite name=\"s\"><testcase classname=\"c\" name=\"t\"/></testsuite>",
+    ] {
+        assert_eq!(
+            parse_junit_xml(xml.as_bytes(), 1).unwrap()[0].status,
+            ExecutionStatus::Passed,
+            "{xml}"
+        );
+    }
+}
+
+#[test]
+fn an_internal_entity_is_expanded() {
+    assert_eq!(
+        details(
+            "<!DOCTYPE testsuite [<!ENTITY e \"expanded\">]>\n<testsuite name=\"s\"><testcase classname=\"c\" name=\"t\"><failure message=\"m\">&e;</failure></testcase></testsuite>"
+        ),
+        "expanded"
+    );
+}
+
+#[test]
+fn a_utf16_report_without_a_byte_order_mark_is_read_as_utf16() {
+    // XML settles the encoding from the document's own bytes before the
+    // declaration is read, and Python's parser does the same.
+    let document = "<?xml version=\"1.0\" encoding=\"UTF-16\"?><testsuite name=\"s\"><testcase classname=\"c\" name=\"t\" time=\"1.5\"/></testsuite>";
+    let units: Vec<u16> = document.encode_utf16().collect();
+    for bytes in [
+        units
+            .iter()
+            .flat_map(|unit| unit.to_le_bytes())
+            .collect::<Vec<u8>>(),
+        units
+            .iter()
+            .flat_map(|unit| unit.to_be_bytes())
+            .collect::<Vec<u8>>(),
+    ] {
+        let case = &parse_junit_xml(&bytes, 1).unwrap()[0];
+        assert_eq!((case.name.as_str(), case.duration), ("t", 1.5));
+    }
+}
+
+#[test]
+fn an_invalid_character_reference_is_refused() {
+    // ElementTree raises on both of these; `roxmltree` reads them as U+FFFD.
+    for reference in ["&#xD800;", "&#x110000;", "&#55296;"] {
+        let xml = format!(
+            r#"<testsuite name="s"><testcase classname="c" name="t"><failure message="m">{reference}</failure></testcase></testsuite>"#
+        );
+        assert_eq!(
+            parse_junit_xml(xml.as_bytes(), 1),
+            Err(ParseError::InvalidXml {
+                detail: "reference to invalid character number".to_owned()
+            }),
+            "{reference}"
+        );
+    }
+}
+
+#[test]
+fn a_character_reference_in_cdata_or_a_comment_is_literal_text() {
+    // Neither is a reference to the parser, so the same text is allowed there.
+    assert_eq!(
+        details(
+            r#"<testsuite name="s"><testcase classname="c" name="t"><failure message="m"><![CDATA[&#xD800;]]></failure></testcase></testsuite>"#
+        ),
+        "&#xD800;"
+    );
+    assert_eq!(
+        details(
+            r#"<testsuite name="s"><testcase classname="c" name="t"><failure message="m"><!-- &#xD800; -->ok</failure></testcase></testsuite>"#
+        ),
+        "ok"
+    );
+    // A reference XML can carry keeps its character.
+    assert_eq!(
+        details(
+            r#"<testsuite name="s"><testcase classname="c" name="t"><failure message="m">&#65;&#x42;</failure></testcase></testsuite>"#
+        ),
+        "AB"
+    );
+}
+
+#[test]
+fn an_encoding_python_does_not_know_is_refused() {
+    let xml = b"<?xml version=\"1.0\" encoding=\"bogus\"?><testsuite name=\"s\"><testcase classname=\"c\" name=\"t\"/></testsuite>";
+    assert_eq!(
+        parse_junit_xml(xml, 1),
+        Err(ParseError::InvalidXml {
+            detail: "unknown encoding: bogus".to_owned()
+        })
+    );
+}
+
+#[test]
+fn a_multi_byte_declared_encoding_is_refused_as_python_refuses_it() {
+    // Python's parser refuses a multi-byte codec, and so does this one, whether
+    // it names one outright or not at all. Only the wording after the prefix
+    // differs, which is the parse-error difference the plan already records.
+    for label in ["shift_jis", "UTF16", "utf-32"] {
+        let xml = format!(
+            "<?xml version=\"1.0\" encoding=\"{label}\"?><testsuite name=\"s\"><testcase classname=\"c\" name=\"t\"/></testsuite>"
+        );
+        let error = parse_junit_xml(xml.as_bytes(), 1).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .starts_with("Not a valid JUnit XML report: "),
+            "{label}: {error}"
+        );
+    }
+}
+
+#[test]
+fn a_declared_encoding_python_reads_only_leniently_falls_back() {
+    // Python's strict parse refuses the endian-specific UTF-16 spellings, and its
+    // lenient retry then reads the bytes as UTF-8.
+    let xml = b"<?xml version=\"1.0\" encoding=\"utf-16le\"?><testsuite name=\"s\"><testcase classname=\"c\" name=\"t\"/></testsuite>";
+    assert_eq!(parse_junit_xml(xml, 1).unwrap()[0].name, "t");
+}
+
+#[test]
+fn a_digit_from_a_wide_decimal_block_keeps_its_value() {
+    // U+1D7CE..U+1D7FF is five adjacent `Nd` blocks, so the value is the digit's
+    // position in the run modulo ten; Python reads each of these as named.
+    let xml = "<testsuite name=\"s\"><testcase classname=\"c\" name=\"a\" time=\"\u{1D7D9}\"/><testcase classname=\"c\" name=\"b\" time=\"\u{1D7CE}\"/><testcase classname=\"c\" name=\"c\" time=\"\u{1D7FF}\"/><testcase classname=\"c\" name=\"d\" time=\"\u{FF15}\"/><testcase classname=\"c\" name=\"e\" time=\"\u{967}\u{968}\"/><testcase classname=\"c\" name=\"f\" time=\"\u{1D7D8}\"/></testsuite>";
+    assert_eq!(
+        parse_junit_xml(xml.as_bytes(), 1)
+            .unwrap()
+            .iter()
+            .map(|case| (case.name.as_str(), case.duration))
+            .collect::<Vec<_>>(),
+        [
+            ("a", 1.0),
+            ("b", 0.0),
+            ("c", 9.0),
+            ("d", 5.0),
+            ("e", 12.0),
+            ("f", 0.0)
+        ]
+    );
+}
+
+#[test]
+fn a_non_finite_time_is_an_upload_error() {
+    // The reference stored `NaN` and infinities as it read them, and the read API
+    // then served JSON `null` against a schema that says number; the approved
+    // rule makes them upload errors like a non-numeric `time`.
+    for time in ["NaN", "inf", "-inf", "1e999"] {
+        let xml = format!(
+            r#"<testsuite name="s"><testcase classname="c" name="t" time="{time}"/></testsuite>"#
+        );
+        assert_eq!(
+            parse_junit_xml(xml.as_bytes(), 1),
+            Err(ParseError::InvalidTime {
+                value: time.to_owned()
+            }),
+            "{time}"
+        );
+    }
+}
+
+#[test]
+fn a_non_finite_retry_time_is_an_upload_error() {
+    let xml = r#"<testsuite name="s"><testcase classname="c" name="t"><rerunFailure message="m" time="NaN"/></testcase></testsuite>"#;
+    assert_eq!(
+        parse_junit_xml(xml.as_bytes(), 1),
+        Err(ParseError::InvalidTime {
+            value: "NaN".to_owned()
+        })
+    );
+}
+
+#[test]
+fn text_after_a_child_element_is_not_the_failure_body() {
+    // ElementTree's `.text` is what comes before the first child element, so the
+    // body here is empty and the message falls back to it (also empty).
+    let case = one(
+        r#"<testsuite name="s"><testcase classname="c" name="t"><failure message=""><child/>after</failure></testcase></testsuite>"#,
+    );
+    assert_eq!((case.message.as_str(), case.details.as_str()), ("", ""));
+}
+
+#[test]
+fn a_whitespace_only_section_is_dropped() {
+    let case = one(
+        r#"<testsuite name="s"><testcase classname="c" name="t"><failure message="m">b</failure><system-out></system-out><system-err>   </system-err></testcase></testsuite>"#,
+    );
+    assert_eq!(case.details, "b");
+}
+
+#[test]
+fn an_unterminated_comment_is_the_parsers_error() {
+    // The character-reference check leaves an unterminated comment alone, so the
+    // answer is the XML parser's own refusal.
+    let xml = r#"<testsuite name="s"><testcase classname="c" name="t"><failure message="m">body</failure></testcase><!-- &#xD800; "#;
+    let error = parse_junit_xml(xml.as_bytes(), 1).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .starts_with("Not a valid JUnit XML report: "),
+        "{error}"
+    );
+    assert!(
+        !error
+            .to_string()
+            .contains("reference to invalid character number")
+    );
+}
+
+#[test]
+fn a_single_byte_code_page_label_is_decoded_by_its_own_codec() {
+    // Python hands the label to its codec registry, so a single-byte code page
+    // that its parser can use decodes exactly as that code page says.
+    let cases: [(&str, &[u8], &str); 4] = [
+        ("windows-1252", b"\x80", "n€"),
+        ("iso-8859-15", b"\xa4", "n€"),
+        ("koi8-r", b"\xc1", "nа"),
+        ("unicode-1-1-utf-8", b"\xc3\xa9", "né"),
+    ];
+    for (label, bytes, expected) in cases {
+        let mut xml = format!(
+            "<?xml version=\"1.0\" encoding=\"{label}\"?><testsuite name=\"s\"><testcase classname=\"c\" name=\"n"
+        )
+        .into_bytes();
+        xml.extend_from_slice(bytes);
+        xml.extend_from_slice(b"\"/></testsuite>");
+        let case = &parse_junit_xml(&xml, 1).unwrap()[0];
+        assert_eq!(case.name.as_str(), expected, "{label}");
+    }
+}

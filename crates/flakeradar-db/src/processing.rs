@@ -579,14 +579,19 @@ fn record_test_executions(
         if case.status.is_failing() {
             entry.1 += 1;
         }
-        let line = case
-            .line
-            .map(|line| {
-                i32::try_from(line).map_err(|_out_of_range| {
-                    ProcessError::permanent(format!("DataError: line {line} is out of range"))
+        // The reference writes a Location only when the report gave a file, so a
+        // line without one is never stored and never has to fit the column.
+        let line = if case.file.is_some() {
+            case.line
+                .map(|line| {
+                    i32::try_from(line).map_err(|_out_of_range| {
+                        ProcessError::permanent(format!("DataError: line {line} is out of range"))
+                    })
                 })
-            })
-            .transpose()?;
+                .transpose()?
+        } else {
+            None
+        };
         executions.push(test_executions::ActiveModel {
             test_case_id: Set(test_case_id),
             test_run_id: Set(run_id),

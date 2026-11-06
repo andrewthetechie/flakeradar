@@ -476,6 +476,23 @@ async fn the_location_is_the_latest_but_is_never_erased() {
 }
 
 #[tokio::test]
+async fn a_line_past_the_column_without_a_file_does_not_fail_the_report() {
+    // Python writes a Location only when the report gave a `file`, so a line on
+    // its own is never stored and never has to fit an `int4` column (S13b).
+    let db = TestDb::new().await.expect("a test database");
+    let project = project(&db, "acme/app", "backend").await;
+    let body = b"<testsuite name=\"s\"><testcase classname=\"c\" name=\"t\" line=\"3000000000\"/></testsuite>";
+    queue(&db, &project, body).await;
+    let outcome = process_next(db.connection(), &settings())
+        .await
+        .expect("the processor runs")
+        .expect("a Report was processed");
+    assert_eq!(outcome.status, "processed");
+    let row = test(&db).await;
+    assert_eq!((row.file.as_deref(), row.line), (None, None));
+}
+
+#[tokio::test]
 async fn line_base_zero_stores_a_one_based_location() {
     let db = TestDb::new().await.expect("a test database");
     let project = project(&db, "acme/app", "backend").await;
