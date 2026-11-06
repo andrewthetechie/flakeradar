@@ -8,7 +8,7 @@
 //! when the issue closes as completed or is gone.
 //!
 //! The rules live in the engines, once for both targets; only an intended
-//! per-target difference is [`github_provider_only`] (a Job may link an issue only
+//! per-target difference is `github_provider_only` (a Job may link an issue only
 //! on a GitHub Pipeline). The two targets select genuinely different row shapes,
 //! which is the one place the engines switch on the target.
 
