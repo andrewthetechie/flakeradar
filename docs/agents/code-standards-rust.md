@@ -142,6 +142,11 @@ is worse than none.
     sit through the seconds the cancelled work asked for, which is the only observable a
     cancel has; and `tests/parity.rs` bounds its own waits so a stuck replay reports a
     mismatch in its answer instead of panicking. Every other sleeping wait is a bug.
+  - Two more reads of the real clock are listed here because the clock is the subject.
+    A retention window and a "new within N days" filter are about the present day, so the
+    tests that age rows and the `days_ago` helpers count back from `Utc::now()`; and
+    `postgres.rs` polls a container that is really starting. Every fixture timestamp that
+    is not about the present is `flakeradar_test_support::FIXTURE_INSTANT`.
 - Test-only helpers — test databases, factories, mocks — live in `flakeradar-test-support`, which
   only a `[dev-dependencies]` entry can name, so no test helper reaches a release binary
   (M-TEST-UTIL).

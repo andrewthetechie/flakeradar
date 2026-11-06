@@ -9,10 +9,10 @@
     reason = "a test fails loudly when the fixture or the lookup it just wrote fails"
 )]
 
-use chrono::Utc;
 use flakeradar_db::entities::{reports, test_cases};
 use flakeradar_test_support::{
-    TestDb, make_job, make_job_execution, make_pipeline, make_project, make_test_case,
+    FIXTURE_INSTANT, TestDb, make_job, make_job_execution, make_pipeline, make_project,
+    make_test_case,
 };
 use sea_orm::{ActiveModelTrait, EntityTrait, Set, entity::prelude::DateTimeWithTimeZone};
 
@@ -73,7 +73,7 @@ async fn a_new_report_is_pending_and_stamped_in_utc() {
         .build(db.connection())
         .await
         .expect("a Project");
-    let created_at: DateTimeWithTimeZone = Utc::now().fixed_offset();
+    let created_at: DateTimeWithTimeZone = FIXTURE_INSTANT.fixed_offset();
     let stored = reports::ActiveModel {
         repo_id: Set(project.repo_id),
         project_id: Set(Some(project.id)),
@@ -106,7 +106,7 @@ async fn a_junit_report_requires_a_project() {
             commit_sha: Set("sha1".to_owned()),
             branch: Set("main".to_owned()),
             body: Set(b"<testsuites/>".to_vec()),
-            created_at: Set(Utc::now().fixed_offset()),
+            created_at: Set(FIXTURE_INSTANT.fixed_offset()),
             ..Default::default()
         }
         .insert(db.connection())
@@ -129,7 +129,7 @@ async fn a_pipeline_report_needs_no_project() {
         commit_sha: Set("sha1".to_owned()),
         branch: Set("main".to_owned()),
         body: Set(b"{}".to_vec()),
-        created_at: Set(Utc::now().fixed_offset()),
+        created_at: Set(FIXTURE_INSTANT.fixed_offset()),
         ..Default::default()
     }
     .insert(db.connection())
