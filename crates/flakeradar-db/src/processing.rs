@@ -29,7 +29,7 @@ use crate::attribution::{
 };
 use crate::batching::chunks;
 use crate::clock::{SharedClock, SystemClock};
-use crate::entities::{jobs, pipelines, reports, repos, test_cases, test_executions, test_runs};
+use crate::entities::{pipelines, reports, repos, test_cases, test_executions, test_runs};
 use crate::error::DbError;
 use crate::report_intake::{
     complete_report, fail_report, requeue_report, stored_junit_body, stored_pipeline_report,
@@ -1144,7 +1144,7 @@ pub async fn rescore(
             clear_fixed_note: streak == 0,
         });
     }
-    let old = old_test_scores(db, test_case_ids).await?;
+    let old = old_scores(db, EntityKind::Test, test_case_ids).await?;
     let changes = test_tier_changes(db, &updates, &old, settings).await?;
     write_test_updates(db, &updates).await?;
     if !updates.is_empty() {
@@ -1173,19 +1173,30 @@ pub async fn rescore(
     Ok(changes)
 }
 
-/// The scores a Test rescore is about to replace, read before the update.
-async fn old_test_scores(
+/// The table that holds `kind`'s scored rows.
+fn scored_table(kind: EntityKind) -> &'static str {
+    match kind {
+        EntityKind::Test => "test_cases",
+        EntityKind::Job => "jobs",
+    }
+}
+
+/// The scores a rescore is about to replace, read before the update.
+async fn old_scores(
     db: &impl ConnectionTrait,
+    kind: EntityKind,
     ids: &[i32],
 ) -> Result<BTreeMap<i32, f64>, DbError> {
+    let table = scored_table(kind);
     let mut scores = BTreeMap::new();
     for chunk in chunks(ids) {
-        for row in test_cases::Entity::find()
-            .filter(test_cases::Column::Id.is_in(chunk.to_vec()))
-            .all(db)
-            .await?
-        {
-            scores.insert(row.id, row.flakiness_score);
+        let sql = format!(
+            "SELECT id, flakiness_score FROM {table} WHERE id IN ({})",
+            placeholder_list(1, chunk.len())
+        );
+        let values = chunk.iter().map(|id| Value::from(*id)).collect();
+        for row in rows(db, sql, values).await? {
+            scores.insert(get(&row, "id")?, get(&row, "flakiness_score")?);
         }
     }
     Ok(scores)
@@ -1444,7 +1455,7 @@ pub async fn rescore_jobs(
             clear_fixed_note: streak == 0,
         });
     }
-    let old = old_job_scores(db, job_ids).await?;
+    let old = old_scores(db, EntityKind::Job, job_ids).await?;
     let changes = job_tier_changes(db, &updates, &old, settings).await?;
     write_job_updates(db, &updates).await?;
     if !updates.is_empty() {
@@ -1471,24 +1482,6 @@ pub async fn rescore_jobs(
         .await?;
     }
     Ok(changes)
-}
-
-/// The scores a Job rescore is about to replace, read before the update.
-async fn old_job_scores(
-    db: &impl ConnectionTrait,
-    ids: &[i32],
-) -> Result<BTreeMap<i32, f64>, DbError> {
-    let mut scores = BTreeMap::new();
-    for chunk in chunks(ids) {
-        for row in jobs::Entity::find()
-            .filter(jobs::Column::Id.is_in(chunk.to_vec()))
-            .all(db)
-            .await?
-        {
-            scores.insert(row.id, row.flakiness_score);
-        }
-    }
-    Ok(scores)
 }
 
 /// The names a tier-change event gives a Job.
