@@ -9,17 +9,26 @@ This page is for the owner's second review of `feat/rust-rewrite`. The first rev
 `HANDOFF.md` and `STATUS.md`'s row for task 31 — so `git diff e8563b1..HEAD --stat` names only
 those files, and one test fix (`04bc0ac`, below).
 
-**CI on `04bc0ac`: 17 checks pass, one skips, and `Rust coverage (lines + branches)` fails.** Its
-own words: `branches 1274 / 1356 = 93.95%` against the floor of `94%`, with `lines 15369 / 15929 =
-96.48%` clearing `96%`. The floor is the one task 15 set from a local measurement; CI's
-configuration (Linux, no `frontend/dist`, `FLAKERADAR_TEST_DATABASE_URL` set) measures 9 branches
-fewer than any run on a machine that takes the test-support Docker path, and every one of the nine
-is in `flakeradar-test-support/src/postgres.rs` and `db.rs` — the path `coverage-gaps.md` already
-logs as unreachable in CI. With `FLAKERADAR_TEST_DATABASE_URL` unset for the coverage command only,
-the same tree measures **1283 / 1356 = 94.62%** of branches and 96.87% of lines. Lowering the floor
-and moving the coverage job onto the Docker path are both the owner's decision under
-`00-fixes-context.md`'s "Coverage floors only rise"; the floor is unchanged and the question is
-open when this file was written.
+**The coverage floor is 93 branches, by the owner's decision of 2026-11-06.** The first CI run
+after the fixes failed `Rust coverage (lines + branches)` on `branches 1274 / 1356 = 93.95%` against
+a floor of `94%`, with `lines 15369 / 15929 = 96.48%` clearing `96%`. The floor was task 15's,
+taken from a local measurement; CI's configuration (Linux, no `frontend/dist`,
+`FLAKERADAR_TEST_DATABASE_URL` set) measures 9 branches fewer than any run on a machine that takes
+the test-support Docker path, and all nine are in `flakeradar-test-support/src/postgres.rs` and one
+`db.rs` branch — the path `coverage-gaps.md` already logs as unreachable in CI. Measured for
+context, with `FLAKERADAR_TEST_DATABASE_URL` unset for the coverage command only so that the
+container path runs, the same tree measures **1283 / 1356 = 94.62%** of branches and 96.87% of
+lines. The owner chose to lower the floor rather than move the coverage job onto the Docker path:
+
+> **Owner decision 2026-11-06:** the branch floor is 93, not 94, because CI's coverage
+> configuration measures 93.95% (1274/1356) on the merged tree after tasks 16–30; the 9-branch gap
+> against a local run is `flakeradar-test-support/src/postgres.rs`'s testcontainers path plus one
+> `db.rs` branch, both already logged in `coverage-gaps.md` as unreachable when CI sets
+> `FLAKERADAR_TEST_DATABASE_URL`. Lines stay at 96.
+
+`coverage-floor.json` is therefore `{"lines": 96, "branches": 93}`, nothing else in it changed, and
+`.github/workflows/ci.yml`'s coverage job is untouched. `differences.md` gains no row: this is a
+measurement, not a wire or behaviour difference.
 
 ## 1. The ledger is closed
 

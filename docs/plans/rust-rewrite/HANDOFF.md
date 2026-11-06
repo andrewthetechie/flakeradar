@@ -437,14 +437,17 @@ configuration CI measures in — three times, and the three summaries agree on e
   missed); regions 93.38% (16863/18059), functions 97.46% (1999/2051). The third run's
   `instantiations` count differs by two (6323 against 6321), which is a generic instantiation
   count and not a line or branch figure.
-- The floor is `coverage-floor.json`'s `{"lines": 96, "branches": 94}`, both **rounded down** from
-  those totals (96.87 → 96, 94.61 → 94), so the measurement raises no floor and a run that
-  reaches it passes. Both are above the `{95, 80}` minimum the plan sets, and nothing was
-  lowered. The floor sits below the measurement because a gate set at `{96.87, 94.62}` could
-  fail on a figure the same code did not reach on that run: some arms are state-dependent, and
-  the gap list names them — `TestDb::new`'s template-build branch is reported as missed on a
-  server that already holds the template, which is why that row is logged as state-dependent
-  rather than unreachable.
+- The floor is `coverage-floor.json`'s `{"lines": 96, "branches": 93}`. Lines is **rounded down**
+  from 96.87 and was not lowered. Branches is 93 by the **owner's decision of 2026-11-06**: CI's
+  own configuration measures 93.95% (1274/1356) on the merged tree, 9 branches below a run on a
+  machine that takes the test-support Docker path, and all nine are in `postgres.rs` and `db.rs` —
+  the path `coverage-gaps.md` already logs as unreachable in CI. The alternative the owner did not
+  take was moving the coverage job onto the Docker path, which measured 94.62% here. Both floors
+  stay above the `{95, 80}` minimum the plan sets, and the floor sits below the measurement because
+  a gate set at the measurement could fail on a figure the same code did not reach on that run:
+  some arms are state-dependent, and the gap list names them — `TestDb::new`'s template-build
+  branch is reported as missed on a server that already holds the template, which is why that row
+  is logged as state-dependent rather than unreachable.
 - The floor follows the **lower** of the two honest configurations: with
   `FLAKERADAR_TEST_DATABASE_URL` unset the suite starts its own containers, that file's Docker
   path is covered, and the same tree reports more of both. CI takes the URL-set path, so that is

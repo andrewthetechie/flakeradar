@@ -276,9 +276,12 @@ functions 97.46% (1999/2051). The three runs agree on every one of those figures
 `instantiations` count moved, by two (6321 and 6323 in the first two runs against 6323 in the
 third), which is a generic-instantiation count and not a line or branch figure.
 
-`coverage-floor.json` stays `{"lines": 96, "branches": 94}`, both rounded down from those totals
-(96.87 → 96, 94.61 → 94), so this measurement raises no floor and both stay above the `{95, 80}`
-minimum the plan sets. Nothing was lowered.
+`coverage-floor.json` is `{"lines": 96, "branches": 93}`. Lines is rounded down from 96.87 and was
+not lowered. Branches is 93 by the **owner's decision of 2026-11-06**, because CI's configuration
+measures 93.95% (1274/1356) on the merged tree: the 9-branch gap against a run that takes this
+file's Docker path is `postgres.rs`'s testcontainers path plus one `db.rs` branch, both logged
+above as unreachable when CI sets `FLAKERADAR_TEST_DATABASE_URL`. Both floors stay above the
+`{95, 80}` minimum the plan sets.
 
 **The list is 87 rows.** Task 15 left 78; task 18 added five (the client-build arms) and task 20
 added four (the lax and multipart guards), and no task removed one. Rows 1–78 of the table are the
