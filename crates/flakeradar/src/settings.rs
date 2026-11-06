@@ -1,9 +1,9 @@
 //! The server's configuration, read from `FLAKERADAR_*` environment variables.
 //!
-//! One field per variable, with the same names, defaults and accepted values as
-//! the frozen Python server's `config.py`. Values are read once at start-up and
-//! then shared immutably, so no handler can observe a half-applied change and no
-//! test needs a process-wide environment variable.
+//! One field per variable, each with the name, default and accepted values this
+//! API documents in `.env.example`. Values are read once at start-up and then
+//! shared immutably, so no handler can observe a half-applied change and no test
+//! needs a process-wide environment variable.
 
 // Rust guideline compliant 2026-07-21
 
@@ -79,9 +79,9 @@ pub enum SettingsError {
     },
     /// A variable holds a value that parses but that the field could not mean.
     ///
-    /// The frozen server took every value the type admitted, so a NaN decay
-    /// scored every Test flaky instead of refusing to start. Only non-secret
-    /// fields are checked against a range, so the value here is never a token.
+    /// Taking every value the type admits is what a NaN decay did: it scored every
+    /// Test flaky instead of refusing to start. Only non-secret fields are checked
+    /// against a range, so the value here is never a token.
     #[error("{}: expected {expected}, got '{value}'", .variable)]
     OutOfRange {
         /// The variable's name, such as `FLAKERADAR_SCORE_DECAY`.
@@ -185,16 +185,16 @@ impl Raw<'_> {
     /// The value of `field` exactly as the environment held it, or `None` when
     /// the variable is unset.
     ///
-    /// Nothing is trimmed: the frozen server's `str` fields kept every space an
-    /// operator typed, so a token or a URL is read back byte for byte.
+    /// Nothing is trimmed: a `str` field keeps every space an operator typed, so a
+    /// token or a URL is read back byte for byte.
     fn raw(&self, field: &str) -> Option<&str> {
         self.values.get(&variable(field)).map(String::as_str)
     }
 
     /// The value of `field` with surrounding whitespace removed.
     ///
-    /// Only the fields Python parsed with `int()` or `float()` use this: those
-    /// two ignore leading and trailing whitespace, and so did the frozen server.
+    /// Only the fields that are numbers use this: a number read from text ignores
+    /// leading and trailing whitespace, so ` 30 ` and `30` are the same timeout.
     fn trimmed(&self, field: &str) -> Option<&str> {
         self.raw(field).map(str::trim)
     }
@@ -240,10 +240,9 @@ impl Raw<'_> {
 
     /// The value of `field` parsed as a boolean, or `None` when it is unset.
     ///
-    /// Accepts `1`/`0`, `true`/`false`, `yes`/`no` and `on`/`off`, in any case,
-    /// which is the set Pydantic accepted for the frozen server's `bool` fields.
-    /// Pydantic compared those spellings exactly, so `" yes "` is not one of
-    /// them and is refused here too.
+    /// Accepts `1`/`0`, `true`/`false`, `yes`/`no` and `on`/`off`, in any case.
+    /// The spelling is compared exactly, so a padded `" yes "` is not one of them
+    /// and is refused: a value nobody meant to set must not switch a feature on.
     fn boolean(&self, field: &str) -> Result<Option<bool>, SettingsError> {
         match self.raw(field) {
             None => Ok(None),
@@ -261,8 +260,7 @@ impl Raw<'_> {
 
     /// The value of `field` parsed as a Webhook format, or `None` when unset.
     ///
-    /// The two names are compared exactly, as Pydantic's `Literal` compared
-    /// them, so a padded `" slack "` is refused.
+    /// The two names are compared exactly, so a padded `" slack "` is refused.
     fn webhook_format(&self, field: &str) -> Result<Option<WebhookFormat>, SettingsError> {
         match self.raw(field) {
             None => Ok(None),
@@ -426,10 +424,10 @@ impl Settings {
 
     /// Reads the settings, overlaid on the defaults.
     ///
-    /// `values` holds `FLAKERADAR_*` variables only; anything else is ignored,
-    /// exactly as the frozen server's `extra="ignore"` did. A variable that is
-    /// absent keeps its default, so a test states only what it changes, and every
-    /// default is stated once: in [`Settings::default`].
+    /// `values` holds `FLAKERADAR_*` variables only; anything else is ignored, so a
+    /// process environment full of unrelated variables configures nothing here. A
+    /// variable that is absent keeps its default, so a test states only what it
+    /// changes, and every default is stated once: in [`Settings::default`].
     ///
     /// # Errors
     ///
@@ -542,8 +540,8 @@ impl Settings {
     ///
     /// The file is only a convenience: a value in `process` overrides it, and a
     /// missing file is not an error. `FLAKERADAR_ALLOW_INSECURE` is not read
-    /// here: [`check_api_token`] reads it from the process environment, because
-    /// the frozen server's `os.getenv` never saw a value that came from `.env`.
+    /// here: [`check_api_token`] reads it from the process environment, so a value
+    /// in `.env` can never lift the default-token refusal.
     ///
     /// # Errors
     ///
@@ -555,12 +553,11 @@ impl Settings {
 
     /// Refuses a value that no configuration of its field could mean.
     ///
-    /// The frozen server accepted every value the type admitted, and the fields'
-    /// meanings are narrower than their types: a NaN decay scored every Test 1.0
-    /// because `f64::min` answers the other operand, a window of 0 weighed no
-    /// Execution at all, and a poll of 0 made the worker query with no wait. A
-    /// refused value stops the process at start-up instead, and the error names
-    /// the variable rather than the value of a secret.
+    /// The fields' meanings are narrower than their types: a NaN decay scored
+    /// every Test 1.0 because `f64::min` answers the other operand, a window of 0
+    /// weighed no Execution at all, and a poll of 0 made the worker query with no
+    /// wait. Such a value stops the process at start-up, and the error names the
+    /// variable rather than the value of a secret.
     ///
     /// # Errors
     ///
@@ -660,11 +657,11 @@ impl Settings {
         flakeradar_db::DbSettings::new(self.db_command_timeout_seconds)
     }
 
-    /// The CORS origins, split on commas exactly as the frozen server split them.
+    /// The CORS origins, split on commas.
     ///
-    /// A space after a comma stays part of the origin, so an operator who typed
-    /// one configured an origin no browser sends, as they did in Python. Blank
-    /// entries are dropped because no `Origin` header is empty.
+    /// A space after a comma stays part of the origin, so an operator who typed one
+    /// configured an origin no browser sends. Blank entries are dropped because no
+    /// `Origin` header is empty.
     #[must_use]
     pub fn cors_origin_list(&self) -> Vec<String> {
         self.cors_origins
@@ -678,8 +675,9 @@ impl Settings {
 /// The variable that allows the shipped default token for a throwaway demo.
 ///
 /// It is not a [`Settings`] field, because it can only lift the default-token
-/// refusal and never configures the server. The frozen server read it with
-/// `os.getenv`, so a value in `.env` never lifted it there and does not here.
+/// refusal and never configures the server. It is read from the process
+/// environment rather than from `.env`, so a file in the checkout cannot lift the
+/// refusal on its own.
 pub const ALLOW_INSECURE_VARIABLE: &str = "FLAKERADAR_ALLOW_INSECURE";
 
 /// Refuses the shipped default token unless the operator opted in.
@@ -720,8 +718,8 @@ pub fn is_default_token(token: &str) -> bool {
 ///
 /// # Errors
 ///
-/// Returns [`SettingsError::InsecureToken`] with the message the frozen server
-/// printed, when the token is the default and `allow_insecure` is not `1`.
+/// Returns [`SettingsError::InsecureToken`] when the token is the default and
+/// `allow_insecure` is not `1`.
 pub fn assert_secure_token(
     settings: &Settings,
     allow_insecure: Option<&str>,
@@ -930,11 +928,11 @@ mod tests {
     }
 
     #[test]
-    fn every_setting_defaults_to_the_frozen_servers_value() {
-        // The expected values are `backend/app/config.py`'s defaults at 86c98804,
-        // not a second copy of `Settings::default`: this test is the contract with
-        // the frozen server, so a literal here is the requirement and not a
-        // restatement of the code under it.
+    fn every_setting_defaults_to_the_documented_value() {
+        // The expected values are what `.env.example` and the README state, not a
+        // second copy of `Settings::default`: this test is the contract with the
+        // deployment, so a literal here is the requirement and not a restatement
+        // of the code under it.
         let settings = Settings::default();
         assert_eq!(settings.api_token.expose(), DEFAULT_INSECURE_TOKEN);
         assert_eq!(settings.database_url.expose(), DEFAULT_DATABASE_URL);
@@ -1011,8 +1009,8 @@ mod tests {
             ("SOME_OTHER_VARIABLE", "ignored"),
         ]);
         let settings = Settings::from_map(&values).expect("the fixture is valid");
-        // A `str` field keeps the spaces the environment held, as Pydantic kept
-        // them: the token is a credential, so nothing rewrites it.
+        // A `str` field keeps the spaces the environment held: the token is a
+        // credential, so nothing rewrites it.
         assert_eq!(settings.api_token.expose(), " token ");
         assert_eq!(settings.database_url.expose(), "postgres://u@h/d");
         assert_eq!(settings.score_window, 7);
@@ -1036,8 +1034,8 @@ mod tests {
             settings.webhook_format,
             flakeradar_core::notify::WebhookFormat::Slack
         );
-        // The space after the comma is part of the second origin, as it was in
-        // Python: splitting is all the frozen server did.
+        // The space after the comma is part of the second origin: splitting is all
+        // this reader does.
         assert_eq!(
             settings.cors_origin_list(),
             ["https://a.example.com", " https://b.example.com"]
@@ -1071,9 +1069,10 @@ mod tests {
     }
 
     #[test]
-    fn a_padded_boolean_is_refused_as_pydantic_refused_it() {
-        // Pydantic compared the spelling exactly, so `FLAKERADAR_GITHUB_CLOSE_FIXED=" true "`
-        // was an error rather than true, and the server would not start.
+    fn a_padded_boolean_is_refused() {
+        // The spelling is compared exactly, so
+        // `FLAKERADAR_GITHUB_CLOSE_FIXED=" true "` is an error rather than true,
+        // and the server does not start.
         for text in [" yes ", "true ", " on"] {
             let error = Settings::from_map(&map(&[("FLAKERADAR_GITHUB_CLOSE_FIXED", text)]))
                 .expect_err("a padded spelling is not a boolean");
@@ -1082,13 +1081,13 @@ mod tests {
     }
 
     #[test]
-    fn a_number_ignores_surrounding_space_as_pythons_parsers_did() {
+    fn a_number_ignores_surrounding_space() {
         let settings = Settings::from_map(&map(&[
             ("FLAKERADAR_SCORE_WINDOW", " 7 "),
             ("FLAKERADAR_SCORE_DECAY", "0.5\t"),
             ("FLAKERADAR_PORT", " 9000\n"),
         ]))
-        .expect("Python's int() and float() ignore surrounding whitespace");
+        .expect("a number read from text ignores surrounding whitespace");
         assert_eq!(settings.score_window, 7);
         assert_eq!(settings.score_decay, 0.5);
         assert_eq!(settings.port, 9000);
@@ -1097,7 +1096,7 @@ mod tests {
     #[test]
     fn a_webhook_format_must_be_one_of_the_two_names_exactly() {
         let error = Settings::from_map(&map(&[("FLAKERADAR_WEBHOOK_FORMAT", " json ")]))
-            .expect_err("Pydantic's Literal compared the name exactly");
+            .expect_err("the two names are compared exactly");
         assert!(error.to_string().contains("FLAKERADAR_WEBHOOK_FORMAT"));
     }
 
@@ -1134,7 +1133,7 @@ mod tests {
     }
 
     #[test]
-    fn a_non_postgres_url_is_refused_with_pythons_text() {
+    fn a_non_postgres_url_is_refused_with_the_documented_text() {
         let error = Settings::from_map(&map(&[("FLAKERADAR_DATABASE_URL", "sqlite:///x.db")]))
             .expect_err("sqlite is not PostgreSQL");
         assert_eq!(
@@ -1197,8 +1196,8 @@ mod tests {
             "http://localhost:5173,, https://a.example.com ,",
         )]))
         .expect("the fixture is valid");
-        // Python split the value and kept every space, so an origin written with
-        // one never matched the header a browser sends.
+        // Splitting keeps every space, so an origin written with one never
+        // matched the header a browser sends.
         assert_eq!(
             settings.cors_origin_list(),
             ["http://localhost:5173", " https://a.example.com "]
@@ -1222,8 +1221,8 @@ mod tests {
             check_api_token(DEFAULT_INSECURE_TOKEN, Some(" 1 "))
                 .expect("the opt-in allows the default");
         });
-        // The frozen server warned that the instance is open to anyone who
-        // reaches it, which is the only notice an operator gets.
+        // The warning is the only notice an operator gets that the instance is
+        // open to anyone who reaches it.
         assert!(
             logged.contains("FLAKERADAR_API_TOKEN is the default 'changeme'"),
             "the opt-in warns about the default token: {logged}"

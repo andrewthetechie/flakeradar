@@ -1,9 +1,9 @@
 //! The three extractors' rejections: status, and the `type` and `loc` of every
 //! issue, which is what the parity replay compares.
 //!
-//! A body is read the way Pydantic read it: the extractor hands the parsed JSON
-//! object to the model, and the model's own lax readers decide what each field
-//! takes. `UpdateBody` below is a small model for those tests.
+//! A body is read with the lax rules this API applies: the extractor hands the
+//! parsed JSON object to the model, and the model's own readers decide what each
+//! field takes. `UpdateBody` below is a small model for those tests.
 
 #![expect(
     clippy::expect_used,
@@ -104,7 +104,7 @@ struct TestPath {
 /// The fields are named for their types, not for a route: this suite pins what
 /// [`ApiJson`] does with a body, and which spellings a route's own DTO accepts
 /// is the route's decision. The readers are the ones every route's body uses,
-/// so `"yes"` is a `boolean` here as it was for Pydantic, and a `2` is not.
+/// so `"yes"` is a `boolean` and a `2` is not.
 #[derive(Debug)]
 struct UpdateBody {
     number: i64,
@@ -323,8 +323,8 @@ async fn a_path_parameter_the_router_cannot_fill_is_a_server_error() {
 
 #[tokio::test]
 async fn a_single_path_parameter_of_the_wrong_type_names_the_path_only() {
-    // A route whose whole path is one value has no key to name, as FastAPI's
-    // `loc: ["path"]` had none.
+    // A route whose whole path is one value has no key to name, so `loc` is just
+    // `["path"]`.
     let reply = call(axum::http::Method::GET, "/plain/abc", &[], "").await;
     assert_single_issue(&reply, "int_parsing", &json!(["path"]));
 
@@ -369,7 +369,7 @@ async fn a_body_field_of_the_wrong_type_names_the_field() {
         r#"{"number": 1, "enabled": 2}"#,
     )
     .await;
-    // A boolean reads Pydantic's spellings, so `"yes"` is true and `2` is the
+    // A boolean reads the documented spellings, so `"yes"` is true and `2` is the
     // `bool_parsing` refusal; the routes' own bodies take the same spellings.
     assert_single_issue(&reply, "bool_parsing", &json!(["body", "enabled"]));
 
@@ -420,8 +420,8 @@ async fn malformed_json_reports_the_position_of_the_error() {
     let issue = &reply.json()["detail"][0];
     assert_eq!(issue["type"], json!("json_invalid"));
     assert_eq!(issue["loc"][0], json!("body"));
-    // Python reports the character index of the error, which is the offset of
-    // the offending token.
+    // The reported position is the character index of the error, which is the
+    // offset of the offending token.
     assert_eq!(issue["loc"][1], json!(11));
 }
 
@@ -441,8 +441,8 @@ async fn a_body_that_is_not_an_object_is_not_a_model() {
 
 #[tokio::test]
 async fn a_body_without_a_json_content_type_is_raw_text_not_a_model() {
-    // FastAPI left a body whose Content-Type is not JSON as bytes, so the model
-    // rejected it rather than the framework refusing the content type.
+    // A body whose Content-Type is not JSON is left as bytes, so the model rejects
+    // it rather than the framework refusing the content type.
     for headers in [
         &[][..],
         &[("content-type", "text/plain")][..],

@@ -1,7 +1,7 @@
-//! Row builders with the frozen Python server's fixture defaults.
+//! Row builders with the documented fixture defaults.
 //!
-//! Each `make_*` function returns a builder whose defaults match
-//! `backend/tests/factories.py`, so a test states only the fields it cares
+//! Each `make_*` function returns a builder whose defaults are the ones a row
+//! written by the server would have, so a test states only the fields it cares
 //! about. Building flushes nothing and opens no transaction: it inserts the rows
 //! the test asked for on the connection it was given.
 
@@ -356,7 +356,7 @@ impl TestCaseBuilder {
     }
 }
 
-/// The Test fingerprint, computed the way the frozen Python server computes it.
+/// The Test fingerprint, computed independently of the server's own copy.
 ///
 /// The factory keeps its own copy rather than calling the server's, so a bug in
 /// the server's fingerprint shows up as a failing test instead of a fixture that

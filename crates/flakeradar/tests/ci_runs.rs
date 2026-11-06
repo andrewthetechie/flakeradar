@@ -1,6 +1,6 @@
 //! The CI run failure listing: which attempt, Report counts, failures, failed Jobs.
 //!
-//! Ported from `backend/tests/test_ci_runs_api.py`.
+//! The CI run failure listing: the cap, the counts and the failed Jobs it names.
 
 #![expect(
     clippy::expect_used,
@@ -1175,7 +1175,7 @@ async fn failed_jobs_of_another_attempt_are_ignored() {
 #[tokio::test]
 async fn an_empty_ci_run_id_answers_the_404_body() {
     let db = TestDb::new().await.expect("a test database");
-    // `/api/ci-runs//failures` never matched the frozen server's route.
+    // `/api/ci-runs//failures` matches no route, so it answers the 404 body.
     let reply = request(
         &app(&db, &[]),
         axum::http::Method::GET,

@@ -1,7 +1,7 @@
 //! The `search_tests` tool: Tests whose name, classname or file contains the query.
 //!
 //! The name, title, description, argument schema and annotations are the wire
-//! contract the frozen server recorded, so they stay literals here.
+//! contract `tests/parity` replays, so they stay literals here.
 
 // Rust guideline compliant 2026-07-21
 

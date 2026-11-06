@@ -1,11 +1,10 @@
 //! The multipart request body `POST /api/ingest` reads an upload from.
 //!
-//! The frozen server handed a `multipart/form-data` request to Starlette's form
-//! parser and read the file field named `report`; every other content type was
-//! the raw body. The route reads the whole body under its own size limit first,
-//! so this only has to find that one file in the buffered bytes: a missing
-//! field, a field sent without a filename, or a body whose framing the reference
-//! parser would refuse all read as an empty upload.
+//! A `multipart/form-data` request is read for the file field named `report`;
+//! every other content type is the raw body. The route reads the whole body under
+//! its own size limit first, so this only has to find that one file in the
+//! buffered bytes: a missing field, a field sent without a filename, or a body
+//! whose framing is no multipart framing all read as an empty upload.
 //!
 //! The scan is linear in the body however the client shapes it. The boundary is
 //! the client's to choose and the body can be 20 MiB, so a search that re-reads
@@ -26,13 +25,12 @@ const HEADER_END: &[u8] = b"\r\n\r\n";
 /// The two dashes that turn a delimiter into the closing one.
 const CLOSING: &[u8] = b"--";
 
-/// A part whose header block the reference parser refuses.
+/// A part whose header block is no header block.
 ///
-/// `python_multipart` reads each header line as a field name and a value, and a
-/// name may hold only the characters RFC 7230 allows in a token. A line that is
-/// no header at all, or whose name holds something else, raises there, and
-/// Starlette rounds the raise up to `MultiPartException("Invalid multipart
-/// data.")`, which the reference answered as 400.
+/// Each header line is a field name and a value, and a name may hold only the
+/// characters RFC 7230 allows in a token. A line that is no header at all, or
+/// whose name holds something else, is a malformed body: a client that cannot
+/// frame its own headers sent no upload worth reading, so the route answers 400.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MalformedHeaders;
 
@@ -40,16 +38,14 @@ pub struct MalformedHeaders;
 ///
 /// `content_type` is the request's `Content-Type`, whose `boundary` parameter
 /// separates the parts. Anything this cannot read — a missing or empty boundary,
-/// a preamble the reference parser refuses, an unterminated part, a body with no
-/// such file field — reads as `Ok(None)`. A part whose header block the reference
-/// parser refuses is [`MalformedHeaders`], which the route answers as the 400 the
-/// reference gave.
+/// a preamble, an unterminated part, a body with no such file field — reads as
+/// `Ok(None)`. A part whose header block is no header block is
+/// [`MalformedHeaders`], which the route answers as a 400.
 ///
 /// A part's data may hold anything, the boundary bytes included: only a CRLF
-/// followed by the delimiter and then a CRLF or the closing dashes ends a part,
-/// so the reference parser keeps scanning past bytes that merely look like one.
-/// When the field arrives more than once, the last part that carries it decides,
-/// whatever its kind, because that is the value Starlette's form answered: a
+/// followed by the delimiter and then a CRLF or the closing dashes ends a part, so
+/// the scan continues past bytes that merely look like one. When the field arrives
+/// more than once, the last part that carries it decides, whatever its kind: a
 /// later plain form value leaves no upload at all.
 ///
 /// # Errors

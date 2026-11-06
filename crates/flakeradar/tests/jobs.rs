@@ -1,6 +1,6 @@
 //! The Jobs read API: leaderboard, detail, runner statistics and summary.
 //!
-//! Ported from `backend/tests/test_jobs_api.py`.
+//! The Job leaderboard, a Job's detail and its history.
 
 #![expect(
     clippy::expect_used,

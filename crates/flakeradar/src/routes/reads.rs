@@ -1,10 +1,10 @@
 //! The dashboard read APIs: Repos, the two leaderboards, summaries, detail and
 //! quarantine, plus the CI run failure listing.
 //!
-//! Every handler validates the way FastAPI did, calls one function in
-//! `flakeradar_db::reads`, and serializes the DTO from `flakeradar-core`. The
-//! frozen server's `routers/tests.py`, `routers/jobs.py` and
-//! `routers/ci_runs.py` are the reference, including their 422 shapes.
+//! Every handler validates its query the way this API answers a bad one, calls
+//! one function in `flakeradar_db::reads`, and serializes the DTO from
+//! `flakeradar-core`. The 422 shapes are part of the wire, so `tests/parity`
+//! replays each one.
 
 // Rust guideline compliant 2026-07-21
 
@@ -40,7 +40,7 @@ use crate::routes::{JobPath, TestPath};
 
 /// The dashboard's read routes.
 ///
-/// `GO /api/quarantine` is the only one behind the shared token: a runner reads
+/// `GET /api/quarantine` is the only one behind the shared token: a runner reads
 /// the skip list with the same token it uploads with.
 pub fn router(state: AppState) -> Router<AppState> {
     let token = middleware::from_fn_with_state(state, require_token);
@@ -83,8 +83,8 @@ const QUERY_MAX: usize = 200;
 
 /// Records a string with a NUL in it, and one longer than its limit.
 ///
-/// The length counts characters as Pydantic counted them. A NUL is refused
-/// because a PostgreSQL `text` column cannot store one, where the reference
+/// The length counts characters rather than bytes. A NUL is refused because a
+/// PostgreSQL `text` column cannot store one, and a NUL that reached the column
 /// answered 500 and logged at error level on an unauthenticated route.
 fn check_max(value: Option<&String>, max: usize, field: &str, issues: &mut Vec<ValidationIssue>) {
     let Some(value) = value else {
@@ -128,7 +128,7 @@ fn check_le(value: Option<i64>, max: i64, field: &str, issues: &mut Vec<Validati
 
 /// The largest `page` whose `OFFSET` fits an `i64` at [`LIST_LIMIT_MAX`].
 ///
-/// The reference bounded only the bottom of the range, so a page past this one
+/// Only the bottom of the range was bounded before, so a page past this one
 /// wrapped in release builds and panicked in development ones. A page real
 /// clients ask for is a handful of digits.
 const PAGE_MAX: i64 = i64::MAX / LIST_LIMIT_MAX;
@@ -160,7 +160,7 @@ fn validate_sort(sort: Option<&String>, issues: &mut Vec<ValidationIssue>) {
     }
 }
 
-/// The expected list of Failure categories, as Pydantic printed it.
+/// The expected list of Failure categories, as the 422 spells it.
 fn category_expected() -> String {
     let names: Vec<String> = FailureCategory::ALL
         .iter()
@@ -770,21 +770,21 @@ pub async fn ci_run(
     ApiPath(path): ApiPath<CiRunPath>,
     ApiQuery(query): ApiQuery<CiRunFailuresQuery>,
 ) -> RouteResult<Json<CiRunFailuresOut>> {
-    // `/api/ci-runs//failures` never matched the frozen server's route, so it
-    // answered the 404 body rather than FastAPI's `min_length=1` 422.
+    // `/api/ci-runs//failures` matches no route, so it answers the 404 body
+    // rather than a `min_length=1` 422.
     if path.ci_run_id.is_empty() {
         return Err(RouteError::NotFound("Not Found".to_owned()));
     }
     let mut issues = Vec::new();
     let length = path.ci_run_id.chars().count();
-    if length > 255 {
+    if length > NAME_MAX {
         issues.push(ValidationIssue::string_too_long(
             vec![
                 flakeradar_core::dto::LocSegment::Field("path".to_owned()),
                 flakeradar_core::dto::LocSegment::Field("ci_run_id".to_owned()),
             ],
             JsonValue::from(path.ci_run_id.clone()),
-            255,
+            NAME_MAX,
         ));
     }
     if !issues.is_empty() {

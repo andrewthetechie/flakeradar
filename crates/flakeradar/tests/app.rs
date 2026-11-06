@@ -50,8 +50,8 @@ async fn a_trailing_slash_redirects_to_the_path_without_it() {
     let reply = get(&app, "/api/health/").await;
     assert_eq!(reply.status, StatusCode::TEMPORARY_REDIRECT);
     assert_eq!(reply.header("location").as_deref(), Some("/api/health"));
-    // Starlette answered a redirect with no body and no content type, and the
-    // recorded goldens are compared on both.
+    // The redirect carries no body and no content type, and the recorded goldens
+    // are compared on both.
     assert_eq!(reply.body, Vec::<u8>::new());
     assert_eq!(reply.header("content-type"), None);
 
@@ -62,15 +62,15 @@ async fn a_trailing_slash_redirects_to_the_path_without_it() {
         Some("/api/health?repo=o%2Fr")
     );
 
-    // The redirect does not check whether the target exists, as Starlette's
-    // redirect_slashes did not: the client asked for a different resource.
+    // The redirect does not check whether the target exists: the client asked for
+    // a different resource.
     let reply = get(&app, "/api/tests/").await;
     assert_eq!(reply.status, StatusCode::TEMPORARY_REDIRECT);
     assert_eq!(reply.header("location").as_deref(), Some("/api/tests"));
 }
 
 #[tokio::test]
-async fn a_method_a_path_does_not_answer_is_a_405_with_fastapis_body() {
+async fn a_method_a_path_does_not_answer_is_a_405_with_the_documented_body() {
     let db = TestDb::new().await.expect("a test database is available");
     let app = app(&db, &[]);
     let reply = request(&app, Method::POST, "/api/health").await;
@@ -80,16 +80,16 @@ async fn a_method_a_path_does_not_answer_is_a_405_with_fastapis_body() {
         reply.header("content-type").as_deref(),
         Some("application/json")
     );
-    // Starlette names the methods the path does answer, and so does Axum.
+    // The answer names the methods the path does answer.
     let allow = reply.header("allow").expect("the answer names its methods");
     assert!(allow.contains("GET"), "{allow}");
 }
 
 #[tokio::test]
 async fn a_route_that_needs_the_token_refuses_a_missing_or_wrong_one() {
-    // No route requires the token until task 06, so the middleware's own contract
-    // is pinned here: a missing or wrong `X-API-Key` is 401 with the frozen
-    // server's message, and the configured one is let through.
+    // The middleware's own contract is pinned here: a missing or wrong
+    // `X-API-Key` is 401 with the published message, and the configured one is let
+    // through.
     let db = TestDb::new().await.expect("a test database is available");
     let state = AppState::new(
         db.connection().clone(),

@@ -1,6 +1,6 @@
 //! The Report queue's read side: status, listing, summary, retry and delete.
 //!
-//! The behaviour is `backend/tests/test_reports_api.py`, on a queue seeded
+//! The Report queue routes, on a queue seeded
 //! directly rather than through ingest.
 
 #![expect(

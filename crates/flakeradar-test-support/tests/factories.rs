@@ -1,8 +1,8 @@
 //! The row builders, against a real database.
 //!
-//! Every builder's defaults come from `backend/tests/factories.py`, so a port of
-//! a Python test can build the same rows without restating them. Each test here
-//! states the defaults it relies on and proves that a setter stores its value.
+//! Every builder's defaults are the documented ones, so a test builds the rows it
+//! needs without restating them. Each test here states the defaults it relies on
+//! and proves that a setter stores its value.
 
 #![expect(
     clippy::expect_used,
@@ -41,7 +41,7 @@ async fn stored_test_case(
 }
 
 #[tokio::test]
-async fn a_project_and_its_repo_have_pythons_defaults() {
+async fn a_project_and_its_repo_have_the_documented_defaults() {
     let db = TestDb::new().await.expect("a migrated test database");
     let project = make_project()
         .build(db.connection())
@@ -78,7 +78,7 @@ async fn a_project_builder_stores_the_repo_project_and_root_it_was_given() {
 }
 
 #[tokio::test]
-async fn a_test_has_pythons_defaults_and_a_fingerprint_from_its_identity() {
+async fn a_test_has_the_documented_defaults_and_a_fingerprint_from_its_identity() {
     let db = TestDb::new().await.expect("a migrated test database");
     let project = make_project()
         .build(db.connection())
@@ -179,7 +179,7 @@ async fn a_quarantine_field_alone_marks_the_test_quarantined() {
 }
 
 #[tokio::test]
-async fn a_run_has_pythons_defaults_and_stores_what_it_is_given() {
+async fn a_run_has_the_documented_defaults_and_stores_what_it_is_given() {
     let db = TestDb::new().await.expect("a migrated test database");
     let project = make_project()
         .build(db.connection())
@@ -222,7 +222,7 @@ async fn a_run_has_pythons_defaults_and_stores_what_it_is_given() {
 }
 
 #[tokio::test]
-async fn an_execution_has_pythons_defaults_and_stores_what_it_is_given() {
+async fn an_execution_has_the_documented_defaults_and_stores_what_it_is_given() {
     let db = TestDb::new().await.expect("a migrated test database");
     let project = make_project()
         .build(db.connection())
@@ -272,7 +272,7 @@ async fn an_execution_has_pythons_defaults_and_stores_what_it_is_given() {
 }
 
 #[tokio::test]
-async fn a_pipeline_and_its_job_have_pythons_defaults() {
+async fn a_pipeline_and_its_job_have_the_documented_defaults() {
     let db = TestDb::new().await.expect("a migrated test database");
     let pipeline = make_pipeline()
         .build(db.connection())
@@ -324,7 +324,7 @@ async fn a_pipeline_and_its_job_have_pythons_defaults() {
 }
 
 #[tokio::test]
-async fn a_job_execution_has_pythons_defaults_and_a_fresh_ci_job_id() {
+async fn a_job_execution_has_the_documented_defaults_and_a_fresh_ci_job_id() {
     let db = TestDb::new().await.expect("a migrated test database");
     let pipeline = make_pipeline()
         .build(db.connection())
@@ -448,7 +448,7 @@ async fn a_score_history_row_is_one_day_for_one_owner() {
 }
 
 #[tokio::test]
-async fn a_report_has_pythons_defaults_and_stores_what_it_is_given() {
+async fn a_report_has_the_documented_defaults_and_stores_what_it_is_given() {
     let db = TestDb::new().await.expect("a migrated test database");
     let project = make_project()
         .build(db.connection())

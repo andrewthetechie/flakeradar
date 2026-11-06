@@ -39,7 +39,7 @@ pub enum Command {
 /// The parsed command line.
 ///
 /// With no subcommand the binary serves, which is how `docker run` starts it and
-/// what the frozen server's `uvicorn` command line did.
+/// how the image's entrypoint runs it.
 #[derive(Debug, Parser)]
 #[command(
     name = "flakeradar",

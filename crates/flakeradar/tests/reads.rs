@@ -1,8 +1,8 @@
 //! The dashboard read APIs: Repos, the Tests leaderboard, summaries, Test detail
 //! and quarantine.
 //!
-//! Ported from `backend/tests/test_tests_api.py` and
-//! `backend/tests/test_test_detail_api.py`. Every assertion reads the response
+//! The Test leaderboard, a Test's detail page and the filters they take. Every
+//! assertion reads the response
 //! the way the frontend and the actions do.
 
 #![expect(
@@ -56,7 +56,7 @@ fn item_names(page: &Value) -> Vec<String> {
         .collect()
 }
 
-/// The writers-app / fantasy fixture the Python tests seed.
+/// The writers-app / fantasy fixture the recorded scenarios seed.
 async fn seed(db: &TestDb) {
     let connection = db.connection();
     let wb = make_project()
@@ -774,7 +774,7 @@ async fn q_rejects_a_query_over_two_hundred_characters() {
     assert_eq!(reply.json()["detail"][0]["loc"], json!(["query", "q"]));
 }
 
-/// The quarantine fixture the Python tests seed.
+/// The quarantine fixture the recorded scenarios seed.
 async fn seed_quarantine(db: &TestDb) {
     let project = make_project()
         .repo("acme/app")
@@ -1276,7 +1276,7 @@ async fn quarantine_toggles_and_lists_one_project() {
 }
 
 #[tokio::test]
-async fn quarantine_takes_pydantics_lax_boolean_and_404s_a_missing_test() {
+async fn quarantine_takes_the_lax_boolean_and_404s_a_missing_test() {
     let db = TestDb::new().await.expect("a test database");
     let app = token_app(&db);
     for spelling in [
@@ -1293,7 +1293,7 @@ async fn quarantine_takes_pydantics_lax_boolean_and_404s_a_missing_test() {
         json!(0),
         json!(true),
         json!(false),
-        // Pydantic reads the floats `1.0` and `0.0` as booleans, so the route
+        // The floats `1.0` and `0.0` are booleans, so the route
         // validated the body and answered for the missing Test rather than 422.
         json!(1.0),
         json!(0.0),
@@ -1309,8 +1309,8 @@ async fn quarantine_takes_pydantics_lax_boolean_and_404s_a_missing_test() {
         assert_eq!(reply.status, 404, "{spelling}");
         assert_eq!(reply.json(), json!({"detail": "Test not found"}));
     }
-    // A spelling Pydantic refused is still a 422, not a silent coercion, and the
-    // kind is the one Pydantic gave: a value of another JSON type is `bool_type`,
+    // A spelling the reader refuses is still a 422, not a silent coercion, and the
+    // kind is the documented one: a value of another JSON type is `bool_type`,
     // a number or string of the right type it could not read is `bool_parsing`.
     let refused: [(&str, Value, &str); 8] = [
         ("1.5", json!(1.5), "bool_type"),
@@ -1446,7 +1446,7 @@ async fn seed_model(db: &TestDb, id: i32) -> flakeradar_db::entities::test_cases
 
 /// Fabro's own view of a Test, copied from `flakeradar.rs` and `scout/flakeradar.rs`.
 ///
-/// Every field Fabro reads is here, with timestamps as the text FastAPI sent, so
+/// Every field Fabro reads is here, with timestamps as the reference sends them, so
 /// a missing or reshaped field fails to deserialize.
 #[derive(Debug, serde::Deserialize)]
 struct FabroTest {

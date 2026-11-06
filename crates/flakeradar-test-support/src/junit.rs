@@ -4,8 +4,7 @@
 
 use std::fmt::Write as _;
 
-/// Builds a minimal JUnit XML report, as the frozen Python server's `conftest.py`
-/// built it.
+/// Builds a minimal JUnit XML report for a test to upload.
 ///
 /// `cases` is one `(name, status)` pair per Test, where the status is `passed`,
 /// `failed`, `error` or `skipped`. Every Test is in the suite `unit` and the

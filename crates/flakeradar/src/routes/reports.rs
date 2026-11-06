@@ -4,7 +4,8 @@
 //! pending Report and answers 202; the processor turns it into a Run later.
 //! `POST /api/ingest/pipeline` does the same for one attempt of a Pipeline run.
 //! The rest read the queue, summarise it, retry a failed Report or dismiss one.
-//! `backend/app/routers/reports.py` is the reference.
+//! The bodies, status codes and `detail` texts are the wire contract `tests/parity`
+//! replays.
 
 // Rust guideline compliant 2026-07-21
 
@@ -43,9 +44,9 @@ use crate::multipart::{MalformedHeaders, REPORT_FIELD, file_field};
 
 /// The largest Report body accepted, in bytes.
 ///
-/// The frozen server's `MAX_REPORT_BYTES`. A larger upload is refused with 413
-/// before it is parsed or stored, because a report nobody can process is not
-/// worth a row in the queue.
+/// A larger upload is refused with 413 before it is parsed or stored, because a
+/// report nobody can process is not worth a row in the queue. The bound is the one
+/// this API publishes, and `actions/report` reads the client-side copy.
 pub const MAX_REPORT_BYTES: usize = 20 * 1024 * 1024;
 
 /// How much framing a multipart upload may add over [`MAX_REPORT_BYTES`].
@@ -167,11 +168,11 @@ fn default_report_limit() -> i64 {
 }
 
 impl Validate for IngestQuery {
-    /// Checks the lengths and ranges `reports.py` put on the query parameters.
+    /// Checks the lengths and ranges the ingest query parameters carry.
     ///
-    /// FastAPI checked them before the handler ran, so a query that breaks one
-    /// answers 422 before the body is read, and the issues come in the order the
-    /// parameters are declared.
+    /// The check runs before the handler, so a query that breaks one answers 422
+    /// before the body is read, and the issues come in the order the parameters are
+    /// declared.
     fn validate(&self) -> ApiResult<()> {
         let mut issues = Vec::new();
         check_max(&self.repo, NAME_MAX, "repo", &mut issues);
@@ -219,11 +220,10 @@ impl Validate for IngestQuery {
         if !issues.is_empty() {
             return Err(ApiError::unprocessable(issues));
         }
-        // An attempt past the column's range is not a body this server can
-        // store, and Python crashed on it after creating rows this Request
-        // would have to undo. It is refused with 400, the same way an
-        // unparsable `time` is, rather than rewritten into a value CI never
-        // sent.
+        // An attempt past the column's range is not a body this server can store,
+        // and answering it late crashed after creating rows the Request would have
+        // to undo. It is refused with 400, the same way an unparsable `time` is,
+        // rather than rewritten into a value CI never sent.
         if attempt_over_range {
             return Err(too_large_attempt());
         }
@@ -237,9 +237,9 @@ struct AttemptQuery(AttemptIn);
 
 /// Reads a query `ci_run_attempt` as the value it spells.
 ///
-/// The reading is never a parse error: a value Pydantic could not read is a 422
-/// with Pydantic's kind, and one past the `int4` column is the 400 both ingest
-/// routes answer, so the rule runs in `Validate` where the route can say which.
+/// The reading is never a parse error: a value that is no integer is a 422 with
+/// its own kind, and one past the `int4` column is the 400 both ingest routes
+/// answer, so the rule runs in `Validate` where the route can say which.
 fn read_attempt_query<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Option<AttemptQuery>, D::Error> {
@@ -267,9 +267,9 @@ fn line_base_value(line_base: i64) -> i32 {
 
 /// Records a NUL or a maximum-length failure for `field`.
 ///
-/// The length counts characters as Python counted them. A NUL is refused because
-/// a PostgreSQL `text` column cannot store one, where the reference answered 500
-/// after creating the Repo and Project rows.
+/// The length counts characters rather than bytes. A NUL is refused because a
+/// PostgreSQL `text` column cannot store one, and one that reached the column
+/// answered 500 after creating the Repo and Project rows.
 fn check_max(value: &str, max: usize, field: &str, issues: &mut Vec<ValidationIssue>) {
     lax::refuse_nul(value, query_loc(field), issues);
     if value.chars().count() > max {
@@ -281,7 +281,7 @@ fn check_max(value: &str, max: usize, field: &str, issues: &mut Vec<ValidationIs
     }
 }
 
-/// Records a minimum-length failure for `field`, in characters as Python counted.
+/// Records a minimum-length failure for `field`, in characters.
 fn check_min(value: &str, min: usize, field: &str, issues: &mut Vec<ValidationIssue>) {
     if value.chars().count() < min {
         issues.push(ValidationIssue::string_too_short(
@@ -295,7 +295,7 @@ fn check_min(value: &str, min: usize, field: &str, issues: &mut Vec<ValidationIs
 /// The path parameters of a Report route.
 ///
 /// The field is named, so a path that is not an integer reports `loc`
-/// `["path", "report_id"]` as FastAPI's named path parameter did.
+/// `["path", "report_id"]`, naming the parameter rather than the whole path.
 #[derive(Debug, Clone, Copy, Deserialize)]
 pub struct ReportPath {
     /// The Report's id.
@@ -402,14 +402,13 @@ pub async fn ingest(
     let root = normalize_root(query.root.as_deref()).map_err(|error| named_error(&error))?;
     let line_base = query.line_base;
     parse_report_body(content.clone(), line_base).await?;
-    // Checked here, where Python's insert failed on the same value, so every
-    // refusal before this one answers exactly as it did.
+    // Checked here, where the insert fails on the same value, so every refusal
+    // before this one answers what it always did.
     let ci_run_attempt = accepted_ci_run_attempt(query.ci_run_attempt.as_ref());
 
     let now = state.clock().now();
-    // The Repo, Project and Report are one unit of work: Python committed them
-    // once, at the end, so a duplicate answer or a failed insert left none of
-    // them behind. A transaction keeps that promise when the insert fails.
+    // The Repo, Project and Report are one unit of work, committed once at the
+    // end, so a duplicate answer or a failed insert leaves none of them behind.
     let txn = state.pool().begin().await?;
     let project = get_or_create_project(&txn, &repo_name, &project_name, now).await?;
     let candidate = NewJunitReport {
@@ -429,8 +428,8 @@ pub async fn ingest(
     };
     if let Some(existing) = find_junit_duplicate(&txn, &candidate).await? {
         // A duplicate queues nothing, and the Repo and Project this request may
-        // have created are not committed either, as Python's single `commit`
-        // site never reached them.
+        // have created are not committed either: the one commit site is not
+        // reached.
         txn.rollback().await?;
         return Ok(accepted(IngestAccepted {
             report_id: i64::from(existing.id),
@@ -486,8 +485,8 @@ async fn report_body(request: Request) -> Result<Bytes, ApiError> {
     })?;
     match found {
         Ok(found) => Ok(found.map_or_else(Bytes::new, Bytes::from)),
-        // The reference handed the body to Starlette's form parser, which
-        // refused a part whose headers are no headers with this detail.
+        // A part whose headers are no headers is refused with this detail, which is
+        // the text a client already reads.
         Err(MalformedHeaders) => Err(ApiError::new(
             StatusCode::BAD_REQUEST,
             "Invalid multipart data.",
@@ -498,8 +497,8 @@ async fn report_body(request: Request) -> Result<Bytes, ApiError> {
 /// The 413 or 500 for an upload that could not be read.
 ///
 /// The route's own limit is what a body over [`INGEST_BODY_LIMIT`] hits, so the
-/// frozen server's "Report exceeds 20 MB limit" is the answer rather than Axum's
-/// generic one.
+/// published "Report exceeds 20 MB limit" is the answer rather than Axum's generic
+/// one.
 fn report_body_error(rejection: &axum::extract::rejection::BytesRejection) -> ApiError {
     use axum::extract::rejection::{BytesRejection, FailedToBufferBody};
 
@@ -516,9 +515,9 @@ fn report_body_error(rejection: &axum::extract::rejection::BytesRejection) -> Ap
 
 /// Parses the upload off the request's thread, so a large report never blocks it.
 ///
-/// Parsing is CPU-bound, and the frozen server ran it in a worker thread for the
-/// same reason. A `<testcase time>` that is not a number answers 400, and every
-/// other parse failure answers 422.
+/// Parsing is CPU-bound, so it runs in a blocking task rather than on an async
+/// worker. A `<testcase time>` that is not a number answers 400, and every other
+/// parse failure answers 422.
 async fn parse_report_body(content: Bytes, line_base: i64) -> ApiResult<()> {
     let parsed = tokio::task::spawn_blocking(move || parse_junit_xml(&content, line_base))
         .await
@@ -548,8 +547,8 @@ fn named_error(error: &flakeradar_core::identity::IdentityError) -> ApiError {
 /// A query parameter's value with the surrounding whitespace trimmed, or `None`
 /// when nothing is left.
 ///
-/// The frozen server wrote `(value or "").strip() or None`, which is Python's
-/// strip, so a value that is only whitespace becomes NULL in the database.
+/// An empty or whitespace-only value becomes NULL in the database, so a query
+/// parameter left blank stores nothing rather than an empty string.
 fn blank_to_none(value: Option<String>) -> Option<String> {
     value
         .map(|value| strip_wire_whitespace(&value).to_owned())
@@ -582,8 +581,8 @@ pub async fn ingest_pipeline(
     ApiJson(payload): ApiJson<PipelineReportIn>,
 ) -> RouteResult<Response> {
     let now = state.clock().now();
-    // The Repo and the Report are one unit of work, as they were for Python's
-    // single `commit`: a failed insert leaves no Repo behind.
+    // The Repo and the Report are one unit of work, committed once: a failed
+    // insert leaves no Repo behind.
     let txn = state.pool().begin().await?;
     let repo = get_or_create_repo(&txn, &payload.repo, now).await?;
     let report = NewPipelineReport {

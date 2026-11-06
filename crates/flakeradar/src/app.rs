@@ -172,9 +172,9 @@ pub fn with_common_layers(router: Router<AppState>, settings: &Settings) -> Rout
 
 /// The response for a path that exists but does not answer this method.
 ///
-/// The frozen server answered with Starlette's `HTTPException`, which FastAPI
-/// renders as the usual `{"detail": ...}` document; Axum's own 405 has an empty
-/// body. Both send an `Allow` header naming the methods the path does answer.
+/// The answer is the usual `{"detail": "Method Not Allowed"}` document with an
+/// `Allow` header naming the methods the path does answer; Axum's own 405 has an
+/// empty body and no document, which is not the shape this API answers.
 async fn method_not_allowed() -> Response {
     method_not_allowed_body(None)
 }
@@ -193,16 +193,16 @@ fn method_not_allowed_body(allow: Option<&'static str>) -> Response {
 
 /// The response for a path no route matched.
 ///
-/// The frozen server ran Starlette, which redirects a path with a trailing slash
-/// to the same path without it; every API path is registered without the slash,
-/// so `GET /api/tests/` answered 307 and the client retried. The fallback keeps
-/// that, and answers 404 only when there is no slash to remove. Redirecting a
-/// path that then 404s is intended: the client asked for a different resource.
+/// A path with a trailing slash is redirected to the same path without it; every
+/// API path is registered without the slash, so `GET /api/tests/` answers 307 and
+/// the client retries. The fallback keeps that, and answers 404 only when there is
+/// no slash to remove. Redirecting a path that then 404s is intended: the client
+/// asked for a different resource.
 ///
-/// The reference also mounted the built frontend at `/`, after every API route,
-/// so a path no route matched was a file when there was one and this 404 when
-/// there was not. [`static_response`] is that mount; it answers first, and a
-/// path it does not serve reaches the redirect and the 404 exactly as before.
+/// The built frontend is mounted at `/`, after every API route, so a path no route
+/// matched is a file when there is one and this 404 when there is not.
+/// [`static_response`] is that mount; it answers first, and a path it does not
+/// serve reaches the redirect and the 404.
 async fn not_found(
     State(state): State<AppState>,
     method: Method,
@@ -247,8 +247,8 @@ fn static_response(
     }
     let (asset, name) = lookup(source, &path)?;
     if !matches!(*method, Method::GET | Method::HEAD) {
-        // Starlette's static mount answered every method but GET and HEAD with
-        // this 405, and named the two it serves.
+        // A frontend path answers every method but GET and HEAD with this 405,
+        // and names the two it serves.
         return Some(method_not_allowed_body(Some("GET, HEAD")));
     }
     Some(asset_response(&asset, &name, method, headers))
@@ -288,10 +288,9 @@ fn lookup(source: &dyn AssetSource, path: &str) -> Option<(Asset, String)> {
 
 /// The answer for one asset, honouring `If-None-Match`.
 ///
-/// `content-length` is the file's own length even for `HEAD`, which is what
-/// Starlette's `FileResponse` sent: the method asks for the headers a `GET`
-/// would carry, not for a zero-length file. Hyper would otherwise derive the
-/// length from the empty body and announce `0`.
+/// `content-length` is the file's own length even for `HEAD`: the method asks for
+/// the headers a `GET` would carry, not for a zero-length file. Hyper would
+/// otherwise derive the length from the empty body and announce `0`.
 fn asset_response(asset: &Asset, name: &str, method: &Method, headers: &HeaderMap) -> Response {
     let cache = if name.starts_with("assets/") {
         HASHED_ASSET_CACHE
@@ -329,8 +328,8 @@ fn asset_response(asset: &Asset, name: &str, method: &Method, headers: &HeaderMa
 
 /// Whether the request already holds the bytes `etag` names.
 ///
-/// Starlette answered 304 for `*` and for any tag in the list that matched with
-/// a weak prefix stripped, and so does this.
+/// A 304 is answered for `*` and for any tag in the list that matches with a weak
+/// prefix stripped.
 fn is_not_modified(headers: &HeaderMap, etag: &str) -> bool {
     let Some(value) = headers
         .get(header::IF_NONE_MATCH)
@@ -347,7 +346,7 @@ fn is_not_modified(headers: &HeaderMap, etag: &str) -> bool {
     })
 }
 
-/// The media type of `name`, with the charset Starlette added to text.
+/// The media type of `name`, with a charset on text.
 fn content_type(name: &str) -> String {
     let media = mime_guess::from_path(name)
         .first_or_octet_stream()

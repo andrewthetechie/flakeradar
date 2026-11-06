@@ -9,10 +9,9 @@ use flakeradar_db::clock::MonotonicClock;
 
 /// A monotonic clock that answers each reading from a list the test wrote.
 ///
-/// The frozen Python server's retention tests replaced `time.monotonic` with an
-/// iterator for the same reason: the last reading it scripts is past the budget,
-/// so the run stops without spending one. Once the list is empty, the last value
-/// repeats, because a run may read the clock more often than the test predicted.
+/// The last reading it scripts is past the budget, so the run stops without
+/// spending one. Once the list is empty, the last value repeats, because a run may
+/// read the clock more often than the test predicted.
 #[derive(Debug)]
 pub struct ScriptedMonotonic {
     readings: Mutex<(VecDeque<f64>, f64)>,

@@ -1,8 +1,7 @@
 //! The Notification task: one POST per Report's Tier changes, retried per ADR 0009.
 //!
-//! Ported from `backend/tests/test_webhook_worker.py`. The endpoint is a stub
-//! server, so a test asserts what was posted rather than that a function was
-//! called, and nothing waits on the real clock.
+//! The endpoint is a stub server, so a test asserts what was posted rather than
+//! that a function was called, and nothing waits on the real clock.
 
 #![expect(
     clippy::expect_used,

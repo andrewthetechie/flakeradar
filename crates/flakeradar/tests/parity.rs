@@ -1,10 +1,9 @@
 //! The parity replay: every recorded scenario step, against the Rust app.
 //!
-//! The contract is `tests/parity/README.md`. The deleted recorder
-//! (`tools/parity-record/record.py` at `97b933d`) recorded what the frozen
-//! Python server answered for each step of each scenario; this harness sends the
-//! same requests to [`flakeradar::app::build_app`] on a database of its own and
-//! compares the answers.
+//! The contract is `tests/parity/README.md`. Each golden records the answer one
+//! step of one scenario was given when the corpus was recorded; this harness
+//! sends the same requests to [`flakeradar::app::build_app`] on a database of its
+//! own and compares the answers.
 //!
 //! Every scenario in `tests/parity/scenarios/` runs every step: there is no list
 //! of enabled steps to fall behind and no way to switch a scenario off. A new
@@ -534,7 +533,7 @@ const MCP_VERSION: &str = "2026-07-28";
 
 /// Replays one `mcp` step: one JSON-RPC request to the transport.
 ///
-/// The golden holds the JSON-RPC `result` the frozen server's client decoded, so
+/// The golden holds the JSON-RPC `result` the recording client decoded, so
 /// the comparison is against the `result` member of the answer. A `tools/list`
 /// golden holds the result object itself, because the recorder dumped the
 /// client's tool models rather than the envelope.
@@ -739,9 +738,8 @@ fn body_of(request: &Value) -> (Vec<u8>, Option<String>) {
         return (payload, None);
     }
     if let Some(value) = request.get("body_json") {
-        // The recorder sent these bytes with no content type, and only a step
-        // that names one sends it: `json.dumps` text is the body, not a typed
-        // document, which is why Python read it as raw text.
+        // These bytes are sent with no content type unless the step names one: a
+        // serialized document in the body is raw text, not a typed request.
         let payload = serde_json::to_vec(value).expect("the fixture body serializes");
         return (payload, None);
     }
@@ -945,7 +943,7 @@ fn compare_body(
     failures
 }
 
-/// Whether a recorded body is FastAPI's own validation-error shape.
+/// Whether a recorded body is the framework's own validation-error shape.
 fn is_framework_422(body: &Value) -> bool {
     body.get("detail")
         .and_then(Value::as_array)
@@ -1003,11 +1001,11 @@ fn compare_framework_422(
 /// The component schemas whose names the two frameworks spell differently.
 ///
 /// Every other schema must exist under the same name and declare the same field
-/// names. FastAPI's two validation schemas are its framework's own: the reference
-/// documents its 422 as `HTTPValidationError` wrapping `ValidationError`, while
-/// this port documents the status with a description and keeps the same five
-/// issue fields in `ValidationIssue`. The 422 replay steps compare the wire
-/// bodies of both, and `differences.md` records the difference.
+/// names. The two validation schemas are the recorded document's own: it describes
+/// its 422 as `HTTPValidationError` wrapping `ValidationError`, while this server
+/// documents the status with a description and keeps the same five issue fields in
+/// `ValidationIssue`. The 422 replay steps compare the wire bodies of both, and
+/// `differences.md` records the difference.
 const OPENAPI_SCHEMA_ALIASES: &[(&str, &str)] = &[("ValidationError", "ValidationIssue")];
 
 /// The schemas only the reference's document has.
@@ -1171,10 +1169,10 @@ fn compare_openapi_schemas(
 /// a string enumeration with a `$ref` where the reference writes `string`, so
 /// both spellings are canonicalised rather than compared as text.
 ///
-/// The required list is compared with one recorded difference: the reference
-/// marks every nullable field required, because Pydantic serializes an absent
-/// `Optional` field as an explicit `null`, and the port documents a nullable
-/// field as optional. So a field the reference requires and the port does not
+/// The required list is compared with one recorded difference: the recorded
+/// document marks every nullable field required, because a nullable field is
+/// always serialized as an explicit `null` there, and this server documents a
+/// nullable field as optional. So a field the reference requires and the port does not
 /// must be nullable in the port — the mismatch is that one rule and nothing
 /// else. `differences.md` records it under the `/openapi.json` row.
 fn compare_openapi_fields(
@@ -1261,10 +1259,9 @@ fn compare_openapi_fields(
 
 /// The fields whose documented type differs, and what each side says.
 ///
-/// `ValidationIssue.ctx` is the only one: Pydantic's own model declares it
-/// `dict[str, Any]`, so FastAPI's document calls it an object and requires it,
-/// while this port declares it `Option<Value>`, omits it from the answer when it
-/// is absent and documents `object | null`. The port's document is the truthful
+/// `ValidationIssue.ctx` is the only one: the recorded document calls it an object
+/// and requires it, while this server declares it `Option<Value>`, omits it from
+/// the answer when it is absent and documents `object | null`. The port's document is the truthful
 /// one — a validation issue with no `ctx` is what both servers answer — and no
 /// golden compares it, because the 422 goldens' issues carry `ctx` or not by
 /// case. Each entry is the schema, the field, and the two canonical types, so a
@@ -1275,10 +1272,10 @@ const OPENAPI_TYPE_DIFFERENCES: &[(&str, &str, &str, &str)] =
 /// The fields the port documents as required where the reference leaves them
 /// optional.
 ///
-/// `IngestAccepted.duplicate` is Python's `duplicate: bool = False`, which
-/// Pydantic documents with a default rather than as required, while this port
-/// always answers it. The value is on the wire in both, so the port's document
-/// says more than the reference's and never less.
+/// `IngestAccepted.duplicate` carries a default in the recorded document, so that
+/// document does not require it, while this server always answers it. The value is
+/// on the wire in both, so this server's document says more than the recorded one
+/// and never less.
 const OPENAPI_REQUIRED_ONLY_IN_THE_PORT: &[(&str, &str)] = &[("IngestAccepted", "duplicate")];
 
 /// A field's JSON Schema type, in the one spelling both documents reduce to.
@@ -1955,7 +1952,7 @@ fn is_digits(text: &str, width: usize) -> bool {
     text.len() == width && text.chars().all(|c| c.is_ascii_digit())
 }
 
-/// Settings at the frozen server's defaults, for a harness test with no scenario.
+/// Settings at the shipped defaults, for a harness test with no scenario.
 fn test_settings() -> Settings {
     Settings::from_map(&BTreeMap::new()).expect("the default settings are valid")
 }
@@ -2225,9 +2222,10 @@ mod tests {
 
     #[test]
     fn a_table_body_compares_field_by_field_on_the_real_dump() {
-        // The `reports` dump of a step this harness records. Rust writes the
-        // fraction Python omits, which `differences.md` allows on a timestamp and on
-        // nothing else, so the queued document is compared rather than its hex.
+        // The `reports` dump of a step this harness records. This server writes
+        // six fraction digits where the golden omits them, which `differences.md`
+        // allows on a timestamp and on nothing else, so the queued document is
+        // compared rather than its hex.
         let recorded = super::golden("pipeline-jobs", 37);
         let tables = recorded
             .get("tables")
@@ -2625,10 +2623,9 @@ async fn a_wait_processed_step_gives_up_on_a_queue_that_never_drains() {
 
 #[tokio::test]
 async fn an_mcp_step_replays_the_recorded_protocol_result() {
-    // The recorded `tools/list` answer of the frozen server, replayed against
-    // the Rust transport: the tool names, descriptions, schemas and annotations
-    // are the wire, so the golden must replay clean and one changed description
-    // must fail.
+    // The recorded `tools/list` answer, replayed against the transport: the tool
+    // names, descriptions, schemas and annotations are the wire, so the golden
+    // must replay clean and one changed description must fail.
     let db = TestDb::new().await.expect("a test database is available");
     let server = Listener::start(app(&db, &[("FLAKERADAR_API_TOKEN", TOKEN)])).await;
     let spec = scenario("mcp")

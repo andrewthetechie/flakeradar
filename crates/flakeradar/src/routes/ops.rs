@@ -61,10 +61,10 @@ pub async fn health() -> Json<HealthOut> {
 ///
 /// # Errors
 ///
-/// Returns the 500 the frozen server's unhandled query error became when the
-/// database answered the connectivity check but the queue query then failed. A
-/// database that does not answer at all is a 503 body rather than an error,
-/// because the probe exists to report exactly that.
+/// Returns the plain-text 500 when the database answered the connectivity check
+/// but the queue query then failed. A database that does not answer at all is a
+/// 503 body rather than an error, because the probe exists to report exactly
+/// that.
 #[utoipa::path(
     get,
     path = "/api/health/ready",
@@ -214,11 +214,11 @@ fn render(snapshot: &Snapshot) -> String {
     body
 }
 
-/// Renders a float the way Python's `str` does, with a decimal point.
+/// Renders a float with a decimal point, which is the form Prometheus reads.
 ///
-/// A sample line prints `0.0` for an empty queue, where Rust's own `Display`
-/// would print `0`. Every value here is a number of seconds, so none reaches the
-/// magnitude where Python switches to exponent notation.
+/// A sample line prints `0.0` for an empty queue, where Rust's own `Display` would
+/// print `0`. Every value here is a number of seconds, so none is large enough to
+/// print in exponent notation.
 fn render_seconds(value: f64) -> String {
     let text = format!("{value}");
     if value.is_finite() && !text.contains('.') && !text.contains('e') && !text.contains('E') {
@@ -229,11 +229,10 @@ fn render_seconds(value: f64) -> String {
 
 /// The 500 a readiness probe answers when its queue query fails.
 ///
-/// The frozen server ran that query outside its `try`, so the unhandled
-/// `SQLAlchemyError` reached Starlette's error handler and became a plain-text
-/// 500, not the `{"detail": ...}` document every other failure carries. The
-/// scrape answers 503 instead, because its whole query block was inside the
-/// `try`.
+/// The probe's query runs outside the route's error handling, so a failure is the
+/// plain-text 500 the probe has always answered rather than the `{"detail": ...}`
+/// document every other failure carries. The scrape answers 503, because its whole
+/// query block is handled.
 fn database_failure(error: &DbError) -> Response {
     tracing::error!(
         name: "http.readiness.failed",
@@ -256,7 +255,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     #[test]
-    fn a_float_is_printed_the_way_python_prints_it() {
+    fn a_float_is_printed_with_a_decimal_point() {
         assert_eq!(render_seconds(0.0), "0.0");
         assert_eq!(render_seconds(90.0), "90.0");
         assert_eq!(render_seconds(0.125), "0.125");

@@ -1,10 +1,10 @@
-//! Every route the server serves, in the order later tasks add them.
+//! Every route the server serves.
 //!
 //! [`router`] is what [`crate::app::build_app`] merges: the operations routes, the
-//! API documentation, and from task 06 on the Report routes. A route group that
-//! needs the shared token attaches
-//! [`crate::middleware::require_token`] to its own subtree, so the read APIs stay
-//! open.
+//! API documentation, ingest and the Report queue, the read APIs, the Issue link
+//! and admin routes, and the MCP transport. A route group that needs the shared
+//! token attaches [`crate::middleware::require_token`] to its own subtree, so the
+//! read APIs stay open.
 
 // Rust guideline compliant 2026-07-21
 

@@ -1,15 +1,15 @@
-//! Request extractors that reject the way FastAPI rejected.
+//! Request extractors that answer a bad request the way this API answers one.
 //!
-//! FastAPI answers a bad query parameter, path parameter or body with **422**
-//! and a `detail` list of Pydantic issues, each naming the request part and the
-//! field. Axum's own extractors answer 400 with a sentence and no field name, so
-//! the three types here wrap them and rebuild the FastAPI shape: [`ApiQuery`]
-//! and [`ApiJson`] parse with the same `serde` machinery Axum uses, keeping the
-//! path to the failing field, and [`ApiPath`] reads the field name from Axum's
-//! typed path rejection.
+//! A bad query parameter, path parameter or body is a **422** whose `detail` is a
+//! list of issues, each naming the request part and the field. Axum's own
+//! extractors answer 400 with a sentence and no field name, so the three types
+//! here wrap them and rebuild the published shape: [`ApiQuery`] and [`ApiJson`]
+//! parse with the same `serde` machinery Axum uses, keeping the path to the
+//! failing field, and [`ApiPath`] reads the field name from Axum's typed path
+//! rejection.
 //!
 //! A value's own range and length rules go in [`Validate`], so a route's limits
-//! report in the same shape and with Pydantic's wording.
+//! report in the same shape and with the same wording as a field's own rules.
 
 // Rust guideline compliant 2026-07-21
 
@@ -46,7 +46,7 @@ impl From<BodyRefusal> for ApiError {
 /// A field's type check happens while the value is parsed; a rule such as
 /// "at least 1" or "at most 64 characters" can only run once the field holds a
 /// value. The trait exists so those rules answer exactly like the parse failures
-/// do: 422 with a Pydantic issue naming the field.
+/// do: 422 with an issue naming the field.
 pub trait Validate {
     /// Checks the value's own rules.
     ///
@@ -84,8 +84,8 @@ where
 /// The path parameters of a request.
 ///
 /// Rejects with 422 and `loc: ["path", <field>]` when a parameter does not fit
-/// its type. The frozen server places no range or length rule on a path
-/// parameter, so there is no [`Validate`] step.
+/// its type. No path parameter has a range or length rule, so there is no
+/// [`Validate`] step.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ApiPath<T>(pub T);
 
@@ -106,9 +106,9 @@ where
 
 /// A JSON request body a model reads its own fields from.
 ///
-/// The reading rules a field has — Pydantic's spelling of a boolean, a
-/// number's range, a string's length — belong to the model, so the extractor
-/// only gets the body to it in the shape the reference validated.
+/// The reading rules a field has — the spellings of a boolean, a number's range,
+/// a string's length — belong to the model, so the extractor only gets the body
+/// to it as the object the model reads.
 pub trait FromJsonObject: Sized {
     /// Reads the value from the parsed object.
     ///
@@ -120,10 +120,10 @@ pub trait FromJsonObject: Sized {
 
 /// A JSON request body, validated.
 ///
-/// FastAPI reads a body by its `Content-Type`: anything that is not JSON is left
-/// as the raw bytes, which a model then rejects as not an object. The same two
-/// steps happen here, so a request that sends no `Content-Type` gets the 422
-/// FastAPI gave it rather than Axum's 415.
+/// A body is read by its `Content-Type`: anything that is not JSON is left as the
+/// raw bytes, which the model then rejects as not an object. The same two steps
+/// happen here, so a request that sends no `Content-Type` gets a 422 rather than
+/// Axum's 415.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ApiJson<T>(pub T);
 
@@ -177,11 +177,10 @@ impl FromJsonObject for flakeradar_core::dto::PipelineReportIn {
 }
 
 /// Parses `query` into `T` and checks its own rules, reporting the failing field
-/// the way FastAPI did.
+/// the way this API does.
 ///
-/// A parameter sent more than once keeps its last value, which is the one
-/// Starlette's `request.query_params` read and Pydantic validated. A refused
-/// value's issue echoes the text the request sent, as Pydantic's `input` did —
+/// A parameter sent more than once keeps its last value, which is the one this
+/// reader validates. A refused value's issue echoes the text the request sent,
 /// including when the value parsed and broke a declared range.
 fn parse_query<T: DeserializeOwned + Validate>(pairs: &[(String, String)]) -> ApiResult<T> {
     let collapsed = serialised(pairs);
@@ -198,7 +197,7 @@ fn parse_query<T: DeserializeOwned + Validate>(pairs: &[(String, String)]) -> Ap
     Ok(value)
 }
 
-/// `error` with the text each issue's parameter carried, as Pydantic echoed it.
+/// `error` with the text each issue's parameter carried.
 fn with_query_input(error: ApiError, pairs: &[(String, String)]) -> ApiError {
     let Detail::Issues(issues) = error.detail() else {
         return error;
@@ -231,11 +230,11 @@ fn serialised(pairs: &[(String, String)]) -> String {
     serialiser.finish()
 }
 
-/// Puts the text the request sent into `issue`'s `input`, as Pydantic echoed it.
+/// Puts the text the request sent into `issue`'s `input`.
 ///
-/// Pydantic reported the raw query text for every query value it refused,
-/// including one that broke a declared range, so the issue carries the string
-/// even where the port held the parsed number when the rule failed.
+/// A refused query value reports the raw text, including one that broke a
+/// declared range, so the issue carries the string even where the rule saw the
+/// parsed number.
 fn attach_query_input(issue: &mut ValidationIssue, pairs: &[(String, String)]) {
     if issue.r#type == "missing" {
         return;
@@ -248,11 +247,11 @@ fn attach_query_input(issue: &mut ValidationIssue, pairs: &[(String, String)]) {
     }
 }
 
-/// Parses a request body into the JSON object Pydantic validated.
+/// Parses a request body into the JSON object a model reads its fields from.
 ///
-/// A body the reference refused before validating any field is refused here:
-/// an empty body is a missing field, a body that is not JSON is not a model, and
-/// one that is not an object is not a dictionary Pydantic can read fields from.
+/// A body that is refused before any field is validated is refused here: an empty
+/// body is a missing field, a body that is not JSON is no body at all, and one
+/// that is not an object is not a map a model can read fields from.
 pub(crate) fn parse_json_object(
     bytes: &[u8],
     content_type: Option<&str>,
@@ -264,7 +263,7 @@ pub(crate) fn parse_json_object(
     }
     if !is_json_content_type(content_type) {
         // A body that is not JSON is handed to the model as raw text, which
-        // Pydantic reports as not being a dictionary or object.
+        // is reported as not being a dictionary or object.
         let text = String::from_utf8_lossy(bytes);
         return Err(ApiError::unprocessable(vec![
             ValidationIssue::model_attributes_type(
@@ -291,7 +290,7 @@ pub(crate) fn parse_json_object(
     }
 }
 
-/// Whether a `Content-Type` names JSON, the way FastAPI's check did.
+/// Whether a `Content-Type` names JSON.
 fn is_json_content_type(value: Option<&str>) -> bool {
     let Some(value) = value else {
         return false;
@@ -334,11 +333,12 @@ fn scope_loc(scope: &str) -> Vec<LocSegment> {
     vec![LocSegment::Field(scope.to_owned())]
 }
 
-/// The character offset `serde_json` reports an error at, as Python counted it.
+/// The character offset `serde_json` reports an error at, as an index into the
+/// decoded text.
 ///
-/// Python's `json` module reports a position as an index into the decoded text,
-/// so a multi-byte character counts once and a newline counts as one. `serde_json`
-/// reports a 1-based line and column instead, which this turns back into an index.
+/// The published position is an index into the text, so a multi-byte character
+/// counts once and a newline counts as one. `serde_json` reports a 1-based line
+/// and column instead, which this turns back into an index.
 fn json_error_position(bytes: &[u8], error: &serde_json::Error) -> usize {
     let text = String::from_utf8_lossy(bytes);
     let mut offset = 0;
@@ -379,7 +379,7 @@ fn issue_for(scope: &str, path: &ErrorPath, message: &str) -> ValidationIssue {
     }
 }
 
-/// Pydantic's error kind for a `serde` failure, from the parser's own wording.
+/// The error kind a `serde` failure is reported as, from the parser's wording.
 ///
 /// `serde` reports one sentence per failure and exposes no kind, so the kind is
 /// read from that sentence. Each mapping is pinned by a test, and an unfamiliar
@@ -413,7 +413,7 @@ fn kind_for(message: &str) -> &'static str {
     }
 }
 
-/// Pydantic's error kind for a type name `serde` or Axum printed.
+/// The error kind for a type name `serde` or Axum printed.
 fn kind_for_type_name(name: &str) -> &'static str {
     match name {
         "bool" => "bool_parsing",
@@ -569,7 +569,7 @@ mod tests {
     }
 
     #[test]
-    fn a_serde_message_maps_to_pydantics_kind() {
+    fn a_serde_message_maps_to_its_kind() {
         assert_eq!(kind_for(lax_bool::WRONG_TYPE_MESSAGE), "bool_type");
         assert_eq!(kind_for(lax_bool::UNPARSABLE_MESSAGE), "bool_parsing");
         assert_eq!(
@@ -611,7 +611,7 @@ mod tests {
     }
 
     #[test]
-    fn a_type_name_maps_to_pydantics_kind() {
+    fn a_type_name_maps_to_its_kind() {
         assert_eq!(kind_for_type_name("bool"), "bool_parsing");
         for name in ["f32", "f64"] {
             assert_eq!(kind_for_type_name(name), "float_parsing");
@@ -661,7 +661,7 @@ mod tests {
 
     #[test]
     fn an_error_position_counts_characters_from_the_start() {
-        // Python reports an index into the decoded text: a newline counts one and
+        // The position is an index into the decoded text: a newline counts one and
         // a multi-byte character counts one, whatever its UTF-8 length.
         let cases: [(&str, usize); 4] = [
             ("{\"number\": }", 11),

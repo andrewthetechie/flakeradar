@@ -1,11 +1,11 @@
 //! The `detail` body every failed request carries, and the one error a route
 //! answers with.
 //!
-//! FastAPI renders a failure as `{"detail": ...}`: a hand-written message for
-//! the errors the routes raise themselves, and a list of issues for a request
-//! that failed validation. Both consumers of the API read `detail`, so the shape
-//! stays whatever else changes. A query that fails outside those cases is the
-//! plain-text 500 Starlette answered with, written in one place here.
+//! A failure answers `{"detail": ...}`: a hand-written message for the errors the
+//! routes raise themselves, and a list of issues for a request that failed
+//! validation. Both consumers of the API read `detail`, so the shape stays
+//! whatever else changes. A query that fails outside those cases is a plain-text
+//! 500, written in one place here.
 
 // Rust guideline compliant 2026-07-21
 

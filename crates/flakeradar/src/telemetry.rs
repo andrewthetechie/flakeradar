@@ -1,8 +1,8 @@
 //! Log output for the binary.
 //!
 //! One process-wide `tracing` subscriber, installed by the binary at start-up.
-//! It writes to stdout at `INFO` unless `RUST_LOG` says otherwise, which is what
-//! the frozen Python server's `logging.basicConfig(level=logging.INFO)` did.
+//! It writes to stdout at `INFO` unless `RUST_LOG` says otherwise, so a
+//! deployment that sets nothing still logs every event this server emits.
 
 // Rust guideline compliant 2026-07-21
 

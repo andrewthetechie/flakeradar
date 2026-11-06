@@ -92,12 +92,10 @@ async fn call_result(app: &Router, tool: &str, arguments: Value) -> Value {
     reply.json().get("result").cloned().unwrap_or(Value::Null)
 }
 
-/// Asserts the status the reference answers a tool whose statement failed.
+/// Asserts the status a tool whose statement failed answers.
 ///
-/// fastmcp 4.1.6, the version the 1.x `backend/requirements.txt` pinned (deleted
-/// at cutover), carries a tool's failure inside the JSON-RPC answer and answers
-/// HTTP 200: driven over its own Streamable HTTP app, a tool that raises answers
-/// 200, so a failed statement must never become an HTTP 500.
+/// A tool's failure is carried inside the JSON-RPC answer with HTTP 200, recorded
+/// from a real client, so a failed statement must never become an HTTP 500.
 fn assert_answered_ok(reply: &Reply) {
     assert_eq!(
         reply.status,
@@ -110,12 +108,11 @@ fn assert_answered_ok(reply: &Reply) {
 /// Asserts a tool failure is the reference's `isError` result, and answers the
 /// text it carries.
 ///
-/// Measured over the pinned fastmcp 4.1.6's own Streamable HTTP app: a tool that
-/// raises, a name no tool has and arguments that do not validate all answer HTTP
-/// 200 with a JSON-RPC *result* — never a JSON-RPC `error`, because the request
-/// itself was well formed — whose only content is one text block, whose
-/// `isError` is true, and which carries no structured content field at all. (A
-/// refusal does the same but with an explicit `null`, golden `mcp/09`.)
+/// A tool that raises, a name no tool has and arguments that do not validate all
+/// answer HTTP 200 with a JSON-RPC *result* — never a JSON-RPC `error`, because
+/// the request itself was well formed — whose only content is one text block,
+/// whose `isError` is true, and which carries no structured content field at all.
+/// (A refusal does the same but with an explicit `null`, golden `mcp/09`.)
 fn error_result_text(reply: &Reply) -> String {
     assert_answered_ok(reply);
     let body = reply.json();
@@ -294,7 +291,7 @@ async fn seed(db: &TestDb) -> i64 {
 }
 
 #[tokio::test]
-async fn the_tools_are_the_eleven_the_frozen_server_served() {
+async fn the_tools_are_the_eleven_the_wire_declares() {
     let db = TestDb::new().await.expect("a test database is available");
     let app = mcp_app(&db);
     let reply = rpc(&app, "tools/list", None, json!({})).await;
@@ -1003,7 +1000,7 @@ async fn get_job_by_id_and_by_name_with_explained_failures() {
             "url",
         ]
     );
-    // Python's `isoformat()` writes `+00:00`; Rust writes the six-digit `Z`
+    // The recorded timestamps write `+00:00`; this server writes the six-digit `Z`
     // spelling differences.md records, so the assertion is on that contract.
     let created_at = explained["created_at"]
         .as_str()
@@ -1476,12 +1473,11 @@ async fn link_issue_refuses_a_conflict_unless_it_may_replace() {
 }
 
 #[tokio::test]
-async fn a_tool_argument_takes_the_spellings_pydantic_took() {
-    // Measured from the reference at 86c98804 through a real MCP client: a
-    // tool's arguments are validated by Pydantic in its lax mode, so `"2"`,
-    // `2.0` and `true` are all the integer 2, `1`, `1.0` and `"TRUE"` are all
-    // `true`, and an argument the tool does not declare is a validation error
-    // rather than something to ignore. The refusal's text is a recorded
+async fn a_tool_argument_takes_the_documented_spellings() {
+    // A tool's arguments are read with the same lax rules the request bodies use,
+    // so `"2"`, `2.0` and `true` are all the integer 2, `1`, `1.0` and `"TRUE"`
+    // are all `true`, and an argument the tool does not declare is a validation
+    // error rather than something to ignore. The refusal's text is a recorded
     // difference; what is asserted here is whether the call ran at all.
     let db = TestDb::new().await.expect("a test database is available");
     let app = mcp_app(&db);
@@ -1541,7 +1537,7 @@ async fn a_tool_argument_takes_the_spellings_pydantic_took() {
         let result = call_result(&app, tool, arguments.clone()).await;
         assert!(
             !text(&result).starts_with("1 validation error for call"),
-            "{tool} {arguments} was validated as Pydantic read it: {}",
+            "{tool} {arguments} was validated as documented: {}",
             text(&result)
         );
     }
@@ -1602,14 +1598,14 @@ async fn an_unknown_tool_and_an_unreadable_argument_are_error_results() {
     let text = error_result_text(&unreadable);
     assert!(
         text.starts_with("1 validation error for call[top_flaky_tests]\nlimit\n  "),
-        "the reference opens with Pydantic's header and the field: {text:?}"
+        "the text opens with the header and the field: {text:?}"
     );
-    // The reference's diagnosis is Pydantic's own sentence, followed by its
-    // `[type=…, input_value=…, input_type=…]` tail and a link, which
-    // `differences.md` records as not reproduced.
+    // The diagnosis is the recorded sentence, without the type, value and
+    // documentation-URL tail the reference appended, which `differences.md`
+    // records as not reproduced.
     assert!(
         text.ends_with("Input should be a valid integer, unable to parse string as an integer"),
-        "the diagnosis is Pydantic's: {text:?}"
+        "the diagnosis is the recorded one: {text:?}"
     );
     let missing = rpc(
         &app,
@@ -1619,9 +1615,8 @@ async fn an_unknown_tool_and_an_unreadable_argument_are_error_results() {
     )
     .await;
     let text = error_result_text(&missing);
-    // The reference names the field Pydantic reported missing; only the
-    // diagnosis's own wording (`Missing required argument`) is a recorded
-    // difference.
+    // The field is named; only the diagnosis's own wording (`Missing required
+    // argument`) is a recorded difference.
     assert!(
         text.starts_with("1 validation error for call[top_flaky_tests]\nrepo\n  "),
         "a missing field is named: {text:?}"

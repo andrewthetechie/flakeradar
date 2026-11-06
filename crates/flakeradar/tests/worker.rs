@@ -40,7 +40,7 @@ fn at() -> DateTime<FixedOffset> {
     DateTime::parse_from_rfc3339("2026-10-20T09:00:00+00:00").expect("a fixed instant")
 }
 
-/// The processor settings on the frozen server's defaults, with a stopped clock.
+/// The processor settings on the shipped defaults, with a stopped clock.
 fn processing() -> ProcessingSettings {
     ProcessingSettings {
         clock: Arc::new(FixedClock::new(at())),

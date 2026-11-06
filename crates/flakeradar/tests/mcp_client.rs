@@ -1,6 +1,6 @@
 //! `/mcp/` driven by a real MCP client over a real socket.
 //!
-//! Task 11's Done-when asked for an actual client, and every other MCP test in
+//! The MCP transport proved with a real client, which every other MCP test in
 //! this repo writes its own JSON-RPC documents. This one uses the official
 //! `rmcp` SDK: its Streamable HTTP client performs the `initialize` handshake,
 //! then lists the tools, reads a Test, links an Issue and unlinks it, and the

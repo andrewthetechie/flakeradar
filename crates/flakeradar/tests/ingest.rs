@@ -1,8 +1,7 @@
 //! Ingest: validate an upload, queue a pending Report, answer 202.
 //!
-//! The behaviour is `backend/tests/test_ingest_api.py` and
-//! `test_pipeline_ingest_api.py`: what the queue holds after an upload, what a
-//! retried upload answers, and every refusal `POST /api/ingest` gives.
+//! What the queue holds after an upload, what a retried upload answers, and every
+//! refusal `POST /api/ingest` gives.
 
 #![expect(
     clippy::expect_used,
@@ -114,7 +113,7 @@ async fn ingest_requires_token() {
 }
 
 /// The instant the clock stops at, which no wall clock would agree with.
-fn frozen_instant() -> DateTime<FixedOffset> {
+fn stopped_instant() -> DateTime<FixedOffset> {
     Utc.with_ymd_and_hms(2001, 2, 3, 4, 5, 6)
         .unwrap()
         .fixed_offset()
@@ -123,7 +122,7 @@ fn frozen_instant() -> DateTime<FixedOffset> {
 #[tokio::test]
 async fn a_report_is_stamped_with_the_states_clock() {
     let db = TestDb::new().await.expect("a test database is available");
-    let instant = frozen_instant();
+    let instant = stopped_instant();
     let reply = ingest(&app_at(&db, instant), &[], passing_report()).await;
     assert_eq!(reply.status, StatusCode::ACCEPTED, "{}", reply.text());
 
@@ -138,7 +137,7 @@ async fn a_report_is_stamped_with_the_states_clock() {
 #[tokio::test]
 async fn a_pipeline_report_is_stamped_with_the_states_clock() {
     let db = TestDb::new().await.expect("a test database is available");
-    let instant = frozen_instant();
+    let instant = stopped_instant();
     let reply = post(
         &app_at(&db, instant),
         "/api/ingest/pipeline",
@@ -306,10 +305,9 @@ async fn ingest_rejects_ci_run_attempt_zero() {
 
 #[tokio::test]
 async fn ingest_rejects_a_ci_run_attempt_past_the_column() {
-    // The column is `int4`: Python's `ge=1` let a bigger number through and the
-    // driver raised, which answered 500 after creating rows. A value the column
-    // cannot hold is refused with 400 and queues nothing, as an unparsable
-    // `time` is.
+    // The column is `int4`: a bigger number reached the driver, which raised and
+    // answered 500 after creating rows. A value the column cannot hold is refused
+    // with 400 and queues nothing, as an unparsable `time` is.
     let db = TestDb::new().await.expect("a test database is available");
     let reply = ingest(
         &test_app(&db),
@@ -327,8 +325,8 @@ async fn ingest_rejects_a_ci_run_attempt_past_the_column() {
 
 #[tokio::test]
 async fn ingest_rejects_a_ci_run_attempt_past_i64() {
-    // Python holds arbitrary-precision ints, so this reached the driver and
-    // answered 500. It is past the column by any reading, so it is a 400.
+    // An integer type with no ceiling would let this reach the driver and answer
+    // 500. It is past the column by any reading, so it is a 400.
     let db = TestDb::new().await.expect("a test database is available");
     let reply = ingest(
         &test_app(&db),
@@ -366,7 +364,7 @@ async fn ingest_stores_the_largest_ci_run_attempt() {
 
 #[tokio::test]
 async fn ingest_rejects_an_empty_ci_run_attempt() {
-    // Pydantic reads an empty string as no integer at all, not as no value.
+    // An empty string is no integer at all, not a missing value.
     let db = TestDb::new().await.expect("a test database is available");
     let reply = ingest(&test_app(&db), &[("ci_run_attempt", "")], passing_report()).await;
     assert_eq!(reply.status, StatusCode::UNPROCESSABLE_ENTITY);
@@ -376,8 +374,8 @@ async fn ingest_rejects_an_empty_ci_run_attempt() {
 
 #[tokio::test]
 async fn ingest_rejects_a_ci_run_attempt_that_is_a_word() {
-    // Pydantic's `int_parsing`, which is what keeps a word apart from a number
-    // past the column's range.
+    // The `int_parsing` kind, which is what keeps a word apart from a number past
+    // the column's range.
     let db = TestDb::new().await.expect("a test database is available");
     let reply = ingest(
         &test_app(&db),
@@ -426,10 +424,10 @@ async fn ingest_defaults_branch_and_ci_run_id() {
 
 #[tokio::test]
 async fn a_failed_ingest_leaves_no_repo_or_project() {
-    // Python committed the Repo, Project and Report once, at the end, so a
-    // failure after the get-or-create left none of them. Here the insert is what
-    // fails: a CHECK the row cannot satisfy refuses it after the Repo and
-    // Project are in the transaction.
+    // The Repo, Project and Report are committed once, at the end, so a failure
+    // after the get-or-create leaves none of them. Here the insert is what fails: a
+    // CHECK the row cannot satisfy refuses it after the Repo and Project are in the
+    // transaction.
     let db = TestDb::new().await.expect("a test database is available");
     db.connection()
         .execute_unprepared("ALTER TABLE reports ADD CONSTRAINT ingest_always_fails CHECK (false)")
@@ -595,10 +593,9 @@ async fn ingest_multipart_without_the_file_field_is_an_empty_report() {
 
 #[tokio::test]
 async fn ingest_multipart_with_a_garbage_header_is_a_bad_request() {
-    // `python_multipart` refuses a header line that is not `name: value` (its
-    // field name may hold no spaces), and Starlette rounds that up to
-    // `MultiPartException("Invalid multipart data.")`, which FastAPI answers as
-    // 400. The reference sent exactly this answer and queued nothing.
+    // A header line that is not `name: value` (a field name may hold no spaces) is
+    // a malformed body, which answers 400 with `Invalid multipart data.` and queues
+    // nothing.
     let db = TestDb::new().await.expect("a test database is available");
     let boundary = "----flakeradar-ingest-test";
     let mut body = Vec::new();
@@ -797,8 +794,9 @@ async fn ingest_rejects_a_report_with_no_test_cases() {
 
 #[tokio::test]
 async fn ingest_rejects_a_testcase_time_that_is_not_a_number() {
-    // The user approved this: Python's unhandled ValueError answered 500, and
-    // the Rust server validates the attribute and answers 400.
+    // The user approved this: an unparsable `time` used to be an unhandled error
+    // that answered 500, and the server now validates the attribute and answers
+    // 400.
     let db = TestDb::new().await.expect("a test database is available");
     let body = br#"<testsuite><testcase classname="c" name="t" time="abc"/></testsuite>"#;
     let reply = ingest(&test_app(&db), &[], body.to_vec()).await;
@@ -1158,9 +1156,9 @@ async fn ingest_rejects_a_root_that_climbs_out() {
 
 #[tokio::test]
 async fn ingest_rejects_a_query_that_is_not_an_integer() {
-    // Measured from the reference at 86c98804: `line_base` is a Pydantic `int`
-    // in the query, so `abc` and an empty value are `int_parsing` with Pydantic's
-    // sentence, and `1.0` is the integer 1 rather than a refusal.
+    // `line_base` is an integer in the query, so `abc` and an empty value are
+    // `int_parsing` with the published sentence, and `1.0` is the integer 1 rather
+    // than a refusal.
     let db = TestDb::new().await.expect("a test database is available");
     let app = test_app(&db);
     for value in ["abc", ""] {

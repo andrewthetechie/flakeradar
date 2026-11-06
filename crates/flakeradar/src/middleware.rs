@@ -20,8 +20,8 @@ use crate::settings::Settings;
 
 /// The request header a CI system presents the shared token in.
 ///
-/// MCP clients use the same token as an `Authorization: Bearer`, which task 11
-/// checks; this header is what `actions/report/report.sh` sends.
+/// MCP clients present the same token as an `Authorization: Bearer`, which the
+/// MCP transport checks; this header is what `actions/report/report.sh` sends.
 pub const API_KEY_HEADER: &str = "x-api-key";
 
 /// What a request with a missing or wrong token is told.
@@ -54,10 +54,9 @@ pub async fn require_token(
 
 /// Whether two byte strings are equal, in time that does not depend on where.
 ///
-/// The length is compared first, which is all the frozen server's
-/// `secrets.compare_digest` gave away either: a token of the wrong length is
-/// rejected, and the bytes of a token of the right length are compared without
-/// an early exit.
+/// The length is compared first, which is all this check gives away either: a
+/// token of the wrong length is rejected, and the bytes of a token of the right
+/// length are compared without an early exit.
 pub(crate) fn constant_time_eq(presented: &[u8], expected: &[u8]) -> bool {
     if presented.len() != expected.len() {
         return false;
@@ -71,10 +70,9 @@ pub(crate) fn constant_time_eq(presented: &[u8], expected: &[u8]) -> bool {
 
 /// The CORS policy every route answers with.
 ///
-/// The configured origins are echoed back, any method and any header are
-/// allowed, and credentials are off, which is what the frozen server's
-/// `CORSMiddleware` was configured with. An origin that is not configured is
-/// answered without an `Access-Control-Allow-Origin`, so the browser blocks it.
+/// The configured origins are echoed back, any method and any header are allowed,
+/// and credentials are off. An origin that is not configured is answered without
+/// an `Access-Control-Allow-Origin`, so the browser blocks it.
 pub(crate) fn cors_layer(settings: &Settings) -> CorsLayer {
     CorsLayer::new()
         .allow_origin(AllowOrigin::list(cors_origins(settings)))

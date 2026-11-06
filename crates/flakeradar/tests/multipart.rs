@@ -186,9 +186,9 @@ fn a_parameter_that_names_nothing_is_skipped() {
 
 #[test]
 fn a_header_line_that_is_no_header_is_a_malformed_body() {
-    // Measured against Starlette's own parser: a header line with no colon
-    // raises `Invalid multipart data.`, before or after a valid header, and
-    // so does a field name holding a character RFC 7230 does not allow.
+    // A header line with no colon is `Invalid multipart data.`, before or after a
+    // valid header, and so is a field name holding a character RFC 7230 does not
+    // allow.
     for headers in [
         &b"Content-Disposition: form-data; name=\"report\"; filename=\"r.xml\"\r\nX-NoColon"[..],
         &b"X-NoColon\r\nContent-Disposition: form-data; name=\"report\"; filename=\"r.xml\""[..],
@@ -240,10 +240,9 @@ fn only_a_file_field_understood_as_utf8_names_the_field() {
 
 #[test]
 fn a_preamble_is_not_a_form() {
-    // The reference parser takes CR, LF or the delimiter as the first byte
-    // and nothing else: a preamble that starts with any other byte is an
-    // error, which Starlette's `request.form()` raises as MultiPartException
-    // and FastAPI answers with 400. The route reads that as an empty upload.
+    // CR, LF or the delimiter is the first byte and nothing else: a preamble that
+    // starts with any other byte is a malformed body, which answers 400. The route
+    // reads that as an empty upload.
     let boundary = "b";
     let framed = form(boundary, &[file_part(boundary, REPORT_FIELD, b"<x/>")]);
     for preamble in [&b"preamble in front of the form\r\n"[..], b" ", b"x\r\n"] {
@@ -259,8 +258,8 @@ fn a_preamble_is_not_a_form() {
 
 #[test]
 fn a_preamble_of_leading_newlines_is_skipped() {
-    // python-multipart skips any run of leading CR and LF before the
-    // delimiter, so a form behind one still carries its field.
+    // Any run of leading CR and LF before the delimiter is skipped, so a form
+    // behind one still carries its field.
     let boundary = "b";
     let framed = form(boundary, &[file_part(boundary, REPORT_FIELD, b"<x/>")]);
     for preamble in [&b"\n"[..], b"\r\n", b"\r\n\r\n"] {
@@ -314,9 +313,8 @@ fn a_false_delimiter_in_a_preamble_is_not_the_form() {
 
 #[test]
 fn a_false_delimiter_inside_a_part_is_kept_and_the_scan_goes_on() {
-    // A part's data can hold the boundary bytes. python-multipart keeps them
-    // as data — its `note` field is still `hello\r\n--bXworld` — and reads
-    // the part after them.
+    // A part's data can hold the boundary bytes: they stay data — the `note` field
+    // is still `hello\r\n--bXworld` — and the part after them is read.
     let boundary = "b";
     let body = form(
         boundary,
@@ -333,9 +331,8 @@ fn a_false_delimiter_inside_a_part_is_kept_and_the_scan_goes_on() {
 
 #[test]
 fn a_boundary_that_prefixes_another_stays_in_the_part() {
-    // After `--b` comes `b`, so this is not a delimiter at all: the whole
-    // run, closing bytes and all, is the part's data, and python-multipart
-    // reports the same 16 bytes.
+    // After `--b` comes `b`, so this is not a delimiter at all: the whole run,
+    // closing bytes and all, is the part's data.
     let boundary = "b";
     let payload = b"<x/>\r\n--bb\r\nmore";
     let body = form(
@@ -350,18 +347,17 @@ fn a_boundary_that_prefixes_another_stays_in_the_part() {
 
 #[test]
 fn lf_only_framing_is_not_a_form() {
-    // python-multipart requires CRLF: bare LF framing raises
-    // MultiPartException, so the route answers 400 and stores nothing.
+    // The framing requires CRLF: bare LF framing is a malformed body, so the route
+    // answers 400 and stores nothing.
     let body = b"--b\nContent-Disposition: form-data; name=\"report\"; filename=\"r.xml\"\n\n<x/>\n--b--\n";
     assert_eq!(field_of(body, "multipart/form-data; boundary=b"), None);
 }
 
 #[test]
 fn the_last_report_part_wins_whatever_its_kind() {
-    // Starlette's form answers the last value a name carried, so a
-    // duplicated field is the later part. A plain value is answered as a
-    // string rather than an upload, which leaves the route with nothing to
-    // read: the 400 the frozen server gave, not the earlier file.
+    // The last value a name carried is the answer, so a duplicated field is the
+    // later part. A plain value is a string rather than an upload, which leaves the
+    // route with nothing to read: a 400, not the earlier file.
     let boundary = "b";
     let two_files = form(
         boundary,
@@ -414,8 +410,8 @@ fn the_last_report_part_wins_whatever_its_kind() {
 
 #[test]
 fn a_part_left_open_at_the_end_carries_nothing() {
-    // python-multipart drops a part whose ending delimiter never arrived,
-    // and the parts that did close still count.
+    // A part whose ending delimiter never arrived carries nothing, and the parts
+    // that did close still count.
     let boundary = "b";
     let mut body = form(boundary, &[file_part(boundary, REPORT_FIELD, b"<x/>")]);
     body.extend_from_slice(&file_part(boundary, "note", b"no end"));

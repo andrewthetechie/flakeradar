@@ -2,8 +2,9 @@
 //!
 //! A body is a heading, a bullet list, a paragraph, the execution table and, for a
 //! Test, a sample failure, and both bodies put those blocks in the same order. Every
-//! literal here is the sentence the reference writes, byte for byte: the bodies are
-//! what an engineer or an agent acts on, so none of them is paraphrased.
+//! literal here is the sentence the body has always carried, byte for byte: the
+//! bodies are what an engineer or an agent acts on, so none of them is
+//! paraphrased, and `tests/parity` pins the whole body S7 recorded.
 
 // Rust guideline compliant 2026-07-21
 
@@ -55,7 +56,7 @@ pub(super) fn job_title(pipeline: &str, name: &str) -> String {
 /// The best re-run command for a Test, inferred from its file's extension.
 ///
 /// FlakeRadar ingests JUnit XML from any runner, so the framework is never
-/// reported directly; a wrong guess would send an agent to run a Python command
+/// reported directly; a wrong guess would send an agent to run a `pytest` command
 /// against a JavaScript, Java or Go test.
 #[must_use]
 pub fn run_hint(path: Option<&str>, classname: &str, name: &str) -> String {

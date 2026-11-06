@@ -1,8 +1,7 @@
 //! The leader-only GitHub task: it drains the queue and syncs on its interval.
 //!
-//! Ported from `backend/tests/test_github_worker.py`. The GitHub API is a stub
-//! server and the sync interval is read from a scripted clock, so nothing waits
-//! on a real interval. A call the test needs to hold open is staged by a stub
+//! The GitHub API is a stub server and the sync interval is read from a scripted
+//! clock, so nothing waits on a real interval. A call the test needs to hold open is staged by a stub
 //! answer that signals when it arrived and waits to be released.
 
 #![expect(

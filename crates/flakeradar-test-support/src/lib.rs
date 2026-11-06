@@ -7,7 +7,7 @@
 //! [`ensure_postgres`] finds a server: `FLAKERADAR_TEST_DATABASE_URL` when it is
 //! set, otherwise one reused Docker container. [`TestDb`] then clones a
 //! migrated template database per test, and [`make_project`] and the other
-//! builders write rows with the frozen Python server's defaults.
+//! builders write rows with the documented defaults.
 
 // Rust guideline compliant 2026-07-21
 

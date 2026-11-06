@@ -1,8 +1,8 @@
 //! The Issue link routes: link and unlink a GitHub issue on a Test or a Job.
 //!
 //! Both write routes are token-protected. The rules and the response shape live
-//! in `flakeradar_db::issue_links`, so the MCP tools of task 11 reuse the same
-//! text, and the route only maps a refusal to its status.
+//! in `flakeradar_db::issue_links`, so the MCP tools answer with the same text,
+//! and the route only maps a refusal to its status.
 
 // Rust guideline compliant 2026-07-21
 

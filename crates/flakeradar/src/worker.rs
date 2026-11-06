@@ -7,7 +7,7 @@
 //!
 //! The loop claims one Report at a time, prunes at most once per interval, and
 //! hands each outcome to the [`LeaderTask`]s that need it — the GitHub and
-//! Webhook work of task 10 — without waiting for their I/O. Hands over are
+//! Webhook work — without waiting for their I/O. Hands over are
 //! non-blocking, so a slow or hanging external call cannot stop processing. When
 //! leadership ends, the leader tasks stop *before* the lock is released, so a
 //! replacement leader never sees the lock free while this process still has an
@@ -153,10 +153,10 @@ pub type StopFuture<'a> = Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send
 
 /// Work only the leader runs: it starts with leadership and stops before the lock is released.
 ///
-/// Task 10 implements this for the GitHub issue filer and the Notification
-/// sender. [`LeaderTask::enqueue`] never waits for the task's network I/O, so a
-/// slow endpoint cannot delay Report processing, and its error is logged rather
-/// than allowed to stop the loop.
+/// The GitHub issue filer and the Notification sender are the two implementations.
+/// [`LeaderTask::enqueue`] never waits for the task's network I/O, so a slow
+/// endpoint cannot delay Report processing, and its error is logged rather than
+/// allowed to stop the loop.
 pub trait LeaderTask: fmt::Debug + Send + Sync {
     /// The name a log line uses for this task, such as `GitHub`.
     fn name(&self) -> &'static str;
@@ -514,7 +514,7 @@ fn seconds(value: f64) -> Duration {
 ///
 /// [`ReportWorker::start`] spawns the loop, [`ReportWorker::stop`] cancels it,
 /// waits for it and then ends leadership. A worker that never started is
-/// stopped without any task to cancel, exactly as the frozen server's was.
+/// stopped without any task to cancel.
 pub struct ReportWorker {
     pool: DatabaseConnection,
     lock: Arc<dyn LockSession>,

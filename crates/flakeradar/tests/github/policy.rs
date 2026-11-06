@@ -58,10 +58,9 @@ fn every_operation_judges_every_verdict_as_the_reference_does() {
     };
     use github::{Action, Operation, Verdict, action};
 
-    // The expected pair is the Python reference's own policy: `_FILING_SKIP_REPO_KINDS`,
-    // `_SYNC_SKIP_REPO_KINDS`, `_NOTE_SKIP_REPO_KINDS` and `_ALREADY_GONE_KINDS`. The
-    // three cells that differ between operations are the ones that always did: a 404
-    // in a sync re-arms the link, a 401 on the note paths costs only its item, and the
+    // The expected pair is the recorded policy, one row per operation. The three
+    // cells that differ between operations are the ones that always did: a 404 in a
+    // sync re-arms the link, a 401 on the note paths costs only its item, and the
     // post-delete close has no Repo skip at all.
     let policy: [(Operation, [(Verdict, Action); 8]); 5] = [
         (

@@ -221,7 +221,7 @@ async fn ready_reports_a_missing_database_rather_than_failing() {
 async fn ready_answers_a_plain_text_500_when_the_queue_query_fails() {
     // `SELECT 1` answers, so the probe goes on to the queue query, which reads
     // `reports`; a database without that table fails exactly there, which is
-    // what the frozen server's unhandled `SQLAlchemyError` became.
+    // the plain-text 500 a query outside the route's error handling becomes.
     let db = TestDb::new().await.expect("a test database is available");
     db.connection()
         .execute_raw(Statement::from_string(

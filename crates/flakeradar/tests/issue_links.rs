@@ -1,7 +1,6 @@
 //! The Issue link routes: link and unlink a GitHub issue on a Test or a Job.
 //!
-//! Ported from `backend/tests/test_issue_links_api.py` and
-//! `backend/tests/test_issue_links_lifecycle.py`: the response shapes, the rules
+//! The Issue link routes and their lifecycle: the response shapes, the rules
 //! that refuse a request, and the state the pair leaves behind.
 
 #![expect(
@@ -372,7 +371,7 @@ async fn a_url_must_be_the_issue_in_the_tests_own_repo() {
 }
 
 #[tokio::test]
-async fn a_number_out_of_range_is_the_validation_error_pydantic_gave() {
+async fn a_number_out_of_range_is_the_documented_validation_error() {
     let db = TestDb::new().await.expect("a test database");
     let test = one_test(&db).await;
     let app = app(&db, &[("FLAKERADAR_API_TOKEN", TOKEN)]);

@@ -1,9 +1,8 @@
 //! Admin delete of a Repo or one Project, with the cascade, the counts and the
 //! issues it strands.
 //!
-//! Ported from `backend/tests/test_repos_api.py`. The GitHub closer is proved
-//! through a stub server, so a test asserts the requests it makes rather than a
-//! call count.
+//! The GitHub closer is proved through a stub server, so a test asserts the
+//! requests it makes rather than a call count.
 
 #![expect(
     clippy::expect_used,

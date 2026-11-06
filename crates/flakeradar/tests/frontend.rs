@@ -135,8 +135,8 @@ async fn an_unknown_path_is_the_api_404_rather_than_the_page() {
     for path in ["/nowhere", "/assets", "/assets/", "/index.htm"] {
         let reply = get(&app, path).await;
         if path == "/assets/" {
-            // A trailing slash keeps Starlette's redirect, which lands on the
-            // same 404 the path without it gets.
+            // A trailing slash keeps the redirect, which lands on the same 404 the
+            // path without it gets.
             assert_eq!(reply.status, StatusCode::TEMPORARY_REDIRECT, "{path}");
             assert_eq!(
                 reply.header("location").as_deref(),
@@ -224,8 +224,8 @@ async fn a_head_request_carries_the_headers_and_no_body() {
     );
     assert_eq!(reply.header("etag").as_deref(), Some("\"index-1\""));
     assert_eq!(reply.header("cache-control").as_deref(), Some("no-cache"));
-    // The length is the file's, not the empty body's: Starlette's FileResponse
-    // announced the file it would have sent, and a client asks HEAD to learn it.
+    // The length is the file's, not the empty body's: `HEAD` announces the file a
+    // `GET` would have sent, and a client asks it to learn that.
     assert_eq!(
         reply.header("content-length").as_deref(),
         Some(PAGE.len().to_string().as_str())

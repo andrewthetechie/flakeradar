@@ -37,7 +37,7 @@ pub(crate) struct AllowedField {
     pub(crate) file: String,
     /// The dotted path into the golden, such as `body.detail`.
     pub(crate) field: String,
-    /// The value Python recorded there, when the allowance is narrowed to it.
+    /// The value the golden records there, when the allowance is narrowed to it.
     ///
     /// An explicit `null` is a named value — the field the golden does not carry
     /// — so it is not the same thing as the key being absent.
@@ -166,10 +166,10 @@ pub(crate) fn differences() -> String {
 ///
 /// An allowance is honest only when all of this holds: its `differenceRow` is a
 /// row of `differences.md`, the golden it names exists, the field it names holds
-/// exactly the value it says Python recorded (an absent field is `null`), and it
-/// narrows the difference to named values or to a contract — an entry that names
-/// neither accepts any mismatch at that field, which is how a real regression
-/// hides.
+/// exactly the value the entry says the golden records (an absent field is
+/// `null`), and it narrows the difference to named values or to a contract — an
+/// entry that names neither accepts any mismatch at that field, which is how a
+/// real regression hides.
 pub(crate) fn reconcile(entries: &[Allowance], differences: &str, parity: &Path) -> Vec<String> {
     let mut problems = Vec::new();
     let mut ids = BTreeSet::new();

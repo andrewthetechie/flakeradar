@@ -1,10 +1,9 @@
-//! The request validation Pydantic applied, case by case.
+//! The request validation this API applies, case by case.
 //!
-//! Pydantic validated a JSON body in one pass with its lax rules and reported
-//! every field it refused; the port parses with `serde`, which stops at the
-//! first failure and accepts no other spelling of a value. Each test here pins
-//! one row of what the reference at `86c98804` answered, recorded by sending the
-//! same request to it, so the port answers what CI already sends.
+//! A JSON body is validated in one pass with the lax rules and every field it
+//! refuses is reported; `serde` alone stops at the first failure and accepts no
+//! other spelling of a value, so the readers are this crate's own. Each test
+//! pins one recorded answer, so the server answers what CI already sends.
 
 #![expect(
     clippy::expect_used,
@@ -28,8 +27,8 @@ fn test_app(db: &TestDb) -> axum::Router {
     app_with(db, settings(&[("FLAKERADAR_API_TOKEN", TOKEN)]))
 }
 
-/// The `(type, loc)` of every issue a 422 carries, which is what Pydantic's
-/// `detail` list names and what the parity replay compares.
+/// The `(type, loc)` of every issue a 422 carries, which is what the `detail`
+/// list names and what the parity replay compares.
 fn issues(reply: &Reply) -> Vec<(String, Value)> {
     reply.json()["detail"]
         .as_array()
@@ -261,7 +260,7 @@ async fn the_pipeline_body_names_a_field_of_the_wrong_type() {
 }
 
 #[tokio::test]
-async fn the_pipeline_body_reads_the_attempt_as_pydantic_did() {
+async fn the_pipeline_body_reads_the_attempt_as_documented() {
     let db = TestDb::new().await.expect("a test database is available");
     let app = test_app(&db);
     // Accepted spellings, and the attempt each one means.
@@ -307,8 +306,9 @@ async fn the_pipeline_body_reads_the_attempt_as_pydantic_did() {
 
 #[tokio::test]
 async fn a_pipeline_attempt_past_the_column_is_a_bad_request() {
-    // Python's `int` had no ceiling and the driver raised, answering 500 after
-    // the Repo row was created. The approved answer is the 400 ingest gives.
+    // An integer type with no ceiling let this reach the driver, which raised and
+    // answered 500 after the Repo row was created. The approved answer is the 400
+    // ingest gives.
     let db = TestDb::new().await.expect("a test database is available");
     let reply = pipeline(
         &test_app(&db),
@@ -323,7 +323,7 @@ async fn a_pipeline_attempt_past_the_column_is_a_bad_request() {
 }
 
 #[tokio::test]
-async fn the_pipeline_body_reads_a_timestamp_the_way_pydantic_did() {
+async fn the_pipeline_body_reads_a_timestamp_the_way_the_wire_does() {
     let db = TestDb::new().await.expect("a test database is available");
     let app = test_app(&db);
     // Every spelling the reference accepted, and the instant it means.
@@ -391,7 +391,7 @@ async fn the_pipeline_body_reads_a_timestamp_the_way_pydantic_did() {
 }
 
 #[tokio::test]
-async fn the_pipeline_body_reads_a_bool_as_pydantic_did() {
+async fn the_pipeline_body_reads_a_bool_as_the_wire_does() {
     let db = TestDb::new().await.expect("a test database is available");
     let app = test_app(&db);
     for (value, summary) in [
@@ -449,7 +449,7 @@ async fn the_pipeline_body_reads_a_bool_as_pydantic_did() {
 
 #[tokio::test]
 async fn nul_in_a_request_body_is_refused() {
-    // PostgreSQL `text` cannot hold a NUL, so Python answered 500 and stored
+    // PostgreSQL `text` cannot hold a NUL, so the insert answered 500 and stored
     // nothing. The approved answer is the 4xx the route already gives bad text.
     let db = TestDb::new().await.expect("a test database is available");
     let app = test_app(&db);
@@ -507,7 +507,7 @@ async fn nul_in_a_query_is_refused() {
 }
 
 #[tokio::test]
-async fn a_query_integer_takes_the_forms_pydantic_took() {
+async fn a_query_integer_takes_the_documented_forms() {
     let db = TestDb::new().await.expect("a test database is available");
     let app = test_app(&db);
     for (uri, page, page_size) in [
@@ -534,7 +534,7 @@ async fn a_query_integer_takes_the_forms_pydantic_took() {
         authorised_get(&app, "/api/reports?limit=1_0").await.status,
         StatusCode::OK
     );
-    // `true`, `0x10` and nothing at all are not integers to Pydantic either.
+    // `true`, `0x10` and nothing at all are no integers either.
     for uri in [
         "/api/tests?page=true",
         "/api/tests?page=0x10",
@@ -557,11 +557,11 @@ async fn a_query_integer_takes_the_forms_pydantic_took() {
 }
 
 #[tokio::test]
-async fn a_query_issue_carries_the_value_pydantic_echoed() {
-    // Measured from the reference at 86c98804: a refused query value's issue
-    // echoes the raw text Pydantic read (`input`), a value outside a declared
-    // range carries the constraint it broke (`ctx`), and a required parameter
-    // that is absent is Pydantic's own `missing` issue, `input: null`.
+async fn a_query_issue_carries_the_value_the_request_sent() {
+    // A refused query value's issue echoes the raw text the request sent
+    // (`input`), a value outside a declared range carries the constraint it broke
+    // (`ctx`), and a required parameter that is absent is the `missing` issue with
+    // `input: null`.
     let db = TestDb::new().await.expect("a test database is available");
     let app = test_app(&db);
     for (uri, expected) in [
@@ -646,9 +646,9 @@ async fn a_repeated_query_parameter_takes_the_last_value() {
 
 #[tokio::test]
 async fn a_page_whose_offset_does_not_fit_is_refused() {
-    // Python's `page` had only `ge=1`, so the product overflowed and PostgreSQL
-    // refused the offset. Both leaderboards answer the 4xx, whichever way the
-    // product would have wrapped.
+    // Bounding only `ge=1` let the product overflow, and PostgreSQL refused the
+    // offset. Both leaderboards answer the 4xx, whichever way the product would
+    // have wrapped.
     let db = TestDb::new().await.expect("a test database is available");
     let app = test_app(&db);
     for uri in [
@@ -676,7 +676,7 @@ async fn a_page_whose_offset_does_not_fit_is_refused() {
 }
 
 #[tokio::test]
-async fn the_ingest_attempt_takes_the_forms_pydantic_took() {
+async fn the_ingest_attempt_takes_the_documented_forms() {
     let db = TestDb::new().await.expect("a test database is available");
     let app = test_app(&db);
     let report = "<testsuites><testsuite name=\"s\" tests=\"1\">\
@@ -714,7 +714,7 @@ async fn the_ingest_attempt_takes_the_forms_pydantic_took() {
 }
 
 #[tokio::test]
-async fn the_quarantine_body_reads_its_numbers_as_pydantic_did() {
+async fn the_quarantine_body_reads_its_numbers_as_documented() {
     let db = TestDb::new().await.expect("a test database is available");
     let id = one_test(&db).await;
     let app = test_app(&db);
@@ -763,7 +763,7 @@ async fn the_quarantine_body_reads_its_numbers_as_pydantic_did() {
 }
 
 #[tokio::test]
-async fn the_issue_body_reads_its_number_as_pydantic_did() {
+async fn the_issue_body_reads_its_number_as_documented() {
     let db = TestDb::new().await.expect("a test database is available");
     let id = one_test(&db).await;
     let app = test_app(&db);
