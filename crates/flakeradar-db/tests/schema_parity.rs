@@ -9,6 +9,8 @@
 //! one field of a real snapshot at a time, so that comparison is shown to report
 //! a single altered column by name instead of only a wholly absent schema.
 
+// Rust guideline compliant 2026-07-21
+
 #![expect(
     clippy::expect_used,
     reason = "a test fails loudly when a statement or a query it just wrote fails"

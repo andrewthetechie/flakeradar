@@ -4,6 +4,8 @@
 //! requests are the JSON-RPC documents a client sends, so what is under test is
 //! the wire a client sees.
 
+// Rust guideline compliant 2026-07-21
+
 #![expect(
     clippy::expect_used,
     reason = "a test that cannot build its request or read its answer has failed"

@@ -1,8 +1,8 @@
 //! What this module promises, asserted from outside it.
 
-// Rust guideline compliant 2026-07-21
-
 //! The chunk size matters to the bind-parameter limit, so it is checked here.
+
+// Rust guideline compliant 2026-07-21
 
 use flakeradar_db::{CHUNK, chunks};
 

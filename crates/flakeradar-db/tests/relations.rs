@@ -9,6 +9,8 @@
 //! `find_with_related`, so the generated `RelationDef` is exercised against the
 //! real foreign key rather than just constructed.
 
+// Rust guideline compliant 2026-07-21
+
 #![expect(
     clippy::expect_used,
     reason = "a test fails loudly when the fixture or the generated relation is wrong"

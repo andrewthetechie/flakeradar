@@ -2,6 +2,8 @@
 //!
 //! The Job leaderboard, a Job's detail and its history.
 
+// Rust guideline compliant 2026-07-21
+
 #![expect(
     clippy::expect_used,
     reason = "a test fails loudly when a fixture or an answer does not behave"

@@ -5,6 +5,8 @@
 //! and the past-score lookup and the per-row lateral condition must agree. The
 //! trend cases are pure and live with `trend_for` in `flakeradar-core`.
 
+// Rust guideline compliant 2026-07-21
+
 #![expect(
     clippy::expect_used,
     reason = "a test fails loudly when a query misbehaves"

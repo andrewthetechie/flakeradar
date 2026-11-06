@@ -4,8 +4,10 @@
 //! is `npm run build` in `frontend/`, then `cargo build`. This script only
 //! reports what it finds. `frontend/dist/index.html` present means the crate is
 //! compiled with `cfg(has_frontend)` and `rust-embed` carries the directory into
-//! the binary; absent means a warning and an API-only binary, which is what the
-//! reference served when the directory was not there.
+//! the binary; absent means a warning and an API-only binary that serves no
+//! page.
+
+// Rust guideline compliant 2026-07-21
 
 use std::io::Write as _;
 use std::path::PathBuf;

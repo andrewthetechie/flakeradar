@@ -6,9 +6,9 @@
 //! [`reconcile`] checks that the two files still say the same thing, which is
 //! what the deleted recorder used to do. Nothing here runs a server: the checks
 //! are over committed files.
-//
 // Rust guideline compliant 2026-07-21
 
+//
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 

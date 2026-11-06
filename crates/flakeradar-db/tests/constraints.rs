@@ -3,6 +3,8 @@
 //! The rows go through the generated entities rather than through raw inserts, so
 //! a case proves the database contract and not the ORM's convenience.
 
+// Rust guideline compliant 2026-07-21
+
 #![expect(
     clippy::expect_used,
     reason = "a test fails loudly when the fixture or the lookup it just wrote fails"

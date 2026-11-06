@@ -6,6 +6,8 @@
 //! does look at the real build is `the_embedded_frontend_is_in_the_binary`, and
 //! it only exists in a build that embedded one.
 
+// Rust guideline compliant 2026-07-21
+
 #![expect(
     clippy::expect_used,
     reason = "a test fails loudly when the app answers something else"

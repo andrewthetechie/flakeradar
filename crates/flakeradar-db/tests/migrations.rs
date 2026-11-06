@@ -1,6 +1,8 @@
 //! The baseline migration: what it creates, that it runs once, and that it
 //! refuses a database an older FlakeRadar created.
 
+// Rust guideline compliant 2026-07-21
+
 #![expect(
     clippy::expect_used,
     clippy::panic,

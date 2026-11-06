@@ -5,6 +5,8 @@
 //! is the realistic starting point, and the mutations cover the encoding
 //! declaration, the structure and the attribute values at once.
 
+// Rust guideline compliant 2026-07-21
+
 #![expect(
     clippy::expect_used,
     clippy::panic,

@@ -5,6 +5,8 @@
 //! whether the builder expressed it readably, or whether it needs a raw
 //! `Statement`.
 
+// Rust guideline compliant 2026-07-21
+
 #![expect(
     clippy::expect_used,
     reason = "a test fails loudly when the query it just wrote returns the wrong rows"

@@ -4,6 +4,8 @@
 //! A builder produces an un-added row, the duplicate lookup reads only, and a
 //! transition changes fields without committing.
 
+// Rust guideline compliant 2026-07-21
+
 #![expect(
     clippy::expect_used,
     reason = "a test fails loudly when report intake misbehaves"

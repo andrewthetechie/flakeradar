@@ -1,6 +1,8 @@
 //! Opening the server's pool: URL spellings, the statement timeout, and the
 //! ping that replaces a dead pooled connection.
 
+// Rust guideline compliant 2026-07-21
+
 #![expect(
     clippy::expect_used,
     reason = "a test fails loudly when the connection it just opened misbehaves"

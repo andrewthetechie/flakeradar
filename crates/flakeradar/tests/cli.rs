@@ -4,6 +4,8 @@
 //! a real socket on a loopback port: a 200, another status, a closed port and a
 //! wildcard host that must still be reached through loopback.
 
+// Rust guideline compliant 2026-07-21
+
 #![expect(
     clippy::expect_used,
     reason = "a test fails loudly when the command line or the probe answers something else"

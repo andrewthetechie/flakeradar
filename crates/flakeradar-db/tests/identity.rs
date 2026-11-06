@@ -3,6 +3,8 @@
 //! The same Repo and Project come back for repeated calls, and the hot path (the
 //! row already exists) is a select only, so it never takes a write lock.
 
+// Rust guideline compliant 2026-07-21
+
 #![expect(
     clippy::expect_used,
     reason = "a test fails loudly when get-or-create misbehaves"

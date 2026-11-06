@@ -5,6 +5,8 @@
 //! readers apply
 //! to a Pipeline report.
 
+// Rust guideline compliant 2026-07-21
+
 #![expect(
     clippy::expect_used,
     clippy::unwrap_used,

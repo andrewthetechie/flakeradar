@@ -6,6 +6,8 @@
 //! `tests/parity/allowed-differences.json`, read here exactly as the parity
 //! rules describe it, so an intended difference can never hide in this test.
 
+// Rust guideline compliant 2026-07-21
+
 #![expect(
     clippy::expect_used,
     clippy::panic,

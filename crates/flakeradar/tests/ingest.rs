@@ -3,6 +3,8 @@
 //! What the queue holds after an upload, what a retried upload answers, and every
 //! refusal `POST /api/ingest` gives.
 
+// Rust guideline compliant 2026-07-21
+
 #![expect(
     clippy::expect_used,
     reason = "a test fails loudly when ingest answers something else"

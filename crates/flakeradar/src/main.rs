@@ -6,10 +6,10 @@
 //! suite proves the path a deployment takes and only the process edge is left
 //! here.
 
+// Rust guideline compliant 2026-07-21
+
 // cargo-llvm-cov sets `coverage_nightly` on nightly; see `lib.rs`.
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
-
-// Rust guideline compliant 2026-07-21
 
 use std::process::ExitCode;
 

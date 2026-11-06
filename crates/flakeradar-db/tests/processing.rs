@@ -3,6 +3,8 @@
 //! Both Report kinds, the retry budget and the answers each one leaves behind:
 //! every case below is an end-state rule, and `tests/parity` replays the rest.
 
+// Rust guideline compliant 2026-07-21
+
 #![expect(
     clippy::expect_used,
     reason = "a test fails loudly when the processor misbehaves"

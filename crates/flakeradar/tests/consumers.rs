@@ -9,6 +9,8 @@
 //! committed files rather than invented, so a renamed query parameter or
 //! response field fails here.
 
+// Rust guideline compliant 2026-07-21
+
 #![expect(
     clippy::expect_used,
     clippy::panic,

@@ -7,6 +7,8 @@
 //! `filing`, `sync` and `notes`, plus `hook` for the `ReportWorker` hook that
 //! composes filing and noting, and `support` for the fixtures they share.
 
+// Rust guideline compliant 2026-07-21
+
 #![expect(
     clippy::expect_used,
     reason = "a test fails loudly when a stub or an answer does not behave"

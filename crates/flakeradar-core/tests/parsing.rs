@@ -3,6 +3,8 @@
 //! Each test pins one behaviour rule of the parser, and its name says what the
 //! behaviour is: an identity, an outcome, a Location or a retry's duration.
 
+// Rust guideline compliant 2026-07-21
+
 #![expect(
     clippy::unwrap_used,
     clippy::expect_used,

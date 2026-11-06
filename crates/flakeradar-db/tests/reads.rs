@@ -4,6 +4,8 @@
 //! The CI run failure cap and the recorded nextest flaky-fail case, and the
 //! summaries that never touch the Execution tables.
 
+// Rust guideline compliant 2026-07-21
+
 #![expect(
     clippy::expect_used,
     reason = "a test fails loudly when a fixture or a read does not behave"

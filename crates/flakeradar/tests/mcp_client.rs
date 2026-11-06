@@ -14,6 +14,8 @@
 //! port, in `cargo nextest`. No desktop client or Inspector CLI was available
 //! here; this is the SDK's own client.
 
+// Rust guideline compliant 2026-07-21
+
 #![expect(
     clippy::expect_used,
     reason = "a test that cannot complete the handshake or a tool call has failed"

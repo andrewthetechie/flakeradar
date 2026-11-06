@@ -4,6 +4,8 @@
 //! `"1_0"` is 10, `1e300` is `int_parsing_size`, `false` as a boolean is `false`,
 //! and a date alone is that day's midnight.
 
+// Rust guideline compliant 2026-07-21
+
 #![expect(
     clippy::expect_used,
     clippy::panic,

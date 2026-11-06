@@ -3,6 +3,8 @@
 //! The Issue link routes and their lifecycle: the response shapes, the rules
 //! that refuse a request, and the state the pair leaves behind.
 
+// Rust guideline compliant 2026-07-21
+
 #![expect(
     clippy::expect_used,
     reason = "a test fails loudly when a fixture or an answer does not behave"

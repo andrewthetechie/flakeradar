@@ -3,6 +3,8 @@
 //! The endpoint is a stub server, so a test asserts what was posted rather than
 //! that a function was called, and nothing waits on the real clock.
 
+// Rust guideline compliant 2026-07-21
+
 #![expect(
     clippy::expect_used,
     reason = "a test fails loudly when a stub or a delivery does not behave"

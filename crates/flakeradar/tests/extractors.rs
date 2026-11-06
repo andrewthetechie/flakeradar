@@ -5,6 +5,8 @@
 //! parsed JSON object to the model, and the model's own readers decide what each
 //! field takes. `UpdateBody` below is a small model for those tests.
 
+// Rust guideline compliant 2026-07-21
+
 #![expect(
     clippy::expect_used,
     reason = "a test fails loudly when an extractor answers something else"

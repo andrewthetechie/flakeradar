@@ -4,4 +4,6 @@
 //! with `docs/plans/rust-rewrite/differences.md`. Nothing here runs a server, and
 //! every other helper the tests share lives in `flakeradar_test_support`.
 
+// Rust guideline compliant 2026-07-21
+
 pub(crate) mod allowances;

@@ -6,6 +6,8 @@
 //! test asks the server which it got; the database is [`TestDb::empty`], so the
 //! migration has to run for any route that reads a table to answer.
 
+// Rust guideline compliant 2026-07-21
+
 #![expect(
     clippy::expect_used,
     reason = "a test fails loudly when the server does not answer as it must"

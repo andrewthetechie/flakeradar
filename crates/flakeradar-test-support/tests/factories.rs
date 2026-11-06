@@ -4,6 +4,8 @@
 //! needs without restating them. Each test here states the defaults it relies on
 //! and proves that a setter stores its value.
 
+// Rust guideline compliant 2026-07-21
+
 #![expect(
     clippy::expect_used,
     reason = "a test fails loudly when the fixture it just built cannot be read back"

@@ -4,6 +4,8 @@
 //! rules (issue #9), and the way `job_history` turns an explained failure into a
 //! `skipped` row before scoring sees it.
 
+// Rust guideline compliant 2026-07-21
+
 #![expect(
     clippy::expect_used,
     reason = "a test fails loudly when the processor misbehaves"

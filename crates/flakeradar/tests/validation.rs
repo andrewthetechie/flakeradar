@@ -5,6 +5,8 @@
 //! other spelling of a value, so the readers are this crate's own. Each test
 //! pins one recorded answer, so the server answers what CI already sends.
 
+// Rust guideline compliant 2026-07-21
+
 #![expect(
     clippy::expect_used,
     clippy::panic,
