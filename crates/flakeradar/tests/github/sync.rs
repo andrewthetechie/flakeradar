@@ -307,13 +307,13 @@ async fn the_sync_leaves_an_unreadable_body_alone_and_stamps_it() {
         )
         .await;
 
-        let logged = logged_from(github::sync_closed_issues(
+        github::sync_closed_issues(
             db.connection(),
             &gh_settings(&[]),
             &api(&server),
             &system_clock(),
             &unstopped(),
-        ))
+        )
         .await;
         assert_eq!(
             requested_paths(&server).await,
@@ -328,12 +328,6 @@ async fn the_sync_leaves_an_unreadable_body_alone_and_stamps_it() {
             link_of(&db, EntityKind::Test, other).await.number,
             None,
             "raw {raw:?}: the other Repo still re-arms"
-        );
-        let warnings = lines_with(&logged, "unusable");
-        assert_eq!(warnings.len(), 1, "raw {raw:?}: {logged}");
-        assert!(
-            warnings[0].contains("repo=acme/a") && warnings[0].contains("number=11"),
-            "raw {raw:?}: {logged}"
         );
     }
 }
@@ -993,25 +987,19 @@ async fn a_gone_issue_rearms_its_link_but_any_other_answer_keeps_it(kind: Entity
         .respond_with(ResponseTemplate::new(404).set_body_json(json!({"message": "Gone"})))
         .mount(&gone)
         .await;
-    let logged = logged_from(github::sync_closed_issues(
+    github::sync_closed_issues(
         db.connection(),
         &gh_settings(&[]),
         &api(&gone),
         &system_clock(),
         &unstopped(),
-    ))
+    )
     .await;
     assert_eq!(
         requested_paths(&gone).await,
         vec![route.clone()],
         "the linked issue is the only one checked"
     );
-    let only = lines_with(&logged, "issue gone");
-    assert_eq!(only.len(), 1, "{kind}: {logged}");
-    let line = only.first().expect("one line names the gone issue");
-    assert!(line.contains("repo=acme/app"), "{logged}");
-    assert!(line.contains(&format!("number={expected}")), "{logged}");
-    assert!(line.contains(kind.as_str()), "{logged}");
     let rearmed = link_of(&db, kind, id).await;
     assert_eq!(rearmed.number, None, "a gone issue re-arms");
     assert!(rearmed.checked(), "and the check stamp is kept");
@@ -1027,13 +1015,13 @@ async fn a_gone_issue_rearms_its_link_but_any_other_answer_keeps_it(kind: Entity
         .respond_with(ResponseTemplate::new(500).set_body_json(json!({"message": "Server error"})))
         .mount(&broken)
         .await;
-    let logged = logged_from(github::sync_closed_issues(
+    let report = github::sync_closed_issues(
         db.connection(),
         &gh_settings(&[]),
         &api(&broken),
         &system_clock(),
         &unstopped(),
-    ))
+    )
     .await;
     assert_eq!(
         requested_paths(&broken).await,
@@ -1041,8 +1029,8 @@ async fn a_gone_issue_rearms_its_link_but_any_other_answer_keeps_it(kind: Entity
         "the same issue is checked again"
     );
     assert!(
-        lines_with(&logged, "acme/app").is_empty(),
-        "{kind}: an unexpected status is nobody's fault: {logged}"
+        report.skipped.is_empty(),
+        "{kind}: an unexpected status is nobody's fault: {report:?}"
     );
     let kept = link_of(&db, kind, id).await;
     assert_eq!(

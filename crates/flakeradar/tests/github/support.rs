@@ -267,6 +267,23 @@ pub(crate) async fn flaky_job_in(db: &TestDb, repo: &str, pipeline: &str, name: 
 }
 
 /// The `github_issue_*` columns of one Job.
+/// `call`'s answer and the log lines it wrote.
+///
+/// A test that has a returned value and a log rule asserts both: the value is the
+/// outcome, and the log is checked only where the wording is a requirement of its
+/// own, such as the cap on a GitHub body.
+pub(crate) async fn logged_call<T>(call: impl Future<Output = T>) -> (T, String) {
+    let mut answer = None;
+    let lines = {
+        let slot = &mut answer;
+        logged_from(async move {
+            *slot = Some(call.await);
+        })
+        .await
+    };
+    (answer.expect("the call answered"), lines)
+}
+
 /// The log lines `future` writes, with a subscriber installed for this thread.
 pub(crate) async fn logged_from(future: impl Future) -> String {
     use std::io::Write as _;

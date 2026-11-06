@@ -21,7 +21,7 @@ use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
 use crate::support::{
     CREATED, Loopback, TOKEN, api, clean_streak_of, fixed_settings, flaky_job, flaky_test,
-    flaky_test_in, gh_settings, lines_with, link_of, link_table, logged_from, mount_comment,
+    flaky_test_in, gh_settings, lines_with, link_of, link_table, logged_call, mount_comment,
     mount_create, mount_issue, mount_patch, mount_state, note_row, noted, requested_calls,
     requested_paths, set_clean_streak, stage_mid_request, stamp, stamp_link, stamp_note, unstopped,
 };
@@ -478,14 +478,14 @@ async fn a_note_close_that_fails_keeps_the_stamp() {
     .await;
     let settings = fixed_settings(&[("FLAKERADAR_GITHUB_CLOSE_FIXED", "true")]);
 
-    let logged = logged_from(github::note_fixed_issues_for(
+    let report = github::note_fixed_issues_for(
         db.connection(),
         &[test],
         &settings,
         &api(&server),
         &system_clock(),
         &unstopped(),
-    ))
+    )
     .await;
     assert_eq!(
         requested_paths(&server).await,
@@ -495,10 +495,14 @@ async fn a_note_close_that_fails_keeps_the_stamp() {
         ]
     );
     assert!(noted(&db, "test_cases", test).await);
+    assert!(
+        !link_of(&db, EntityKind::Test, test).await.closed,
+        "the close failed, so the issue is still open"
+    );
     assert_eq!(
-        lines_with(&logged, "close after noting the fix failed").len(),
-        1,
-        "{logged}"
+        (report.stopped, report.skipped.len()),
+        (None, 0),
+        "a 500 on one close is neither a stop nor a skipped Repo"
     );
 
     github::note_fixed_issues_for(
@@ -575,14 +579,14 @@ async fn a_note_rate_limit_stops_the_batch() {
     )
     .await;
     let settings = fixed_settings(&[("FLAKERADAR_GITHUB_CLOSE_FIXED", "true")]);
-    let logged = logged_from(github::note_fixed_issues_for(
+    let report = github::note_fixed_issues_for(
         db.connection(),
         &[first, second],
         &settings,
         &api(&server),
         &system_clock(),
         &unstopped(),
-    ))
+    )
     .await;
     assert_eq!(
         requested_paths(&server).await,
@@ -590,10 +594,14 @@ async fn a_note_rate_limit_stops_the_batch() {
             "/repos/acme/a/issues/71/comments",
             "/repos/acme/a/issues/71"
         ],
-        "{logged}"
     );
     assert!(noted(&db, "test_cases", first).await, "the comment landed");
     assert!(!noted(&db, "test_cases", second).await);
+    assert_eq!(
+        report.stopped,
+        Some(github::BatchStop::RateLimited),
+        "the 429 on a close ends the batch"
+    );
 }
 
 #[tokio::test]
@@ -661,14 +669,14 @@ async fn a_note_permission_403_skips_only_that_repo() {
     .await;
     mount_patch(&server, "acme/b", 72, ResponseTemplate::new(200)).await;
     let settings = fixed_settings(&[("FLAKERADAR_GITHUB_CLOSE_FIXED", "true")]);
-    let logged = logged_from(github::note_fixed_issues_for(
+    let report = github::note_fixed_issues_for(
         db.connection(),
         &[a, b],
         &settings,
         &api(&server),
         &system_clock(),
         &unstopped(),
-    ))
+    )
     .await;
     assert_eq!(
         requested_paths(&server).await,
@@ -681,9 +689,10 @@ async fn a_note_permission_403_skips_only_that_repo() {
     );
     assert!(noted(&db, "test_cases", a).await);
     assert!(noted(&db, "test_cases", b).await);
-    assert!(
-        lines_with(&logged, "issue close skipped for this Repo").len() == 1,
-        "{logged}"
+    assert_eq!(
+        report.skipped,
+        std::collections::BTreeSet::from(["acme/a".to_owned()]),
+        "only the Repo whose close was denied is skipped"
     );
 }
 
@@ -696,20 +705,20 @@ async fn a_note_network_error_is_logged_and_never_raises() {
     // Nothing listens on this port.
     let api = Api::new(Secret::new(TOKEN), "http://127.0.0.1:1").expect("the HTTP client builds");
 
-    let logged = logged_from(github::note_fixed_issues_for(
+    let report = github::note_fixed_issues_for(
         db.connection(),
         &[test],
         &fixed_settings(&[]),
         &api,
         &system_clock(),
         &unstopped(),
-    ))
+    )
     .await;
     assert!(!noted(&db, "test_cases", test).await);
     assert_eq!(
-        lines_with(&logged, "unreachable, skipping fixed-note comments").len(),
-        1,
-        "{logged}"
+        report.stopped,
+        Some(github::BatchStop::Unreachable),
+        "the batch ends at the endpoint it could not reach"
     );
 }
 
@@ -768,14 +777,14 @@ async fn a_fixed_note_close_whose_connection_dies_keeps_the_stamp() {
     let api = Api::new(Secret::new(TOKEN), &loopback.base).expect("the HTTP client builds");
     let settings = fixed_settings(&[("FLAKERADAR_GITHUB_CLOSE_FIXED", "true")]);
 
-    let logged = logged_from(github::note_fixed_issues_for(
+    let report = github::note_fixed_issues_for(
         db.connection(),
         &[test],
         &settings,
         &api,
         &system_clock(),
         &unstopped(),
-    ))
+    )
     .await;
 
     assert_eq!(
@@ -784,9 +793,9 @@ async fn a_fixed_note_close_whose_connection_dies_keeps_the_stamp() {
         "the comment landed and the close was attempted"
     );
     assert_eq!(
-        lines_with(&logged, "GitHub unreachable, skipping the close").len(),
-        1,
-        "{logged}"
+        report.stopped,
+        Some(github::BatchStop::Unreachable),
+        "the batch ends at the close it could not reach"
     );
     assert!(
         noted(&db, "test_cases", test).await,
@@ -809,14 +818,14 @@ async fn an_unusable_note_comment_status_leaves_the_row_unstamped() {
         .mount(&server)
         .await;
 
-    let logged = logged_from(github::note_fixed_issues_for(
+    let report = github::note_fixed_issues_for(
         db.connection(),
         &[bad, other],
         &fixed_settings(&[]),
         &api(&server),
         &system_clock(),
         &unstopped(),
-    ))
+    )
     .await;
     assert_eq!(
         requested_paths(&server).await,
@@ -829,14 +838,25 @@ async fn an_unusable_note_comment_status_leaves_the_row_unstamped() {
     assert!(!noted(&db, "test_cases", bad).await);
     assert!(!noted(&db, "test_cases", other).await);
     assert_eq!(
-        lines_with(&logged, "fixed-note comment failed").len(),
-        2,
-        "{logged}"
+        report.skipped,
+        std::collections::BTreeSet::new(),
+        "a 500 is nobody's Repo-wide fault"
     );
 }
 
 /// The fixed-note entry point of one entity.
 async fn note_entity(db: &TestDb, kind: EntityKind, ids: &[i32], settings: &Settings, api: &Api) {
+    note_entity_value(db, kind, ids, settings, api).await;
+}
+
+/// The same, answering what the batch reported.
+async fn note_entity_value(
+    db: &TestDb,
+    kind: EntityKind,
+    ids: &[i32],
+    settings: &Settings,
+    api: &Api,
+) -> github::BatchReport {
     match kind {
         EntityKind::Test => {
             github::note_fixed_issues_for(
@@ -847,7 +867,7 @@ async fn note_entity(db: &TestDb, kind: EntityKind, ids: &[i32], settings: &Sett
                 &system_clock(),
                 &unstopped(),
             )
-            .await;
+            .await
         }
         EntityKind::Job => {
             github::note_fixed_job_issues_for(
@@ -858,7 +878,7 @@ async fn note_entity(db: &TestDb, kind: EntityKind, ids: &[i32], settings: &Sett
                 &system_clock(),
                 &unstopped(),
             )
-            .await;
+            .await
         }
     }
 }
@@ -1034,14 +1054,7 @@ async fn a_deleted_row_costs_only_that_fixed_note(kind: EntityKind) {
         .await;
     let settings = fixed_settings(&[]);
 
-    let logged = logged_from(note_entity(
-        &db,
-        kind,
-        &[doomed, kept],
-        &settings,
-        &api(&server),
-    ))
-    .await;
+    note_entity(&db, kind, &[doomed, kept], &settings, &api(&server)).await;
     assert_eq!(
         requested_paths(&server).await,
         vec![
@@ -1050,11 +1063,8 @@ async fn a_deleted_row_costs_only_that_fixed_note(kind: EntityKind) {
         ],
         "the vanished row costs one note, not the batch"
     );
+    // The row is gone, so the only thing left to read is the one that survived.
     assert!(noted(&db, table, kept).await, "the surviving note lands");
-    assert!(
-        lines_with(&logged, "deleted (admin delete) while noting").len() == 1,
-        "the lost note is reported: {logged}"
-    );
 }
 
 #[tokio::test]
@@ -1091,7 +1101,14 @@ async fn a_clean_streak_reset_mid_post_is_not_undone_by_the_stamp(kind: EntityKi
         .await;
     let settings = fixed_settings(&[("FLAKERADAR_GITHUB_CLOSE_FIXED", "true")]);
 
-    let logged = logged_from(note_entity(&db, kind, &[obj], &settings, &api(&server))).await;
+    let (report, logged) = logged_call(Box::pin(note_entity_value(
+        &db,
+        kind,
+        &[obj],
+        &settings,
+        &api(&server),
+    )))
+    .await;
     assert_eq!(
         requested_calls(&server).await,
         vec![(
@@ -1109,6 +1126,13 @@ async fn a_clean_streak_reset_mid_post_is_not_undone_by_the_stamp(kind: EntityKi
         !noted(&db, table, obj).await,
         "the reset must not be undone by a stamp"
     );
+    assert_eq!(
+        report.skipped,
+        std::collections::BTreeSet::new(),
+        "a stamp that could not land costs no Repo"
+    );
+    // The stamp's refusal names the streak it found, which no returned value
+    // carries, so the line stays a log assertion.
     assert!(
         lines_with(&logged, "stopped being noteable").len() == 1,
         "the skipped stamp is reported: {logged}"

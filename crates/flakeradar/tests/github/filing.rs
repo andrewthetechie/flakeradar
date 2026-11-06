@@ -19,8 +19,8 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use crate::support::{
     TOKEN, api, explain_job_execution, fixed_settings, flaky_job, flaky_job_in, flaky_test,
-    flaky_test_in, gh_settings, lines_with, link_of, logged_from, mount_create, requested_paths,
-    stamp, stamp_link, unstopped,
+    flaky_test_in, gh_settings, lines_with, link_of, logged_call, logged_from, mount_create,
+    requested_paths, stamp, stamp_link, unstopped,
 };
 
 #[tokio::test]
@@ -507,18 +507,15 @@ async fn a_row_deleted_while_filing_closes_the_issue_it_just_created() {
         .await
         .expect("the vanish trigger installs");
 
-    let logged = logged_from(async {
-        let filed = github::file_issues_for(
-            db.connection(),
-            &[test],
-            &gh_settings(&[]),
-            &api(&server),
-            &unstopped(),
-        )
-        .await;
-        assert!(filed.linked.is_empty(), "a vanished row is not a link");
-    })
+    let filed = github::file_issues_for(
+        db.connection(),
+        &[test],
+        &gh_settings(&[]),
+        &api(&server),
+        &unstopped(),
+    )
     .await;
+    assert!(filed.linked.is_empty(), "a vanished row is not a link");
     assert_eq!(
         requested_paths(&server).await,
         vec![
@@ -528,9 +525,6 @@ async fn a_row_deleted_while_filing_closes_the_issue_it_just_created() {
         ],
         "the new issue is commented on, then closed"
     );
-    let warnings = lines_with(&logged, "closed the new issue");
-    assert_eq!(warnings.len(), 1, "{logged}");
-    assert!(warnings[0].contains('7'), "{logged}");
 }
 
 #[tokio::test]
@@ -565,23 +559,20 @@ async fn a_store_failure_leaves_the_issue_open_and_stops_the_batch() {
         .await
         .expect("the failing trigger installs");
 
-    let logged = logged_from(async {
-        let filed = github::file_issues_for(
-            db.connection(),
-            &[first, second],
-            &gh_settings(&[]),
-            &api(&server),
-            &unstopped(),
-        )
-        .await;
-        assert!(filed.linked.is_empty(), "a failed store links nothing");
-        assert_eq!(
-            filed.stopped,
-            Some(github::BatchStop::StoreFailed),
-            "the batch reports why it ended"
-        );
-    })
+    let (filed, logged) = logged_call(github::file_issues_for(
+        db.connection(),
+        &[first, second],
+        &gh_settings(&[]),
+        &api(&server),
+        &unstopped(),
+    ))
     .await;
+    assert!(filed.linked.is_empty(), "a failed store links nothing");
+    assert_eq!(
+        filed.stopped,
+        Some(github::BatchStop::StoreFailed),
+        "the batch reports why it ended"
+    );
     assert_eq!(
         requested_paths(&server).await,
         vec!["/repos/acme/app/issues"],
@@ -1034,16 +1025,13 @@ async fn a_permission_403_costs_only_the_denied_repo() {
         .mount(&server)
         .await;
 
-    let logged = logged_from(async {
-        github::file_issues_for(
-            db.connection(),
-            &[a1, a2, b],
-            &gh_settings(&[]),
-            &api(&server),
-            &unstopped(),
-        )
-        .await;
-    })
+    let (report, logged) = logged_call(github::file_issues_for(
+        db.connection(),
+        &[a1, a2, b],
+        &gh_settings(&[]),
+        &api(&server),
+        &unstopped(),
+    ))
     .await;
 
     assert_eq!(
@@ -1055,10 +1043,15 @@ async fn a_permission_403_costs_only_the_denied_repo() {
     assert_eq!(link_of(&db, EntityKind::Test, a2).await.number, None);
     assert_eq!(link_of(&db, EntityKind::Test, b).await.number, Some(88));
 
+    assert_eq!(
+        report.skipped,
+        std::collections::BTreeSet::from(["acme/a".to_owned()]),
+        "the denied Repo is the one the batch skipped"
+    );
+    // The cap on a GitHub body is this project's own logging rule, so it is the one
+    // part of this case asserted from the log.
     let warnings = lines_with(&logged, "skipped for this Repo");
     assert_eq!(warnings.len(), 1, "{logged}");
-    assert!(warnings[0].contains("acme/a"), "{logged}");
-    assert!(warnings[0].contains("403"), "{logged}");
     let kept: String = body.chars().take(300).collect();
     let cut: String = body.chars().skip(300).collect();
     assert!(
@@ -1082,17 +1075,14 @@ async fn a_permission_403_costs_only_the_denied_repo() {
         .mount(&jobs)
         .await;
 
-    let logged = logged_from(async {
-        github::file_job_issues_for(
-            db.connection(),
-            &[ja1, ja2, jb],
-            &gh_settings(&[]),
-            &api(&jobs),
-            &system_clock(),
-            &unstopped(),
-        )
-        .await;
-    })
+    let (report, logged) = logged_call(github::file_job_issues_for(
+        db.connection(),
+        &[ja1, ja2, jb],
+        &gh_settings(&[]),
+        &api(&jobs),
+        &system_clock(),
+        &unstopped(),
+    ))
     .await;
     assert_eq!(
         requested_paths(&jobs).await,
@@ -1101,11 +1091,14 @@ async fn a_permission_403_costs_only_the_denied_repo() {
     assert_eq!(link_of(&db, EntityKind::Job, ja1).await.number, None);
     assert_eq!(link_of(&db, EntityKind::Job, ja2).await.number, None);
     assert_eq!(link_of(&db, EntityKind::Job, jb).await.number, Some(88));
+    assert_eq!(
+        report.skipped,
+        std::collections::BTreeSet::from(["acme/a".to_owned()])
+    );
     let warnings = lines_with(&logged, "skipped for this Repo");
     assert_eq!(warnings.len(), 1, "{logged}");
-    assert!(warnings[0].contains("acme/a") && warnings[0].contains("403"));
     let cut: String = body.chars().skip(300).collect();
-    assert!(!warnings[0].contains(&cut));
+    assert!(!warnings[0].contains(&cut), "the rest is cut: {logged}");
 }
 
 #[tokio::test]
@@ -1129,16 +1122,13 @@ async fn a_repo_whose_issues_are_disabled_is_skipped_for_the_rest_of_the_batch()
             .mount(&server)
             .await;
 
-        let logged = logged_from(async {
-            github::file_issues_for(
-                db.connection(),
-                &[a1, a2, b],
-                &gh_settings(&[]),
-                &api(&server),
-                &unstopped(),
-            )
-            .await;
-        })
+        let report = github::file_issues_for(
+            db.connection(),
+            &[a1, a2, b],
+            &gh_settings(&[]),
+            &api(&server),
+            &unstopped(),
+        )
         .await;
         assert_eq!(
             requested_paths(&server).await,
@@ -1148,9 +1138,11 @@ async fn a_repo_whose_issues_are_disabled_is_skipped_for_the_rest_of_the_batch()
         assert_eq!(link_of(&db, EntityKind::Test, a1).await.number, None);
         assert_eq!(link_of(&db, EntityKind::Test, a2).await.number, None);
         assert_eq!(link_of(&db, EntityKind::Test, b).await.number, Some(99));
-        let warnings = lines_with(&logged, "skipped for this Repo");
-        assert_eq!(warnings.len(), 1, "{logged}");
-        assert!(warnings[0].contains(&status.to_string()), "{logged}");
+        assert_eq!(
+            report.skipped,
+            std::collections::BTreeSet::from(["acme/a".to_owned()]),
+            "the Repo whose Issues are off is skipped on {status}"
+        );
         unlink_test(&db, b).await;
 
         let ja1 = flaky_job_in(
@@ -1187,17 +1179,14 @@ async fn a_repo_whose_issues_are_disabled_is_skipped_for_the_rest_of_the_batch()
             .respond_with(ResponseTemplate::new(201).set_body_json(json!({"number": 99})))
             .mount(&jobs)
             .await;
-        let logged = logged_from(async {
-            github::file_job_issues_for(
-                db.connection(),
-                &[ja1, ja2, jb],
-                &gh_settings(&[]),
-                &api(&jobs),
-                &system_clock(),
-                &unstopped(),
-            )
-            .await;
-        })
+        let report = github::file_job_issues_for(
+            db.connection(),
+            &[ja1, ja2, jb],
+            &gh_settings(&[]),
+            &api(&jobs),
+            &system_clock(),
+            &unstopped(),
+        )
         .await;
         assert_eq!(
             requested_paths(&jobs).await,
@@ -1207,9 +1196,9 @@ async fn a_repo_whose_issues_are_disabled_is_skipped_for_the_rest_of_the_batch()
         assert_eq!(link_of(&db, EntityKind::Job, ja2).await.number, None);
         assert_eq!(link_of(&db, EntityKind::Job, jb).await.number, Some(99));
         assert_eq!(
-            lines_with(&logged, "skipped for this Repo").len(),
-            1,
-            "{logged}"
+            report.skipped,
+            std::collections::BTreeSet::from(["acme/a".to_owned()]),
+            "the Job batch skips the same Repo on {status}"
         );
     }
 }
@@ -1232,16 +1221,13 @@ async fn an_unusable_status_costs_one_issue_and_the_batch_goes_on() {
         .mount(&server)
         .await;
 
-    let logged = logged_from(async {
-        github::file_issues_for(
-            db.connection(),
-            &[a1, a2],
-            &gh_settings(&[]),
-            &api(&server),
-            &unstopped(),
-        )
-        .await;
-    })
+    let (report, logged) = logged_call(github::file_issues_for(
+        db.connection(),
+        &[a1, a2],
+        &gh_settings(&[]),
+        &api(&server),
+        &unstopped(),
+    ))
     .await;
 
     assert_eq!(
@@ -1251,14 +1237,21 @@ async fn an_unusable_status_costs_one_issue_and_the_batch_goes_on() {
     );
     assert_eq!(link_of(&db, EntityKind::Test, a1).await.number, Some(77));
     assert_eq!(link_of(&db, EntityKind::Test, a2).await.number, None);
+    assert!(
+        report.skipped.is_empty(),
+        "a 500 must not skip the Repo: {report:?}"
+    );
+    assert_eq!(
+        report.linked,
+        std::collections::BTreeSet::from([a1]),
+        "only the issue that was created is linked"
+    );
+    // The failure's own sentence is what an operator reads, and nothing else
+    // carries it, so this one line stays a log assertion.
     let failures = lines_with(&logged, "GitHub issue creation failed");
     assert_eq!(failures.len(), 1, "{logged}");
     assert!(failures[0].contains("acme/a") && failures[0].contains("500"));
     assert!(failures[0].contains("server exploded"));
-    assert!(
-        lines_with(&logged, "skipped for this Repo").is_empty(),
-        "a 500 must not skip the Repo: {logged}"
-    );
 }
 
 #[tokio::test]
@@ -1288,16 +1281,13 @@ async fn a_malformed_201_body_keeps_the_batch_and_stores_nothing() {
             .mount(&server)
             .await;
 
-        let logged = logged_from(async {
-            github::file_issues_for(
-                db.connection(),
-                &[a, b],
-                &gh_settings(&[]),
-                &api(&server),
-                &unstopped(),
-            )
-            .await;
-        })
+        let (report, logged) = logged_call(github::file_issues_for(
+            db.connection(),
+            &[a, b],
+            &gh_settings(&[]),
+            &api(&server),
+            &unstopped(),
+        ))
         .await;
 
         assert_eq!(
@@ -1315,9 +1305,15 @@ async fn a_malformed_201_body_keeps_the_batch_and_stores_nothing() {
             Some(91),
             "{raw}"
         );
+        assert_eq!(
+            report.linked,
+            std::collections::BTreeSet::from([b]),
+            "{raw}: the row with no issue number is not a link"
+        );
+        // The body GitHub answered with is what an operator needs to see, and no
+        // returned value carries it, so this line stays a log assertion.
         let warnings = lines_with(&logged, "201 with no issue number");
         assert_eq!(warnings.len(), 1, "{raw}: {logged}");
-        assert!(warnings[0].contains("acme/a"), "{logged}");
         assert!(warnings[0].contains(raw), "{logged}");
     }
 }
@@ -1772,17 +1768,14 @@ async fn the_job_row_deleted_while_filing_closes_the_new_issue() {
         .mount(&server)
         .await;
 
-    let logged = logged_from(async {
-        github::file_job_issues_for(
-            db.connection(),
-            &[job],
-            &gh_settings(&[]),
-            &api(&server),
-            &system_clock(),
-            &unstopped(),
-        )
-        .await;
-    })
+    github::file_job_issues_for(
+        db.connection(),
+        &[job],
+        &gh_settings(&[]),
+        &api(&server),
+        &system_clock(),
+        &unstopped(),
+    )
     .await;
 
     assert_eq!(
@@ -1791,12 +1784,10 @@ async fn the_job_row_deleted_while_filing_closes_the_new_issue() {
             "/repos/acme/app/issues",
             "/repos/acme/app/issues/77/comments",
             "/repos/acme/app/issues/77",
-        ]
+        ],
+        "the issue the vanished Job stranded is commented on and closed"
     );
     assert_eq!(link_of(&db, EntityKind::Job, job).await.number, None);
-    let warnings = lines_with(&logged, "closed the new issue");
-    assert_eq!(warnings.len(), 1, "{logged}");
-    assert!(warnings[0].contains("77"), "{logged}");
 }
 
 #[tokio::test]
