@@ -731,8 +731,14 @@ pub async fn summary(
     let threshold = settings.flake_threshold;
     let today = settings.today();
     let counts = test_counts(db, scope, threshold).await?;
-    let new_flaky = new_flaky_count(db, scope, threshold, today).await?;
-    let (executions_30d, failures_30d) = window_sums(db, scope, today).await?;
+    let new_flaky = new_flaky_count(db, &TEST_TALLY, threshold, today, |binds| {
+        scope_conditions(scope, "r.name", "p.name", binds);
+    })
+    .await?;
+    let (executions_30d, failures_30d) = window_sums(db, &TEST_TALLY, today, |binds| {
+        scope_conditions(scope, "r.name", "p.name", binds);
+    })
+    .await?;
     Ok(SummaryOut {
         total_tests: counts.total,
         flaky_tests: counts.flaky,
@@ -803,31 +809,79 @@ async fn test_counts(
     })
 }
 
-/// How many Tests in scope became flaky inside [`NEW_FLAKY_DAYS`].
+/// The scored table and its Score history, as a headline count reads them.
+struct Tally {
+    /// The entity the counts are about.
+    kind: EntityKind,
+    /// The table alias the conditions name.
+    alias: &'static str,
+    /// The scored table joined to its Repo.
+    from: &'static str,
+    /// The Score history joined to the scored table and its Repo.
+    history_from: &'static str,
+    /// How the entity's queries are named in the error a statement that
+    /// answered nothing gives: nothing for a Test, `job ` for a Job.
+    prefix: &'static str,
+}
+
+/// The Tests' headline counts.
+const TEST_TALLY: Tally = Tally {
+    kind: EntityKind::Test,
+    alias: "t",
+    from: "test_cases t \
+        JOIN projects p ON p.id = t.project_id \
+        JOIN repos r ON r.id = p.repo_id",
+    history_from: "test_score_history h \
+        JOIN test_cases t ON t.id = h.test_case_id \
+        JOIN projects p ON p.id = t.project_id \
+        JOIN repos r ON r.id = p.repo_id",
+    prefix: "",
+};
+
+/// The Jobs' headline counts.
+const JOB_TALLY: Tally = Tally {
+    kind: EntityKind::Job,
+    alias: "j",
+    from: "jobs j \
+        JOIN pipelines p ON p.id = j.pipeline_id \
+        JOIN repos r ON r.id = p.repo_id",
+    history_from: "job_score_history h \
+        JOIN jobs j ON j.id = h.job_id \
+        JOIN pipelines p ON p.id = j.pipeline_id \
+        JOIN repos r ON r.id = p.repo_id",
+    prefix: "job ",
+};
+
+/// How many rows became flaky inside [`NEW_FLAKY_DAYS`].
+///
+/// `filter` adds the caller's own conditions: the Test side scopes by Repo and
+/// Project, and the Job side by Repo alone.
 async fn new_flaky_count(
     db: &impl ConnectionTrait,
-    scope: &Scope,
+    tally: &Tally,
     threshold: f64,
     today: NaiveDate,
+    filter: impl FnOnce(&mut Binds),
 ) -> Result<i64, DbError> {
     let cutoff = today - Duration::days(NEW_FLAKY_DAYS);
     // The lateral subquery's cut-off is a literal day, so the binds stay simple.
-    let old_point = score_history::newest_history_before(EntityKind::Test, "t")
+    let old_point = score_history::newest_history_before(tally.kind, tally.alias)
         .replace("$1::DATE", &format!("DATE '{}'", cutoff.format("%Y-%m-%d")));
     let mut new_flaky = Binds::after(2);
     new_flaky.raw("(past.score IS NULL OR past.score < $1)");
-    scope_conditions(scope, "r.name", "p.name", &mut new_flaky);
+    filter(&mut new_flaky);
     let new_sql = format!(
-        "SELECT count(*) FILTER (WHERE t.flakiness_score >= $1) AS new_flaky \
-           FROM test_cases t \
-           JOIN projects p ON p.id = t.project_id \
-           JOIN repos r ON r.id = p.repo_id \
+        "SELECT count(*) FILTER (WHERE {}.flakiness_score >= $1) AS new_flaky \
+           FROM {} \
            LEFT JOIN LATERAL ({old_point}) AS past ON true{}",
+        tally.alias,
+        tally.from,
         new_flaky.suffix()
     );
     let mut new_binds = vec![Value::from(threshold)];
     new_binds.extend(new_flaky.into_values());
-    let row = required_one(db, new_sql, new_binds, "new-flaky").await?;
+    let what = format!("{}new-flaky", tally.prefix);
+    let row = required_one(db, new_sql, new_binds, &what).await?;
     get(&row, "new_flaky")
 }
 
@@ -840,28 +894,28 @@ struct RunnerCounts {
     unexplained: i64,
 }
 
-/// The Executions and failures of the last [`SUMMARY_WINDOW_DAYS`] in scope.
+/// The Executions and failures of the last [`SUMMARY_WINDOW_DAYS`].
 async fn window_sums(
     db: &impl ConnectionTrait,
-    scope: &Scope,
+    tally: &Tally,
     today: NaiveDate,
+    filter: impl FnOnce(&mut Binds),
 ) -> Result<(i64, i64), DbError> {
     let cutoff = today - Duration::days(SUMMARY_WINDOW_DAYS);
     let mut sums = Binds::after(2);
     sums.raw("h.day > $1");
-    scope_conditions(scope, "r.name", "p.name", &mut sums);
+    filter(&mut sums);
     let sums_sql = format!(
         "SELECT coalesce(sum(h.executions), 0) AS executions, \
                 coalesce(sum(h.failures), 0) AS failures \
-           FROM test_score_history h \
-           JOIN test_cases t ON t.id = h.test_case_id \
-           JOIN projects p ON p.id = t.project_id \
-           JOIN repos r ON r.id = p.repo_id{}",
+           FROM {}{}",
+        tally.history_from,
         sums.suffix()
     );
     let mut sum_binds = vec![Value::from(cutoff)];
     sum_binds.extend(sums.into_values());
-    let row = required_one(db, sums_sql, sum_binds, "thirty-day sums").await?;
+    let what = format!("{}thirty-day sums", tally.prefix);
+    let row = required_one(db, sums_sql, sum_binds, &what).await?;
     Ok((get(&row, "executions")?, get(&row, "failures")?))
 }
 
@@ -1618,47 +1672,19 @@ pub async fn job_summary(
     let confirmed: i64 = get(&row, "confirmed")?;
 
     let today = settings.today();
-    let cutoff = today - Duration::days(NEW_FLAKY_DAYS);
-    let old_point = score_history::newest_history_before(EntityKind::Job, "j")
-        .replace("$1::DATE", &format!("DATE '{}'", cutoff.format("%Y-%m-%d")));
-    let mut new_flaky = Binds::after(2);
-    new_flaky.raw("(past.score IS NULL OR past.score < $1)");
-    if let Some(repo) = repo {
-        new_flaky.eq("r.name", Value::from(repo.to_owned()));
-    }
-    let new_sql = format!(
-        "SELECT count(*) FILTER (WHERE j.flakiness_score >= $1) AS new_flaky \
-           FROM jobs j \
-           JOIN pipelines p ON p.id = j.pipeline_id \
-           JOIN repos r ON r.id = p.repo_id \
-           LEFT JOIN LATERAL ({old_point}) AS past ON true{}",
-        new_flaky.suffix()
-    );
-    let mut new_binds = vec![Value::from(threshold)];
-    new_binds.extend(new_flaky.into_values());
-    let row = required_one(db, new_sql, new_binds, "job new-flaky").await?;
-    let new_flaky: i64 = get(&row, "new_flaky")?;
+    let new_flaky = new_flaky_count(db, &JOB_TALLY, threshold, today, |binds| {
+        if let Some(repo) = repo {
+            binds.eq("r.name", Value::from(repo.to_owned()));
+        }
+    })
+    .await?;
 
-    let window_cutoff = today - Duration::days(SUMMARY_WINDOW_DAYS);
-    let mut sums = Binds::after(2);
-    sums.raw("h.day > $1");
-    if let Some(repo) = repo {
-        sums.eq("r.name", Value::from(repo.to_owned()));
-    }
-    let sums_sql = format!(
-        "SELECT coalesce(sum(h.executions), 0) AS executions, \
-                coalesce(sum(h.failures), 0) AS failures \
-           FROM job_score_history h \
-           JOIN jobs j ON j.id = h.job_id \
-           JOIN pipelines p ON p.id = j.pipeline_id \
-           JOIN repos r ON r.id = p.repo_id{}",
-        sums.suffix()
-    );
-    let mut sum_binds = vec![Value::from(window_cutoff)];
-    sum_binds.extend(sums.into_values());
-    let row = required_one(db, sums_sql, sum_binds, "job thirty-day sums").await?;
-    let executions_30d: i64 = get(&row, "executions")?;
-    let failures_30d: i64 = get(&row, "failures")?;
+    let (executions_30d, failures_30d) = window_sums(db, &JOB_TALLY, today, |binds| {
+        if let Some(repo) = repo {
+            binds.eq("r.name", Value::from(repo.to_owned()));
+        }
+    })
+    .await?;
 
     let mut pipelines_in = Binds::after(1);
     if let Some(repo) = repo {
