@@ -1,0 +1,45 @@
+//! The `list_repos` tool: every Repo with its Projects.
+//!
+//! The name, title, description, argument schema and annotations are the wire
+//! contract the frozen server recorded, so they stay literals here.
+
+// Rust guideline compliant 2026-07-21
+
+use rmcp::model::ToolAnnotations;
+use serde_json::{Value, json};
+
+use flakeradar_db::reads;
+
+use crate::mcp::{Answer, BoxFuture, McpServer, ToolResult, no_arguments, read_only};
+
+/// The tool's name on the wire.
+pub(super) const NAME: &str = "list_repos";
+/// The title a client shows.
+pub(super) const TITLE: &str = "List Repos";
+/// The description a client shows.
+pub(super) const DESCRIPTION: &str =
+    r#"List every Repo with its Projects (name and Project root)."#;
+
+/// Whether this tool answers a list, wrapped in `{"result": …}`.
+///
+/// The definition's output schema and the answer's `_meta` are both derived from
+/// this one statement.
+pub(super) const LISTS: bool = true;
+
+/// The tool's argument schema.
+pub(super) fn input_schema() -> Value {
+    json!({"additionalProperties": false, "properties": {}, "type": "object"})
+}
+
+/// The annotations a read-only tool carries.
+pub(super) fn annotations() -> ToolAnnotations {
+    read_only()
+}
+
+/// Runs the tool over its arguments.
+pub(super) fn call(server: &McpServer, arguments: Value) -> BoxFuture<'_, ToolResult> {
+    Box::pin(async move {
+        no_arguments(&arguments)?;
+        Answer::list(&reads::list_repos(server.pool()).await?)
+    })
+}
