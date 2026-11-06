@@ -241,3 +241,26 @@ and `Window::push`/`window_binds` by both window reads. `processing.rs` is 97.86
 95.59% of branches and `reads.rs` 99.12% and 93.44%; the lines they miss are the ones the rows
 above already name, and the suite is 97.67% of lines (364 missed) and 94.71% of branches
 (70 missed), so `coverage-floor.json` stays `{96, 94}`.
+
+## Task 28: two join-error arms, and the rows the moves keep
+
+Task 28 moved the Execution build into `spawn_blocking` and the JSON body parse off the async
+thread, so two arms now cover a blocking task that did not finish: `parse_report`'s and
+`build_executions`' `RuntimeError` closures in `crates/flakeradar-db/src/processing.rs`, and
+`ApiJson`'s "The JSON body parser did not finish" closure in `crates/flakeradar/src/extract.rs`.
+Only a panic inside the parser, the classifier or the Execution build reaches them, and those
+run on attacker-controlled CI input, which the code standards forbid from panicking; the arms
+exist so that a bug there is a stored failure or a 500 rather than a dropped request. They are
+the same shape as the `report_body`/`parse_report_body` arms row 06 already carries.
+
+Nothing else this task adds is uncovered: `batching.rs` is 100% of lines (24) and branches (0
+counted), `sql.rs` 100% of both (136 lines, 2 branches) with `impl Into<String>` reached by both
+a borrowed static statement and an owned one, `github/client.rs` 100% of lines and branches
+(`Answer::new` parses every answer the tests answer), and `retention.rs` 98.99% of lines and 100%
+of branches, whose three missed lines are the `tracing` field arguments of the expiry line that
+row 07's artifact note already names. `processing.rs` is 97.66% of lines and 95.59% of branches,
+`reads.rs` 99.05% and 92.62%, and `extract.rs` 95.87% and 89.66%; every line they miss is one a
+row above already names, plus `extract.rs`'s two join-error lines. The suite is 97.59% of lines
+(377 missed) and 94.65% of branches (71 missed), so `coverage-floor.json` stays `{96, 94}`.
+
+The re-measured ingest and processing figures are in `docs/perf/22-rust-vs-python.md`.

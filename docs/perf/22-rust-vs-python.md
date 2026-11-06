@@ -119,6 +119,45 @@ Python's 7 ms is a property of asyncpg's pool, and matching it would mean disabl
 retry window entirely, which would fail requests that are only waiting their turn. 5 s is
 bounded and recorded rather than a hang.
 
+## Re-measured for task 28: ingest, health and the 100-Report run
+
+The processing rewrite (task 28) moved the per-case hashing and the Execution build off the
+async threads, removed the copies of a Report's cases, and made the quarantine expiry one
+statement. The two numbers this document exists for were measured again on the same host, a
+debug build of both commits, the same two workloads, and a Python 3.12 client of the same shape
+as the first table's: the 2,500-Test report (157 failures) and 100 reports of 25 Tests each,
+posted back to back, timed until `/api/reports/summary` answered `pending: 0`.
+
+Each row below is one run against a freshly created database, with `/api/health` polled every
+10 ms from before the upload until the Report was processed, and RSS sampled every 100 ms.
+**Both columns were measured in this session, alternately, so the comparison is not against a
+figure from a quieter day**: the left column is `21a766e`, the commit task 28 started from.
+
+| Measurement | `21a766e` (three runs) | task 28 (three runs) |
+| --- | --- | --- |
+| 2,500-Test report accepted (202) | 0.078, 0.079, 0.078 s | 0.070, 0.080, 0.081 s |
+| `/api/health` worst during upload and processing | 18.8, 22.2, 24.2 ms | 11.6, 19.0, 22.2 ms |
+| `/api/health` p95 during that window | 9.9, 11.3, 12.7 ms | 6.6, 6.9, 7.6 ms |
+| 2,500-Test report processed (worker) | 1.809, 1.850, 1.909 s | 1.857, 1.865, 1.874 s |
+| Summary polls while it processed | 31 (worst read 21.6 ms), 31 (19.3 ms), 32 (10.3 ms) | 32 (9.8 ms), 32 (18.4 ms), 32 (18.6 ms) |
+| The Report's counts | 2,343 passed / 157 failed | 2,343 passed / 157 failed |
+| 100 Reports accepted | 0.343, 0.351, 0.386 s | 0.318, 0.356, 0.458 s |
+| 100 Reports all processed | 2.677, 2.719, 2.725 s | 2.628, 2.676, 2.694 s |
+| Peak process RSS | 39 MB | 39 MB |
+
+Read against the threshold this document states — a regression beyond 20% needs a fix or a
+recorded reason — the task changed nothing: the 100-Report run is 1.6% faster on the median of
+three, and every other row is inside the spread of the three runs. `/api/health` stayed far
+under the 100 ms the task asks for, at a worst read of 22.2 ms while a 2,500-Test report was
+uploading and processing.
+
+**The 2.415 s and 0.175 s recorded above are not reproducible on this host today**, on either
+commit: `21a766e` itself measures 2.68–2.73 s for the same 100 Reports and 0.078 s for the same
+upload. Six PostgreSQL containers — five from earlier tasks and this run's own — on a 24 GB
+machine are a busier host than the one the first table was measured on, and both binaries are
+unoptimized debug builds. The numbers in the table above are therefore the comparison that
+matters, and the first table stays as the record of the day the port was first measured.
+
 ## What is not measured here
 
 - Duplicate **issues** across two instances, which needs a real GitHub API; see "Two instances,
