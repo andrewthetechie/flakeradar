@@ -1,7 +1,7 @@
 //! Report intake (ADR 0002, accept-then-process): the pending Report row.
 //!
-//! Free functions over the entities, in the shape of the frozen server's
-//! `report_intake.py`: this module owns how a pending Report row looks per kind
+//! Free functions over the entities. This module owns how a pending Report row
+//! looks per kind
 //! (body and its digest) and the JUnit duplicate identity, reads a stored body
 //! back per kind — including the rule that a NULL `line_base` reads as 1 — and
 //! holds the queue transitions a processor applies to a row. It also serves the

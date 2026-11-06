@@ -1,10 +1,10 @@
 //! The Report processor: one pending Report becomes a Run or Job executions,
 //! and Tests and Jobs are rescored.
 //!
-//! This is the frozen Python server's `processing.py`, statement by statement:
-//! scoring depends on Execution order, so one Report is processed at a time and
-//! every bulk statement stays in the same shape (and therefore consumes the
-//! same sequence values) as the Python server's.
+//! Scoring depends on the order Executions ran in, so one Report is processed at
+//! a time, and every bulk statement keeps a shape whose row order is the report's
+//! own: a rewritten statement that reordered rows would move served scores.
+//! `tests/parity` replays the recorded answers.
 
 // Rust guideline compliant 2026-07-21
 
@@ -128,11 +128,10 @@ pub struct ProcessOutcome {
 /// Only `process_next` reads it, so it stays inside this module; the caller sees
 /// the failure as a stored Report status and message.
 ///
-/// The message is `TypeName: message`, and `TypeName` is the failure class the
-/// frozen server stored for the same case, because that text is what an operator
-/// reads: a failed Report's `error` is served by `GET /api/reports` and shown in
-/// the dashboard's failed-Report panel, so it stays the text a 1.x instance
-/// wrote. The five names are `OperationalError` (a retryable driver failure),
+/// The message is `TypeName: message`, and `TypeName` is the failure class an
+/// operator reads: a failed Report's `error` is served by `GET /api/reports` and
+/// shown in the dashboard's failed-Report panel, so its shape is part of the
+/// wire and a 1.x instance's stored text reads the same way. The five names are `OperationalError` (a retryable driver failure),
 /// `DBAPIError` (a driver failure no retry fixes), `DataError` (a value the
 /// stored row could not hold), `ValidationError` (a stored Pipeline body that is
 /// not one this server wrote) and `ParseError` (a stored JUnit body that is not
@@ -199,8 +198,8 @@ fn transient_sqlstate(code: &str) -> bool {
         || code == "40P01"
 }
 
-/// Whether a driver error belongs to the connection/operational family Python
-/// retried (`OperationalError`, `InterfaceError`).
+/// Whether a driver error belongs to the family a retry can survive: a dropped
+/// connection, a pool timeout or a transient SQLSTATE.
 fn transient_db_error(error: &DbErr) -> bool {
     use sea_orm::RuntimeErr;
     use sea_orm::sqlx::error::Error as SqlxError;
@@ -225,7 +224,7 @@ fn transient_db_error(error: &DbErr) -> bool {
 /// Locks the oldest pending Report for this transaction (`FOR UPDATE SKIP LOCKED`).
 ///
 /// Only this query skips a locked row: the rest of the transaction must wait for
-/// an admin delete of the Report's Repo or Project, as Python's did.
+/// an admin delete of the Report's Repo or Project.
 ///
 /// # Errors
 ///
@@ -476,9 +475,9 @@ async fn process_junit_report(
     let built = build_executions(db, parsed, project_id, run_id, now).await?;
     store_executions(db, built.executions, &built.latest, now).await?;
 
-    // Python rescored `sorted(latest)`: the ids are ordered by id, not by where a
-    // Test first appeared in the report, because they set `touched_test_ids` and
-    // the order the Tier changes are emitted in.
+    // The ids are ordered by id, not by where a Test first appeared in the
+    // report, because they set `touched_test_ids` and the order the Tier changes
+    // are emitted in.
     let mut touched: Vec<i32> = built.latest.iter().map(|row| row.id).collect();
     touched.sort_unstable();
     let mut tier_changes = rescore(db, &touched, Some(&built.day_counts), settings).await?;
@@ -791,9 +790,10 @@ async fn upsert_test_cases(
         .collect();
     for chunk in owned_chunks(inserted) {
         test_cases::Entity::insert_many(chunk)
-            // Python's bare `ON CONFLICT DO NOTHING` skips a conflict on *any*
-            // constraint; SeaORM's target-less `OnConflict` is that statement,
-            // while `on_conflict_do_nothing` would name the primary key only.
+            // A conflict on *any* constraint must skip the row, because the
+            // unique index and the primary key can both collide. SeaORM's
+            // target-less `OnConflict` is that statement, while
+            // `on_conflict_do_nothing` would name the primary key only.
             .on_conflict(
                 sea_orm::sea_query::OnConflict::new()
                     .do_nothing()
@@ -1319,7 +1319,8 @@ async fn job_windows(
     let mut windows: BTreeMap<i32, Window> = BTreeMap::new();
     for chunk in chunks(ids) {
         // The table names are written out: `job_execution_explained_sql` reads
-        // `job_executions`, `jobs` and `pipelines` by name, as Python's query did.
+        // `job_executions`, `jobs` and `pipelines` by name, and a query that named
+        // them by alias could not be spliced into this one.
         let sql = format!(
             "SELECT job_executions.job_id, job_executions.commit_sha, job_executions.branch, \
                     job_executions.status, ({}) AS explained, repos.default_branch \
@@ -1577,8 +1578,8 @@ async fn tier_changes(
     if crossed.is_empty() {
         return Ok(Vec::new());
     }
-    // Python builds these from `_rows_by_id`, a dict sorted by id, so the events go
-    // out in id order whatever order the caller listed the ids in.
+    // The events go out in id order whatever order the caller listed the ids in:
+    // the named rows are read back into a map keyed by id.
     crossed.sort_unstable_by_key(|update| update.id);
     let by_id: BTreeMap<i32, Update> = crossed.iter().map(|update| (update.id, *update)).collect();
     let ids: Vec<i32> = crossed.iter().map(|update| update.id).collect();
@@ -1886,7 +1887,7 @@ mod tests {
     }
 
     #[test]
-    fn a_transient_failure_is_the_connection_and_the_sqlstates_python_retried() {
+    fn a_transient_failure_is_the_connection_and_the_transient_sqlstates() {
         assert!(transient_db_error(&DbErr::ConnectionAcquire(
             ConnAcquireErr::Timeout
         )));

@@ -1,7 +1,7 @@
-//! The migrated schema, compared against the frozen Python server's dump.
+//! The migrated schema, compared against the recorded baseline.
 //!
-//! `tests/parity/schema.sql` is the schema the Python server created, recorded
-//! before the port. This test applies that dump to one database and compares its
+//! `tests/parity/schema.sql` is the schema a 1.x database has, recorded before
+//! the rewrite. This test applies that dump to one database and compares its
 //! columns, constraints and indexes with the migrated database's, so a drift in
 //! either direction fails.
 //!
@@ -18,7 +18,7 @@ use flakeradar_db::split_statements;
 use flakeradar_test_support::TestDb;
 use sea_orm::{ConnectionTrait, DatabaseBackend, DatabaseConnection, Statement, TransactionTrait};
 
-/// The Python server's schema, as dumped by `pg_dump`.
+/// The recorded 1.x schema, as dumped by `pg_dump`.
 const GOLDEN_SCHEMA: &str = include_str!("../../../tests/parity/schema.sql");
 
 /// The start of the snapshot line for the column the drift cases change.
@@ -193,13 +193,13 @@ fn without_line(snapshot: &[String], dropped: &str) -> Vec<String> {
 }
 
 #[tokio::test]
-async fn the_migrated_schema_matches_the_python_schema() {
+async fn the_migrated_schema_matches_the_recorded_baseline() {
     let (migrated_schema, golden_schema) = compared_snapshots().await;
 
     let difference = snapshot_difference(&migrated_schema, &golden_schema);
     assert!(
         difference.is_empty(),
-        "the migrated schema drifted from the frozen Python schema: {difference:#?}"
+        "the migrated schema drifted from the recorded baseline: {difference:#?}"
     );
     // The difference ignores the order of the lines, and the snapshots are
     // ordered too, so a reordered line is still a drift.

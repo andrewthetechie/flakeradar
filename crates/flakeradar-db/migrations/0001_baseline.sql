@@ -1,6 +1,6 @@
 -- FlakeRadar 2 baseline schema.
 --
--- This is the schema of the frozen Python server (tests/parity/schema.sql) as
+-- This is the recorded baseline schema (tests/parity/schema.sql) as
 -- one applyable script: same tables, columns, types, defaults, constraint names
 -- and index names. The migration in src/migration.rs runs it statement by
 -- statement. Do not restate a semicolon inside a string literal: the splitter

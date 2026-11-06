@@ -9,8 +9,8 @@
 ///
 /// 1000 rows stay far below PostgreSQL's 32,767-bind-parameter limit for the
 /// widest row in the schema, while keeping each statement large enough that the
-/// round-trip cost stays small. It is the frozen Python server's `CHUNK`, so a
-/// bulk statement issues the same number of round trips.
+/// round-trip cost stays small. Raising it approaches the parameter limit on the
+/// widest row; lowering it multiplies the round trips a large Report costs.
 pub const CHUNK: usize = 1000;
 
 /// Splits `items` into chunks of at most `CHUNK` items.

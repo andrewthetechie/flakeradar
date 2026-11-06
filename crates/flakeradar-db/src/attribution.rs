@@ -3,8 +3,8 @@
 //! A failed Job execution is *explained* when a Run with the same `ci_job_id`
 //! in the same Repo has a failing Test execution, or when the Job is a Summary
 //! Job and a non-summary Job failed in the same CI run attempt. Scoring, the
-//! read API and issue filing share these rules, so they live here once. The
-//! rules are the frozen Python server's `attribution.py`.
+//! read API and issue filing share these rules, so they live here once: a Job
+//! scored by one of them cannot be scored differently by another.
 
 // Rust guideline compliant 2026-07-21
 
@@ -29,9 +29,9 @@ pub const SIBLING_MAX: usize = 20;
 
 /// Joins a `Vec<i32>` as one PostgreSQL `integer[]` bind parameter.
 ///
-/// The window queries take the whole chunk as one array, exactly as the frozen
-/// server's `unnest(bindparam(...))` did, so the statement keeps the measured
-/// lateral shape in `docs/perf/20-test-rescore-explain.md`.
+/// The window queries take the whole chunk as one array, which `unnest` expands
+/// inside the statement, so each query keeps the measured lateral shape recorded
+/// in `docs/perf/20-test-rescore-explain.md`.
 #[must_use]
 pub(crate) fn int_array(ids: &[i32]) -> Value {
     Value::Array(

@@ -1069,17 +1069,17 @@ async fn run_prune_stops_at_time_budget() {
     // Only the first committed batch; the backlog waits for the next interval.
     assert_eq!(result.executions, 2, "{result:?}");
     assert_eq!(count::<test_executions::Entity>(&db).await, 4);
-    // The frozen server's line, budget included: "Retention prune hit its 60s
-    // budget; the rest waits for the next interval". Python prints the budget
-    // as a float ("60.0s") and Rust's Display drops the zero ("60s"), so only
-    // the number's spelling differs, which log format may.
+    // The line, budget included: "Retention prune hit its 60s budget; the rest
+    // waits for the next interval". This server prints the budget through a
+    // `f64`'s `Display`, which drops a trailing zero, so the recorded answer's
+    // "60.0s" reads "60s" here; log format may differ.
     let budget_stop = format!(
         "Retention prune hit its {}s budget; the rest waits for the next interval",
         settings.time_budget_seconds
     );
     assert!(
         log.lines().contains(&budget_stop),
-        "the budget stop is logged with the reference's wording: {}",
+        "the budget stop is logged with the recorded wording: {}",
         log.lines()
     );
 }

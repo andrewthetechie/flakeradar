@@ -1,9 +1,8 @@
 //! Builds the PostgreSQL connection pool.
 //!
 //! The URL is accepted in the three spellings FlakeRadar has ever documented,
-//! and the pool is configured the way the frozen Python server configured
-//! asyncpg: a statement timeout on every connection, and a ping before a pooled
-//! connection is handed out.
+//! and the pool sets a statement timeout on every connection and pings a
+//! connection before handing it out.
 
 // Rust guideline compliant 2026-07-21
 
@@ -17,15 +16,15 @@ use crate::error::DbError;
 ///
 /// `SQLx` retries a failed connection attempt inside this window, and its default
 /// is 30 seconds: measured against a stopped PostgreSQL, a read waited the whole
-/// 30 seconds before its 500, where asyncpg raised on the pooled connection at
-/// once. Five seconds keeps an outage an error rather than a hang without failing
-/// a request that is only waiting its turn behind the pool's own traffic.
+/// 30 seconds before its 500. Five seconds keeps an outage an error rather than a
+/// hang without failing a request that is only waiting its turn behind the pool's
+/// own traffic.
 const ACQUIRE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Seconds a statement may run before PostgreSQL cancels it.
 ///
-/// The frozen Python server's `db_command_timeout_seconds` default; the settings
-/// and this pool take the value from one place, so they cannot disagree. A long
+/// The settings and this pool take the value from one place, so they cannot
+/// disagree. A long
 /// statement would otherwise hold a pooled connection until the client gives up,
 /// so the server cancels it instead.
 const DEFAULT_COMMAND_TIMEOUT_SECONDS: f64 = flakeradar_core::defaults::DB_COMMAND_TIMEOUT_SECONDS;
@@ -84,8 +83,9 @@ impl Default for DbSettings {
 /// [`DbError::Database`] when the server cannot be reached.
 pub async fn connect(url: &str, settings: DbSettings) -> Result<DatabaseConnection, DbError> {
     let mut options = shared_options(url, settings)?;
-    // Match asyncpg's `pool_pre_ping`: a connection that died while idle is
-    // replaced instead of failing the request that borrowed it.
+    // A connection that died while idle is replaced instead of failing the
+    // request that borrowed it, which is what a pooled server needs after a
+    // database restart.
     options.test_before_acquire(true);
     Ok(Database::connect(options).await?)
 }

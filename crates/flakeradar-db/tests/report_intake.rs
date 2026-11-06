@@ -1,9 +1,8 @@
 //! Report intake: the pending-row builders, the JUnit duplicate identity and the
 //! queue transitions.
 //!
-//! The behaviour is `backend/tests/test_report_intake.py`: a builder produces an
-//! un-added row, the duplicate lookup reads only, and a transition changes
-//! fields without committing.
+//! A builder produces an un-added row, the duplicate lookup reads only, and a
+//! transition changes fields without committing.
 
 #![expect(
     clippy::expect_used,

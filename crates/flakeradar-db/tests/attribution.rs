@@ -1,7 +1,6 @@
 //! Job attribution: linked JUnit Reports explain Job failures; only unexplained count.
 //!
-//! The behaviour is the frozen Python server's `test_attribution.py`: the
-//! `explained_ci_job_ids` / `unexplained_failure_counts` reads, the Summary Job
+//! The `explained_ci_job_ids` / `unexplained_failure_counts` reads, the Summary Job
 //! rules (issue #9), and the way `job_history` turns an explained failure into a
 //! `skipped` row before scoring sees it.
 
@@ -33,7 +32,7 @@ fn at() -> DateTime<FixedOffset> {
     DateTime::parse_from_rfc3339("2026-10-20T09:00:00+00:00").expect("a fixed instant")
 }
 
-/// Settings on the frozen server's defaults, with a stopped clock.
+/// Settings on the shipped defaults, with a stopped clock.
 fn settings() -> ProcessingSettings {
     ProcessingSettings {
         clock: Arc::new(FixedClock::new(at())),
@@ -71,7 +70,7 @@ fn summary_job(ci_job_id: &str, name: &str, status: JobStatus) -> JobResultIn {
     }
 }
 
-/// One Pipeline payload with the frozen server's defaults.
+/// One Pipeline payload with the documented defaults.
 fn payload(jobs: Vec<JobResultIn>) -> PipelineReportIn {
     PipelineReportIn {
         repo: "acme/app".to_owned(),

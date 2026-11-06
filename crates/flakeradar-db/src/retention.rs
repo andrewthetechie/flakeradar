@@ -1,12 +1,11 @@
 //! Retention: delete old Reports, Executions and Score history in bounded batches.
 //!
-//! This is the frozen Python server's `retention.py`. Each round deletes at most
-//! `batch` rows per table, oldest id first, and is its own committed
-//! transaction, so a large backlog drains a few thousand rows per interval
-//! instead of issuing one delete that the statement timeout would cancel. A run
-//! repeats until a round deletes less than a full batch from every table, or
-//! until its time budget is spent; running out of budget is a normal return, and
-//! the next interval resumes where the committed batches left off.
+//! Each round deletes at most `batch` rows per table, oldest id first, and is its
+//! own committed transaction, so a large backlog drains a few thousand rows per
+//! interval instead of issuing one delete that the statement timeout would
+//! cancel. A run repeats until a round deletes less than a full batch from every
+//! table, or until its time budget is spent; running out of budget is a normal
+//! return, and the next interval resumes where the committed batches left off.
 //!
 //! Every round rescores the Tests and Jobs whose Executions it deleted, in the
 //! same transaction, so a Test or Job that stopped running decays to a score of
@@ -165,8 +164,8 @@ pub async fn prune(
 ) -> Result<PruneResult, DbError> {
     let batch = batch_limit(retention.batch);
     let reports = delete_processed_reports(db, cutoff(now, retention.report_days), batch).await?;
-    // Zero and negative values keep the frozen server's behaviour of never
-    // pruning a failed Report, so a misconfigured zero cannot empty the queue.
+    // Zero and negative values never prune a failed Report, so a misconfigured
+    // zero cannot empty the queue of the failures an operator needs to read.
     let failed_reports = if retention.failed_report_days > 0 {
         delete_failed_reports(db, cutoff(now, retention.failed_report_days), batch).await?
     } else {

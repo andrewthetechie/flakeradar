@@ -1,8 +1,7 @@
 //! Get-or-create for Repos and Projects.
 //!
-//! The behaviour is the frozen server's `identity.py`: the same Repo and Project
-//! come back for repeated calls, and the hot path (the row already exists) is a
-//! select only, so it never takes a write lock.
+//! The same Repo and Project come back for repeated calls, and the hot path (the
+//! row already exists) is a select only, so it never takes a write lock.
 
 #![expect(
     clippy::expect_used,

@@ -1,8 +1,7 @@
 //! The constraints, defaults and timestamps the schema enforces.
 //!
-//! The Python suite proved these with row inserts through `SQLAlchemy`; here the
-//! same rows go through the generated entities, so the test proves the database
-//! contract rather than the ORM's.
+//! The rows go through the generated entities rather than through raw inserts, so
+//! a case proves the database contract and not the ORM's convenience.
 
 #![expect(
     clippy::expect_used,

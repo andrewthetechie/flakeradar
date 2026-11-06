@@ -1,9 +1,9 @@
 //! The clock the processor and the Score history read.
 //!
 //! Every rule that depends on "today" takes its time from here, so a test can
-//! put the processor on a fixed day without touching the wall clock. The frozen
-//! Python server read `utcnow()` directly; the rules are the same, only the
-//! source of the instant moved.
+//! put the processor on a fixed day without touching the wall clock. Nothing in
+//! this crate reads the wall clock directly: every rule takes its instant from a
+//! [`Clock`], so a test states the day instead of waiting for one.
 
 // Rust guideline compliant 2026-07-21
 
@@ -40,10 +40,10 @@ pub type SharedClock = Arc<dyn Clock>;
 
 /// Where a background run learns how much time it has spent.
 ///
-/// The frozen Python server's retention read `time.monotonic` through a module
-/// attribute so a test could stop it; here the run takes each reading from this
-/// seam. Only differences between two readings are meaningful, and the origin is
-/// an arbitrary instant, so nothing here reports a wall-clock time.
+/// Retention takes each reading from this seam, so a test can stop the clock and
+/// decide when a run has spent its budget. Only differences between two readings
+/// are meaningful, and the origin is an arbitrary instant, so nothing here
+/// reports a wall-clock time.
 pub trait MonotonicClock: fmt::Debug + Send + Sync {
     /// Seconds from this clock's origin.
     fn now(&self) -> f64;

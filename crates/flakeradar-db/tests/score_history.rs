@@ -1,7 +1,7 @@
 //! Score history (ADR 0007): the daily snapshot write, and the reads from it.
 //!
-//! The behaviour is the frozen Python server's `test_score_history.py`: the
-//! write replaces the score and Proven flake count and adds the day's counts,
+//! The write replaces the score and Proven flake count and adds the day's
+//! counts,
 //! and the past-score lookup and the per-row lateral condition must agree. The
 //! trend cases are pure and live with `trend_for` in `flakeradar-core`.
 

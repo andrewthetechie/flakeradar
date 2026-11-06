@@ -1,9 +1,8 @@
 //! The read services against a real database: the behaviour the HTTP tests
 //! cannot reach, and the query functions the MCP server shares.
 //!
-//! Ported from `backend/tests/test_ci_runs_api.py` (the cap, the nextest
-//! flaky-fail case) and `backend/tests/test_ops_api.py` (the summaries never
-//! touch the Execution tables).
+//! The CI run failure cap and the recorded nextest flaky-fail case, and the
+//! summaries that never touch the Execution tables.
 
 #![expect(
     clippy::expect_used,

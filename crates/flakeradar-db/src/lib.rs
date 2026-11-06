@@ -87,13 +87,13 @@ pub use report_intake::{
 
 /// Advisory-lock key that serializes the startup migration.
 ///
-/// The same key as the frozen Python server's `MIGRATION_LOCK_KEY`, so a
-/// database that both servers could reach is still only migrated once at a
-/// time. Several server replicas start at once and must not race.
+/// Several server replicas start at once and must not race, so the migration runs
+/// under this key. It is fixed rather than chosen per run: a database an older
+/// instance could reach is still only migrated once at a time.
 pub const MIGRATION_LOCK_KEY: i64 = 726_300_001;
 
 /// Advisory-lock key that elects the single Report processor.
 ///
-/// The same key as the frozen Python server's `WORKER_LOCK_KEY`, so one
-/// processor runs however many FlakeRadar replicas are started.
+/// Exactly one processor runs however many FlakeRadar replicas are started, and
+/// the key is fixed so every version of this binary agrees on which one.
 pub const WORKER_LOCK_KEY: i64 = 726_300_002;

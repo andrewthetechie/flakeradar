@@ -1,15 +1,14 @@
 //! The read services the REST routes and the MCP server share.
 //!
 //! Every function takes the connection and returns a DTO from `flakeradar-core`,
-//! so both front doors expose exactly the same data. The rules are the frozen
-//! Python server's `queries.py`, `score_history.py` and `attribution.py`; the
-//! statements keep the shapes recorded in `spike-notes.md`, including the
-//! `LATERAL ... LIMIT` lookups the leaderboard filters with.
+//! so both front doors expose exactly the same data. The statements keep the
+//! shapes `spike-notes.md` records, including the `LATERAL ... LIMIT` lookups the
+//! leaderboard filters with, so a plan that reads them one row at a time stays.
 //!
-//! The leaderboard is one engine with a descriptor per entity, exactly as
-//! `_list_leaderboard` is: the threshold rule, the stable-hiding default, search,
-//! the issue filter and the new-flaky window are stated once, and only an
-//! intended per-entity difference is descriptor data.
+//! The leaderboard is one engine with a descriptor per entity: the threshold
+//! rule, the stable-hiding default, search, the issue filter and the new-flaky
+//! window are stated once, and only an intended per-entity difference is
+//! descriptor data.
 
 // Rust guideline compliant 2026-07-21
 
@@ -208,8 +207,7 @@ pub enum SortKey {
 }
 
 impl SortKey {
-    /// The spellings the query parameter takes, in the order the frozen server's
-    /// `Literal` listed them.
+    /// The spellings the query parameter takes, in the order the 422 lists them.
     pub const SPELLINGS: [&'static str; 3] = ["score", "last_seen", "proven"];
 
     /// Parses the query parameter's value.

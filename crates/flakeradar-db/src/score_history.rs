@@ -3,8 +3,9 @@
 //! The write happens in the same transaction as each rescore. The score and the
 //! Proven flake count are replaced (the end-of-day value); executions and
 //! failures are added. The reads are the past-score lookup, its lateral twin and
-//! the detail window, per entity. The rules are the frozen Python server's
-//! `score_history.py`.
+//! the detail window, per entity. Every one of them reads the same two tables, so
+//! a snapshot written by the processor and a point read by a route cannot
+//! disagree about a day.
 
 // Rust guideline compliant 2026-07-21
 

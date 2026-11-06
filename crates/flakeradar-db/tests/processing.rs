@@ -1,8 +1,7 @@
 //! The Report processor: Runs, Executions, Tests, Locations, scoring and Jobs.
 //!
-//! The behaviour is the frozen Python server's `test_processing.py`,
-//! `test_pipeline_processing.py` and the processor half of
-//! `test_report_retry_budget.py`.
+//! Both Report kinds, the retry budget and the answers each one leaves behind:
+//! every case below is an end-state rule, and `tests/parity` replays the rest.
 
 #![expect(
     clippy::expect_used,
@@ -39,7 +38,7 @@ fn at() -> DateTime<FixedOffset> {
     DateTime::parse_from_rfc3339("2026-10-20T09:00:00+00:00").expect("a fixed instant")
 }
 
-/// Settings on the frozen server's defaults, with a stopped clock.
+/// Settings on the shipped defaults, with a stopped clock.
 fn settings() -> ProcessingSettings {
     ProcessingSettings {
         clock: Arc::new(FixedClock::new(at())),
@@ -54,7 +53,7 @@ fn settings_with(change: impl FnOnce(&mut ProcessingSettings)) -> ProcessingSett
     settings
 }
 
-/// Python's `tests/factories._notify_settings`: decay 0 makes the score depend
+/// Decay 0 makes the score depend
 /// on one transition and a 0.05 threshold makes a crossing exact.
 fn notify_settings() -> ProcessingSettings {
     settings_with(|settings| {
@@ -226,7 +225,7 @@ fn job_in(ci_job_id: &str, name: &str, status: JobStatus) -> JobResultIn {
     }
 }
 
-/// One Pipeline payload with the frozen server's defaults.
+/// One Pipeline payload with the documented defaults.
 fn payload(jobs: Vec<JobResultIn>) -> PipelineReportIn {
     PipelineReportIn {
         repo: "acme/app".to_owned(),
@@ -482,7 +481,7 @@ async fn the_location_is_the_latest_but_is_never_erased() {
 
 #[tokio::test]
 async fn a_line_past_the_column_without_a_file_does_not_fail_the_report() {
-    // Python writes a Location only when the report gave a `file`, so a line on
+    // A Location is written only when the report gave a `file`, so a line on
     // its own is never stored and never has to fit an `int4` column (S13b).
     let db = TestDb::new().await.expect("a test database");
     let project = project(&db, "acme/app", "backend").await;
@@ -931,7 +930,8 @@ async fn a_rescore_matches_the_branch_scoped_score_over_all_rows() {
         .build(db.connection())
         .await
         .expect("a Test");
-    // Oldest first, so reversing the list gives the newest-first history Python reads.
+    // Oldest first, so reversing the list gives the newest-first history the
+    // route serves.
     let mut history: Vec<ScoredExecution> = Vec::new();
     for (index, status) in ["failed", "passed", "failed", "passed", "failed"]
         .iter()
@@ -1262,7 +1262,7 @@ async fn touched_tests_are_rescored_in_id_order_not_report_order() {
         "the ids must not follow this report's order"
     );
 
-    // Python rescored `sorted(latest)`, so the touched Tests come back by id, not
+    // The touched Tests are rescored by id, not
     // in the order this report first named them.
     queue(
         &db,
@@ -1312,7 +1312,7 @@ async fn tier_changes_are_emitted_in_id_order() {
                 .expect("an Execution");
         }
     }
-    // Python read the Tests back through `_rows_by_id`, a dict sorted by id, so the
+    // The Tests are read back into a map keyed by id, so the
     // events go out in id order whatever order the caller lists the ids in.
     let changes = rescore(
         db.connection(),
@@ -1990,7 +1990,8 @@ async fn a_default_branch_change_silences_the_pipeline_reports_own_crossings() {
 
 /// A `cargo-nextest` run whose flaky try failed and whose re-run passed.
 ///
-/// Inlined next to the parser's own copy, because the frozen Python tree goes at
+/// Inlined next to the parser's own copy, because the recorded corpus is what the
+/// parser is checked against and it is not read at run time.
 /// cutover.
 const NEXTEST_FLAKY_FAIL_XML: &str =
     include_str!("../../flakeradar-core/tests/fixtures/nextest_flaky_fail.xml");
