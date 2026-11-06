@@ -19,7 +19,6 @@
 
 // Rust guideline compliant 2026-07-21
 
-use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -28,6 +27,7 @@ use sea_orm::DatabaseConnection;
 use tokio_util::sync::CancellationToken;
 
 use crate::github::Api;
+use crate::queue::BatchQueue;
 use crate::settings::Settings;
 use crate::worker::{LeaderRun, LeaderTask, StartFuture, StopFuture};
 
@@ -49,9 +49,7 @@ struct GitHubShared {
     settings: Arc<Settings>,
     api: Api,
     sync_interval: Duration,
-    queue: Mutex<VecDeque<ProcessOutcome>>,
-    dropped: Mutex<usize>,
-    notify: tokio::sync::Notify,
+    queue: BatchQueue<ProcessOutcome>,
     last_sync: Mutex<Option<f64>>,
     monotonic: SharedMonotonic,
     clock: SharedClock,
@@ -77,19 +75,12 @@ impl GitHubShared {
 
     /// Queues one outcome, dropping the oldest when the queue is full.
     fn push(&self, outcome: ProcessOutcome) {
-        let mut queue = guard(&self.queue);
-        if queue.len() >= QUEUE_MAX {
-            queue.pop_front();
-            let dropped = {
-                let mut dropped = guard(&self.dropped);
-                *dropped += 1;
-                *dropped
-            };
-            tracing::warn!(dropped, "GitHub queue full; dropped the oldest outcome");
+        if self.queue.push(outcome).is_some() {
+            tracing::warn!(
+                dropped = self.queue.dropped(),
+                "GitHub queue full; dropped the oldest outcome"
+            );
         }
-        queue.push_back(outcome);
-        drop(queue);
-        self.notify.notify_one();
     }
 
     /// Files issues for one outcome's touched Tests and Jobs.
@@ -122,9 +113,8 @@ impl GitHubShared {
         loop {
             // The notification future is created before the queue is read, so an
             // enqueue between the two cannot be missed.
-            let notified = self.notify.notified();
-            let queued = guard(&self.queue).pop_front();
-            if let Some(outcome) = queued {
+            let notified = self.queue.notified();
+            if let Some(outcome) = self.queue.pop() {
                 return Some(outcome);
             }
             tokio::select! {
@@ -143,6 +133,7 @@ impl GitHubShared {
                 Some(seconds) => {
                     if let Some(outcome) = self.next_outcome(seconds, cancel).await {
                         self.file(outcome, cancel).await;
+                        self.queue.finish();
                     }
                 }
             }
@@ -184,9 +175,7 @@ impl GitHubWorker {
                 settings,
                 api,
                 sync_interval,
-                queue: Mutex::new(VecDeque::new()),
-                dropped: Mutex::new(0),
-                notify: tokio::sync::Notify::new(),
+                queue: BatchQueue::new(QUEUE_MAX),
                 last_sync: Mutex::new(None),
                 monotonic: Arc::new(SystemMonotonic::new()),
                 clock: Arc::new(SystemClock),
@@ -213,16 +202,10 @@ impl GitHubWorker {
         self
     }
 
-    /// How many outcomes are waiting to be filed, for a test.
+    /// The queue the task drains, and its own record of what it did with it.
     #[must_use]
-    pub fn queued(&self) -> usize {
-        guard(&self.shared.queue).len()
-    }
-
-    /// How many outcomes the queue has dropped, for a test.
-    #[must_use]
-    pub fn dropped(&self) -> usize {
-        *guard(&self.shared.dropped)
+    pub fn queue(&self) -> &BatchQueue<ProcessOutcome> {
+        &self.shared.queue
     }
 }
 

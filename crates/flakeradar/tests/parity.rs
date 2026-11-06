@@ -44,7 +44,7 @@ use flakeradar::{
 };
 use flakeradar_db::entities::repos;
 use flakeradar_db::{DbSettings, ProcessingSettings};
-use flakeradar_test_support::{TestDb, system_clock};
+use flakeradar_test_support::{FIXTURE_INSTANT, TestDb, system_clock};
 use sea_orm::{ConnectionTrait, DbBackend, EntityTrait, JsonValue, Statement};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -2570,7 +2570,7 @@ async fn a_dump_db_step_lists_the_named_tables() {
 
     let repo = repos::ActiveModel {
         name: sea_orm::Set("acme/app".to_owned()),
-        created_at: sea_orm::Set(chrono::Utc::now().fixed_offset()),
+        created_at: sea_orm::Set(FIXTURE_INSTANT.fixed_offset()),
         ..Default::default()
     };
     repos::Entity::insert(repo)

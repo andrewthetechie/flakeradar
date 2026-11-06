@@ -14,7 +14,7 @@
 mod common;
 
 use flakeradar::{Server, Settings};
-use flakeradar_test_support::TestDb;
+use flakeradar_test_support::{TestDb, wait_until};
 use sea_orm::{ConnectionTrait as _, EntityTrait as _, PaginatorTrait as _};
 use serde_json::json;
 use tokio::sync::oneshot;
@@ -217,26 +217,35 @@ async fn the_readiness_probe_reports_the_worker_leading_and_releases_it_on_shutd
     // The worker elects itself on its first poll, so the probe reports the leader
     // once that has happened; the wait bounds a failure, not a duration.
     let client = reqwest::Client::new();
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
-    loop {
-        let body: serde_json::Value = client
-            .get(format!("http://{address}/api/health/ready"))
-            .send()
-            .await
-            .expect("the socket answers")
-            .json()
-            .await
-            .expect("a JSON body");
-        if body["processor_leader"] == json!(true) {
-            assert_eq!(body["database"], json!(true), "{body}");
-            break;
+    let answers = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    wait_until("the worker leads the running server", || {
+        let client = &client;
+        let answers = std::sync::Arc::clone(&answers);
+        async move {
+            let body: serde_json::Value = client
+                .get(format!("http://{address}/api/health/ready"))
+                .send()
+                .await
+                .expect("the socket answers")
+                .json()
+                .await
+                .expect("a JSON body");
+            let leading = body["processor_leader"] == json!(true);
+            answers
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(body);
+            leading
         }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "the worker never led: {body}"
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-    }
+    })
+    .await;
+    let body = {
+        let answers = answers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        answers.last().cloned().expect("the probe answered")
+    };
+    assert_eq!(body["database"], json!(true), "{body}");
 
     let _ = stop.send(());
     serving

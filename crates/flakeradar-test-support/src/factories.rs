@@ -23,9 +23,21 @@ use crate::db::hex;
 use crate::error::TestError;
 
 /// The time a row is stamped with when a builder is not given one.
+///
+/// A fixture's age is never what a test asserts, and a row stamped with the wall
+/// clock makes a suite whose rows differ from run to run. This instant is fixed,
+/// so two runs build the same rows; a test that cares when a row was written
+/// says so with the builder's own setter.
 fn now() -> DateTimeWithTimeZone {
-    Utc::now().fixed_offset()
+    FIXTURE_INSTANT.fixed_offset()
 }
+
+/// The instant every fixture row is stamped with unless it is told otherwise:
+/// 2020-09-13T12:26:40Z, which no test treats as special and every run can
+/// therefore repeat.
+pub const FIXTURE_INSTANT: DateTime<Utc> = DateTime::from_timestamp(1_600_000_000, 0)
+    .expect("the fixture instant is a time the calendar has")
+    .to_utc();
 
 /// Inserts `active` and returns the stored row.
 async fn insert<A, E>(db: &impl ConnectionTrait, active: A) -> Result<E::Model, TestError>

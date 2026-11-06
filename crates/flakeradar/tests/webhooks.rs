@@ -18,6 +18,7 @@ use flakeradar::LeaderTask;
 use flakeradar::WebhookWorker;
 use flakeradar_core::{EntityKind, ReportStatus, Tier, TierChange, WebhookFormat};
 use flakeradar_db::ProcessOutcome;
+use flakeradar_test_support::{dropped, queued, until_finished, wait_until, within};
 use serde_json::{Value, json};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -91,22 +92,6 @@ async fn recorded(server: &MockServer) -> usize {
         .map_or(0, |requests| requests.len())
 }
 
-/// Waits until the stub has recorded `expected` requests, without asserting how
-/// long that took.
-async fn until_count(server: &MockServer, expected: usize) {
-    for _ in 0..400 {
-        if recorded(server).await == expected {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    }
-    assert_eq!(
-        recorded(server).await,
-        expected,
-        "the stub never recorded the expected requests"
-    );
-}
-
 /// An `io::Write` that appends to the shared buffer.
 struct Sink(Arc<Mutex<Vec<u8>>>);
 
@@ -151,22 +136,6 @@ fn log_count(lines: &Arc<Mutex<Vec<u8>>>, needle: &str) -> usize {
     logged(lines).matches(needle).count()
 }
 
-/// Waits until the log carries `expected` occurrences of `needle`.
-async fn until_logged(lines: &Arc<Mutex<Vec<u8>>>, needle: &str, expected: usize) {
-    for _ in 0..400 {
-        if log_count(lines, needle) >= expected {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    }
-    assert_eq!(
-        log_count(lines, needle),
-        expected,
-        "the log never carried {expected} `{needle}` lines; it says: {}",
-        logged(lines)
-    );
-}
-
 #[tokio::test]
 async fn one_request_per_report_carries_every_event_of_it() {
     let server = MockServer::start().await;
@@ -180,7 +149,7 @@ async fn one_request_per_report_carries_every_event_of_it() {
 
     let batch = outcome(vec![test_change(), job_change()]);
     LeaderTask::enqueue(worker.as_ref(), &batch).expect("the queue takes the outcome");
-    until_count(&server, 1).await;
+    until_finished(worker.queue(), 1).await;
     LeaderTask::stop(worker.as_ref())
         .await
         .expect("the task stops");
@@ -206,21 +175,31 @@ async fn an_outcome_without_a_tier_change_posts_nothing() {
     let worker = Arc::new(worker(vec![format!("{}/hook", server.uri())]));
     LeaderTask::start(worker.as_ref()).await;
     LeaderTask::enqueue(worker.as_ref(), &outcome(Vec::new())).expect("the queue takes it");
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(
+        queued(worker.queue()),
+        0,
+        "an outcome with no Tier change is not queued"
+    );
+    // A batch with a Tier change is the proof the task was serving: it is
+    // delivered, and the batch that carried nothing was never posted.
+    LeaderTask::enqueue(worker.as_ref(), &outcome(vec![test_change()]))
+        .expect("the queue takes it");
+    until_finished(worker.queue(), 1).await;
     LeaderTask::stop(worker.as_ref())
         .await
         .expect("the task stops");
 
-    assert_eq!(
-        worker.queued(),
-        0,
-        "an outcome with no Tier change is not queued"
-    );
     let requests = server
         .received_requests()
         .await
         .expect("the stub records requests");
-    assert!(requests.is_empty());
+    assert_eq!(requests.len(), 1, "only the batch with events was posted");
+    let body: Value = serde_json::from_slice(&requests[0].body).expect("the body is JSON");
+    assert_eq!(
+        body.as_array().expect("the payload is a list").len(),
+        1,
+        "the one event is the one the second batch carried"
+    );
 }
 
 #[tokio::test]
@@ -241,7 +220,7 @@ async fn a_transient_failure_is_retried_until_it_succeeds() {
     LeaderTask::start(worker.as_ref()).await;
     LeaderTask::enqueue(worker.as_ref(), &outcome(vec![test_change()]))
         .expect("the queue takes it");
-    until_count(&server, 2).await;
+    until_finished(worker.queue(), 1).await;
     LeaderTask::stop(worker.as_ref())
         .await
         .expect("the task stops");
@@ -279,8 +258,9 @@ async fn a_client_error_is_permanent_and_is_not_retried() {
         LeaderTask::start(worker.as_ref()).await;
         LeaderTask::enqueue(worker.as_ref(), &outcome(vec![test_change()]))
             .expect("the queue takes it");
-        until_count(&server, 1).await;
-        tokio::time::sleep(Duration::from_millis(60)).await;
+        // The batch is finished, so a retry this policy allowed would already be
+        // in the stub's record below.
+        until_finished(worker.queue(), 1).await;
         LeaderTask::stop(worker.as_ref())
             .await
             .expect("the task stops");
@@ -314,10 +294,15 @@ async fn a_rate_limited_attempt_is_retried() {
     LeaderTask::start(worker.as_ref()).await;
     LeaderTask::enqueue(worker.as_ref(), &outcome(vec![test_change()]))
         .expect("the queue takes it");
-    until_count(&server, 2).await;
+    until_finished(worker.queue(), 1).await;
     LeaderTask::stop(worker.as_ref())
         .await
         .expect("the task stops");
+    assert_eq!(
+        recorded(&server).await,
+        2,
+        "the rate limit was retried and accepted"
+    );
 }
 
 #[tokio::test]
@@ -339,10 +324,10 @@ async fn three_attempts_then_the_task_keeps_serving() {
 
     LeaderTask::enqueue(worker.as_ref(), &outcome(vec![test_change()]))
         .expect("the queue takes it");
-    until_count(&server, 3).await;
+    until_finished(worker.queue(), 1).await;
 
     LeaderTask::enqueue(worker.as_ref(), &outcome(vec![job_change()])).expect("the queue takes it");
-    until_count(&server, 4).await;
+    until_finished(worker.queue(), 2).await;
     LeaderTask::stop(worker.as_ref())
         .await
         .expect("the task stops");
@@ -373,10 +358,10 @@ async fn an_unreachable_endpoint_is_tried_three_times_and_the_task_keeps_serving
     LeaderTask::start(worker.as_ref()).await;
     LeaderTask::enqueue(worker.as_ref(), &outcome(vec![test_change()]))
         .expect("the queue takes it");
-    until_logged(&lines, "Webhook endpoint unreachable", 3).await;
+    until_finished(worker.queue(), 1).await;
     // A second batch proves the task is still serving after the failures.
     LeaderTask::enqueue(worker.as_ref(), &outcome(vec![job_change()])).expect("the queue takes it");
-    until_logged(&lines, "Webhook endpoint unreachable", 6).await;
+    until_finished(worker.queue(), 2).await;
     LeaderTask::stop(worker.as_ref())
         .await
         .expect("the task stops");
@@ -407,7 +392,7 @@ async fn an_endpoint_that_is_not_a_url_is_retried_and_never_logged() {
     LeaderTask::start(worker.as_ref()).await;
     LeaderTask::enqueue(worker.as_ref(), &outcome(vec![test_change()]))
         .expect("the queue takes it");
-    until_logged(&lines, "Webhook endpoint unreachable", 3).await;
+    until_finished(worker.queue(), 1).await;
     LeaderTask::stop(worker.as_ref())
         .await
         .expect("the task stops");
@@ -481,12 +466,7 @@ async fn every_endpoint_gets_the_batch_on_its_own_terms() {
     LeaderTask::start(worker.as_ref()).await;
     LeaderTask::enqueue(worker.as_ref(), &outcome(vec![test_change()]))
         .expect("the queue takes it");
-    for _ in 0..400 {
-        if recorded(&broken).await == 3 && recorded(&good).await == 1 {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    }
+    until_finished(worker.queue(), 1).await;
     assert_eq!(
         recorded(&broken).await,
         3,
@@ -520,11 +500,11 @@ async fn a_full_queue_drops_the_oldest_batch_and_delivers_the_newest() {
     let mut recovered = test_change();
     recovered.tier = Tier::Stable;
     LeaderTask::enqueue(worker.as_ref(), &outcome(vec![recovered])).expect("the queue takes it");
-    assert_eq!(worker.dropped(), 1, "one batch was dropped");
-    assert_eq!(worker.queued(), flakeradar::webhooks::QUEUE_MAX);
+    assert_eq!(dropped(worker.queue()), 1, "one batch was dropped");
+    assert_eq!(queued(worker.queue()), flakeradar::webhooks::QUEUE_MAX);
 
     LeaderTask::start(worker.as_ref()).await;
-    until_count(&server, flakeradar::webhooks::QUEUE_MAX).await;
+    until_finished(worker.queue(), flakeradar::webhooks::QUEUE_MAX).await;
     LeaderTask::stop(worker.as_ref())
         .await
         .expect("the task stops");
@@ -562,7 +542,7 @@ async fn a_slack_payload_is_one_text_with_a_line_per_event() {
     LeaderTask::start(worker.as_ref()).await;
     LeaderTask::enqueue(worker.as_ref(), &outcome(vec![test_change(), job_change()]))
         .expect("the queue takes it");
-    until_count(&server, 1).await;
+    until_finished(worker.queue(), 1).await;
     LeaderTask::stop(worker.as_ref())
         .await
         .expect("the task stops");
@@ -596,7 +576,7 @@ async fn a_webhook_url_is_never_logged_at_any_level() {
     LeaderTask::start(worker.as_ref()).await;
     LeaderTask::enqueue(worker.as_ref(), &outcome(vec![test_change()]))
         .expect("the queue takes it");
-    until_count(&server, 1).await;
+    until_finished(worker.queue(), 1).await;
     LeaderTask::stop(worker.as_ref())
         .await
         .expect("the task stops");
@@ -650,7 +630,7 @@ async fn an_http_date_retry_after_uses_the_default_wait_and_still_retries() {
     LeaderTask::start(worker.as_ref()).await;
     LeaderTask::enqueue(worker.as_ref(), &outcome(vec![test_change()]))
         .expect("the queue takes it");
-    until_count(&server, 3).await;
+    until_finished(worker.queue(), 1).await;
     LeaderTask::stop(worker.as_ref())
         .await
         .expect("the task stops");
@@ -668,7 +648,7 @@ async fn a_stopped_webhook_task_delivers_again_after_a_restart() {
     LeaderTask::start(worker.as_ref()).await;
     LeaderTask::enqueue(worker.as_ref(), &outcome(vec![test_change()]))
         .expect("the queue takes it");
-    until_count(&server, 1).await;
+    until_finished(worker.queue(), 1).await;
     LeaderTask::stop(worker.as_ref())
         .await
         .expect("the task stops");
@@ -676,7 +656,7 @@ async fn a_stopped_webhook_task_delivers_again_after_a_restart() {
     // The same worker, re-elected: a fresh term starts a fresh task.
     LeaderTask::start(worker.as_ref()).await;
     LeaderTask::enqueue(worker.as_ref(), &outcome(vec![job_change()])).expect("the queue takes it");
-    until_count(&server, 2).await;
+    until_finished(worker.queue(), 2).await;
     LeaderTask::stop(worker.as_ref())
         .await
         .expect("the task stops");
@@ -704,18 +684,19 @@ async fn stopping_ends_the_wait_before_a_retry_at_once() {
     LeaderTask::start(worker.as_ref()).await;
     LeaderTask::enqueue(worker.as_ref(), &outcome(vec![test_change()]))
         .expect("the queue takes it");
-    until_count(&server, 1).await; // the first attempt answered 503, so the wait began
-    let started = std::time::Instant::now();
-    LeaderTask::stop(worker.as_ref())
-        .await
-        .expect("the task stops");
-    let waited = started.elapsed();
-
-    assert!(
-        waited < STOP_BOUND,
-        "the token ended the wait between retries instead of the wait ending it, \
-         but stop waited {waited:?}"
-    );
+    // The batch cannot finish here: the retry waits 60 seconds. The stub's first
+    // request is what says the wait has begun.
+    wait_until("the first attempt is answered", || async {
+        recorded(&server).await == 1
+    })
+    .await;
+    within(
+        "the token ends the wait between retries instead of the wait ending it",
+        STOP_BOUND,
+        LeaderTask::stop(worker.as_ref()),
+    )
+    .await
+    .expect("the task stops");
     assert_eq!(
         recorded(&server).await,
         1,
@@ -731,16 +712,13 @@ async fn stopping_ends_an_unanswered_delivery_at_once() {
     LeaderTask::enqueue(worker.as_ref(), &outcome(vec![test_change()]))
         .expect("the queue takes it");
     endpoint.arrived().await; // the delivery is in flight
-    let started = std::time::Instant::now();
-    LeaderTask::stop(worker.as_ref())
-        .await
-        .expect("the task stops");
-    let waited = started.elapsed();
-
-    assert!(
-        waited < STOP_BOUND,
-        "the token ended the POST instead of the timeout, but stop waited {waited:?}"
-    );
+    within(
+        "the token ends the POST instead of the timeout",
+        STOP_BOUND,
+        LeaderTask::stop(worker.as_ref()),
+    )
+    .await
+    .expect("the task stops");
     assert_eq!(
         endpoint.requests(),
         1,

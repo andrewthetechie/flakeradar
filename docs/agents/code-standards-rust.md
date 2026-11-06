@@ -131,6 +131,17 @@ is worse than none.
   injected, and a wait uses `tokio::time::pause` and `tokio::time::advance`, never
   `tokio::time::sleep` against the real clock. A path reached only by timing makes CI fail at
   random, and the coverage gate has no tolerance.
+  - A wait for work a background task does is a signal, not a sleep: a worker's queue counts
+    the batches it finished (`flakeradar_test_support::until_finished`), a stub records a call,
+    a `Notify` marks the moment. A negative assertion waits for that signal first, so
+    "nothing was sent" is a claim about a task that ran.
+  - Three facts have no signal, and each is one documented helper in
+    `flakeradar-test-support` rather than a sleep at the call site:
+    `wait_until` polls a row, a counter or a socket answer and fails on a 30-second deadline
+    (a bound on a failure, never on a duration); `within` asserts that a cancellation did not
+    sit through the seconds the cancelled work asked for, which is the only observable a
+    cancel has; and `tests/parity.rs` bounds its own waits so a stuck replay reports a
+    mismatch in its answer instead of panicking. Every other sleeping wait is a bug.
 - Test-only helpers — test databases, factories, mocks — live in `flakeradar-test-support`, which
   only a `[dev-dependencies]` entry can name, so no test helper reaches a release binary
   (M-TEST-UTIL).

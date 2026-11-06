@@ -6,8 +6,8 @@ use flakeradar::github;
 use flakeradar_core::{EntityKind, ExecutionStatus};
 use flakeradar_db::filing::{JobRow, RecentExecution, TestRow};
 use flakeradar_test_support::{
-    TestDb, make_execution, make_job_execution, make_project, make_run, make_test_case,
-    system_clock,
+    FIXTURE_INSTANT, TestDb, make_execution, make_job_execution, make_project, make_run,
+    make_test_case, system_clock,
 };
 use sea_orm::ConnectionTrait as _;
 use sea_orm::EntityTrait as _;
@@ -41,7 +41,7 @@ async fn a_field_the_body_prices_differently_is_still_the_reference_sentence() {
         details: None,
         commit_sha: "abcdef1234567890".to_owned(),
         branch: "main".to_owned(),
-        created_at: chrono::Utc::now(),
+        created_at: FIXTURE_INSTANT,
     }];
     let settings = gh_settings(&[]);
     let body = github::test_issue_body(&test, &recent, "acme/app", "backend", "", &settings);
@@ -84,7 +84,7 @@ fn the_last_failing_commit_has_no_branch_clause_when_no_branch_was_reported() {
         details: None,
         commit_sha: "abcdef1234567890".to_owned(),
         branch: String::new(),
-        created_at: chrono::Utc::now(),
+        created_at: FIXTURE_INSTANT,
     }];
     let body =
         github::test_issue_body(&test, &recent, "acme/app", "backend", "", &gh_settings(&[]));
@@ -283,7 +283,7 @@ fn a_job_body_names_every_outcome_runner_and_link_it_has() {
             runner_labels: Vec::new(),
             started_at: None,
             completed_at: None,
-            created_at: chrono::Utc::now(),
+            created_at: FIXTURE_INSTANT,
             explained_by: Vec::new(),
             explained_by_jobs: Vec::new(),
         }
@@ -308,7 +308,7 @@ fn a_job_body_names_every_outcome_runner_and_link_it_has() {
             clean_streak: 0,
             trend: None,
             last_status: "failed".to_owned(),
-            last_seen_at: chrono::Utc::now(),
+            last_seen_at: FIXTURE_INSTANT,
             summary: false,
             github_issue_number: None,
             github_issue_url: None,

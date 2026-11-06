@@ -14,8 +14,7 @@
 
 // Rust guideline compliant 2026-07-21
 
-use std::collections::VecDeque;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context as _;
@@ -23,6 +22,7 @@ use flakeradar_core::{TierChange, WebhookFormat, render};
 use flakeradar_db::ProcessOutcome;
 use tokio_util::sync::CancellationToken;
 
+use crate::queue::BatchQueue;
 use crate::worker::{LeaderRun, LeaderTask, StartFuture, StopFuture, until_stopped};
 
 /// The delays before the second and third Notification attempts, in seconds.
@@ -44,12 +44,6 @@ pub const QUEUE_MAX: usize = 1000;
 /// The statuses a Notification retries; every other client error is permanent.
 pub const RETRYABLE_STATUSES: [u16; 2] = [408, 429];
 
-/// A mutex whose poisoning is recovered from, because a task that panicked
-/// elsewhere must not stop the leader from working.
-fn guard<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
 /// Everything the Notification task shares with its loop.
 struct WebhookShared {
     urls: Vec<String>,
@@ -57,9 +51,7 @@ struct WebhookShared {
     public_url: String,
     retry_delays: [f64; 2],
     client: reqwest::Client,
-    queue: Mutex<VecDeque<Vec<TierChange>>>,
-    dropped: Mutex<usize>,
-    notify: tokio::sync::Notify,
+    queue: BatchQueue<Vec<TierChange>>,
 }
 
 impl std::fmt::Debug for WebhookShared {
@@ -74,19 +66,12 @@ impl std::fmt::Debug for WebhookShared {
 impl WebhookShared {
     /// Queues one batch, dropping the oldest when the queue is full.
     fn push(&self, batch: Vec<TierChange>) {
-        let mut queue = guard(&self.queue);
-        if queue.len() >= QUEUE_MAX {
-            queue.pop_front();
-            let dropped = {
-                let mut dropped = guard(&self.dropped);
-                *dropped += 1;
-                *dropped
-            };
-            tracing::warn!(dropped, "Webhook queue full; dropped the oldest batch");
+        if self.queue.push(batch).is_some() {
+            tracing::warn!(
+                dropped = self.queue.dropped(),
+                "Webhook queue full; dropped the oldest batch"
+            );
         }
-        queue.push_back(batch);
-        drop(queue);
-        self.notify.notify_one();
     }
 
     /// The task's loop: take a batch, deliver it to every endpoint.
@@ -109,9 +94,8 @@ impl WebhookShared {
         Fut: Future<Output = ()> + Send + 'static,
     {
         while !cancel.is_cancelled() {
-            let notified = self.notify.notified();
-            let batch = guard(&self.queue).pop_front();
-            let Some(batch) = batch else {
+            let notified = self.queue.notified();
+            let Some(batch) = self.queue.pop() else {
                 tokio::select! {
                     () = cancel.cancelled() => return,
                     () = notified => continue,
@@ -127,6 +111,7 @@ impl WebhookShared {
                     tracing::error!(events, error = %error, "Webhook delivery failed");
                 }
             }
+            self.queue.finish();
         }
     }
 
@@ -295,24 +280,16 @@ impl WebhookWorker {
                 public_url: public_url.to_owned(),
                 retry_delays,
                 client,
-                queue: Mutex::new(VecDeque::new()),
-                dropped: Mutex::new(0),
-                notify: tokio::sync::Notify::new(),
+                queue: BatchQueue::new(QUEUE_MAX),
             }),
             run: LeaderRun::new(),
         })
     }
 
-    /// The home of the batches queued and dropped so far, for a test.
+    /// The queue the task drains, and its own record of what it did with it.
     #[must_use]
-    pub fn queued(&self) -> usize {
-        guard(&self.shared.queue).len()
-    }
-
-    /// How many batches the queue has dropped, for a test.
-    #[must_use]
-    pub fn dropped(&self) -> usize {
-        *guard(&self.shared.dropped)
+    pub fn queue(&self) -> &BatchQueue<Vec<TierChange>> {
+        &self.shared.queue
     }
 }
 

@@ -18,7 +18,7 @@ use chrono::{DateTime, FixedOffset, TimeZone as _, Utc};
 use common::{Reply, get, post, request, send, settings};
 use flakeradar_core::ReportStatus;
 use flakeradar_db::entities::{projects, reports, repos};
-use flakeradar_test_support::{FixedClock, TestDb, make_junit};
+use flakeradar_test_support::{FIXTURE_INSTANT, FixedClock, TestDb, make_junit};
 use sea_orm::{
     ColumnTrait, ConnectionTrait as _, DbErr, EntityTrait, PaginatorTrait as _, QueryFilter,
     QueryOrder,
@@ -1326,7 +1326,7 @@ async fn a_reports_list_counts_only_the_rows_it_holds() {
             pipeline: None,
             default_branch: None,
         }
-        .into_active_model(Utc::now().fixed_offset()),
+        .into_active_model(FIXTURE_INSTANT.fixed_offset()),
     )
     .exec(db.connection())
     .await

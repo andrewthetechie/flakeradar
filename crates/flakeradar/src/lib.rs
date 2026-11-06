@@ -33,6 +33,7 @@ pub mod github_worker;
 pub mod mcp;
 pub mod middleware;
 pub mod multipart;
+pub mod queue;
 pub mod routes;
 pub mod server;
 pub mod settings;
@@ -58,6 +59,8 @@ pub use github_worker::GitHubWorker;
 pub use mcp::{INSTRUCTIONS, McpServer};
 #[doc(inline)]
 pub use multipart::file_field;
+#[doc(inline)]
+pub use queue::BatchQueue;
 pub use routes::{JobPath, TestPath};
 #[doc(inline)]
 pub use server::Server;

@@ -30,8 +30,8 @@ use flakeradar_db::{
     connect_session,
 };
 use flakeradar_test_support::{
-    FixedClock, ScriptedMonotonic, TestDb, make_job, make_junit, make_pipeline, make_project,
-    make_report, make_test_case,
+    FixedClock, ScriptedMonotonic, TestDb, dropped, make_job, make_junit, make_pipeline,
+    make_project, make_report, make_test_case, queued, until_finished, wait_until, within,
 };
 use sea_orm::ConnectionTrait as _;
 use sea_orm::{
@@ -63,22 +63,6 @@ async fn recorded(server: &MockServer) -> usize {
         .received_requests()
         .await
         .map_or(0, |requests| requests.len())
-}
-
-/// Waits until the stub has recorded `expected` requests.
-async fn until_count(server: &MockServer, expected: usize) {
-    for _ in 0..400 {
-        if recorded(server).await == expected {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    }
-    assert_eq!(
-        recorded(server).await,
-        expected,
-        "the stub never recorded the expected requests: {:?}",
-        requested_calls(server).await
-    );
 }
 
 /// One flaky Test in `acme/app`.
@@ -154,7 +138,7 @@ async fn a_queued_outcome_is_filed_in_the_background() {
     LeaderTask::start(&worker).await;
 
     LeaderTask::enqueue(&worker, &processed(&[test])).expect("the queue takes the outcome");
-    until_count(&server, 1).await;
+    until_finished(worker.queue(), 1).await;
     let requests = server.received_requests().await.expect("a record");
     assert_eq!(requests[0].method.as_str(), "POST");
     assert_eq!(requests[0].url.path(), "/repos/acme/app/issues");
@@ -208,8 +192,16 @@ async fn the_first_sync_runs_at_start_and_the_next_one_on_the_interval() {
     )
     .with_monotonic(monotonic);
     LeaderTask::start(&worker).await;
-    until_count(&server, 1).await;
-    until_count(&server, 2).await;
+    // A sync is not a queue batch, so the stub's own record of the `GET`s is the
+    // only thing that says one happened.
+    wait_until("the first sync asks about the link", || async {
+        recorded(&server).await >= 1
+    })
+    .await;
+    wait_until("the interval's sync asks again", || async {
+        recorded(&server).await >= 2
+    })
+    .await;
     LeaderTask::stop(&worker).await.expect("the task stops");
 }
 
@@ -244,7 +236,10 @@ async fn the_sync_stamps_a_checked_link_with_the_tasks_clock() {
     )
     .with_clock(Arc::new(FixedClock::new(instant)));
     LeaderTask::start(&worker).await;
-    until_count(&server, 1).await;
+    wait_until("the sync stamps the link", || async {
+        checked_at(&db, test).await.is_some()
+    })
+    .await;
     LeaderTask::stop(&worker).await.expect("the task stops");
 
     let row = db
@@ -279,7 +274,7 @@ async fn an_outcome_with_no_touched_ids_files_nothing() {
     );
     LeaderTask::start(&worker).await;
     LeaderTask::enqueue(&worker, &processed(&[])).expect("the queue takes the outcome");
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    until_finished(worker.queue(), 1).await;
     LeaderTask::stop(&worker).await.expect("the task stops");
     assert!(
         server
@@ -349,10 +344,10 @@ async fn a_failing_github_call_never_stops_the_task() {
     let test = flaky_test(&db).await;
     LeaderTask::start(&worker).await;
     LeaderTask::enqueue(&worker, &processed(&[test])).expect("the queue takes the outcome");
-    until_count(&server, 1).await;
+    until_finished(worker.queue(), 1).await;
     // A second outcome still goes out, so the task survived the failed one.
     LeaderTask::enqueue(&worker, &processed(&[test])).expect("the queue takes the outcome");
-    until_count(&server, 2).await;
+    until_finished(worker.queue(), 2).await;
     LeaderTask::stop(&worker).await.expect("the task stops");
 }
 
@@ -372,6 +367,12 @@ fn worker_settings() -> WorkerSettings {
 /// A `ReportWorker` over `db` that leads through the real advisory lock and
 /// carries `github` as its leader task.
 fn leader_worker(db: &TestDb, github: Arc<GitHubWorker>) -> Arc<ReportWorker> {
+    leader_worker_over(db, github as Arc<dyn LeaderTask>)
+}
+
+/// A `ReportWorker` over `db` that leads through the real advisory lock and
+/// carries `task` as its leader task.
+fn leader_worker_over(db: &TestDb, task: Arc<dyn LeaderTask>) -> Arc<ReportWorker> {
     let lock: Arc<dyn LockSession> = Arc::new(AdvisoryLock::new(db.url(), DbSettings::default()));
     Arc::new(
         ReportWorker::new(
@@ -380,25 +381,122 @@ fn leader_worker(db: &TestDb, github: Arc<GitHubWorker>) -> Arc<ReportWorker> {
             ProcessingSettings::default(),
             worker_settings(),
         )
-        .with_leader_task(github),
+        .with_leader_task(task),
     )
 }
 
-/// Waits for `condition`, failing rather than hanging.
+/// One Test's stored issue-check stamp.
+async fn checked_at(db: &TestDb, id: i32) -> Option<chrono::DateTime<FixedOffset>> {
+    let row = db
+        .connection()
+        .query_one_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "SELECT github_issue_checked_at FROM test_cases WHERE id = $1",
+            [Value::from(id)],
+        ))
+        .await
+        .expect("the stamp reads")
+        .expect("the Test exists");
+    row.try_get("", "github_issue_checked_at")
+        .expect("the stamp is a timestamp")
+}
+
+/// A lock session that counts the attempts to take the processor lock.
 ///
-/// The deadline bounds a failure; it is never the thing asserted.
-async fn wait_until<F, Fut>(what: &str, mut condition: F)
-where
-    F: FnMut() -> Fut,
-    Fut: Future<Output = bool>,
-{
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-    while !condition().await {
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "timed out waiting for {what}"
-        );
-        tokio::time::sleep(Duration::from_millis(2)).await;
+/// A stand-by worker never asks for a Report, so its lock attempts are the only
+/// thing its loop does that a test can see; counting them is how a test knows the
+/// worker ran rather than assuming it did.
+#[derive(Debug)]
+struct CountingLock {
+    inner: Arc<dyn LockSession>,
+    attempts: AtomicUsize,
+}
+
+impl CountingLock {
+    fn new(db: &TestDb) -> Self {
+        Self {
+            inner: Arc::new(AdvisoryLock::new(db.url(), DbSettings::default())),
+            attempts: AtomicUsize::new(0),
+        }
+    }
+
+    /// How many times the worker has tried the lock.
+    fn attempts(&self) -> usize {
+        self.attempts.load(Ordering::SeqCst)
+    }
+}
+
+impl LockSession for CountingLock {
+    fn try_lock(&self) -> flakeradar::worker::LockFuture<'_> {
+        self.attempts.fetch_add(1, Ordering::SeqCst);
+        self.inner.try_lock()
+    }
+
+    fn check(&self) -> flakeradar::worker::SessionFuture<'_> {
+        self.inner.check()
+    }
+
+    fn unlock(&self) -> flakeradar::worker::SessionFuture<'_> {
+        self.inner.unlock()
+    }
+}
+
+/// A GitHub task that says when a stop has reached it.
+///
+/// `LeaderTask::stop` is where the release order is decided: the worker that
+/// stops its tasks before it unlocks calls it while the task's own call is still
+/// in flight. A test that has to look at that window waits on this signal rather
+/// than on a sleep, so the window is a fact rather than a hope.
+#[derive(Debug)]
+struct Announced {
+    inner: Arc<GitHubWorker>,
+    stopping: tokio::sync::Notify,
+    seen: AtomicBool,
+}
+
+impl Announced {
+    fn new(inner: Arc<GitHubWorker>) -> Self {
+        Self {
+            inner,
+            stopping: tokio::sync::Notify::new(),
+            seen: AtomicBool::new(false),
+        }
+    }
+
+    /// Whether the release has asked the task to stop.
+    fn seen(&self) -> bool {
+        self.seen.load(Ordering::SeqCst)
+    }
+
+    /// Waits until the release has asked the task to stop.
+    async fn announced(&self) {
+        let waiting = self.stopping.notified();
+        tokio::pin!(waiting);
+        waiting.as_mut().enable();
+        if self.seen() {
+            return;
+        }
+        waiting.await;
+    }
+}
+
+impl LeaderTask for Announced {
+    fn name(&self) -> &'static str {
+        self.inner.name()
+    }
+
+    fn start(&self) -> flakeradar::StartFuture<'_> {
+        self.inner.start()
+    }
+
+    fn stop(&self) -> flakeradar::StopFuture<'_> {
+        self.seen.store(true, Ordering::SeqCst);
+        self.stopping.notify_waiters();
+        self.inner.stop()
+    }
+
+    fn enqueue(&self, outcome: &ProcessOutcome) -> anyhow::Result<()> {
+        self.inner.enqueue(outcome)
     }
 }
 
@@ -890,7 +988,7 @@ async fn a_failing_filing_is_logged_and_the_next_outcome_still_files() {
         LeaderTask::start(&worker).await;
         LeaderTask::enqueue(&worker, &processed(&[test]))
             .expect("the queue takes the first outcome");
-        until_count(&server, 1).await;
+        until_finished(worker.queue(), 1).await;
         assert_eq!(
             stored_number(&db, test).await,
             None,
@@ -898,11 +996,7 @@ async fn a_failing_filing_is_logged_and_the_next_outcome_still_files() {
         );
         LeaderTask::enqueue(&worker, &processed(&[test]))
             .expect("the queue takes the second outcome");
-        until_count(&server, 2).await;
-        wait_until("the second outcome is filed", || async {
-            stored_number(&db, test).await == Some(7)
-        })
-        .await;
+        until_finished(worker.queue(), 2).await;
         LeaderTask::stop(&worker).await.expect("the task stops");
     })
     .await;
@@ -937,7 +1031,7 @@ async fn the_fixed_note_runs_in_the_background_for_touched_ids() {
 
     LeaderTask::start(&worker).await;
     LeaderTask::enqueue(&worker, &processed(&[test])).expect("the queue takes the outcome");
-    until_count(&server, 2).await;
+    until_finished(worker.queue(), 1).await;
     assert_eq!(
         requested_calls(&server).await,
         vec![
@@ -949,7 +1043,10 @@ async fn the_fixed_note_runs_in_the_background_for_touched_ids() {
         ],
         "filing is silent for a linked row, so the POST can only be the note"
     );
-    wait_until("the note is stamped", || async { noted(&db, test).await }).await;
+    assert!(
+        noted(&db, test).await,
+        "the batch is finished, so the note has been stamped"
+    );
     LeaderTask::stop(&worker).await.expect("the task stops");
 }
 
@@ -969,13 +1066,22 @@ async fn the_github_task_starts_and_stops_with_leadership() {
 
     Arc::clone(&worker).start().await;
     wait_until("the worker leads", || async { worker.is_leader() }).await;
-    until_count(&server, 1).await; // the task's first sync proves it started
+    // The task's first sync proves it started; a sync is not a queue batch.
+    wait_until("the task's first sync asks", || async {
+        recorded(&server).await >= 1
+    })
+    .await;
     let test = flaky_test(&db).await;
     worker.stop().await;
     assert!(!worker.is_leader());
 
     LeaderTask::enqueue(github.as_ref(), &processed(&[test])).expect("the queue takes the outcome");
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // Nothing is left running to take it, which the queue itself says.
+    assert_eq!(
+        queued(github.queue()),
+        1,
+        "a stopped task never takes the outcome"
+    );
     assert_eq!(
         requested_calls(&server).await.len(),
         1,
@@ -1002,7 +1108,10 @@ async fn a_lost_lock_connection_stops_the_github_task() {
 
     Arc::clone(&worker).start().await;
     wait_until("the worker leads", || async { worker.is_leader() }).await;
-    until_count(&server, 1).await;
+    wait_until("the task's first sync asks", || async {
+        recorded(&server).await >= 1
+    })
+    .await;
 
     // Queue for the lock before the session that holds it dies: the server grants
     // the claim the moment the lock is free, ahead of a worker that must first find
@@ -1025,7 +1134,11 @@ async fn a_lost_lock_connection_stops_the_github_task() {
     // The GitHub task stopped with the leadership: an outcome queued now has no
     // running task to drain it, however often the worker asks for the lock.
     LeaderTask::enqueue(github.as_ref(), &processed(&[test])).expect("the queue takes it");
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(
+        queued(github.queue()),
+        1,
+        "no task is left running to take the outcome"
+    );
     assert_eq!(
         requested_calls(&server).await.len(),
         1,
@@ -1051,12 +1164,16 @@ async fn stopping_the_task_ends_its_work() {
     );
 
     LeaderTask::start(&worker).await;
-    until_count(&server, 1).await;
+    wait_until("the task's first sync asks", || async {
+        recorded(&server).await >= 1
+    })
+    .await;
     LeaderTask::stop(&worker).await.expect("the task stops");
-    // The queue is dead after a stop: nothing in it is ever filed.
+    // The queue is dead after a stop: nothing in it is ever filed, which the
+    // queue itself proves by still holding the outcome.
     let test = flaky_test(&db).await;
     LeaderTask::enqueue(&worker, &processed(&[test])).expect("the queue takes the outcome");
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(queued(worker.queue()), 1, "nothing took the outcome");
     assert_eq!(requested_calls(&server).await.len(), 1);
     assert_eq!(stored_number(&db, test).await, None);
     assert_eq!(stored_number(&db, linked).await, Some(12));
@@ -1084,7 +1201,7 @@ async fn a_queued_outcome_files_through_the_workers_api_for_tests_and_jobs() {
 
     LeaderTask::start(&worker).await;
     LeaderTask::enqueue(&worker, &outcome).expect("the queue takes the outcome");
-    until_count(&server, 2).await;
+    until_finished(worker.queue(), 1).await;
     LeaderTask::stop(&worker).await.expect("the task stops");
 
     assert_eq!(
@@ -1160,8 +1277,14 @@ async fn a_sync_that_cannot_answer_is_retried_on_the_next_interval() {
     .with_monotonic(monotonic);
 
     LeaderTask::start(&worker).await;
-    until_count(&server, 1).await;
-    until_count(&server, 2).await;
+    wait_until("the first sync is answered", || async {
+        recorded(&server).await >= 1
+    })
+    .await;
+    wait_until("the interval's sync is answered", || async {
+        recorded(&server).await >= 2
+    })
+    .await;
     LeaderTask::stop(&worker).await.expect("the task stops");
 
     assert_eq!(
@@ -1197,7 +1320,8 @@ async fn the_github_task_ends_before_the_lock_is_released() {
         Api::new(Secret::new(TOKEN), &server.uri()).expect("the HTTP client builds"),
         Duration::from_secs(3600),
     ));
-    let worker = leader_worker(&db, Arc::clone(&github));
+    let announced = Arc::new(Announced::new(Arc::clone(&github)));
+    let worker = leader_worker_over(&db, Arc::clone(&announced) as Arc<dyn LeaderTask>);
 
     Arc::clone(&worker).start().await;
     wait_until("the worker leads", || async { worker.is_leader() }).await;
@@ -1210,7 +1334,7 @@ async fn the_github_task_ends_before_the_lock_is_released() {
     };
     // The loop has finished and release is now waiting for the GitHub task, whose
     // call is still in flight: the lock must still be held.
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    announced.announced().await;
     assert!(
         !lock_is_free(db.url()).await,
         "unlocking now would let a replacement leader file the same issue"
@@ -1247,7 +1371,8 @@ async fn a_standby_leads_only_after_the_former_github_task_stops() {
         Api::new(Secret::new(TOKEN), &former_server.uri()).expect("the HTTP client builds"),
         Duration::from_secs(3600),
     ));
-    let former = leader_worker(&db, Arc::clone(&former_github));
+    let former_end = Arc::new(Announced::new(Arc::clone(&former_github)));
+    let former = leader_worker_over(&db, Arc::clone(&former_end) as Arc<dyn LeaderTask>);
     let successor_github = Arc::new(GitHubWorker::new(
         db.connection().clone(),
         Arc::new(settings()),
@@ -1258,7 +1383,10 @@ async fn a_standby_leads_only_after_the_former_github_task_stops() {
 
     Arc::clone(&former).start().await;
     wait_until("the former leads", || async { former.is_leader() }).await;
-    until_count(&former_server, 1).await; // its own first sync
+    wait_until("the former's own first sync asks", || async {
+        recorded(&former_server).await >= 1
+    })
+    .await;
     Arc::clone(&standby).start().await;
     assert!(!standby.is_leader(), "only one process may lead");
     assert_eq!(
@@ -1275,7 +1403,9 @@ async fn a_standby_leads_only_after_the_former_github_task_stops() {
         let former = Arc::clone(&former);
         tokio::spawn(async move { former.stop().await })
     };
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // The former's release has reached its GitHub task, whose POST is still in
+    // flight: the lock is therefore still held, and the standby cannot lead.
+    former_end.announced().await;
     assert!(!standby.is_leader(), "the standby cannot lead yet");
     assert_eq!(
         requested_calls(&successor_server).await.len(),
@@ -1488,10 +1618,12 @@ async fn a_database_that_drops_the_leader_files_the_next_proven_flake() {
     let leader: Arc<dyn LeaderTask> = Arc::clone(&github) as Arc<dyn LeaderTask>;
     let report_processor: Arc<dyn ReportProcessor> =
         Arc::clone(&processor) as Arc<dyn ReportProcessor>;
+    let lock = Arc::new(CountingLock::new(&db));
+    let lock_session: Arc<dyn LockSession> = Arc::clone(&lock) as Arc<dyn LockSession>;
     let worker = Arc::new(
         ReportWorker::new(
             db.connection().clone(),
-            Arc::new(AdvisoryLock::new(db.url(), DbSettings::default())),
+            lock_session,
             ProcessingSettings::default(),
             worker_settings(),
         )
@@ -1524,8 +1656,15 @@ async fn a_database_that_drops_the_leader_files_the_next_proven_flake() {
 
     // The queue outlives the leadership, as the reference's does: the outcome the
     // next leader claims is filed even though it was handed over by nobody.
+    let attempts = lock.attempts();
     processor.hand_over(processed(&[second]));
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // A stand-by worker does nothing but ask for the lock, so that it asked again
+    // is what proves it ran without claiming, and the empty link below is about a
+    // worker that looked rather than about a test that slept.
+    wait_until("the standing-by worker tries the lock again", || async {
+        lock.attempts() > attempts
+    })
+    .await;
     assert_eq!(
         stored_number(&db, second).await,
         None,
@@ -1649,12 +1788,12 @@ async fn a_full_queue_drops_the_oldest_outcome_and_says_so() {
     .await;
 
     assert_eq!(
-        worker.queued(),
+        queued(worker.queue()),
         flakeradar::github_worker::QUEUE_MAX,
         "the queue holds no more than its bound"
     );
     assert_eq!(
-        worker.dropped(),
+        dropped(worker.queue()),
         over,
         "every outcome past the bound is dropped"
     );
@@ -1682,14 +1821,13 @@ async fn stopping_ends_an_unanswered_sync_get_at_once() {
 
     LeaderTask::start(&worker).await;
     endpoint.arrived().await; // the start-up sync's first GET is in flight
-    let started = std::time::Instant::now();
-    LeaderTask::stop(&worker).await.expect("the task stops");
-    let waited = started.elapsed();
-
-    assert!(
-        waited < STOP_BOUND,
-        "the token ended the GET instead of the request timeout, but stop waited {waited:?}"
-    );
+    within(
+        "the token ends the GET instead of the request timeout",
+        STOP_BOUND,
+        LeaderTask::stop(&worker),
+    )
+    .await
+    .expect("the task stops");
     assert_eq!(
         endpoint.requests(),
         1,
@@ -1721,14 +1859,13 @@ async fn stopping_ends_an_unanswered_note_post_at_once() {
     let test = noteable_test(&db, 77, 3).await;
     LeaderTask::enqueue(&worker, &processed(&[test])).expect("the queue takes the outcome");
     endpoint.arrived().await; // the comment POST is in flight
-    let started = std::time::Instant::now();
-    LeaderTask::stop(&worker).await.expect("the task stops");
-    let waited = started.elapsed();
-
-    assert!(
-        waited < STOP_BOUND,
-        "the token ended the comment POST instead of the request timeout, but stop waited {waited:?}"
-    );
+    within(
+        "the token ends the comment POST instead of the request timeout",
+        STOP_BOUND,
+        LeaderTask::stop(&worker),
+    )
+    .await
+    .expect("the task stops");
     assert!(
         !noted(&db, test).await,
         "an unposted comment stamps nothing"
@@ -1813,17 +1950,14 @@ async fn stopping_ends_an_unanswered_close_at_once() {
     LeaderTask::start(worker.as_ref()).await;
     LeaderTask::enqueue(worker.as_ref(), &processed(&[test])).expect("the queue takes the outcome");
     arrived_rx.await.expect("the close PATCH is in flight");
-    let started = std::time::Instant::now();
-    LeaderTask::stop(worker.as_ref())
-        .await
-        .expect("the task stops");
-    let waited = started.elapsed();
+    within(
+        "the token ends the close instead of the request timeout",
+        STOP_BOUND,
+        LeaderTask::stop(worker.as_ref()),
+    )
+    .await
+    .expect("the task stops");
     release_tx.send(()).expect("the stub is released");
-
-    assert!(
-        waited < STOP_BOUND,
-        "the token ended the close instead of the request timeout, but stop waited {waited:?}"
-    );
     assert!(
         noted(&db, test).await,
         "the comment that did post is still stamped"

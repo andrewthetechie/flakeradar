@@ -29,7 +29,7 @@ use flakeradar_db::{
     DbError, DbSettings, FixedClock, MonotonicClock, ProcessOutcome, ProcessingSettings,
     PruneResult, WORKER_LOCK_KEY, connect,
 };
-use flakeradar_test_support::{TestDb, make_junit, make_project, make_report};
+use flakeradar_test_support::{TestDb, make_junit, make_project, make_report, wait_until};
 use sea_orm::{ConnectionTrait, DatabaseConnection, EntityTrait, QueryOrder as _, Statement};
 use serde_json::Value as Json;
 use wiremock::matchers::method;
@@ -96,25 +96,6 @@ fn shared_monotonic<T: MonotonicClock + 'static>(monotonic: &Arc<T>) -> Arc<dyn 
 fn shared_waiter<T: Waiter + 'static>(waiter: &Arc<T>) -> Arc<dyn Waiter> {
     let shared: Arc<T> = Arc::clone(waiter);
     shared
-}
-
-/// Waits for `condition` to hold, failing rather than hanging.
-///
-/// The deadline is a bound on a failure, not an assertion about time: every
-/// condition this suite waits on is a database row or a counter the worker wrote.
-async fn wait_until<F, Fut>(what: &str, mut condition: F)
-where
-    F: FnMut() -> Fut,
-    Fut: Future<Output = bool>,
-{
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-    while !condition().await {
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "timed out waiting for {what}"
-        );
-        tokio::time::sleep(Duration::from_millis(2)).await;
-    }
 }
 
 /// The statuses of every Report, ordered by id.
