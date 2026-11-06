@@ -25,6 +25,22 @@ pub fn chunks<T>(items: &[T]) -> impl Iterator<Item = &[T]> {
     items.chunks(CHUNK)
 }
 
+/// Splits owned `items` into chunks of at most `CHUNK`, moving each row once.
+///
+/// # Examples
+///
+/// ```
+/// # use flakeradar_db::owned_chunks;
+/// assert_eq!(owned_chunks(vec![1, 2, 3]).count(), 1);
+/// ```
+pub fn owned_chunks<T>(items: Vec<T>) -> impl Iterator<Item = Vec<T>> {
+    let mut items = items.into_iter();
+    std::iter::from_fn(move || {
+        let chunk: Vec<T> = items.by_ref().take(CHUNK).collect();
+        (!chunk.is_empty()).then_some(chunk)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     //! The chunk size matters to the bind-parameter limit, so it is checked here.

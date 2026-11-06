@@ -48,7 +48,7 @@ pub use attribution::{
     SIBLING_MAX, explained_ci_job_ids, summary_explaining_siblings, unexplained_failure_counts,
 };
 #[doc(inline)]
-pub use batching::{CHUNK, chunks};
+pub use batching::{CHUNK, chunks, owned_chunks};
 #[doc(inline)]
 pub use clock::{
     Clock, FixedClock, MonotonicClock, SharedClock, SharedMonotonic, SystemClock, SystemMonotonic,

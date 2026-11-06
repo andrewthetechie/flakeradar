@@ -12,7 +12,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use flakeradar_core::{
-    EntityKind, ExecutionStatus, FailureCategory, JobStatus, ParseError, ParsedCase,
+    EntityKind, ExecutionStatus, FailureCategory, Fingerprint, JobStatus, ParseError, ParsedCase,
     PipelineReportIn, ReportKind, ReportStatus, ScoredExecution, Tier, TierChange,
     branch_scoped_fail_streak, branch_scoped_score, branch_scoped_streak, classify_failure,
     defaults, dominant_category, is_broken, parse_junit_xml, tier_for,
@@ -28,7 +28,7 @@ use serde_json::{Value as JsonValue, json};
 use crate::attribution::{
     int_array, job_execution_explained_sql, job_window_ids_sql, test_window_ids_sql,
 };
-use crate::batching::chunks;
+use crate::batching::{chunks, owned_chunks};
 use crate::clock::{SharedClock, SystemClock};
 use crate::entities::{pipelines, reports, repos, test_cases, test_executions, test_runs};
 use crate::error::DbError;
@@ -245,21 +245,36 @@ pub(crate) async fn write_report(
 
 /// Parses a JUnit body and classifies each failing case: the CPU half, run off
 /// the async thread.
-fn parse_and_classify(
-    body: &[u8],
-    line_base: i32,
-) -> Result<Vec<(ParsedCase, Option<FailureCategory>)>, ParseError> {
+///
+/// The fingerprint of every case is hashed here, once, so neither the upsert nor
+/// the Execution build hashes the same identity again.
+fn parse_and_classify(body: &[u8], line_base: i32) -> Result<ParsedReport, ParseError> {
     let parsed = parse_junit_xml(body, i64::from(line_base))?;
-    Ok(parsed
+    let cases: Vec<ReportedCase> = parsed
         .into_iter()
-        .map(|case| {
-            let category = case
+        .map(|case| ReportedCase {
+            fingerprint: flakeradar_core::fingerprint(&case.suite, &case.classname, &case.name),
+            category: case
                 .status
                 .is_failing()
-                .then(|| classify_failure(&case.message, &case.details));
-            (case, category)
+                .then(|| classify_failure(&case.message, &case.details)),
+            case,
         })
-        .collect())
+        .collect();
+    let first = first_occurrences(&cases);
+    Ok(ParsedReport { cases, first })
+}
+
+/// The index of each distinct Test's first case, in the order they first appear.
+fn first_occurrences(cases: &[ReportedCase]) -> Vec<usize> {
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    let mut first = Vec::new();
+    for (index, case) in cases.iter().enumerate() {
+        if seen.insert(case.fingerprint.as_str()) {
+            first.push(index);
+        }
+    }
+    first
 }
 
 /// The counts a processed Report stores.
@@ -393,7 +408,20 @@ pub async fn process_next(
     }
 }
 
+/// What one processed Report contributed: the Run, the counts and what it touched.
+struct Scored {
+    run_id: Option<i32>,
+    counts: JsonValue,
+    touched_test_ids: Vec<i32>,
+    touched_job_ids: Vec<i32>,
+    tier_changes: Vec<TierChange>,
+}
+
 /// Persists one claimed Report. The caller owns the transaction.
+///
+/// Both kinds take the same shape of steps — read the stored payload, store what
+/// the Report carries, rescore what it touched — and share [`finish_report`],
+/// which is its completion.
 async fn process_report(
     db: &impl ConnectionTrait,
     report: &mut reports::Model,
@@ -402,34 +430,134 @@ async fn process_report(
     if report.kind == ReportKind::Pipeline.as_str() {
         return process_pipeline_report(db, report, settings).await;
     }
-    let (body, line_base) = stored_junit_body(report);
-    let body = body.to_vec();
-    let classified = tokio::task::spawn_blocking(move || parse_and_classify(&body, line_base))
-        .await
-        .map_err(|error| ProcessError::permanent(format!("RuntimeError: {error}")))??;
-    let parsed: Vec<ParsedCase> = classified.iter().map(|(case, _)| case.clone()).collect();
-    let now = settings.clock.now();
+    process_junit_report(db, report, settings).await
+}
 
+/// Persists one JUnit Report: parse, store the Run and its Executions, rescore.
+async fn process_junit_report(
+    db: &impl ConnectionTrait,
+    report: &mut reports::Model,
+    settings: &ProcessingSettings,
+) -> Result<ProcessOutcome, ProcessError> {
+    let parsed = parse_report(report).await?;
+    let now = settings.clock.now();
     // A reported Default branch changes the Repo, so apply it before inserting
     // anything: every Test in the Repo is rescored under the new value.
-    let branch_changed = apply_default_branch(db, report.repo_id, report.default_branch.as_deref())
-        .await
-        .map_err(ProcessError::from)?;
-
-    if let Some(root) = &report.root {
-        // Write only when the value actually changes, so a run of Reports with
-        // the same root never rewrites (and briefly locks) the Project row.
-        db.execute_raw(Statement::from_sql_and_values(
-            DbBackend::Postgres,
-            "UPDATE projects SET root = $1 WHERE id = $2 AND root <> $1",
-            [Value::from(root.clone()), Value::from(report.project_id)],
-        ))
-        .await?;
-    }
-
+    let branch_changed =
+        apply_default_branch(db, report.repo_id, report.default_branch.as_deref()).await?;
+    write_project_root(db, report).await?;
     let project_id = report
         .project_id
         .ok_or_else(|| ProcessError::permanent("DataError: a JUnit Report has no Project"))?;
+    let run_id = store_run(db, report, project_id, now).await?;
+    let built = build_executions(db, parsed, project_id, run_id, now).await?;
+    store_executions(db, built.executions, &built.latest, now).await?;
+
+    // Python rescored `sorted(latest)`: the ids are ordered by id, not by where a
+    // Test first appeared in the report, because they set `touched_test_ids` and
+    // the order the Tier changes are emitted in.
+    let mut touched: Vec<i32> = built.latest.iter().map(|row| row.id).collect();
+    touched.sort_unstable();
+    let mut tier_changes = rescore(db, &touched, Some(&built.day_counts), settings).await?;
+    if branch_changed {
+        rescore_repo(db, report.repo_id, settings).await?;
+    }
+    // A linked JUnit report explains (or un-explains) Job failures: rescore the
+    // Jobs that carry this ci_job_id, so arrival order does not matter.
+    let mut touched_job_ids = Vec::new();
+    if let Some(ci_job_id) = report.ci_job_id.clone() {
+        let (job_ids, job_changes) =
+            rescore_jobs_for_ci_job_id(db, report.repo_id, &ci_job_id, settings).await?;
+        touched_job_ids = job_ids;
+        tier_changes.extend(job_changes);
+    }
+
+    let scored = Scored {
+        run_id: Some(run_id),
+        counts: built.counts.junit_json(),
+        touched_test_ids: touched,
+        touched_job_ids,
+        tier_changes,
+    };
+    finish_report(db, report, now, scored, branch_changed).await
+}
+
+/// Completes one processed Report and answers what it did.
+///
+/// A Default-branch change rescored the whole Repo, so its Tier changes stay
+/// silent wherever they came from (ADR 0009).
+async fn finish_report(
+    db: &impl ConnectionTrait,
+    report: &mut reports::Model,
+    now: DateTimeWithTimeZone,
+    scored: Scored,
+    branch_changed: bool,
+) -> Result<ProcessOutcome, ProcessError> {
+    let Scored {
+        run_id,
+        counts,
+        touched_test_ids,
+        touched_job_ids,
+        tier_changes,
+    } = scored;
+    complete_report(report, now, run_id, counts.clone());
+    write_report(report, db).await?;
+    Ok(ProcessOutcome {
+        report_id: report.id,
+        status: ReportStatus::Processed,
+        run_id,
+        counts: Some(counts),
+        touched_test_ids,
+        error: None,
+        touched_job_ids,
+        tier_changes: if branch_changed {
+            Vec::new()
+        } else {
+            tier_changes
+        },
+        retry_count: report.retry_count,
+    })
+}
+
+/// Parses and classifies the stored JUnit body off the async thread.
+///
+/// The body moves to the blocking thread, because the parser owns the bytes it
+/// reads and the row keeps its own copy for the status write.
+async fn parse_report(report: &reports::Model) -> Result<ParsedReport, ProcessError> {
+    let (body, line_base) = stored_junit_body(report);
+    let body = body.to_vec();
+    let parsed = tokio::task::spawn_blocking(move || parse_and_classify(&body, line_base))
+        .await
+        .map_err(|error| ProcessError::permanent(format!("RuntimeError: {error}")))?;
+    Ok(parsed?)
+}
+
+/// Writes the Project root the Report named, when it differs from the stored one.
+async fn write_project_root(
+    db: &impl ConnectionTrait,
+    report: &reports::Model,
+) -> Result<(), ProcessError> {
+    let Some(root) = &report.root else {
+        return Ok(());
+    };
+    // Write only when the value actually changes, so a run of Reports with the
+    // same root never rewrites (and briefly locks) the Project row.
+    db.execute_raw(Statement::from_sql_and_values(
+        DbBackend::Postgres,
+        "UPDATE projects SET root = $1 WHERE id = $2 AND root <> $1",
+        [Value::from(root.clone()), Value::from(report.project_id)],
+    ))
+    .await?;
+    Ok(())
+}
+
+/// Stores the Run this Report becomes, and answers its id.
+async fn store_run(
+    db: &impl ConnectionTrait,
+    report: &reports::Model,
+    project_id: i32,
+    now: DateTimeWithTimeZone,
+) -> Result<i32, ProcessError> {
     let run = test_runs::Entity::insert(test_runs::ActiveModel {
         project_id: Set(project_id),
         commit_sha: Set(report.commit_sha.clone()),
@@ -442,82 +570,67 @@ async fn process_report(
         ..Default::default()
     })
     .exec_with_returning(db)
-    .await
-    .map_err(ProcessError::from)?;
-
-    let ids = upsert_test_cases(db, project_id, &parsed, now)
-        .await
-        .map_err(ProcessError::from)?;
-
-    let RecordedTests {
-        counts,
-        executions,
-        latest,
-        day_counts,
-    } = build_test_executions(&classified, &ids, run.id, now)?;
-
-    for chunk in chunks(&executions) {
-        test_executions::Entity::insert_many(chunk.to_vec())
-            .exec_without_returning(db)
-            .await
-            .map_err(ProcessError::from)?;
-    }
-    update_latest_tests(db, &latest, now)
-        .await
-        .map_err(ProcessError::from)?;
-
-    // Python rescored `sorted(latest)`: the ids are ordered by id, not by where a
-    // Test first appeared in the report, because they set `touched_test_ids` and
-    // the order the Tier changes are emitted in.
-    let mut touched: Vec<i32> = latest.iter().map(|row| row.id).collect();
-    touched.sort_unstable();
-    let mut tier_changes = rescore(db, &touched, Some(&day_counts), settings)
-        .await
-        .map_err(ProcessError::from)?;
-    if branch_changed {
-        rescore_repo(db, report.repo_id, &tier_changes, settings)
-            .await
-            .map_err(ProcessError::from)?;
-    }
-
-    // A linked JUnit report explains (or un-explains) Job failures: rescore the
-    // Jobs that carry this ci_job_id, so arrival order does not matter.
-    let mut touched_jobs = Vec::new();
-    if let Some(ci_job_id) = report.ci_job_id.clone() {
-        let (job_ids, job_changes) =
-            rescore_jobs_for_ci_job_id(db, report.repo_id, &ci_job_id, settings)
-                .await
-                .map_err(ProcessError::from)?;
-        touched_jobs = job_ids;
-        tier_changes.extend(job_changes);
-    }
-
-    let counts_json = counts.junit_json();
-    complete_report(report, now, Some(run.id), counts_json.clone());
-    write_report(report, db).await.map_err(ProcessError::from)?;
-    Ok(ProcessOutcome {
-        report_id: report.id,
-        status: ReportStatus::Processed,
-        run_id: Some(run.id),
-        counts: Some(counts_json),
-        touched_test_ids: touched,
-        error: None,
-        touched_job_ids: touched_jobs,
-        // A whole-Repo rescore must stay silent (ADR 0009).
-        tier_changes: if branch_changed {
-            Vec::new()
-        } else {
-            tier_changes
-        },
-        retry_count: report.retry_count,
-    })
+    .await?;
+    Ok(run.id)
 }
 
-/// One Report's Executions, its newest occurrence per Test and its day counts.
-struct RecordedTests {
-    counts: Counts,
+/// Upserts the Report's Tests, then builds its Executions off the async thread.
+async fn build_executions(
+    db: &impl ConnectionTrait,
+    parsed: ParsedReport,
+    project_id: i32,
+    run_id: i32,
+    now: DateTimeWithTimeZone,
+) -> Result<BuiltExecutions, ProcessError> {
+    let ids = upsert_test_cases(db, project_id, &parsed, now).await?;
+    tokio::task::spawn_blocking(move || build_test_executions(parsed, &ids, run_id, now))
+        .await
+        .map_err(|error| ProcessError::permanent(format!("RuntimeError: {error}")))?
+}
+
+/// Stores this Report's Executions and the Tests' newest status.
+async fn store_executions(
+    db: &impl ConnectionTrait,
     executions: Vec<test_executions::ActiveModel>,
+    latest: &[LatestTest],
+    now: DateTimeWithTimeZone,
+) -> Result<(), ProcessError> {
+    for chunk in owned_chunks(executions) {
+        test_executions::Entity::insert_many(chunk)
+            .exec_without_returning(db)
+            .await?;
+    }
+    update_latest_tests(db, latest, now).await?;
+    Ok(())
+}
+
+/// One Report's cases, and the first case of each distinct Test.
+struct ParsedReport {
+    /// Every case the parser produced, in Report order.
+    cases: Vec<ReportedCase>,
+    /// The index in `cases` of each Test's first occurrence, in that order.
+    first: Vec<usize>,
+}
+
+/// One Test a Report named, with the two facts the processor derives once.
+struct ReportedCase {
+    /// The Test's identity, hashed once for the whole Report.
+    fingerprint: Fingerprint,
+    /// The case the parser read.
+    case: ParsedCase,
+    /// The likely cause of a failure; only a failing case has one.
+    category: Option<FailureCategory>,
+}
+
+/// One Report's Executions as they are built, before they are stored.
+struct BuiltExecutions {
+    /// The rows to insert, in Report order.
+    executions: Vec<test_executions::ActiveModel>,
+    /// The counts a processed Report stores.
+    counts: Counts,
+    /// Each Test's newest occurrence in the Report.
     latest: Vec<LatestTest>,
+    /// What the day added to each Test's Score history.
     day_counts: BTreeMap<i32, DayCounts>,
 }
 
@@ -534,21 +647,26 @@ pub struct DayCounts {
 ///
 /// `attempt` counts per Test from 0; the last occurrence of a Test wins its
 /// `last_status`, and only an occurrence with a Location sets one. Day counts
-/// feed today's Score history row.
+/// feed today's Score history row. The cases are consumed, so a Failure's
+/// details move into the row they belong to instead of being copied.
 fn build_test_executions(
-    classified: &[(ParsedCase, Option<FailureCategory>)],
+    report: ParsedReport,
     ids: &BTreeMap<String, i32>,
     run_id: i32,
     now: DateTimeWithTimeZone,
-) -> Result<RecordedTests, ProcessError> {
+) -> Result<BuiltExecutions, ProcessError> {
     let mut counts = Counts::default();
     let mut attempts: BTreeMap<i32, i32> = BTreeMap::new();
-    let mut executions: Vec<test_executions::ActiveModel> = Vec::with_capacity(classified.len());
+    let mut executions: Vec<test_executions::ActiveModel> = Vec::with_capacity(report.cases.len());
     let mut latest: Vec<LatestTest> = Vec::new();
     let mut latest_by_id: BTreeMap<i32, usize> = BTreeMap::new();
     let mut day_counts: BTreeMap<i32, DayCounts> = BTreeMap::new();
-    for (case, category) in classified {
-        let fingerprint = flakeradar_core::fingerprint(&case.suite, &case.classname, &case.name);
+    for reported in report.cases {
+        let ReportedCase {
+            fingerprint,
+            case,
+            category,
+        } = reported;
         let test_case_id = ids.get(fingerprint.as_str()).copied().ok_or_else(|| {
             ProcessError::permanent(format!("DataError: Test {fingerprint} vanished"))
         })?;
@@ -578,8 +696,8 @@ fn build_test_executions(
             test_run_id: Set(run_id),
             status: Set(case.status.as_str().to_owned()),
             duration: Set(case.duration),
-            message: Set(case.message.clone()),
-            details: Set(case.details.clone()),
+            message: Set(case.message),
+            details: Set(case.details),
             attempt: Set(attempt),
             failure_category: Set(category.map(|category| category.as_str().to_owned())),
             created_at: Set(now),
@@ -607,9 +725,9 @@ fn build_test_executions(
     }
     counts.retried =
         i64::try_from(attempts.values().filter(|seen| **seen > 1).count()).unwrap_or(i64::MAX);
-    Ok(RecordedTests {
-        counts,
+    Ok(BuiltExecutions {
         executions,
+        counts,
         latest,
         day_counts,
     })
@@ -628,40 +746,28 @@ struct LatestTest {
 async fn upsert_test_cases(
     db: &impl ConnectionTrait,
     project_id: i32,
-    parsed: &[ParsedCase],
+    report: &ParsedReport,
     now: DateTimeWithTimeZone,
 ) -> Result<BTreeMap<String, i32>, DbError> {
-    let mut order: Vec<String> = Vec::new();
-    let mut first: BTreeMap<String, &ParsedCase> = BTreeMap::new();
-    for case in parsed {
-        let fingerprint = flakeradar_core::fingerprint(&case.suite, &case.classname, &case.name);
-        if let std::collections::btree_map::Entry::Vacant(entry) =
-            first.entry(fingerprint.to_string())
-        {
-            order.push(fingerprint.to_string());
-            entry.insert(case);
-        }
-    }
-    let inserted: Vec<test_cases::ActiveModel> = order
+    let first: Vec<&ReportedCase> = report
+        .first
         .iter()
-        .filter_map(|fingerprint| first.get(fingerprint).copied())
-        .map(|case| test_cases::ActiveModel {
+        .filter_map(|index| report.cases.get(*index))
+        .collect();
+    let inserted: Vec<test_cases::ActiveModel> = first
+        .iter()
+        .map(|reported| test_cases::ActiveModel {
             project_id: Set(project_id),
-            fingerprint: Set(flakeradar_core::fingerprint(
-                &case.suite,
-                &case.classname,
-                &case.name,
-            )
-            .to_string()),
-            suite: Set(case.suite.clone()),
-            classname: Set(case.classname.clone()),
-            name: Set(case.name.clone()),
+            fingerprint: Set(reported.fingerprint.as_str().to_owned()),
+            suite: Set(reported.case.suite.clone()),
+            classname: Set(reported.case.classname.clone()),
+            name: Set(reported.case.name.clone()),
             last_seen_at: Set(now),
             ..Default::default()
         })
         .collect();
-    for chunk in chunks(&inserted) {
-        test_cases::Entity::insert_many(chunk.to_vec())
+    for chunk in owned_chunks(inserted) {
+        test_cases::Entity::insert_many(chunk)
             // Python's bare `ON CONFLICT DO NOTHING` skips a conflict on *any*
             // constraint; SeaORM's target-less `OnConflict` is that statement,
             // while `on_conflict_do_nothing` would name the primary key only.
@@ -674,7 +780,7 @@ async fn upsert_test_cases(
             .await?;
     }
     let mut ids = BTreeMap::new();
-    for chunk in chunks(&order) {
+    for chunk in chunks(&first) {
         let placeholders = placeholder_list(2, chunk.len());
         let sql = format!(
             "SELECT fingerprint, id FROM test_cases WHERE project_id = $1 AND fingerprint IN ({placeholders})"
@@ -684,7 +790,7 @@ async fn upsert_test_cases(
         values.extend(
             chunk
                 .iter()
-                .map(|fingerprint| Value::from(fingerprint.clone())),
+                .map(|reported| Value::from(reported.fingerprint.as_str().to_owned())),
         );
         for row in rows(db, sql, values).await? {
             ids.insert(get::<String>(&row, "fingerprint")?, get::<i32>(&row, "id")?);
@@ -766,40 +872,27 @@ async fn process_pipeline_report(
         .map_err(|error| ProcessError::permanent(format!("ValidationError: {error}")))?;
     let now = settings.clock.now();
     let branch_changed =
-        apply_default_branch(db, report.repo_id, pipeline.default_branch.as_deref())
-            .await
-            .map_err(ProcessError::from)?;
+        apply_default_branch(db, report.repo_id, pipeline.default_branch.as_deref()).await?;
     let (job_ids, flag_changed) = upsert_pipeline_jobs(db, report.repo_id, &pipeline, now).await?;
     let (mut new_counts, jobs_with_new_exec, day_counts) =
         insert_pipeline_job_executions(db, &pipeline, &job_ids, now).await?;
     update_job_last_status(db, &pipeline, &job_ids, &jobs_with_new_exec, now).await?;
 
-    let touched: Vec<i32> = jobs_with_new_exec.union(&flag_changed).copied().collect();
-    let mut tier_changes = rescore_jobs(db, &touched, Some(&day_counts), settings)
-        .await
-        .map_err(ProcessError::from)?;
+    let touched_job_ids: Vec<i32> = jobs_with_new_exec.union(&flag_changed).copied().collect();
+    let tier_changes = rescore_jobs(db, &touched_job_ids, Some(&day_counts), settings).await?;
     if branch_changed {
-        rescore_repo(db, report.repo_id, &tier_changes, settings)
-            .await
-            .map_err(ProcessError::from)?;
-        tier_changes = Vec::new();
+        rescore_repo(db, report.repo_id, settings).await?;
     }
     new_counts.duplicate = i64::try_from(pipeline.jobs.len()).unwrap_or(i64::MAX)
         - (new_counts.passed + new_counts.failed + new_counts.skipped);
-    let counts_json = new_counts.pipeline_json();
-    complete_report(report, now, None, counts_json.clone());
-    write_report(report, db).await.map_err(ProcessError::from)?;
-    Ok(ProcessOutcome {
-        report_id: report.id,
-        status: ReportStatus::Processed,
+    let scored = Scored {
         run_id: None,
-        counts: Some(counts_json),
+        counts: new_counts.pipeline_json(),
         touched_test_ids: Vec::new(),
-        error: None,
-        touched_job_ids: touched,
+        touched_job_ids,
         tier_changes,
-        retry_count: report.retry_count,
-    })
+    };
+    finish_report(db, report, now, scored, branch_changed).await
 }
 
 /// Upserts the report's Pipeline and Jobs, returning every Job id by name and
@@ -823,15 +916,13 @@ async fn upsert_pipeline_jobs(
             .to_owned(),
     )
     .exec_without_returning(db)
-    .await
-    .map_err(ProcessError::from)?;
+    .await?;
     let pipeline = pipelines::Entity::find()
         .filter(pipelines::Column::RepoId.eq(repo_id))
         .filter(pipelines::Column::Provider.eq(payload.provider.clone()))
         .filter(pipelines::Column::Name.eq(payload.pipeline.clone()))
         .one(db)
-        .await
-        .map_err(ProcessError::from)?
+        .await?
         .ok_or_else(|| ProcessError::permanent("DataError: the Pipeline vanished"))?;
 
     let mut job_names: Vec<String> = payload.jobs.iter().map(|job| job.name.clone()).collect();
@@ -873,8 +964,8 @@ async fn upsert_pipeline_jobs(
             placeholders.join(", ")
         );
         values.push(Value::from(now));
-        for row in rows(db, sql, values).await.map_err(ProcessError::from)? {
-            flag_changed.insert(get(&row, "id").map_err(ProcessError::from)?);
+        for row in rows(db, sql, values).await? {
+            flag_changed.insert(get(&row, "id")?);
         }
     }
 
@@ -887,11 +978,8 @@ async fn upsert_pipeline_jobs(
         let mut values = Vec::with_capacity(chunk.len() + 1);
         values.push(Value::from(pipeline.id));
         values.extend(chunk.iter().map(|name| Value::from(name.clone())));
-        for row in rows(db, sql, values).await.map_err(ProcessError::from)? {
-            job_ids.insert(
-                get(&row, "name").map_err(ProcessError::from)?,
-                get(&row, "id").map_err(ProcessError::from)?,
-            );
+        for row in rows(db, sql, values).await? {
+            job_ids.insert(get(&row, "name")?, get(&row, "id")?);
         }
     }
     Ok((job_ids, flag_changed))
@@ -931,9 +1019,9 @@ async fn insert_pipeline_job_executions(
     let mut day_counts: BTreeMap<i32, DayCounts> = BTreeMap::new();
     for chunk in chunks(&exec_rows) {
         let (sql, values) = insert_job_executions_sql(chunk, now);
-        for row in rows(db, sql, values).await.map_err(ProcessError::from)? {
-            let job_id: i32 = get(&row, "job_id").map_err(ProcessError::from)?;
-            let status: String = get(&row, "status").map_err(ProcessError::from)?;
+        for row in rows(db, sql, values).await? {
+            let job_id: i32 = get(&row, "job_id")?;
+            let status: String = get(&row, "status")?;
             jobs_with_new_exec.insert(job_id);
             match status.as_str() {
                 "passed" => new_counts.passed += 1,
@@ -1039,8 +1127,7 @@ async fn update_job_last_status(
             sql,
             values,
         ))
-        .await
-        .map_err(ProcessError::from)?;
+        .await?;
     }
     Ok(())
 }
@@ -1653,11 +1740,13 @@ pub async fn job_history(
     job_ids: &[i32],
     settings: &ProcessingSettings,
 ) -> Result<BTreeMap<i32, JobHistory>, DbError> {
-    let windows = job_windows(db, job_ids, settings).await?;
+    let mut windows = job_windows(db, job_ids, settings).await?;
     Ok(job_ids
         .iter()
         .map(|id| {
-            let window = windows.get(id).cloned().unwrap_or_default();
+            // The window is consumed: a Job's whole history is large, so it is
+            // taken out of the map rather than copied out of it.
+            let window = windows.remove(id).unwrap_or_default();
             (
                 *id,
                 JobHistory {
@@ -1695,13 +1784,7 @@ async fn rescore_jobs_for_ci_job_id(
                JOIN jobs ON jobs.id = job_executions.job_id \
                JOIN pipelines ON pipelines.id = jobs.pipeline_id \
               WHERE job_executions.ci_job_id = $1 AND pipelines.repo_id = $2";
-    for row in rows(
-        db,
-        sql.to_owned(),
-        vec![Value::from(ci_job_id), Value::from(repo_id)],
-    )
-    .await?
-    {
+    for row in rows(db, sql, vec![Value::from(ci_job_id), Value::from(repo_id)]).await? {
         job_ids.insert(get(&row, "job_id")?);
     }
     let job_ids: Vec<i32> = job_ids.into_iter().collect();
@@ -1714,15 +1797,14 @@ async fn rescore_jobs_for_ci_job_id(
 
 /// Rescores every Test and every Job in the Repo (chunked).
 ///
-/// Returns `(test_ids, job_ids)`, each sorted. The tier changes are dropped on
-/// purpose: a Default branch change rescores the whole Repo at once, so
-/// notifying about it would send hundreds of events for one Report (ADR 0009).
+/// The Tier changes are dropped on purpose: a Default branch change rescores the
+/// whole Repo at once, so notifying about it would send hundreds of events for
+/// one Report (ADR 0009). Only their count is reported.
 async fn rescore_repo(
     db: &impl ConnectionTrait,
     repo_id: i32,
-    report_tier_changes: &[TierChange],
     settings: &ProcessingSettings,
-) -> Result<(Vec<i32>, Vec<i32>), DbError> {
+) -> Result<(), DbError> {
     let mut test_ids = Vec::new();
     for row in rows(
         db,
@@ -1747,15 +1829,14 @@ async fn rescore_repo(
     }
     test_ids.sort_unstable();
     job_ids.sort_unstable();
-    let mut dropped = report_tier_changes.len();
-    dropped += rescore(db, &test_ids, None, settings).await?.len();
+    let mut dropped = rescore(db, &test_ids, None, settings).await?.len();
     dropped += rescore_jobs(db, &job_ids, None, settings).await?.len();
     if dropped > 0 {
         // One event per changed Test would flood the channel, so only the count
         // is reported (ADR 0009).
         tracing::info!("Rescore of Repo {repo_id} dropped {dropped} Notification(s)");
     }
-    Ok((test_ids, job_ids))
+    Ok(())
 }
 
 #[cfg(test)]
