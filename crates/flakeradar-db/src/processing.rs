@@ -119,6 +119,17 @@ pub struct ProcessOutcome {
 ///
 /// Only `process_next` reads it, so it stays inside this module; the caller sees
 /// the failure as a stored Report status and message.
+///
+/// The message is `TypeName: message`, and `TypeName` is the failure class the
+/// frozen server stored for the same case, because that text is what an operator
+/// reads: a failed Report's `error` is served by `GET /api/reports` and shown in
+/// the dashboard's failed-Report panel, so it stays the text a 1.x instance
+/// wrote. The five names are `OperationalError` (a retryable driver failure),
+/// `DBAPIError` (a driver failure no retry fixes), `DataError` (a value the
+/// stored row could not hold), `ValidationError` (a stored Pipeline body that is
+/// not one this server wrote) and `ParseError` (a stored JUnit body that is not
+/// JUnit); `RuntimeError` covers a blocking task that did not finish. Nothing
+/// branches on the name: whether a failure is retried is [`ProcessError::transient`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ProcessError {
     /// True for a failure that may succeed on a later attempt.
