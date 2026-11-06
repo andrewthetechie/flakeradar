@@ -102,6 +102,20 @@ where
     }
 }
 
+/// A JSON request body a model reads its own fields from.
+///
+/// The reading rules a field has — Pydantic's spelling of a boolean, a
+/// number's range, a string's length — belong to the model, so the extractor
+/// only gets the body to it in the shape the reference validated.
+pub trait FromJsonObject: Sized {
+    /// Reads the value from the parsed object.
+    ///
+    /// # Errors
+    ///
+    /// Returns the 422 the model's rules failed with.
+    fn from_object(object: &Map<String, Value>) -> ApiResult<Self>;
+}
+
 /// A JSON request body, validated.
 ///
 /// FastAPI reads a body by its `Content-Type`: anything that is not JSON is left
@@ -113,7 +127,7 @@ pub struct ApiJson<T>(pub T);
 
 impl<T, S> FromRequest<S> for ApiJson<T>
 where
-    T: DeserializeOwned + Validate + Send,
+    T: FromJsonObject + Send,
     S: Send + Sync,
 {
     type Rejection = ApiError;
@@ -127,9 +141,26 @@ where
         let bytes = Bytes::from_request(req, state)
             .await
             .map_err(|rejection| body_error(&rejection))?;
-        let value: T = parse_json(&bytes, content_type.as_deref())?;
-        value.validate()?;
-        Ok(Self(value))
+        let object = parse_json_object(&bytes, content_type.as_deref())?;
+        Ok(Self(T::from_object(&object)?))
+    }
+}
+
+impl FromJsonObject for flakeradar_core::QuarantineIn {
+    fn from_object(object: &Map<String, Value>) -> ApiResult<Self> {
+        Self::from_value(object).map_err(ApiError::unprocessable)
+    }
+}
+
+impl FromJsonObject for flakeradar_core::IssueLinkIn {
+    fn from_object(object: &Map<String, Value>) -> ApiResult<Self> {
+        Self::from_value(object).map_err(ApiError::unprocessable)
+    }
+}
+
+impl FromJsonObject for flakeradar_core::PipelineReportIn {
+    fn from_object(object: &Map<String, Value>) -> ApiResult<Self> {
+        Self::from_value(object).map_err(ApiError::from)
     }
 }
 
@@ -203,18 +234,6 @@ fn attach_query_input(issue: &mut ValidationIssue, pairs: &[(String, String)]) {
     if let Some((_, value)) = pairs.iter().find(|(seen, _)| seen == name) {
         issue.input = Some(Value::String(value.clone()));
     }
-}
-
-/// Parses a request body into `T` by the rule FastAPI applied.
-pub(crate) fn parse_json<T: DeserializeOwned>(
-    bytes: &[u8],
-    content_type: Option<&str>,
-) -> ApiResult<T> {
-    let object = parse_json_object(bytes, content_type)?;
-    serde_path_to_error::deserialize(Value::Object(object)).map_err(|error| {
-        let issue = issue_for("body", error.path(), &error.inner().to_string());
-        ApiError::unprocessable(vec![issue])
-    })
 }
 
 /// Parses a request body into the JSON object Pydantic validated.

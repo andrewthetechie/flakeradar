@@ -64,15 +64,15 @@ use crate::settings::Settings;
 
 /// The largest `limit` a listing tool accepts.
 ///
-/// The REST leaderboards cap a page at 100, so a tool that took more would
-/// answer rows no client could page to; the MCP surface refuses instead.
-const MAX_LIMIT: i64 = 100;
+/// The REST leaderboards cap a page at the same number, so a tool that took more
+/// would answer rows no client could page to; the MCP surface refuses instead.
+const MAX_LIMIT: i64 = flakeradar_core::limits::LIST_LIMIT_MAX;
 
 /// The widest "became flaky recently" window a tool accepts, in days.
 ///
-/// The same bound as the REST `?new_within_days=` parameter, because both read
-/// the same Score history.
-const MAX_NEW_WITHIN_DAYS: i64 = 90;
+/// The REST `?new_within_days=` parameter enforces the same bound, because both
+/// read the same Score history.
+const MAX_NEW_WITHIN_DAYS: i64 = flakeradar_core::limits::NEW_WITHIN_DAYS_MAX;
 
 /// How many characters of a Failure's details a tool returns.
 ///

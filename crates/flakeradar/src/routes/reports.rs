@@ -38,7 +38,7 @@ use serde_json::Value as JsonValue;
 
 use crate::app::AppState;
 use crate::error::{ApiError, ApiResult, RouteError, RouteResult};
-use crate::extract::{ApiPath, ApiQuery, Validate, query_loc};
+use crate::extract::{ApiJson, ApiPath, ApiQuery, Validate, query_loc};
 use crate::middleware::require_token;
 use crate::multipart::{MalformedHeaders, REPORT_FIELD, file_field};
 
@@ -354,31 +354,6 @@ impl Validate for ListQuery {
     }
 }
 
-/// A Pipeline Report body that passed the rules `schemas.py` put on it.
-#[derive(Debug)]
-pub struct PipelineBody(pub PipelineReportIn);
-
-impl<S> FromRequest<S> for PipelineBody
-where
-    S: Send + Sync,
-{
-    type Rejection = ApiError;
-
-    async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
-        let content_type = req
-            .headers()
-            .get(header::CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_owned);
-        let bytes = Bytes::from_request(req, state)
-            .await
-            .map_err(|rejection| crate::extract::body_error(&rejection))?;
-        let object = crate::extract::parse_json_object(&bytes, content_type.as_deref())?;
-        let payload = PipelineReportIn::from_value(&object)?;
-        Ok(Self(payload))
-    }
-}
-
 /// Accepts a JUnit XML report as a multipart upload or a raw body.
 ///
 /// Only validation happens here: the Report is queued, and the processor turns
@@ -612,7 +587,7 @@ fn blank_to_none(value: Option<String>) -> Option<String> {
 )]
 pub async fn ingest_pipeline(
     State(state): State<AppState>,
-    PipelineBody(payload): PipelineBody,
+    ApiJson(payload): ApiJson<PipelineReportIn>,
 ) -> RouteResult<Response> {
     let now = Utc::now().fixed_offset();
     // The Repo and the Report are one unit of work, as they were for Python's

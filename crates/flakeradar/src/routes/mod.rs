@@ -16,9 +16,24 @@ pub mod reports;
 
 use axum::Router;
 use axum::routing::get;
+use serde::Deserialize;
 
 use crate::app::AppState;
 use crate::{docs, mcp};
+
+/// The path parameter of a Test route.
+#[derive(Debug, Clone, Copy, Deserialize)]
+pub struct TestPath {
+    /// The Test's id.
+    pub test_id: i64,
+}
+
+/// The path parameter of a Job route.
+#[derive(Debug, Clone, Copy, Deserialize)]
+pub struct JobPath {
+    /// The Job's id.
+    pub job_id: i64,
+}
 
 /// The app's routes, before the state is attached.
 ///

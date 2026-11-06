@@ -9,10 +9,11 @@
 // Rust guideline compliant 2026-07-21
 
 use axum::Json;
-use axum::extract::{FromRequest, Request, State};
-use axum::http::{StatusCode, header};
+use axum::extract::State;
+use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Router, middleware};
+use flakeradar_core::limits::{LIST_LIMIT_MAX, NEW_WITHIN_DAYS_MAX};
 use flakeradar_core::{
     CiRunFailuresOut, FailureCategory, HistoryOut, JobHistoryOut, JobPage, JobSummaryOut,
     QuarantineIn, QuarantineItem, RepoOut, SummaryOut, TestOut, TestPage, ValidationIssue, lax,
@@ -28,8 +29,9 @@ use serde_json::Value as JsonValue;
 
 use crate::app::AppState;
 use crate::error::{ApiError, ApiResult, RouteError, RouteResult};
-use crate::extract::{ApiPath, ApiQuery, Validate, body_error, parse_json_object, query_loc};
+use crate::extract::{ApiJson, ApiPath, ApiQuery, Validate, query_loc};
 use crate::middleware::require_token;
+use crate::routes::{JobPath, TestPath};
 
 /// The dashboard's read routes.
 ///
@@ -111,28 +113,25 @@ fn check_le(value: Option<i64>, max: i64, field: &str, issues: &mut Vec<Validati
     }
 }
 
-/// The largest page size a leaderboard serves.
-const PAGE_SIZE_MAX: i64 = 100;
-
-/// The largest `page` whose `OFFSET` fits an `i64` at [`PAGE_SIZE_MAX`].
+/// The largest `page` whose `OFFSET` fits an `i64` at [`LIST_LIMIT_MAX`].
 ///
 /// The reference bounded only the bottom of the range, so a page past this one
 /// wrapped in release builds and panicked in development ones. A page real
 /// clients ask for is a handful of digits.
-const PAGE_MAX: i64 = i64::MAX / PAGE_SIZE_MAX;
+const PAGE_MAX: i64 = i64::MAX / LIST_LIMIT_MAX;
 
 /// The paging range both leaderboards share.
 fn validate_paging(page: Option<i64>, page_size: Option<i64>, issues: &mut Vec<ValidationIssue>) {
     check_ge(page, 1, "page", issues);
     check_le(page, PAGE_MAX, "page", issues);
     check_ge(page_size, 1, "page_size", issues);
-    check_le(page_size, PAGE_SIZE_MAX, "page_size", issues);
+    check_le(page_size, LIST_LIMIT_MAX, "page_size", issues);
 }
 
 /// The `new_within_days` range both leaderboards share.
 fn validate_new_within_days(value: Option<i64>, issues: &mut Vec<ValidationIssue>) {
     check_ge(value, 1, "new_within_days", issues);
-    check_le(value, 90, "new_within_days", issues);
+    check_le(value, NEW_WITHIN_DAYS_MAX, "new_within_days", issues);
 }
 
 /// Records a `sort` value that is not one of the three orders.
@@ -216,27 +215,6 @@ fn scope_of(repo: Option<String>, project: Option<String>) -> RouteResult<Scope>
         None => None,
     };
     Scope::new(repo, project).map_err(|error| detail_error(error.to_string()).into())
-}
-
-/// The query parameters of `GET /api/summary`.
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct SummaryQuery {
-    /// The Repo's `owner/name`.
-    #[serde(default)]
-    repo: Option<String>,
-    /// The Project's name, which needs a Repo.
-    #[serde(default)]
-    project: Option<String>,
-}
-
-impl Validate for SummaryQuery {
-    fn validate(&self) -> ApiResult<()> {
-        ScopeQuery {
-            repo: self.repo.clone(),
-            project: self.project.clone(),
-        }
-        .validate()
-    }
 }
 
 /// The query parameters of `GET /api/tests`.
@@ -386,27 +364,6 @@ impl HistoryQuery {
     }
 }
 
-/// The path parameter of the two detail routes and the quarantine route.
-#[derive(Debug, Clone, Copy, Deserialize)]
-pub struct TestPath {
-    /// The Test's or Job's id.
-    pub test_id: i64,
-}
-
-/// The path parameter of the quarantine route.
-#[derive(Debug, Clone, Copy, Deserialize)]
-pub struct QuarantinePath {
-    /// The Test's id.
-    pub test_id: i64,
-}
-
-/// The path parameter of a Job route.
-#[derive(Debug, Clone, Copy, Deserialize)]
-pub struct JobPath {
-    /// The Job's id.
-    pub job_id: i64,
-}
-
 /// The path parameter of `GET /api/ci-runs/{ci_run_id}/failures`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct CiRunPath {
@@ -457,31 +414,6 @@ impl Validate for QuarantineQuery {
         } else {
             Err(ApiError::unprocessable(issues))
         }
-    }
-}
-
-/// A quarantine body that passed the rules `schemas.py` put on it.
-#[derive(Debug)]
-pub struct QuarantineBody(pub QuarantineIn);
-
-impl<S> FromRequest<S> for QuarantineBody
-where
-    S: Send + Sync,
-{
-    type Rejection = ApiError;
-
-    async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
-        let content_type = req
-            .headers()
-            .get(header::CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_owned);
-        let bytes = axum::body::Bytes::from_request(req, state)
-            .await
-            .map_err(|rejection| body_error(&rejection))?;
-        let object = parse_json_object(&bytes, content_type.as_deref())?;
-        let payload = QuarantineIn::from_value(&object).map_err(ApiError::unprocessable)?;
-        Ok(Self(payload))
     }
 }
 
@@ -561,7 +493,7 @@ pub async fn tests(
 )]
 pub async fn test_summary(
     State(state): State<AppState>,
-    ApiQuery(query): ApiQuery<SummaryQuery>,
+    ApiQuery(query): ApiQuery<ScopeQuery>,
 ) -> RouteResult<Json<SummaryOut>> {
     let scope = scope_of(query.repo, query.project)?;
     Ok(Json(
@@ -626,8 +558,8 @@ pub async fn test_history(
 )]
 pub async fn quarantine_test(
     State(state): State<AppState>,
-    ApiPath(path): ApiPath<QuarantinePath>,
-    QuarantineBody(body): QuarantineBody,
+    ApiPath(path): ApiPath<TestPath>,
+    ApiJson(body): ApiJson<QuarantineIn>,
 ) -> RouteResult<Json<TestOut>> {
     let stored = set_quarantine(
         state.pool(),

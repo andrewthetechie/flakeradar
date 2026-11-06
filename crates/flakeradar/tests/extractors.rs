@@ -1,5 +1,9 @@
 //! The three extractors' rejections: status, and the `type` and `loc` of every
 //! issue, which is what the parity replay compares.
+//!
+//! A body is read the way Pydantic read it: the extractor hands the parsed JSON
+//! object to the model, and the model's own lax readers decide what each field
+//! takes. `UpdateBody` below is a small model for those tests.
 
 #![expect(
     clippy::expect_used,
@@ -13,10 +17,10 @@ use axum::extract::DefaultBodyLimit;
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use common::Reply;
-use flakeradar::{ApiError, ApiJson, ApiPath, ApiQuery, Validate, body_loc, query_loc};
-use flakeradar_core::ValidationIssue;
+use flakeradar::{ApiError, ApiJson, ApiPath, ApiQuery, FromJsonObject, Validate, query_loc};
+use flakeradar_core::{LocSegment, ValidationIssue, lax};
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
 /// A query DTO with one bounded integer, one boolean and one literal.
 #[derive(Debug, Deserialize)]
@@ -97,34 +101,65 @@ struct TestPath {
 ///
 /// The fields are named for their types, not for a route: this suite pins what
 /// [`ApiJson`] does with a body, and which spellings a route's own DTO accepts
-/// is the route's decision. `validation.json` step 17 shows the difference —
-/// Pydantic's `bool` takes the string `"yes"` as true, so Python's
-/// `POST /api/tests/1/quarantine` accepted that body, found no Test 1 and
-/// answered 404 `{"detail": "Test not found"}` (golden 17), not the 422 a
-/// strict `bool` gives. Task 10 must reproduce that 404, so the quarantine route
-/// needs a bool that takes Pydantic's spellings; see the deferral in
-/// `tests/parity.rs`.
-#[derive(Debug, Deserialize)]
+/// is the route's decision. The readers are the ones every route's body uses,
+/// so `"yes"` is a `boolean` here as it was for Pydantic, and a `2` is not.
+#[derive(Debug)]
 struct UpdateBody {
     number: i64,
-    #[serde(default)]
     #[expect(
         dead_code,
         reason = "the extractor must parse it; these tests read other fields"
     )]
     enabled: bool,
-    #[serde(default)]
+    #[expect(
+        dead_code,
+        reason = "the model must check it; these tests read the status and the issue"
+    )]
     reason: Option<String>,
 }
 
-impl Validate for UpdateBody {
-    fn validate(&self) -> Result<(), ApiError> {
-        match &self.reason {
-            Some(reason) if reason.chars().count() > 5 => Err(ApiError::unprocessable(vec![
-                ValidationIssue::string_too_long(body_loc("reason"), json!(reason), 5),
-            ])),
-            _ => Ok(()),
+impl FromJsonObject for UpdateBody {
+    fn from_object(object: &Map<String, Value>) -> Result<Self, ApiError> {
+        let fields = lax::Fields::new(object, vec![LocSegment::Field("body".to_owned())]);
+        let mut issues = Vec::new();
+        let mut number = 0;
+        if let Some(value) = fields.required("number", &mut issues) {
+            match lax::integer(value, fields.loc("number")) {
+                Ok(read) => number = read,
+                Err(issue) => issues.push(*issue),
+            }
         }
+        let mut enabled = false;
+        if let Some(value) = fields.field("enabled").filter(|value| !value.is_null()) {
+            match lax::boolean(value, fields.loc("enabled")) {
+                Ok(read) => enabled = read,
+                Err(issue) => issues.push(*issue),
+            }
+        }
+        let mut reason = None;
+        if let Some(value) = fields.field("reason").filter(|value| !value.is_null()) {
+            match lax::string(value, fields.loc("reason")) {
+                Ok(text) => {
+                    if text.chars().count() > 5 {
+                        issues.push(ValidationIssue::string_too_long(
+                            fields.loc("reason"),
+                            Value::from(text.clone()),
+                            5,
+                        ));
+                    }
+                    reason = Some(text);
+                }
+                Err(issue) => issues.push(*issue),
+            }
+        }
+        if !issues.is_empty() {
+            return Err(ApiError::unprocessable(issues));
+        }
+        Ok(Self {
+            number,
+            enabled,
+            reason,
+        })
     }
 }
 
@@ -329,13 +364,21 @@ async fn a_body_field_of_the_wrong_type_names_the_field() {
         axum::http::Method::POST,
         "/update",
         &[("content-type", "application/json")],
+        r#"{"number": 1, "enabled": 2}"#,
+    )
+    .await;
+    // A boolean reads Pydantic's spellings, so `"yes"` is true and `2` is the
+    // `bool_parsing` refusal; the routes' own bodies take the same spellings.
+    assert_single_issue(&reply, "bool_parsing", &json!(["body", "enabled"]));
+
+    let reply = call(
+        axum::http::Method::POST,
+        "/update",
+        &[("content-type", "application/json")],
         r#"{"number": 1, "enabled": "yes"}"#,
     )
     .await;
-    // A field this DTO types `bool` rejects the string, and the rejection is
-    // Pydantic's `bool_parsing` shape. A route whose DTO takes Pydantic's lax
-    // spellings — as the quarantine body does — never reaches this arm.
-    assert_single_issue(&reply, "bool_parsing", &json!(["body", "enabled"]));
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.text());
 }
 
 #[tokio::test]

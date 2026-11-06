@@ -47,9 +47,9 @@ pub use assets::{Asset, AssetSource};
 #[doc(inline)]
 pub use cli::{Cli, Command, HEALTH_PATH, HEALTHCHECK_TIMEOUT, healthcheck, healthcheck_url};
 #[doc(inline)]
-pub use error::{ApiError, ApiResult, Detail};
+pub use error::{ApiError, ApiResult, Detail, RouteError, RouteResult};
 #[doc(inline)]
-pub use extract::{ApiJson, ApiPath, ApiQuery, Validate, body_loc, query_loc};
+pub use extract::{ApiJson, ApiPath, ApiQuery, FromJsonObject, Validate, body_loc, query_loc};
 #[doc(inline)]
 pub use github::{Answer, Api, FilingGate, JobRow, RecentExecution, TestRow};
 #[doc(inline)]
@@ -58,6 +58,7 @@ pub use github_worker::GitHubWorker;
 pub use mcp::{INSTRUCTIONS, McpServer};
 #[doc(inline)]
 pub use multipart::file_field;
+pub use routes::{JobPath, TestPath};
 #[doc(inline)]
 pub use server::Server;
 #[doc(inline)]

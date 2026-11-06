@@ -7,8 +7,7 @@
 // Rust guideline compliant 2026-07-21
 
 use axum::Json;
-use axum::extract::{FromRequest, Request, State};
-use axum::http::header;
+use axum::extract::State;
 use axum::routing::put;
 use axum::{Router, middleware};
 use flakeradar_core::dto::lax_bool;
@@ -18,9 +17,10 @@ use flakeradar_db::issue_links::{self, IssueLinkError, LinkTarget, LinkedOut};
 use serde::Deserialize;
 
 use crate::app::AppState;
-use crate::error::{ApiError, ApiResult, RouteError, RouteResult};
-use crate::extract::{ApiPath, ApiQuery, Validate, body_error, parse_json_object};
+use crate::error::{ApiResult, RouteError, RouteResult};
+use crate::extract::{ApiJson, ApiPath, ApiQuery, Validate};
 use crate::middleware::require_token;
+use crate::routes::{JobPath, TestPath};
 
 /// The two Issue link routes of a Test or a Job.
 pub fn router(state: AppState) -> Router<AppState> {
@@ -45,45 +45,6 @@ pub struct LinkQuery {
 impl Validate for LinkQuery {
     fn validate(&self) -> ApiResult<()> {
         Ok(())
-    }
-}
-
-/// The path parameter of the Test link routes.
-#[derive(Debug, Clone, Copy, Deserialize)]
-pub struct TestPath {
-    /// The Test's id.
-    test_id: i64,
-}
-
-/// The path parameter of the Job link routes.
-#[derive(Debug, Clone, Copy, Deserialize)]
-pub struct JobPath {
-    /// The Job's id.
-    job_id: i64,
-}
-
-/// A link body that passed the rules `schemas.py` put on it.
-#[derive(Debug)]
-pub struct LinkBody(pub IssueLinkIn);
-
-impl<S> FromRequest<S> for LinkBody
-where
-    S: Send + Sync,
-{
-    type Rejection = ApiError;
-
-    async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
-        let content_type = req
-            .headers()
-            .get(header::CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_owned);
-        let bytes = axum::body::Bytes::from_request(req, state)
-            .await
-            .map_err(|rejection| body_error(&rejection))?;
-        let object = parse_json_object(&bytes, content_type.as_deref())?;
-        let payload = IssueLinkIn::from_value(&object).map_err(ApiError::unprocessable)?;
-        Ok(Self(payload))
     }
 }
 
@@ -114,7 +75,7 @@ pub async fn link_test(
     State(state): State<AppState>,
     ApiPath(path): ApiPath<TestPath>,
     ApiQuery(query): ApiQuery<LinkQuery>,
-    LinkBody(body): LinkBody,
+    ApiJson(body): ApiJson<IssueLinkIn>,
 ) -> RouteResult<Json<TestOut>> {
     let out = issue_links::link_issue(
         state.pool(),
@@ -199,7 +160,7 @@ pub async fn link_job(
     State(state): State<AppState>,
     ApiPath(path): ApiPath<JobPath>,
     ApiQuery(query): ApiQuery<LinkQuery>,
-    LinkBody(body): LinkBody,
+    ApiJson(body): ApiJson<IssueLinkIn>,
 ) -> RouteResult<Json<JobOut>> {
     let out = issue_links::link_issue(
         state.pool(),
