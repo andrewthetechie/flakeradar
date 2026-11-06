@@ -20,7 +20,7 @@ pub(super) const NAME: &str = "list_projects";
 pub(super) const TITLE: &str = "List Projects";
 /// The description a client shows.
 pub(super) const DESCRIPTION: &str =
-    r#"List the Projects (test suites) of one Repo, e.g. repo='owner/name'."#;
+    "List the Projects (test suites) of one Repo, e.g. repo='owner/name'.";
 
 /// Whether this tool answers a list, wrapped in `{"result": …}`.
 ///

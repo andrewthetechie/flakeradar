@@ -181,11 +181,6 @@ fn postgres_url(url: &str) -> Result<String, DbError> {
 mod tests {
     //! URL and setting parsing need no database, so they are checked here.
 
-    #![expect(
-        clippy::expect_used,
-        reason = "a test fails loudly when a fixture is not what it claims"
-    )]
-
     use sea_orm::ConnectOptions;
 
     use super::{

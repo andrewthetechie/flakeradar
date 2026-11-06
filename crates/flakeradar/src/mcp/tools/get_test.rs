@@ -27,10 +27,11 @@ pub(super) const NAME: &str = "get_test";
 /// The title a client shows.
 pub(super) const TITLE: &str = "Get Test";
 /// The description a client shows.
-pub(super) const DESCRIPTION: &str = r#"Everything about one test: pass test_id, or repo + project + name
+pub(super) const DESCRIPTION: &str =
+    "Everything about one test: pass test_id, or repo + project + name
 (+ classname when the name is ambiguous). Returns Location with a
 GitHub permalink at the last failing commit, the latest failure's
-message and details (traceback, capped at 4 KB), and recent executions."#;
+message and details (traceback, capped at 4 KB), and recent executions.";
 
 /// Whether this tool answers a list, wrapped in `{"result": …}`.
 ///

@@ -364,11 +364,6 @@ async fn one_many(
 
 #[cfg(test)]
 mod tests {
-    #![expect(
-        clippy::expect_used,
-        reason = "a test fails loudly when a fixture or a statement does not work"
-    )]
-
     use sea_orm::sqlx::error::Error as SqlxError;
     use sea_orm::{DbErr, RuntimeErr};
 

@@ -22,14 +22,14 @@ pub(super) const NAME: &str = "top_flaky_tests";
 /// The title a client shows.
 pub(super) const TITLE: &str = "Top Flaky Tests";
 /// The description a client shows.
-pub(super) const DESCRIPTION: &str = r#"Worst tests first in a Repo (optionally one Project).
+pub(super) const DESCRIPTION: &str = "Worst tests first in a Repo (optionally one Project).
 
 include_suspect=False returns only 'flaky' tier tests. `file` keeps
 tests whose reported file contains that text (e.g. 'tests/test_cron.py').
 `category` keeps tests whose likely cause (Failure category) is one of
 network, environment, timing, assertion, other. new_within_days=N keeps
 only tests that became flaky in the last N days: score at/above the
-threshold now, below it N days ago or with no history that old."#;
+threshold now, below it N days ago or with no history that old.";
 
 /// Whether this tool answers a list, wrapped in `{"result": …}`.
 ///

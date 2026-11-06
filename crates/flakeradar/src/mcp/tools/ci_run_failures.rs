@@ -22,10 +22,11 @@ pub(super) const NAME: &str = "ci_run_failures";
 /// The title a client shows.
 pub(super) const TITLE: &str = "Ci Run Failures";
 /// The description a client shows.
-pub(super) const DESCRIPTION: &str = r#"Tests that failed in one CI run attempt (the latest unless ci_run_attempt
+pub(super) const DESCRIPTION: &str =
+    "Tests that failed in one CI run attempt (the latest unless ci_run_attempt
 is given), each with its current tier and score, and the CI run's failed
 jobs marked explained or unexplained. reports.pending > 0 means some
-reports are not processed yet, so the lists can be incomplete."#;
+reports are not processed yet, so the lists can be incomplete.";
 
 /// Whether this tool answers a list, wrapped in `{"result": …}`.
 ///

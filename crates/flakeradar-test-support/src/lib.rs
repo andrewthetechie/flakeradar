@@ -11,6 +11,14 @@
 
 // Rust guideline compliant 2026-07-21
 
+#![cfg_attr(
+    test,
+    expect(
+        clippy::expect_used,
+        reason = "a unit test fails loudly when the rule under test is wrong"
+    )
+)]
+
 mod app;
 mod clock;
 mod db;

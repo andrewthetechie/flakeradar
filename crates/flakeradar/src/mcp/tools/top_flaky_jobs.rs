@@ -23,10 +23,11 @@ pub(super) const NAME: &str = "top_flaky_jobs";
 /// The title a client shows.
 pub(super) const TITLE: &str = "Top Flaky Jobs";
 /// The description a client shows.
-pub(super) const DESCRIPTION: &str = r#"Worst CI jobs first in a Repo. Job scores count only UNEXPLAINED failures
+pub(super) const DESCRIPTION: &str =
+    "Worst CI jobs first in a Repo. Job scores count only UNEXPLAINED failures
 (failures with no failing test in the same job). new_within_days=N keeps
 only jobs that became flaky in the last N days: score at/above the
-threshold now, below it N days ago or with no history that old."#;
+threshold now, below it N days ago or with no history that old.";
 
 /// Whether this tool answers a list, wrapped in `{"result": …}`.
 ///

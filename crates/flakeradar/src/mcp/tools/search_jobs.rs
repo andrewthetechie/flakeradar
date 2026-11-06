@@ -23,7 +23,7 @@ pub(super) const NAME: &str = "search_jobs";
 pub(super) const TITLE: &str = "Search Jobs";
 /// The description a client shows.
 pub(super) const DESCRIPTION: &str =
-    r#"Find Jobs whose name or Pipeline (workflow file) contains `query`."#;
+    "Find Jobs whose name or Pipeline (workflow file) contains `query`.";
 
 /// Whether this tool answers a list, wrapped in `{"result": …}`.
 ///

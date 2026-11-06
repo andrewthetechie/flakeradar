@@ -360,11 +360,6 @@ mod tests {
     //! template is published only once it is complete is a property of the
     //! server, so those cases run against a real one.
 
-    #![expect(
-        clippy::expect_used,
-        reason = "a test fails loudly when the server call it just made returns an error"
-    )]
-
     use sea_orm::{ConnectionTrait, DatabaseBackend, DatabaseConnection, Statement};
 
     use super::{

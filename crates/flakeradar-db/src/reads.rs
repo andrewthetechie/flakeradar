@@ -2156,11 +2156,6 @@ async fn ci_run_failed_jobs(
 mod tests {
     //! The small helpers' own rules, without a database.
 
-    #![expect(
-        clippy::expect_used,
-        reason = "a helper test fails loudly when a scope or a conversion is wrong"
-    )]
-
     use super::{
         Binds, EntityKind, ListOptions, NEW_FLAKY_DAYS, ReadError, ReadSettings, SortKey,
         TierFilter, newest_history_join, scope_conditions,

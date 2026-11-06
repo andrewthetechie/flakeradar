@@ -27,9 +27,10 @@ pub(super) const NAME: &str = "get_job";
 /// The title a client shows.
 pub(super) const TITLE: &str = "Get Job";
 /// The description a client shows.
-pub(super) const DESCRIPTION: &str = r#"One Job: score, tier, unexplained vs explained failures, failures grouped
+pub(super) const DESCRIPTION: &str =
+    "One Job: score, tier, unexplained vs explained failures, failures grouped
 by runner (label set, plus runner names seen more than once), and recent
-executions (outcome, sha, branch, attempt, runner, CI url, explaining tests)."#;
+executions (outcome, sha, branch, attempt, runner, CI url, explaining tests).";
 
 /// Whether this tool answers a list, wrapped in `{"result": …}`.
 ///

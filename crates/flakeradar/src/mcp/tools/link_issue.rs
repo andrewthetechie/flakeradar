@@ -21,11 +21,12 @@ pub(super) const NAME: &str = "link_issue";
 /// The title a client shows.
 pub(super) const TITLE: &str = "Link Issue";
 /// The description a client shows.
-pub(super) const DESCRIPTION: &str = r#"Record that GitHub issue #number tracks a flaky test or job. Pass
+pub(super) const DESCRIPTION: &str =
+    "Record that GitHub issue #number tracks a flaky test or job. Pass
 exactly one of test_id or job_id. The issue must be in that test's or
 job's own repo. FlakeRadar then shows the issue and files none of its
 own, and clears the link when the issue closes. Fails when a different
-issue is already linked, unless replace=True. Returns the test or job."#;
+issue is already linked, unless replace=True. Returns the test or job.";
 
 /// Whether this tool answers a list, wrapped in `{"result": …}`.
 ///

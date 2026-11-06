@@ -17,8 +17,7 @@ pub(super) const NAME: &str = "list_repos";
 /// The title a client shows.
 pub(super) const TITLE: &str = "List Repos";
 /// The description a client shows.
-pub(super) const DESCRIPTION: &str =
-    r#"List every Repo with its Projects (name and Project root)."#;
+pub(super) const DESCRIPTION: &str = "List every Repo with its Projects (name and Project root).";
 
 /// Whether this tool answers a list, wrapped in `{"result": …}`.
 ///

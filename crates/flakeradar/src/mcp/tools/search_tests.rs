@@ -22,7 +22,7 @@ pub(super) const NAME: &str = "search_tests";
 pub(super) const TITLE: &str = "Search Tests";
 /// The description a client shows.
 pub(super) const DESCRIPTION: &str =
-    r#"Find tests in a Repo whose name, classname or file contains `query`."#;
+    "Find tests in a Repo whose name, classname or file contains `query`.";
 
 /// Whether this tool answers a list, wrapped in `{"result": …}`.
 ///

@@ -21,8 +21,9 @@ pub(super) const NAME: &str = "unlink_issue";
 /// The title a client shows.
 pub(super) const TITLE: &str = "Unlink Issue";
 /// The description a client shows.
-pub(super) const DESCRIPTION: &str = r#"Remove the GitHub issue link of a test or job (exactly one of test_id
-or job_id), for example a link to the wrong issue. Returns the test or job."#;
+pub(super) const DESCRIPTION: &str =
+    "Remove the GitHub issue link of a test or job (exactly one of test_id
+or job_id), for example a link to the wrong issue. Returns the test or job.";
 
 /// Whether this tool answers a list, wrapped in `{"result": …}`.
 ///
