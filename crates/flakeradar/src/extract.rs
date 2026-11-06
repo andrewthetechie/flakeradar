@@ -141,7 +141,17 @@ where
         let bytes = Bytes::from_request(req, state)
             .await
             .map_err(|rejection| body_error(&rejection))?;
-        let object = parse_json_object(&bytes, content_type.as_deref())?;
+        // A Pipeline body can be 20 MiB, and reading it as JSON is CPU work, so
+        // it runs on a blocking thread: the `Bytes` handle moves for free.
+        let object =
+            tokio::task::spawn_blocking(move || parse_json_object(&bytes, content_type.as_deref()))
+                .await
+                .map_err(|error| {
+                    ApiError::new(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("The JSON body parser did not finish: {error}"),
+                    )
+                })??;
         Ok(Self(T::from_object(&object)?))
     }
 }
