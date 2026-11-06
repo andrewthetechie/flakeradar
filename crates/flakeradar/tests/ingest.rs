@@ -1104,10 +1104,37 @@ async fn ingest_rejects_a_root_that_climbs_out() {
 
 #[tokio::test]
 async fn ingest_rejects_a_query_that_is_not_an_integer() {
+    // Measured from the reference at 86c98804: `line_base` is a Pydantic `int`
+    // in the query, so `abc` and an empty value are `int_parsing` with Pydantic's
+    // sentence, and `1.0` is the integer 1 rather than a refusal.
     let db = TestDb::new().await.expect("a test database is available");
-    let reply = ingest(&test_app(&db), &[("line_base", "abc")], passing_report()).await;
-    assert_eq!(reply.status, StatusCode::UNPROCESSABLE_ENTITY);
-    assert_eq!(reply.json()["detail"][0]["type"], json!("int_parsing"));
+    let app = test_app(&db);
+    for value in ["abc", ""] {
+        let reply = ingest(&app, &[("line_base", value)], passing_report()).await;
+        assert_eq!(
+            reply.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "line_base={value}"
+        );
+        assert_eq!(
+            reply.json()["detail"],
+            json!([{
+                "type": "int_parsing",
+                "loc": ["query", "line_base"],
+                "msg": "Input should be a valid integer, unable to parse string as an integer",
+                "input": value,
+            }]),
+            "line_base={value}"
+        );
+    }
+    let reply = ingest(&app, &[("line_base", "1.0")], passing_report()).await;
+    assert_eq!(
+        reply.status,
+        StatusCode::ACCEPTED,
+        "line_base=1.0: {}",
+        reply.text()
+    );
+    assert_eq!(reply.json()["status"], json!("pending"));
 }
 
 #[tokio::test]

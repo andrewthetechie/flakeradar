@@ -707,7 +707,10 @@ fn parse<T: serde::de::DeserializeOwned>(arguments: Value) -> Result<T, ToolFail
         let path = error.path().to_string();
         let detail = error.into_inner().to_string();
         let path = match path.as_str() {
-            "." => unknown_field(&detail).unwrap_or(path.as_str()).to_owned(),
+            "." => unknown_field(&detail)
+                .or_else(|| missing_field(&detail))
+                .unwrap_or(path.as_str())
+                .to_owned(),
             _ => path,
         };
         ToolFailure::InvalidArguments { path, detail }
@@ -735,6 +738,12 @@ fn no_arguments(arguments: &Value) -> Result<(), ToolFailure> {
 /// The field name in serde's own "unknown field" message.
 fn unknown_field(message: &str) -> Option<&str> {
     let rest = message.split_once("unknown field `")?.1;
+    rest.split_once('`').map(|(field, _)| field)
+}
+
+/// The field name in serde's own "missing field" message.
+fn missing_field(message: &str) -> Option<&str> {
+    let rest = message.split_once("missing field `")?.1;
     rest.split_once('`').map(|(field, _)| field)
 }
 

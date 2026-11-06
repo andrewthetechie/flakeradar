@@ -1623,9 +1623,12 @@ async fn an_unknown_tool_and_an_unreadable_argument_are_error_results() {
     )
     .await;
     let text = error_result_text(&missing);
+    // The reference names the field Pydantic reported missing; only the
+    // diagnosis's own wording (`Missing required argument`) is a recorded
+    // difference.
     assert!(
-        text.starts_with("1 validation error for call[top_flaky_tests]\narguments\n  "),
-        "a missing field fails at the argument object: {text:?}"
+        text.starts_with("1 validation error for call[top_flaky_tests]\nrepo\n  "),
+        "a missing field is named: {text:?}"
     );
     assert!(
         text.contains("missing field `repo`"),

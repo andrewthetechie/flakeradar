@@ -186,7 +186,10 @@ pub struct IngestQuery {
     #[serde(default)]
     root: Option<String>,
     /// The base the runner used for line numbers: `1` or `0`.
-    #[serde(default = "default_line_base")]
+    #[serde(
+        default = "default_line_base",
+        deserialize_with = "flakeradar_core::dto::lax_int::value"
+    )]
     line_base: i64,
     /// The commit the Report covers.
     commit_sha: String,
