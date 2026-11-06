@@ -1079,10 +1079,100 @@ pub async fn rescore(
     day_counts: Option<&BTreeMap<i32, DayCounts>>,
     settings: &ProcessingSettings,
 ) -> Result<Vec<TierChange>, DbError> {
-    let mut history: BTreeMap<i32, Vec<ScoredExecution>> = BTreeMap::new();
-    let mut categories: BTreeMap<i32, Vec<Option<FailureCategory>>> = BTreeMap::new();
-    let mut default_branch: BTreeMap<i32, Option<String>> = BTreeMap::new();
-    for chunk in chunks(test_case_ids) {
+    rescore_kind(db, EntityKind::Test, test_case_ids, day_counts, settings).await
+}
+
+/// One entity's scoring window: its newest Executions and its Repo's branch.
+#[derive(Debug, Clone, Default)]
+struct Window {
+    /// Executions, newest first.
+    executions: Vec<ScoredExecution>,
+    /// The Failure categories of the same Executions, newest first. Only a Test
+    /// is categorised, so a Job's window leaves this empty.
+    categories: Vec<Option<FailureCategory>>,
+    /// The Default branch of the entity's Repo, or `None` while it is unknown.
+    default_branch: Option<String>,
+}
+
+impl Window {
+    /// Adds one newest-first row: its Execution, and the Repo's Default branch.
+    fn push(&mut self, row: &QueryResult, status: ExecutionStatus) -> Result<(), DbError> {
+        self.executions.push(ScoredExecution {
+            commit_sha: get(row, "commit_sha")?,
+            branch: get(row, "branch")?,
+            status,
+        });
+        self.default_branch = get(row, "default_branch")?;
+        Ok(())
+    }
+}
+
+/// The binds both window statements take: the ids and the window, twice.
+fn window_binds(chunk: &[i32], settings: &ProcessingSettings) -> Vec<Value> {
+    vec![
+        int_array(chunk),
+        Value::from(window_param(settings.score_window)),
+        int_array(chunk),
+        Value::from(window_param(settings.score_window)),
+    ]
+}
+
+impl Update {
+    /// The row `id`'s window scores to.
+    ///
+    /// A row with no window scores as an empty one: no flip, no Proven flake and
+    /// a Clean streak of 0.
+    fn of(id: i32, window: Option<&Window>, settings: &ProcessingSettings) -> Self {
+        let empty = Window::default();
+        let window = window.unwrap_or(&empty);
+        let branch = window.default_branch.as_deref();
+        let (score, proven) = branch_scoped_score(
+            &window.executions,
+            branch,
+            settings.score_decay,
+            settings.score_window,
+        );
+        let streak = branch_scoped_streak(&window.executions, branch);
+        let categories: Vec<Option<FailureCategory>> = window
+            .categories
+            .iter()
+            .take(settings.score_window)
+            .copied()
+            .collect();
+        Self {
+            id,
+            flakiness_score: score.as_f64(),
+            confirmed_flake_count: i32::try_from(proven).unwrap_or(i32::MAX),
+            clean_streak: i32::try_from(streak).unwrap_or(i32::MAX),
+            clear_fixed_note: streak == 0,
+            fail_streak: i32::try_from(branch_scoped_fail_streak(&window.executions, branch))
+                .unwrap_or(i32::MAX),
+            failure_category: dominant_category(&categories),
+        }
+    }
+}
+
+/// The windows of every id, newest first.
+async fn windows(
+    db: &impl ConnectionTrait,
+    kind: EntityKind,
+    ids: &[i32],
+    settings: &ProcessingSettings,
+) -> Result<BTreeMap<i32, Window>, DbError> {
+    match kind {
+        EntityKind::Test => test_windows(db, ids, settings).await,
+        EntityKind::Job => job_windows(db, ids, settings).await,
+    }
+}
+
+/// The Tests' scoring windows, with the Failure category of each Execution.
+async fn test_windows(
+    db: &impl ConnectionTrait,
+    ids: &[i32],
+    settings: &ProcessingSettings,
+) -> Result<BTreeMap<i32, Window>, DbError> {
+    let mut windows: BTreeMap<i32, Window> = BTreeMap::new();
+    for chunk in chunks(ids) {
         let sql = format!(
             "SELECT e.test_case_id, r.commit_sha, r.branch, e.status, e.failure_category, ro.default_branch \
                FROM test_executions e \
@@ -1093,82 +1183,126 @@ pub async fn rescore(
               ORDER BY e.test_case_id, e.id DESC",
             test_window_ids_sql()
         );
-        let values = vec![
-            int_array(chunk),
-            Value::from(window_param(settings.score_window)),
-            int_array(chunk),
-            Value::from(window_param(settings.score_window)),
-        ];
-        for row in rows(db, sql, values).await? {
+        for row in rows(db, sql, window_binds(chunk, settings)).await? {
             let id: i32 = get(&row, "test_case_id")?;
-            history.entry(id).or_default().push(ScoredExecution {
-                commit_sha: get::<String>(&row, "commit_sha")?,
-                branch: get::<String>(&row, "branch")?,
-                status: execution_status(&get::<String>(&row, "status")?)?,
-            });
-            categories.entry(id).or_default().push(
+            let status = execution_status(&get::<String>(&row, "status")?)?;
+            let window = windows.entry(id).or_default();
+            window.push(&row, status)?;
+            window.categories.push(
                 get::<Option<String>>(&row, "failure_category")?
                     .as_deref()
                     .and_then(FailureCategory::from_wire),
             );
-            default_branch.insert(id, get(&row, "default_branch")?);
         }
     }
+    Ok(windows)
+}
 
-    let mut updates = Vec::with_capacity(test_case_ids.len());
-    for id in test_case_ids {
-        let empty = Vec::new();
-        let executions = history.get(id).unwrap_or(&empty);
-        let branch = default_branch.get(id).cloned().flatten();
-        let (score, proven) = branch_scoped_score(
-            executions,
-            branch.as_deref(),
-            settings.score_decay,
-            settings.score_window,
+/// The Jobs' scoring windows, newest first.
+///
+/// Explained failed Executions become `skipped`, so they never break a streak.
+async fn job_windows(
+    db: &impl ConnectionTrait,
+    ids: &[i32],
+    settings: &ProcessingSettings,
+) -> Result<BTreeMap<i32, Window>, DbError> {
+    let mut windows: BTreeMap<i32, Window> = BTreeMap::new();
+    for chunk in chunks(ids) {
+        // The table names are written out: `job_execution_explained_sql` reads
+        // `job_executions`, `jobs` and `pipelines` by name, as Python's query did.
+        let sql = format!(
+            "SELECT job_executions.job_id, job_executions.commit_sha, job_executions.branch, \
+                    job_executions.status, ({}) AS explained, repos.default_branch \
+               FROM job_executions \
+               JOIN jobs ON jobs.id = job_executions.job_id \
+               JOIN pipelines ON pipelines.id = jobs.pipeline_id \
+               JOIN repos ON repos.id = pipelines.repo_id \
+              WHERE job_executions.id IN (SELECT w.id FROM ({}) AS w) \
+              ORDER BY job_executions.job_id, job_executions.id DESC",
+            job_execution_explained_sql(),
+            job_window_ids_sql()
         );
-        let streak = branch_scoped_streak(executions, branch.as_deref());
-        let window_categories: Vec<Option<FailureCategory>> = categories
-            .get(id)
-            .map(|all| all.iter().take(settings.score_window).copied().collect())
-            .unwrap_or_default();
-        updates.push(Update {
-            id: *id,
-            flakiness_score: score.as_f64(),
-            confirmed_flake_count: i32::try_from(proven).unwrap_or(i32::MAX),
-            failure_category: dominant_category(&window_categories),
-            clean_streak: i32::try_from(streak).unwrap_or(i32::MAX),
-            fail_streak: i32::try_from(branch_scoped_fail_streak(executions, branch.as_deref()))
-                .unwrap_or(i32::MAX),
-            clear_fixed_note: streak == 0,
-        });
+        for row in rows(db, sql, window_binds(chunk, settings)).await? {
+            let id: i32 = get(&row, "job_id")?;
+            let explained: bool = get(&row, "explained")?;
+            let mut status = execution_status(&get::<String>(&row, "status")?)?;
+            if explained && status == ExecutionStatus::Failed {
+                status = ExecutionStatus::Skipped;
+            }
+            windows.entry(id).or_default().push(&row, status)?;
+        }
     }
-    let old = old_scores(db, EntityKind::Test, test_case_ids).await?;
-    let changes = tier_changes(db, &TEST_NOTICES, &updates, &old, settings).await?;
-    write_updates(db, &TEST_TABLE, &updates).await?;
-    if !updates.is_empty() {
-        let history_updates: Vec<HistoryUpdate> = updates
-            .iter()
-            .map(|update| HistoryUpdate {
-                id: update.id,
-                flakiness_score: update.flakiness_score,
-                confirmed_flake_count: update.confirmed_flake_count,
-                executions: day_counts
-                    .and_then(|counts| counts.get(&update.id))
-                    .map_or(0, |counts| counts.executions),
-                failures: day_counts
-                    .and_then(|counts| counts.get(&update.id))
-                    .map_or(0, |counts| counts.failures),
-            })
-            .collect();
-        write_today_history(
-            db,
-            EntityKind::Test,
-            &history_updates,
-            settings.clock.today(),
-        )
-        .await?;
+    Ok(windows)
+}
+
+/// The `UpdateTable` that holds `kind`'s rows.
+fn table_of(kind: EntityKind) -> &'static UpdateTable {
+    match kind {
+        EntityKind::Test => &TEST_TABLE,
+        EntityKind::Job => &JOB_TABLE,
     }
+}
+
+/// The `Notices` that report `kind`'s Tier changes.
+fn notices_of(kind: EntityKind) -> &'static Notices {
+    match kind {
+        EntityKind::Test => &TEST_NOTICES,
+        EntityKind::Job => &JOB_NOTICES,
+    }
+}
+
+/// Recomputes flakiness for `kind`'s rows, and writes the Tier changes it makes.
+///
+/// Every rule a rescore applies is here, once: the window scores the row, the
+/// old score says whether the tier crossed, the bulk update writes the row and
+/// today's Score history gains the day's counts. What differs between a Test and
+/// a Job is a window statement, a table and a set of Notices, which the
+/// descriptors carry.
+async fn rescore_kind(
+    db: &impl ConnectionTrait,
+    kind: EntityKind,
+    ids: &[i32],
+    day_counts: Option<&BTreeMap<i32, DayCounts>>,
+    settings: &ProcessingSettings,
+) -> Result<Vec<TierChange>, DbError> {
+    let windows = windows(db, kind, ids, settings).await?;
+    let updates: Vec<Update> = ids
+        .iter()
+        .map(|id| Update::of(*id, windows.get(id), settings))
+        .collect();
+    let old = old_scores(db, kind, ids).await?;
+    let changes = tier_changes(db, notices_of(kind), &updates, &old, settings).await?;
+    write_updates(db, table_of(kind), &updates).await?;
+    write_day_counts(db, kind, &updates, day_counts, settings).await?;
     Ok(changes)
+}
+
+/// Adds this rescore to today's Score history row of every id.
+async fn write_day_counts(
+    db: &impl ConnectionTrait,
+    kind: EntityKind,
+    updates: &[Update],
+    day_counts: Option<&BTreeMap<i32, DayCounts>>,
+    settings: &ProcessingSettings,
+) -> Result<(), DbError> {
+    if updates.is_empty() {
+        return Ok(());
+    }
+    let history_updates: Vec<HistoryUpdate> = updates
+        .iter()
+        .map(|update| HistoryUpdate {
+            id: update.id,
+            flakiness_score: update.flakiness_score,
+            confirmed_flake_count: update.confirmed_flake_count,
+            executions: day_counts
+                .and_then(|counts| counts.get(&update.id))
+                .map_or(0, |counts| counts.executions),
+            failures: day_counts
+                .and_then(|counts| counts.get(&update.id))
+                .map_or(0, |counts| counts.failures),
+        })
+        .collect();
+    write_today_history(db, kind, &history_updates, settings.clock.today()).await
 }
 
 /// The table that holds `kind`'s scored rows.
@@ -1519,56 +1653,16 @@ pub async fn job_history(
     job_ids: &[i32],
     settings: &ProcessingSettings,
 ) -> Result<BTreeMap<i32, JobHistory>, DbError> {
-    let mut history: BTreeMap<i32, Vec<ScoredExecution>> = BTreeMap::new();
-    let mut branches: BTreeMap<i32, Option<String>> = BTreeMap::new();
-    for id in job_ids {
-        history.entry(*id).or_default();
-        branches.entry(*id).or_insert(None);
-    }
-    for chunk in chunks(job_ids) {
-        // The table names are written out: `job_execution_explained_sql` reads
-        // `job_executions`, `jobs` and `pipelines` by name, as Python's query did.
-        let sql = format!(
-            "SELECT job_executions.job_id, job_executions.commit_sha, job_executions.branch, \
-                    job_executions.status, ({}) AS explained, repos.default_branch \
-               FROM job_executions \
-               JOIN jobs ON jobs.id = job_executions.job_id \
-               JOIN pipelines ON pipelines.id = jobs.pipeline_id \
-               JOIN repos ON repos.id = pipelines.repo_id \
-              WHERE job_executions.id IN (SELECT w.id FROM ({}) AS w) \
-              ORDER BY job_executions.job_id, job_executions.id DESC",
-            job_execution_explained_sql(),
-            job_window_ids_sql()
-        );
-        let values = vec![
-            int_array(chunk),
-            Value::from(window_param(settings.score_window)),
-            int_array(chunk),
-            Value::from(window_param(settings.score_window)),
-        ];
-        for row in rows(db, sql, values).await? {
-            let id: i32 = get(&row, "job_id")?;
-            let explained: bool = get(&row, "explained")?;
-            let mut status = execution_status(&get::<String>(&row, "status")?)?;
-            if explained && status == ExecutionStatus::Failed {
-                status = ExecutionStatus::Skipped;
-            }
-            history.entry(id).or_default().push(ScoredExecution {
-                commit_sha: get::<String>(&row, "commit_sha")?,
-                branch: get::<String>(&row, "branch")?,
-                status,
-            });
-            branches.insert(id, get(&row, "default_branch")?);
-        }
-    }
-    Ok(history
-        .into_iter()
-        .map(|(id, executions)| {
+    let windows = job_windows(db, job_ids, settings).await?;
+    Ok(job_ids
+        .iter()
+        .map(|id| {
+            let window = windows.get(id).cloned().unwrap_or_default();
             (
-                id,
+                *id,
                 JobHistory {
-                    default_branch: branches.get(&id).cloned().flatten(),
-                    executions,
+                    default_branch: window.default_branch,
+                    executions: window.executions,
                 },
             )
         })
@@ -1586,56 +1680,7 @@ pub async fn rescore_jobs(
     day_counts: Option<&BTreeMap<i32, DayCounts>>,
     settings: &ProcessingSettings,
 ) -> Result<Vec<TierChange>, DbError> {
-    let history = job_history(db, job_ids, settings).await?;
-    let mut updates = Vec::with_capacity(job_ids.len());
-    for id in job_ids {
-        let entry = history.get(id).cloned().unwrap_or_default();
-        let branch = entry.default_branch;
-        let (score, proven) = branch_scoped_score(
-            &entry.executions,
-            branch.as_deref(),
-            settings.score_decay,
-            settings.score_window,
-        );
-        let streak = branch_scoped_streak(&entry.executions, branch.as_deref());
-        updates.push(Update {
-            id: *id,
-            flakiness_score: score.as_f64(),
-            confirmed_flake_count: i32::try_from(proven).unwrap_or(i32::MAX),
-            clean_streak: i32::try_from(streak).unwrap_or(i32::MAX),
-            clear_fixed_note: streak == 0,
-            // A Job scores neither: the two columns are a Test's.
-            fail_streak: 0,
-            failure_category: None,
-        });
-    }
-    let old = old_scores(db, EntityKind::Job, job_ids).await?;
-    let changes = tier_changes(db, &JOB_NOTICES, &updates, &old, settings).await?;
-    write_updates(db, &JOB_TABLE, &updates).await?;
-    if !updates.is_empty() {
-        let history_updates: Vec<HistoryUpdate> = updates
-            .iter()
-            .map(|update| HistoryUpdate {
-                id: update.id,
-                flakiness_score: update.flakiness_score,
-                confirmed_flake_count: update.confirmed_flake_count,
-                executions: day_counts
-                    .and_then(|counts| counts.get(&update.id))
-                    .map_or(0, |counts| counts.executions),
-                failures: day_counts
-                    .and_then(|counts| counts.get(&update.id))
-                    .map_or(0, |counts| counts.failures),
-            })
-            .collect();
-        write_today_history(
-            db,
-            EntityKind::Job,
-            &history_updates,
-            settings.clock.today(),
-        )
-        .await?;
-    }
-    Ok(changes)
+    rescore_kind(db, EntityKind::Job, job_ids, day_counts, settings).await
 }
 
 /// Rescales every Job that carries this `ci_job_id` in the Repo.
