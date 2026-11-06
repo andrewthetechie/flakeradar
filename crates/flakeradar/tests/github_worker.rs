@@ -10,8 +10,6 @@
     reason = "a test fails loudly when a stub or a task does not behave"
 )]
 
-mod common;
-
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use chrono::{FixedOffset, TimeZone as _, Utc};
@@ -30,8 +28,9 @@ use flakeradar_db::{
     connect_session,
 };
 use flakeradar_test_support::{
-    FixedClock, ScriptedMonotonic, TestDb, dropped, make_job, make_junit, make_pipeline,
-    make_project, make_report, make_test_case, queued, until_finished, wait_until, within,
+    FixedClock, ScriptedMonotonic, TestDb, Unanswered, app, database_name, dropped, end_session,
+    lock_holder, lock_holder_pid, lock_is_free, make_job, make_junit, make_pipeline, make_project,
+    make_report, make_test_case, post, queued, until_finished, wait_until, within,
 };
 use sea_orm::ConnectionTrait as _;
 use sea_orm::{
@@ -500,84 +499,6 @@ impl LeaderTask for Announced {
     }
 }
 
-/// Whether another session can take the processor lock right now.
-async fn lock_is_free(url: &str) -> bool {
-    let pool = connect(url, DbSettings::default())
-        .await
-        .expect("the probe's pool");
-    let statement = Statement::from_sql_and_values(
-        DbBackend::Postgres,
-        "SELECT pg_try_advisory_lock($1) AS locked",
-        [WORKER_LOCK_KEY.into()],
-    );
-    let row = pool
-        .query_one_raw(statement)
-        .await
-        .expect("the probe query runs")
-        .expect("the probe query answers");
-    let free: bool = row.try_get("", "locked").expect("a flag");
-    if free {
-        let statement = Statement::from_sql_and_values(
-            DbBackend::Postgres,
-            "SELECT pg_advisory_unlock($1)",
-            [WORKER_LOCK_KEY.into()],
-        );
-        pool.execute_raw(statement)
-            .await
-            .expect("the probe releases the lock");
-    }
-    pool.close().await.expect("the probe's pool closes");
-    free
-}
-
-/// The name of `db`'s database, for ending sessions on it.
-async fn database_name(db: &TestDb) -> String {
-    let row = db
-        .connection()
-        .query_one_raw(Statement::from_string(
-            DbBackend::Postgres,
-            "SELECT current_database() AS name".to_owned(),
-        ))
-        .await
-        .expect("the database name reads")
-        .expect("a database name");
-    row.try_get("", "name").expect("a database name")
-}
-
-/// The backend id that holds the processor lock for `database`, when one does.
-async fn lock_holder_pid(db: &TestDb, database: &str) -> Option<i32> {
-    let admin = connect(db.maintenance_url(), DbSettings::default())
-        .await
-        .expect("the maintenance connection");
-    let statement = Statement::from_sql_and_values(
-        DbBackend::Postgres,
-        "SELECT pid FROM pg_locks WHERE locktype = 'advisory' AND granted \
-           AND classid = 0 AND objid::bigint = $1 \
-           AND database = (SELECT oid FROM pg_database WHERE datname = $2)",
-        [WORKER_LOCK_KEY.into(), database.into()],
-    );
-    let row = admin
-        .query_one_raw(statement)
-        .await
-        .expect("the lock query runs");
-    let pid: Option<i32> = row.map(|row| row.try_get("", "pid").expect("a backend id"));
-    admin
-        .close()
-        .await
-        .expect("the maintenance connection closes");
-    pid
-}
-
-/// The backend id that holds the processor lock for `database`.
-///
-/// Read while the worker leads and nothing else has been changed, so the answer
-/// cannot race the loss the caller stages next.
-async fn lock_holder(db: &TestDb, database: &str) -> i32 {
-    lock_holder_pid(db, database)
-        .await
-        .expect("the worker that leads holds the processor lock")
-}
-
 /// Restarts the server under `db`, as far as a client can tell: every backend on
 /// the database dies at once, which is what a restarted PostgreSQL hands its
 /// clients. The lock session goes with them, so the worker has to earn leadership
@@ -616,28 +537,6 @@ async fn issue_reads(server: &MockServer) -> usize {
         .iter()
         .filter(|(method, path)| method == "GET" && path.starts_with("/repos/acme/app/issues/"))
         .count()
-}
-
-/// Ends the backend `pid`, answering whether it was still there.
-async fn end_session(db: &TestDb, pid: i32) -> bool {
-    let admin = connect(db.maintenance_url(), DbSettings::default())
-        .await
-        .expect("the maintenance connection");
-    let row = admin
-        .query_one_raw(Statement::from_sql_and_values(
-            DbBackend::Postgres,
-            "SELECT pg_terminate_backend($1) AS ended",
-            [pid.into()],
-        ))
-        .await
-        .expect("the terminate query runs")
-        .expect("the terminate query answers");
-    let ended: bool = row.try_get("", "ended").expect("a flag");
-    admin
-        .close()
-        .await
-        .expect("the maintenance connection closes");
-    ended
 }
 
 /// A claim on the processor lock, queued on a session of the test's own.
@@ -1811,7 +1710,7 @@ async fn stopping_ends_an_unanswered_sync_get_at_once() {
     // to it after the first GET gave up, so the request count is a second fact
     // about the stop, independent of how long anything took.
     let other = linked_test_in(&db, "other/app", 13).await;
-    let endpoint = common::Unanswered::start().await;
+    let endpoint = Unanswered::start().await;
     let worker = GitHubWorker::new(
         db.connection().clone(),
         Arc::new(settings()),
@@ -1844,7 +1743,7 @@ async fn stopping_ends_an_unanswered_sync_get_at_once() {
 #[tokio::test]
 async fn stopping_ends_an_unanswered_note_post_at_once() {
     let db = TestDb::new().await.expect("a test database");
-    let endpoint = common::Unanswered::start().await;
+    let endpoint = Unanswered::start().await;
     let worker = GitHubWorker::new(
         db.connection().clone(),
         Arc::new(note_settings()),
@@ -2014,8 +1913,8 @@ async fn a_sync_holds_no_row_lock_across_its_get() {
 
     // The quarantine route wants that same row, and answers 200 rather than the
     // 500 a statement timeout would give it.
-    let app = common::app(&db, &[]);
-    let reply = common::post(
+    let app = app(&db, &[]);
+    let reply = post(
         &app,
         &format!("/api/tests/{checked}/quarantine"),
         &[("content-type", "application/json")],

@@ -51,7 +51,7 @@ pub use attribution::{
 pub use batching::{CHUNK, chunks, owned_chunks};
 #[doc(inline)]
 pub use clock::{
-    Clock, FixedClock, MonotonicClock, SharedClock, SharedMonotonic, SystemClock, SystemMonotonic,
+    Clock, MonotonicClock, SharedClock, SharedMonotonic, SystemClock, SystemMonotonic,
 };
 #[doc(inline)]
 pub use connect::{DbSettings, connect, connect_session};

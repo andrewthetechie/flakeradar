@@ -22,11 +22,11 @@ use flakeradar_db::entities::{
     test_executions, test_runs, test_score_history,
 };
 use flakeradar_db::{
-    FixedClock, ProcessingSettings, claim_next_report, get_or_create_project, process_next,
-    rescore, rescore_jobs,
+    ProcessingSettings, claim_next_report, get_or_create_project, process_next, rescore,
+    rescore_jobs,
 };
 use flakeradar_test_support::{
-    TestDb, make_job, make_job_execution, make_junit, make_pipeline, make_report,
+    FixedClock, TestDb, make_job, make_job_execution, make_junit, make_pipeline, make_report,
 };
 use sea_orm::{
     ColumnTrait, ConnectionTrait, EntityTrait, PaginatorTrait as _, QueryFilter, QueryOrder,

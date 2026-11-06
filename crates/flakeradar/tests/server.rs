@@ -11,17 +11,16 @@
     reason = "a test fails loudly when the server does not answer as it must"
 )]
 
-mod common;
-
 use flakeradar::{Server, Settings};
-use flakeradar_test_support::{TestDb, wait_until};
+use flakeradar_test_support::{TestDb, settings, wait_until};
+
 use sea_orm::{ConnectionTrait as _, EntityTrait as _, PaginatorTrait as _};
 use serde_json::json;
 use tokio::sync::oneshot;
 
 /// Settings for a server on `db`, on the kernel's choice of port.
 fn settings_for(db: &TestDb) -> Settings {
-    common::settings(&[
+    settings(&[
         ("FLAKERADAR_DATABASE_URL", db.url()),
         ("FLAKERADAR_HOST", "127.0.0.1"),
         ("FLAKERADAR_PORT", "0"),
@@ -174,7 +173,7 @@ async fn processor_lock_is_free(db: &TestDb) -> bool {
 #[tokio::test]
 async fn a_server_with_webhook_urls_starts_and_stops_the_notification_task() {
     let db = TestDb::new().await.expect("a test database");
-    let settings = common::settings(&[
+    let settings = settings(&[
         ("FLAKERADAR_DATABASE_URL", db.url()),
         ("FLAKERADAR_HOST", "127.0.0.1"),
         ("FLAKERADAR_PORT", "0"),

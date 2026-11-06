@@ -7,14 +7,12 @@
     reason = "a test fails loudly when a fixture or an answer does not behave"
 )]
 
-mod common;
-
 use chrono::{Duration, Utc};
-use common::{app, get};
 use flakeradar_test_support::{
-    TestDb, make_execution, make_job, make_job_execution, make_job_score, make_pipeline,
+    TestDb, app, get, make_execution, make_job, make_job_execution, make_job_score, make_pipeline,
     make_project, make_run, make_test_case,
 };
+
 use serde_json::{Value, json};
 
 /// The UTC day `days` before today.

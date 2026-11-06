@@ -8,13 +8,13 @@
     reason = "a test fails loudly when a Report route answers something else"
 )]
 
-mod common;
-
 use axum::http::{Method, StatusCode};
-use common::{Reply, app, get, request};
 use flakeradar_core::ReportStatus;
 use flakeradar_db::entities::reports;
-use flakeradar_test_support::{TestDb, make_project, make_report};
+use flakeradar_test_support::{
+    Reply, TestDb, app, get, make_project, make_report, post, request, request_with_headers,
+};
+
 use sea_orm::{EntityTrait, PaginatorTrait as _};
 use serde_json::json;
 
@@ -173,20 +173,20 @@ async fn retry() {
     let unauthorised = request(&app, Method::POST, &format!("/api/reports/{failed}/retry")).await;
     assert_eq!(unauthorised.status, StatusCode::UNAUTHORIZED);
 
-    let retried = common::post(&app, &format!("/api/reports/{failed}/retry"), &auth(), "").await;
+    let retried = post(&app, &format!("/api/reports/{failed}/retry"), &auth(), "").await;
     assert_eq!(retried.status, StatusCode::OK);
     assert_eq!(retried.json()["status"], json!("pending"));
     assert_eq!(retried.json()["error"], json!(null));
     assert_eq!(retried.json()["retry_count"], json!(0));
 
-    let conflict = common::post(&app, &format!("/api/reports/{pending}/retry"), &auth(), "").await;
+    let conflict = post(&app, &format!("/api/reports/{pending}/retry"), &auth(), "").await;
     assert_eq!(conflict.status, StatusCode::CONFLICT);
     assert_eq!(
         conflict.json(),
         json!({"detail": "Only failed reports can be retried"})
     );
 
-    let missing = common::post(&app, "/api/reports/999999/retry", &auth(), "").await;
+    let missing = post(&app, "/api/reports/999999/retry", &auth(), "").await;
     assert_eq!(missing.status, StatusCode::NOT_FOUND);
     assert_eq!(missing.json(), json!({"detail": "Report not found"}));
 
@@ -206,7 +206,7 @@ async fn retry_resets_the_budget_at_the_cap() {
     // retries have spent the whole budget, and the budget starts again.
     let db = TestDb::new().await.expect("a test database is available");
     let [_, failed, ..] = seed(&db).await;
-    let reply = common::post(
+    let reply = post(
         &test_app(&db),
         &format!("/api/reports/{failed}/retry"),
         &auth(),
@@ -228,7 +228,7 @@ async fn delete() {
 
     let deleted = request(&app, Method::DELETE, &format!("/api/reports/{failed}")).await;
     assert_eq!(deleted.status, StatusCode::UNAUTHORIZED);
-    let deleted = common::request_with_headers(
+    let deleted = request_with_headers(
         &app,
         Method::DELETE,
         &format!("/api/reports/{failed}"),
@@ -250,7 +250,7 @@ async fn delete() {
     );
 
     for other in [pending, done] {
-        let conflict = common::request_with_headers(
+        let conflict = request_with_headers(
             &app,
             Method::DELETE,
             &format!("/api/reports/{other}"),
@@ -263,8 +263,7 @@ async fn delete() {
             json!({"detail": "Only failed reports can be deleted"})
         );
     }
-    let missing =
-        common::request_with_headers(&app, Method::DELETE, "/api/reports/9999", &auth()).await;
+    let missing = request_with_headers(&app, Method::DELETE, "/api/reports/9999", &auth()).await;
     assert_eq!(missing.status, StatusCode::NOT_FOUND);
     assert_eq!(missing.json(), json!({"detail": "Report not found"}));
 }

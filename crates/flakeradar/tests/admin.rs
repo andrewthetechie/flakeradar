@@ -10,18 +10,16 @@
     reason = "a test fails loudly when a fixture or an answer does not behave"
 )]
 
-mod common;
-
 use std::sync::Arc;
 
 use axum::Router;
 use axum::http::{Method, StatusCode};
-use common::{Reply, request, request_with_headers, settings};
 use flakeradar::{Api, AppState, build_app};
 use flakeradar_test_support::{
-    TestDb, make_execution, make_job, make_job_execution, make_pipeline, make_project, make_report,
-    make_run, make_test_case,
+    Reply, TestDb, get, make_execution, make_job, make_job_execution, make_pipeline, make_project,
+    make_report, make_run, make_test_case, request, request_with_headers, settings,
 };
+
 use sea_orm::ConnectionTrait as _;
 use sea_orm::Statement;
 use sea_orm::{DbBackend, Value};
@@ -136,7 +134,7 @@ async fn raise_on_delete(db: &TestDb, table: &str, sqlstate: &str) {
 
 /// The Projects the Repos listing names for one Repo.
 async fn projects_of(app: &Router, repo: &str) -> Vec<String> {
-    let reply = common::get(app, "/api/repos").await;
+    let reply = get(app, "/api/repos").await;
     reply
         .json()
         .as_array()
@@ -260,7 +258,7 @@ async fn deleting_a_project_removes_only_its_own_rows() {
     );
     assert_eq!(projects_of(&app, "acme/app").await, vec!["frontend"]);
 
-    let listed = common::get(&app, "/api/reports").await;
+    let listed = get(&app, "/api/reports").await;
     let ids: Vec<i64> = listed
         .json()
         .as_array()
@@ -372,7 +370,7 @@ async fn deleting_a_repo_removes_everything_in_it() {
     ] {
         assert_eq!(count(&db, table, None).await, 0, "{table} is empty");
     }
-    assert_eq!(common::get(&app, "/api/repos").await.json(), json!([]));
+    assert_eq!(get(&app, "/api/repos").await.json(), json!([]));
 }
 
 #[tokio::test]

@@ -9,21 +9,20 @@
     reason = "a test fails loudly when the probe or the scrape answers something else"
 )]
 
-mod common;
-
 use std::collections::BTreeMap;
 
 use axum::Router;
 use axum::http::StatusCode;
-use common::{Reply, app, get};
 use flakeradar::AppState;
 use flakeradar::build_app;
 use flakeradar_core::ReportStatus;
 use flakeradar_db::WORKER_LOCK_KEY;
 use flakeradar_db::entities::projects;
 use flakeradar_test_support::{
-    TestDb, make_job, make_pipeline, make_project, make_report, make_test_case,
+    Reply, TestDb, app, get, make_job, make_pipeline, make_project, make_report, make_test_case,
+    settings,
 };
+
 use sea_orm::{ConnectionTrait, DatabaseConnection, DbBackend, Statement, TransactionTrait as _};
 
 const OLDEST: &str = "flakeradar_oldest_pending_report_age_seconds";
@@ -97,7 +96,7 @@ async fn closed_app() -> Router {
     let db = TestDb::new().await.expect("a test database is available");
     let pool = db.connection().clone();
     let app = build_app(
-        AppState::new(pool.clone(), std::sync::Arc::new(common::settings(&[])))
+        AppState::new(pool.clone(), std::sync::Arc::new(settings(&[])))
             .expect("the app state builds"),
     );
     pool.close().await.expect("the pool closes");

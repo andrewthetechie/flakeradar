@@ -11,8 +11,10 @@
 
 // Rust guideline compliant 2026-07-21
 
+mod app;
 mod clock;
 mod db;
+mod doubles;
 mod error;
 mod factories;
 mod junit;
@@ -21,9 +23,21 @@ mod postgres;
 mod wait;
 
 #[doc(inline)]
+pub use app::{
+    MemoryAssets, Reply, Unanswered, app, app_serving, app_with, get, post, request,
+    request_with_headers, send, settings,
+};
+#[doc(inline)]
 pub use clock::{FixedClock, system_clock};
 #[doc(inline)]
 pub use db::TestDb;
+#[doc(inline)]
+pub use doubles::{
+    CapturedLog, CountingLock, CountingPruner, FailingLock, FailingOnceProcessor,
+    FailingUnlockLock, GateWaiter, ManualMonotonic, RecordingTask, RecordingWaiter,
+    ScriptedProcessor, SharedWriter, StopProbe, database_name, end_session, lock_holder,
+    lock_holder_pid, lock_is_free, set_connections_allowed, terminate_lock_session,
+};
 #[doc(inline)]
 pub use error::TestError;
 #[doc(inline)]

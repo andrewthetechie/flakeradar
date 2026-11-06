@@ -1015,14 +1015,21 @@ dependencies = [
 name = "flakeradar-test-support"
 version = "2.0.0"
 dependencies = [
+ "anyhow",
+ "axum",
  "chrono",
  "flakeradar",
+ "flakeradar-core",
  "flakeradar-db",
  "sea-orm",
+ "serde_json",
  "sha1",
  "sha2 0.11.1",
  "thiserror",
  "tokio",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

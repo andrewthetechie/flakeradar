@@ -9,14 +9,13 @@
     reason = "a test fails loudly when a fixture or an answer does not behave"
 )]
 
-mod common;
-
 use axum::http::{Method, StatusCode};
-use common::{app, get, post, request, request_with_headers, send, settings};
 use flakeradar_core::EntityKind;
 use flakeradar_test_support::{
-    TestDb, make_job, make_pipeline, make_project, make_test_case, system_clock,
+    Reply, TestDb, app, get, make_job, make_pipeline, make_project, make_test_case, post, request,
+    request_with_headers, send, settings, system_clock,
 };
+
 use sea_orm::ConnectionTrait as _;
 use sea_orm::DbBackend;
 use sea_orm::Statement;
@@ -31,7 +30,7 @@ fn json_headers() -> [(&'static str, &'static str); 2] {
 }
 
 /// Sends one `PUT` with a JSON body and the token.
-async fn put(app: &axum::Router, uri: &str, body: &Value) -> common::Reply {
+async fn put(app: &axum::Router, uri: &str, body: &Value) -> Reply {
     let mut builder = axum::http::Request::builder().method(Method::PUT).uri(uri);
     for (name, value) in json_headers() {
         builder = builder.header(name, value);
@@ -46,7 +45,7 @@ async fn put(app: &axum::Router, uri: &str, body: &Value) -> common::Reply {
 }
 
 /// Sends one `DELETE` with the token.
-async fn delete(app: &axum::Router, uri: &str) -> common::Reply {
+async fn delete(app: &axum::Router, uri: &str) -> Reply {
     request_with_headers(app, Method::DELETE, uri, &[("X-API-Key", TOKEN)]).await
 }
 

@@ -9,16 +9,17 @@
     reason = "a test fails loudly when ingest answers something else"
 )]
 
-mod common;
-
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Method, StatusCode};
 use chrono::{DateTime, FixedOffset, TimeZone as _, Utc};
-use common::{Reply, get, post, request, send, settings};
 use flakeradar_core::ReportStatus;
 use flakeradar_db::entities::{projects, reports, repos};
-use flakeradar_test_support::{FIXTURE_INSTANT, FixedClock, TestDb, make_junit};
+use flakeradar_test_support::{
+    FIXTURE_INSTANT, FixedClock, Reply, TestDb, app_with, get, make_junit, make_project, post,
+    request, send, settings,
+};
+
 use sea_orm::{
     ColumnTrait, ConnectionTrait as _, DbErr, EntityTrait, PaginatorTrait as _, QueryFilter,
     QueryOrder,
@@ -35,7 +36,7 @@ fn test_settings() -> flakeradar::Settings {
 
 /// An app over `db` with the test's settings.
 fn test_app(db: &TestDb) -> Router {
-    common::app_with(db, test_settings())
+    app_with(db, test_settings())
 }
 
 /// The app over `db`, on a clock that always reads `instant`.
@@ -1305,7 +1306,6 @@ async fn pipeline_ingest_answers_a_body_that_fails_while_it_is_read() {
 
 #[tokio::test]
 async fn a_reports_list_counts_only_the_rows_it_holds() {
-    use flakeradar_test_support::make_project;
     let db = TestDb::new().await.expect("a test database is available");
     let project = make_project()
         .build(db.connection())

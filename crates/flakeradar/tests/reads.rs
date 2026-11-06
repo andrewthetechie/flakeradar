@@ -10,13 +10,12 @@
     reason = "a test fails loudly when a fixture or an answer does not behave"
 )]
 
-mod common;
-
 use chrono::{DateTime, Duration, FixedOffset, NaiveDateTime, Utc};
-use common::{app, get, request_with_headers};
 use flakeradar_test_support::{
-    TestDb, make_execution, make_project, make_run, make_test_case, make_test_score,
+    Reply, TestDb, app, get, make_execution, make_project, make_run, make_test_case,
+    make_test_score, request_with_headers, send,
 };
+
 use sea_orm::ConnectionTrait as _;
 use sea_orm::entity::prelude::DateTimeWithTimeZone;
 use serde_json::{Value, json};
@@ -1087,7 +1086,7 @@ async fn post(
     uri: &str,
     headers: &[(&str, &str)],
     body: impl Into<axum::body::Body>,
-) -> common::Reply {
+) -> Reply {
     let mut all: Vec<(&str, &str)> = headers.to_vec();
     if !all
         .iter()
@@ -1095,7 +1094,7 @@ async fn post(
     {
         all.push(("content-type", "application/json"));
     }
-    common::post(app, uri, &all, body).await
+    flakeradar_test_support::post(app, uri, &all, body).await
 }
 
 /// The token the tests present to the quarantine route.
@@ -1361,7 +1360,7 @@ async fn a_quarantine_body_that_fails_while_it_is_read_answers_the_500() {
         .header("content-type", "application/json")
         .body(axum::body::Body::from_stream(stream))
         .expect("the fixture request builds");
-    let reply = common::send(&app, request).await;
+    let reply = send(&app, request).await;
     assert_eq!(reply.status, 500);
     assert!(
         reply.text().contains("Reading the request body failed"),

@@ -550,13 +550,6 @@ impl Settings {
         Self::from_map(&environment_values(Path::new(".env"), std::env::vars())?)
     }
 
-    /// The settings with an explicit token, for a test that needs a secure one.
-    #[must_use]
-    pub fn with_api_token(mut self, token: &str) -> Self {
-        self.api_token = Secret::new(token);
-        self
-    }
-
     /// Refuses a value that no configuration of its field could mean.
     ///
     /// The frozen server accepted every value the type admitted, and the fields'
@@ -1242,7 +1235,10 @@ mod tests {
 
     #[test]
     fn the_start_up_gate_reads_the_settings_token() {
-        let secure = Settings::default().with_api_token("a-real-token");
+        let secure = Settings {
+            api_token: Secret::new("a-real-token"),
+            ..Settings::default()
+        };
         assert_secure_token(&secure, None).expect("a real token is allowed");
 
         let shipped = Settings::default();

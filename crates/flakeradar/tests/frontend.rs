@@ -11,11 +11,11 @@
     reason = "a test fails loudly when the app answers something else"
 )]
 
-mod common;
-
 use axum::http::{Method, StatusCode};
-use common::{Reply, app, app_serving, get, request, request_with_headers};
-use flakeradar_test_support::TestDb;
+use flakeradar_test_support::{
+    Reply, TestDb, app, app_serving, get, request, request_with_headers, settings,
+};
+
 use serde_json::json;
 
 /// The files every test serves unless it says otherwise.
@@ -301,7 +301,7 @@ async fn the_embedded_frontend_is_in_the_binary() {
     use flakeradar::{AppState, build_app};
 
     let db = TestDb::new().await.expect("a test database is available");
-    let state = AppState::new(db.connection().clone(), Arc::new(common::settings(&[])))
+    let state = AppState::new(db.connection().clone(), Arc::new(settings(&[])))
         .expect("the app state builds")
         .with_assets(embedded());
     let app = build_app(state);

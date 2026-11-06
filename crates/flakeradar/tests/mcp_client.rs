@@ -19,10 +19,9 @@
     reason = "a test that cannot complete the handshake or a tool call has failed"
 )]
 
-mod common;
-
 use flakeradar_db::entities::test_cases;
-use flakeradar_test_support::{TestDb, make_project, make_test_case};
+use flakeradar_test_support::{TestDb, app, make_project, make_test_case};
+
 use rmcp::RoleClient;
 use rmcp::model::{CallToolRequestParams, JsonObject};
 use rmcp::service::RunningService;
@@ -60,7 +59,7 @@ async fn seed(db: &TestDb) -> i64 {
 /// the answer and sends `notifications/initialized`, so a server that cannot
 /// complete the protocol fails here rather than at the first tool call.
 async fn connect(db: &TestDb) -> (RunningService<RoleClient, ()>, tokio::task::JoinHandle<()>) {
-    let app = common::app(db, &[("FLAKERADAR_API_TOKEN", TOKEN)]);
+    let app = app(db, &[("FLAKERADAR_API_TOKEN", TOKEN)]);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("a loopback port");

@@ -10,13 +10,12 @@
     reason = "a test fails loudly when an extractor answers something else"
 )]
 
-mod common;
+use flakeradar_test_support::{Reply, send};
 
 use axum::Router;
 use axum::extract::DefaultBodyLimit;
 use axum::http::StatusCode;
 use axum::routing::{get, post};
-use common::Reply;
 use flakeradar::{ApiError, ApiJson, ApiPath, ApiQuery, FromJsonObject, Validate, query_loc};
 use flakeradar_core::{LocSegment, ValidationIssue, lax};
 use serde::Deserialize;
@@ -219,7 +218,7 @@ async fn call(
             .body(axum::body::Body::from(body.to_owned()))
             .expect("the fixture request builds")
     };
-    common::send(&extractor_app(), request).await
+    send(&extractor_app(), request).await
 }
 
 /// Asserts the reply is one 422 carrying exactly `(type, loc)`.

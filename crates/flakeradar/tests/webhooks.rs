@@ -9,8 +9,6 @@
     reason = "a test fails loudly when a stub or a delivery does not behave"
 )]
 
-mod common;
-
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -18,7 +16,8 @@ use flakeradar::LeaderTask;
 use flakeradar::WebhookWorker;
 use flakeradar_core::{EntityKind, ReportStatus, Tier, TierChange, WebhookFormat};
 use flakeradar_db::ProcessOutcome;
-use flakeradar_test_support::{dropped, queued, until_finished, wait_until, within};
+use flakeradar_test_support::{Unanswered, dropped, queued, until_finished, wait_until, within};
+
 use serde_json::{Value, json};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -706,7 +705,7 @@ async fn stopping_ends_the_wait_before_a_retry_at_once() {
 
 #[tokio::test]
 async fn stopping_ends_an_unanswered_delivery_at_once() {
-    let endpoint = common::Unanswered::start().await;
+    let endpoint = Unanswered::start().await;
     let worker = Arc::new(worker(vec![format!("{}/hook", endpoint.base)]));
     LeaderTask::start(worker.as_ref()).await;
     LeaderTask::enqueue(worker.as_ref(), &outcome(vec![test_change()]))

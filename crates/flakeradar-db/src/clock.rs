@@ -11,7 +11,7 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::Instant;
 
-use chrono::{DateTime, FixedOffset, NaiveDate, Utc};
+use chrono::{NaiveDate, Utc};
 use sea_orm::entity::prelude::DateTimeWithTimeZone;
 
 /// Where the processor learns the current instant.
@@ -32,26 +32,6 @@ pub struct SystemClock;
 impl Clock for SystemClock {
     fn now(&self) -> DateTimeWithTimeZone {
         Utc::now().fixed_offset()
-    }
-}
-
-/// A clock stopped at one instant, for tests that must control the day.
-#[derive(Debug, Clone)]
-pub struct FixedClock {
-    now: DateTimeWithTimeZone,
-}
-
-impl FixedClock {
-    /// A clock reading `now`.
-    #[must_use]
-    pub fn new(now: DateTime<FixedOffset>) -> Self {
-        Self { now }
-    }
-}
-
-impl Clock for FixedClock {
-    fn now(&self) -> DateTimeWithTimeZone {
-        self.now
     }
 }
 

@@ -13,11 +13,11 @@
     reason = "a test fails loudly when a route answers something else"
 )]
 
-mod common;
-
 use axum::http::StatusCode;
-use common::{Reply, get, post, send, settings};
-use flakeradar_test_support::{TestDb, make_project, make_test_case};
+use flakeradar_test_support::{
+    Reply, TestDb, app_with, get, make_project, make_test_case, post, send, settings,
+};
+
 use serde_json::{Value, json};
 
 /// The token the tests present.
@@ -25,7 +25,7 @@ const TOKEN: &str = "validation-token";
 
 /// An app over `db` with the test's token.
 fn test_app(db: &TestDb) -> axum::Router {
-    common::app_with(db, settings(&[("FLAKERADAR_API_TOKEN", TOKEN)]))
+    app_with(db, settings(&[("FLAKERADAR_API_TOKEN", TOKEN)]))
 }
 
 /// The `(type, loc)` of every issue a 422 carries, which is what Pydantic's

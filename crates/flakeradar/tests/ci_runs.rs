@@ -7,13 +7,11 @@
     reason = "a test fails loudly when a fixture or an answer does not behave"
 )]
 
-mod common;
-
-use common::{app, get, post, request};
 use flakeradar_test_support::{
-    TestDb, make_execution, make_job, make_job_execution, make_junit, make_pipeline, make_project,
-    make_report, make_run, make_test_case,
+    TestDb, app, get, make_execution, make_job, make_job_execution, make_junit, make_pipeline,
+    make_project, make_report, make_run, make_test_case, post, request,
 };
+
 use serde_json::{Value, json};
 
 /// The token the ingest route needs.

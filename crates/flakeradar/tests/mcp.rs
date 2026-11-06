@@ -9,19 +9,15 @@
     reason = "a test that cannot build its request or read its answer has failed"
 )]
 
-mod common;
-
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use chrono::Utc;
 use flakeradar_test_support::{
-    TestDb, make_execution, make_job, make_job_execution, make_job_score, make_pipeline,
-    make_project, make_run, make_test_case, make_test_score,
+    Reply, TestDb, app, make_execution, make_job, make_job_execution, make_job_score,
+    make_pipeline, make_project, make_run, make_test_case, make_test_score, post, send,
 };
 use serde_json::{Value, json};
-
-use common::{Reply, app, send};
 
 /// The token every request in this file presents.
 const TOKEN: &str = "mcp-test-token";
@@ -398,7 +394,7 @@ async fn a_wrong_token_and_a_wrong_scheme_are_refused() {
 async fn post_mcp_redirects_to_the_transport_path() {
     let db = TestDb::new().await.expect("a test database is available");
     let app = mcp_app(&db);
-    let reply = common::post(
+    let reply = post(
         &app,
         "/mcp",
         &[("content-type", "application/json")],

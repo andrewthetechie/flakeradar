@@ -15,14 +15,13 @@
     reason = "a consumer test that cannot send its payload or read the answer has failed"
 )]
 
-mod common;
-
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Method, Request};
 use chrono::NaiveDateTime;
 use flakeradar_db::ProcessingSettings;
-use flakeradar_test_support::TestDb;
+use flakeradar_test_support::{TestDb, app, get};
+
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -75,7 +74,7 @@ fn writers_app_junit(cases: &[(&str, bool)]) -> String {
 
 /// Sends one request and returns its status and JSON body.
 async fn send(app: &Router, request: Request<Body>) -> (u16, Value) {
-    let reply = common::send(app, request).await;
+    let reply = flakeradar_test_support::send(app, request).await;
     (reply.status.as_u16(), reply.json())
 }
 
@@ -125,7 +124,7 @@ async fn process_all(db: &TestDb) {
 #[tokio::test]
 async fn the_writers_app_curl_upload_reaches_a_processed_run() {
     let db = TestDb::new().await.expect("a test database");
-    let app = common::app(&db, &settings_pairs());
+    let app = app(&db, &settings_pairs());
     let report_id = upload_as_the_report_action(
         &app,
         "andrewthetechie/writers-app",
@@ -139,7 +138,7 @@ async fn the_writers_app_curl_upload_reaches_a_processed_run() {
     .await;
     process_all(&db).await;
 
-    let report = common::get(&app, &format!("/api/reports/{report_id}")).await;
+    let report = get(&app, &format!("/api/reports/{report_id}")).await;
     assert_eq!(report.status, 200);
     let report = report.json();
     assert_eq!(report["status"], "processed");
@@ -156,7 +155,7 @@ async fn the_writers_app_curl_upload_reaches_a_processed_run() {
     // The dashboard, the summary action and Fabro read the Tests this Run
     // produced, so the upload's Project root, Pipeline and metadata must be
     // visible there.
-    let page = common::get(
+    let page = get(
         &app,
         "/api/tests?repo=andrewthetechie%2Fwriters-app&include_stable=true",
     )
@@ -224,7 +223,7 @@ fn jobs_payload(commit_sha: &str, ci_run_id: &str) -> Value {
 #[tokio::test]
 async fn the_writers_app_jobs_upload_lands_as_job_executions() {
     let db = TestDb::new().await.expect("a test database");
-    let app = common::app(&db, &settings_pairs());
+    let app = app(&db, &settings_pairs());
     let request = Request::builder()
         .method(Method::POST)
         .uri("/api/ingest/pipeline")
@@ -237,7 +236,7 @@ async fn the_writers_app_jobs_upload_lands_as_job_executions() {
     assert_eq!(body.get("status"), Some(&json!("pending")), "{body}");
     process_all(&db).await;
 
-    let page = common::get(
+    let page = get(
         &app,
         "/api/jobs?repo=andrewthetechie%2Fwriters-app&include_stable=true",
     )
@@ -256,7 +255,7 @@ async fn the_writers_app_jobs_upload_lands_as_job_executions() {
     assert_eq!(job["last_status"], "failed");
     // No Report named this Job's Tests, so the failure is unexplained and is
     // the one that counts against its Flakiness score.
-    let history = common::get(&app, &format!("/api/jobs/{}/history", job["id"])).await;
+    let history = get(&app, &format!("/api/jobs/{}/history", job["id"])).await;
     assert_eq!(history.status, 200);
     let history = history.json();
     assert_eq!(history["unexplained_failures"], 1, "{history}");
@@ -269,7 +268,7 @@ async fn the_writers_app_jobs_upload_lands_as_job_executions() {
     assert_eq!(summary["summary"], true);
     // A failed Summary Job is explained by the failed non-summary Job in the
     // same CI run attempt, so it does not count against its own score.
-    let history = common::get(&app, &format!("/api/jobs/{}/history", summary["id"])).await;
+    let history = get(&app, &format!("/api/jobs/{}/history", summary["id"])).await;
     let history = history.json();
     assert_eq!(history["unexplained_failures"], 0, "{history}");
     assert_eq!(history["explained_failures"], 1, "{history}");
@@ -379,7 +378,7 @@ struct FabroFailedJob {
 #[tokio::test]
 async fn fabro_reads_every_field_of_the_test_reads_through_the_writers_app_payloads() {
     let db = TestDb::new().await.expect("a test database");
-    let app = common::app(&db, &settings_pairs());
+    let app = app(&db, &settings_pairs());
     // The same commit twice: the Test passes in the first Report and fails in
     // the second, which is a Proven flake and puts it in the flaky tier.
     upload_as_the_report_action(
@@ -406,15 +405,13 @@ async fn fabro_reads_every_field_of_the_test_reads_through_the_writers_app_paylo
     .await;
     process_all(&db).await;
     assert_eq!(
-        common::get(&app, &format!("/api/reports/{failing_id}"))
+        get(&app, &format!("/api/reports/{failing_id}"))
             .await
             .json()["status"],
         "processed"
     );
 
-    let page = common::get(&app, "/api/tests?include_stable=true")
-        .await
-        .json();
+    let page = get(&app, "/api/tests?include_stable=true").await.json();
     let items: Vec<FabroTest> =
         serde_json::from_value(page["items"].clone()).expect("Fabro's struct reads the page");
     assert_eq!(items.len(), 2, "{page}");
@@ -445,7 +442,7 @@ async fn fabro_reads_every_field_of_the_test_reads_through_the_writers_app_paylo
     assert!(flaked.flakiness_score > 0.0);
 
     let history: FabroHistory = serde_json::from_value(
-        common::get(&app, &format!("/api/tests/{}/history", flaked.id))
+        get(&app, &format!("/api/tests/{}/history", flaked.id))
             .await
             .json(),
     )
@@ -468,7 +465,7 @@ async fn fabro_reads_every_field_of_the_test_reads_through_the_writers_app_paylo
 #[tokio::test]
 async fn fabro_reads_a_ci_runs_failures_through_the_writers_app_payloads() {
     let db = TestDb::new().await.expect("a test database");
-    let app = common::app(&db, &settings_pairs());
+    let app = app(&db, &settings_pairs());
     // The same commit passes first and then fails, so the CI run's failure is a
     // Test FlakeRadar already knows as flaky: the case that decides a merge.
     upload_as_the_report_action(
@@ -489,14 +486,14 @@ async fn fabro_reads_a_ci_runs_failures_through_the_writers_app_payloads() {
     .await;
     process_all(&db).await;
     assert_eq!(
-        common::get(&app, &format!("/api/reports/{failing_id}"))
+        get(&app, &format!("/api/reports/{failing_id}"))
             .await
             .json()["status"],
         "processed"
     );
 
     let failures: FabroFailures = serde_json::from_value(
-        common::get(
+        get(
             &app,
             "/api/ci-runs/42002/failures?repo=andrewthetechie%2Fwriters-app",
         )

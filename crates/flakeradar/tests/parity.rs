@@ -44,7 +44,8 @@ use flakeradar::{
 };
 use flakeradar_db::entities::repos;
 use flakeradar_db::{DbSettings, ProcessingSettings};
-use flakeradar_test_support::{FIXTURE_INSTANT, TestDb, system_clock};
+use flakeradar_test_support::{FIXTURE_INSTANT, TestDb, app, system_clock};
+
 use sea_orm::{ConnectionTrait, DbBackend, EntityTrait, JsonValue, Statement};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -2628,7 +2629,7 @@ async fn an_mcp_step_replays_the_recorded_protocol_result() {
     // are the wire, so the golden must replay clean and one changed description
     // must fail.
     let db = TestDb::new().await.expect("a test database is available");
-    let server = Listener::start(common::app(&db, &[("FLAKERADAR_API_TOKEN", TOKEN)])).await;
+    let server = Listener::start(app(&db, &[("FLAKERADAR_API_TOKEN", TOKEN)])).await;
     let spec = scenario("mcp")
         .steps
         .get(5)
@@ -2836,7 +2837,7 @@ async fn an_enabled_step_that_answers_something_else_fails_loudly() {
     // proves a wrong answer becomes one: the same step and spec replay clean
     // against the recorded golden and fail once the recorded status is changed.
     let db = TestDb::new().await.expect("a test database is available");
-    let server = Listener::start(common::app(&db, &[])).await;
+    let server = Listener::start(app(&db, &[])).await;
     let spec = scenario("health")
         .steps
         .first()

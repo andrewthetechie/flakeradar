@@ -6,13 +6,11 @@
     reason = "a test fails loudly when the app answers something else"
 )]
 
-mod common;
-
 use axum::http::{Method, StatusCode};
-use common::{app, get, request, send, settings};
 use flakeradar::AppState;
 use flakeradar::build_app;
-use flakeradar_test_support::TestDb;
+use flakeradar_test_support::{TestDb, app, get, post, request, send, settings};
+
 use serde_json::json;
 
 #[tokio::test]
@@ -253,7 +251,7 @@ async fn the_json_body_limit_is_twenty_megabytes() {
     .with_state(state);
 
     let inside = "a".repeat(flakeradar::JSON_BODY_LIMIT);
-    let reply = common::post(
+    let reply = post(
         &app,
         "/echo",
         &[("content-type", "application/json")],
@@ -263,7 +261,7 @@ async fn the_json_body_limit_is_twenty_megabytes() {
     assert_eq!(reply.status, StatusCode::OK);
 
     let over = "a".repeat(flakeradar::JSON_BODY_LIMIT + 1);
-    let reply = common::post(&app, "/echo", &[("content-type", "application/json")], over).await;
+    let reply = post(&app, "/echo", &[("content-type", "application/json")], over).await;
     assert_eq!(reply.status, StatusCode::PAYLOAD_TOO_LARGE);
 }
 
