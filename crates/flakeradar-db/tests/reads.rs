@@ -306,6 +306,30 @@ async fn the_flaky_only_listing_keeps_only_flaky_rows() {
 }
 
 #[tokio::test]
+async fn a_page_whose_offset_overflows_is_an_error() {
+    // Validation bounds `page` so the offset fits, and this is what a caller
+    // that builds `ListOptions` itself gets instead of a wrapped offset: an
+    // error, in a development build and in a release build alike.
+    let db = TestDb::new().await.expect("a test database");
+    let error = list_tests(
+        db.connection(),
+        &Scope::default(),
+        &TestListFilters::default(),
+        &options(|options| {
+            options.page = i64::MAX;
+            options.page_size = 100;
+        }),
+        &settings(),
+    )
+    .await
+    .expect_err("a page whose offset does not fit is refused");
+    assert!(
+        error.to_string().contains("offset"),
+        "the error names the offset: {error}"
+    );
+}
+
+#[tokio::test]
 async fn list_tests_sorts_by_proven_flakes_and_by_last_seen() {
     let db = TestDb::new().await.expect("a test database");
     let project = make_project()

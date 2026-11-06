@@ -16,7 +16,7 @@ use axum::routing::{get, post};
 use axum::{Router, middleware};
 use flakeradar_core::{
     CiRunFailuresOut, FailureCategory, HistoryOut, JobHistoryOut, JobPage, JobSummaryOut,
-    QuarantineIn, QuarantineItem, RepoOut, SummaryOut, TestOut, TestPage, ValidationIssue,
+    QuarantineIn, QuarantineItem, RepoOut, SummaryOut, TestOut, TestPage, ValidationIssue, lax,
     normalize_project, normalize_repo,
 };
 use flakeradar_db::{
@@ -30,7 +30,7 @@ use serde_json::Value as JsonValue;
 
 use crate::app::AppState;
 use crate::error::{ApiError, ApiResult};
-use crate::extract::{ApiPath, ApiQuery, Validate, body_error, parse_json, query_loc};
+use crate::extract::{ApiPath, ApiQuery, Validate, body_error, parse_json_object, query_loc};
 use crate::middleware::require_token;
 
 /// A read route's answer.
@@ -128,11 +128,17 @@ fn detail_error(message: impl Into<String>) -> ApiError {
     ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, message)
 }
 
-/// Records a string longer than its limit, in characters as Pydantic counted.
+/// Records a string with a NUL in it, and one longer than its limit.
+///
+/// The length counts characters as Pydantic counted them. A NUL is refused
+/// because a PostgreSQL `text` column cannot store one, where the reference
+/// answered 500 and logged at error level on an unauthenticated route.
 fn check_max(value: Option<&String>, max: usize, field: &str, issues: &mut Vec<ValidationIssue>) {
-    if let Some(value) = value
-        && value.chars().count() > max
-    {
+    let Some(value) = value else {
+        return;
+    };
+    lax::refuse_nul(value, query_loc(field), issues);
+    if value.chars().count() > max {
         issues.push(ValidationIssue::string_too_long(
             query_loc(field),
             JsonValue::from(value.clone()),
@@ -167,11 +173,22 @@ fn check_le(value: Option<i64>, max: i64, field: &str, issues: &mut Vec<Validati
     }
 }
 
+/// The largest page size a leaderboard serves.
+const PAGE_SIZE_MAX: i64 = 100;
+
+/// The largest `page` whose `OFFSET` fits an `i64` at [`PAGE_SIZE_MAX`].
+///
+/// The reference bounded only the bottom of the range, so a page past this one
+/// wrapped in release builds and panicked in development ones. A page real
+/// clients ask for is a handful of digits.
+const PAGE_MAX: i64 = i64::MAX / PAGE_SIZE_MAX;
+
 /// The paging range both leaderboards share.
 fn validate_paging(page: Option<i64>, page_size: Option<i64>, issues: &mut Vec<ValidationIssue>) {
     check_ge(page, 1, "page", issues);
+    check_le(page, PAGE_MAX, "page", issues);
     check_ge(page_size, 1, "page_size", issues);
-    check_le(page_size, 100, "page_size", issues);
+    check_le(page_size, PAGE_SIZE_MAX, "page_size", issues);
 }
 
 /// The `new_within_days` range both leaderboards share.
@@ -295,9 +312,9 @@ pub struct TestsQuery {
     include_stable: Option<bool>,
     #[serde(default)]
     sort: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "flakeradar_core::dto::lax_int::optional")]
     page: Option<i64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "flakeradar_core::dto::lax_int::optional")]
     page_size: Option<i64>,
     #[serde(default)]
     file: Option<String>,
@@ -309,7 +326,7 @@ pub struct TestsQuery {
     quarantined: Option<bool>,
     #[serde(default, deserialize_with = "flakeradar_core::dto::lax_bool::optional")]
     has_issue: Option<bool>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "flakeradar_core::dto::lax_int::optional")]
     new_within_days: Option<i64>,
     #[serde(default, deserialize_with = "flakeradar_core::dto::lax_bool::optional")]
     broken: Option<bool>,
@@ -374,9 +391,9 @@ pub struct JobsQuery {
     include_stable: Option<bool>,
     #[serde(default)]
     sort: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "flakeradar_core::dto::lax_int::optional")]
     page: Option<i64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "flakeradar_core::dto::lax_int::optional")]
     page_size: Option<i64>,
     #[serde(default)]
     q: Option<String>,
@@ -384,7 +401,7 @@ pub struct JobsQuery {
     pipeline: Option<String>,
     #[serde(default, deserialize_with = "flakeradar_core::dto::lax_bool::optional")]
     has_issue: Option<bool>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "flakeradar_core::dto::lax_int::optional")]
     new_within_days: Option<i64>,
 }
 
@@ -409,7 +426,7 @@ impl Validate for JobsQuery {
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct HistoryQuery {
     /// How many Executions to return.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "flakeradar_core::dto::lax_int::optional")]
     limit: Option<i64>,
 }
 
@@ -466,7 +483,7 @@ pub struct CiRunFailuresQuery {
     /// The Repo's `owner/name`; required.
     repo: String,
     /// Which attempt to read; the newest when absent.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "flakeradar_core::dto::lax_int::optional")]
     ci_run_attempt: Option<i64>,
 }
 
@@ -525,8 +542,8 @@ where
         let bytes = axum::body::Bytes::from_request(req, state)
             .await
             .map_err(|rejection| body_error(&rejection))?;
-        let payload: QuarantineIn = parse_json(&bytes, content_type.as_deref())?;
-        payload.validate().map_err(ApiError::unprocessable)?;
+        let object = parse_json_object(&bytes, content_type.as_deref())?;
+        let payload = QuarantineIn::from_value(&object).map_err(ApiError::unprocessable)?;
         Ok(Self(payload))
     }
 }

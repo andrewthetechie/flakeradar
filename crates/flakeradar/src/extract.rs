@@ -20,12 +20,24 @@ use axum::extract::{FromRequest, FromRequestParts, Path, Request};
 use axum::http::request::Parts;
 use axum::http::{StatusCode, header};
 use flakeradar_core::dto::lax_bool;
-use flakeradar_core::{LocSegment, ValidationIssue};
+use flakeradar_core::lax;
+use flakeradar_core::{BodyRefusal, LocSegment, ValidationIssue, attempt_too_large};
 use serde::de::DeserializeOwned;
-use serde_json::Value;
+use serde_json::{Map, Value};
 use serde_path_to_error::{Path as ErrorPath, Segment};
 
 use crate::error::{ApiError, ApiResult};
+
+impl From<BodyRefusal> for ApiError {
+    fn from(refusal: BodyRefusal) -> Self {
+        match refusal {
+            BodyRefusal::Issues(issues) => Self::unprocessable(issues),
+            BodyRefusal::AttemptPastColumn => {
+                Self::new(StatusCode::BAD_REQUEST, attempt_too_large())
+            }
+        }
+    }
+}
 
 /// The range and length rules a request value checks after it is parsed.
 ///
@@ -125,13 +137,33 @@ where
 }
 
 /// Parses `query` into `T`, reporting the failing field the way FastAPI did.
+///
+/// A parameter sent more than once keeps its last value, which is the one
+/// Starlette's `request.query_params` read and Pydantic validated.
 fn parse_query<T: DeserializeOwned>(query: &str) -> ApiResult<T> {
+    let collapsed = last_value_per_name(query);
     let deserializer =
-        serde_urlencoded::Deserializer::new(form_urlencoded::parse(query.as_bytes()));
+        serde_urlencoded::Deserializer::new(form_urlencoded::parse(collapsed.as_bytes()));
     serde_path_to_error::deserialize(deserializer).map_err(|error| {
         let issue = issue_for("query", error.path(), &error.inner().to_string());
         ApiError::unprocessable(vec![issue])
     })
+}
+
+/// The query with one pair per name, each keeping the last value the query gave it.
+fn last_value_per_name(query: &str) -> String {
+    let mut pairs: Vec<(String, String)> = Vec::new();
+    for (name, value) in form_urlencoded::parse(query.as_bytes()) {
+        match pairs.iter_mut().find(|(seen, _)| *seen == name) {
+            Some((_, kept)) => *kept = value.into_owned(),
+            None => pairs.push((name.into_owned(), value.into_owned())),
+        }
+    }
+    let mut serialiser = form_urlencoded::Serializer::new(String::new());
+    for (name, value) in &pairs {
+        let _ = serialiser.append_pair(name, value);
+    }
+    serialiser.finish()
 }
 
 /// Parses a request body into `T` by the rule FastAPI applied.
@@ -139,6 +171,22 @@ pub(crate) fn parse_json<T: DeserializeOwned>(
     bytes: &[u8],
     content_type: Option<&str>,
 ) -> ApiResult<T> {
+    let object = parse_json_object(bytes, content_type)?;
+    serde_path_to_error::deserialize(Value::Object(object)).map_err(|error| {
+        let issue = issue_for("body", error.path(), &error.inner().to_string());
+        ApiError::unprocessable(vec![issue])
+    })
+}
+
+/// Parses a request body into the JSON object Pydantic validated.
+///
+/// A body the reference refused before validating any field is refused here:
+/// an empty body is a missing field, a body that is not JSON is not a model, and
+/// one that is not an object is not a dictionary Pydantic can read fields from.
+pub(crate) fn parse_json_object(
+    bytes: &[u8],
+    content_type: Option<&str>,
+) -> ApiResult<Map<String, Value>> {
     if bytes.is_empty() {
         return Err(ApiError::unprocessable(vec![ValidationIssue::missing(
             scope_loc("body"),
@@ -165,15 +213,12 @@ pub(crate) fn parse_json<T: DeserializeOwned>(
             ]));
         }
     };
-    if !value.is_object() {
-        return Err(ApiError::unprocessable(vec![
-            ValidationIssue::model_attributes_type(scope_loc("body"), value),
-        ]));
+    match value {
+        Value::Object(object) => Ok(object),
+        other => Err(ApiError::unprocessable(vec![
+            ValidationIssue::model_attributes_type(scope_loc("body"), other),
+        ])),
     }
-    serde_path_to_error::deserialize(value).map_err(|error| {
-        let issue = issue_for("body", error.path(), &error.inner().to_string());
-        ApiError::unprocessable(vec![issue])
-    })
 }
 
 /// Whether a `Content-Type` names JSON, the way FastAPI's check did.
@@ -267,6 +312,9 @@ fn issue_for(scope: &str, path: &ErrorPath, message: &str) -> ValidationIssue {
 /// read from that sentence. Each mapping is pinned by a test, and an unfamiliar
 /// message falls back to `value_error` rather than guessing a narrower kind.
 fn kind_for(message: &str) -> &'static str {
+    if message == lax::INT_PARSING_MESSAGE {
+        return "int_parsing";
+    }
     if message == lax_bool::UNPARSABLE_MESSAGE {
         return "bool_parsing";
     }

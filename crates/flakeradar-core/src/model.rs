@@ -144,6 +144,9 @@ pub enum JobStatus {
 }
 
 impl JobStatus {
+    /// Every spelling a Pipeline report may use, in Pydantic's order.
+    pub const ALL: [Self; 3] = [Self::Passed, Self::Failed, Self::Skipped];
+
     /// The status as the Python server spelled it.
     #[must_use]
     pub fn as_str(self) -> &'static str {
@@ -152,6 +155,12 @@ impl JobStatus {
             Self::Failed => "failed",
             Self::Skipped => "skipped",
         }
+    }
+
+    /// The status one of those spellings names.
+    #[must_use]
+    pub fn parse(text: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|status| status.as_str() == text)
     }
 }
 

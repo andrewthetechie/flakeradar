@@ -909,13 +909,17 @@ async fn top_flaky_jobs_lists_worst_first() {
         ["e2e (ubuntu-latest)"],
         "test is suspect"
     );
-    refused(
-        &app,
-        "top_flaky_jobs",
-        json!({"repo": "acme/app", "limit": 0}),
-        "limit must be between 1 and 100",
-    )
-    .await;
+    // The REST leaderboard's own bound, so a tool cannot ask for a page no
+    // client could page to. A tool takes no `page`, so no page can overflow here.
+    for limit in [0, 101] {
+        refused(
+            &app,
+            "top_flaky_jobs",
+            json!({"repo": "acme/app", "limit": limit}),
+            "limit must be between 1 and 100",
+        )
+        .await;
+    }
 }
 
 #[tokio::test]

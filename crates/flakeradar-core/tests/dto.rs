@@ -14,8 +14,8 @@
 use chrono::{DateTime, NaiveDate, TimeZone as _, Utc};
 use flakeradar_core::dto::lax_bool;
 use flakeradar_core::{
-    IssueLinkIn, JobResultIn, LocSegment, PipelineReportIn, QuarantineIn, ReportOut, ScorePointOut,
-    TestOut, Tier, Trend, ValidationIssue,
+    BodyRefusal, IssueLinkIn, JobResultIn, LocSegment, PipelineReportIn, QuarantineIn, ReportOut,
+    ScorePointOut, TestOut, Tier, Trend, ValidationIssue,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -39,15 +39,19 @@ fn valid_report() -> Value {
     })
 }
 
-/// Parses and validates the fixture body.
+/// Reads the fixture body the way the route reads one.
 #[expect(
     clippy::panic_in_result_fn,
-    reason = "the test helper returns the validation Result but fails loudly on a fixture that does not parse"
+    reason = "the helper returns the refusal but fails loudly on a fixture that is no object"
 )]
-fn validated(body: Value) -> Result<PipelineReportIn, Vec<ValidationIssue>> {
-    serde_json::from_value::<PipelineReportIn>(body)
-        .unwrap_or_else(|error| panic!("the fixture deserializes: {error}"))
-        .validate()
+fn validated(body: &Value) -> Result<PipelineReportIn, Vec<ValidationIssue>> {
+    let object = body
+        .as_object()
+        .unwrap_or_else(|| panic!("the fixture is a JSON object: {body}"));
+    PipelineReportIn::from_value(object).map_err(|refusal| match refusal {
+        BodyRefusal::Issues(issues) => issues,
+        BodyRefusal::AttemptPastColumn => panic!("an attempt inside the column is refused"),
+    })
 }
 
 #[test]
@@ -211,7 +215,7 @@ fn a_test_out_keeps_every_field_the_consumers_read() {
 
 #[test]
 fn a_valid_pipeline_report_is_normalized() {
-    let report = validated(valid_report()).expect("the report is valid");
+    let report = validated(&valid_report()).expect("the report is valid");
     assert_eq!(report.repo, "acme/app");
     assert_eq!(report.provider, "github");
     assert_eq!(report.jobs[0].name, "build");
@@ -222,13 +226,15 @@ fn a_valid_pipeline_report_is_normalized() {
 fn a_blank_default_branch_is_unknown() {
     let mut body = valid_report();
     body["default_branch"] = json!("  ");
-    let report = validated(body).expect("the report is valid");
+    let report = validated(&body).expect("the report is valid");
     assert_eq!(report.default_branch, None);
 
     let mut body = valid_report();
     body["default_branch"] = json!("main");
     assert_eq!(
-        validated(body).expect("the report is valid").default_branch,
+        validated(&body)
+            .expect("the report is valid")
+            .default_branch,
         Some("main".to_owned())
     );
 }
@@ -237,7 +243,7 @@ fn a_blank_default_branch_is_unknown() {
 fn a_bad_repo_is_a_value_error_with_pydantic_wording() {
     let mut body = valid_report();
     body["repo"] = json!("Not A Repo");
-    let issues = validated(body).expect_err("the report is rejected");
+    let issues = validated(&body).expect_err("the report is rejected");
     assert_eq!(
         issues,
         [ValidationIssue {
@@ -260,7 +266,7 @@ fn a_bad_repo_is_a_value_error_with_pydantic_wording() {
 fn a_bad_provider_is_rejected() {
     let mut body = valid_report();
     body["provider"] = json!("has space");
-    let issues = validated(body).expect_err("the report is rejected");
+    let issues = validated(&body).expect_err("the report is rejected");
     assert_eq!(issues[0].r#type, "value_error");
     assert!(issues[0].msg.contains("provider must be 1-32 chars"));
 }
@@ -269,7 +275,7 @@ fn a_bad_provider_is_rejected() {
 fn an_empty_job_list_is_too_short() {
     let mut body = valid_report();
     body["jobs"] = json!([]);
-    let issues = validated(body).expect_err("the report is rejected");
+    let issues = validated(&body).expect_err("the report is rejected");
     assert_eq!(issues[0].r#type, "too_short");
     assert_eq!(
         issues[0].msg,
@@ -289,7 +295,7 @@ fn an_empty_job_list_is_too_short() {
 fn a_blank_job_name_is_too_short() {
     let mut body = valid_report();
     body["jobs"][0]["name"] = json!("   ");
-    let issues = validated(body).expect_err("the report is rejected");
+    let issues = validated(&body).expect_err("the report is rejected");
     assert_eq!(issues[0].r#type, "string_too_short");
     assert_eq!(issues[0].msg, "String should have at least 1 character");
     assert_eq!(
@@ -308,7 +314,7 @@ fn a_long_url_and_runner_name_are_too_long() {
     let mut body = valid_report();
     body["jobs"][0]["url"] = json!("u".repeat(2049));
     body["jobs"][0]["runner_name"] = json!("r".repeat(256));
-    let issues = validated(body).expect_err("the report is rejected");
+    let issues = validated(&body).expect_err("the report is rejected");
     assert_eq!(issues.len(), 2);
     assert_eq!(issues[0].r#type, "string_too_long");
     assert_eq!(issues[1].r#type, "string_too_long");
@@ -319,7 +325,7 @@ fn a_long_url_and_runner_name_are_too_long() {
 fn too_many_runner_labels_are_rejected() {
     let mut body = valid_report();
     body["jobs"][0]["runner_labels"] = json!(vec!["ubuntu-latest"; 51]);
-    let issues = validated(body).expect_err("the report is rejected");
+    let issues = validated(&body).expect_err("the report is rejected");
     assert_eq!(issues[0].r#type, "too_long");
     assert_eq!(
         issues[0].msg,
@@ -331,7 +337,7 @@ fn too_many_runner_labels_are_rejected() {
 fn a_long_runner_label_names_its_position() {
     let mut body = valid_report();
     body["jobs"][0]["runner_labels"] = json!(["ok", "x".repeat(256)]);
-    let issues = validated(body).expect_err("the report is rejected");
+    let issues = validated(&body).expect_err("the report is rejected");
     assert_eq!(issues[0].r#type, "string_too_long");
     assert!(issues[0].loc.contains(&LocSegment::Index(1)));
 }
@@ -340,7 +346,7 @@ fn a_long_runner_label_names_its_position() {
 fn a_zero_attempt_is_below_the_minimum() {
     let mut body = valid_report();
     body["ci_run_attempt"] = json!(0);
-    let issues = validated(body).expect_err("the report is rejected");
+    let issues = validated(&body).expect_err("the report is rejected");
     assert_eq!(issues[0].r#type, "greater_than_equal");
     assert_eq!(issues[0].msg, "Input should be greater than or equal to 1");
     assert_eq!(issues[0].ctx, Some(json!({"ge": 1})));
@@ -353,7 +359,7 @@ fn duplicate_job_ids_are_a_model_error() {
         {"ci_job_id": "1", "name": "a", "status": "passed"},
         {"ci_job_id": "1", "name": "b", "status": "failed"}
     ]);
-    let issues = validated(body).expect_err("the report is rejected");
+    let issues = validated(&body).expect_err("the report is rejected");
     assert_eq!(issues[0].r#type, "value_error");
     assert_eq!(issues[0].msg, "Value error, duplicate ci_job_id in jobs");
     assert_eq!(issues[0].loc, [LocSegment::Field("body".to_owned())]);
@@ -371,7 +377,7 @@ fn duplicate_job_ids_are_not_checked_while_a_field_is_invalid() {
         {"ci_job_id": "1", "name": "a", "status": "passed"},
         {"ci_job_id": "1", "name": "b", "status": "failed"}
     ]);
-    let issues = validated(body).expect_err("the report is rejected");
+    let issues = validated(&body).expect_err("the report is rejected");
     assert_eq!(issues.len(), 1);
     assert_eq!(issues[0].r#type, "string_too_short");
 }
@@ -381,7 +387,7 @@ fn a_too_long_pipeline_and_commit_sha_are_reported_in_field_order() {
     let mut body = valid_report();
     body["pipeline"] = json!("p".repeat(513));
     body["commit_sha"] = json!("c".repeat(65));
-    let issues = validated(body).expect_err("the report is rejected");
+    let issues = validated(&body).expect_err("the report is rejected");
     assert_eq!(issues.len(), 2);
     assert_eq!(issues[0].loc[1], LocSegment::Field("pipeline".to_owned()));
     assert_eq!(issues[1].loc[1], LocSegment::Field("commit_sha".to_owned()));
@@ -391,7 +397,7 @@ fn a_too_long_pipeline_and_commit_sha_are_reported_in_field_order() {
 fn a_too_long_repo_is_a_length_error_not_a_value_error() {
     let mut body = valid_report();
     body["repo"] = json!(format!("{}/{}", "o".repeat(250), "n".repeat(10)));
-    let issues = validated(body).expect_err("the report is rejected");
+    let issues = validated(&body).expect_err("the report is rejected");
     assert_eq!(issues[0].r#type, "string_too_long");
     assert_eq!(issues[0].ctx, Some(json!({"max_length": 255})));
 }
@@ -401,7 +407,7 @@ fn a_too_long_default_branch_and_run_id_are_rejected() {
     let mut body = valid_report();
     body["default_branch"] = json!("b".repeat(256));
     body["ci_run_id"] = json!("r".repeat(256));
-    let issues = validated(body).expect_err("the report is rejected");
+    let issues = validated(&body).expect_err("the report is rejected");
     assert_eq!(issues.len(), 2);
     assert_eq!(issues[0].r#type, "string_too_long");
     assert_eq!(issues[1].r#type, "string_too_long");
@@ -414,7 +420,7 @@ fn more_than_a_thousand_jobs_are_rejected() {
         .map(|index| json!({"ci_job_id": index.to_string(), "name": "a", "status": "passed"}))
         .collect();
     body["jobs"] = Value::Array(jobs);
-    let issues = validated(body).expect_err("the report is rejected");
+    let issues = validated(&body).expect_err("the report is rejected");
     assert_eq!(issues[0].r#type, "too_long");
     assert_eq!(
         issues[0].msg,
@@ -426,7 +432,7 @@ fn more_than_a_thousand_jobs_are_rejected() {
 fn fifty_runner_labels_are_allowed() {
     let mut body = valid_report();
     body["jobs"][0]["runner_labels"] = json!(vec!["ubuntu-latest"; 50]);
-    let report = validated(body).expect("fifty labels fit the limit");
+    let report = validated(&body).expect("fifty labels fit the limit");
     assert_eq!(report.jobs[0].runner_labels.len(), 50);
 }
 
@@ -434,7 +440,7 @@ fn fifty_runner_labels_are_allowed() {
 fn a_job_timestamp_round_trips_in_the_accepted_shape() {
     let mut body = valid_report();
     body["jobs"][0]["started_at"] = json!("2026-10-20T09:00:00+00:00");
-    let report = validated(body).expect("the report is valid");
+    let report = validated(&body).expect("the report is valid");
     let value = serde_json::to_value(&report).expect("the report serializes");
     assert_eq!(
         value["jobs"][0]["started_at"],
@@ -444,11 +450,32 @@ fn a_job_timestamp_round_trips_in_the_accepted_shape() {
 }
 
 #[test]
+fn a_stored_payload_that_names_no_attempt_counts_as_the_first() {
+    // The stored body is written by this port, so it always names an attempt;
+    // the default is what Pydantic gave a payload that named none.
+    let mut body = json!({
+        "repo": "acme/app",
+        "provider": "github",
+        "pipeline": "ci.yml",
+        "commit_sha": "abc",
+        "branch": "main",
+        "jobs": [{"ci_job_id": "1", "name": "n", "status": "passed"}]
+    });
+    let stored: PipelineReportIn =
+        serde_json::from_value(body.clone()).expect("a stored payload deserializes");
+    assert_eq!(stored.ci_run_attempt, 1);
+    body["ci_run_attempt"] = json!(7);
+    let stored: PipelineReportIn =
+        serde_json::from_value(body).expect("a stored payload deserializes");
+    assert_eq!(stored.ci_run_attempt, 7);
+}
+
+#[test]
 fn a_job_validation_is_usable_on_its_own() {
-    let job: JobResultIn =
-        serde_json::from_value(json!({"ci_job_id": " 1 ", "name": " build ", "status": "failed"}))
-            .expect("the job deserializes");
-    let job = job.validate(3).expect("the job is valid");
+    let body = json!({"ci_job_id": " 1 ", "name": " build ", "status": "failed"});
+    let object = body.as_object().expect("the fixture is a JSON object");
+    let job = JobResultIn::from_value(object, vec![LocSegment::Field("body".to_owned())])
+        .expect("the job is valid");
     assert_eq!(job.ci_job_id, "1");
     assert_eq!(job.name, "build");
     assert_eq!(job.url, "");

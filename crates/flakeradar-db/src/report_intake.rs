@@ -169,10 +169,10 @@ impl NewPipelineReport {
 
 /// A CI attempt number as the column holds it.
 ///
-/// A validated attempt is at least 1 and realistically small. A value past
-/// `i32::MAX` saturates rather than failing the upload: the column is what
-/// limits it, and losing a whole report over an absurd attempt number helps
-/// nobody.
+/// Both ingest routes refuse an attempt past `i32::MAX` with a 400 before one is
+/// stored, so this saturates only for a payload a `2.0` build wrote before that
+/// rule existed: the column is what limits it, and failing that stored Report
+/// would lose a Run over an attempt number nobody reads.
 #[must_use]
 pub fn stored_attempt(ci_run_attempt: i64) -> i32 {
     i32::try_from(ci_run_attempt).unwrap_or(i32::MAX)

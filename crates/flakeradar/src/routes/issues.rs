@@ -20,7 +20,7 @@ use serde::Deserialize;
 
 use crate::app::AppState;
 use crate::error::{ApiError, ApiResult};
-use crate::extract::{ApiPath, ApiQuery, Validate, body_error, parse_json};
+use crate::extract::{ApiPath, ApiQuery, Validate, body_error, parse_json_object};
 use crate::middleware::require_token;
 
 /// A link route's answer.
@@ -151,8 +151,8 @@ where
         let bytes = axum::body::Bytes::from_request(req, state)
             .await
             .map_err(|rejection| body_error(&rejection))?;
-        let payload: IssueLinkIn = parse_json(&bytes, content_type.as_deref())?;
-        payload.validate().map_err(ApiError::unprocessable)?;
+        let object = parse_json_object(&bytes, content_type.as_deref())?;
+        let payload = IssueLinkIn::from_value(&object).map_err(ApiError::unprocessable)?;
         Ok(Self(payload))
     }
 }

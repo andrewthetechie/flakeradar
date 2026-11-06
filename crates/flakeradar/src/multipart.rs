@@ -26,12 +26,24 @@ const HEADER_END: &[u8] = b"\r\n\r\n";
 /// The two dashes that turn a delimiter into the closing one.
 const CLOSING: &[u8] = b"--";
 
+/// A part whose header block the reference parser refuses.
+///
+/// `python_multipart` reads each header line as a field name and a value, and a
+/// name may hold only the characters RFC 7230 allows in a token. A line that is
+/// no header at all, or whose name holds something else, raises there, and
+/// Starlette rounds the raise up to `MultiPartException("Invalid multipart
+/// data.")`, which the reference answered as 400.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MalformedHeaders;
+
 /// The file field `field` in a buffered multipart body, when the body has one.
 ///
 /// `content_type` is the request's `Content-Type`, whose `boundary` parameter
 /// separates the parts. Anything this cannot read — a missing or empty boundary,
 /// a preamble the reference parser refuses, an unterminated part, a body with no
-/// such file field — reads as `None`.
+/// such file field — reads as `Ok(None)`. A part whose header block the reference
+/// parser refuses is [`MalformedHeaders`], which the route answers as the 400 the
+/// reference gave.
 ///
 /// A part's data may hold anything, the boundary bytes included: only a CRLF
 /// followed by the delimiter and then a CRLF or the closing dashes ends a part,
@@ -39,33 +51,55 @@ const CLOSING: &[u8] = b"--";
 /// When the field arrives more than once, the last part that carries it decides,
 /// whatever its kind, because that is the value Starlette's form answered: a
 /// later plain form value leaves no upload at all.
-#[must_use]
-pub fn file_field<'a>(body: &'a [u8], content_type: &str, field: &str) -> Option<&'a [u8]> {
-    let boundary = boundary_of(content_type)?;
+///
+/// # Errors
+///
+/// Returns [`MalformedHeaders`] for a part whose header block is no header block.
+pub fn file_field<'a>(
+    body: &'a [u8],
+    content_type: &str,
+    field: &str,
+) -> Result<Option<&'a [u8]>, MalformedHeaders> {
+    let Some(boundary) = boundary_of(content_type) else {
+        return Ok(None);
+    };
     let framing = Framing::new(boundary.as_bytes());
-    let mut delimiter_at = framing.opening(body)?;
+    let Some(mut delimiter_at) = framing.opening(body) else {
+        return Ok(None);
+    };
     let mut found = None;
     loop {
-        let data_at = delimiter_at.checked_add(framing.delimiter.len())?;
+        let Some(data_at) = delimiter_at.checked_add(framing.delimiter.len()) else {
+            return Ok(found);
+        };
         // A delimiter followed by anything but a CRLF closes the form, or is no
         // delimiter at all; the form's parts carry no field from here on.
-        if !body.get(data_at..)?.starts_with(CRLF) {
-            return found;
+        if !body
+            .get(data_at..)
+            .is_some_and(|rest| rest.starts_with(CRLF))
+        {
+            return Ok(found);
         }
-        let part_start = data_at.checked_add(CRLF.len())?;
+        let part_start = data_at + CRLF.len();
         // A part whose ending delimiter never arrived is still open when the
         // body ends, and the reference parser drops what it read of it.
         let Some(part_end) = framing.next_end(body, part_start) else {
-            return found;
+            return Ok(found);
         };
-        match part_field(body.get(part_start..part_end)?, field) {
+        let Some(part) = body.get(part_start..part_end) else {
+            return Ok(found);
+        };
+        match part_field(part, field)? {
             // A part that names no field, or whose headers cannot be read,
             // leaves the field where the parts before it put it.
             None | Some(FieldPart::Other) => {}
             Some(FieldPart::Value) => found = None,
             Some(FieldPart::File(bytes)) => found = Some(bytes),
         }
-        delimiter_at = part_end.checked_add(CRLF.len())?;
+        match part_end.checked_add(CRLF.len()) {
+            Some(next) => delimiter_at = next,
+            None => return Ok(found),
+        }
     }
 }
 
@@ -101,36 +135,63 @@ enum FieldPart<'a> {
     File(&'a [u8]),
 }
 
+/// The RFC 7230 characters a header field name may hold besides ASCII digits and
+/// letters.
+const TOKEN_CHARS: &[u8] = b"!#$%&'*+-.^_`|~";
+
 /// How this part sends `field`, when its headers say anything this can read.
 ///
-/// `None` when the part's headers cannot be read at all: the reference parser
-/// answers such a part with an error, or drops it, and either way the field
-/// keeps what the parts before it gave.
-fn part_field<'a>(part: &'a [u8], field: &str) -> Option<FieldPart<'a>> {
-    let header_end = find(part, HEADER_END)?;
-    let headers = part.get(..header_end)?;
-    let payload = part.get(header_end + HEADER_END.len()..)?;
+/// # Errors
+///
+/// Returns [`MalformedHeaders`] when a header line is no header line, or its name
+/// holds a character RFC 7230 does not allow in a token, which the reference
+/// parser refused the whole body for.
+fn part_field<'a>(part: &'a [u8], field: &str) -> Result<Option<FieldPart<'a>>, MalformedHeaders> {
+    let Some(header_end) = find(part, HEADER_END) else {
+        return Ok(None);
+    };
+    let (Some(headers), Some(payload)) = (
+        part.get(..header_end),
+        part.get(header_end + HEADER_END.len()..),
+    ) else {
+        return Ok(None);
+    };
     let mut named = false;
     let mut filename = false;
     for line in headers.split(|byte| *byte == b'\n') {
         let line = line.strip_suffix(b"\r").unwrap_or(line);
-        let Some(colon) = line.iter().position(|byte| *byte == b':') else {
+        if line.is_empty() {
             continue;
+        }
+        let name = match line.iter().position(|byte| *byte == b':') {
+            Some(colon) => line.get(..colon).unwrap_or_default(),
+            None => return Err(MalformedHeaders),
         };
-        let (name, value) = (line.get(..colon)?, line.get(colon + 1..)?);
+        let value = line.get(name.len() + 1..).unwrap_or_default();
+        if !is_token(name) {
+            return Err(MalformedHeaders);
+        }
         if name.eq_ignore_ascii_case(b"content-disposition") {
             let (part_name, has_filename) = disposition(value);
             named = part_name.is_some_and(|part_name| part_name == field);
             filename = has_filename;
         }
     }
-    Some(if !named {
+    Ok(Some(if !named {
         FieldPart::Other
     } else if filename {
         FieldPart::File(payload)
     } else {
         FieldPart::Value
-    })
+    }))
+}
+
+/// Whether `name` is one HTTP header field name may hold.
+fn is_token(name: &[u8]) -> bool {
+    !name.is_empty()
+        && name
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || TOKEN_CHARS.contains(byte))
 }
 
 /// The `name` parameter of a `Content-Disposition` value, and whether it also
@@ -364,7 +425,12 @@ mod comparisons {
 mod tests {
     //! The framing cases the route depends on, on bytes a real client writes.
 
-    use super::{REPORT_FIELD, file_field};
+    use super::{MalformedHeaders, REPORT_FIELD, file_field};
+
+    /// The file field `body` carries, where the test's framing is well formed.
+    fn field_of<'a>(body: &'a [u8], content_type: &str) -> Option<&'a [u8]> {
+        file_field(body, content_type, REPORT_FIELD).expect("the fixture's headers are headers")
+    }
 
     /// One part, framed the way httpx and curl frame it.
     fn multipart(field: &str, filename: Option<&str>, payload: &[u8]) -> (Vec<u8>, String) {
@@ -424,33 +490,27 @@ mod tests {
     #[test]
     fn the_report_file_field_is_the_upload() {
         let (body, content_type) = multipart(REPORT_FIELD, Some("junit.xml"), b"<testsuite/>");
-        assert_eq!(
-            file_field(&body, &content_type, REPORT_FIELD),
-            Some(&b"<testsuite/>"[..])
-        );
+        assert_eq!(field_of(&body, &content_type), Some(&b"<testsuite/>"[..]));
     }
 
     #[test]
     fn a_field_without_a_filename_is_not_a_file() {
         let (body, content_type) = multipart(REPORT_FIELD, None, b"<testsuite/>");
-        assert_eq!(file_field(&body, &content_type, REPORT_FIELD), None);
+        assert_eq!(field_of(&body, &content_type), None);
     }
 
     #[test]
     fn a_body_without_the_field_is_empty() {
         let (body, content_type) = multipart("other", Some("junit.xml"), b"<testsuite/>");
-        assert_eq!(file_field(&body, &content_type, REPORT_FIELD), None);
+        assert_eq!(field_of(&body, &content_type), None);
         // A boundary that is not in the body reads as no field either.
         let (body, _) = multipart(REPORT_FIELD, Some("junit.xml"), b"<testsuite/>");
         assert_eq!(
-            file_field(&body, "multipart/form-data; boundary=absent", REPORT_FIELD),
+            field_of(&body, "multipart/form-data; boundary=absent"),
             None
         );
-        assert_eq!(file_field(&body, "multipart/form-data", REPORT_FIELD), None);
-        assert_eq!(
-            file_field(&body, "multipart/form-data; boundary=", REPORT_FIELD),
-            None
-        );
+        assert_eq!(field_of(&body, "multipart/form-data"), None);
+        assert_eq!(field_of(&body, "multipart/form-data; boundary="), None);
     }
 
     #[test]
@@ -464,11 +524,7 @@ mod tests {
             ],
         );
         assert_eq!(
-            file_field(
-                body.as_slice(),
-                "multipart/form-data; boundary=sep",
-                REPORT_FIELD
-            ),
+            field_of(body.as_slice(), "multipart/form-data; boundary=sep"),
             Some(&b"<x/>"[..])
         );
     }
@@ -477,10 +533,9 @@ mod tests {
     fn a_quoted_boundary_reads_the_same() {
         let (body, _) = multipart(REPORT_FIELD, Some("junit.xml"), b"<x/>");
         assert_eq!(
-            file_field(
+            field_of(
                 &body,
-                "multipart/form-data; charset=utf-8; boundary=\"-----flakeradar-test-boundary\"",
-                REPORT_FIELD
+                "multipart/form-data; charset=utf-8; boundary=\"-----flakeradar-test-boundary\""
             ),
             Some(&b"<x/>"[..])
         );
@@ -489,10 +544,7 @@ mod tests {
     #[test]
     fn an_empty_file_is_a_file_with_no_bytes() {
         let (body, content_type) = multipart(REPORT_FIELD, Some("junit.xml"), b"");
-        assert_eq!(
-            file_field(&body, &content_type, REPORT_FIELD),
-            Some(&b""[..])
-        );
+        assert_eq!(field_of(&body, &content_type), Some(&b""[..]));
     }
 
     #[test]
@@ -501,21 +553,14 @@ mod tests {
         // the XML stay part of the upload.
         let payload = b"<testsuite name=\"--x\r\ncontent\"/>";
         let (body, content_type) = multipart(REPORT_FIELD, Some("junit.xml"), payload);
-        assert_eq!(
-            file_field(&body, &content_type, REPORT_FIELD),
-            Some(&payload[..])
-        );
+        assert_eq!(field_of(&body, &content_type), Some(&payload[..]));
     }
 
     #[test]
     fn a_body_that_ends_before_any_part_is_empty() {
         // The closing delimiter on its own: there was never a part to read.
         assert_eq!(
-            file_field(
-                b"--b--\r\n",
-                "multipart/form-data; boundary=b",
-                REPORT_FIELD
-            ),
+            field_of(b"--b--\r\n", "multipart/form-data; boundary=b"),
             None
         );
     }
@@ -524,10 +569,9 @@ mod tests {
     fn a_flag_before_the_boundary_does_not_hide_it() {
         let (body, _) = multipart(REPORT_FIELD, Some("junit.xml"), b"<x/>");
         assert_eq!(
-            file_field(
+            field_of(
                 &body,
-                "multipart/form-data; charset; boundary=-----flakeradar-test-boundary",
-                REPORT_FIELD
+                "multipart/form-data; charset; boundary=-----flakeradar-test-boundary"
             ),
             Some(&b"<x/>"[..])
         );
@@ -536,71 +580,75 @@ mod tests {
     #[test]
     fn an_unterminated_quote_is_not_the_field_name() {
         let body = b"--b\r\nContent-Disposition: form-data; name=\"report; filename=\"r\"\r\n\r\n<x/>\r\n--b--\r\n";
-        assert_eq!(
-            file_field(body, "multipart/form-data; boundary=b", REPORT_FIELD),
-            None
-        );
+        assert_eq!(field_of(body, "multipart/form-data; boundary=b"), None);
     }
 
     #[test]
     fn a_parameter_that_names_nothing_is_skipped() {
         let body = b"--b\r\nContent-Disposition: form-data; flag; size=9; name=\"report\"; \
-                     filename=\"r.xml\"\r\nX-NoColon\r\n\r\n<x/>\r\n--b--\r\n";
+                     filename=\"r.xml\"\r\nX-Ok: 1\r\n\r\n<x/>\r\n--b--\r\n";
         assert_eq!(
-            file_field(body, "multipart/form-data; boundary=b", REPORT_FIELD),
+            field_of(body, "multipart/form-data; boundary=b"),
             Some(&b"<x/>"[..])
         );
         // A filename with no name leaves the field unnamed.
         let unnamed =
             b"--b\r\nContent-Disposition: form-data; filename=\"r.xml\"\r\n\r\n<x/>\r\n--b--\r\n";
-        assert_eq!(
-            file_field(unnamed, "multipart/form-data; boundary=b", REPORT_FIELD),
-            None
-        );
+        assert_eq!(field_of(unnamed, "multipart/form-data; boundary=b"), None);
+    }
+
+    #[test]
+    fn a_header_line_that_is_no_header_is_a_malformed_body() {
+        // Measured against Starlette's own parser: a header line with no colon
+        // raises `Invalid multipart data.`, before or after a valid header, and
+        // so does a field name holding a character RFC 7230 does not allow.
+        for headers in [
+            &b"Content-Disposition: form-data; name=\"report\"; filename=\"r.xml\"\r\nX-NoColon"[..],
+            &b"X-NoColon\r\nContent-Disposition: form-data; name=\"report\"; filename=\"r.xml\""[..],
+            &b"Content-Disposition: form-data; name=\"report\"; filename=\"r.xml\"\r\nX Bad: 1"[..],
+        ] {
+            let mut body = b"--b\r\n".to_vec();
+            body.extend_from_slice(headers);
+            body.extend_from_slice(b"\r\n\r\n<x/>\r\n--b--\r\n");
+            assert_eq!(
+                file_field(&body, "multipart/form-data; boundary=b", REPORT_FIELD),
+                Err(MalformedHeaders),
+                "{}",
+                String::from_utf8_lossy(headers)
+            );
+        }
     }
 
     #[test]
     fn a_truncated_body_is_empty() {
         // The opening delimiter with no part after it, and a part with no headers.
         assert_eq!(
-            file_field(b"--b\r\n", "multipart/form-data; boundary=b", REPORT_FIELD),
+            field_of(b"--b\r\n", "multipart/form-data; boundary=b"),
             None
         );
         assert_eq!(
-            file_field(
-                b"--b\r\nno headers",
-                "multipart/form-data; boundary=b",
-                REPORT_FIELD
-            ),
+            field_of(b"--b\r\nno headers", "multipart/form-data; boundary=b"),
             None
         );
         // A part that closed but never ended its headers carries no field.
         assert_eq!(
-            file_field(
+            field_of(
                 b"--b\r\nContent-Disposition: form-data; name=\"report\"; filename=\"r.xml\"\r\n--b--\r\n",
-                "multipart/form-data; boundary=b",
-                REPORT_FIELD
-            ),
+                "multipart/form-data; boundary=b"),
             None
         );
         // The delimiter's own bytes run on into something that is no delimiter.
         assert_eq!(
-            file_field(b"--bX\r\n", "multipart/form-data; boundary=b", REPORT_FIELD),
+            field_of(b"--bX\r\n", "multipart/form-data; boundary=b"),
             None
         );
-        assert_eq!(
-            file_field(b"", "multipart/form-data; boundary=b", REPORT_FIELD),
-            None
-        );
+        assert_eq!(field_of(b"", "multipart/form-data; boundary=b"), None);
     }
 
     #[test]
     fn only_a_file_field_understood_as_utf8_names_the_field() {
         let body = b"--b\r\nContent-Disposition: form-data; name=\"\xff\"; filename=\"r\"\r\n\r\nx\r\n--b--\r\n";
-        assert_eq!(
-            file_field(body, "multipart/form-data; boundary=b", REPORT_FIELD),
-            None
-        );
+        assert_eq!(field_of(body, "multipart/form-data; boundary=b"), None);
     }
 
     #[test]
@@ -615,7 +663,7 @@ mod tests {
             let mut body = preamble.to_vec();
             body.extend_from_slice(&framed);
             assert_eq!(
-                file_field(&body, "multipart/form-data; boundary=b", REPORT_FIELD),
+                field_of(&body, "multipart/form-data; boundary=b"),
                 None,
                 "{preamble:?} in front of the form"
             );
@@ -632,7 +680,7 @@ mod tests {
             let mut body = preamble.to_vec();
             body.extend_from_slice(&framed);
             assert_eq!(
-                file_field(&body, "multipart/form-data; boundary=b", REPORT_FIELD),
+                field_of(&body, "multipart/form-data; boundary=b"),
                 Some(&b"<x/>"[..]),
                 "{preamble:?} in front of the form"
             );
@@ -649,19 +697,16 @@ mod tests {
         let mut body = b"\r\nwords\r\n".to_vec();
         body.extend_from_slice(&framed);
         assert_eq!(
-            file_field(&body, "multipart/form-data; boundary=b", REPORT_FIELD),
+            field_of(&body, "multipart/form-data; boundary=b"),
             Some(&b"<x/>"[..])
         );
         // A `-` that opens no delimiter is where that search stops, and a body
         // with no `-` after its newlines carries no field either.
         let mut body = b"\r\n-junk".to_vec();
         body.extend_from_slice(&framed);
+        assert_eq!(field_of(&body, "multipart/form-data; boundary=b"), None);
         assert_eq!(
-            file_field(&body, "multipart/form-data; boundary=b", REPORT_FIELD),
-            None
-        );
-        assert_eq!(
-            file_field(b"\r\njunk", "multipart/form-data; boundary=b", REPORT_FIELD),
+            field_of(b"\r\njunk", "multipart/form-data; boundary=b"),
             None
         );
     }
@@ -677,10 +722,7 @@ mod tests {
             boundary,
             &[file_part(boundary, REPORT_FIELD, b"<x/>")],
         ));
-        assert_eq!(
-            file_field(&body, "multipart/form-data; boundary=b", REPORT_FIELD),
-            None
-        );
+        assert_eq!(field_of(&body, "multipart/form-data; boundary=b"), None);
     }
 
     #[test]
@@ -697,7 +739,7 @@ mod tests {
             ],
         );
         assert_eq!(
-            file_field(&body, "multipart/form-data; boundary=b", REPORT_FIELD),
+            field_of(&body, "multipart/form-data; boundary=b"),
             Some(&b"<x/>"[..])
         );
     }
@@ -714,7 +756,7 @@ mod tests {
             &[file_part(boundary, REPORT_FIELD, payload.as_slice())],
         );
         assert_eq!(
-            file_field(&body, "multipart/form-data; boundary=b", REPORT_FIELD),
+            field_of(&body, "multipart/form-data; boundary=b"),
             Some(&payload[..])
         );
     }
@@ -724,10 +766,7 @@ mod tests {
         // python-multipart requires CRLF: bare LF framing raises
         // MultiPartException, so the route answers 400 and stores nothing.
         let body = b"--b\nContent-Disposition: form-data; name=\"report\"; filename=\"r.xml\"\n\n<x/>\n--b--\n";
-        assert_eq!(
-            file_field(body, "multipart/form-data; boundary=b", REPORT_FIELD),
-            None
-        );
+        assert_eq!(field_of(body, "multipart/form-data; boundary=b"), None);
     }
 
     #[test]
@@ -745,7 +784,7 @@ mod tests {
             ],
         );
         assert_eq!(
-            file_field(&two_files, "multipart/form-data; boundary=b", REPORT_FIELD),
+            field_of(&two_files, "multipart/form-data; boundary=b"),
             Some(&b"<second/>"[..])
         );
         let file_then_text = form(
@@ -756,11 +795,7 @@ mod tests {
             ],
         );
         assert_eq!(
-            file_field(
-                &file_then_text,
-                "multipart/form-data; boundary=b",
-                REPORT_FIELD
-            ),
+            field_of(&file_then_text, "multipart/form-data; boundary=b"),
             None
         );
         let text_then_file = form(
@@ -771,11 +806,7 @@ mod tests {
             ],
         );
         assert_eq!(
-            file_field(
-                &text_then_file,
-                "multipart/form-data; boundary=b",
-                REPORT_FIELD
-            ),
+            field_of(&text_then_file, "multipart/form-data; boundary=b"),
             Some(&b"<second/>"[..])
         );
         // A part under another name decides nothing at all, here and anywhere.
@@ -789,11 +820,7 @@ mod tests {
             ],
         );
         assert_eq!(
-            file_field(
-                &file_then_other,
-                "multipart/form-data; boundary=b",
-                REPORT_FIELD
-            ),
+            field_of(&file_then_other, "multipart/form-data; boundary=b"),
             Some(&b"<second/>"[..])
         );
     }
@@ -806,15 +833,12 @@ mod tests {
         let mut body = form(boundary, &[file_part(boundary, REPORT_FIELD, b"<x/>")]);
         body.extend_from_slice(&file_part(boundary, "note", b"no end"));
         assert_eq!(
-            file_field(&body, "multipart/form-data; boundary=b", REPORT_FIELD),
+            field_of(&body, "multipart/form-data; boundary=b"),
             Some(&b"<x/>"[..])
         );
         // A body whose only part is still open carries no field.
         let body = file_part(boundary, REPORT_FIELD, b"<x/>");
-        assert_eq!(
-            file_field(&body, "multipart/form-data; boundary=b", REPORT_FIELD),
-            None
-        );
+        assert_eq!(field_of(&body, "multipart/form-data; boundary=b"), None);
     }
 
     #[test]
@@ -851,7 +875,7 @@ mod tests {
         body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
 
         super::comparisons::reset();
-        assert_eq!(file_field(&body, &content_type, REPORT_FIELD), None);
+        assert_eq!(field_of(&body, &content_type), None);
         let near_misses = super::comparisons::count();
         assert!(
             near_misses < 3 * body.len(),
@@ -864,10 +888,7 @@ mod tests {
         carrying.extend_from_slice(&file_part(&boundary, REPORT_FIELD, b"<x/>"));
         carrying.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
         super::comparisons::reset();
-        assert_eq!(
-            file_field(&carrying, &content_type, REPORT_FIELD),
-            Some(&b"<x/>"[..])
-        );
+        assert_eq!(field_of(&carrying, &content_type), Some(&b"<x/>"[..]));
         let comparisons = super::comparisons::count();
         assert!(
             comparisons < 3 * carrying.len(),

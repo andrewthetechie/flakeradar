@@ -18,8 +18,9 @@ use axum::routing::{get, post};
 use axum::{Router, middleware};
 use chrono::Utc;
 use flakeradar_core::{
-    IngestAccepted, ParseError, PipelineReportIn, ReportOut, ReportSummaryOut, ValidationIssue,
-    normalize_project, normalize_repo, normalize_root, parse_junit_xml, pipeline_body, py_strip,
+    AttemptReading, IngestAccepted, ParseError, PipelineReportIn, ReportOut, ReportSummaryOut,
+    ValidationIssue, attempt_too_large, lax, normalize_project, normalize_repo, normalize_root,
+    parse_junit_xml, pipeline_body, py_strip, read_attempt,
 };
 use flakeradar_db::entities::reports;
 use flakeradar_db::{
@@ -39,7 +40,7 @@ use crate::app::AppState;
 use crate::error::{ApiError, ApiResult};
 use crate::extract::{ApiPath, ApiQuery, Validate, query_loc};
 use crate::middleware::require_token;
-use crate::multipart::{REPORT_FIELD, file_field};
+use crate::multipart::{MalformedHeaders, REPORT_FIELD, file_field};
 
 /// The largest Report body accepted, in bytes.
 ///
@@ -203,11 +204,10 @@ pub struct IngestQuery {
     ci_job_id: Option<String>,
     /// Which attempt of the CI run this is, numbered from 1.
     ///
-    /// Read as text so a number too long for the `int4` column — even one past
-    /// `i64` — is still told apart from a word, because the two get different
-    /// answers: 400 for the first, 422 for the second.
-    #[serde(default)]
-    ci_run_attempt: Option<String>,
+    /// Parsed by [`read_attempt_query`] into the value it spells and the rule it
+    /// breaks, so the upload is parsed once and the range is one rule.
+    #[serde(default, deserialize_with = "read_attempt_query")]
+    ci_run_attempt: Option<AttemptQuery>,
     /// The Pipeline the Job belongs to.
     #[serde(default)]
     pipeline: Option<String>,
@@ -266,26 +266,15 @@ impl Validate for IngestQuery {
         if let Some(ci_job_id) = &self.ci_job_id {
             check_max(ci_job_id, 255, "ci_job_id", &mut issues);
         }
-        let mut attempt_over_range = false;
-        if let Some(text) = &self.ci_run_attempt {
-            match attempt_value(text) {
-                AttemptValue::Number(attempt) if attempt < 1 => {
-                    issues.push(ValidationIssue::greater_than_equal(
-                        query_loc("ci_run_attempt"),
-                        attempt.into(),
-                        1,
-                    ));
+        let attempt_over_range = match &self.ci_run_attempt {
+            Some(AttemptQuery(reading)) => {
+                if let Some(issue) = reading.issue(query_loc("ci_run_attempt")) {
+                    issues.push(issue);
                 }
-                AttemptValue::Number(attempt) => {
-                    attempt_over_range = attempt > i64::from(i32::MAX);
-                }
-                AttemptValue::PastEveryRange => attempt_over_range = true,
-                AttemptValue::NotANumber => issues.push(ValidationIssue::int_parsing(
-                    query_loc("ci_run_attempt"),
-                    text.clone().into(),
-                )),
+                *reading == AttemptReading::PastColumn
             }
-        }
+            None => false,
+        };
         if let Some(pipeline) = &self.pipeline {
             check_max(pipeline, 512, "pipeline", &mut issues);
         }
@@ -304,40 +293,42 @@ impl Validate for IngestQuery {
     }
 }
 
-/// A `ci_run_attempt` query value as the number it spells.
-#[derive(Debug, Clone, Copy)]
-enum AttemptValue {
-    /// The number the text spells, when it fits `i64`.
-    Number(i64),
-    /// A run of digits longer than `i64` holds, so past the column's range
-    /// whatever it spells.
-    PastEveryRange,
-    /// Something that is not an integer.
-    NotANumber,
-}
+/// The `ci_run_attempt` an upload named, parsed once.
+#[derive(Debug, Clone)]
+struct AttemptQuery(AttemptReading);
 
-/// The number `text` spells, as far as it can be told without a range in mind.
-fn attempt_value(text: &str) -> AttemptValue {
-    let text = text.trim();
-    if let Ok(number) = text.parse::<i64>() {
-        return AttemptValue::Number(number);
-    }
-    if !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit()) {
-        return AttemptValue::PastEveryRange;
-    }
-    AttemptValue::NotANumber
+/// Reads a query `ci_run_attempt` as the value it spells.
+///
+/// The reading is never a parse error: a value Pydantic could not read is a 422
+/// with Pydantic's kind, and one past the `int4` column is the 400 both ingest
+/// routes answer, so the rule runs in `Validate` where the route can say which.
+fn read_attempt_query<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<AttemptQuery>, D::Error> {
+    let text = Option::<String>::deserialize(deserializer)?;
+    Ok(text.map(|text| AttemptQuery(read_attempt(&JsonValue::from(text)))))
 }
 
 /// The 400 for a `ci_run_attempt` the `int4` column cannot hold.
 fn too_large_attempt() -> ApiError {
-    ApiError::new(
-        StatusCode::BAD_REQUEST,
-        format!("ci_run_attempt must be at most {}", i32::MAX),
-    )
+    ApiError::new(StatusCode::BAD_REQUEST, attempt_too_large())
 }
 
-/// Records a maximum-length failure for `field`, in characters as Python counted.
+/// The attempt to store, once `Validate` has accepted the upload.
+fn stored_ci_run_attempt(attempt: Option<&AttemptQuery>) -> Option<i32> {
+    match attempt {
+        Some(AttemptQuery(AttemptReading::Attempt(number))) => Some(*number),
+        _ => None,
+    }
+}
+
+/// Records a NUL or a maximum-length failure for `field`.
+///
+/// The length counts characters as Python counted them. A NUL is refused because
+/// a PostgreSQL `text` column cannot store one, where the reference answered 500
+/// after creating the Repo and Project rows.
 fn check_max(value: &str, max: usize, field: &str, issues: &mut Vec<ValidationIssue>) {
+    lax::refuse_nul(value, query_loc(field), issues);
     if value.chars().count() > max {
         issues.push(ValidationIssue::string_too_long(
             query_loc(field),
@@ -375,7 +366,10 @@ pub struct ListQuery {
     #[serde(default)]
     status: Option<String>,
     /// How many Reports to return.
-    #[serde(default = "default_report_limit")]
+    #[serde(
+        default = "default_report_limit",
+        deserialize_with = "flakeradar_core::dto::lax_int::value"
+    )]
     limit: i64,
 }
 
@@ -426,9 +420,8 @@ where
         let bytes = Bytes::from_request(req, state)
             .await
             .map_err(|rejection| crate::extract::body_error(&rejection))?;
-        let payload: PipelineReportIn =
-            crate::extract::parse_json(&bytes, content_type.as_deref())?;
-        let payload = payload.validate().map_err(ApiError::unprocessable)?;
+        let object = crate::extract::parse_json_object(&bytes, content_type.as_deref())?;
+        let payload = PipelineReportIn::from_value(&object)?;
         Ok(Self(payload))
     }
 }
@@ -493,7 +486,7 @@ pub async fn ingest(
     parse_upload(content.clone(), line_base).await?;
     // Checked here, where Python's insert failed on the same value, so every
     // refusal before this one answers exactly as it did.
-    let ci_run_attempt = stored_ci_run_attempt(query.ci_run_attempt.as_deref())?;
+    let ci_run_attempt = stored_ci_run_attempt(query.ci_run_attempt.as_ref());
 
     let now = Utc::now().fixed_offset();
     // The Repo, Project and Report are one unit of work: Python committed them
@@ -562,7 +555,7 @@ async fn report_body(request: Request) -> Result<Vec<u8>, ApiError> {
     // Finding the field reads the whole body, which can be 20 MiB, so it runs
     // on a blocking thread rather than on the one serving every other request.
     let found = tokio::task::spawn_blocking(move || {
-        file_field(&bytes, &content_type, REPORT_FIELD).map(<[u8]>::to_vec)
+        file_field(&bytes, &content_type, REPORT_FIELD).map(|found| found.map(<[u8]>::to_vec))
     })
     .await
     .map_err(|error| {
@@ -571,28 +564,15 @@ async fn report_body(request: Request) -> Result<Vec<u8>, ApiError> {
             format!("The multipart scan did not finish: {error}"),
         )
     })?;
-    Ok(found.unwrap_or_default())
-}
-
-/// The `ci_run_attempt` to store, refusing one the `int4` column cannot hold.
-///
-/// [`IngestQuery::validate`] has already answered 422 for everything that is
-/// not an integer at all, so a text that does not read as one here is a run of
-/// digits past `i64`: out of range either way.
-///
-/// # Errors
-///
-/// Returns the 400 for a number past the column's range.
-fn stored_ci_run_attempt(text: Option<&str>) -> ApiResult<Option<i32>> {
-    let Some(text) = text else {
-        return Ok(None);
-    };
-    text.trim()
-        .parse::<i64>()
-        .ok()
-        .and_then(|attempt| i32::try_from(attempt).ok())
-        .map(Some)
-        .ok_or_else(too_large_attempt)
+    match found {
+        Ok(found) => Ok(found.unwrap_or_default()),
+        // The reference handed the body to Starlette's form parser, which
+        // refused a part whose headers are no headers with this detail.
+        Err(MalformedHeaders) => Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "Invalid multipart data.",
+        )),
+    }
 }
 
 /// The 413 or 500 for an upload that could not be read.

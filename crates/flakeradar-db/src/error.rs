@@ -34,6 +34,18 @@ pub enum DbError {
         /// `seaql_migrations` table next to them.
         detail: String,
     },
+    /// A leaderboard page whose `OFFSET` would not fit an `i64`.
+    ///
+    /// Request validation bounds `page` so the product fits, so a caller that
+    /// builds the options itself is the only way here: it gets an error rather
+    /// than a wrapped offset that would answer another page's rows.
+    #[error("page {page} at page size {page_size} is past the largest offset an i64 holds")]
+    PageOffsetTooLarge {
+        /// The page that was asked for.
+        page: i64,
+        /// The page size it was asked for with.
+        page_size: i64,
+    },
     /// A stored Pipeline Report body is not the payload it was built from.
     #[error("the stored Pipeline Report body is not its payload: {detail}")]
     StoredPayload {

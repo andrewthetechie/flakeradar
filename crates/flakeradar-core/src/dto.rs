@@ -17,7 +17,9 @@ use serde_json::Value;
 use utoipa::ToSchema;
 
 use crate::identity::{IdentityError, normalize_provider, normalize_repo};
+use crate::lax;
 use crate::model::{FailedJobOutcome, JobOutcome, JobStatus, Tier, Trend};
+use crate::py::py_strip;
 
 /// The timestamp shape every response uses.
 ///
@@ -162,9 +164,19 @@ pub mod lax_bool {
         }
     }
 
+    /// What Pydantic's lax mode made of one JSON value.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Refusal::WrongType`] for a value of another JSON type and
+    /// [`Refusal::Unparsable`] for a number or a string it could not read.
+    pub fn read(value: &Value) -> Result<bool, Refusal> {
+        interpret(value)
+    }
+
     /// Why Pydantic refused a value, which is also the error kind it reported.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    enum Refusal {
+    pub enum Refusal {
         /// A value of another JSON type: Pydantic's `bool_type`.
         WrongType,
         /// A number or string Pydantic could not read: `bool_parsing`.
@@ -221,6 +233,41 @@ pub mod lax_bool {
         } else {
             Err(Refusal::WrongType)
         }
+    }
+}
+
+/// Pydantic's lax integer, for the query parameters FastAPI read as one.
+///
+/// A query string carries text, and Pydantic read it as an integer in the
+/// spellings its lax mode took: `"1_0"` is 10, `"2.0"` is 2, `" 2 "` is 2, and
+/// `"true"` or `"0x10"` are none. Axum's own `serde` route takes only digits, so
+/// every query field that is an integer goes through here.
+pub mod lax_int {
+    use serde::{Deserialize, Deserializer};
+
+    use crate::lax::{INT_PARSING_MESSAGE, python_int};
+
+    /// Reads a required lax integer.
+    ///
+    /// # Errors
+    ///
+    /// Returns Pydantic's `int_parsing` message for a text that is no integer.
+    pub fn value<'de, D: Deserializer<'de>>(deserializer: D) -> Result<i64, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        python_int(&text).ok_or_else(|| serde::de::Error::custom(INT_PARSING_MESSAGE))
+    }
+
+    /// Reads an optional lax integer, where an absent parameter is `None`.
+    ///
+    /// # Errors
+    ///
+    /// Returns Pydantic's `int_parsing` message for a text that is no integer.
+    pub fn optional<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<i64>, D::Error> {
+        Option::<String>::deserialize(deserializer)?
+            .map(|text| {
+                python_int(&text).ok_or_else(|| serde::de::Error::custom(INT_PARSING_MESSAGE))
+            })
+            .transpose()
     }
 }
 
@@ -372,12 +419,7 @@ impl ValidationIssue {
     /// A value that is not an integer.
     #[must_use]
     pub fn int_parsing(loc: Vec<LocSegment>, input: Value) -> Self {
-        Self::parsing(
-            "int_parsing",
-            "Input should be a valid integer, unable to parse string as an integer",
-            loc,
-            input,
-        )
+        Self::parsing("int_parsing", lax::INT_PARSING_MESSAGE, loc, input)
     }
 
     /// A value that is not a number.
@@ -397,6 +439,88 @@ impl ValidationIssue {
         Self::parsing(
             "bool_parsing",
             "Input should be a valid boolean, unable to interpret input",
+            loc,
+            input,
+        )
+    }
+
+    /// A value of another JSON type, where a boolean was expected.
+    #[must_use]
+    pub fn bool_type(loc: Vec<LocSegment>, input: Value) -> Self {
+        Self::parsing("bool_type", "Input should be a valid boolean", loc, input)
+    }
+
+    /// A value of another JSON type, where a string was expected.
+    #[must_use]
+    pub fn string_type(loc: Vec<LocSegment>, input: Value) -> Self {
+        Self::parsing("string_type", "Input should be a valid string", loc, input)
+    }
+
+    /// A value of another JSON type, where a list was expected.
+    #[must_use]
+    pub fn list_type(loc: Vec<LocSegment>, input: Value) -> Self {
+        Self::parsing("list_type", "Input should be a valid list", loc, input)
+    }
+
+    /// A value of another JSON type, where an integer was expected.
+    #[must_use]
+    pub fn int_type(loc: Vec<LocSegment>, input: Value) -> Self {
+        Self::parsing("int_type", "Input should be a valid integer", loc, input)
+    }
+
+    /// A float with a fractional part, where an integer was expected.
+    #[must_use]
+    pub fn int_from_float(loc: Vec<LocSegment>, input: Value) -> Self {
+        Self::parsing(
+            "int_from_float",
+            "Input should be a valid integer, got a number with a fractional part",
+            loc,
+            input,
+        )
+    }
+
+    /// A number past the range an integer is held in.
+    #[must_use]
+    pub fn int_parsing_size(loc: Vec<LocSegment>, input: Value) -> Self {
+        Self::parsing(
+            "int_parsing_size",
+            "Unable to parse input string as an integer, exceeded maximum size",
+            loc,
+            input,
+        )
+    }
+
+    /// A value of another JSON type, where a timestamp was expected.
+    #[must_use]
+    pub fn datetime_type(loc: Vec<LocSegment>, input: Value) -> Self {
+        Self::parsing(
+            "datetime_type",
+            "Input should be a valid datetime",
+            loc,
+            input,
+        )
+    }
+
+    /// A string Pydantic could not read as a date or a datetime.
+    #[must_use]
+    pub fn datetime_from_date_parsing(loc: Vec<LocSegment>, input: Value, error: &str) -> Self {
+        let mut ctx = serde_json::Map::new();
+        let _ = ctx.insert("error".to_owned(), Value::from(error));
+        Self {
+            r#type: "datetime_from_date_parsing".to_owned(),
+            loc,
+            msg: format!("Input should be a valid datetime or date, {error}"),
+            input: Some(input),
+            ctx: Some(Value::Object(ctx)),
+        }
+    }
+
+    /// A text holding a NUL character, which a `text` column cannot store.
+    #[must_use]
+    pub fn nul_character(loc: Vec<LocSegment>, input: Value) -> Self {
+        Self::parsing(
+            "value_error",
+            "Value error, the text contains a NUL character, which a text column cannot store",
             loc,
             input,
         )
@@ -539,81 +663,196 @@ pub struct JobResultIn {
     pub summary: bool,
 }
 
+/// The longest `runner_labels` list a Job may carry.
+const RUNNER_LABELS_MAX: usize = 50;
+
+/// The longest one runner label may be.
+const RUNNER_LABEL_MAX: usize = 255;
+
 impl JobResultIn {
-    /// Strips the strings and checks the lengths Pydantic checked.
+    /// Reads one Job of a Pipeline report the way Pydantic read it.
     ///
-    /// `index` is the Job's position in the Pipeline report's `jobs` list, so
-    /// each issue's `loc` points at the field a client has to fix.
+    /// `at` is where the Job sits in the body, so each issue's `loc` names the
+    /// Job and the field a client has to fix.
     ///
     /// # Errors
     ///
-    /// Returns one [`ValidationIssue`] per failed rule, in field order, which
-    /// the route serves as the 422 `detail` list.
-    pub fn validate(self, index: usize) -> Result<Self, Vec<ValidationIssue>> {
-        let loc = |field: &str| job_loc(index, field);
+    /// Returns every issue Pydantic listed for the Job, in field order.
+    pub fn from_value(
+        object: &serde_json::Map<String, Value>,
+        at: Vec<LocSegment>,
+    ) -> Result<Self, Vec<ValidationIssue>> {
+        let fields = lax::Fields::new(object, at);
         let mut issues = Vec::new();
-        let ci_job_id = check_string(&self.ci_job_id, 1, 255, loc("ci_job_id"), &mut issues);
-        let name = check_string(&self.name, 1, 512, loc("name"), &mut issues);
-        let url = check_string(&self.url, 0, 2048, loc("url"), &mut issues);
-        let runner_name = check_string(&self.runner_name, 0, 255, loc("runner_name"), &mut issues);
-        let mut runner_labels = Vec::with_capacity(self.runner_labels.len());
-        for (label_index, label) in self.runner_labels.into_iter().enumerate() {
-            let label = stripped(&label);
-            if label.chars().count() > 255 {
-                issues.push(ValidationIssue::string_too_long(
-                    job_loc_with(label_index, "runner_labels"),
-                    Value::from(label.clone()),
-                    255,
-                ));
-            }
-            runner_labels.push(label);
-        }
-        if runner_labels.len() > 50 {
-            issues.push(ValidationIssue::list_too_long(
-                loc("runner_labels"),
-                Value::from(runner_labels.len()),
-                50,
-                runner_labels.len(),
-            ));
-        }
+
+        let ci_job_id = read_string(&fields, "ci_job_id", 1, 255, &mut issues).unwrap_or_default();
+        let name = read_string(&fields, "name", 1, 512, &mut issues).unwrap_or_default();
+        let status = read_status(&fields, &mut issues).unwrap_or(JobStatus::Passed);
+        let url = read_defaulted_string(&fields, "url", 2048, &mut issues).unwrap_or_default();
+        let runner_name =
+            read_defaulted_string(&fields, "runner_name", 255, &mut issues).unwrap_or_default();
+        let runner_labels = read_runner_labels(&fields, &mut issues);
+        let started_at = read_optional_timestamp(&fields, "started_at", &mut issues);
+        let completed_at = read_optional_timestamp(&fields, "completed_at", &mut issues);
+        let summary = read_defaulted_bool(&fields, "summary", &mut issues).unwrap_or(false);
+
         if !issues.is_empty() {
             return Err(issues);
         }
         Ok(Self {
             ci_job_id,
             name,
-            status: self.status,
+            status,
             url,
             runner_name,
             runner_labels,
-            started_at: self.started_at,
-            completed_at: self.completed_at,
-            summary: self.summary,
+            started_at,
+            completed_at,
+            summary,
         })
     }
 }
 
-/// Where one field of one Job in a Pipeline report sits.
-fn job_loc(index: usize, field: &str) -> Vec<LocSegment> {
-    job_loc_with(index, field)
+/// The required string `field` of `fields` holds, stripped and checked.
+fn read_string(
+    fields: &lax::Fields<'_>,
+    field: &str,
+    min: usize,
+    max: usize,
+    issues: &mut Vec<ValidationIssue>,
+) -> Option<String> {
+    let value = fields.required(field, issues)?;
+    match lax::string(value, fields.loc(field)) {
+        Ok(text) => Some(check_string(&text, min, max, fields.loc(field), issues)),
+        Err(issue) => {
+            issues.push(*issue);
+            None
+        }
+    }
 }
 
-/// Where one field, or one list item's field, of a Job sits.
-fn job_loc_with(index: usize, field: &str) -> Vec<LocSegment> {
-    vec![
-        LocSegment::Field("body".to_owned()),
-        LocSegment::Field("jobs".to_owned()),
-        LocSegment::Index(index),
-        LocSegment::Field(field.to_owned()),
-    ]
+/// The string `field` of `fields` holds, stripped and checked, when it is there.
+///
+/// The field has a default, so an absent value leaves it; a `null` is a value of
+/// the wrong type, which Pydantic refused exactly as it refused a number.
+fn read_defaulted_string(
+    fields: &lax::Fields<'_>,
+    field: &str,
+    max: usize,
+    issues: &mut Vec<ValidationIssue>,
+) -> Option<String> {
+    let value = fields.field(field)?;
+    match lax::string(value, fields.loc(field)) {
+        Ok(text) => Some(check_string(&text, 0, max, fields.loc(field), issues)),
+        Err(issue) => {
+            issues.push(*issue);
+            None
+        }
+    }
+}
+
+/// The `status` of a Job, as Pydantic's literal set read it.
+fn read_status(fields: &lax::Fields<'_>, issues: &mut Vec<ValidationIssue>) -> Option<JobStatus> {
+    let value = fields.required("status", issues)?;
+    let options: Vec<&str> = JobStatus::ALL
+        .iter()
+        .map(|status| status.as_str())
+        .collect();
+    match lax::literal(value, &options, fields.loc("status")) {
+        Ok(text) => JobStatus::parse(text),
+        Err(issue) => {
+            issues.push(*issue);
+            None
+        }
+    }
+}
+
+/// The `runner_labels` of a Job: a list of short strings, at most 50 of them.
+fn read_runner_labels(fields: &lax::Fields<'_>, issues: &mut Vec<ValidationIssue>) -> Vec<String> {
+    let Some(value) = fields.field("runner_labels") else {
+        return Vec::new();
+    };
+    let labels = match lax::list_of(value, fields.loc("runner_labels")) {
+        Ok(labels) => labels,
+        Err(issue) => {
+            issues.push(*issue);
+            return Vec::new();
+        }
+    };
+    // A list past the bound is refused whole, as Pydantic's list constraint
+    // refuses it before it reads any item.
+    if labels.len() > RUNNER_LABELS_MAX {
+        issues.push(ValidationIssue::list_too_long(
+            fields.loc("runner_labels"),
+            Value::from(labels.len()),
+            RUNNER_LABELS_MAX,
+            labels.len(),
+        ));
+        return Vec::new();
+    }
+    let mut out = Vec::with_capacity(labels.len());
+    for (index, label) in labels.iter().enumerate() {
+        let loc = fields.item_loc("runner_labels", index);
+        match lax::string(label, loc.clone()) {
+            Ok(text) => {
+                let text = stripped(&text);
+                lax::refuse_nul(&text, loc.clone(), issues);
+                if text.chars().count() > RUNNER_LABEL_MAX {
+                    issues.push(ValidationIssue::string_too_long(
+                        loc,
+                        Value::from(text.clone()),
+                        RUNNER_LABEL_MAX,
+                    ));
+                }
+                out.push(text);
+            }
+            Err(issue) => issues.push(*issue),
+        }
+    }
+    out
+}
+
+/// The optional timestamp `field` of `fields` holds.
+fn read_optional_timestamp(
+    fields: &lax::Fields<'_>,
+    field: &str,
+    issues: &mut Vec<ValidationIssue>,
+) -> Option<DateTime<Utc>> {
+    let value = fields.field(field).filter(|value| !value.is_null())?;
+    match lax::timestamp(value, fields.loc(field)) {
+        Ok(at) => Some(at),
+        Err(issue) => {
+            issues.push(*issue);
+            None
+        }
+    }
+}
+
+/// The boolean `field` of `fields` holds, when it is there.
+///
+/// The field has a default, so an absent value leaves it; a `null` is a value of
+/// the wrong type, as it was to Pydantic.
+fn read_defaulted_bool(
+    fields: &lax::Fields<'_>,
+    field: &str,
+    issues: &mut Vec<ValidationIssue>,
+) -> Option<bool> {
+    let value = fields.field(field)?;
+    match lax::boolean(value, fields.loc(field)) {
+        Ok(flag) => Some(flag),
+        Err(issue) => {
+            issues.push(*issue);
+            None
+        }
+    }
 }
 
 /// Trims text the way Pydantic's `str_strip_whitespace` does.
 fn stripped(text: &str) -> String {
-    crate::py::py_strip(text).to_owned()
+    py_strip(text).to_owned()
 }
 
-/// Checks a string's length bounds, returning the stripped value.
+/// Checks a string's NUL and length bounds, returning the stripped value.
 fn check_string(
     text: &str,
     min: usize,
@@ -622,6 +861,7 @@ fn check_string(
     issues: &mut Vec<ValidationIssue>,
 ) -> String {
     let text = stripped(text);
+    lax::refuse_nul(&text, loc.clone(), issues);
     let len = text.chars().count();
     if len < min {
         issues.push(ValidationIssue::string_too_short(
@@ -638,6 +878,106 @@ fn check_string(
         ));
     }
     text
+}
+
+/// The most Jobs one Pipeline report may carry.
+const JOBS_MAX: usize = 1000;
+
+/// The largest `ci_run_attempt` the `int4` column holds.
+pub const ATTEMPT_MAX: i64 = i32::MAX as i64;
+
+/// Why a Pipeline report body was refused.
+#[derive(Debug, Clone, PartialEq)]
+pub enum BodyRefusal {
+    /// Every issue Pydantic listed, which the 422's `detail` list carries.
+    Issues(Vec<ValidationIssue>),
+    /// A `ci_run_attempt` past the `int4` column, which both ingest routes answer
+    /// 400 for rather than rewriting the value CI sent.
+    AttemptPastColumn,
+}
+
+/// What one `ci_run_attempt` value says, before a route answers it.
+#[expect(
+    clippy::derive_partial_eq_without_eq,
+    reason = "the reading keeps the JSON value the caller sent, which holds floats"
+)]
+#[derive(Debug, Clone, PartialEq)]
+pub enum AttemptReading {
+    /// The attempt the value names, inside the column's range.
+    Attempt(i32),
+    /// A number below 1, as the caller sent it.
+    BelowMinimum(Value),
+    /// A number past the `int4` column, however it is spelled.
+    PastColumn,
+    /// A value that is no integer, in the terms Pydantic reported it.
+    NotAnInteger {
+        /// Pydantic's error kind, such as `int_type`.
+        kind: String,
+        /// Pydantic's message for that kind.
+        msg: String,
+        /// The value as the caller sent it.
+        input: Value,
+    },
+}
+
+impl AttemptReading {
+    /// The issue this reading reports at `loc`, or `None` when it reports none.
+    ///
+    /// The two ingest routes place the same value at a query and at a body
+    /// field, so the reading carries what was said and the route says where.
+    #[must_use]
+    pub fn issue(&self, loc: Vec<LocSegment>) -> Option<ValidationIssue> {
+        match self {
+            Self::Attempt(_) | Self::PastColumn => None,
+            Self::BelowMinimum(input) => {
+                Some(ValidationIssue::greater_than_equal(loc, input.clone(), 1))
+            }
+            Self::NotAnInteger { kind, msg, input } => Some(ValidationIssue {
+                r#type: kind.clone(),
+                loc,
+                msg: msg.clone(),
+                input: Some(input.clone()),
+                ctx: None,
+            }),
+        }
+    }
+}
+
+/// Reads a `ci_run_attempt` from the value a request carried.
+///
+/// One rule serves both ingest routes: Pydantic's lax integer, at least 1, and
+/// inside the `int4` column. The issue's `loc` is the route's to place, so the
+/// reading is built without one.
+#[must_use]
+pub fn read_attempt(value: &Value) -> AttemptReading {
+    // A run of digits past `i64` is a number past the column whatever it spells,
+    // where any other unreadable value is Pydantic's `int_parsing`.
+    if let Value::String(text) = value {
+        let trimmed = py_strip(text);
+        if lax::python_int(text).is_none()
+            && !trimmed.is_empty()
+            && trimmed.bytes().all(|byte| byte.is_ascii_digit())
+        {
+            return AttemptReading::PastColumn;
+        }
+    }
+    match lax::integer(value, Vec::new()) {
+        Ok(number) if number < 1 => AttemptReading::BelowMinimum(value.clone()),
+        Ok(number) => {
+            i32::try_from(number).map_or(AttemptReading::PastColumn, AttemptReading::Attempt)
+        }
+        Err(issue) => AttemptReading::NotAnInteger {
+            kind: issue.r#type,
+            msg: issue.msg,
+            input: value.clone(),
+        },
+    }
+}
+
+/// The `detail` both ingest routes answer for an attempt past the column.
+#[must_use]
+pub fn attempt_too_large() -> String {
+    format!("ci_run_attempt must be at most {ATTEMPT_MAX}")
 }
 
 /// One attempt of one Pipeline run.
@@ -672,95 +1012,53 @@ fn default_attempt() -> i64 {
 }
 
 impl PipelineReportIn {
-    /// Strips the strings, checks Pydantic's rules and normalizes the names.
+    /// Reads a Pipeline report body the way Pydantic read one.
     ///
     /// # Errors
     ///
-    /// Returns one [`ValidationIssue`] per failed rule, in field order, which
-    /// the route serves as the 422 `detail` list.
-    pub fn validate(self) -> Result<Self, Vec<ValidationIssue>> {
+    /// Returns every issue Pydantic listed, in field order, or
+    /// [`BodyRefusal::AttemptPastColumn`] for an attempt the `int4` column cannot
+    /// hold.
+    pub fn from_value(object: &serde_json::Map<String, Value>) -> Result<Self, BodyRefusal> {
+        let fields = lax::Fields::new(object, body_loc_root());
         let mut issues = Vec::new();
 
-        let repo = normalized_name(&self.repo, 255, "repo", &mut issues, normalize_repo);
-        let provider = normalized_name(
-            &self.provider,
-            32,
-            "provider",
-            &mut issues,
-            normalize_provider,
-        );
-
-        let pipeline = check_string(&self.pipeline, 1, 512, body_loc("pipeline"), &mut issues);
-        let commit_sha = check_string(&self.commit_sha, 1, 64, body_loc("commit_sha"), &mut issues);
-        let branch = check_string(&self.branch, 1, 255, body_loc("branch"), &mut issues);
-
-        let default_branch = self
-            .default_branch
-            .map(|branch| stripped(&branch))
-            .and_then(|branch| {
-                if branch.is_empty() {
-                    None
-                } else if branch.chars().count() > 255 {
-                    issues.push(ValidationIssue::string_too_long(
-                        body_loc("default_branch"),
-                        Value::from(branch),
-                        255,
-                    ));
-                    None
-                } else {
-                    Some(branch)
-                }
-            });
-
-        let ci_run_id = stripped(&self.ci_run_id);
-        if ci_run_id.chars().count() > 255 {
-            issues.push(ValidationIssue::string_too_long(
-                body_loc("ci_run_id"),
-                Value::from(ci_run_id.clone()),
-                255,
-            ));
-        }
-
-        if self.ci_run_attempt < 1 {
-            issues.push(ValidationIssue::greater_than_equal(
-                body_loc("ci_run_attempt"),
-                Value::from(self.ci_run_attempt),
-                1,
-            ));
-        }
-
-        if self.jobs.is_empty() {
-            issues.push(ValidationIssue::list_too_short(
-                body_loc("jobs"),
-                Value::from(0),
-                1,
-            ));
-        } else if self.jobs.len() > 1000 {
-            issues.push(ValidationIssue::list_too_long(
-                body_loc("jobs"),
-                Value::from(self.jobs.len()),
-                1000,
-                self.jobs.len(),
-            ));
-        }
-
-        let mut jobs = Vec::with_capacity(self.jobs.len());
-        for (index, job) in self.jobs.into_iter().enumerate() {
-            match job.validate(index) {
-                Ok(job) => jobs.push(job),
-                Err(job_issues) => issues.extend(job_issues),
+        let repo = read_name(&fields, "repo", 255, &mut issues, normalize_repo);
+        let provider = read_name(&fields, "provider", 32, &mut issues, normalize_provider);
+        let pipeline = read_string(&fields, "pipeline", 1, 512, &mut issues).unwrap_or_default();
+        let commit_sha = read_string(&fields, "commit_sha", 1, 64, &mut issues).unwrap_or_default();
+        let branch = read_string(&fields, "branch", 1, 255, &mut issues).unwrap_or_default();
+        let default_branch = read_default_branch(&fields, &mut issues);
+        let ci_run_id =
+            read_defaulted_string(&fields, "ci_run_id", 255, &mut issues).unwrap_or_default();
+        let mut ci_run_attempt = default_attempt();
+        let mut attempt_past_column = false;
+        if let Some(value) = fields.field("ci_run_attempt") {
+            let reading = read_attempt(value);
+            if let Some(issue) = reading.issue(fields.loc("ci_run_attempt")) {
+                issues.push(issue);
+            }
+            match reading {
+                AttemptReading::Attempt(number) => ci_run_attempt = i64::from(number),
+                AttemptReading::PastColumn => attempt_past_column = true,
+                _ => {}
             }
         }
+        let jobs = read_jobs(&fields, &mut issues);
 
         if issues.is_empty() {
+            // A model-level rule runs only once every field validated, as
+            // Pydantic's `model_validator(mode="after")` does.
             let mut seen = std::collections::BTreeSet::new();
             if !jobs.iter().all(|job| seen.insert(job.ci_job_id.clone())) {
                 issues.push(ValidationIssue::model_error("duplicate ci_job_id in jobs"));
             }
         }
-
         if !issues.is_empty() {
-            return Err(issues);
+            return Err(BodyRefusal::Issues(issues));
+        }
+        if attempt_past_column {
+            return Err(BodyRefusal::AttemptPastColumn);
         }
         Ok(Self {
             repo,
@@ -770,10 +1068,106 @@ impl PipelineReportIn {
             branch,
             default_branch,
             ci_run_id,
-            ci_run_attempt: self.ci_run_attempt,
+            ci_run_attempt,
             jobs,
         })
     }
+}
+
+/// The required name `field` of `fields` holds, normalized by `normalize`.
+fn read_name(
+    fields: &lax::Fields<'_>,
+    field: &str,
+    max: usize,
+    issues: &mut Vec<ValidationIssue>,
+    normalize: fn(&str) -> Result<String, IdentityError>,
+) -> String {
+    let Some(value) = fields.required(field, issues) else {
+        return String::new();
+    };
+    let text = match lax::string(value, fields.loc(field)) {
+        Ok(text) => text,
+        Err(issue) => {
+            issues.push(*issue);
+            return String::new();
+        }
+    };
+    normalized_name(&text, max, field, issues, normalize)
+}
+
+/// The `default_branch` of a Pipeline report: a short string, blank for none.
+fn read_default_branch(
+    fields: &lax::Fields<'_>,
+    issues: &mut Vec<ValidationIssue>,
+) -> Option<String> {
+    let value = fields
+        .field("default_branch")
+        .filter(|value| !value.is_null())?;
+    let text = match lax::string(value, fields.loc("default_branch")) {
+        Ok(text) => text,
+        Err(issue) => {
+            issues.push(*issue);
+            return None;
+        }
+    };
+    let text = stripped(&text);
+    lax::refuse_nul(&text, fields.loc("default_branch"), issues);
+    if text.is_empty() {
+        return None;
+    }
+    if text.chars().count() > 255 {
+        issues.push(ValidationIssue::string_too_long(
+            fields.loc("default_branch"),
+            Value::from(text),
+            255,
+        ));
+        return None;
+    }
+    Some(text)
+}
+
+/// The `jobs` of a Pipeline report: one or more Jobs, each read field by field.
+fn read_jobs(fields: &lax::Fields<'_>, issues: &mut Vec<ValidationIssue>) -> Vec<JobResultIn> {
+    let Some(value) = fields.required("jobs", issues) else {
+        return Vec::new();
+    };
+    let items = match lax::list_of(value, fields.loc("jobs")) {
+        Ok(items) => items,
+        Err(issue) => {
+            issues.push(*issue);
+            return Vec::new();
+        }
+    };
+    if items.is_empty() {
+        issues.push(ValidationIssue::list_too_short(
+            fields.loc("jobs"),
+            Value::from(0),
+            1,
+        ));
+        return Vec::new();
+    }
+    if items.len() > JOBS_MAX {
+        issues.push(ValidationIssue::list_too_long(
+            fields.loc("jobs"),
+            Value::from(items.len()),
+            JOBS_MAX,
+            items.len(),
+        ));
+        return Vec::new();
+    }
+    let mut jobs = Vec::with_capacity(items.len());
+    for (index, item) in items.iter().enumerate() {
+        let at = fields.item_loc("jobs", index);
+        let Some(object) = item.as_object() else {
+            issues.push(ValidationIssue::model_attributes_type(at, item.clone()));
+            continue;
+        };
+        match JobResultIn::from_value(object, at) {
+            Ok(job) => jobs.push(job),
+            Err(job_issues) => issues.extend(job_issues),
+        }
+    }
+    jobs
 }
 
 /// The stored body of a Pipeline Report: the validated payload, canonically
@@ -805,7 +1199,7 @@ fn body_loc(field: &str) -> Vec<LocSegment> {
     ]
 }
 
-/// Records a maximum-length failure, returning whether the value fits.
+/// Normalizes a required name that passed its length rule.
 fn normalized_name(
     raw: &str,
     max: usize,
@@ -814,9 +1208,11 @@ fn normalized_name(
     normalize: fn(&str) -> Result<String, IdentityError>,
 ) -> String {
     let raw = stripped(raw);
+    let loc = body_loc(field);
+    lax::refuse_nul(&raw, loc.clone(), issues);
     if raw.chars().count() > max {
         issues.push(ValidationIssue::string_too_long(
-            body_loc(field),
+            loc,
             Value::from(raw.clone()),
             max,
         ));
@@ -827,7 +1223,7 @@ fn normalized_name(
         Err(error) => {
             issues.push(ValidationIssue::value_error(
                 &error,
-                body_loc(field),
+                loc,
                 Value::from(raw.clone()),
             ));
             raw
@@ -1322,52 +1718,82 @@ pub struct QuarantineIn {
 }
 
 impl QuarantineIn {
-    /// Checks the rules `schemas.py` put on the body.
+    /// Reads a quarantine body the way Pydantic read it.
     ///
     /// # Errors
     ///
-    /// Returns the issues a 422 carries when a rule fails.
-    pub fn validate(&self) -> Result<(), Vec<ValidationIssue>> {
+    /// Returns every issue Pydantic listed, in field order, which the 422's
+    /// `detail` list carries.
+    pub fn from_value(
+        object: &serde_json::Map<String, Value>,
+    ) -> Result<Self, Vec<ValidationIssue>> {
+        let fields = lax::Fields::new(object, body_loc_root());
         let mut issues = Vec::new();
-        if let Some(reason) = &self.reason
-            && reason.chars().count() > 500
-        {
-            issues.push(ValidationIssue::string_too_long(
-                body_field("reason"),
-                Value::from(reason.clone()),
-                500,
-            ));
-        }
-        if let Some(days) = self.expires_in_days {
-            if days < 1 {
-                issues.push(ValidationIssue::greater_than_equal(
-                    body_field("expires_in_days"),
-                    Value::from(days),
-                    1,
-                ));
-            } else if days > 365 {
-                issues.push(ValidationIssue::less_than_equal(
-                    body_field("expires_in_days"),
-                    Value::from(days),
-                    365,
-                ));
+
+        let mut quarantined = false;
+        if let Some(value) = fields.required("quarantined", &mut issues) {
+            match lax::boolean(value, fields.loc("quarantined")) {
+                Ok(flag) => quarantined = flag,
+                Err(issue) => issues.push(*issue),
             }
         }
+        let mut reason = None;
+        if let Some(value) = fields.field("reason").filter(|value| !value.is_null()) {
+            match lax::string(value, fields.loc("reason")) {
+                Ok(text) => {
+                    lax::refuse_nul(&text, fields.loc("reason"), &mut issues);
+                    if text.chars().count() > QUARANTINE_REASON_MAX {
+                        issues.push(ValidationIssue::string_too_long(
+                            fields.loc("reason"),
+                            Value::from(text.clone()),
+                            QUARANTINE_REASON_MAX,
+                        ));
+                    }
+                    reason = Some(text);
+                }
+                Err(issue) => issues.push(*issue),
+            }
+        }
+        let mut expires_in_days = None;
+        if let Some(value) = fields
+            .field("expires_in_days")
+            .filter(|value| !value.is_null())
+        {
+            match lax::integer(value, fields.loc("expires_in_days")) {
+                Ok(days) if days < 1 => issues.push(ValidationIssue::greater_than_equal(
+                    fields.loc("expires_in_days"),
+                    value.clone(),
+                    1,
+                )),
+                Ok(days) if days > QUARANTINE_DAYS_MAX => {
+                    issues.push(ValidationIssue::less_than_equal(
+                        fields.loc("expires_in_days"),
+                        value.clone(),
+                        QUARANTINE_DAYS_MAX,
+                    ));
+                }
+                Ok(days) => expires_in_days = Some(days),
+                Err(issue) => issues.push(*issue),
+            }
+        }
+
         if issues.is_empty() {
-            Ok(())
+            Ok(Self {
+                quarantined,
+                reason,
+                expires_in_days,
+            })
         } else {
             Err(issues)
         }
     }
 }
 
-/// The `loc` of a bad field of the request body.
-fn body_field(field: &str) -> Vec<LocSegment> {
-    vec![
-        LocSegment::Field("body".to_owned()),
-        LocSegment::Field(field.to_owned()),
-    ]
-}
+/// The longest quarantine reason a human may record.
+const QUARANTINE_REASON_MAX: usize = 500;
+
+/// The most days a quarantine may last.
+const QUARANTINE_DAYS_MAX: i64 = 365;
 
 /// One quarantined Test in the quarantine list.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -1524,39 +1950,60 @@ pub struct IssueLinkIn {
 }
 
 impl IssueLinkIn {
-    /// Checks the rules `schemas.py` put on the body.
+    /// Reads an Issue link body the way Pydantic read it.
     ///
     /// # Errors
     ///
-    /// Returns the issues a 422 carries when a rule fails.
-    pub fn validate(&self) -> Result<(), Vec<ValidationIssue>> {
+    /// Returns every issue Pydantic listed, in field order, which the 422's
+    /// `detail` list carries.
+    pub fn from_value(
+        object: &serde_json::Map<String, Value>,
+    ) -> Result<Self, Vec<ValidationIssue>> {
+        let fields = lax::Fields::new(object, body_loc_root());
         let mut issues = Vec::new();
-        if self.number < 1 {
-            issues.push(ValidationIssue::greater_than_equal(
-                body_field("number"),
-                Value::from(self.number),
-                1,
-            ));
-        } else if self.number > MAX_ISSUE_NUMBER {
-            issues.push(ValidationIssue::less_than_equal(
-                body_field("number"),
-                Value::from(self.number),
-                MAX_ISSUE_NUMBER,
-            ));
+
+        let mut number = 0;
+        if let Some(value) = fields.required("number", &mut issues) {
+            match lax::integer(value, fields.loc("number")) {
+                Ok(value_number) if value_number < 1 => issues.push(
+                    ValidationIssue::greater_than_equal(fields.loc("number"), value.clone(), 1),
+                ),
+                Ok(value_number) if value_number > MAX_ISSUE_NUMBER => {
+                    issues.push(ValidationIssue::less_than_equal(
+                        fields.loc("number"),
+                        value.clone(),
+                        MAX_ISSUE_NUMBER,
+                    ));
+                }
+                Ok(value_number) => number = value_number,
+                Err(issue) => issues.push(*issue),
+            }
         }
-        if let Some(url) = &self.url
-            && url.chars().count() > 2048
-        {
-            issues.push(ValidationIssue::string_too_long(
-                body_field("url"),
-                Value::from(url.clone()),
-                2048,
-            ));
+        let mut url = None;
+        if let Some(value) = fields.field("url").filter(|value| !value.is_null()) {
+            match lax::string(value, fields.loc("url")) {
+                Ok(text) => {
+                    lax::refuse_nul(&text, fields.loc("url"), &mut issues);
+                    if text.chars().count() > ISSUE_URL_MAX {
+                        issues.push(ValidationIssue::string_too_long(
+                            fields.loc("url"),
+                            Value::from(text.clone()),
+                            ISSUE_URL_MAX,
+                        ));
+                    }
+                    url = Some(text);
+                }
+                Err(issue) => issues.push(*issue),
+            }
         }
+
         if issues.is_empty() {
-            Ok(())
+            Ok(Self { number, url })
         } else {
             Err(issues)
         }
     }
 }
+
+/// The longest issue url an Issue link body may carry.
+const ISSUE_URL_MAX: usize = 2048;

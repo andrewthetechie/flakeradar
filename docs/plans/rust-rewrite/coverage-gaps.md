@@ -167,3 +167,23 @@ so what stays uncovered is only the production builders' `build()?` and the two 
 cannot make fail: four of the five rows above. The `github.rs` field-argument artifact row also
 covers the three events this task added or moved (`record_filed`'s three outcomes and
 `file_job_issues_for`'s unreadable-history warning), all of which a log-capture test proves fires.
+
+## Task 20: three unreachable lax arms and five multipart guards
+
+Measured with `cargo +nightly-2026-10-25 llvm-cov nextest --branch --all-features --profile ci`
+and `FLAKERADAR_TEST_DATABASE_URL` set: **lines 96.83%** (15166, 481 missed) and **branches
+94.17%** (1286, 75 missed), regions 92.93% and functions 96.29%. `coverage-floor.json` stays
+`{"lines": 96, "branches": 94}` and the gate passes at them.
+
+`crates/flakeradar-core/src/lax.rs` is at 98.79% of lines and 88.89% of branches: every accepted
+and refused spelling this task reads is covered by `crates/flakeradar-core/tests/lax.rs` (one row
+per value Pydantic was measured with) and by the route-level tables in
+`crates/flakeradar/tests/validation.rs`. Three arms cannot run, and `multipart.rs`'s guards are
+the same shapes its `?`s were before this task gave them a `Result`:
+
+| Task | File | Function | Kind | Why it is not covered | Closed by |
+|---|---|---|---|---|---|
+| 20 | `crates/flakeradar-core/src/lax.rs` | `integer_from_number` | unreached arms | The `else` of `let Some(float) = number.as_f64()` and the `int_type` it answers for a float that is not finite. `serde_json::Number` holds a `u64`, an `i64` or an `f64` and `as_f64` answers all three, and `serde_json` builds no `Value` from a `NaN` or an infinity (`Number::from_f64` answers `None` for one), so no body carries either. The task 09 row for `lax_bool::interpret_number` is the same arm in the older reader | — |
+| 20 | `crates/flakeradar-core/src/lax.rs` | `epoch_instant` | unreached arm | The `if !seconds.is_finite()` guard, for the reason above: a JSON number is always finite | — |
+| 20 | `crates/flakeradar/src/multipart.rs` | `file_field` | unreached arms | The two `checked_add` overflows of the delimiter scan and the `body.get(part_start..part_end)` that follows `next_end`, which answers an index inside the same body. A body of 20 MiB cannot reach `usize::MAX`, and `next_end` only returns an end its own scan found. `arithmetic_side_effects` and `indexing_slicing` are in the lint set, so each is an arm rather than an unchecked add or index; before this task they were the same arms written as `?` | — |
+| 20 | `crates/flakeradar/src/multipart.rs` | `part_field` | unreached arms | The `let … else` that answers `Ok(None)` for a header block whose end or payload cannot be sliced, which `find(part, HEADER_END)` has just located, and the `continue` for an empty header line, which cannot appear because the first empty line is the end of the block | — |

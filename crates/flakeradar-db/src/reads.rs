@@ -384,7 +384,18 @@ impl Board<'_> {
         let mut values = conditions.values;
         values.push(Value::from(self.page_size));
         let offset = format!("${}", values.len() + 1);
-        values.push(Value::from((self.page - 1) * self.page_size));
+        // A page whose offset does not fit is an error rather than a wrapped
+        // offset: the route refuses such a page, and a caller building the
+        // options itself is told instead of being answered another page's rows.
+        let offset_rows = self
+            .page
+            .saturating_sub(1)
+            .checked_mul(self.page_size)
+            .ok_or(DbError::PageOffsetTooLarge {
+                page: self.page,
+                page_size: self.page_size,
+            })?;
+        values.push(Value::from(offset_rows));
         let page_sql = format!("{base} ORDER BY {order} LIMIT {limit} OFFSET {offset}");
         let page = rows(db, page_sql, values).await?;
         Ok(BoardPage { rows: page, total })

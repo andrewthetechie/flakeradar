@@ -540,6 +540,40 @@ async fn ingest_multipart_without_the_file_field_is_an_empty_report() {
 }
 
 #[tokio::test]
+async fn ingest_multipart_with_a_garbage_header_is_a_bad_request() {
+    // `python_multipart` refuses a header line that is not `name: value` (its
+    // field name may hold no spaces), and Starlette rounds that up to
+    // `MultiPartException("Invalid multipart data.")`, which FastAPI answers as
+    // 400. The reference sent exactly this answer and queued nothing.
+    let db = TestDb::new().await.expect("a test database is available");
+    let boundary = "----flakeradar-ingest-test";
+    let mut body = Vec::new();
+    body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+    body.extend_from_slice(
+        b"This is not a header\r\n\
+          Content-Disposition: form-data; name=\"report\"; filename=\"junit.xml\"\r\n\
+          Content-Type: text/xml\r\n\r\n",
+    );
+    body.extend_from_slice(&passing_report());
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+
+    let request = axum::http::Request::builder()
+        .method(Method::POST)
+        .uri(ingest_uri(&[]))
+        .header("x-api-key", TOKEN)
+        .header(
+            "content-type",
+            format!("multipart/form-data; boundary={boundary}"),
+        )
+        .body(Body::from(body))
+        .expect("the fixture request builds");
+    let reply = send(&test_app(&db), request).await;
+    assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{}", reply.text());
+    assert_eq!(reply.json(), json!({"detail": "Invalid multipart data."}));
+    assert_eq!(stored_reports(&db).await.len(), 0);
+}
+
+#[tokio::test]
 async fn ingest_raw_body_any_content_type() {
     let db = TestDb::new().await.expect("a test database is available");
     let app = test_app(&db);
