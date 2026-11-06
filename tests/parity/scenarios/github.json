@@ -1,0 +1,189 @@
+{
+  "name": "github",
+  "settings": {
+    "FLAKERADAR_GITHUB_TOKEN": "ghtok",
+    "FLAKERADAR_GITHUB_ISSUE_MIN_SCORE": "0.5",
+    "FLAKERADAR_GITHUB_ISSUE_MIN_PROVEN_FLAKES": "1",
+    "FLAKERADAR_WEBHOOK_URLS": "$WEBHOOK"
+  },
+  "steps": [
+    {
+      "http": {
+        "method": "POST",
+        "path": "/api/ingest",
+        "query": {
+          "repo": "o/r",
+          "commit_sha": "aaa1",
+          "ci_run_id": "run1"
+        },
+        "headers": {
+          "X-API-Key": "$TOKEN",
+          "Content-Type": "application/xml"
+        },
+        "body_text": "<testsuite name=\"unit\"><testcase classname=\"tests.test_cart\" name=\"test_flaky\" time=\"0.01\" file=\"tests/test_cart.py\" line=\"12\"></testcase><testcase classname=\"tests.test_cart\" name=\"test_suspect\" time=\"0.01\" file=\"tests/test_cart.py\" line=\"30\"></testcase><testcase classname=\"tests.test_cart\" name=\"test_stable\" time=\"0.01\" file=\"tests/test_cart.py\" line=\"48\"></testcase><testcase classname=\"tests.test_cart\" name=\"test_broken\" time=\"0.01\" file=\"tests/test_cart.py\" line=\"66\"><failure message=\"socket.timeout: timed out\">socket.timeout: timed out waiting for the pool</failure></testcase></testsuite>"
+      }
+    },
+    {
+      "http": {
+        "method": "POST",
+        "path": "/api/ingest",
+        "query": {
+          "repo": "o/r",
+          "commit_sha": "aaa2",
+          "ci_run_id": "run2"
+        },
+        "headers": {
+          "X-API-Key": "$TOKEN",
+          "Content-Type": "application/xml"
+        },
+        "body_text": "<testsuite name=\"unit\"><testcase classname=\"tests.test_cart\" name=\"test_flaky\" time=\"0.01\" file=\"tests/test_cart.py\" line=\"12\"><failure message=\"assert 1 == 2\">AssertionError: assert 1 == 2</failure></testcase><testcase classname=\"tests.test_cart\" name=\"test_suspect\" time=\"0.01\" file=\"tests/test_cart.py\" line=\"30\"></testcase><testcase classname=\"tests.test_cart\" name=\"test_stable\" time=\"0.01\" file=\"tests/test_cart.py\" line=\"48\"></testcase><testcase classname=\"tests.test_cart\" name=\"test_broken\" time=\"0.01\" file=\"tests/test_cart.py\" line=\"66\"><failure message=\"socket.timeout: timed out\">socket.timeout: timed out waiting for the pool</failure></testcase></testsuite>"
+      }
+    },
+    {
+      "http": {
+        "method": "POST",
+        "path": "/api/ingest",
+        "query": {
+          "repo": "o/r",
+          "commit_sha": "aaa3",
+          "ci_run_id": "run3"
+        },
+        "headers": {
+          "X-API-Key": "$TOKEN",
+          "Content-Type": "application/xml"
+        },
+        "body_text": "<testsuite name=\"unit\"><testcase classname=\"tests.test_cart\" name=\"test_flaky\" time=\"0.01\" file=\"tests/test_cart.py\" line=\"12\"></testcase><testcase classname=\"tests.test_cart\" name=\"test_suspect\" time=\"0.01\" file=\"tests/test_cart.py\" line=\"30\"><failure message=\"ECONNREFUSED 127.0.0.1:5432\">ConnectionError: [Errno 111] ECONNREFUSED</failure></testcase><testcase classname=\"tests.test_cart\" name=\"test_stable\" time=\"0.01\" file=\"tests/test_cart.py\" line=\"48\"></testcase><testcase classname=\"tests.test_cart\" name=\"test_broken\" time=\"0.01\" file=\"tests/test_cart.py\" line=\"66\"><failure message=\"socket.timeout: timed out\">socket.timeout: timed out waiting for the pool</failure></testcase></testsuite>"
+      }
+    },
+    {
+      "http": {
+        "method": "POST",
+        "path": "/api/ingest",
+        "query": {
+          "repo": "o/r",
+          "commit_sha": "aaa4",
+          "ci_run_id": "run4"
+        },
+        "headers": {
+          "X-API-Key": "$TOKEN",
+          "Content-Type": "application/xml"
+        },
+        "body_text": "<testsuite name=\"unit\"><testcase classname=\"tests.test_cart\" name=\"test_flaky\" time=\"0.01\" file=\"tests/test_cart.py\" line=\"12\"><failure message=\"assert 1 == 2\">AssertionError: assert 1 == 2</failure></testcase><testcase classname=\"tests.test_cart\" name=\"test_suspect\" time=\"0.01\" file=\"tests/test_cart.py\" line=\"30\"></testcase><testcase classname=\"tests.test_cart\" name=\"test_stable\" time=\"0.01\" file=\"tests/test_cart.py\" line=\"48\"></testcase><testcase classname=\"tests.test_cart\" name=\"test_broken\" time=\"0.01\" file=\"tests/test_cart.py\" line=\"66\"><failure message=\"socket.timeout: timed out\">socket.timeout: timed out waiting for the pool</failure></testcase></testsuite>"
+      }
+    },
+    {
+      "http": {
+        "method": "POST",
+        "path": "/api/ingest",
+        "query": {
+          "repo": "o/r",
+          "commit_sha": "aaa5",
+          "ci_run_id": "run5"
+        },
+        "headers": {
+          "X-API-Key": "$TOKEN",
+          "Content-Type": "application/xml"
+        },
+        "body_text": "<testsuite name=\"unit\"><testcase classname=\"tests.test_cart\" name=\"test_flaky\" time=\"0.01\" file=\"tests/test_cart.py\" line=\"12\"></testcase><testcase classname=\"tests.test_cart\" name=\"test_suspect\" time=\"0.01\" file=\"tests/test_cart.py\" line=\"30\"></testcase><testcase classname=\"tests.test_cart\" name=\"test_stable\" time=\"0.01\" file=\"tests/test_cart.py\" line=\"48\"></testcase><testcase classname=\"tests.test_cart\" name=\"test_broken\" time=\"0.01\" file=\"tests/test_cart.py\" line=\"66\"><failure message=\"socket.timeout: timed out\">socket.timeout: timed out waiting for the pool</failure></testcase></testsuite>"
+      }
+    },
+    {
+      "http": {
+        "method": "POST",
+        "path": "/api/ingest",
+        "query": {
+          "repo": "o/r",
+          "commit_sha": "aaa6",
+          "ci_run_id": "run6"
+        },
+        "headers": {
+          "X-API-Key": "$TOKEN",
+          "Content-Type": "application/xml"
+        },
+        "body_text": "<testsuite name=\"unit\"><testcase classname=\"tests.test_cart\" name=\"test_flaky\" time=\"0.01\" file=\"tests/test_cart.py\" line=\"12\"><failure message=\"assert 1 == 2\">AssertionError: assert 1 == 2</failure></testcase><testcase classname=\"tests.test_cart\" name=\"test_suspect\" time=\"0.01\" file=\"tests/test_cart.py\" line=\"30\"></testcase><testcase classname=\"tests.test_cart\" name=\"test_stable\" time=\"0.01\" file=\"tests/test_cart.py\" line=\"48\"></testcase><testcase classname=\"tests.test_cart\" name=\"test_broken\" time=\"0.01\" file=\"tests/test_cart.py\" line=\"66\"><failure message=\"socket.timeout: timed out\">socket.timeout: timed out waiting for the pool</failure></testcase></testsuite>"
+      }
+    },
+    {
+      "http": {
+        "method": "POST",
+        "path": "/api/ingest",
+        "query": {
+          "repo": "o/r",
+          "commit_sha": "aaa7",
+          "ci_run_id": "run7"
+        },
+        "headers": {
+          "X-API-Key": "$TOKEN",
+          "Content-Type": "application/xml"
+        },
+        "body_text": "<testsuite name=\"unit\"><testcase classname=\"tests.test_cart\" name=\"test_flaky\" time=\"0.01\" file=\"tests/test_cart.py\" line=\"12\"></testcase><testcase classname=\"tests.test_cart\" name=\"test_suspect\" time=\"0.01\" file=\"tests/test_cart.py\" line=\"30\"></testcase><testcase classname=\"tests.test_cart\" name=\"test_stable\" time=\"0.01\" file=\"tests/test_cart.py\" line=\"48\"></testcase><testcase classname=\"tests.test_cart\" name=\"test_broken\" time=\"0.01\" file=\"tests/test_cart.py\" line=\"66\"><failure message=\"socket.timeout: timed out\">socket.timeout: timed out waiting for the pool</failure></testcase></testsuite>"
+      }
+    },
+    {
+      "http": {
+        "method": "POST",
+        "path": "/api/ingest",
+        "query": {
+          "repo": "o/r",
+          "commit_sha": "aaa8",
+          "ci_run_id": "run8"
+        },
+        "headers": {
+          "X-API-Key": "$TOKEN",
+          "Content-Type": "application/xml"
+        },
+        "body_text": "<testsuite name=\"unit\"><testcase classname=\"tests.test_cart\" name=\"test_flaky\" time=\"0.01\" file=\"tests/test_cart.py\" line=\"12\"><failure message=\"assert 1 == 2\">AssertionError: assert 1 == 2</failure></testcase><testcase classname=\"tests.test_cart\" name=\"test_suspect\" time=\"0.01\" file=\"tests/test_cart.py\" line=\"30\"></testcase><testcase classname=\"tests.test_cart\" name=\"test_stable\" time=\"0.01\" file=\"tests/test_cart.py\" line=\"48\"></testcase><testcase classname=\"tests.test_cart\" name=\"test_broken\" time=\"0.01\" file=\"tests/test_cart.py\" line=\"66\"><failure message=\"socket.timeout: timed out\">socket.timeout: timed out waiting for the pool</failure></testcase></testsuite>"
+      }
+    },
+    {
+      "http": {
+        "method": "POST",
+        "path": "/api/ingest",
+        "query": {
+          "repo": "o/r",
+          "commit_sha": "aaa8",
+          "ci_run_id": "run9"
+        },
+        "headers": {
+          "X-API-Key": "$TOKEN",
+          "Content-Type": "application/xml"
+        },
+        "body_text": "<testsuite name=\"unit\"><testcase classname=\"tests.test_cart\" name=\"test_proven\" time=\"0.01\" file=\"tests/test_cart.py\" line=\"80\"><failure message=\"assert 2 == 3\">AssertionError: assert 2 == 3</failure></testcase></testsuite>"
+      }
+    },
+    {
+      "http": {
+        "method": "POST",
+        "path": "/api/ingest",
+        "query": {
+          "repo": "o/r",
+          "commit_sha": "aaa8",
+          "ci_run_id": "run10"
+        },
+        "headers": {
+          "X-API-Key": "$TOKEN",
+          "Content-Type": "application/xml"
+        },
+        "body_text": "<testsuite name=\"unit\"><testcase classname=\"tests.test_cart\" name=\"test_proven\" time=\"0.01\" file=\"tests/test_cart.py\" line=\"80\"></testcase></testsuite>"
+      }
+    },
+    {
+      "wait_processed": true
+    },
+    {
+      "http": {
+        "method": "GET",
+        "path": "/api/tests",
+        "query": {
+          "q": "test_flaky"
+        }
+      }
+    },
+    {
+      "dump_db": [
+        "repos",
+        "projects"
+      ]
+    }
+  ]
+}

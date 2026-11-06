@@ -38,14 +38,17 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::routing::get;
 use chrono::DateTime;
 use common::allowances::{Allowances, AllowedField, allowed, contract_for};
-use flakeradar::{AdvisoryLock, DatabaseProcessor, ReportProcessor, ReportWorker, WorkerSettings};
-use flakeradar::{AppState, Settings, build_app};
+use flakeradar::{
+    AdvisoryLock, Api, AppState, DatabaseProcessor, GitHubWorker, ReportProcessor, ReportWorker,
+    Settings, WebhookWorker, WorkerSettings, build_app,
+};
 use flakeradar_db::entities::repos;
 use flakeradar_db::{DbSettings, ProcessingSettings};
 use flakeradar_test_support::TestDb;
 use sea_orm::{ConnectionTrait, DbBackend, EntityTrait, JsonValue, Statement};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 /// The token every scenario's requests present, as the recorder used it.
 const TOKEN: &str = "parity-token";
@@ -295,56 +298,187 @@ impl ReportProcessor for GatedProcessor {
 async fn every_scenario_replays_identically() {
     let mut failures: Mismatches = Vec::new();
     for scenario in scenario_files() {
-        let name = scenario.name.clone();
+        let replay = Replay::start(&scenario).await;
+        failures.extend(replay.run(&scenario).await);
+        replay.stop().await;
+    }
+    assert!(failures.is_empty(), "\n{}", failures.join("\n"));
+}
+
+/// One scenario's server, built the way `Server::start` builds it.
+///
+/// The goldens came from a process that ran its Report processor, its GitHub
+/// task and its Notification task, so a replay runs the same three. The two
+/// services the server calls out to — GitHub and a Webhook endpoint — are mocks,
+/// because a scenario's settings point at them and no test may reach the real
+/// ones.
+struct Replay {
+    /// The database this scenario owns.
+    db: TestDb,
+    /// The settings its server runs with.
+    settings: Settings,
+    /// The app, served on a loopback port.
+    server: Listener,
+    /// The real worker, with the mock-claiming processor.
+    worker: Arc<ReportWorker>,
+    /// The gate that holds the worker's first claim until the scenario drains.
+    gate: Arc<GatedProcessor>,
+    /// The stand-in GitHub this server files against, when it has a token.
+    github: Option<MockServer>,
+    /// The endpoint its Notifications go to, when its settings name one.
+    webhooks: Option<MockServer>,
+}
+
+impl Replay {
+    /// Builds the database, the mocks, the app and the worker for `scenario`.
+    async fn start(scenario: &ScenarioFile) -> Self {
         let db = TestDb::new().await.expect("a test database is available");
-        let settings = settings_for(&scenario, &db);
+        let token = scenario
+            .settings
+            .get("FLAKERADAR_GITHUB_TOKEN")
+            .filter(|token| !token.is_empty())
+            .cloned();
+        let github = match token {
+            Some(_) => Some(github_mock().await),
+            None => None,
+        };
+        let webhooks = if scenario
+            .settings
+            .get("FLAKERADAR_WEBHOOK_URLS")
+            .is_some_and(|urls| urls.contains(WEBHOOK_PLACEHOLDER))
+        {
+            Some(MockServer::start().await)
+        } else {
+            None
+        };
+        let endpoint = webhooks.as_ref().map(MockServer::uri).unwrap_or_default();
+        let settings = settings_for(scenario, &db, &endpoint);
         let app = build_app(
             AppState::new(db.connection().clone(), Arc::new(settings.clone()))
                 .expect("the app state builds"),
         );
-        // The recorded goldens came from a process that ran its Report
-        // processor, so the replay runs the real worker over the same database.
         let gate = Arc::new(GatedProcessor::new());
-        let gate_held: Arc<GatedProcessor> = Arc::clone(&gate);
-        let processor: Arc<dyn ReportProcessor> = gate_held;
-        let worker = Arc::new(
-            ReportWorker::new(
+        let held: Arc<GatedProcessor> = Arc::clone(&gate);
+        let processor: Arc<dyn ReportProcessor> = held;
+        let mut worker = ReportWorker::new(
+            db.connection().clone(),
+            Arc::new(AdvisoryLock::new(db.url(), DbSettings::default())),
+            processing_of(&settings),
+            WorkerSettings::from_settings(&settings),
+        )
+        .with_processor(Arc::clone(&processor));
+        if let Some(github) = &github {
+            worker = worker.with_leader_task(Arc::new(GitHubWorker::new(
                 db.connection().clone(),
-                Arc::new(AdvisoryLock::new(db.url(), DbSettings::default())),
-                processing_of(&settings),
-                WorkerSettings::from_settings(&settings),
-            )
-            .with_processor(Arc::clone(&processor)),
-        );
+                Arc::new(settings.clone()),
+                Api::new(settings.github_token.clone(), &github.uri())
+                    .expect("the mock GitHub client builds"),
+                Duration::try_from_secs_f64(settings.prune_interval_seconds).unwrap_or_default(),
+            )));
+        }
+        let urls = flakeradar_core::parse_urls(settings.webhook_urls.expose());
+        if !urls.is_empty() {
+            worker = worker.with_leader_task(Arc::new(
+                WebhookWorker::new(urls, settings.webhook_format, &settings.public_url)
+                    .expect("the Notification client builds"),
+            ));
+        }
+        let worker = Arc::new(worker);
         Arc::clone(&worker).start().await;
         wait_for_leadership(&worker).await;
         let server = Listener::start(app).await;
+        Self {
+            db,
+            settings,
+            server,
+            worker,
+            gate,
+            github,
+            webhooks,
+        }
+    }
+
+    /// Replays every step of `scenario`, reporting each difference.
+    async fn run(&self, scenario: &ScenarioFile) -> Mismatches {
+        let mut failures = Vec::new();
         for (index, spec) in scenario.steps.iter().enumerate() {
             let step = index + 1;
-            let recorded = golden(&name, step);
+            let recorded = golden(&scenario.name, step);
             if spec.get("wait_processed").is_some() {
-                gate.open();
+                self.gate.open();
             }
-            failures
-                .extend(replay_step(&server, &db, &settings, &name, step, spec, &recorded).await);
+            failures.extend(
+                replay_step(
+                    &self.server,
+                    &self.db,
+                    &self.settings,
+                    &scenario.name,
+                    step,
+                    spec,
+                    &recorded,
+                )
+                .await,
+            );
         }
-        server.stop().await;
-        worker.stop().await;
+        failures
     }
-    assert!(failures.is_empty(), "\n{}", failures.join("\n"));
+
+    /// Stops serving and stops the worker.
+    async fn stop(self) {
+        self.server.stop().await;
+        self.worker.stop().await;
+    }
 }
+
+/// A stand-in GitHub: one issue, numbered 100, for every filing.
+///
+/// The recorder's fake (`review-135/repro/fake-github/fake_gh.py`) numbers the
+/// first issue 100 and each later one after it, so a replay answers the same
+/// numbers a recording saw.
+async fn github_mock() -> MockServer {
+    let server = MockServer::start().await;
+    let next = Arc::new(std::sync::atomic::AtomicI64::new(100));
+    Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path_regex("/repos/.*/issues"))
+        .respond_with(move |_: &wiremock::Request| {
+            // The recorder's fake answers 100 and counts up, so a scenario that
+            // files two issues sees the same two numbers it recorded.
+            let number = next.fetch_add(1, Ordering::SeqCst);
+            ResponseTemplate::new(201).set_body_json(json!({"number": number}))
+        })
+        .mount(&server)
+        .await;
+    Mock::given(wiremock::matchers::any())
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+        .mount(&server)
+        .await;
+    server
+}
+
+/// The placeholder a scenario names in `FLAKERADAR_WEBHOOK_URLS`.
+///
+/// The recorder's server pointed its Notifications at a stand-in on a port it
+/// chose, and a replay cannot reuse that port, so the scenario names the
+/// placeholder and each side substitutes its own endpoint.
+const WEBHOOK_PLACEHOLDER: &str = "$WEBHOOK";
 
 /// The settings a scenario's server runs with.
 ///
 /// The recorder's `FIXED_SETTINGS` name no database, because its server read the
 /// one in its own environment; the replay's worker needs the URL of the database
-/// this scenario owns.
-fn settings_for(scenario: &ScenarioFile, db: &TestDb) -> Settings {
+/// this scenario owns, and its Webhook URL is `webhook` when the scenario asks
+/// for one.
+fn settings_for(scenario: &ScenarioFile, db: &TestDb, webhook: &str) -> Settings {
     let mut values: BTreeMap<String, String> = FIXED_SETTINGS
         .iter()
         .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
         .collect();
-    values.extend(scenario.settings.clone());
+    values.extend(
+        scenario
+            .settings
+            .iter()
+            .map(|(key, value)| (key.clone(), value.replace(WEBHOOK_PLACEHOLDER, webhook))),
+    );
     let _ = values.insert("FLAKERADAR_DATABASE_URL".to_owned(), db.url().to_owned());
     Settings::from_map(&values).expect("the recorded settings are valid")
 }
@@ -2327,6 +2461,107 @@ mod tests {
     }
 }
 
+/// The Issue number stored on the Test named `name`.
+async fn stored_issue(db: &TestDb, name: &str) -> Option<i32> {
+    use sea_orm::ColumnTrait as _;
+    use sea_orm::QueryFilter as _;
+    flakeradar_db::entities::test_cases::Entity::find()
+        .filter(flakeradar_db::entities::test_cases::Column::Name.eq(name))
+        .one(db.connection())
+        .await
+        .expect("the Test reads back")
+        .expect("the Test exists")
+        .github_issue_number
+}
+
+/// Waits until `mock` has answered at least `wanted` requests, and answers them.
+async fn calls(mock: &MockServer, wanted: usize) -> Vec<wiremock::Request> {
+    let deadline = tokio::time::Instant::now() + LEADERSHIP_DEADLINE;
+    loop {
+        let received = mock.received_requests().await.unwrap_or_default();
+        if received.len() >= wanted || tokio::time::Instant::now() >= deadline {
+            return received;
+        }
+        tokio::time::sleep(LEADERSHIP_INTERVAL).await;
+    }
+}
+
+#[tokio::test]
+async fn a_scenario_with_a_github_token_webhooks_and_gates_files_only_the_test_that_qualifies() {
+    // The `github` scenario runs the reference's server with a token, a Webhook
+    // endpoint and two gates that are not the defaults: an Issue needs a score of
+    // 0.5 and at least one Proven flake. `test_proven` meets both and `test_flaky`
+    // — at the highest score there is, with no Proven flake — meets neither, so a
+    // golden cannot show the filing but the two mocks and the rows can.
+    let file = scenario("github");
+    let replay = Replay::start(&file).await;
+    let failures = replay.run(&file).await;
+    assert!(failures.is_empty(), "{failures:?}");
+
+    let github = replay.github.as_ref().expect("the scenario sets a token");
+    let filed = calls(github, 1).await;
+    let issues: Vec<&wiremock::Request> = filed
+        .iter()
+        .filter(|request| request.url.path().ends_with("/issues"))
+        .collect();
+    assert_eq!(
+        issues.len(),
+        1,
+        "one Test qualifies, so one issue: {filed:?}"
+    );
+    let body: Value = serde_json::from_slice(&issues[0].body).expect("the filing body is JSON");
+    let title = body["title"].as_str().expect("the filing names the Test");
+    assert!(title.contains("test_proven"), "{title}");
+    assert!(
+        !title.contains("test_flaky"),
+        "a Test with no Proven flake must not be filed: {title}"
+    );
+    assert_eq!(
+        issues[0]
+            .headers
+            .get("authorization")
+            .and_then(|value| value.to_str().ok()),
+        Some("Bearer ghtok"),
+        "the server presents the token its settings name"
+    );
+
+    assert_eq!(
+        stored_issue(&replay.db, "test_proven").await,
+        Some(100),
+        "the filing's Issue number is stored on the Test"
+    );
+    assert_eq!(
+        stored_issue(&replay.db, "test_flaky").await,
+        None,
+        "the Proven flake gate kept the highest-scoring Test unfiled"
+    );
+
+    let webhooks = replay.webhooks.as_ref().expect("the scenario sets URLs");
+    let delivered = calls(webhooks, 1).await;
+    assert!(!delivered.is_empty(), "no Notification was delivered");
+    let named: Vec<String> = delivered
+        .iter()
+        .filter_map(|request| serde_json::from_slice::<Value>(&request.body).ok())
+        .filter_map(|body| {
+            let events = body.as_array()?.clone();
+            Some(
+                events
+                    .iter()
+                    .filter(|event| event["event"] == json!("test.flaky"))
+                    .filter_map(|event| event["test"]["name"].as_str().map(str::to_owned))
+                    .collect::<Vec<String>>(),
+            )
+        })
+        .flatten()
+        .collect();
+    assert!(
+        named.iter().any(|name| name == "test_proven"),
+        "the Tier change that filed an Issue also sends a Notification: {named:?}"
+    );
+
+    replay.stop().await;
+}
+
 #[tokio::test]
 async fn a_dump_db_step_lists_the_named_tables() {
     let db = TestDb::new().await.expect("a test database is available");
@@ -2441,7 +2676,7 @@ async fn an_mcp_step_replays_the_recorded_protocol_result() {
 async fn seeded_mcp_app() -> (TestDb, Listener) {
     let db = TestDb::new().await.expect("a test database is available");
     let file = scenario("mcp");
-    let settings = settings_for(&file, &db);
+    let settings = settings_for(&file, &db, "");
     let app = build_app(
         AppState::new(db.connection().clone(), Arc::new(settings.clone()))
             .expect("the app state builds"),
