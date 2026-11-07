@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="ISO-8859-1"?>
+<testsuite name="latin1" tests="2">
+  <testcase classname="tests.test_encoding" name="test_café" time="0.01">
+    <failure message="café naïve über">détails: à la carte</failure>
+  </testcase>
+  <testcase classname="tests.test_encoding" name="test_plain" time="0.02" />
+</testsuite>

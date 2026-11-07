@@ -1,0 +1,64 @@
+{
+  "test": {
+    "id": 1,
+    "repo": "demo/shop",
+    "project": "backend",
+    "fingerprint": "abc123",
+    "suite": "shop",
+    "classname": "tests.e2e.test_shop",
+    "name": "test_checkout_total_rounding",
+    "file": "tests/e2e/test_shop.py",
+    "line": 88,
+    "flakiness_score": 0.64,
+    "tier": "flaky",
+    "confirmed_flake_count": 2,
+    "failure_category": "timing",
+    "clean_streak": 3,
+    "fail_streak": 0,
+    "broken": false,
+    "trend": "worsening",
+    "last_status": "failed",
+    "last_seen_at": "2026-01-02T14:12:00Z",
+    "quarantined": false,
+    "quarantined_at": null,
+    "quarantine_reason": null,
+    "quarantine_expires_at": null,
+    "github_issue_number": null,
+    "github_issue_url": null,
+    "github_issue_closed": false
+  },
+  "location": {
+    "path": "tests/e2e/test_shop.py",
+    "line": 88,
+    "url": "https://github.com/demo/shop/blob/abcdef1234/tests/e2e/test_shop.py#L88"
+  },
+  "last_failing_sha": "abcdef1234",
+  "last_failing_branch": "main",
+  "executions": [
+    {
+      "id": 9001,
+      "status": "failed",
+      "duration": 1.24,
+      "message": "AssertionError: expected 104.85, got 104.84",
+      "details": "Traceback (most recent call last):\n  File \"tests/e2e/test_shop.py\", line 88, in test_checkout_total_rounding\n    assert total == Decimal('104.85')\nAssertionError: expected 104.85, got 104.84",
+      "created_at": "2026-01-02T14:11:00Z",
+      "commit_sha": "abcdef1234",
+      "branch": "main",
+      "ci_run_id": "run-12",
+      "attempt": 0,
+      "failure_category": "timing"
+    }
+  ],
+  "jobs": [
+    { "job_id": 1, "pipeline": ".github/workflows/ci.yml", "name": "backend" }
+  ],
+  "score_history": [
+    {
+      "day": "2025-12-04",
+      "flakiness_score": 0.0,
+      "confirmed_flake_count": 0,
+      "executions": 7,
+      "failures": 0
+    }
+  ]
+}

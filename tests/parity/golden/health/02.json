@@ -1,0 +1,16 @@
+{
+  "body": {
+    "database": true,
+    "oldest_pending_age_seconds": 0.0,
+    "pending_reports": 0,
+    "processor_leader": true
+  },
+  "content-type": "application/json",
+  "request": {
+    "method": "GET",
+    "path": "/api/health/ready",
+    "query": {}
+  },
+  "status": 200,
+  "step": 2
+}

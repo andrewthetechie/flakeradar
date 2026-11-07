@@ -1,0 +1,5 @@
+{
+  "error": "Report parsed but contained no test cases.",
+  "line_base": 0,
+  "source": "junit/bad-no-cases.xml"
+}

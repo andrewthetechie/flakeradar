@@ -1,0 +1,13 @@
+{
+  "body": {
+    "detail": "Job already links issue #20; pass replace=true to replace it"
+  },
+  "content-type": "application/json",
+  "request": {
+    "method": "PUT",
+    "path": "/api/jobs/3/issue",
+    "query": {}
+  },
+  "status": 409,
+  "step": 21
+}

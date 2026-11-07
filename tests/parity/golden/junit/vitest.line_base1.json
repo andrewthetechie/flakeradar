@@ -1,0 +1,45 @@
+{
+  "cases": [
+    {
+      "category": null,
+      "classname": "src/sum.test.ts",
+      "details": "",
+      "duration": 0.004,
+      "file": null,
+      "fingerprint": "155b8b3fabcb9e39592aa0e3b8299b9009300552",
+      "line": null,
+      "message": "",
+      "name": "adds two numbers",
+      "status": "passed",
+      "suite": "src/sum.test.ts"
+    },
+    {
+      "category": "assertion",
+      "classname": "src/sum.test.ts",
+      "details": "AssertionError: expected 3 to be 4 // Object.is equality\n\n- Expected\n+ Received\n\n- 4\n+ 3\n\n ❯ src/sum.test.ts:12:18",
+      "duration": 0.006,
+      "file": null,
+      "fingerprint": "729d34462cc8ea2b9bcd6bd3fa160558c99066b0",
+      "line": null,
+      "message": "expected 3 to be 4 // Object.is equality",
+      "name": "rejects a string",
+      "status": "failed",
+      "suite": "src/sum.test.ts"
+    },
+    {
+      "category": null,
+      "classname": "src/sum.test.ts",
+      "details": "",
+      "duration": 0.002,
+      "file": null,
+      "fingerprint": "981517a835e939d65981e120de87b7352659505c",
+      "line": null,
+      "message": "",
+      "name": "handles an empty list",
+      "status": "passed",
+      "suite": "src/sum.test.ts"
+    }
+  ],
+  "line_base": 1,
+  "source": "junit/vitest.xml"
+}

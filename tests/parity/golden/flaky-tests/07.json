@@ -1,0 +1,19 @@
+{
+  "body": {
+    "duplicate": false,
+    "report_id": 7,
+    "status": "pending"
+  },
+  "content-type": "application/json",
+  "request": {
+    "method": "POST",
+    "path": "/api/ingest",
+    "query": {
+      "ci_run_id": "run7",
+      "commit_sha": "aaa7",
+      "repo": "o/r"
+    }
+  },
+  "status": 202,
+  "step": 7
+}

@@ -1,0 +1,18 @@
+{
+  "body": {
+    "detail": "Invalid or missing X-API-Key"
+  },
+  "content-type": "application/json",
+  "request": {
+    "method": "POST",
+    "path": "/api/ingest",
+    "query": {
+      "commit_sha": "b1",
+      "project": "frontend",
+      "repo": "o/r",
+      "root": "./frontend/"
+    }
+  },
+  "status": 401,
+  "step": 14
+}

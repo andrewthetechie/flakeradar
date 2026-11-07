@@ -1,0 +1,52 @@
+{
+  "result": {
+    "_meta": {
+      "fastmcp": {
+        "wrap_result": true
+      }
+    },
+    "content": [
+      {
+        "_meta": null,
+        "annotations": null,
+        "text": "[{\"id\":1,\"repo\":\"o/r\",\"project\":\"default\",\"fingerprint\":\"25cdd150e8f4335ddfb17485d80e2defa6b56643\",\"suite\":\"unit\",\"classname\":\"tests.test_cart\",\"name\":\"test_total\",\"file\":\"tests/test_cart.py\",\"line\":12,\"flakiness_score\":0.1667,\"tier\":\"suspect\",\"confirmed_flake_count\":0,\"failure_category\":\"assertion\",\"clean_streak\":1,\"fail_streak\":0,\"broken\":false,\"trend\":null,\"last_status\":\"passed\",\"last_seen_at\":\"<timestamp>\",\"quarantined\":false,\"quarantined_at\":null,\"quarantine_reason\":null,\"quarantine_expires_at\":null,\"github_issue_number\":null,\"github_issue_url\":null,\"github_issue_closed\":false}]",
+        "type": "text"
+      }
+    ],
+    "isError": false,
+    "resultType": "complete",
+    "structuredContent": {
+      "result": [
+        {
+          "broken": false,
+          "classname": "tests.test_cart",
+          "clean_streak": 1,
+          "confirmed_flake_count": 0,
+          "fail_streak": 0,
+          "failure_category": "assertion",
+          "file": "tests/test_cart.py",
+          "fingerprint": "25cdd150e8f4335ddfb17485d80e2defa6b56643",
+          "flakiness_score": 0.1667,
+          "github_issue_closed": false,
+          "github_issue_number": null,
+          "github_issue_url": null,
+          "id": 1,
+          "last_seen_at": "<timestamp>",
+          "last_status": "passed",
+          "line": 12,
+          "name": "test_total",
+          "project": "default",
+          "quarantine_expires_at": null,
+          "quarantine_reason": null,
+          "quarantined": false,
+          "quarantined_at": null,
+          "repo": "o/r",
+          "suite": "unit",
+          "tier": "suspect",
+          "trend": null
+        }
+      ]
+    }
+  },
+  "step": 12
+}

@@ -1,0 +1,110 @@
+{
+  "step": 15,
+  "tables": {
+    "projects": [
+      {
+        "created_at": "<timestamp>",
+        "id": 1,
+        "name": "default",
+        "repo_id": 1,
+        "root": ""
+      }
+    ],
+    "repos": [
+      {
+        "created_at": "<timestamp>",
+        "default_branch": "main",
+        "id": 1,
+        "name": "o/r"
+      }
+    ],
+    "test_cases": [
+      {
+        "classname": "tests.test_cart",
+        "clean_streak": 1,
+        "confirmed_flake_count": 0,
+        "fail_streak": 0,
+        "failure_category": "assertion",
+        "file": null,
+        "fingerprint": "25cdd150e8f4335ddfb17485d80e2defa6b56643",
+        "flakiness_score": 0,
+        "github_issue_checked_at": null,
+        "github_issue_closed": false,
+        "github_issue_filed": null,
+        "github_issue_fixed_noted_at": null,
+        "github_issue_number": null,
+        "id": 1,
+        "last_seen_at": "<timestamp>",
+        "last_status": "failed",
+        "line": null,
+        "name": "test_total",
+        "project_id": 1,
+        "quarantine_expires_at": null,
+        "quarantine_reason": null,
+        "quarantined": false,
+        "quarantined_at": null,
+        "suite": "unit"
+      }
+    ],
+    "test_executions": [
+      {
+        "attempt": 0,
+        "created_at": "<timestamp>",
+        "details": "AssertionError: assert 1 == 2",
+        "duration": 0.01,
+        "failure_category": "assertion",
+        "id": 1,
+        "message": "assert 1 == 2",
+        "status": "failed",
+        "test_case_id": 1,
+        "test_run_id": 1
+      },
+      {
+        "attempt": 0,
+        "created_at": "<timestamp>",
+        "details": "",
+        "duration": 0.01,
+        "failure_category": null,
+        "id": 2,
+        "message": "",
+        "status": "passed",
+        "test_case_id": 1,
+        "test_run_id": 2
+      },
+      {
+        "attempt": 0,
+        "created_at": "<timestamp>",
+        "details": "",
+        "duration": 0.01,
+        "failure_category": null,
+        "id": 3,
+        "message": "",
+        "status": "passed",
+        "test_case_id": 1,
+        "test_run_id": 3
+      },
+      {
+        "attempt": 0,
+        "created_at": "<timestamp>",
+        "details": "AssertionError: assert 1 == 2",
+        "duration": 0.01,
+        "failure_category": "assertion",
+        "id": 4,
+        "message": "assert 1 == 2",
+        "status": "failed",
+        "test_case_id": 1,
+        "test_run_id": 4
+      }
+    ],
+    "test_score_history": [
+      {
+        "confirmed_flake_count": 0,
+        "day": "<date>",
+        "executions": 4,
+        "failures": 2,
+        "flakiness_score": 0,
+        "test_case_id": 1
+      }
+    ]
+  }
+}

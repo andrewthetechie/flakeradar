@@ -1,0 +1,17 @@
+{
+  "result": {
+    "_meta": null,
+    "content": [
+      {
+        "_meta": null,
+        "annotations": null,
+        "text": "Unknown repo 'nobody/nothing'. Call list_repos to see what exists.",
+        "type": "text"
+      }
+    ],
+    "isError": true,
+    "resultType": "complete",
+    "structuredContent": null
+  },
+  "step": 9
+}

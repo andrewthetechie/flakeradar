@@ -1,0 +1,28 @@
+{
+  "body": {
+    "detail": [
+      {
+        "ctx": {
+          "max_length": 200
+        },
+        "input": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "loc": [
+          "query",
+          "q"
+        ],
+        "msg": "String should have at most 200 characters",
+        "type": "string_too_long"
+      }
+    ]
+  },
+  "content-type": "application/json",
+  "request": {
+    "method": "GET",
+    "path": "/api/tests",
+    "query": {
+      "q": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    }
+  },
+  "status": 422,
+  "step": 41
+}

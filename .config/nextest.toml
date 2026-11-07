@@ -1,0 +1,21 @@
+[profile.default]
+fail-fast = true
+slow-timeout = "60s"
+success-output = "never"
+failure-output = "immediate-final"
+
+[profile.ci]
+fail-fast = false
+retries = 1
+flaky-result = "fail"
+slow-timeout = { period = "90s", terminate-after = 2 }
+leak-timeout = "1s"
+
+[profile.ci.junit]
+# path is relative to the profile's output dir, target/nextest/ci/. The
+# resulting report lands at target/nextest/ci/junit.xml.
+path = "junit.xml"
+store-success-output = false
+store-failure-output = true
+report-skipped = "ignored"
+flaky-fail-status = "failure"

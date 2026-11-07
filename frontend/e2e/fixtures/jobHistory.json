@@ -1,0 +1,59 @@
+{
+  "job": {
+    "id": 1,
+    "repo": "demo/shop",
+    "provider": "github",
+    "pipeline": ".github/workflows/ci.yml",
+    "name": "e2e (ubuntu-latest)",
+    "flakiness_score": 0.42,
+    "tier": "suspect",
+    "confirmed_flake_count": 0,
+    "clean_streak": 1,
+    "trend": "worsening",
+    "last_status": "failed",
+    "last_seen_at": "2026-01-02T14:12:00Z",
+    "summary": false,
+    "github_issue_number": 12,
+    "github_issue_url": "https://github.com/demo/shop/issues/12",
+    "github_issue_closed": false
+  },
+  "unexplained_failures": 3,
+  "explained_failures": 2,
+  "executions": [
+    {
+      "id": 7001,
+      "status": "failed",
+      "outcome": "unexplained",
+      "commit_sha": "abcdef1234",
+      "branch": "main",
+      "ci_run_id": "run-12",
+      "ci_run_attempt": 1,
+      "ci_job_id": "e-12",
+      "url": "http://127.0.0.1:8543/job/e-12",
+      "runner_name": "ubuntu-latest",
+      "runner_labels": ["ubuntu-latest", "self-hosted"],
+      "started_at": "2026-01-02T14:00:00Z",
+      "completed_at": "2026-01-02T14:02:00Z",
+      "created_at": "2026-01-02T14:02:00Z",
+      "explained_by": [],
+      "explained_by_jobs": []
+    }
+  ],
+  "runners": [
+    {
+      "labels": ["ubuntu-latest", "self-hosted"],
+      "runner_name": "ubuntu-latest",
+      "executions": 4,
+      "unexplained_failures": 3
+    }
+  ],
+  "score_history": [
+    {
+      "day": "2025-12-04",
+      "flakiness_score": 0.0,
+      "confirmed_flake_count": 0,
+      "executions": 4,
+      "failures": 0
+    }
+  ]
+}

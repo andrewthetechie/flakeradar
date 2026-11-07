@@ -1,0 +1,5 @@
+{
+  "error": "unhandled ValueError: could not convert string to float: 'abc'",
+  "line_base": 1,
+  "source": "junit/invalid-time.xml"
+}

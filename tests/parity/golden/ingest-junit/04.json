@@ -1,0 +1,16 @@
+{
+  "body": {
+    "detail": "Empty report body"
+  },
+  "content-type": "application/json",
+  "request": {
+    "method": "POST",
+    "path": "/api/ingest",
+    "query": {
+      "commit_sha": "a3",
+      "repo": "o/r"
+    }
+  },
+  "status": 400,
+  "step": 4
+}

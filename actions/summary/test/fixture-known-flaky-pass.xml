@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<testsuites>
+  <testsuite name="summary-suite" errors="0" failures="0" skipped="0" tests="1" time="0.021">
+    <testcase classname="tests.test_summary" name="test_known_flaky" file="tests/test_summary.py" line="10" time="0.021"/>
+  </testsuite>
+</testsuites>

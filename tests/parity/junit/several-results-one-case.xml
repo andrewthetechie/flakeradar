@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="several-results" tests="3">
+  <testcase classname="tests.test_results" name="test_failure_then_error" time="0.01">
+    <failure message="the first result wins">first: failure</failure>
+    <error message="the second result is ignored">second: error</error>
+  </testcase>
+  <testcase classname="tests.test_results" name="test_skipped_then_failure" time="0.02">
+    <skipped message="the first result wins" />
+    <failure message="never seen">ignored</failure>
+  </testcase>
+  <testcase classname="tests.test_results" name="test_passed_with_no_result" time="0.03" />
+</testsuite>

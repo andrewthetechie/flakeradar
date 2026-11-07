@@ -1,0 +1,13 @@
+{
+  "body": {
+    "detail": "project must be 1-100 chars of a-z, 0-9, '.', '_' or '-', got 'Bad Project'"
+  },
+  "content-type": "application/json",
+  "request": {
+    "method": "DELETE",
+    "path": "/api/repos/a/b/projects/Bad Project",
+    "query": {}
+  },
+  "status": 422,
+  "step": 8
+}

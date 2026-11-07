@@ -1,0 +1,11 @@
+{
+  "body": "",
+  "location": "/api/reports",
+  "request": {
+    "method": "GET",
+    "path": "/api/reports/",
+    "query": {}
+  },
+  "status": 307,
+  "step": 3
+}

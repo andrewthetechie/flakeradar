@@ -1,0 +1,58 @@
+{
+  "cases": [
+    {
+      "category": null,
+      "classname": "tests.test_paths",
+      "details": "",
+      "duration": 0.01,
+      "file": "src/app.py",
+      "fingerprint": "861caa94013878ba8398bfe9a2c3b2fd7abad2e6",
+      "line": 4,
+      "message": "",
+      "name": "test_leading_dot_slash",
+      "status": "passed",
+      "suite": "dot-slash"
+    },
+    {
+      "category": null,
+      "classname": "tests.test_paths",
+      "details": "",
+      "duration": 0.01,
+      "file": "src/app.py",
+      "fingerprint": "008e92595d89f352ea87af37ddcfab873cf7d1d5",
+      "line": 5,
+      "message": "",
+      "name": "test_repeated_dot_slash",
+      "status": "passed",
+      "suite": "dot-slash"
+    },
+    {
+      "category": null,
+      "classname": "tests.test_paths",
+      "details": "",
+      "duration": 0.01,
+      "file": "src/./app.py",
+      "fingerprint": "de7382f458ceec646ef7c3aec3885db3373675dc",
+      "line": 6,
+      "message": "",
+      "name": "test_inner_dot_slash_is_kept",
+      "status": "passed",
+      "suite": "dot-slash"
+    },
+    {
+      "category": null,
+      "classname": "tests.test_paths",
+      "details": "",
+      "duration": 0.01,
+      "file": null,
+      "fingerprint": "f94663c69ac7777c50ef5aebe517c006fb051577",
+      "line": 7,
+      "message": "",
+      "name": "test_empty_file_is_no_location",
+      "status": "passed",
+      "suite": "dot-slash"
+    }
+  ],
+  "line_base": 0,
+  "source": "junit/dot-slash-file.xml"
+}

@@ -1,0 +1,17 @@
+{
+  "result": {
+    "_meta": null,
+    "content": [
+      {
+        "_meta": null,
+        "annotations": null,
+        "text": "ci_run_id must not be empty",
+        "type": "text"
+      }
+    ],
+    "isError": true,
+    "resultType": "complete",
+    "structuredContent": null
+  },
+  "step": 36
+}

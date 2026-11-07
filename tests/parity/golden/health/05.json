@@ -1,0 +1,14 @@
+{
+  "body": {
+    "failed": 0,
+    "pending": 0
+  },
+  "content-type": "application/json",
+  "request": {
+    "method": "GET",
+    "path": "/api/reports/summary",
+    "query": {}
+  },
+  "status": 200,
+  "step": 5
+}

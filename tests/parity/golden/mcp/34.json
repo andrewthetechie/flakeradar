@@ -1,0 +1,80 @@
+{
+  "result": {
+    "_meta": null,
+    "content": [
+      {
+        "_meta": null,
+        "annotations": null,
+        "text": "{\"repo\":\"o/r\",\"ci_run_id\":\"555\",\"ci_run_attempt\":1,\"flake_threshold\":0.3,\"reports\":{\"pending\":0,\"processed\":1,\"failed\":0},\"total_failures\":0,\"truncated\":false,\"failures\":[],\"failed_jobs\":[{\"job_id\":1,\"pipeline\":\".github/workflows/ci.yml\",\"name\":\"gate\",\"ci_job_id\":\"52\",\"url\":\"\",\"outcome\":\"explained\",\"summary\":true,\"tier\":\"stable\",\"flakiness_score\":0.0,\"confirmed_flake_count\":0,\"clean_streak\":0,\"github_issue_number\":null,\"github_issue_url\":null,\"github_issue_closed\":false},{\"job_id\":2,\"pipeline\":\".github/workflows/ci.yml\",\"name\":\"lint\",\"ci_job_id\":\"51\",\"url\":\"\",\"outcome\":\"unexplained\",\"summary\":false,\"tier\":\"stable\",\"flakiness_score\":0.0,\"confirmed_flake_count\":0,\"clean_streak\":0,\"github_issue_number\":null,\"github_issue_url\":null,\"github_issue_closed\":false},{\"job_id\":3,\"pipeline\":\".github/workflows/ci.yml\",\"name\":\"unit\",\"ci_job_id\":\"50\",\"url\":\"\",\"outcome\":\"unexplained\",\"summary\":false,\"tier\":\"stable\",\"flakiness_score\":0.0,\"confirmed_flake_count\":0,\"clean_streak\":0,\"github_issue_number\":null,\"github_issue_url\":null,\"github_issue_closed\":false}]}",
+        "type": "text"
+      }
+    ],
+    "isError": false,
+    "resultType": "complete",
+    "structuredContent": {
+      "ci_run_attempt": 1,
+      "ci_run_id": "555",
+      "failed_jobs": [
+        {
+          "ci_job_id": "52",
+          "clean_streak": 0,
+          "confirmed_flake_count": 0,
+          "flakiness_score": 0.0,
+          "github_issue_closed": false,
+          "github_issue_number": null,
+          "github_issue_url": null,
+          "job_id": 1,
+          "name": "gate",
+          "outcome": "explained",
+          "pipeline": ".github/workflows/ci.yml",
+          "summary": true,
+          "tier": "stable",
+          "url": ""
+        },
+        {
+          "ci_job_id": "51",
+          "clean_streak": 0,
+          "confirmed_flake_count": 0,
+          "flakiness_score": 0.0,
+          "github_issue_closed": false,
+          "github_issue_number": null,
+          "github_issue_url": null,
+          "job_id": 2,
+          "name": "lint",
+          "outcome": "unexplained",
+          "pipeline": ".github/workflows/ci.yml",
+          "summary": false,
+          "tier": "stable",
+          "url": ""
+        },
+        {
+          "ci_job_id": "50",
+          "clean_streak": 0,
+          "confirmed_flake_count": 0,
+          "flakiness_score": 0.0,
+          "github_issue_closed": false,
+          "github_issue_number": null,
+          "github_issue_url": null,
+          "job_id": 3,
+          "name": "unit",
+          "outcome": "unexplained",
+          "pipeline": ".github/workflows/ci.yml",
+          "summary": false,
+          "tier": "stable",
+          "url": ""
+        }
+      ],
+      "failures": [],
+      "flake_threshold": 0.3,
+      "repo": "o/r",
+      "reports": {
+        "failed": 0,
+        "pending": 0,
+        "processed": 1
+      },
+      "total_failures": 0,
+      "truncated": false
+    }
+  },
+  "step": 34
+}

@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="times" tests="1">
+  <testcase classname="tests.test_times" name="test_negative_time" time="-1.5" />
+</testsuite>

@@ -1,0 +1,13 @@
+{
+  "body": {
+    "detail": "Only failed reports can be retried"
+  },
+  "content-type": "application/json",
+  "request": {
+    "method": "POST",
+    "path": "/api/reports/1/retry",
+    "query": {}
+  },
+  "status": 409,
+  "step": 23
+}

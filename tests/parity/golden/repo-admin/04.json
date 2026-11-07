@@ -1,0 +1,15 @@
+{
+  "body": {
+    "duplicate": false,
+    "report_id": 4,
+    "status": "pending"
+  },
+  "content-type": "application/json",
+  "request": {
+    "method": "POST",
+    "path": "/api/ingest/pipeline",
+    "query": {}
+  },
+  "status": 202,
+  "step": 4
+}

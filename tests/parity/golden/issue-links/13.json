@@ -1,0 +1,13 @@
+{
+  "body": {
+    "detail": "url must be https://github.com/o/r/issues/16: the issue must be in the Test's own Repo"
+  },
+  "content-type": "application/json",
+  "request": {
+    "method": "PUT",
+    "path": "/api/tests/1/issue",
+    "query": {}
+  },
+  "status": 422,
+  "step": 13
+}

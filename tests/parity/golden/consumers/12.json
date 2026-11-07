@@ -1,0 +1,114 @@
+{
+  "body": {
+    "ci_run_attempt": 1,
+    "ci_run_id": "12345",
+    "failed_jobs": [
+      {
+        "ci_job_id": "999",
+        "clean_streak": 0,
+        "confirmed_flake_count": 0,
+        "flakiness_score": 0.0,
+        "github_issue_closed": false,
+        "github_issue_number": null,
+        "github_issue_url": null,
+        "job_id": 2,
+        "name": "test (ubuntu, 3.12)",
+        "outcome": "explained",
+        "pipeline": ".github/workflows/ci.yml",
+        "summary": false,
+        "tier": "stable",
+        "url": "https://github.com/andrewthetechie/writers-app/actions/runs/12345/job/999"
+      }
+    ],
+    "failures": [
+      {
+        "broken": false,
+        "ci_job_id": "999",
+        "classname": "alpha.test_checkout",
+        "clean_streak": 0,
+        "confirmed_flake_count": 0,
+        "fail_streak": 1,
+        "failed_attempts": 1,
+        "failure_category": "assertion",
+        "flakiness_score": 0.0,
+        "github_issue_closed": false,
+        "github_issue_number": null,
+        "github_issue_url": null,
+        "message": "assert 1 == 2",
+        "name": "test_refund_requires_an_order",
+        "project": "backend",
+        "quarantined": false,
+        "run_id": 2,
+        "status": "failed",
+        "suite": "alpha-suite",
+        "test_id": 4,
+        "tier": "stable"
+      },
+      {
+        "broken": false,
+        "ci_job_id": "999",
+        "classname": "beta.test_login",
+        "clean_streak": 0,
+        "confirmed_flake_count": 0,
+        "fail_streak": 1,
+        "failed_attempts": 1,
+        "failure_category": "assertion",
+        "flakiness_score": 0.0,
+        "github_issue_closed": false,
+        "github_issue_number": null,
+        "github_issue_url": null,
+        "message": "assert not True",
+        "name": "test_locked_account_unlocks_after_cooldown",
+        "project": "backend",
+        "quarantined": false,
+        "run_id": 3,
+        "status": "failed",
+        "suite": "beta-suite",
+        "test_id": 6,
+        "tier": "stable"
+      },
+      {
+        "broken": false,
+        "ci_job_id": "999",
+        "classname": "tests.test_checkout",
+        "clean_streak": 0,
+        "confirmed_flake_count": 0,
+        "fail_streak": 1,
+        "failed_attempts": 1,
+        "failure_category": "assertion",
+        "flakiness_score": 0.0,
+        "github_issue_closed": false,
+        "github_issue_number": null,
+        "github_issue_url": null,
+        "message": "assert 1 == 2",
+        "name": "test_refund",
+        "project": "backend",
+        "quarantined": false,
+        "run_id": 1,
+        "status": "failed",
+        "suite": "pytest",
+        "test_id": 2,
+        "tier": "stable"
+      }
+    ],
+    "flake_threshold": 0.3,
+    "repo": "andrewthetechie/writers-app",
+    "reports": {
+      "failed": 0,
+      "pending": 0,
+      "processed": 4
+    },
+    "total_failures": 3,
+    "truncated": false
+  },
+  "content-type": "application/json",
+  "request": {
+    "method": "GET",
+    "path": "/api/ci-runs/12345/failures",
+    "query": {
+      "repo": "andrewthetechie/writers-app"
+    }
+  },
+  "status": 200,
+  "step": 12
+}

@@ -1,0 +1,19 @@
+{
+  "cases": [
+    {
+      "category": null,
+      "classname": "tests.test_times",
+      "details": "",
+      "duration": 0.0,
+      "file": null,
+      "fingerprint": "db638c171107100923b1c00a17b835199e8ebcf0",
+      "line": null,
+      "message": "",
+      "name": "test_empty_time",
+      "status": "passed",
+      "suite": "times"
+    }
+  ],
+  "line_base": 0,
+  "source": "junit/empty-time.xml"
+}

@@ -1,0 +1,13 @@
+{
+  "body": {
+    "detail": "Invalid or missing X-API-Key"
+  },
+  "content-type": "application/json",
+  "request": {
+    "method": "DELETE",
+    "path": "/api/repos/o/r",
+    "query": {}
+  },
+  "status": 401,
+  "step": 11
+}

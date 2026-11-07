@@ -4,87 +4,88 @@ Domain terms (Repo, Project, Report, Run, Execution, flaky/suspect/stable, …)
 are defined in [CONTEXT.md](CONTEXT.md). Architecture decisions are in
 [docs/adr/](docs/adr/). The [design notes](#design-notes) below link to each one. Use the same words in code, UI text and docs.
 
+Rust code follows [docs/agents/code-standards-rust.md](docs/agents/code-standards-rust.md):
+the lint set, the error type per crate, and the testing rules.
+
 ## Dev setup
 
+FlakeRadar is one Rust binary plus PostgreSQL. The React app stays a separate
+project in `frontend/`.
+
 ```bash
-# PostgreSQL (the backend's default DATABASE_URL points here)
+# PostgreSQL
 docker run -d --name flakeradar-pg -p 5432:5432 \
   -e POSTGRES_USER=flakeradar -e POSTGRES_PASSWORD=flakeradar -e POSTGRES_DB=flakeradar \
   postgres:17-alpine
 
-# Backend (Python 3.12)
-cd backend
-python3.12 -m venv .venv
-.venv/bin/pip install -r requirements-dev.txt
-FLAKERADAR_ALLOW_INSECURE=1 .venv/bin/python -m uvicorn app.main:app --port 8000
+# The server. The crate embeds frontend/dist when it exists, so build the
+# dashboard first if you want it served from the binary; `cargo` never runs npm.
+(cd frontend && npm ci && npm run build)
+FLAKERADAR_ALLOW_INSECURE=1 \
+FLAKERADAR_DATABASE_URL=postgresql://flakeradar:flakeradar@localhost:5432/flakeradar \
+  cargo run -p flakeradar
 
-# Frontend
-cd frontend
-npm install
-npm run dev
+# Frontend, with hot reload against the server above
+cd frontend && npm install && npm run dev
 ```
 
-## Updating Python dependencies
-
-`backend/requirements.in` and `backend/requirements-dev.in` hold the version
-ranges; `requirements.txt` and `requirements-dev.txt` are generated and checked
-in, fully pinned with `--hash=` values, so every install reproduces exactly the
-same dependencies (the Docker image installs the runtime lock with
-`pip install --no-cache-dir --require-hashes -r requirements.txt`). Edit the
-`.in` files, then regenerate **both** `.txt` files from the repo root
-(`requirements-dev.in` includes `requirements.in`, so the two must stay in step):
-
-```bash
-# Compile for 3.12: the image runs python:3.12-slim.
-uv pip compile --generate-hashes --python-version 3.12 backend/requirements.in -o backend/requirements.txt
-uv pip compile --generate-hashes --python-version 3.12 backend/requirements-dev.in -o backend/requirements-dev.txt
-```
-
-Recreate your venv afterwards so it matches the lock (`pip install -r
-backend/requirements-dev.txt`; pip checks the hashes on its own because every
-entry carries them).
+`flakeradar --version` prints the workspace version, and
+`flakeradar healthcheck` probes `/api/health` for the container's `HEALTHCHECK`.
 
 ## Test gate
 
-All must pass before a PR is merged:
+All must pass before a PR is merged. CI runs the same commands, in the `rust`
+and `frontend` jobs of `.github/workflows/ci.yml`. The dashboard's two
+Playwright suites are also required; their commands are under "Dashboard tests
+(Playwright)" below, because each needs a built `frontend/dist` first.
 
 ```bash
-cd backend && .venv/bin/python -m pytest -q   # needs Docker: testcontainers starts Postgres
-cd frontend && npm test                        # Vitest + Testing Library
-cd frontend && npm run build                   # strict TypeScript build
+cargo fmt --all -- --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo nextest run --all-features --profile ci   # needs Docker or FLAKERADAR_TEST_DATABASE_URL
+cargo test --doc --all-features
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features --document-private-items --workspace
+cargo audit
+cd frontend && npm run typecheck && npm run lint && npm run format:check && npm test
 ```
 
-Set `FLAKERADAR_TEST_DATABASE_URL=postgresql+asyncpg://…` to run the backend
-tests against an existing (throwaway!) database instead — its tables are
-truncated between tests.
+The Rust tests need a PostgreSQL server. Without a `FLAKERADAR_TEST_DATABASE_URL`
+they start one with the `docker` command line: `flakeradar-test-support` runs one
+`postgres:17-alpine` container named `flakeradar-test-postgres`, reuses it across
+runs and across every test process, and every test then clones a migrated
+template database of its own. Set `FLAKERADAR_TEST_DATABASE_URL=postgresql://…`
+to run them against an existing (throwaway!) server instead, with no Docker at
+all; their databases are created and dropped per test. `scripts/smoke.sh <binary> <database-url>`
+exercises a built binary end to end — every route, an ingest that reaches
+`processed`, `/docs`, MCP `tools/list` and the `/metrics` series — and is what
+the release matrix runs on each of the five targets.
 
-### Backend coverage
+### Rust coverage
 
-CI measures line and branch coverage (`backend/.coveragerc`). Run the same
-check locally:
+CI measures line and branch coverage on a pinned nightly with
+`cargo-llvm-cov`, against `coverage-floor.json` at the repo root:
 
 ```bash
-cd backend
-.venv/bin/coverage run -m pytest -q
-.venv/bin/coverage report        # per-file table; fails below fail_under
-.venv/bin/coverage html          # browsable report in htmlcov/
+rustup toolchain install nightly-2026-10-25 --profile minimal -c llvm-tools-preview
+cargo +nightly-2026-10-25 llvm-cov nextest --branch --all-features --profile ci --html
 ```
 
-CI fails a backend job in two cases:
+The floors are the measured totals, rounded down, and they ratchet: a PR fails
+when either total is below the baseline `main` last uploaded as the
+`rust-coverage` artifact, and a PR that adds tests raises the floors in the same
+change. Never lower a floor, and never add a scenario, allowance, `#[ignore]` or
+`coverage(off)` to make a gate pass.
 
-- The total is below `fail_under` in `backend/.coveragerc`. Raise the floor as
-  coverage grows. Never lower it.
-- On a PR, the total is lower than the total of the newest push to `main`.
-  Each push to `main` uploads its `coverage.json` as the `backend-coverage`
-  artifact for this comparison.
-
-A local total can be slightly higher than CI's: when `frontend/dist` exists,
-`app/main.py` mounts it, and those lines count as covered.
+Every line a test cannot reach is a row in
+[docs/plans/rust-rewrite/coverage-gaps.md](docs/plans/rust-rewrite/coverage-gaps.md),
+with the file, the function and why. `#[cfg_attr(coverage_nightly,
+coverage(off))]` is limited to code a test process cannot run (the process edge
+in `main.rs`, signal wiring) and each use is logged there too.
 
 ### Frontend coverage
 
-Coverage (v8) is measured in CI only, where `CI` is set; local `npm test`
-stays fast. To see per-file coverage locally:
+Coverage (v8) is measured in CI only, where `CI` is set; local `npm test` stays
+fast. To see per-file coverage locally:
 
 ```bash
 cd frontend
@@ -94,64 +95,138 @@ npx vitest run --coverage.enabled --coverage.reporter=text
 CI fails the frontend job in two cases:
 
 - Statements, branches, functions or lines is below its threshold in
-  `frontend/vite.config.ts`. The thresholds are the measured baseline,
-  rounded down. Raise them as coverage grows. Never lower them.
+  `frontend/vite.config.ts`. The thresholds are the measured baseline, rounded
+  down. Raise them as coverage grows. Never lower them.
 - On a PR, any of the four is lower than the newest push to `main`. Each push
   to `main` uploads `coverage-summary.json` as the `frontend-coverage`
   artifact for this comparison.
 
-## Database migrations
+## Dashboard tests (Playwright)
 
-Schema changes go through Alembic. After editing `backend/app/models.py`, with
-a Postgres reachable at `FLAKERADAR_DATABASE_URL`:
+Two Chromium projects, both against the built `frontend/dist`, both in
+`frontend/`. Vitest covers the components; these cover the running dashboard, and
+CI's `Frontend UI (Playwright, mocked)` and `Dashboard e2e (Playwright, mock
+install)` jobs are what keep it working.
 
 ```bash
-cd backend
-.venv/bin/python -m alembic upgrade head
-.venv/bin/python -m alembic revision --autogenerate -m "describe change"
-# review the generated file
+cd frontend
+npm ci && npm run build
+npx playwright install chromium     # once; the version is pinned in package.json
+
+npx playwright test --project=ui    # dist, with every /api/* call mocked from e2e/fixtures/
+npx playwright test --project=e2e   # the real binary, a throwaway postgres, seeded by samples/simulate_ci.py
 ```
 
-Migrations run automatically on app startup (serialized across uvicorn
-workers by an advisory lock).
+`--project=e2e` needs a built binary as well as `dist`, because it loads the
+page out of the binary rather than from a dev server, so run `cargo build -p
+flakeradar` after `npm run build` (`build.rs` embeds whatever `frontend/dist`
+held at build time). It then starts and stops everything itself: one
+`postgres:17-alpine` container, the server, the seed, and the teardown. To hold
+that same install open while writing a test, run `node
+e2e/scripts/start-mock-install.mjs` and stop it with Ctrl-C; `node
+e2e/scripts/serve-dist.mjs` is the `ui` project's static server on its own.
+
+## Database migrations
+
+The schema is created by one baseline SQL file,
+`crates/flakeradar-db/migrations/0001_baseline.sql`, which
+`crates/flakeradar-db/src/migration.rs` embeds and applies under an advisory
+lock. The entities under `crates/flakeradar-db/src/entities/` are generated from
+a migrated database, never written by hand.
+
+To change the schema:
+
+1. Add a new numbered SQL file beside the baseline and register it in the
+   migration set.
+2. Apply it to a scratch database and regenerate the entities:
+
+```bash
+export FLAKERADAR_TEST_DATABASE_URL=postgresql://flakeradar:flakeradar@localhost:5432/scratch
+cargo run -q -p flakeradar-db --example migrate -- "$FLAKERADAR_TEST_DATABASE_URL"
+cargo install sea-orm-cli --version 2.0.4 --locked   # once
+sea-orm-cli generate entity \
+  --database-url "$FLAKERADAR_TEST_DATABASE_URL" \
+  --output-dir crates/flakeradar-db/src/entities \
+  --with-prelude none
+```
+
+3. Commit the SQL, the regenerated entities and the query changes together. CI
+   regenerates the entities from a migrated database and fails on a diff, so a
+   schema change that the entities do not reflect cannot land.
+
+Constraint and index names are part of the schema contract: the baseline keeps
+the names the 1.x database used, and a new migration keeps that convention.
 
 ## Architecture
 
 ```
-backend/   FastAPI + async SQLAlchemy 2 + asyncpg + PostgreSQL
-  app/
-    routers/reports.py  ingest (validate, queue, 202) and Report status
-    routers/tests.py    Repos, Test leaderboard, summary, Test detail, quarantine
-    routers/jobs.py     Job leaderboard, summary, Job detail
-    routers/ci_runs.py  failing Tests and failed Jobs of one CI run attempt
-    routers/ops.py      readiness probe and /metrics scrape
-    routers/repos.py    admin delete of a Repo or Project (cascade, X-API-Key)
-    queries.py          read services that REST and MCP share
-    parsing.py          JUnit parsing: identity, Location, Failure details, retries
-    processing.py       one Report -> one Run (or Job executions), batched upserts, rescoring
-    attribution.py      explained vs unexplained Job failures
-    classify.py         Failure category rules
-    score_history.py    daily Score history, trend
-    worker.py           the single Report processor (Postgres advisory lock)
-    retention.py        pruning
-    scoring.py          flip score and same-SHA proof (pure functions)
-    github_integration.py  per-Repo issue filing
-    notify.py           render a Notification from a Tier change
-    issue_links.py      set or clear a Test's or Job's Issue link (REST and MCP share it)
-    mcp_server.py       MCP tools (fastmcp): reads, plus link_issue and unlink_issue
-  migrations/     Alembic (async), applied on startup
-  tests/          pytest against a real Postgres (testcontainers)
-frontend/  React 18 + Vite + TypeScript, Vitest; no runtime chart dependencies
-samples/   CI snippets and a demo-data simulator
+crates/
+  flakeradar-core/        pure logic and DTOs: no database, no network
+    parsing.rs            JUnit parsing: identity, Location, Failure details, retries
+    identity.rs           the Test fingerprint (byte-identical to 1.x)
+    scoring.rs            flip score and same-SHA proof
+    classify.rs           Failure category rules
+    notify.rs             render a Notification from a Tier change
+    dto.rs                every request and response body, with utoipa schemas
+    py.rs, helpers.rs     the Python string/cap/round rules behaviour depends on
+  flakeradar-db/          baseline migration, entities, queries, processing
+    migration.rs          the baseline SQL and the old-database refusal
+    report_intake.rs      queue a Report, duplicate detection, the queue reads
+    processing.rs         one Report -> one Run (or Job executions), rescoring
+    attribution.rs        explained vs unexplained Job failures
+    filing.rs             the rows the issue filer selects
+    metrics.rs            the readiness probe's and the scrape's reads
+    score_history.rs      daily Score history, trend
+    reads.rs              every read: leaderboards, summaries, detail, failures
+    issue_links.rs        set or clear a Test's or Job's Issue link
+    deletes.rs            admin delete of a Repo or Project (cascade)
+    retention.rs          pruning
+    connect.rs, error.rs  the pool, the statement timeout, the error type
+  flakeradar-test-support/ test databases and factories (dev-dependency only)
+  flakeradar/             Axum, MCP, workers, the GitHub and webhook clients, the binary
+    app.rs                the router and the 404/405/trailing-slash rules
+    routes/               reports (ingest, queue), reads, issues, admin, ops
+    extract.rs            the 422 query/path/JSON extractors
+    mcp/                  the MCP server (rmcp): the transport, one file per tool
+    worker.rs             the single Report processor (Postgres advisory lock)
+    github/               the GitHub client, one file per responsibility:
+                          client, policy, bodies, filing, sync, notes
+    github_worker.rs      the task that files and syncs on the leader
+    webhooks.rs           the Notification delivery task
+    assets.rs             the embedded dashboard (rust-embed)
+    settings.rs, cli.rs   every FLAKERADAR_* setting, and the command line
+frontend/   React 18 + Vite + TypeScript, Vitest; embedded at build time
+tests/parity/  the recorded Python corpus: scenarios, goldens, the JUnit corpus
+samples/    CI snippets and a demo-data simulator
 ```
+
+How the 1.x modules map onto it: `app/routers/*` became
+`crates/flakeradar/src/routes/*` with the queries in `flakeradar-db`'s `reads.rs`;
+`app/queries.py` (the read services REST and MCP shared) became `reads.rs`, and
+`mcp/` calls it rather than the routes; `app/processing.py`, `attribution.py`,
+`score_history.py`, `retention.py` and `issue_links.py` moved to the same-named
+`flakeradar-db` modules; `app/parsing.py`, `classify.py`, `scoring.py` and
+`notify.py` became `flakeradar-core` modules; `app/worker.py`,
+`github_integration.py` and `notify.py`'s delivery became `worker.rs`,
+`github/` and `github_worker.rs`, and `webhooks.rs`; `app/config.py` became
+`settings.rs`.
+
+## Building with the embedded frontend
+
+`crates/flakeradar/build.rs` sets `cfg(has_frontend)` when
+`frontend/dist/index.html` exists and embeds the whole directory with
+`rust-embed` (`debug-embed`, so a debug build carries it too). Without a build it
+warns and produces an API-only binary that answers 404 at `/`. Cargo never runs
+npm: build the dashboard first, or let CI's `frontend-dist` artifact do it, as
+`release.yml` and the `targets` matrix do.
 
 ## Design notes
 
 - Queued ingest ([ADR 0002](docs/adr/0002-queued-ingest.md)). An upload only
   validates and stores the raw Report. One Report processor, elected with a
-  Postgres advisory lock across uvicorn workers, turns Reports into Runs in
-  upload order. Scoring depends on that order.
-- PostgreSQL only, fully async ([ADR 0003](docs/adr/0003-postgres-only-async.md)).
+  Postgres advisory lock across replicas, turns Reports into Runs in upload
+  order. Scoring depends on that order.
+- PostgreSQL only ([ADR 0003](docs/adr/0003-postgres-only-async.md)).
 - Repos and Projects ([ADR 0001](docs/adr/0001-repo-project-split.md)).
 - Pushed CI jobs and attribution ([ADR 0004](docs/adr/0004-pushed-ci-jobs-and-attribution.md)).
 - Retry attempts from JUnit ([ADR 0005](docs/adr/0005-retry-attempts-from-junit.md)).
@@ -159,6 +234,8 @@ samples/   CI snippets and a demo-data simulator
 - Daily Score history ([ADR 0007](docs/adr/0007-daily-score-history.md)).
 - Issue links from other filers ([ADR 0008](docs/adr/0008-issue-links-from-other-filers.md)).
 - Webhook Notifications ([ADR 0009](docs/adr/0009-webhook-notifications.md)).
+- One Rust binary replaces the Python server
+  ([ADR 0010](docs/adr/0010-rust-rewrite.md)).
 - The read APIs and the quarantine toggle are unauthenticated by design,
   because the dashboard is expected to be on a private network. The CI
   endpoints, the Issue link endpoints (`PUT`/`DELETE …/issue`), the admin

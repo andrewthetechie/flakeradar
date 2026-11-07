@@ -1,0 +1,14 @@
+{
+  "body": "Internal Server Error",
+  "content-type": "text/plain; charset=utf-8",
+  "request": {
+    "method": "POST",
+    "path": "/api/ingest",
+    "query": {
+      "commit_sha": "a3",
+      "repo": "o/r"
+    }
+  },
+  "status": 500,
+  "step": 7
+}

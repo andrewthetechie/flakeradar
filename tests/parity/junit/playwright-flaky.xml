@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites id="checkout" name="playwright" tests="3" failures="1" errors="0" time="9.412">
+  <testsuite id="chromium" name="chromium" tests="3" failures="1" errors="0" skipped="0" time="9.412" timestamp="2026-10-20T12:00:00.000Z" hostname="localhost">
+    <testcase id="checkout-1" name="checkout.spec.ts:12:3 › checkout › pays with a card" classname="chromium" time="4.201" file="checkout.spec.ts" line="12">
+      <flakyFailure type="FAILURE" message="Timeout 5000ms exceeded.">
+        <stackTrace>Error: Timeout 5000ms exceeded.
+  at Object.&lt;anonymous&gt; (checkout.spec.ts:20:9)</stackTrace>
+        <system-out>flaky attempt stdout</system-out>
+      </flakyFailure>
+      <system-err>flaky attempt stderr</system-err>
+    </testcase>
+    <testcase id="checkout-2" name="checkout.spec.ts:40:3 › checkout › rejects an expired card" classname="chromium" time="3.190">
+      <flakyError type="TIMEOUT" message="">
+        <stackTrace>Error: browser has been closed
+  at &lt;anonymous&gt;</stackTrace>
+      </flakyError>
+      <failure message="Error: expected the page to show &quot;Card expired&quot;">Error: expected the page to show "Card expired"
+  at checkout.spec.ts:48:5</failure>
+      <system-out>final attempt stdout</system-out>
+    </testcase>
+    <testcase id="checkout-3" name="checkout.spec.ts:60:3 › checkout › lists saved cards" classname="chromium" time="2.021">
+      <system-out>a passing case ignores its captured output</system-out>
+    </testcase>
+  </testsuite>
+</testsuites>

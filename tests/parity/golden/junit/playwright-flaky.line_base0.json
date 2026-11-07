@@ -1,0 +1,71 @@
+{
+  "cases": [
+    {
+      "category": "timing",
+      "classname": "chromium",
+      "details": "Error: Timeout 5000ms exceeded.\n  at Object.<anonymous> (checkout.spec.ts:20:9)\n\n--- stdout ---\nflaky attempt stdout",
+      "duration": 0.0,
+      "file": "checkout.spec.ts",
+      "fingerprint": "f710391b8d86e543702bc00cb0efdb72e3ada75a",
+      "line": 13,
+      "message": "Timeout 5000ms exceeded.",
+      "name": "checkout.spec.ts:12:3 › checkout › pays with a card",
+      "status": "failed",
+      "suite": "chromium"
+    },
+    {
+      "category": null,
+      "classname": "chromium",
+      "details": "",
+      "duration": 4.201,
+      "file": "checkout.spec.ts",
+      "fingerprint": "f710391b8d86e543702bc00cb0efdb72e3ada75a",
+      "line": 13,
+      "message": "",
+      "name": "checkout.spec.ts:12:3 › checkout › pays with a card",
+      "status": "passed",
+      "suite": "chromium"
+    },
+    {
+      "category": "environment",
+      "classname": "chromium",
+      "details": "Error: browser has been closed\n  at <anonymous>",
+      "duration": 0.0,
+      "file": null,
+      "fingerprint": "c2bbdfceaf9204d96afaec4f5d9c5833b9e88958",
+      "line": null,
+      "message": "Error: browser has been closed",
+      "name": "checkout.spec.ts:40:3 › checkout › rejects an expired card",
+      "status": "error",
+      "suite": "chromium"
+    },
+    {
+      "category": "assertion",
+      "classname": "chromium",
+      "details": "Error: expected the page to show \"Card expired\"\n  at checkout.spec.ts:48:5\n\n--- stdout ---\nfinal attempt stdout",
+      "duration": 3.19,
+      "file": null,
+      "fingerprint": "c2bbdfceaf9204d96afaec4f5d9c5833b9e88958",
+      "line": null,
+      "message": "Error: expected the page to show \"Card expired\"",
+      "name": "checkout.spec.ts:40:3 › checkout › rejects an expired card",
+      "status": "failed",
+      "suite": "chromium"
+    },
+    {
+      "category": null,
+      "classname": "chromium",
+      "details": "",
+      "duration": 2.021,
+      "file": null,
+      "fingerprint": "57568ad191f490806be11334b0dca817182baed4",
+      "line": null,
+      "message": "",
+      "name": "checkout.spec.ts:60:3 › checkout › lists saved cards",
+      "status": "passed",
+      "suite": "chromium"
+    }
+  ],
+  "line_base": 0,
+  "source": "junit/playwright-flaky.xml"
+}

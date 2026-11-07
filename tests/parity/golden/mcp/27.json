@@ -1,0 +1,42 @@
+{
+  "result": {
+    "_meta": {
+      "fastmcp": {
+        "wrap_result": true
+      }
+    },
+    "content": [
+      {
+        "_meta": null,
+        "annotations": null,
+        "text": "[{\"id\":2,\"repo\":\"o/r\",\"provider\":\"github\",\"pipeline\":\".github/workflows/ci.yml\",\"name\":\"lint\",\"flakiness_score\":0.0,\"tier\":\"stable\",\"confirmed_flake_count\":0,\"clean_streak\":0,\"trend\":null,\"last_status\":\"failed\",\"last_seen_at\":\"<timestamp>\",\"summary\":false,\"github_issue_number\":null,\"github_issue_url\":null,\"github_issue_closed\":false}]",
+        "type": "text"
+      }
+    ],
+    "isError": false,
+    "resultType": "complete",
+    "structuredContent": {
+      "result": [
+        {
+          "clean_streak": 0,
+          "confirmed_flake_count": 0,
+          "flakiness_score": 0.0,
+          "github_issue_closed": false,
+          "github_issue_number": null,
+          "github_issue_url": null,
+          "id": 2,
+          "last_seen_at": "<timestamp>",
+          "last_status": "failed",
+          "name": "lint",
+          "pipeline": ".github/workflows/ci.yml",
+          "provider": "github",
+          "repo": "o/r",
+          "summary": false,
+          "tier": "stable",
+          "trend": null
+        }
+      ]
+    }
+  },
+  "step": 27
+}

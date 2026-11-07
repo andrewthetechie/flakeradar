@@ -1,0 +1,13 @@
+{
+  "body": {
+    "detail": "Test not found"
+  },
+  "content-type": "application/json",
+  "request": {
+    "method": "POST",
+    "path": "/api/tests/1/quarantine",
+    "query": {}
+  },
+  "status": 404,
+  "step": 17
+}

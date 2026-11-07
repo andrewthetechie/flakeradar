@@ -1,0 +1,15 @@
+{
+  "body": {
+    "detail": "repo must look like 'owner/name', got 'not a repo'"
+  },
+  "content-type": "application/json",
+  "request": {
+    "method": "GET",
+    "path": "/api/jobs",
+    "query": {
+      "repo": "not a repo"
+    }
+  },
+  "status": 422,
+  "step": 32
+}

@@ -1,0 +1,34 @@
+{
+  "result": {
+    "_meta": null,
+    "content": [
+      {
+        "_meta": null,
+        "annotations": null,
+        "text": "{\"id\":1,\"repo\":\"o/r\",\"provider\":\"github\",\"pipeline\":\".github/workflows/ci.yml\",\"name\":\"gate\",\"flakiness_score\":0.0,\"tier\":\"stable\",\"confirmed_flake_count\":0,\"clean_streak\":0,\"trend\":null,\"last_status\":\"failed\",\"last_seen_at\":\"<timestamp>\",\"summary\":true,\"github_issue_number\":null,\"github_issue_url\":null,\"github_issue_closed\":false}",
+        "type": "text"
+      }
+    ],
+    "isError": false,
+    "resultType": "complete",
+    "structuredContent": {
+      "clean_streak": 0,
+      "confirmed_flake_count": 0,
+      "flakiness_score": 0.0,
+      "github_issue_closed": false,
+      "github_issue_number": null,
+      "github_issue_url": null,
+      "id": 1,
+      "last_seen_at": "<timestamp>",
+      "last_status": "failed",
+      "name": "gate",
+      "pipeline": ".github/workflows/ci.yml",
+      "provider": "github",
+      "repo": "o/r",
+      "summary": true,
+      "tier": "stable",
+      "trend": null
+    }
+  },
+  "step": 44
+}

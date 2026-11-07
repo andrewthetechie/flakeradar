@@ -1,0 +1,85 @@
+{
+  "result": {
+    "_meta": null,
+    "content": [
+      {
+        "_meta": null,
+        "annotations": null,
+        "text": "{\"test\":{\"id\":2,\"repo\":\"o/r\",\"project\":\"default\",\"fingerprint\":\"a97cddcdc015eee23feaf27c920433747e51adc3\",\"suite\":\"unit\",\"classname\":\"tests.test_cart\",\"name\":\"test_tax\",\"file\":\"tests/test_cart.py\",\"line\":20,\"flakiness_score\":0.0,\"tier\":\"stable\",\"confirmed_flake_count\":0,\"failure_category\":null,\"clean_streak\":2,\"fail_streak\":0,\"broken\":false,\"trend\":null,\"last_status\":\"passed\",\"last_seen_at\":\"<timestamp>\",\"quarantined\":false,\"quarantined_at\":null,\"quarantine_reason\":null,\"quarantine_expires_at\":null,\"github_issue_number\":null,\"github_issue_url\":null,\"github_issue_closed\":false},\"location\":{\"path\":\"tests/test_cart.py\",\"line\":20,\"url\":null},\"last_failing_sha\":null,\"last_failing_branch\":null,\"latest_failure\":null,\"executions\":[{\"status\":\"passed\",\"commit_sha\":\"m2\",\"branch\":\"main\",\"ci_run_id\":\"\",\"created_at\":\"<timestamp>\",\"duration\":0.01,\"message\":\"\",\"attempt\":0,\"failure_category\":null},{\"status\":\"passed\",\"commit_sha\":\"m1\",\"branch\":\"main\",\"ci_run_id\":\"\",\"created_at\":\"<timestamp>\",\"duration\":0.01,\"message\":\"\",\"attempt\":0,\"failure_category\":null}],\"jobs\":[],\"score_history\":[{\"day\":\"<date>\",\"flakiness_score\":0.0}]}",
+        "type": "text"
+      }
+    ],
+    "isError": false,
+    "resultType": "complete",
+    "structuredContent": {
+      "executions": [
+        {
+          "attempt": 0,
+          "branch": "main",
+          "ci_run_id": "",
+          "commit_sha": "m2",
+          "created_at": "<timestamp>",
+          "duration": 0.01,
+          "failure_category": null,
+          "message": "",
+          "status": "passed"
+        },
+        {
+          "attempt": 0,
+          "branch": "main",
+          "ci_run_id": "",
+          "commit_sha": "m1",
+          "created_at": "<timestamp>",
+          "duration": 0.01,
+          "failure_category": null,
+          "message": "",
+          "status": "passed"
+        }
+      ],
+      "jobs": [],
+      "last_failing_branch": null,
+      "last_failing_sha": null,
+      "latest_failure": null,
+      "location": {
+        "line": 20,
+        "path": "tests/test_cart.py",
+        "url": null
+      },
+      "score_history": [
+        {
+          "day": "<date>",
+          "flakiness_score": 0.0
+        }
+      ],
+      "test": {
+        "broken": false,
+        "classname": "tests.test_cart",
+        "clean_streak": 2,
+        "confirmed_flake_count": 0,
+        "fail_streak": 0,
+        "failure_category": null,
+        "file": "tests/test_cart.py",
+        "fingerprint": "a97cddcdc015eee23feaf27c920433747e51adc3",
+        "flakiness_score": 0.0,
+        "github_issue_closed": false,
+        "github_issue_number": null,
+        "github_issue_url": null,
+        "id": 2,
+        "last_seen_at": "<timestamp>",
+        "last_status": "passed",
+        "line": 20,
+        "name": "test_tax",
+        "project": "default",
+        "quarantine_expires_at": null,
+        "quarantine_reason": null,
+        "quarantined": false,
+        "quarantined_at": null,
+        "repo": "o/r",
+        "suite": "unit",
+        "tier": "stable",
+        "trend": null
+      }
+    }
+  },
+  "step": 20
+}

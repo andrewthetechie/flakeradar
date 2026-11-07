@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="vitest tests" tests="3" failures="1" errors="0" time="0.842">
+    <testsuite name="src/sum.test.ts" tests="3" failures="1" errors="0" time="0.842">
+        <testcase classname="src/sum.test.ts" name="adds two numbers" time="0.004">
+        </testcase>
+        <testcase classname="src/sum.test.ts" name="rejects a string" time="0.006">
+            <failure message="expected 3 to be 4 // Object.is equality">AssertionError: expected 3 to be 4 // Object.is equality
+
+- Expected
++ Received
+
+- 4
++ 3
+
+ ❯ src/sum.test.ts:12:18</failure>
+        </testcase>
+        <testcase classname="src/sum.test.ts" name="handles an empty list" time="0.002">
+        </testcase>
+    </testsuite>
+</testsuites>

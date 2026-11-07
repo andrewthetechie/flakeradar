@@ -1,0 +1,16 @@
+{
+  "body": {
+    "detail": "repo must look like 'owner/name', got 'Not A Repo'"
+  },
+  "content-type": "application/json",
+  "request": {
+    "method": "POST",
+    "path": "/api/ingest",
+    "query": {
+      "commit_sha": "a3",
+      "repo": "Not A Repo"
+    }
+  },
+  "status": 422,
+  "step": 9
+}

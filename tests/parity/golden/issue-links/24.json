@@ -1,0 +1,28 @@
+{
+  "body": {
+    "clean_streak": 0,
+    "confirmed_flake_count": 0,
+    "flakiness_score": 0.0,
+    "github_issue_closed": false,
+    "github_issue_number": null,
+    "github_issue_url": null,
+    "id": 3,
+    "last_seen_at": "<timestamp>",
+    "last_status": "failed",
+    "name": "unit",
+    "pipeline": ".github/workflows/ci.yml",
+    "provider": "github",
+    "repo": "o/r",
+    "summary": false,
+    "tier": "stable",
+    "trend": null
+  },
+  "content-type": "application/json",
+  "request": {
+    "method": "DELETE",
+    "path": "/api/jobs/3/issue",
+    "query": {}
+  },
+  "status": 200,
+  "step": 24
+}

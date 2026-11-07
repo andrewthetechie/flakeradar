@@ -1,0 +1,32 @@
+{
+  "cases": [
+    {
+      "category": null,
+      "classname": "tests.test_nameless",
+      "details": "",
+      "duration": 0.02,
+      "file": null,
+      "fingerprint": "c946cf71857c0342c3d34c9d678423073b756f23",
+      "line": null,
+      "message": "",
+      "name": "test_named",
+      "status": "passed",
+      "suite": "nameless"
+    },
+    {
+      "category": "other",
+      "classname": "tests.test_nameless",
+      "details": "kept: the attribute exists",
+      "duration": 0.03,
+      "file": null,
+      "fingerprint": "57fd7c321d761e02d5abd2c3c4c4d06b55b15fc0",
+      "line": null,
+      "message": "an empty name is still a name",
+      "name": "",
+      "status": "failed",
+      "suite": "nameless"
+    }
+  ],
+  "line_base": 1,
+  "source": "junit/nameless-case.xml"
+}

@@ -1,0 +1,17 @@
+{
+  "result": {
+    "_meta": null,
+    "content": [
+      {
+        "_meta": null,
+        "annotations": null,
+        "text": "Test already links issue #31; pass replace=true to replace it",
+        "type": "text"
+      }
+    ],
+    "isError": true,
+    "resultType": "complete",
+    "structuredContent": null
+  },
+  "step": 39
+}

@@ -1,0 +1,49 @@
+{
+  "body": {
+    "items": [
+      {
+        "broken": false,
+        "classname": "src/cart.test.ts Cart",
+        "clean_streak": 0,
+        "confirmed_flake_count": 0,
+        "fail_streak": 1,
+        "failure_category": "assertion",
+        "file": "src/cart.test.ts",
+        "fingerprint": "941305f1d008a9579665ac3a4b905b5048a79e0d",
+        "flakiness_score": 0.0,
+        "github_issue_closed": false,
+        "github_issue_number": null,
+        "github_issue_url": null,
+        "id": 35,
+        "last_seen_at": "<timestamp>",
+        "last_status": "failed",
+        "line": 8,
+        "name": "adds items",
+        "project": "frontend",
+        "quarantine_expires_at": null,
+        "quarantine_reason": null,
+        "quarantined": false,
+        "quarantined_at": null,
+        "repo": "o/r",
+        "suite": "unit",
+        "tier": "stable",
+        "trend": null
+      }
+    ],
+    "page": 1,
+    "page_size": 50,
+    "total": 1
+  },
+  "content-type": "application/json",
+  "request": {
+    "method": "GET",
+    "path": "/api/tests",
+    "query": {
+      "include_stable": "true",
+      "project": "frontend",
+      "repo": "o/r"
+    }
+  },
+  "status": 200,
+  "step": 16
+}

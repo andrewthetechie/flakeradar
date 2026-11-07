@@ -1,0 +1,28 @@
+{
+  "body": {
+    "category_counts": {
+      "assertion": 2,
+      "environment": 0,
+      "network": 1,
+      "other": 0,
+      "timing": 0
+    },
+    "confirmed_flaky_tests": 1,
+    "executions_30d": 35,
+    "failures_30d": 15,
+    "flake_threshold": 0.3,
+    "flaky_tests": 2,
+    "new_flaky_7d": 2,
+    "suspect_tests": 1,
+    "total_runs": 11,
+    "total_tests": 6
+  },
+  "content-type": "application/json",
+  "request": {
+    "method": "GET",
+    "path": "/api/summary",
+    "query": {}
+  },
+  "status": 200,
+  "step": 43
+}

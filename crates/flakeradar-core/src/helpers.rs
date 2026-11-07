@@ -1,0 +1,197 @@
+//! The small pure helpers the queries and the DTOs share.
+//!
+//! Each one is a rule the queries and the DTOs both read: the tier a score falls
+//! in, whether a Test is broken, the trend arrow, LIKE escaping, GitHub URLs and
+//! the Report body digest. They live here so the routes, the MCP tools and the
+//! processors cannot answer differently about the same row.
+
+use std::fmt::Write as _;
+
+use sha2::{Digest as _, Sha256};
+
+use crate::model::{Tier, Trend};
+use crate::types::Score;
+
+/// The age, in days, of the Score history point a trend is measured from.
+///
+/// A trend compares today's score against the score two weeks ago, which is long
+/// enough to see past one bad afternoon and short enough that a fix shows up.
+/// The frontend shows the same arrow for the same reason, and the leaderboard's
+/// `trend` field is this comparison: widening it flattens every arrow, narrowing
+/// it makes one bad day read as a worsening Test.
+pub const TREND_DAYS: i64 = 14;
+
+/// The score movement that counts as a trend rather than noise.
+///
+/// A Flakiness score moves whenever one Execution flips, and the smallest useful
+/// move of a rounded score is 0.0001, so anything nonzero would call noise a
+/// trend. Five points is about one flip in a window of 20 Executions, which is
+/// the smallest move worth an arrow. Raising it hides a Test getting worse;
+/// lowering it makes every arrow flicker between runs.
+pub const TREND_DELTA: f64 = 0.05;
+
+/// The Flakiness tier a score falls in.
+///
+/// A score at or above the Flake threshold is flaky; above zero is suspect; zero
+/// is stable. The score is a [`Score`], not a bare number, so a caller cannot
+/// hand the threshold where the score belongs: the two arguments are different
+/// types, and the first one has already been checked against 0 to 1. The
+/// threshold stays the configured number it is, because an instance may set it
+/// outside that range only through the start-up rule that refuses it.
+///
+/// # Examples
+///
+/// ```
+/// use flakeradar_core::{helpers::tier_for, model::Tier, types::Score};
+///
+/// let score = |value| Score::new(value).expect("a score");
+/// assert_eq!(tier_for(score(0.5), 0.5), Tier::Flaky);
+/// assert_eq!(tier_for(score(0.1), 0.5), Tier::Suspect);
+/// assert_eq!(tier_for(Score::ZERO, 0.5), Tier::Stable);
+/// ```
+#[must_use]
+pub fn tier_for(score: Score, threshold: f64) -> Tier {
+    if score.as_f64() >= threshold {
+        Tier::Flaky
+    } else if score.as_f64() > 0.0 {
+        Tier::Suspect
+    } else {
+        Tier::Stable
+    }
+}
+
+/// Whether a Test is broken: it failed `broken_streak` times in a row.
+///
+/// A `broken_streak` of zero disables broken detection.
+///
+/// # Examples
+///
+/// ```
+/// assert!(flakeradar_core::helpers::is_broken(5, 5));
+/// assert!(!flakeradar_core::helpers::is_broken(5, 0));
+/// ```
+#[must_use]
+pub fn is_broken(fail_streak: i64, broken_streak: i64) -> bool {
+    broken_streak > 0 && fail_streak >= broken_streak
+}
+
+/// The trend between a score now and its baseline [`TREND_DAYS`] ago.
+///
+/// `None` means the baseline is unknown, which is also what a Test or Job with
+/// no Score history that old reports.
+#[must_use]
+pub fn trend_for(current: f64, past: Option<f64>) -> Option<Trend> {
+    let past = past?;
+    let delta = current - past;
+    if delta >= TREND_DELTA {
+        Some(Trend::Worsening)
+    } else if delta <= -TREND_DELTA {
+        Some(Trend::Improving)
+    } else {
+        Some(Trend::Steady)
+    }
+}
+
+/// Escapes the LIKE wildcards so user text matches literally.
+///
+/// Pair it with `ESCAPE '\'`; the backslash is escaped first so it cannot
+/// escape the escapes.
+///
+/// # Examples
+///
+/// ```
+/// assert_eq!(flakeradar_core::helpers::escape_like(r"50%_off\"), r"50\%\_off\\");
+/// ```
+#[must_use]
+pub fn escape_like(text: &str) -> String {
+    text.replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+
+/// The GitHub issue a Test or Job was filed as, if any.
+#[must_use]
+pub fn issue_url(repo: &str, number: Option<i64>) -> Option<String> {
+    let number = number?;
+    Some(format!("https://github.com/{repo}/issues/{number}"))
+}
+
+/// The GitHub issue a Job was filed as; only GitHub Pipelines file issues.
+///
+/// A non-GitHub Job has nowhere to link, so its `github_issue_url` is `None` even
+/// when a number was written to it by hand.
+#[must_use]
+pub fn job_issue_url(repo: &str, provider: &str, number: Option<i64>) -> Option<String> {
+    if provider == "github" {
+        issue_url(repo, number)
+    } else {
+        None
+    }
+}
+
+/// A reported file path made relative to the Repo root.
+///
+/// # Examples
+///
+/// ```
+/// assert_eq!(flakeradar_core::helpers::repo_path("frontend", "src/a.ts"), "frontend/src/a.ts");
+/// assert_eq!(flakeradar_core::helpers::repo_path("", "src/a.ts"), "src/a.ts");
+/// ```
+#[must_use]
+pub fn repo_path(root: &str, file: &str) -> String {
+    if root.is_empty() {
+        file.to_owned()
+    } else {
+        format!("{root}/{file}")
+    }
+}
+
+/// A Test's Location and the commit to link it at.
+///
+/// Every field is named because a permalink joins a Repo, a commit and a path:
+/// four bare strings in a row would let a caller pass the root where the file
+/// belongs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LocationRef<'a> {
+    /// The Repo's `owner/name`.
+    pub repo: &'a str,
+    /// The commit SHA the path is read at.
+    pub commit_sha: &'a str,
+    /// The Project root the file is relative to.
+    pub project_root: &'a str,
+    /// The file, relative to the Project root.
+    pub file: &'a str,
+    /// The line, when the report gave one.
+    pub line: Option<i64>,
+}
+
+/// A GitHub permalink to a Test's Location at one commit SHA.
+///
+/// The line anchor is added for a 1-based line only.
+#[must_use]
+pub fn permalink(location: &LocationRef<'_>) -> String {
+    let url = format!(
+        "https://github.com/{}/blob/{}/{}",
+        location.repo,
+        location.commit_sha,
+        repo_path(location.project_root, location.file)
+    );
+    match location.line {
+        Some(line) if line >= 1 => format!("{url}#L{line}"),
+        _ => url,
+    }
+}
+
+/// The SHA-256 digest of a Report body, as lowercase hex.
+///
+/// A Report's duplicate identity includes this digest, so the digest and the
+/// stored row cannot disagree.
+#[must_use]
+pub fn body_digest(content: &[u8]) -> String {
+    let digest = Sha256::digest(content);
+    let mut hex = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        let _ = write!(hex, "{byte:02x}");
+    }
+    hex
+}

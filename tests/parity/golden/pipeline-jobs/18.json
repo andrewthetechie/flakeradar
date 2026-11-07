@@ -1,0 +1,141 @@
+{
+  "body": {
+    "executions": [
+      {
+        "branch": "main",
+        "ci_job_id": "53",
+        "ci_run_attempt": 1,
+        "ci_run_id": "781",
+        "commit_sha": "c5",
+        "completed_at": null,
+        "created_at": "<timestamp>",
+        "explained_by": [],
+        "explained_by_jobs": [],
+        "id": 20,
+        "outcome": "passed",
+        "runner_labels": [],
+        "runner_name": "",
+        "started_at": null,
+        "status": "passed",
+        "url": ""
+      },
+      {
+        "branch": "main",
+        "ci_job_id": "43",
+        "ci_run_attempt": 1,
+        "ci_run_id": "780",
+        "commit_sha": "c4",
+        "completed_at": null,
+        "created_at": "<timestamp>",
+        "explained_by": [],
+        "explained_by_jobs": [],
+        "id": 16,
+        "outcome": "passed",
+        "runner_labels": [],
+        "runner_name": "",
+        "started_at": null,
+        "status": "passed",
+        "url": ""
+      },
+      {
+        "branch": "main",
+        "ci_job_id": "33",
+        "ci_run_attempt": 1,
+        "ci_run_id": "779",
+        "commit_sha": "c3",
+        "completed_at": null,
+        "created_at": "<timestamp>",
+        "explained_by": [],
+        "explained_by_jobs": [],
+        "id": 12,
+        "outcome": "passed",
+        "runner_labels": [],
+        "runner_name": "",
+        "started_at": null,
+        "status": "passed",
+        "url": ""
+      },
+      {
+        "branch": "main",
+        "ci_job_id": "23",
+        "ci_run_attempt": 1,
+        "ci_run_id": "778",
+        "commit_sha": "c2",
+        "completed_at": null,
+        "created_at": "<timestamp>",
+        "explained_by": [],
+        "explained_by_jobs": [],
+        "id": 8,
+        "outcome": "passed",
+        "runner_labels": [],
+        "runner_name": "",
+        "started_at": null,
+        "status": "passed",
+        "url": ""
+      },
+      {
+        "branch": "main",
+        "ci_job_id": "13",
+        "ci_run_attempt": 1,
+        "ci_run_id": "777",
+        "commit_sha": "c1",
+        "completed_at": null,
+        "created_at": "<timestamp>",
+        "explained_by": [],
+        "explained_by_jobs": [],
+        "id": 4,
+        "outcome": "passed",
+        "runner_labels": [],
+        "runner_name": "",
+        "started_at": null,
+        "status": "passed",
+        "url": ""
+      }
+    ],
+    "explained_failures": 0,
+    "job": {
+      "clean_streak": 5,
+      "confirmed_flake_count": 0,
+      "flakiness_score": 0.0,
+      "github_issue_closed": false,
+      "github_issue_number": null,
+      "github_issue_url": null,
+      "id": 1,
+      "last_seen_at": "<timestamp>",
+      "last_status": "passed",
+      "name": "build",
+      "pipeline": ".github/workflows/ci.yml",
+      "provider": "github",
+      "repo": "o/r",
+      "summary": false,
+      "tier": "stable",
+      "trend": null
+    },
+    "runners": [
+      {
+        "executions": 5,
+        "labels": [],
+        "runner_name": null,
+        "unexplained_failures": 0
+      }
+    ],
+    "score_history": [
+      {
+        "confirmed_flake_count": 0,
+        "day": "<date>",
+        "executions": 5,
+        "failures": 0,
+        "flakiness_score": 0.0
+      }
+    ],
+    "unexplained_failures": 0
+  },
+  "content-type": "application/json",
+  "request": {
+    "method": "GET",
+    "path": "/api/jobs/1/history",
+    "query": {}
+  },
+  "status": 200,
+  "step": 18
+}

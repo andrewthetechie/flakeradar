@@ -1,0 +1,23 @@
+{
+  "name": "quarantine",
+  "steps": [
+    {"http": {"method": "POST", "path": "/api/ingest", "query": {"repo": "o/r", "commit_sha": "q1"}, "headers": {"X-API-Key": "$TOKEN", "Content-Type": "application/xml"}, "body_text": "<testsuite name=\"unit\"><testcase classname=\"tests.test_cart\" name=\"test_total\" time=\"0.01\" file=\"tests/test_cart.py\" line=\"12\"><failure message=\"assert 1 == 2\">AssertionError: assert 1 == 2</failure></testcase><testcase classname=\"tests.test_cart\" name=\"test_tax\" time=\"0.01\" file=\"tests/test_cart.py\" line=\"20\"></testcase></testsuite>"}},
+    {"wait_processed": true},
+    {"http": {"method": "POST", "path": "/api/tests/1/quarantine", "query": {}, "headers": {"X-API-Key": "$TOKEN", "Content-Type": "application/json"}, "body_json": {"quarantined": true, "reason": "known race in the tax service", "expires_in_days": 7}}},
+    {"http": {"method": "GET", "path": "/api/quarantine", "query": {"repo": "o/r"}}},
+    {"http": {"method": "GET", "path": "/api/quarantine", "query": {"repo": "o/r", "project": "frontend"}}},
+    {"http": {"method": "GET", "path": "/api/tests", "query": {"repo": "o/r", "quarantined": "true"}}},
+    {"http": {"method": "GET", "path": "/api/tests", "query": {"repo": "o/r", "quarantined": "false", "include_stable": "true"}}},
+    {"http": {"method": "POST", "path": "/api/tests/1/quarantine", "query": {}, "headers": {"X-API-Key": "$TOKEN", "Content-Type": "application/json"}, "body_json": {"quarantined": true, "reason": "no expiry this time"}}},
+    {"http": {"method": "GET", "path": "/api/quarantine", "query": {"repo": "o/r"}}},
+    {"http": {"method": "POST", "path": "/api/tests/1/quarantine", "query": {}, "headers": {"X-API-Key": "$TOKEN", "Content-Type": "application/json"}, "body_json": {"quarantined": false}}},
+    {"http": {"method": "GET", "path": "/api/quarantine", "query": {"repo": "o/r"}}},
+    {"http": {"method": "POST", "path": "/api/tests/1/quarantine", "query": {}, "headers": {"X-API-Key": "$TOKEN", "Content-Type": "application/json"}, "body_json": {"quarantined": true, "expires_in_days": 0}}},
+    {"http": {"method": "POST", "path": "/api/tests/1/quarantine", "query": {}, "headers": {"X-API-Key": "$TOKEN", "Content-Type": "application/json"}, "body_json": {"reason": "missing the flag"}}},
+    {"http": {"method": "POST", "path": "/api/tests/999/quarantine", "query": {}, "headers": {"X-API-Key": "$TOKEN", "Content-Type": "application/json"}, "body_json": {"quarantined": true}}},
+    {"http": {"method": "POST", "path": "/api/tests/abc/quarantine", "query": {}, "headers": {"X-API-Key": "$TOKEN", "Content-Type": "application/json"}, "body_json": {"quarantined": true}}},
+    {"http": {"method": "GET", "path": "/api/quarantine", "query": {"repo": "not a repo"}}},
+    {"http": {"method": "GET", "path": "/api/quarantine", "query": {"project": "frontend"}}},
+    {"dump_db": ["test_cases"]}
+  ]
+}
