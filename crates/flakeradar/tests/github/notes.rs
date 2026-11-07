@@ -778,7 +778,7 @@ async fn a_note_permission_403_skips_only_that_repo() {
 }
 
 #[tokio::test]
-async fn a_note_network_error_ends_the_batch_and_never_raises() {
+async fn a_note_network_error_ends_the_batch() {
     let db = TestDb::new().await.expect("a test database");
     let test = flaky_test_in(&db, "acme/app", "linked", "linked").await;
     stamp_link(&db, EntityKind::Test, test, stamp().number(77).checked()).await;

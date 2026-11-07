@@ -436,7 +436,7 @@ async fn issues_disabled_skips_the_rest_of_that_repo() {
 }
 
 #[tokio::test]
-async fn a_201_without_a_number_never_raises_and_stores_nothing() {
+async fn a_201_without_a_number_stores_no_link() {
     let db = TestDb::new().await.expect("a test database");
     let test = flaky_test(&db).await;
     let server = MockServer::start().await;
@@ -566,7 +566,7 @@ async fn a_store_failure_leaves_the_issue_open_and_stops_the_batch() {
 }
 
 #[tokio::test]
-async fn a_network_error_never_raises() {
+async fn a_network_error_stops_the_batch_and_stores_nothing() {
     let db = TestDb::new().await.expect("a test database");
     let test = flaky_test(&db).await;
     // Nothing listens on this port.

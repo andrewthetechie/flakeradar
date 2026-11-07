@@ -760,6 +760,21 @@ pub(crate) async fn note_batch(
     }
 }
 
+/// One closed-issue sync over the rows `db` holds, against `server`.
+///
+/// Every sync scenario makes this call and reads the same report back; what
+/// differs between them is the rows it seeded.
+pub(crate) async fn sync_batch(db: &TestDb, server: &MockServer) -> BatchReport {
+    github::sync_closed_issues(
+        db.connection(),
+        &gh_settings(&[]),
+        &api(server),
+        &system_clock(),
+        &unstopped(),
+    )
+    .await
+}
+
 /// The method and path of every request a stub server was asked for, in order.
 pub(crate) async fn requested_calls(server: &MockServer) -> Vec<(String, String)> {
     server

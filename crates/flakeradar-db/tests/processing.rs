@@ -15,9 +15,9 @@ use std::sync::Arc;
 
 use chrono::{DateTime, FixedOffset};
 use flakeradar_core::{
-    dto::JobResultIn, dto::PipelineReportIn, dto::pipeline_body, helpers::tier_for,
-    model::ExecutionStatus, model::JobStatus, model::ReportStatus, scoring::ScoredExecution,
-    types::CiRunId,
+    dto::JobResultIn, dto::PipelineReportIn, dto::pipeline_body, helpers::is_broken,
+    helpers::tier_for, model::ExecutionStatus, model::JobStatus, model::ReportStatus,
+    scoring::ScoredExecution, types::CiRunId,
 };
 use flakeradar_db::entities::{
     job_executions, job_score_history, jobs, pipelines, projects, reports, repos, test_cases,
@@ -1128,14 +1128,29 @@ async fn five_default_branch_failures_mark_a_test_broken() {
     }
     drain(&db, &settings()).await;
     let row = test(&db).await;
-    assert_eq!(row.flakiness_score, 0.0);
+    assert_eq!(
+        row.flakiness_score, 0.0,
+        "a Test that only fails is not flaky"
+    );
     assert_eq!(row.fail_streak, 5);
+    let broken_streak = settings().broken_streak;
+    assert!(
+        is_broken(i64::from(row.fail_streak), broken_streak),
+        "{} Default-branch failures reach the broken threshold of {broken_streak}",
+        row.fail_streak
+    );
+
     queue_with(&db, &project, &make_junit(&[("t", "passed")]), |b| {
         b.branch("main").commit_sha("m5")
     })
     .await;
     drain(&db, &settings()).await;
-    assert_eq!(test(&db).await.fail_streak, 0);
+    let after = test(&db).await;
+    assert_eq!(after.fail_streak, 0, "a pass ends the streak");
+    assert!(
+        !is_broken(i64::from(after.fail_streak), broken_streak),
+        "and with it the broken flag"
+    );
 }
 
 #[tokio::test]

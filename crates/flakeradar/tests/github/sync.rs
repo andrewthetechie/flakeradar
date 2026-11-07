@@ -20,7 +20,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 use crate::support::{
     CREATED, Held, Loopback, TOKEN, TRUNCATED, api, flaky_job, flaky_row, flaky_test,
     flaky_test_in, gh_settings, link_of, mount_close, mount_create, mount_issue, mount_state,
-    noted, requested_paths, stamp, stamp_link, stamp_note, unstopped,
+    noted, requested_paths, stamp, stamp_link, stamp_note, sync_batch, unstopped,
 };
 
 #[tokio::test]
@@ -86,14 +86,7 @@ async fn the_sync_rearms_a_link_whose_issue_closed() {
     )
     .await;
 
-    github::sync_closed_issues(
-        db.connection(),
-        &gh_settings(&[]),
-        &api(&server),
-        &system_clock(),
-        &unstopped(),
-    )
-    .await;
+    sync_batch(&db, &server).await;
     let link = link_of(&db, EntityKind::Test, test).await;
     assert_eq!(
         link.number, None,
@@ -121,14 +114,7 @@ async fn the_sync_keeps_a_link_closed_as_not_planned() {
     )
     .await;
 
-    github::sync_closed_issues(
-        db.connection(),
-        &gh_settings(&[]),
-        &api(&server),
-        &system_clock(),
-        &unstopped(),
-    )
-    .await;
+    sync_batch(&db, &server).await;
     let link = link_of(&db, EntityKind::Test, test).await;
     assert_eq!(
         link.number,
@@ -159,14 +145,7 @@ async fn the_sync_clears_the_flag_when_a_declined_issue_reopens() {
     )
     .await;
 
-    github::sync_closed_issues(
-        db.connection(),
-        &gh_settings(&[]),
-        &api(&server),
-        &system_clock(),
-        &unstopped(),
-    )
-    .await;
+    sync_batch(&db, &server).await;
     let link = link_of(&db, EntityKind::Test, test).await;
     assert_eq!(link.number, Some(12));
     assert_eq!(link.filed, Some(true), "the link is still ours");
@@ -181,14 +160,7 @@ async fn the_sync_rearms_a_link_whose_issue_is_gone() {
     let server = MockServer::start().await;
     mount_state(&server, ResponseTemplate::new(404)).await;
 
-    github::sync_closed_issues(
-        db.connection(),
-        &gh_settings(&[]),
-        &api(&server),
-        &system_clock(),
-        &unstopped(),
-    )
-    .await;
+    sync_batch(&db, &server).await;
     let link = link_of(&db, EntityKind::Test, test).await;
     assert_eq!(link.number, None);
     assert_eq!(link.filed, None, "the flag resets with the number");
@@ -217,14 +189,7 @@ async fn the_sync_keeps_a_link_on_a_permission_error_and_stamps_it() {
     )
     .await;
 
-    github::sync_closed_issues(
-        db.connection(),
-        &gh_settings(&[]),
-        &api(&server),
-        &system_clock(),
-        &unstopped(),
-    )
-    .await;
+    sync_batch(&db, &server).await;
     let link = link_of(&db, EntityKind::Test, test).await;
     assert_eq!(
         link.number,
@@ -272,14 +237,7 @@ async fn the_sync_leaves_an_unreadable_body_alone_and_stamps_it() {
         )
         .await;
 
-        github::sync_closed_issues(
-            db.connection(),
-            &gh_settings(&[]),
-            &api(&server),
-            &system_clock(),
-            &unstopped(),
-        )
-        .await;
+        sync_batch(&db, &server).await;
         assert_eq!(
             requested_paths(&server).await,
             vec!["/repos/acme/a/issues/11", "/repos/acme/b/issues/22"],
@@ -308,14 +266,7 @@ async fn the_sync_stops_on_a_rate_limit_before_stamping_the_row() {
     )
     .await;
 
-    github::sync_closed_issues(
-        db.connection(),
-        &gh_settings(&[]),
-        &api(&server),
-        &system_clock(),
-        &unstopped(),
-    )
-    .await;
+    sync_batch(&db, &server).await;
     let link = link_of(&db, EntityKind::Test, test).await;
     assert_eq!(link.number, Some(12));
     assert!(
@@ -364,14 +315,7 @@ async fn a_sync_whose_rotation_list_cannot_be_read_makes_no_request() {
         .mount(&server)
         .await;
 
-    github::sync_closed_issues(
-        db.connection(),
-        &gh_settings(&[]),
-        &api(&server),
-        &system_clock(),
-        &unstopped(),
-    )
-    .await;
+    sync_batch(&db, &server).await;
 
     assert!(
         server
@@ -404,14 +348,7 @@ async fn the_sync_leaves_an_unknown_issue_state_alone() {
     )
     .await;
 
-    github::sync_closed_issues(
-        db.connection(),
-        &gh_settings(&[]),
-        &api(&server),
-        &system_clock(),
-        &unstopped(),
-    )
-    .await;
+    sync_batch(&db, &server).await;
     let link = link_of(&db, EntityKind::Test, test).await;
     assert_eq!(link.number, Some(12), "an unknown state says nothing");
     assert_eq!(link.filed, Some(true));
@@ -487,14 +424,7 @@ async fn a_never_checked_link_goes_before_a_stamped_one() {
         .mount(&server)
         .await;
 
-    github::sync_closed_issues(
-        db.connection(),
-        &gh_settings(&[]),
-        &api(&server),
-        &system_clock(),
-        &unstopped(),
-    )
-    .await;
+    sync_batch(&db, &server).await;
     assert_eq!(
         requested_paths(&server).await.len(),
         2,
@@ -582,14 +512,7 @@ async fn a_sync_rate_limit_stops_the_batch_and_keeps_the_stamp_it_made() {
         ResponseTemplate::new(403).insert_header("x-ratelimit-remaining", "0"),
     )
     .await;
-    let report = github::sync_closed_issues(
-        db.connection(),
-        &gh_settings(&[]),
-        &api(&server),
-        &system_clock(),
-        &unstopped(),
-    )
-    .await;
+    let report = sync_batch(&db, &server).await;
     assert_eq!(
         report.stopped,
         Some(github::BatchStop::RateLimited),
@@ -634,14 +557,7 @@ async fn a_sync_continues_from_the_stamp_a_stopped_run_left() {
         ResponseTemplate::new(403).insert_header("x-ratelimit-remaining", "0"),
     )
     .await;
-    github::sync_closed_issues(
-        db.connection(),
-        &gh_settings(&[]),
-        &api(&server),
-        &system_clock(),
-        &unstopped(),
-    )
-    .await;
+    sync_batch(&db, &server).await;
 
     // The retried row still sorts first, because nothing stamped it.
     let second_server = MockServer::start().await;
@@ -701,14 +617,7 @@ async fn a_permission_403_skips_the_later_rows_of_that_repo() {
     )
     .await;
 
-    github::sync_closed_issues(
-        db.connection(),
-        &gh_settings(&[]),
-        &api(&server),
-        &system_clock(),
-        &unstopped(),
-    )
-    .await;
+    sync_batch(&db, &server).await;
     let mut paths = requested_paths(&server).await;
     paths.sort();
     assert_eq!(
@@ -825,14 +734,7 @@ async fn a_sync_definitive_client_error_keeps_the_link_and_skips_the_repo() {
         )
         .await;
 
-        github::sync_closed_issues(
-            db.connection(),
-            &gh_settings(&[]),
-            &api(&server),
-            &system_clock(),
-            &unstopped(),
-        )
-        .await;
+        sync_batch(&db, &server).await;
         assert_eq!(
             requested_paths(&server).await,
             vec!["/repos/acme/a/issues/11", "/repos/acme/b/issues/22"],
@@ -879,14 +781,7 @@ async fn gone_issue_rearms_its_link(kind: EntityKind) {
         .mount(&server)
         .await;
 
-    github::sync_closed_issues(
-        db.connection(),
-        &gh_settings(&[]),
-        &api(&server),
-        &system_clock(),
-        &unstopped(),
-    )
-    .await;
+    sync_batch(&db, &server).await;
 
     assert_eq!(
         requested_paths(&server).await,
@@ -921,14 +816,7 @@ async fn an_unusable_answer_keeps_the_link(kind: EntityKind) {
         .mount(&server)
         .await;
 
-    let report = github::sync_closed_issues(
-        db.connection(),
-        &gh_settings(&[]),
-        &api(&server),
-        &system_clock(),
-        &unstopped(),
-    )
-    .await;
+    let report = sync_batch(&db, &server).await;
 
     assert_eq!(
         requested_paths(&server).await,
@@ -1209,7 +1097,7 @@ async fn a_failed_post_delete_request_costs_only_that_issue() {
 }
 
 #[tokio::test]
-async fn the_post_delete_close_never_raises_when_github_is_unreachable() {
+async fn the_post_delete_close_reports_the_issue_nothing_answered() {
     // Nothing listens on this port.
     let api = Api::new(Secret::new(TOKEN), "http://127.0.0.1:1").expect("the HTTP client builds");
     let report = github::close_issues_after_removal("acme/app", &[123], &api).await;
@@ -1455,14 +1343,7 @@ async fn the_sync_rearm_clears_the_fixed_note_stamp_but_a_declined_link_keeps_it
     )
     .await;
 
-    github::sync_closed_issues(
-        db.connection(),
-        &gh_settings(&[]),
-        &api(&server),
-        &system_clock(),
-        &unstopped(),
-    )
-    .await;
+    sync_batch(&db, &server).await;
     assert_eq!(
         requested_paths(&server).await,
         vec![
