@@ -327,6 +327,36 @@ async fn a_pipeline_attempt_past_the_column_is_a_bad_request() {
     );
 }
 
+/// Posts `value` as one Job's `field` and answers the value the body stored.
+async fn stored_timestamp(app: &axum::Router, db: &TestDb, field: &str, value: &Value) -> Value {
+    let reply = pipeline(
+        app,
+        &json!({"jobs": [{"ci_job_id": "1", "name": "n", "status": "passed", field: value}]}),
+    )
+    .await;
+    assert_eq!(
+        reply.status,
+        StatusCode::ACCEPTED,
+        "{value}: {}",
+        reply.text()
+    );
+    stored_pipeline(db).await.body["jobs"][0][field].clone()
+}
+
+/// Posts `value` as one Job's `field` and answers the status and the issues.
+async fn refused_timestamp(
+    app: &axum::Router,
+    field: &str,
+    value: &Value,
+) -> (StatusCode, Vec<(String, Value)>) {
+    let reply = pipeline(
+        app,
+        &json!({"jobs": [{"ci_job_id": "1", "name": "n", "status": "passed", field: value}]}),
+    )
+    .await;
+    (reply.status, issues(&reply))
+}
+
 #[tokio::test]
 async fn the_pipeline_body_reads_a_timestamp_the_way_the_wire_does() {
     let db = TestDb::new().await.expect("a test database is available");
@@ -370,20 +400,8 @@ async fn the_pipeline_body_reads_a_timestamp_the_way_the_wire_does() {
         (json!("0"), "1970-01-01T00:00:00.000000Z"),
         (json!("-5"), "1969-12-31T23:59:55.000000Z"),
     ] {
-        let reply = pipeline(
-            &app,
-            &json!({"jobs": [{"ci_job_id": "1", "name": "n", "status": "passed",
-                              "started_at": value}]}),
-        )
-        .await;
         assert_eq!(
-            reply.status,
-            StatusCode::ACCEPTED,
-            "{value}: {}",
-            reply.text()
-        );
-        assert_eq!(
-            stored_pipeline(&db).await.body["jobs"][0]["started_at"],
+            stored_timestamp(&app, &db, "started_at", &value).await,
             json!(instant),
             "{value}"
         );
@@ -402,20 +420,10 @@ async fn the_pipeline_body_reads_a_timestamp_the_way_the_wire_does() {
         (json!(true), "datetime_type"),
         (json!([]), "datetime_type"),
     ] {
-        let reply = pipeline(
-            &app,
-            &json!({"jobs": [{"ci_job_id": "1", "name": "n", "status": "passed",
-                              "started_at": value}]}),
-        )
-        .await;
+        let (status, found) = refused_timestamp(&app, "started_at", &value).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{value}");
         assert_eq!(
-            reply.status,
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "{value}: {}",
-            reply.text()
-        );
-        assert_eq!(
-            issues(&reply),
+            found,
             [(kind.to_owned(), json!(["body", "jobs", 0, "started_at"]))],
             "{value}"
         );
@@ -425,38 +433,16 @@ async fn the_pipeline_body_reads_a_timestamp_the_way_the_wire_does() {
         (json!(1_767_225_600_000_i64), "2026-01-01T00:00:00.000000Z"),
         (json!("1767225600"), "2026-01-01T00:00:00.000000Z"),
     ] {
-        let reply = pipeline(
-            &app,
-            &json!({"jobs": [{"ci_job_id": "1", "name": "n", "status": "passed",
-                              "completed_at": value}]}),
-        )
-        .await;
         assert_eq!(
-            reply.status,
-            StatusCode::ACCEPTED,
-            "{value}: {}",
-            reply.text()
-        );
-        assert_eq!(
-            stored_pipeline(&db).await.body["jobs"][0]["completed_at"],
+            stored_timestamp(&app, &db, "completed_at", &value).await,
             json!(instant),
             "{value}"
         );
     }
-    let reply = pipeline(
-        &app,
-        &json!({"jobs": [{"ci_job_id": "1", "name": "n", "status": "passed",
-                          "completed_at": 1e15}]}),
-    )
-    .await;
+    let (status, found) = refused_timestamp(&app, "completed_at", &json!(1e15)).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(
-        reply.status,
-        StatusCode::UNPROCESSABLE_ENTITY,
-        "{}",
-        reply.text()
-    );
-    assert_eq!(
-        issues(&reply),
+        found,
         [(
             "datetime_parsing".to_owned(),
             json!(["body", "jobs", 0, "completed_at"])

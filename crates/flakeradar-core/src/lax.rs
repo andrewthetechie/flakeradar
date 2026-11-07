@@ -16,9 +16,17 @@ use crate::dto::lax_bool::{self, Refusal};
 use crate::dto::{LocSegment, ValidationIssue};
 use crate::py::strip_wire_whitespace;
 
-/// `2^63`, the first whole number above `i64::MAX`. A float at or past it in
-/// magnitude names no `i64`, which the reference reports as `int_parsing_size`.
-/// The comparison is on the float because the cast itself saturates.
+/// `2^63`, the first whole number above `i64::MAX`.
+///
+/// It is a power of two, so the float holds it exactly; `i64::MAX` itself is not
+/// a float, which is why the bound is this one. A float at or past it in
+/// magnitude names no `i64`, which the reference reports as `int_parsing_size`;
+/// the comparison is on the float because the cast to an integer saturates
+/// instead.
+#[expect(
+    clippy::lossy_float_literal,
+    reason = "2^63 is exact in a float; the lint counts digits rather than the value"
+)]
 const INTEGER_RANGE: f64 = 9_223_372_036_854_775_808.0;
 
 /// The milliseconds in one second, which a timestamp past [`EPOCH_MILLISECONDS`]

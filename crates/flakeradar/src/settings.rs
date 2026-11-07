@@ -12,7 +12,10 @@ use std::fmt;
 use std::path::Path;
 
 use flakeradar_core::defaults;
+use flakeradar_core::dto::lax_bool;
+use flakeradar_core::lax::text_int;
 use flakeradar_core::notify::WebhookFormat;
+use serde_json::Value;
 use thiserror::Error;
 
 /// The token a fresh install ships with, which start-up refuses to keep.
@@ -224,8 +227,20 @@ impl Raw<'_> {
     }
 
     /// The value of `field` parsed as a whole number, or `None` when it is unset.
-    fn int<T: std::str::FromStr>(&self, field: &str) -> Result<Option<T>, SettingsError> {
-        self.parsed(field, "a whole number")
+    ///
+    /// The spelling is the request body's, read by the same reader: a trailing
+    /// zero fraction and underscores between digits are part of a whole number,
+    /// so `5.0`, `1_000` and `+5` are 5, 1000 and 5.
+    fn whole<T: TryFrom<i64>>(&self, field: &str) -> Result<Option<T>, SettingsError> {
+        let Some(text) = self.trimmed(field) else {
+            return Ok(None);
+        };
+        let value = text_int(text).and_then(|value| T::try_from(value).ok());
+        value.map(Some).ok_or_else(|| SettingsError::InvalidValue {
+            variable: variable(field),
+            value: text.to_owned(),
+            expected: "a whole number",
+        })
     }
 
     /// The value of `field` parsed as a number, or `None` when it is unset.
@@ -240,22 +255,21 @@ impl Raw<'_> {
 
     /// The value of `field` parsed as a boolean, or `None` when it is unset.
     ///
-    /// Accepts `1`/`0`, `true`/`false`, `yes`/`no` and `on`/`off`, in any case.
-    /// The spelling is compared exactly, so a padded `" yes "` is not one of them
-    /// and is refused: a value nobody meant to set must not switch a feature on.
+    /// The spelling is the request body's, read by the same reader: `1`/`0`,
+    /// `true`/`false`, `t`/`f`, `yes`/`no` and `on`/`off`, in any case. The
+    /// spelling is compared exactly, so a padded `" yes "` is not one of them and
+    /// is refused: a value nobody meant to set must not switch a feature on.
     fn boolean(&self, field: &str) -> Result<Option<bool>, SettingsError> {
-        match self.raw(field) {
-            None => Ok(None),
-            Some(text) => match text.to_lowercase().as_str() {
-                "1" | "true" | "yes" | "on" => Ok(Some(true)),
-                "0" | "false" | "no" | "off" => Ok(Some(false)),
-                _ => Err(SettingsError::InvalidValue {
-                    variable: variable(field),
-                    value: text.to_owned(),
-                    expected: "a boolean (1/0, true/false, yes/no or on/off)",
-                }),
-            },
-        }
+        let Some(text) = self.raw(field) else {
+            return Ok(None);
+        };
+        let read = lax_bool::read(&Value::from(text));
+        read.map(Some)
+            .map_err(|_refusal| SettingsError::InvalidValue {
+                variable: variable(field),
+                value: text.to_owned(),
+                expected: "a boolean (1/0, true/false, t/f, yes/no, y/n or on/off)",
+            })
     }
 
     /// The value of `field` parsed as a Webhook format, or `None` when unset.
@@ -446,9 +460,9 @@ impl Settings {
             &mut settings.database_url,
             raw.text("DATABASE_URL").map(Secret::new),
         );
-        set_if_some(&mut settings.score_window, raw.int("SCORE_WINDOW")?);
+        set_if_some(&mut settings.score_window, raw.whole("SCORE_WINDOW")?);
         set_if_some(&mut settings.score_decay, raw.float("SCORE_DECAY")?);
-        set_if_some(&mut settings.broken_streak, raw.int("BROKEN_STREAK")?);
+        set_if_some(&mut settings.broken_streak, raw.whole("BROKEN_STREAK")?);
         set_if_some(
             &mut settings.github_token,
             raw.text("GITHUB_TOKEN").map(Secret::new),
@@ -463,19 +477,19 @@ impl Settings {
         );
         set_if_some(
             &mut settings.github_issue_min_proven_flakes,
-            raw.int("GITHUB_ISSUE_MIN_PROVEN_FLAKES")?,
+            raw.whole("GITHUB_ISSUE_MIN_PROVEN_FLAKES")?,
         );
         set_if_some(
             &mut settings.github_issue_min_failures,
-            raw.int("GITHUB_ISSUE_MIN_FAILURES")?,
+            raw.whole("GITHUB_ISSUE_MIN_FAILURES")?,
         );
         set_if_some(
             &mut settings.github_sync_batch,
-            raw.int("GITHUB_SYNC_BATCH")?,
+            raw.whole("GITHUB_SYNC_BATCH")?,
         );
         set_if_some(
             &mut settings.github_fixed_streak,
-            raw.int("GITHUB_FIXED_STREAK")?,
+            raw.whole("GITHUB_FIXED_STREAK")?,
         );
         set_if_some(
             &mut settings.github_close_fixed,
@@ -502,29 +516,29 @@ impl Settings {
         );
         set_if_some(
             &mut settings.max_report_retries,
-            raw.int("MAX_REPORT_RETRIES")?,
+            raw.whole("MAX_REPORT_RETRIES")?,
         );
         set_if_some(
             &mut settings.report_retention_days,
-            raw.int("REPORT_RETENTION_DAYS")?,
+            raw.whole("REPORT_RETENTION_DAYS")?,
         );
         set_if_some(
             &mut settings.failed_report_retention_days,
-            raw.int("FAILED_REPORT_RETENTION_DAYS")?,
+            raw.whole("FAILED_REPORT_RETENTION_DAYS")?,
         );
         set_if_some(
             &mut settings.execution_retention_days,
-            raw.int("EXECUTION_RETENTION_DAYS")?,
+            raw.whole("EXECUTION_RETENTION_DAYS")?,
         );
         set_if_some(
             &mut settings.score_history_retention_days,
-            raw.int("SCORE_HISTORY_RETENTION_DAYS")?,
+            raw.whole("SCORE_HISTORY_RETENTION_DAYS")?,
         );
         set_if_some(
             &mut settings.prune_interval_seconds,
             raw.float("PRUNE_INTERVAL_SECONDS")?,
         );
-        set_if_some(&mut settings.prune_batch, raw.int("PRUNE_BATCH")?);
+        set_if_some(&mut settings.prune_batch, raw.whole("PRUNE_BATCH")?);
         set_if_some(
             &mut settings.prune_time_budget_seconds,
             raw.float("PRUNE_TIME_BUDGET_SECONDS")?,
@@ -1056,15 +1070,45 @@ mod tests {
 
     #[test]
     fn a_boolean_takes_every_spelling_it_documents() {
-        for text in ["1", "true", "TRUE", "yes", "On"] {
+        // Every spelling the reference starts with, measured from it: the short
+        // `t`/`f` and `y`/`n` forms are how an operator writes a flag in a shell.
+        for text in ["1", "true", "TRUE", "yes", "On", "t", "T", "y", "Y"] {
             let settings = Settings::from_map(&map(&[("FLAKERADAR_GITHUB_CLOSE_FIXED", text)]))
                 .expect("the value is a boolean");
             assert!(settings.github_close_fixed, "{text}");
         }
-        for text in ["0", "false", "No", "OFF"] {
+        for text in ["0", "false", "No", "OFF", "f", "F", "n", "N"] {
             let settings = Settings::from_map(&map(&[("FLAKERADAR_GITHUB_CLOSE_FIXED", text)]))
                 .expect("the value is a boolean");
             assert!(!settings.github_close_fixed, "{text}");
+        }
+    }
+
+    #[test]
+    fn a_whole_number_takes_every_spelling_the_wire_does() {
+        // The spellings a request body takes, and the ones the reference starts
+        // with, measured from it: a trailing zero fraction and underscores
+        // between digits are both part of a whole number.
+        for (text, expected) in [
+            ("5", 5),
+            ("5.0", 5),
+            ("5.000", 5),
+            ("+5", 5),
+            ("05", 5),
+            (" 5 ", 5),
+            ("1_000", 1000),
+        ] {
+            let settings = Settings::from_map(&map(&[("FLAKERADAR_SCORE_WINDOW", text)]))
+                .expect("the value is a whole number");
+            assert_eq!(settings.score_window, expected, "{text}");
+        }
+        for text in ["0x10", "1.5", "1e3", "", "many", "1__0"] {
+            let error = Settings::from_map(&map(&[("FLAKERADAR_SCORE_WINDOW", text)]))
+                .expect_err("the value is no whole number");
+            assert!(
+                error.to_string().contains("FLAKERADAR_SCORE_WINDOW"),
+                "{text}"
+            );
         }
     }
 
