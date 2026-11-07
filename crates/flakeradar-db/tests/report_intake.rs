@@ -393,9 +393,8 @@ async fn the_seeded_report_is_what_ingest_would_have_queued() {
     let project = project(&db).await;
     let stored = make_report(&project, project.repo_id)
         .body(&body())
-        .build(db.connection())
-        .await
-        .expect("a Report");
+        .create(&db)
+        .await;
     assert_eq!(stored.kind, "junit");
     assert_eq!(report_ids(&db).await, vec![stored.id]);
 
@@ -475,9 +474,8 @@ async fn the_stored_pipeline_report_is_the_inverse_of_the_body() {
     let stored = make_report(&project, project.repo_id)
         .body(&pipeline_body(&report))
         .kind("pipeline")
-        .build(db.connection())
-        .await
-        .expect("a Pipeline Report");
+        .create(&db)
+        .await;
     assert_eq!(
         stored_pipeline_report(&stored).expect("the stored Report"),
         report
@@ -491,9 +489,8 @@ async fn a_stored_body_that_is_not_a_report_is_reported() {
     let stored = make_report(&project, project.repo_id)
         .body(b"not json")
         .kind("pipeline")
-        .build(db.connection())
-        .await
-        .expect("a Pipeline Report");
+        .create(&db)
+        .await;
     let error = stored_pipeline_report(&stored).expect_err("the body is not a Report");
     assert!(matches!(error, DbError::StoredReportBody { .. }), "{error}");
     assert!(

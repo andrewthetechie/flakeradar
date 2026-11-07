@@ -46,14 +46,8 @@ fn update(id: i32, score: f64, confirmed: i32, counts: (i32, i32)) -> HistoryUpd
 #[tokio::test]
 async fn write_today_history_replaces_score_and_adds_counts_for_a_test() {
     let db = TestDb::new().await.expect("a test database");
-    let project = make_project()
-        .build(db.connection())
-        .await
-        .expect("a Project");
-    let test_case = make_test_case(&project)
-        .build(db.connection())
-        .await
-        .expect("a Test");
+    let project = make_project().create(&db).await;
+    let test_case = make_test_case(&project).create(&db).await;
     write_today_history(
         db.connection(),
         EntityKind::Test,
@@ -85,14 +79,8 @@ async fn write_today_history_replaces_score_and_adds_counts_for_a_test() {
 #[tokio::test]
 async fn write_today_history_replaces_score_and_adds_counts_for_a_job() {
     let db = TestDb::new().await.expect("a test database");
-    let pipeline = make_pipeline()
-        .build(db.connection())
-        .await
-        .expect("a Pipeline");
-    let job = make_job(&pipeline)
-        .build(db.connection())
-        .await
-        .expect("a Job");
+    let pipeline = make_pipeline().create(&db).await;
+    let job = make_job(&pipeline).create(&db).await;
     write_today_history(
         db.connection(),
         EntityKind::Job,
@@ -124,15 +112,11 @@ async fn write_today_history_replaces_score_and_adds_counts_for_a_job() {
 #[tokio::test]
 async fn write_today_history_defaults_missing_counts_to_zero() {
     let db = TestDb::new().await.expect("a test database");
-    let project = make_project()
-        .build(db.connection())
-        .await
-        .expect("a Project");
+    let project = make_project().create(&db).await;
     let no_counts = make_test_case(&project)
         .name("no_day_counts")
-        .build(db.connection())
-        .await
-        .expect("a Test");
+        .create(&db)
+        .await;
     write_today_history(
         db.connection(),
         EntityKind::Test,
@@ -172,20 +156,9 @@ async fn write_today_history_defaults_missing_counts_to_zero() {
 #[tokio::test]
 async fn a_same_day_rescore_with_no_counts_adds_nothing() {
     let db = TestDb::new().await.expect("a test database");
-    let project = make_project()
-        .build(db.connection())
-        .await
-        .expect("a Project");
-    let covered = make_test_case(&project)
-        .name("covered")
-        .build(db.connection())
-        .await
-        .expect("a Test");
-    let uncovered = make_test_case(&project)
-        .name("uncovered")
-        .build(db.connection())
-        .await
-        .expect("a Test");
+    let project = make_project().create(&db).await;
+    let covered = make_test_case(&project).name("covered").create(&db).await;
+    let uncovered = make_test_case(&project).name("uncovered").create(&db).await;
     write_today_history(
         db.connection(),
         EntityKind::Test,
@@ -244,19 +217,12 @@ async fn a_same_day_rescore_with_no_counts_adds_nothing() {
 #[tokio::test]
 async fn the_history_upsert_keys_the_conflict_on_owner_and_day() {
     let db = TestDb::new().await.expect("a test database");
-    let project = make_project()
-        .build(db.connection())
-        .await
-        .expect("a Project");
-    let test_case = make_test_case(&project)
-        .build(db.connection())
-        .await
-        .expect("a Test");
+    let project = make_project().create(&db).await;
+    let test_case = make_test_case(&project).create(&db).await;
     let yesterday = today() - Duration::days(1);
     make_test_score(&test_case, yesterday, 0.9)
-        .build(db.connection())
-        .await
-        .expect("yesterday's row");
+        .create(&db)
+        .await;
     write_today_history(
         db.connection(),
         EntityKind::Test,
@@ -335,20 +301,9 @@ async fn lateral_scores(
 #[tokio::test]
 async fn score_history_reads_agree_for_a_test() {
     let db = TestDb::new().await.expect("a test database");
-    let project = make_project()
-        .build(db.connection())
-        .await
-        .expect("a Project");
-    let seasoned = make_test_case(&project)
-        .name("seasoned")
-        .build(db.connection())
-        .await
-        .expect("a Test");
-    let fresh = make_test_case(&project)
-        .name("fresh")
-        .build(db.connection())
-        .await
-        .expect("a Test");
+    let project = make_project().create(&db).await;
+    let seasoned = make_test_case(&project).name("seasoned").create(&db).await;
+    let fresh = make_test_case(&project).name("fresh").create(&db).await;
     let today = today();
     let cutoff = today - Duration::days(TREND_DAYS);
 
@@ -360,15 +315,9 @@ async fn score_history_reads_agree_for_a_test() {
         (today - Duration::days(HISTORY_DAYS), 0.4), // outside the detail window
         (today - Duration::days(HISTORY_DAYS - 1), 0.3), // first row inside it
     ] {
-        make_test_score(&seasoned, day, score)
-            .build(db.connection())
-            .await
-            .expect("a history row");
+        make_test_score(&seasoned, day, score).create(&db).await;
     }
-    make_test_score(&fresh, today, 0.6)
-        .build(db.connection())
-        .await
-        .expect("a history row");
+    make_test_score(&fresh, today, 0.6).create(&db).await;
 
     let ids = [seasoned.id, fresh.id];
     let past = past_scores(db.connection(), EntityKind::Test, &ids, today)
@@ -421,20 +370,9 @@ async fn score_history_reads_agree_for_a_test() {
 #[tokio::test]
 async fn score_history_reads_agree_for_a_job() {
     let db = TestDb::new().await.expect("a test database");
-    let pipeline: pipelines::Model = make_pipeline()
-        .build(db.connection())
-        .await
-        .expect("a Pipeline");
-    let seasoned = make_job(&pipeline)
-        .name("seasoned")
-        .build(db.connection())
-        .await
-        .expect("a Job");
-    let fresh = make_job(&pipeline)
-        .name("fresh")
-        .build(db.connection())
-        .await
-        .expect("a Job");
+    let pipeline: pipelines::Model = make_pipeline().create(&db).await;
+    let seasoned = make_job(&pipeline).name("seasoned").create(&db).await;
+    let fresh = make_job(&pipeline).name("fresh").create(&db).await;
     let today = today();
     let cutoff = today - Duration::days(TREND_DAYS);
 
@@ -446,15 +384,9 @@ async fn score_history_reads_agree_for_a_job() {
         (today - Duration::days(HISTORY_DAYS), 0.4),
         (today - Duration::days(HISTORY_DAYS - 1), 0.3),
     ] {
-        make_job_score(&seasoned, day, score)
-            .build(db.connection())
-            .await
-            .expect("a history row");
+        make_job_score(&seasoned, day, score).create(&db).await;
     }
-    make_job_score(&fresh, today, 0.6)
-        .build(db.connection())
-        .await
-        .expect("a history row");
+    make_job_score(&fresh, today, 0.6).create(&db).await;
 
     let ids = [seasoned.id, fresh.id];
     let past = past_scores(db.connection(), EntityKind::Job, &ids, today)

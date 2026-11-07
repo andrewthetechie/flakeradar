@@ -96,9 +96,8 @@ async fn queue_pipeline(db: &TestDb, project: &projects::Model, payload: &Pipeli
         .commit_sha(&payload.commit_sha)
         .branch(&payload.branch)
         .ci_run_id(payload.ci_run_id.as_str())
-        .build(db.connection())
+        .create(db)
         .await
-        .expect("a queued Pipeline Report")
         .id
 }
 
@@ -117,11 +116,7 @@ async fn queue_junit(
     if let Some(ci_job_id) = ci_job_id {
         builder = builder.ci_job_id(ci_job_id);
     }
-    builder
-        .build(db.connection())
-        .await
-        .expect("a queued JUnit Report")
-        .id
+    builder.create(db).await.id
 }
 
 /// Processes one Report and returns its outcome.
@@ -316,9 +311,8 @@ async fn attribution_params_round_trip_to_test_run() {
         .ci_job_id("42")
         .ci_run_attempt(3)
         .pipeline(".github/workflows/ci.yml")
-        .build(db.connection())
-        .await
-        .expect("a queued Report");
+        .create(&db)
+        .await;
     process(&db, &settings()).await;
     let run = test_runs::Entity::find()
         .one(db.connection())
@@ -424,39 +418,23 @@ async fn unexplained_failure_counts_over_the_newest_window() {
 async fn explained_failure_does_not_break_clean_streak() {
     let db = TestDb::new().await.expect("a test database");
     let project = project(&db, "acme/app", "backend").await;
-    let pipeline = make_pipeline()
-        .build(db.connection())
-        .await
-        .expect("a Pipeline");
-    let job = make_job(&pipeline)
-        .name("e2e")
-        .build(db.connection())
-        .await
-        .expect("a Job");
+    let pipeline = make_pipeline().create(&db).await;
+    let job = make_job(&pipeline).name("e2e").create(&db).await;
     for (ci_job_id, status) in [("J1", "passed"), ("J2", "failed"), ("J3", "passed")] {
         make_job_execution(&job)
             .ci_job_id(ci_job_id)
             .status(status)
             .branch("main")
-            .build(db.connection())
-            .await
-            .expect("a Job execution");
+            .create(&db)
+            .await;
     }
     // Explain J2: a failing Test in the same repo with the same ci_job_id.
-    let test_case = make_test_case(&project)
-        .build(db.connection())
-        .await
-        .expect("a Test");
-    let run = make_run(&project)
-        .ci_job_id("J2")
-        .build(db.connection())
-        .await
-        .expect("a Run");
+    let test_case = make_test_case(&project).create(&db).await;
+    let run = make_run(&project).ci_job_id("J2").create(&db).await;
     make_execution(&test_case, &run)
         .status("failed")
-        .build(db.connection())
-        .await
-        .expect("an Execution");
+        .create(&db)
+        .await;
 
     rescore(
         db.connection(),
@@ -474,23 +452,15 @@ async fn explained_failure_does_not_break_clean_streak() {
 #[tokio::test]
 async fn unexplained_failure_breaks_clean_streak() {
     let db = TestDb::new().await.expect("a test database");
-    let pipeline = make_pipeline()
-        .build(db.connection())
-        .await
-        .expect("a Pipeline");
-    let job = make_job(&pipeline)
-        .name("e2e")
-        .build(db.connection())
-        .await
-        .expect("a Job");
+    let pipeline = make_pipeline().create(&db).await;
+    let job = make_job(&pipeline).name("e2e").create(&db).await;
     for (ci_job_id, status) in [("J1", "passed"), ("J2", "failed"), ("J3", "passed")] {
         make_job_execution(&job)
             .ci_job_id(ci_job_id)
             .status(status)
             .branch("main")
-            .build(db.connection())
-            .await
-            .expect("a Job execution");
+            .create(&db)
+            .await;
     }
     rescore(
         db.connection(),
@@ -512,44 +482,30 @@ async fn old_explained_failures_beyond_the_window_do_not_change_the_score() {
         ..settings()
     };
     let project = project(&db, "acme/app", "backend").await;
-    let pipeline = make_pipeline()
-        .build(db.connection())
-        .await
-        .expect("a Pipeline");
-    let twin = make_job(&pipeline)
-        .name("recent-only")
-        .build(db.connection())
-        .await
-        .expect("a Job");
+    let pipeline = make_pipeline().create(&db).await;
+    let twin = make_job(&pipeline).name("recent-only").create(&db).await;
     let full = make_job(&pipeline)
         .name("with-old-explained")
-        .build(db.connection())
-        .await
-        .expect("a Job");
+        .create(&db)
+        .await;
     // 6 old explained failures on `full`: a failing Test run with the same ci_job_id explains each.
-    let test_case = make_test_case(&project)
-        .build(db.connection())
-        .await
-        .expect("a Test");
+    let test_case = make_test_case(&project).create(&db).await;
     for index in 0..6 {
         make_job_execution(&full)
             .status("failed")
             .ci_job_id(&format!("OLD{index}"))
             .branch("main")
             .commit_sha(&format!("o{index}"))
-            .build(db.connection())
-            .await
-            .expect("a Job execution");
+            .create(&db)
+            .await;
         let run = make_run(&project)
             .ci_job_id(&format!("OLD{index}"))
-            .build(db.connection())
-            .await
-            .expect("a Run");
+            .create(&db)
+            .await;
         make_execution(&test_case, &run)
             .status("failed")
-            .build(db.connection())
-            .await
-            .expect("an Execution");
+            .create(&db)
+            .await;
     }
     // Both Jobs then share the same newest 3 (unexplained) rows: failed, passed, failed.
     for job in [&twin, &full] {
@@ -559,9 +515,8 @@ async fn old_explained_failures_beyond_the_window_do_not_change_the_score() {
                 .ci_job_id(&format!("NEW{}-{index}", job.id))
                 .branch("main")
                 .commit_sha(&format!("n{index}"))
-                .build(db.connection())
-                .await
-                .expect("a Job execution");
+                .create(&db)
+                .await;
         }
     }
 
@@ -595,28 +550,20 @@ async fn job_default_branch_window_survives_newer_feature_rows() {
         score_window: 3,
         ..settings()
     };
-    let pipeline = make_pipeline()
-        .build(db.connection())
-        .await
-        .expect("a Pipeline");
+    let pipeline = make_pipeline().create(&db).await;
     db.connection()
         .execute_unprepared("UPDATE repos SET default_branch = 'main'")
         .await
         .expect("the Default branch");
-    let job = make_job(&pipeline)
-        .name("e2e")
-        .build(db.connection())
-        .await
-        .expect("a Job");
+    let job = make_job(&pipeline).name("e2e").create(&db).await;
     for (index, status) in ["failed", "passed", "failed"].iter().enumerate() {
         make_job_execution(&job)
             .status(status)
             .ci_job_id(&format!("M{index}"))
             .branch("main")
             .commit_sha(&format!("m{index}"))
-            .build(db.connection())
-            .await
-            .expect("a Job execution");
+            .create(&db)
+            .await;
     }
     for index in 0..10 {
         make_job_execution(&job)
@@ -624,9 +571,8 @@ async fn job_default_branch_window_survives_newer_feature_rows() {
             .ci_job_id(&format!("F{index}"))
             .branch("feat")
             .commit_sha(&format!("f{index}"))
-            .build(db.connection())
-            .await
-            .expect("a Job execution");
+            .create(&db)
+            .await;
     }
 
     rescore(db.connection(), EntityKind::Job, &[job.id], None, &settings)
@@ -915,14 +861,8 @@ async fn a_job_execution_with_an_unknown_status_refuses_to_score() {
     // `job_history` parses the stored status, so a row the schema accepted but the
     // scoring code does not know fails loudly rather than scoring as a pass.
     let db = TestDb::new().await.expect("a test database");
-    let pipeline = make_pipeline()
-        .build(db.connection())
-        .await
-        .expect("a Pipeline");
-    let job = make_job(&pipeline)
-        .build(db.connection())
-        .await
-        .expect("a Job");
+    let pipeline = make_pipeline().create(&db).await;
+    let job = make_job(&pipeline).create(&db).await;
     job_executions::Entity::insert(job_executions::ActiveModel {
         job_id: sea_orm::Set(job.id),
         ci_job_id: sea_orm::Set("J1".to_owned()),
@@ -958,21 +898,13 @@ async fn summary_explaining_siblings_lists_the_failed_jobs_of_each_pair() {
     // is checked here: one pair, a second attempt, an empty run ID, a passed
     // execution, a Summary Job and another Repo must all be left out or kept apart.
     let db = TestDb::new().await.expect("a test database");
-    let pipeline = make_pipeline()
-        .build(db.connection())
-        .await
-        .expect("a Pipeline");
-    let lint = make_job(&pipeline)
-        .name("lint")
-        .build(db.connection())
-        .await
-        .expect("a Job");
+    let pipeline = make_pipeline().create(&db).await;
+    let lint = make_job(&pipeline).name("lint").create(&db).await;
     let gate = make_job(&pipeline)
         .name("gate")
         .summary(true)
-        .build(db.connection())
-        .await
-        .expect("a Summary Job");
+        .create(&db)
+        .await;
     for (job, status, run_id, attempt) in [
         (&lint, "failed", "7", 1),
         (&lint, "passed", "7", 1),
@@ -984,27 +916,17 @@ async fn summary_explaining_siblings_lists_the_failed_jobs_of_each_pair() {
             .status(status)
             .ci_run_id(run_id)
             .ci_run_attempt(attempt)
-            .build(db.connection())
-            .await
-            .expect("a Job execution");
+            .create(&db)
+            .await;
     }
-    let other = make_pipeline()
-        .repo("other/app")
-        .build(db.connection())
-        .await
-        .expect("a Pipeline in another Repo");
-    let foreign = make_job(&other)
-        .name("lint")
-        .build(db.connection())
-        .await
-        .expect("a Job");
+    let other = make_pipeline().repo("other/app").create(&db).await;
+    let foreign = make_job(&other).name("lint").create(&db).await;
     make_job_execution(&foreign)
         .status("failed")
         .ci_run_id("7")
         .ci_run_attempt(1)
-        .build(db.connection())
-        .await
-        .expect("a Job execution");
+        .create(&db)
+        .await;
     let repo = repos::Entity::find()
         .one(db.connection())
         .await
@@ -1054,22 +976,15 @@ async fn summary_explaining_siblings_lists_the_failed_jobs_of_each_pair() {
 #[tokio::test]
 async fn summary_explaining_siblings_lists_at_most_the_cap_per_pair() {
     let db = TestDb::new().await.expect("a test database");
-    let pipeline = make_pipeline()
-        .build(db.connection())
-        .await
-        .expect("a Pipeline");
-    let lint = make_job(&pipeline)
-        .build(db.connection())
-        .await
-        .expect("a Job");
+    let pipeline = make_pipeline().create(&db).await;
+    let lint = make_job(&pipeline).create(&db).await;
     for _ in 0..=SIBLING_MAX {
         make_job_execution(&lint)
             .status("failed")
             .ci_run_id("7")
             .ci_run_attempt(1)
-            .build(db.connection())
-            .await
-            .expect("a Job execution");
+            .create(&db)
+            .await;
     }
     let repo = repos::Entity::find()
         .one(db.connection())

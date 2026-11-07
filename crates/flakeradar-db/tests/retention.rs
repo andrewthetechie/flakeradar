@@ -73,56 +73,45 @@ async fn prune_deletes_only_expired_rows() {
     let project = make_project()
         .repo("acme/app")
         .project("backend")
-        .build(db.connection())
-        .await
-        .expect("a Project");
-    let test = make_test_case(&project)
-        .build(db.connection())
-        .await
-        .expect("a Test");
+        .create(&db)
+        .await;
+    let test = make_test_case(&project).create(&db).await;
 
     let old_run = make_run(&project)
         .commit_sha("old")
         .created_at(old)
-        .build(db.connection())
-        .await
-        .expect("an old Run");
+        .create(&db)
+        .await;
     make_execution(&test, &old_run)
         .created_at(old)
-        .build(db.connection())
-        .await
-        .expect("an old Execution");
+        .create(&db)
+        .await;
     let new_run = make_run(&project)
         .commit_sha("new")
         .created_at(recent)
-        .build(db.connection())
-        .await
-        .expect("a recent Run");
+        .create(&db)
+        .await;
     make_execution(&test, &new_run)
         .created_at(recent)
-        .build(db.connection())
-        .await
-        .expect("a recent Execution");
+        .create(&db)
+        .await;
 
     let stale = make_report(&project, project.repo_id)
         .status("processed")
         .processed_at(days_before(now, 8))
-        .build(db.connection())
-        .await
-        .expect("a stale Report");
+        .create(&db)
+        .await;
     let _ = stale;
     let fresh = make_report(&project, project.repo_id)
         .status("processed")
         .processed_at(days_before(now, 6))
-        .build(db.connection())
-        .await
-        .expect("a fresh Report");
+        .create(&db)
+        .await;
     let failed = make_report(&project, project.repo_id)
         .status("failed")
         .processed_at(days_before(now, 30))
-        .build(db.connection())
-        .await
-        .expect("a failed Report");
+        .create(&db)
+        .await;
 
     let result = prune(
         db.connection(),
@@ -173,32 +162,27 @@ async fn seed_failed_report_ages(db: &TestDb, now: DateTime<FixedOffset>) -> (i3
     let project = make_project()
         .repo("acme/app")
         .project("backend")
-        .build(db.connection())
-        .await
-        .expect("a Project");
+        .create(db)
+        .await;
     let stale = make_report(&project, project.repo_id)
         .status("processed")
         .processed_at(days_before(now, 8))
-        .build(db.connection())
-        .await
-        .expect("a stale Report");
+        .create(db)
+        .await;
     let old_failed = make_report(&project, project.repo_id)
         .status("failed")
         .processed_at(days_before(now, 8))
-        .build(db.connection())
-        .await
-        .expect("an old failed Report");
+        .create(db)
+        .await;
     let recent_failed = make_report(&project, project.repo_id)
         .status("failed")
         .processed_at(days_before(now, 1))
-        .build(db.connection())
-        .await
-        .expect("a recent failed Report");
+        .create(db)
+        .await;
     let mut orphaned = make_report(&project, project.repo_id)
         .status("failed")
-        .build(db.connection())
-        .await
-        .expect("an orphaned failed Report");
+        .create(db)
+        .await;
     // The factory writes `created_at` as now; this row's age is its ingest time.
     orphaned.created_at = days_before(now, 8);
     reports::Entity::update(reports::ActiveModel {
@@ -352,16 +336,14 @@ async fn run_prune_batches_failed_report_deletes() {
     let project = make_project()
         .repo("acme/app")
         .project("backend")
-        .build(db.connection())
-        .await
-        .expect("a Project");
+        .create(&db)
+        .await;
     for _ in 0..5 {
         make_report(&project, project.repo_id)
             .status("failed")
             .processed_at(days_before(now, 8))
-            .build(db.connection())
-            .await
-            .expect("a failed Report");
+            .create(&db)
+            .await;
     }
 
     let result = run_prune(
@@ -389,33 +371,29 @@ async fn prune_clears_expired_quarantines_only() {
     let project = make_project()
         .repo("acme/app")
         .project("backend")
-        .build(db.connection())
-        .await
-        .expect("a Project");
+        .create(&db)
+        .await;
     let expired = make_test_case(&project)
         .name("expired")
         .quarantined_at(days_before(now, 20))
         .quarantine_reason("flaky on arm")
         .quarantine_expires_at(days_before(now, 1))
-        .build(db.connection())
-        .await
-        .expect("an expired quarantine");
+        .create(&db)
+        .await;
     let future = make_test_case(&project)
         .name("future")
         .quarantined_at(days_before(now, 2))
         .quarantine_reason("waiting on upstream")
         .quarantine_expires_at(now + TimeDelta::days(5))
-        .build(db.connection())
-        .await
-        .expect("a live quarantine");
+        .create(&db)
+        .await;
     let future_expiry = future.quarantine_expires_at;
     let never = make_test_case(&project)
         .name("never")
         .quarantined_at(now)
         .quarantine_reason("owner decided")
-        .build(db.connection())
-        .await
-        .expect("a quarantine with no expiry");
+        .create(&db)
+        .await;
     let log = CapturedLog::install();
 
     let result = prune(db.connection(), now, &retention(), &processing(now))
@@ -468,18 +446,16 @@ async fn an_expiry_round_clears_every_due_quarantine_in_one_statement() {
     let project = make_project()
         .repo("acme/app")
         .project("backend")
-        .build(db.connection())
-        .await
-        .expect("a Project");
+        .create(&db)
+        .await;
     for name in ["one", "two", "three"] {
         make_test_case(&project)
             .name(name)
             .quarantined_at(days_before(now, 30))
             .quarantine_reason("flaky on arm")
             .quarantine_expires_at(days_before(now, 1))
-            .build(db.connection())
-            .await
-            .expect("an expired quarantine");
+            .create(&db)
+            .await;
     }
     audit_test_case_updates(&db).await;
 
@@ -539,27 +515,18 @@ async fn test_case_updates(db: &TestDb) -> i64 {
 async fn prune_deletes_old_job_executions() {
     let now = now();
     let db = TestDb::new().await.expect("a test database");
-    let pipeline = make_pipeline()
-        .repo("acme/app")
-        .build(db.connection())
-        .await
-        .expect("a Pipeline");
-    let job = make_job(&pipeline)
-        .build(db.connection())
-        .await
-        .expect("a Job");
+    let pipeline = make_pipeline().repo("acme/app").create(&db).await;
+    let job = make_job(&pipeline).create(&db).await;
     make_job_execution(&job)
         .ci_job_id("old")
         .created_at(days_before(now, 100))
-        .build(db.connection())
-        .await
-        .expect("an old Job execution");
+        .create(&db)
+        .await;
     make_job_execution(&job)
         .ci_job_id("new")
         .created_at(days_before(now, 1))
-        .build(db.connection())
-        .await
-        .expect("a recent Job execution");
+        .create(&db)
+        .await;
 
     let result = prune(db.connection(), now, &retention(), &processing(now))
         .await
@@ -584,21 +551,15 @@ async fn prune_deletes_old_score_history_rows() {
     let project = make_project()
         .repo("acme/app")
         .project("backend")
-        .build(db.connection())
-        .await
-        .expect("a Project");
-    let test = make_test_case(&project)
-        .build(db.connection())
-        .await
-        .expect("a Test");
+        .create(&db)
+        .await;
+    let test = make_test_case(&project).create(&db).await;
     make_test_score(&test, days_before(now, 400).date_naive(), 0.5)
-        .build(db.connection())
-        .await
-        .expect("an old Score history row");
+        .create(&db)
+        .await;
     make_test_score(&test, days_before(now, 10).date_naive(), 0.5)
-        .build(db.connection())
-        .await
-        .expect("a recent Score history row");
+        .create(&db)
+        .await;
 
     let result = prune(
         db.connection(),
@@ -621,23 +582,14 @@ async fn prune_deletes_old_score_history_rows() {
 async fn prune_deletes_old_job_score_history_rows() {
     let now = now();
     let db = TestDb::new().await.expect("a test database");
-    let pipeline = make_pipeline()
-        .repo("acme/app")
-        .build(db.connection())
-        .await
-        .expect("a Pipeline");
-    let job = make_job(&pipeline)
-        .build(db.connection())
-        .await
-        .expect("a Job");
+    let pipeline = make_pipeline().repo("acme/app").create(&db).await;
+    let job = make_job(&pipeline).create(&db).await;
     make_job_score(&job, days_before(now, 400).date_naive(), 0.5)
-        .build(db.connection())
-        .await
-        .expect("an old Score history row");
+        .create(&db)
+        .await;
     make_job_score(&job, days_before(now, 10).date_naive(), 0.5)
-        .build(db.connection())
-        .await
-        .expect("a recent Score history row");
+        .create(&db)
+        .await;
 
     let result = prune(
         db.connection(),
@@ -663,26 +615,22 @@ async fn prune_rescores_test_with_no_executions_left() {
     let project = make_project()
         .repo("acme/app")
         .project("backend")
-        .build(db.connection())
-        .await
-        .expect("a Project");
+        .create(&db)
+        .await;
     let test = make_test_case(&project)
         .flakiness_score(0.5)
         .clean_streak(3)
-        .build(db.connection())
-        .await
-        .expect("a Test");
+        .create(&db)
+        .await;
     let run = make_run(&project)
         .commit_sha("old")
         .created_at(old)
-        .build(db.connection())
-        .await
-        .expect("an old Run");
+        .create(&db)
+        .await;
     make_execution(&test, &run)
         .created_at(old)
-        .build(db.connection())
-        .await
-        .expect("an old Execution");
+        .create(&db)
+        .await;
 
     let result = prune(db.connection(), now, &retention(), &processing(now))
         .await
@@ -708,41 +656,28 @@ async fn prune_counts_the_notifications_it_drops() {
     let project = make_project()
         .repo("acme/app")
         .project("backend")
-        .build(db.connection())
-        .await
-        .expect("a Project");
+        .create(&db)
+        .await;
     let test = make_test_case(&project)
         .flakiness_score(0.5)
-        .build(db.connection())
-        .await
-        .expect("a Test");
+        .create(&db)
+        .await;
     let run = make_run(&project)
         .commit_sha("old")
         .created_at(old)
-        .build(db.connection())
-        .await
-        .expect("an old Run");
+        .create(&db)
+        .await;
     make_execution(&test, &run)
         .created_at(old)
-        .build(db.connection())
-        .await
-        .expect("an old Execution");
-    let pipeline = make_pipeline()
-        .repo("acme/app")
-        .build(db.connection())
-        .await
-        .expect("a Pipeline");
-    let job = make_job(&pipeline)
-        .flakiness_score(0.5)
-        .build(db.connection())
-        .await
-        .expect("a Job");
+        .create(&db)
+        .await;
+    let pipeline = make_pipeline().repo("acme/app").create(&db).await;
+    let job = make_job(&pipeline).flakiness_score(0.5).create(&db).await;
     make_job_execution(&job)
         .ci_job_id("old")
         .created_at(old)
-        .build(db.connection())
-        .await
-        .expect("an old Job execution");
+        .create(&db)
+        .await;
     let result = prune(db.connection(), now, &retention(), &processing(now))
         .await
         .expect("the prune runs");
@@ -761,41 +696,35 @@ async fn prune_rescores_test_from_remaining_executions() {
     let project = make_project()
         .repo("acme/app")
         .project("backend")
-        .build(db.connection())
-        .await
-        .expect("a Project");
+        .create(&db)
+        .await;
     let test = make_test_case(&project)
         .flakiness_score(0.9)
         .clean_streak(3)
-        .build(db.connection())
-        .await
-        .expect("a Test");
+        .create(&db)
+        .await;
     for (sha, status) in [("old1", "failed"), ("old2", "passed")] {
         let run = make_run(&project)
             .commit_sha(sha)
             .created_at(old)
-            .build(db.connection())
-            .await
-            .expect("an old Run");
+            .create(&db)
+            .await;
         make_execution(&test, &run)
             .status(status)
             .created_at(old)
-            .build(db.connection())
-            .await
-            .expect("an old Execution");
+            .create(&db)
+            .await;
     }
     for sha in ["new1", "new2"] {
         let run = make_run(&project)
             .commit_sha(sha)
             .created_at(recent)
-            .build(db.connection())
-            .await
-            .expect("a recent Run");
+            .create(&db)
+            .await;
         make_execution(&test, &run)
             .created_at(recent)
-            .build(db.connection())
-            .await
-            .expect("a recent Execution");
+            .create(&db)
+            .await;
     }
 
     let result = prune(db.connection(), now, &retention(), &processing(now))
@@ -818,23 +747,17 @@ async fn prune_rescores_job_with_no_executions_left() {
     let now = now();
     let old = days_before(now, 100);
     let db = TestDb::new().await.expect("a test database");
-    let pipeline = make_pipeline()
-        .repo("acme/app")
-        .build(db.connection())
-        .await
-        .expect("a Pipeline");
+    let pipeline = make_pipeline().repo("acme/app").create(&db).await;
     let job = make_job(&pipeline)
         .flakiness_score(0.5)
         .clean_streak(3)
-        .build(db.connection())
-        .await
-        .expect("a Job");
+        .create(&db)
+        .await;
     make_job_execution(&job)
         .ci_job_id("old")
         .created_at(old)
-        .build(db.connection())
-        .await
-        .expect("an old Job execution");
+        .create(&db)
+        .await;
 
     let result = prune(db.connection(), now, &retention(), &processing(now))
         .await
@@ -856,31 +779,24 @@ async fn prune_rescores_job_from_remaining_executions() {
     let old = days_before(now, 100);
     let recent = days_before(now, 1);
     let db = TestDb::new().await.expect("a test database");
-    let pipeline = make_pipeline()
-        .repo("acme/app")
-        .build(db.connection())
-        .await
-        .expect("a Pipeline");
+    let pipeline = make_pipeline().repo("acme/app").create(&db).await;
     let job = make_job(&pipeline)
         .flakiness_score(0.9)
         .clean_streak(3)
-        .build(db.connection())
-        .await
-        .expect("a Job");
+        .create(&db)
+        .await;
     make_job_execution(&job)
         .status("failed")
         .ci_job_id("old")
         .created_at(old)
-        .build(db.connection())
-        .await
-        .expect("an old Job execution");
+        .create(&db)
+        .await;
     for ci_job_id in ["new1", "new2"] {
         make_job_execution(&job)
             .ci_job_id(ci_job_id)
             .created_at(recent)
-            .build(db.connection())
-            .await
-            .expect("a recent Job execution");
+            .create(&db)
+            .await;
     }
 
     let result = prune(db.connection(), now, &retention(), &processing(now))
@@ -906,27 +822,23 @@ async fn run_prune_deletes_in_batches() {
     let project = make_project()
         .repo("acme/app")
         .project("backend")
-        .build(db.connection())
-        .await
-        .expect("a Project");
+        .create(&db)
+        .await;
     let test = make_test_case(&project)
         .flakiness_score(0.5)
         .clean_streak(3)
-        .build(db.connection())
-        .await
-        .expect("a Test");
+        .create(&db)
+        .await;
     let run = make_run(&project)
         .commit_sha("old")
         .created_at(old)
-        .build(db.connection())
-        .await
-        .expect("an old Run");
+        .create(&db)
+        .await;
     for _ in 0..5 {
         make_execution(&test, &run)
             .created_at(old)
-            .build(db.connection())
-            .await
-            .expect("an old Execution");
+            .create(&db)
+            .await;
     }
 
     let result = run_prune(
@@ -961,32 +873,19 @@ async fn run_prune_drains_both_score_history_tables() {
     let project = make_project()
         .repo("acme/app")
         .project("backend")
-        .build(db.connection())
-        .await
-        .expect("a Project");
-    let test = make_test_case(&project)
-        .build(db.connection())
-        .await
-        .expect("a Test");
-    let pipeline = make_pipeline()
-        .repo("acme/app")
-        .build(db.connection())
-        .await
-        .expect("a Pipeline");
-    let job = make_job(&pipeline)
-        .build(db.connection())
-        .await
-        .expect("a Job");
+        .create(&db)
+        .await;
+    let test = make_test_case(&project).create(&db).await;
+    let pipeline = make_pipeline().repo("acme/app").create(&db).await;
+    let job = make_job(&pipeline).create(&db).await;
     // Composite primary keys require distinct days.
     for day in 400..405 {
         make_test_score(&test, days_before(now, day).date_naive(), 0.5)
-            .build(db.connection())
-            .await
-            .expect("an old Score history row");
+            .create(&db)
+            .await;
         make_job_score(&job, days_before(now, day).date_naive(), 0.5)
-            .build(db.connection())
-            .await
-            .expect("an old Score history row");
+            .create(&db)
+            .await;
     }
 
     let result = run_prune(
@@ -1018,25 +917,19 @@ async fn run_prune_stops_at_time_budget() {
     let project = make_project()
         .repo("acme/app")
         .project("backend")
-        .build(db.connection())
-        .await
-        .expect("a Project");
-    let test = make_test_case(&project)
-        .build(db.connection())
-        .await
-        .expect("a Test");
+        .create(&db)
+        .await;
+    let test = make_test_case(&project).create(&db).await;
     let run = make_run(&project)
         .commit_sha("old")
         .created_at(old)
-        .build(db.connection())
-        .await
-        .expect("an old Run");
+        .create(&db)
+        .await;
     for _ in 0..6 {
         make_execution(&test, &run)
             .created_at(old)
-            .build(db.connection())
-            .await
-            .expect("an old Execution");
+            .create(&db)
+            .await;
     }
 
     let settings = RetentionSettings {
@@ -1074,30 +967,23 @@ async fn a_failed_round_rolls_back_its_deletes() {
     let project = make_project()
         .repo("acme/app")
         .project("backend")
-        .build(db.connection())
-        .await
-        .expect("a Project");
-    let test = make_test_case(&project)
-        .build(db.connection())
-        .await
-        .expect("a Test");
+        .create(&db)
+        .await;
+    let test = make_test_case(&project).create(&db).await;
     let run = make_run(&project)
         .commit_sha("old")
         .created_at(old)
-        .build(db.connection())
-        .await
-        .expect("an old Run");
+        .create(&db)
+        .await;
     make_execution(&test, &run)
         .created_at(old)
-        .build(db.connection())
-        .await
-        .expect("an old Execution");
+        .create(&db)
+        .await;
     make_report(&project, project.repo_id)
         .status("processed")
         .processed_at(days_before(now, 8))
-        .build(db.connection())
-        .await
-        .expect("a stale Report");
+        .create(&db)
+        .await;
     db.connection()
         .execute_unprepared("DROP TABLE job_score_history")
         .await
@@ -1128,9 +1014,8 @@ async fn a_retention_window_past_the_calendar_is_clamped() {
     let project = make_project()
         .repo("acme/app")
         .project("backend")
-        .build(db.connection())
-        .await
-        .expect("a Project");
+        .create(&db)
+        .await;
     let ancient = make_report(&project, project.repo_id)
         .status("processed")
         .processed_at(
@@ -1138,15 +1023,13 @@ async fn a_retention_window_past_the_calendar_is_clamped() {
                 .expect("an instant in 1732")
                 .fixed_offset(),
         )
-        .build(db.connection())
-        .await
-        .expect("an ancient Report");
+        .create(&db)
+        .await;
     let fresh = make_report(&project, project.repo_id)
         .status("processed")
         .processed_at(now)
-        .build(db.connection())
-        .await
-        .expect("a fresh Report");
+        .create(&db)
+        .await;
 
     let clamped = prune(
         db.connection(),

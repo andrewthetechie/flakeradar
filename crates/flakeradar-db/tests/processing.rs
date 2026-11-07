@@ -84,9 +84,8 @@ async fn project(db: &TestDb, repo: &str, project: &str) -> projects::Model {
 async fn queue(db: &TestDb, project: &projects::Model, body: &[u8]) -> reports::Model {
     make_report(project, project.repo_id)
         .body(body)
-        .build(db.connection())
+        .create(db)
         .await
-        .expect("a queued Report")
 }
 
 /// Queues a JUnit Report with extra attribution.
@@ -99,9 +98,8 @@ async fn queue_with(
     ) -> flakeradar_test_support::ReportBuilder,
 ) -> reports::Model {
     change(make_report(project, project.repo_id).body(body))
-        .build(db.connection())
+        .create(db)
         .await
-        .expect("a queued Report")
 }
 
 /// Queues a Pipeline Report.
@@ -116,9 +114,8 @@ async fn queue_pipeline(
         .commit_sha(&payload.commit_sha)
         .branch(&payload.branch)
         .ci_run_id(payload.ci_run_id.as_str())
-        .build(db.connection())
+        .create(db)
         .await
-        .expect("a queued Pipeline Report")
 }
 
 /// Processes until the queue is empty, returning the outcomes.
@@ -659,9 +656,8 @@ async fn both_retry_kinds_reset_the_queue_fields() {
         .error("ParseError: boom")
         .processed_at(at())
         .retry_count(5)
-        .build(db.connection())
-        .await
-        .expect("a failed Report");
+        .create(&db)
+        .await;
     let transient = queue_with(&db, &project, &body, |builder| {
         builder.commit_sha("transient")
     })
@@ -713,9 +709,8 @@ async fn a_manual_retry_gives_a_fresh_budget() {
         .error("OperationalError: connection reset")
         .processed_at(at())
         .retry_count(5)
-        .build(db.connection())
-        .await
-        .expect("a failed Report");
+        .create(&db)
+        .await;
     fail_test_run_inserts(&db).await;
     let settings = settings_with(|settings| settings.max_report_retries = 3);
 
@@ -934,9 +929,8 @@ async fn a_rescore_matches_the_branch_scoped_score_over_all_rows() {
         .await
         .expect("the Default branch");
     let row = flakeradar_test_support::make_test_case(&project)
-        .build(db.connection())
-        .await
-        .expect("a Test");
+        .create(&db)
+        .await;
     // Oldest first, so reversing the list gives the newest-first history the
     // route serves.
     let mut history: Vec<ScoredExecution> = Vec::new();
@@ -947,14 +941,12 @@ async fn a_rescore_matches_the_branch_scoped_score_over_all_rows() {
         let run = flakeradar_test_support::make_run(&project)
             .commit_sha(&format!("m{index}"))
             .branch("main")
-            .build(db.connection())
-            .await
-            .expect("a Run");
+            .create(&db)
+            .await;
         flakeradar_test_support::make_execution(&row, &run)
             .status(status)
-            .build(db.connection())
-            .await
-            .expect("an Execution");
+            .create(&db)
+            .await;
         history.push(ScoredExecution {
             commit_sha: format!("m{index}"),
             branch: "main".to_owned(),
@@ -965,13 +957,11 @@ async fn a_rescore_matches_the_branch_scoped_score_over_all_rows() {
         let run = flakeradar_test_support::make_run(&project)
             .commit_sha(&format!("f{index}"))
             .branch("feat")
-            .build(db.connection())
-            .await
-            .expect("a Run");
+            .create(&db)
+            .await;
         flakeradar_test_support::make_execution(&row, &run)
-            .build(db.connection())
-            .await
-            .expect("an Execution");
+            .create(&db)
+            .await;
         history.push(ScoredExecution {
             commit_sha: format!("f{index}"),
             branch: "feat".to_owned(),
@@ -1067,16 +1057,14 @@ async fn a_zero_clean_streak_clears_the_fixed_note_and_a_positive_one_keeps_it()
         .name("t_keep")
         .clean_streak(3)
         .github_issue_fixed_noted_at(at().fixed_offset())
-        .build(db.connection())
-        .await
-        .expect("a Test");
+        .create(&db)
+        .await;
     let broke = flakeradar_test_support::make_test_case(&project)
         .name("t_fail")
         .clean_streak(3)
         .github_issue_fixed_noted_at(at().fixed_offset())
-        .build(db.connection())
-        .await
-        .expect("a Test");
+        .create(&db)
+        .await;
     queue_with(
         &db,
         &project,
@@ -1109,9 +1097,8 @@ async fn a_positive_clean_streak_keeps_the_fixed_note() {
         .name("t")
         .clean_streak(3)
         .github_issue_fixed_noted_at(at().fixed_offset())
-        .build(db.connection())
-        .await
-        .expect("a Test");
+        .create(&db)
+        .await;
     queue_with(&db, &project, &make_junit(&[("t", "passed")]), |b| {
         b.branch("main").commit_sha("f9").default_branch("main")
     })
@@ -1318,29 +1305,25 @@ async fn tier_changes_are_emitted_in_id_order() {
         .expect("the Default branch");
     let first = flakeradar_test_support::make_test_case(&project)
         .name("a")
-        .build(db.connection())
-        .await
-        .expect("a Test");
+        .create(&db)
+        .await;
     let second = flakeradar_test_support::make_test_case(&project)
         .name("b")
-        .build(db.connection())
-        .await
-        .expect("a Test");
+        .create(&db)
+        .await;
     // A fail then a pass on different commits is a flake, and neither Test's score
     // has been written yet, so both cross the Flake threshold.
     for (sha, status) in [("f", "failed"), ("g", "passed")] {
         let run = flakeradar_test_support::make_run(&project)
             .commit_sha(sha)
             .branch("main")
-            .build(db.connection())
-            .await
-            .expect("a Run");
+            .create(&db)
+            .await;
         for row in [&first, &second] {
             flakeradar_test_support::make_execution(row, &run)
                 .status(status)
-                .build(db.connection())
-                .await
-                .expect("an Execution");
+                .create(&db)
+                .await;
         }
     }
     // The Tests are read back into a map keyed by id, so the
@@ -1365,25 +1348,13 @@ async fn job_tier_changes_are_emitted_in_id_order() {
     // The webhook task posts Tier changes in the order this rescore emits them,
     // so a Job rescore on ids listed out of order must still emit by id.
     let db = TestDb::new().await.expect("a test database");
-    let pipeline = make_pipeline()
-        .repo("acme/app")
-        .build(db.connection())
-        .await
-        .expect("a Pipeline");
+    let pipeline = make_pipeline().repo("acme/app").create(&db).await;
     db.connection()
         .execute_unprepared("UPDATE repos SET default_branch = 'main'")
         .await
         .expect("the Default branch");
-    let first = make_job(&pipeline)
-        .name("first")
-        .build(db.connection())
-        .await
-        .expect("a Job");
-    let second = make_job(&pipeline)
-        .name("second")
-        .build(db.connection())
-        .await
-        .expect("a Job");
+    let first = make_job(&pipeline).name("first").create(&db).await;
+    let second = make_job(&pipeline).name("second").create(&db).await;
     // An unexplained failure then a pass on different commits of the Default
     // branch is a flake, and neither Job's score has been written yet, so both
     // cross the Flake threshold.
@@ -1392,9 +1363,8 @@ async fn job_tier_changes_are_emitted_in_id_order() {
             make_job_execution(job)
                 .ci_job_id(ci_job_id)
                 .status(status)
-                .build(db.connection())
-                .await
-                .expect("a Job execution");
+                .create(&db)
+                .await;
         }
     }
     let changes = rescore(
@@ -1827,9 +1797,8 @@ async fn a_malformed_pipeline_body_fails_and_the_queue_moves_on() {
     let bad = make_report(&project, project.repo_id)
         .kind("pipeline")
         .body(b"{}")
-        .build(db.connection())
-        .await
-        .expect("a Report");
+        .create(&db)
+        .await;
     let good = queue(&db, &project, &make_junit(&[("t", "passed")])).await;
     let first = process_next(db.connection(), &settings())
         .await

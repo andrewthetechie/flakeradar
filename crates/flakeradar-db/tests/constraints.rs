@@ -30,15 +30,8 @@ fn expect_violation<T: std::fmt::Debug, E: std::fmt::Display>(
 #[tokio::test]
 async fn project_name_is_unique_within_its_repo() {
     let db = TestDb::new().await.expect("a migrated test database");
-    make_project()
-        .build(db.connection())
-        .await
-        .expect("the first Project is stored");
-    make_project()
-        .repo("other/app")
-        .build(db.connection())
-        .await
-        .expect("the same name in another Repo is fine");
+    make_project().create(&db).await;
+    make_project().repo("other/app").create(&db).await;
     expect_violation(
         make_project().build(db.connection()).await,
         "uq_projects_repo_name",
@@ -48,15 +41,11 @@ async fn project_name_is_unique_within_its_repo() {
 #[tokio::test]
 async fn a_test_fingerprint_is_unique_per_project() {
     let db = TestDb::new().await.expect("a migrated test database");
-    let project = make_project()
-        .build(db.connection())
-        .await
-        .expect("a Project");
+    let project = make_project().create(&db).await;
     make_test_case(&project)
         .fingerprint(&"f".repeat(40))
-        .build(db.connection())
-        .await
-        .expect("the first Test is stored");
+        .create(&db)
+        .await;
     expect_violation(
         make_test_case(&project)
             .name("different name")
@@ -70,10 +59,7 @@ async fn a_test_fingerprint_is_unique_per_project() {
 #[tokio::test]
 async fn a_new_report_is_pending_and_stamped_in_utc() {
     let db = TestDb::new().await.expect("a migrated test database");
-    let project = make_project()
-        .build(db.connection())
-        .await
-        .expect("a Project");
+    let project = make_project().create(&db).await;
     let created_at: DateTimeWithTimeZone = FIXTURE_INSTANT.fixed_offset();
     let stored = reports::ActiveModel {
         repo_id: Set(project.repo_id),
@@ -96,10 +82,7 @@ async fn a_new_report_is_pending_and_stamped_in_utc() {
 #[tokio::test]
 async fn a_junit_report_requires_a_project() {
     let db = TestDb::new().await.expect("a migrated test database");
-    let project = make_project()
-        .build(db.connection())
-        .await
-        .expect("a Project");
+    let project = make_project().create(&db).await;
     expect_violation(
         reports::ActiveModel {
             repo_id: Set(project.repo_id),
@@ -119,10 +102,7 @@ async fn a_junit_report_requires_a_project() {
 #[tokio::test]
 async fn a_pipeline_report_needs_no_project() {
     let db = TestDb::new().await.expect("a migrated test database");
-    let project = make_project()
-        .build(db.connection())
-        .await
-        .expect("a Project");
+    let project = make_project().create(&db).await;
     let stored = reports::ActiveModel {
         kind: Set("pipeline".to_owned()),
         repo_id: Set(project.repo_id),
@@ -142,14 +122,8 @@ async fn a_pipeline_report_needs_no_project() {
 #[tokio::test]
 async fn a_job_name_is_unique_within_its_pipeline() {
     let db = TestDb::new().await.expect("a migrated test database");
-    let pipeline = make_pipeline()
-        .build(db.connection())
-        .await
-        .expect("a Pipeline");
-    make_job(&pipeline)
-        .build(db.connection())
-        .await
-        .expect("the first Job is stored");
+    let pipeline = make_pipeline().create(&db).await;
+    make_job(&pipeline).create(&db).await;
     expect_violation(
         make_job(&pipeline).build(db.connection()).await,
         "uq_jobs_pipeline_name",
@@ -159,19 +133,9 @@ async fn a_job_name_is_unique_within_its_pipeline() {
 #[tokio::test]
 async fn a_job_execution_is_unique_per_ci_job_id() {
     let db = TestDb::new().await.expect("a migrated test database");
-    let pipeline = make_pipeline()
-        .build(db.connection())
-        .await
-        .expect("a Pipeline");
-    let job = make_job(&pipeline)
-        .build(db.connection())
-        .await
-        .expect("a Job");
-    make_job_execution(&job)
-        .ci_job_id("42")
-        .build(db.connection())
-        .await
-        .expect("the first Job execution is stored");
+    let pipeline = make_pipeline().create(&db).await;
+    let job = make_job(&pipeline).create(&db).await;
+    make_job_execution(&job).ci_job_id("42").create(&db).await;
     expect_violation(
         make_job_execution(&job)
             .ci_job_id("42")
@@ -184,15 +148,11 @@ async fn a_job_execution_is_unique_per_ci_job_id() {
 #[tokio::test]
 async fn a_test_case_stores_its_generated_row() {
     let db = TestDb::new().await.expect("a migrated test database");
-    let project = make_project()
-        .build(db.connection())
-        .await
-        .expect("a Project");
+    let project = make_project().create(&db).await;
     let stored = make_test_case(&project)
         .name("test_something")
-        .build(db.connection())
-        .await
-        .expect("a Test");
+        .create(&db)
+        .await;
     let found = test_cases::Entity::find_by_id(stored.id)
         .one(db.connection())
         .await

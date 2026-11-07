@@ -82,22 +82,10 @@ async fn every_generated_relation_resolves() {
 #[tokio::test]
 async fn a_relation_loads_the_rows_behind_it() {
     let db = TestDb::new().await.expect("a migrated test database");
-    let project = make_project()
-        .build(db.connection())
-        .await
-        .expect("a Project");
-    let test_case = make_test_case(&project)
-        .build(db.connection())
-        .await
-        .expect("a Test");
-    let run = make_run(&project)
-        .build(db.connection())
-        .await
-        .expect("a Run");
-    make_execution(&test_case, &run)
-        .build(db.connection())
-        .await
-        .expect("an Execution");
+    let project = make_project().create(&db).await;
+    let test_case = make_test_case(&project).create(&db).await;
+    let run = make_run(&project).create(&db).await;
+    make_execution(&test_case, &run).create(&db).await;
 
     let tests = projects::Entity::find_by_id(project.id)
         .one(db.connection())
@@ -121,14 +109,8 @@ async fn a_relation_loads_the_rows_behind_it() {
         .expect("the relation resolves");
     assert_eq!(executions.len(), 1);
 
-    let pipeline = make_pipeline()
-        .build(db.connection())
-        .await
-        .expect("a Pipeline");
-    make_job(&pipeline)
-        .build(db.connection())
-        .await
-        .expect("a Job");
+    let pipeline = make_pipeline().create(&db).await;
+    make_job(&pipeline).create(&db).await;
     let related = repos::Entity::find()
         .find_with_related(projects::Entity)
         .all(db.connection())

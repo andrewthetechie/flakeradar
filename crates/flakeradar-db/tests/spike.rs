@@ -103,10 +103,7 @@ async fn unlock(db: &impl ConnectionTrait, key: i64) {
 #[tokio::test]
 async fn claim_next_report_locks_one_pending_report_and_skips_locked_ones() {
     let db = TestDb::new().await.expect("a migrated test database");
-    let project = make_project()
-        .build(db.connection())
-        .await
-        .expect("a Project");
+    let project = make_project().create(&db).await;
     let first = pending_report(db.connection(), &project).await;
     let second = pending_report(db.connection(), &project).await;
 
@@ -141,27 +138,12 @@ async fn claim_next_report_locks_one_pending_report_and_skips_locked_ones() {
 #[tokio::test]
 async fn the_newest_window_ids_per_test_need_a_lateral_join() {
     let db = TestDb::new().await.expect("a migrated test database");
-    let project = make_project()
-        .build(db.connection())
-        .await
-        .expect("a Project");
-    let test_case = make_test_case(&project)
-        .build(db.connection())
-        .await
-        .expect("a Test");
-    let run = make_run(&project)
-        .build(db.connection())
-        .await
-        .expect("a Run");
+    let project = make_project().create(&db).await;
+    let test_case = make_test_case(&project).create(&db).await;
+    let run = make_run(&project).create(&db).await;
     let mut ids = Vec::new();
     for _ in 0..5 {
-        ids.push(
-            make_execution(&test_case, &run)
-                .build(db.connection())
-                .await
-                .expect("an Execution")
-                .id,
-        );
+        ids.push(make_execution(&test_case, &run).create(&db).await.id);
     }
 
     let rows = raw_rows(
@@ -190,22 +172,15 @@ async fn the_newest_window_ids_per_test_need_a_lateral_join() {
 #[tokio::test]
 async fn the_newest_window_ids_per_job_need_a_lateral_join() {
     let db = TestDb::new().await.expect("a migrated test database");
-    let pipeline = make_pipeline()
-        .build(db.connection())
-        .await
-        .expect("a Pipeline");
-    let job = make_job(&pipeline)
-        .build(db.connection())
-        .await
-        .expect("a Job");
+    let pipeline = make_pipeline().create(&db).await;
+    let job = make_job(&pipeline).create(&db).await;
     let mut ids = Vec::new();
     for attempt in 0..4 {
         ids.push(
             make_job_execution(&job)
                 .ci_job_id(&format!("{attempt}"))
-                .build(db.connection())
+                .create(&db)
                 .await
-                .expect("a Job execution")
                 .id,
         );
     }
@@ -236,20 +211,13 @@ async fn the_newest_window_ids_per_job_need_a_lateral_join() {
 #[tokio::test]
 async fn past_scores_use_a_row_number_window() {
     let db = TestDb::new().await.expect("a migrated test database");
-    let project = make_project()
-        .build(db.connection())
-        .await
-        .expect("a Project");
-    let test_case = make_test_case(&project)
-        .build(db.connection())
-        .await
-        .expect("a Test");
+    let project = make_project().create(&db).await;
+    let test_case = make_test_case(&project).create(&db).await;
     let today = Utc::now().date_naive();
     for (days_ago, score) in [(20, 0.5), (10, 0.4), (1, 0.9)] {
         make_test_score(&test_case, today - Duration::days(days_ago), score)
-            .build(db.connection())
-            .await
-            .expect("a Score history row");
+            .create(&db)
+            .await;
     }
     let cutoff = today - Duration::days(7);
 
@@ -285,18 +253,11 @@ async fn past_scores_use_a_row_number_window() {
 #[tokio::test]
 async fn newest_history_before_feeds_a_filtered_paged_leaderboard() {
     let db = TestDb::new().await.expect("a migrated test database");
-    let project = make_project()
-        .build(db.connection())
-        .await
-        .expect("a Project");
+    let project = make_project().create(&db).await;
     let today = Utc::now().date_naive();
     let mut flaky = Vec::new();
     for name in ["stable", "was_flaky", "new"] {
-        let test_case = make_test_case(&project)
-            .name(name)
-            .build(db.connection())
-            .await
-            .expect("a Test");
+        let test_case = make_test_case(&project).name(name).create(&db).await;
         flaky.push(test_case.id);
     }
     // The first Test was stable a week ago and the second was flaky then; the
@@ -306,17 +267,15 @@ async fn newest_history_before_feeds_a_filtered_paged_leaderboard() {
         today - Duration::days(30),
         0.0,
     )
-    .build(db.connection())
-    .await
-    .expect("a Score history row");
+    .create(&db)
+    .await;
     make_test_score(
         &test_case_of(&db, flaky[1]).await,
         today - Duration::days(30),
         0.2,
     )
-    .build(db.connection())
-    .await
-    .expect("a Score history row");
+    .create(&db)
+    .await;
 
     let sql = "SELECT t.id, h.score FROM test_cases t \
                LEFT JOIN LATERAL ( \
@@ -355,14 +314,8 @@ async fn newest_history_before_feeds_a_filtered_paged_leaderboard() {
 #[tokio::test]
 async fn upsert_history_accumulates_through_on_conflict() {
     let db = TestDb::new().await.expect("a migrated test database");
-    let project = make_project()
-        .build(db.connection())
-        .await
-        .expect("a Project");
-    let test_case = make_test_case(&project)
-        .build(db.connection())
-        .await
-        .expect("a Test");
+    let project = make_project().create(&db).await;
+    let test_case = make_test_case(&project).create(&db).await;
     let today = Utc::now().date_naive();
     let conflict = OnConflict::columns([
         test_score_history::Column::TestCaseId,
@@ -425,25 +378,10 @@ async fn upsert_history_accumulates_through_on_conflict() {
 #[tokio::test]
 async fn a_bulk_update_by_primary_key_sets_optional_columns_per_row() {
     let db = TestDb::new().await.expect("a migrated test database");
-    let project = make_project()
-        .build(db.connection())
-        .await
-        .expect("a Project");
-    let first = make_test_case(&project)
-        .name("first")
-        .build(db.connection())
-        .await
-        .expect("a Test");
-    let second = make_test_case(&project)
-        .name("second")
-        .build(db.connection())
-        .await
-        .expect("a Test");
-    let untouched = make_test_case(&project)
-        .name("untouched")
-        .build(db.connection())
-        .await
-        .expect("a Test");
+    let project = make_project().create(&db).await;
+    let first = make_test_case(&project).name("first").create(&db).await;
+    let second = make_test_case(&project).name("second").create(&db).await;
+    let untouched = make_test_case(&project).name("untouched").create(&db).await;
 
     let statement = Statement::from_sql_and_values(
         DatabaseBackend::Postgres,
@@ -496,20 +434,13 @@ async fn a_bulk_update_by_primary_key_sets_optional_columns_per_row() {
 #[tokio::test]
 async fn deleting_a_history_batch_uses_a_tuple_in_a_limited_subquery() {
     let db = TestDb::new().await.expect("a migrated test database");
-    let project = make_project()
-        .build(db.connection())
-        .await
-        .expect("a Project");
-    let test_case = make_test_case(&project)
-        .build(db.connection())
-        .await
-        .expect("a Test");
+    let project = make_project().create(&db).await;
+    let test_case = make_test_case(&project).create(&db).await;
     let today = Utc::now().date_naive();
     for days_ago in [30, 20, 10, 1] {
         make_test_score(&test_case, today - Duration::days(days_ago), 0.1)
-            .build(db.connection())
-            .await
-            .expect("a Score history row");
+            .create(&db)
+            .await;
     }
     let cutoff = today - Duration::days(7);
 

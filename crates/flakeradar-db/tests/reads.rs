@@ -71,33 +71,25 @@ async fn seed_search(db: &TestDb) -> (i32, i32) {
     let app = make_project()
         .repo("acme/app")
         .project("backend")
-        .build(db.connection())
-        .await
-        .expect("the project");
+        .create(db)
+        .await;
     let other = make_project()
         .repo("acme/other")
         .project("backend")
-        .build(db.connection())
-        .await
-        .expect("the other project");
+        .create(db)
+        .await;
     let wanted = make_test_case(&app)
         .name("test_login")
         .classname("tests.auth")
         .flakiness_score(0.6)
-        .build(db.connection())
-        .await
-        .expect("the wanted test");
+        .create(db)
+        .await;
     make_test_case(&app)
         .name("test_logout")
         .classname("tests.auth")
-        .build(db.connection())
-        .await
-        .expect("another test");
-    make_test_case(&other)
-        .name("test_login")
-        .build(db.connection())
-        .await
-        .expect("the other repo's test");
+        .create(db)
+        .await;
+    make_test_case(&other).name("test_login").create(db).await;
     (wanted.id, app.id)
 }
 
@@ -189,40 +181,26 @@ async fn find_test_ids_matches_the_name_and_the_classname() {
 #[tokio::test]
 async fn latest_failure_is_the_newest_failing_execution() {
     let db = TestDb::new().await.expect("a test database");
-    let project = make_project()
-        .build(db.connection())
-        .await
-        .expect("project");
-    let test = make_test_case(&project)
-        .build(db.connection())
-        .await
-        .expect("test");
+    let project = make_project().create(&db).await;
+    let test = make_test_case(&project).create(&db).await;
     assert!(
         latest_failure(db.connection(), i64::from(test.id))
             .await
             .expect("the lookup")
             .is_none()
     );
-    let run = make_run(&project)
-        .build(db.connection())
-        .await
-        .expect("run");
+    let run = make_run(&project).create(&db).await;
     make_execution(&test, &run)
         .status("failed")
         .message("first")
-        .build(db.connection())
-        .await
-        .expect("a failure");
+        .create(&db)
+        .await;
     make_execution(&test, &run)
         .status("failed")
         .message("second")
-        .build(db.connection())
-        .await
-        .expect("the newer failure");
-    make_execution(&test, &run)
-        .build(db.connection())
-        .await
-        .expect("a pass");
+        .create(&db)
+        .await;
+    make_execution(&test, &run).create(&db).await;
     let failure = latest_failure(db.connection(), i64::from(test.id))
         .await
         .expect("the lookup")
@@ -236,20 +214,14 @@ async fn search_jobs_and_find_job_ids_match_a_job_by_name() {
     let pipeline = make_pipeline()
         .repo("acme/app")
         .name("ci.yml")
-        .build(db.connection())
-        .await
-        .expect("the pipeline");
+        .create(&db)
+        .await;
     let wanted = make_job(&pipeline)
         .name("build-thing")
         .flakiness_score(0.6)
-        .build(db.connection())
-        .await
-        .expect("the job");
-    make_job(&pipeline)
-        .name("lint")
-        .build(db.connection())
-        .await
-        .expect("the other job");
+        .create(&db)
+        .await;
+    make_job(&pipeline).name("lint").create(&db).await;
     let found = search_jobs(db.connection(), "acme/app", "BUILD", &settings(), 20)
         .await
         .expect("the search");
@@ -287,21 +259,13 @@ async fn search_jobs_and_find_job_ids_match_a_job_by_name() {
 #[tokio::test]
 async fn the_flaky_only_listing_keeps_only_flaky_rows() {
     let db = TestDb::new().await.expect("a test database");
-    let project = make_project()
-        .build(db.connection())
-        .await
-        .expect("project");
+    let project = make_project().create(&db).await;
     make_test_case(&project)
         .name("flaky")
         .flakiness_score(0.6)
-        .build(db.connection())
-        .await
-        .expect("the flaky test");
-    make_test_case(&project)
-        .name("stable")
-        .build(db.connection())
-        .await
-        .expect("the stable test");
+        .create(&db)
+        .await;
+    make_test_case(&project).name("stable").create(&db).await;
     let page = list_tests(
         db.connection(),
         &Scope::default(),
@@ -342,23 +306,18 @@ async fn a_page_whose_offset_overflows_is_an_error() {
 #[tokio::test]
 async fn list_tests_sorts_by_proven_flakes_and_by_last_seen() {
     let db = TestDb::new().await.expect("a test database");
-    let project = make_project()
-        .build(db.connection())
-        .await
-        .expect("project");
+    let project = make_project().create(&db).await;
     make_test_case(&project)
         .name("first")
         .flakiness_score(0.4)
-        .build(db.connection())
-        .await
-        .expect("the first test");
+        .create(&db)
+        .await;
     make_test_case(&project)
         .name("proven")
         .flakiness_score(0.4)
         .confirmed_flake_count(3)
-        .build(db.connection())
-        .await
-        .expect("the proven test");
+        .create(&db)
+        .await;
     let by_proven = list_tests(
         db.connection(),
         &Scope::default(),
@@ -387,26 +346,19 @@ async fn a_ci_run_listing_caps_its_failures_and_flags_the_rest() {
     let project = make_project()
         .repo("acme/app")
         .project("backend")
-        .build(db.connection())
-        .await
-        .expect("the project");
+        .create(&db)
+        .await;
     let run = make_run(&project)
         .ci_run_id("100")
         .ci_run_attempt(1)
-        .build(db.connection())
-        .await
-        .expect("the run");
+        .create(&db)
+        .await;
     for name in ["t1", "t2", "t3"] {
-        let test = make_test_case(&project)
-            .name(name)
-            .build(db.connection())
-            .await
-            .expect("a test");
+        let test = make_test_case(&project).name(name).create(&db).await;
         make_execution(&test, &run)
             .status("failed")
-            .build(db.connection())
-            .await
-            .expect("a failure");
+            .create(&db)
+            .await;
     }
     let listing = ci_run_failures(
         db.connection(),
@@ -441,19 +393,14 @@ async fn drain(db: &TestDb) {
 #[tokio::test]
 async fn a_nextest_flaky_fail_is_a_proven_flake_in_its_ci_run() {
     let db = TestDb::new().await.expect("a test database");
-    let project = make_project()
-        .repo("acme/app")
-        .build(db.connection())
-        .await
-        .expect("the project");
+    let project = make_project().repo("acme/app").create(&db).await;
     make_report(&project, project.repo_id)
         .body(NEXTEST_FLAKY_FAIL.as_bytes())
         .commit_sha("777022bf")
         .ci_run_id("38994487107")
         .ci_job_id("J1")
-        .build(db.connection())
-        .await
-        .expect("the junit report");
+        .create(&db)
+        .await;
     let payload: PipelineReportIn = serde_json::from_value(serde_json::json!({
         "repo": "acme/app",
         "provider": "github",
@@ -479,9 +426,8 @@ async fn a_nextest_flaky_fail_is_a_proven_flake_in_its_ci_run() {
         .commit_sha(&payload.commit_sha)
         .branch(&payload.branch)
         .ci_run_id(payload.ci_run_id.as_str())
-        .build(db.connection())
-        .await
-        .expect("the pipeline report");
+        .create(&db)
+        .await;
     drain(&db).await;
 
     let listing = ci_run_failures(
@@ -526,37 +472,21 @@ async fn a_nextest_flaky_fail_is_a_proven_flake_in_its_ci_run() {
 #[tokio::test]
 async fn the_summaries_read_score_history_and_never_the_execution_tables() {
     let db = TestDb::new().await.expect("a test database");
-    let project = make_project()
-        .repo("acme/app")
-        .build(db.connection())
-        .await
-        .expect("the project");
-    let test = make_test_case(&project)
-        .build(db.connection())
-        .await
-        .expect("test");
-    let pipeline = make_pipeline()
-        .repo("acme/app")
-        .build(db.connection())
-        .await
-        .expect("the pipeline");
-    let job = make_job(&pipeline)
-        .build(db.connection())
-        .await
-        .expect("job");
+    let project = make_project().repo("acme/app").create(&db).await;
+    let test = make_test_case(&project).create(&db).await;
+    let pipeline = make_pipeline().repo("acme/app").create(&db).await;
+    let job = make_job(&pipeline).create(&db).await;
     let today = at().date_naive();
     flakeradar_test_support::make_test_score(&test, today, 0.6)
         .executions(3)
         .failures(1)
-        .build(db.connection())
-        .await
-        .expect("a score row");
+        .create(&db)
+        .await;
     make_job_score(&job, today, 0.6)
         .executions(2)
         .failures(1)
-        .build(db.connection())
-        .await
-        .expect("a job score row");
+        .create(&db)
+        .await;
     let counted = summary(db.connection(), &Scope::default(), &settings())
         .await
         .expect("the summary");
@@ -594,18 +524,13 @@ async fn a_summary_ignores_a_category_the_enum_does_not_know() {
     // `failure_category` is free text in the baseline schema, so a row can hold a
     // word the five Failure categories do not name; it counts under none of them.
     let db = TestDb::new().await.expect("a test database");
-    let project = make_project()
-        .repo("acme/app")
-        .build(db.connection())
-        .await
-        .expect("the project");
+    let project = make_project().repo("acme/app").create(&db).await;
     make_test_case(&project)
         .name("unknown_category")
         .flakiness_score(0.6)
         .failure_category("bogus")
-        .build(db.connection())
-        .await
-        .expect("the test");
+        .create(&db)
+        .await;
     let counted = summary(db.connection(), &Scope::default(), &settings())
         .await
         .expect("the summary");
@@ -659,11 +584,7 @@ async fn job_listings_of_an_empty_database_answer_empty_pages() {
 #[tokio::test]
 async fn attribution_queries_tolerate_an_empty_repo() {
     let db = TestDb::new().await.expect("a test database");
-    let project = make_project()
-        .repo("acme/app")
-        .build(db.connection())
-        .await
-        .expect("the project");
+    let project = make_project().repo("acme/app").create(&db).await;
     let repo_id = project.repo_id;
     assert!(
         flakeradar_db::explained_ci_job_ids(db.connection(), repo_id, &[])
@@ -682,37 +603,21 @@ fn _connection_is_a_pool(connection: &DatabaseConnection) -> bool {
 #[tokio::test]
 async fn a_job_execution_fixture_needs_a_job() {
     let db = TestDb::new().await.expect("a test database");
-    let pipeline = make_pipeline()
-        .build(db.connection())
-        .await
-        .expect("pipeline");
-    let job = make_job(&pipeline)
-        .build(db.connection())
-        .await
-        .expect("job");
-    make_job_execution(&job)
-        .build(db.connection())
-        .await
-        .expect("the execution");
+    let pipeline = make_pipeline().create(&db).await;
+    let job = make_job(&pipeline).create(&db).await;
+    make_job_execution(&job).create(&db).await;
 }
 
 #[tokio::test]
 async fn a_skipped_job_execution_has_the_skipped_outcome() {
     let db = TestDb::new().await.expect("a test database");
-    let pipeline = make_pipeline()
-        .build(db.connection())
-        .await
-        .expect("pipeline");
-    let job = make_job(&pipeline)
-        .build(db.connection())
-        .await
-        .expect("job");
+    let pipeline = make_pipeline().create(&db).await;
+    let job = make_job(&pipeline).create(&db).await;
     make_job_execution(&job)
         .status("skipped")
         .ci_job_id("J-S")
-        .build(db.connection())
-        .await
-        .expect("the skipped execution");
+        .create(&db)
+        .await;
     let history =
         flakeradar_db::reads::get_job(db.connection(), i64::from(job.id), &settings(), 60)
             .await
@@ -727,14 +632,8 @@ async fn a_skipped_job_execution_has_the_skipped_outcome() {
 #[tokio::test]
 async fn runner_statistics_break_ties_by_labels_then_name() {
     let db = TestDb::new().await.expect("a test database");
-    let pipeline = make_pipeline()
-        .build(db.connection())
-        .await
-        .expect("pipeline");
-    let job = make_job(&pipeline)
-        .build(db.connection())
-        .await
-        .expect("job");
+    let pipeline = make_pipeline().create(&db).await;
+    let job = make_job(&pipeline).create(&db).await;
     // Two label sets with the same rate and count, so the label set orders them;
     // the gamma set also has a repeated runner name, so the name orders those two.
     for index in 0..2 {
@@ -742,17 +641,15 @@ async fn runner_statistics_break_ties_by_labels_then_name() {
             .status("failed")
             .ci_job_id(&format!("B{index}"))
             .runner_labels(&["beta"])
-            .build(db.connection())
-            .await
-            .expect("a beta failure");
+            .create(&db)
+            .await;
         make_job_execution(&job)
             .status("failed")
             .ci_job_id(&format!("G{index}"))
             .runner_name("runner-z")
             .runner_labels(&["gamma"])
-            .build(db.connection())
-            .await
-            .expect("a gamma failure");
+            .create(&db)
+            .await;
     }
     let stats = flakeradar_db::reads::runner_stats(db.connection(), job.id, 50)
         .await
