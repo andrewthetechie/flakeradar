@@ -651,8 +651,8 @@ async fn read_items<T>(
     let mut items = Vec::with_capacity(rows.len());
     for row in rows {
         let id: i32 = get(row, "id")?;
-        let score: f64 = get(row, "flakiness_score")?;
-        items.push(out(row, trend_for(score, past.get(&id).copied()))?);
+        let score = score(get(row, "flakiness_score")?, "flakiness_score")?;
+        items.push(out(row, trend_for(score.as_f64(), past.get(&id).copied()))?);
     }
     Ok(items)
 }
