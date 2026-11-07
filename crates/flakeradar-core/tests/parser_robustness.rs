@@ -210,8 +210,8 @@ fn a_reference_with_no_terminator_is_refused() {
 fn a_namespace_declaration_on_every_case_is_parsed() {
     // Namespaces are what the second bound is about, and the parser's own answer
     // for them must not change: a declaration under the budget costs nothing and
-    // the case is still a case. `<failure xmlns="">` reads as no namespace at all,
-    // which is the SP2 case the parser's `is_tag` owns.
+    // the case is still a case. What `xmlns=""` means to an element is
+    // `tests/parsing.rs`'s `an_empty_namespace_is_no_namespace`.
     let mut xml = String::from("<testsuite name=\"s\">");
     for index in 0..1000 {
         let _ = write!(xml, "<testcase xmlns:p{index}=\"u\" name=\"a{index}\"/>");
