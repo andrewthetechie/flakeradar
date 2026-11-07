@@ -51,12 +51,14 @@
 //! Report or a route needs. That write applies only while the row still holds the
 //! number that was checked, so a link replaced during the `GET` survives it.
 //!
-//! **Stopping: every batch respects the leader's stop signal.** A sync's `GET`,
-//! a fixed note's comment and its close end as soon as the signal fires, so a
-//! leader that drops costs at most one request. The `POST` that creates an issue
-//! is the exception: it runs on through storing its link, and the batch stops
-//! after it, because a POST cancelled between creating the issue and storing its
-//! number strands an issue and files a duplicate on the next Report.
+//! **Stopping: every batch respects the leader's stop signal.** A sync's `GET`
+//! ends as soon as the signal fires, so a leader that drops costs nothing it has
+//! to retry. Every call that changes something at GitHub runs to its own answer
+//! and the batch stops after it: the `POST` that creates an issue through storing
+//! its link, and a fixed note's comment through its stamp and the close that may
+//! follow. Cancelling one of those could strand an issue, post the same comment
+//! twice, or leave a fixed issue open, so a stop waits for at most the one request
+//! that was in flight.
 //!
 //! **One file per responsibility**, which is why this module is a directory:
 //!

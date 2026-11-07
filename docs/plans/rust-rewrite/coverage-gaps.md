@@ -391,3 +391,35 @@ chrono-range arm behind them (`1e16`, `-1e16`), the second a rounded fraction ca
 `tracing` field lines); this task's two readers are reached by `a_whole_number_...`,
 `a_boolean_...` and `a_wait_no_duration_can_hold_is_refused_by_name`, plus the two
 unparsable-wait rows in `a_bad_value_names_the_variable_it_came_from`.
+
+## Task 35: the SQL log, one off-thread helper, and the name map
+
+Measured with `cargo +nightly-2026-10-25 llvm-cov nextest --branch --all-features --profile ci`
+on a local `postgres:17-alpine` via `FLAKERADAR_TEST_DATABASE_URL`: **lines 96.58%** (16975, 580
+missed) and **branches 93.38%** (1510, 100 missed), regions 93.54% and functions 97.04%.
+`coverage-floor.json` stays `{"lines": 96, "branches": 93}` and the gate passes at them.
+
+Per file this leg touched:
+
+| File | Lines | Branches | What the misses are |
+|---|---|---|---|
+| `crates/flakeradar-db/src/connect.rs` | 99.34% (151, 1) | 91.67% (12, 1) | one line llvm-cov names in no missing-line list (the `DbError::InvalidTimeout` arm is reached through `matches!`, which leaves one of its field regions uncovered) |
+| `crates/flakeradar/src/extract.rs` | 95.85% (410, 17) | 90.00% (60, 6) | `off_thread`'s join-error arm (194-198) — the only new miss — plus the rows above (275, 279, 352-354, 379, 394-395, 494) |
+| `crates/flakeradar/src/github/mod.rs` | 100.00% (33, 0) | 100.00% (8, 0) | — |
+| `crates/flakeradar/src/github/notes.rs` | 70.00% (220, 66) | 82.35% (34, 6) | the `tracing` field-argument lines of every event in the file (50-51, 81-82, 111-112, 128-130, 147-148, 157-158, 164-165, 173-176, 183-188, 194-198, 224-227, 238-242, 252-256, 260-264, 288-290, 300-302, 309-312, 319-322, 330-334) and the `return false` at 229, which is row 10's unreached stamp-write arm |
+| `crates/flakeradar/src/github_worker.rs` | 96.88% (128, 4) | 83.33% (12, 2) | the rows above (`with_monotonic`/`with_clock` and the drop-log fields) |
+| `crates/flakeradar/src/routes/reports.rs` | 96.34% (382, 14) | 100.00% (50, 0) | the two join-error arms row 06 names (480-485, 524-529) and the event-field artifact |
+
+One arm of this leg is a row of its own, because it is new code rather than a shape an existing
+row already carried:
+
+| Task | File | Function | Kind | Why it is not covered | Closed by |
+|---|---|---|---|---|---|
+| 35 | `crates/flakeradar/src/extract.rs` | `off_thread` | unreached arm | The join error of the blocking task: only a panic inside the closure reaches it, and every closure here runs on attacker-controlled CI input, which the code standards forbid from panicking. The arm exists so a bug there is a 500 naming the step rather than a dropped request. It replaces the two arms task 28 recorded (`ApiJson`'s body parse and the route's own `spawn_blocking` for the Report body), which are now the same one | — |
+
+The stop handling this leg adds is reached by `stopping_waits_for_a_comment_post_and_keeps_its_stamp`
+(the top-of-loop and post-stamp stop checks) and `stopping_waits_for_the_close_and_reads_its_answer`
+(the post-close check); the SQL log by `a_read_writes_no_statement_line_at_info`; the name map by
+`a_repeated_query_parameter_takes_the_last_value`; and both store-failure returns by
+`a_store_failure_ends_the_outcome_and_leaves_its_issue_open` and
+`a_job_store_failure_also_ends_the_outcome`.
