@@ -845,13 +845,8 @@ fn read_string(
     issues: &mut Vec<ValidationIssue>,
 ) -> Option<String> {
     let value = fields.required(field, issues)?;
-    match lax::string(value, fields.loc(field)) {
-        Ok(text) => Some(check_string(&text, min, max, fields.loc(field), issues)),
-        Err(issue) => {
-            issues.push(*issue);
-            None
-        }
-    }
+    let text = lax::recorded(lax::string(value, fields.loc(field)), issues)?;
+    Some(check_string(&text, min, max, fields.loc(field), issues))
 }
 
 /// The string `field` of `fields` holds, stripped and checked, when it is there.
@@ -865,13 +860,8 @@ fn read_defaulted_string(
     issues: &mut Vec<ValidationIssue>,
 ) -> Option<String> {
     let value = fields.field(field)?;
-    match lax::string(value, fields.loc(field)) {
-        Ok(text) => Some(check_string(&text, 0, max, fields.loc(field), issues)),
-        Err(issue) => {
-            issues.push(*issue);
-            None
-        }
-    }
+    let text = lax::recorded(lax::string(value, fields.loc(field)), issues)?;
+    Some(check_string(&text, 0, max, fields.loc(field), issues))
 }
 
 /// The `status` of a Job, read against the literals a Job status may be.
@@ -881,13 +871,8 @@ fn read_status(fields: &lax::Fields<'_>, issues: &mut Vec<ValidationIssue>) -> O
         .iter()
         .map(|status| status.as_str())
         .collect();
-    match lax::literal(value, &options, fields.loc("status")) {
-        Ok(text) => JobStatus::parse(text),
-        Err(issue) => {
-            issues.push(*issue);
-            None
-        }
-    }
+    lax::recorded(lax::literal(value, &options, fields.loc("status")), issues)
+        .and_then(JobStatus::parse)
 }
 
 /// The `runner_labels` of a Job: a list of short strings, at most 50 of them.
@@ -895,12 +880,9 @@ fn read_runner_labels(fields: &lax::Fields<'_>, issues: &mut Vec<ValidationIssue
     let Some(value) = fields.field("runner_labels") else {
         return Vec::new();
     };
-    let labels = match lax::list_of(value, fields.loc("runner_labels")) {
-        Ok(labels) => labels,
-        Err(issue) => {
-            issues.push(*issue);
-            return Vec::new();
-        }
+    let Some(labels) = lax::recorded(lax::list_of(value, fields.loc("runner_labels")), issues)
+    else {
+        return Vec::new();
     };
     // A list past the bound is refused whole, before any item is read: one issue
     // names the list's length rather than one issue per label.
@@ -916,21 +898,19 @@ fn read_runner_labels(fields: &lax::Fields<'_>, issues: &mut Vec<ValidationIssue
     let mut out = Vec::with_capacity(labels.len());
     for (index, label) in labels.iter().enumerate() {
         let loc = fields.item_loc("runner_labels", index);
-        match lax::string(label, loc.clone()) {
-            Ok(text) => {
-                let text = stripped(&text);
-                lax::refuse_nul(&text, loc.clone(), issues);
-                if text.chars().count() > RUNNER_LABEL_MAX {
-                    issues.push(ValidationIssue::string_too_long(
-                        loc,
-                        Value::from(text.clone()),
-                        RUNNER_LABEL_MAX,
-                    ));
-                }
-                out.push(text);
-            }
-            Err(issue) => issues.push(*issue),
+        let Some(label) = lax::recorded(lax::string(label, loc.clone()), issues) else {
+            continue;
+        };
+        let label = stripped(&label);
+        lax::refuse_nul(&label, loc.clone(), issues);
+        if label.chars().count() > RUNNER_LABEL_MAX {
+            issues.push(ValidationIssue::string_too_long(
+                loc,
+                Value::from(label.clone()),
+                RUNNER_LABEL_MAX,
+            ));
         }
+        out.push(label);
     }
     out
 }
@@ -942,13 +922,7 @@ fn read_optional_timestamp(
     issues: &mut Vec<ValidationIssue>,
 ) -> Option<DateTime<Utc>> {
     let value = fields.field(field).filter(|value| !value.is_null())?;
-    match lax::timestamp(value, fields.loc(field)) {
-        Ok(at) => Some(at),
-        Err(issue) => {
-            issues.push(*issue);
-            None
-        }
-    }
+    lax::recorded(lax::timestamp(value, fields.loc(field)), issues)
 }
 
 /// The boolean `field` of `fields` holds, when it is there.
@@ -961,13 +935,7 @@ fn read_defaulted_bool(
     issues: &mut Vec<ValidationIssue>,
 ) -> Option<bool> {
     let value = fields.field(field)?;
-    match lax::boolean(value, fields.loc(field)) {
-        Ok(flag) => Some(flag),
-        Err(issue) => {
-            issues.push(*issue);
-            None
-        }
-    }
+    lax::recorded(lax::boolean(value, fields.loc(field)), issues)
 }
 
 /// Trims text on both ends past every whitespace character.
@@ -1220,12 +1188,8 @@ fn read_name(
     let Some(value) = fields.required(field, issues) else {
         return String::new();
     };
-    let text = match lax::string(value, fields.loc(field)) {
-        Ok(text) => text,
-        Err(issue) => {
-            issues.push(*issue);
-            return String::new();
-        }
+    let Some(text) = lax::recorded(lax::string(value, fields.loc(field)), issues) else {
+        return String::new();
     };
     normalized_name(&text, max, field, issues, normalize)
 }
@@ -1238,13 +1202,7 @@ fn read_default_branch(
     let value = fields
         .field("default_branch")
         .filter(|value| !value.is_null())?;
-    let text = match lax::string(value, fields.loc("default_branch")) {
-        Ok(text) => text,
-        Err(issue) => {
-            issues.push(*issue);
-            return None;
-        }
-    };
+    let text = lax::recorded(lax::string(value, fields.loc("default_branch")), issues)?;
     let text = stripped(&text);
     lax::refuse_nul(&text, fields.loc("default_branch"), issues);
     if text.is_empty() {
@@ -1266,12 +1224,8 @@ fn read_jobs(fields: &lax::Fields<'_>, issues: &mut Vec<ValidationIssue>) -> Vec
     let Some(value) = fields.required("jobs", issues) else {
         return Vec::new();
     };
-    let items = match lax::list_of(value, fields.loc("jobs")) {
-        Ok(items) => items,
-        Err(issue) => {
-            issues.push(*issue);
-            return Vec::new();
-        }
+    let Some(items) = lax::recorded(lax::list_of(value, fields.loc("jobs")), issues) else {
+        return Vec::new();
     };
     if items.is_empty() {
         issues.push(ValidationIssue::list_too_short(
@@ -1872,50 +1826,53 @@ impl QuarantineIn {
         let fields = lax::Fields::new(object, body_loc_root());
         let mut issues = Vec::new();
 
-        let mut quarantined = false;
-        if let Some(value) = fields.required("quarantined", &mut issues) {
-            match lax::boolean(value, fields.loc("quarantined")) {
-                Ok(flag) => quarantined = flag,
-                Err(issue) => issues.push(*issue),
+        let quarantined = fields
+            .required("quarantined", &mut issues)
+            .and_then(|value| {
+                lax::recorded(lax::boolean(value, fields.loc("quarantined")), &mut issues)
+            })
+            .unwrap_or_default();
+        let reason = if let Some(text) = fields
+            .field("reason")
+            .filter(|value| !value.is_null())
+            .and_then(|value| lax::recorded(lax::string(value, fields.loc("reason")), &mut issues))
+        {
+            lax::refuse_nul(&text, fields.loc("reason"), &mut issues);
+            if text.chars().count() > QUARANTINE_REASON_MAX {
+                issues.push(ValidationIssue::string_too_long(
+                    fields.loc("reason"),
+                    Value::from(text.clone()),
+                    QUARANTINE_REASON_MAX,
+                ));
             }
-        }
-        let mut reason = None;
-        if let Some(value) = fields.field("reason").filter(|value| !value.is_null()) {
-            match lax::string(value, fields.loc("reason")) {
-                Ok(text) => {
-                    lax::refuse_nul(&text, fields.loc("reason"), &mut issues);
-                    if text.chars().count() > QUARANTINE_REASON_MAX {
-                        issues.push(ValidationIssue::string_too_long(
-                            fields.loc("reason"),
-                            Value::from(text.clone()),
-                            QUARANTINE_REASON_MAX,
-                        ));
-                    }
-                    reason = Some(text);
-                }
-                Err(issue) => issues.push(*issue),
-            }
-        }
+            Some(text)
+        } else {
+            None
+        };
         let mut expires_in_days = None;
         if let Some(value) = fields
             .field("expires_in_days")
             .filter(|value| !value.is_null())
         {
-            match lax::integer(value, fields.loc("expires_in_days")) {
-                Ok(days) if days < 1 => issues.push(ValidationIssue::greater_than_equal(
+            match lax::recorded(
+                lax::integer(value, fields.loc("expires_in_days")),
+                &mut issues,
+            ) {
+                Some(days) if days < 1 => issues.push(ValidationIssue::greater_than_equal(
                     fields.loc("expires_in_days"),
                     value.clone(),
                     1,
                 )),
-                Ok(days) if days > QUARANTINE_DAYS_MAX => {
+                Some(days) if days > QUARANTINE_DAYS_MAX => {
                     issues.push(ValidationIssue::less_than_equal(
                         fields.loc("expires_in_days"),
                         value.clone(),
                         QUARANTINE_DAYS_MAX,
                     ));
                 }
-                Ok(days) => expires_in_days = Some(days),
-                Err(issue) => issues.push(*issue),
+                Some(days) => expires_in_days = Some(days),
+                // A value that is no integer has recorded its own issue.
+                None => {}
             }
         }
 
@@ -2112,38 +2069,39 @@ impl IssueLinkIn {
 
         let mut number = 0;
         if let Some(value) = fields.required("number", &mut issues) {
-            match lax::integer(value, fields.loc("number")) {
-                Ok(value_number) if value_number < 1 => issues.push(
+            match lax::recorded(lax::integer(value, fields.loc("number")), &mut issues) {
+                Some(value_number) if value_number < 1 => issues.push(
                     ValidationIssue::greater_than_equal(fields.loc("number"), value.clone(), 1),
                 ),
-                Ok(value_number) if value_number > MAX_ISSUE_NUMBER => {
+                Some(value_number) if value_number > MAX_ISSUE_NUMBER => {
                     issues.push(ValidationIssue::less_than_equal(
                         fields.loc("number"),
                         value.clone(),
                         MAX_ISSUE_NUMBER,
                     ));
                 }
-                Ok(value_number) => number = value_number,
-                Err(issue) => issues.push(*issue),
+                Some(value_number) => number = value_number,
+                // A value that is no integer has recorded its own issue.
+                None => {}
             }
         }
-        let mut url = None;
-        if let Some(value) = fields.field("url").filter(|value| !value.is_null()) {
-            match lax::string(value, fields.loc("url")) {
-                Ok(text) => {
-                    lax::refuse_nul(&text, fields.loc("url"), &mut issues);
-                    if text.chars().count() > ISSUE_URL_MAX {
-                        issues.push(ValidationIssue::string_too_long(
-                            fields.loc("url"),
-                            Value::from(text.clone()),
-                            ISSUE_URL_MAX,
-                        ));
-                    }
-                    url = Some(text);
-                }
-                Err(issue) => issues.push(*issue),
+        let url = if let Some(text) = fields
+            .field("url")
+            .filter(|value| !value.is_null())
+            .and_then(|value| lax::recorded(lax::string(value, fields.loc("url")), &mut issues))
+        {
+            lax::refuse_nul(&text, fields.loc("url"), &mut issues);
+            if text.chars().count() > ISSUE_URL_MAX {
+                issues.push(ValidationIssue::string_too_long(
+                    fields.loc("url"),
+                    Value::from(text.clone()),
+                    ISSUE_URL_MAX,
+                ));
             }
-        }
+            Some(text)
+        } else {
+            None
+        };
 
         issues.finish().map(|()| Self { number, url })
     }

@@ -571,3 +571,21 @@ pub fn refuse_nul(text: &str, loc: Vec<LocSegment>, issues: &mut Vec<ValidationI
         issues.push(ValidationIssue::nul_character(loc, Value::from(text)));
     }
 }
+
+/// The value of `result`, recording its issue in `issues` when it has one.
+///
+/// A field reader that cannot go on records the issue and answers nothing, which
+/// is the same four lines at every field of every body. This is that step, so a
+/// field reads as its own rule: `lax::recorded(lax::string(value, loc), issues)?`.
+pub fn recorded<T>(
+    result: Result<T, Box<ValidationIssue>>,
+    issues: &mut Vec<ValidationIssue>,
+) -> Option<T> {
+    match result {
+        Ok(value) => Some(value),
+        Err(issue) => {
+            issues.push(*issue);
+            None
+        }
+    }
+}
