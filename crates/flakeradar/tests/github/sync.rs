@@ -8,7 +8,7 @@ use flakeradar_db::issue_links;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use chrono::{DateTime, FixedOffset, TimeZone as _, Utc};
+use chrono::{TimeZone as _, Utc};
 use flakeradar_db::clock::SharedClock;
 use flakeradar_test_support::{FixedClock, TestDb, system_clock};
 use sea_orm::ConnectionTrait as _;
@@ -22,22 +22,6 @@ use crate::support::{
     gh_settings, link_of, mount_close, mount_create, mount_issue, mount_state, noted,
     requested_paths, stamp, stamp_link, stamp_note, unstopped,
 };
-
-/// One Test's stored check stamp.
-async fn checked_at(db: &TestDb, id: i32) -> Option<DateTime<FixedOffset>> {
-    let row = db
-        .connection()
-        .query_one_raw(Statement::from_sql_and_values(
-            DbBackend::Postgres,
-            "SELECT github_issue_checked_at FROM test_cases WHERE id = $1",
-            [Value::from(id)],
-        ))
-        .await
-        .expect("the stamp reads")
-        .expect("the Test exists");
-    row.try_get("", "github_issue_checked_at")
-        .expect("the stamp is a timestamp")
-}
 
 #[tokio::test]
 async fn the_sync_stamps_a_checked_link_with_the_clock_it_was_given() {
@@ -68,7 +52,7 @@ async fn the_sync_stamps_a_checked_link_with_the_clock_it_was_given() {
     .await;
 
     assert_eq!(
-        checked_at(&db, test).await,
+        link_of(&db, EntityKind::Test, test).await.checked_at,
         Some(instant),
         "the check was stamped with the clock the sync was given"
     );
@@ -111,13 +95,12 @@ async fn the_sync_rearms_a_link_whose_issue_closed() {
     )
     .await;
     let link = link_of(&db, EntityKind::Test, test).await;
-    let (number, filed, _, closed) = (link.number, link.filed, link.checked(), link.closed);
     assert_eq!(
-        number, None,
+        link.number, None,
         "the number goes, so the next Report may re-file"
     );
-    assert_eq!(filed, None);
-    assert!(!closed);
+    assert_eq!(link.filed, None);
+    assert!(!link.closed);
     assert_eq!(
         link_of(&db, EntityKind::Test, still_open).await.number,
         Some(22),
@@ -130,14 +113,6 @@ async fn the_sync_keeps_a_link_closed_as_not_planned() {
     let db = TestDb::new().await.expect("a test database");
     let test = flaky_test(&db).await;
     stamp_link(&db, EntityKind::Test, test, stamp().number(12).checked()).await;
-    db.connection()
-        .execute_raw(Statement::from_sql_and_values(
-            DbBackend::Postgres,
-            "UPDATE test_cases SET github_issue_filed = TRUE WHERE id = $1",
-            [Value::from(test)],
-        ))
-        .await
-        .expect("the filed flag writes");
     let server = MockServer::start().await;
     mount_state(
         &server,
@@ -155,15 +130,14 @@ async fn the_sync_keeps_a_link_closed_as_not_planned() {
     )
     .await;
     let link = link_of(&db, EntityKind::Test, test).await;
-    let (number, filed, checked, closed) = (link.number, link.filed, link.checked(), link.closed);
     assert_eq!(
-        number,
+        link.number,
         Some(12),
         "the team declined this flake; nothing is filed again"
     );
-    assert_eq!(filed, Some(true), "the link is still ours");
-    assert!(checked, "and the link stays in the sync rotation");
-    assert!(closed, "and the row records why");
+    assert_eq!(link.filed, Some(true), "the link is still ours");
+    assert!(link.checked(), "and the link stays in the sync rotation");
+    assert!(link.closed, "and the row records why");
 }
 
 #[tokio::test]
@@ -177,14 +151,6 @@ async fn the_sync_clears_the_flag_when_a_declined_issue_reopens() {
         stamp().number(12).checked().closed(),
     )
     .await;
-    db.connection()
-        .execute_raw(Statement::from_sql_and_values(
-            DbBackend::Postgres,
-            "UPDATE test_cases SET github_issue_filed = TRUE WHERE id = $1",
-            [Value::from(test)],
-        ))
-        .await
-        .expect("the filed flag writes");
     let server = MockServer::start().await;
     mount_state(
         &server,
@@ -202,10 +168,9 @@ async fn the_sync_clears_the_flag_when_a_declined_issue_reopens() {
     )
     .await;
     let link = link_of(&db, EntityKind::Test, test).await;
-    let (number, filed, _, closed) = (link.number, link.filed, link.checked(), link.closed);
-    assert_eq!(number, Some(12));
-    assert_eq!(filed, Some(true), "the link is still ours");
-    assert!(!closed, "filing is live again");
+    assert_eq!(link.number, Some(12));
+    assert_eq!(link.filed, Some(true), "the link is still ours");
+    assert!(!link.closed, "filing is live again");
 }
 
 #[tokio::test]
@@ -225,11 +190,10 @@ async fn the_sync_rearms_a_link_whose_issue_is_gone() {
     )
     .await;
     let link = link_of(&db, EntityKind::Test, test).await;
-    let (number, filed, checked, closed) = (link.number, link.filed, link.checked(), link.closed);
-    assert_eq!(number, None);
-    assert_eq!(filed, None, "the flag resets with the number");
-    assert!(checked, "the row rotates like a checked one");
-    assert!(!closed, "a row with no number keeps no stale flag");
+    assert_eq!(link.number, None);
+    assert_eq!(link.filed, None, "the flag resets with the number");
+    assert!(link.checked(), "the row rotates like a checked one");
+    assert!(!link.closed, "a row with no number keeps no stale flag");
 }
 
 #[tokio::test]
@@ -262,13 +226,15 @@ async fn the_sync_keeps_a_link_on_a_permission_error_and_stamps_it() {
     )
     .await;
     let link = link_of(&db, EntityKind::Test, test).await;
-    let (number, _, checked, _) = (link.number, link.filed, link.checked(), link.closed);
     assert_eq!(
-        number,
+        link.number,
         Some(12),
         "a permission error says nothing about the issue"
     );
-    assert!(checked, "but the row was answered for, so it rotates");
+    assert!(
+        link.checked(),
+        "but the row was answered for, so it rotates"
+    );
     assert_eq!(
         link_of(&db, EntityKind::Test, other).await.number,
         None,
@@ -320,9 +286,8 @@ async fn the_sync_leaves_an_unreadable_body_alone_and_stamps_it() {
             "raw {raw:?}: the batch goes on"
         );
         let link = link_of(&db, EntityKind::Test, test).await;
-        let (number, _, checked, _) = (link.number, link.filed, link.checked(), link.closed);
-        assert_eq!(number, Some(11), "raw {raw:?}: the link survives");
-        assert!(checked, "raw {raw:?}: the row rotates");
+        assert_eq!(link.number, Some(11), "raw {raw:?}: the link survives");
+        assert!(link.checked(), "raw {raw:?}: the row rotates");
         assert_eq!(
             link_of(&db, EntityKind::Test, other).await.number,
             None,
@@ -352,9 +317,11 @@ async fn the_sync_stops_on_a_rate_limit_before_stamping_the_row() {
     )
     .await;
     let link = link_of(&db, EntityKind::Test, test).await;
-    let (number, _, checked, _) = (link.number, link.filed, link.checked(), link.closed);
-    assert_eq!(number, Some(12));
-    assert!(!checked, "a rate-limited row is retried first next run");
+    assert_eq!(link.number, Some(12));
+    assert!(
+        !link.checked(),
+        "a rate-limited row is retried first next run"
+    );
 }
 
 #[tokio::test]
@@ -446,11 +413,10 @@ async fn the_sync_leaves_an_unknown_issue_state_alone() {
     )
     .await;
     let link = link_of(&db, EntityKind::Test, test).await;
-    let (number, filed, checked, closed) = (link.number, link.filed, link.checked(), link.closed);
-    assert_eq!(number, Some(12), "an unknown state says nothing");
-    assert_eq!(filed, Some(true));
-    assert!(closed, "only a reported reopen clears the flag");
-    assert!(checked, "and the row still rotates");
+    assert_eq!(link.number, Some(12), "an unknown state says nothing");
+    assert_eq!(link.filed, Some(true));
+    assert!(link.closed, "only a reported reopen clears the flag");
+    assert!(link.checked(), "and the row still rotates");
 }
 
 #[tokio::test]
@@ -751,13 +717,11 @@ async fn a_permission_403_skips_the_later_rows_of_that_repo() {
         "the denied Repo is skipped for the rest of the sync"
     );
     let link = link_of(&db, EntityKind::Test, a1).await;
-    let (a1_number, _, a1_checked, _) = (link.number, link.filed, link.checked(), link.closed);
-    assert_eq!(a1_number, Some(11), "a permission 403 clears nothing");
-    assert!(a1_checked, "the denied row rotates like a checked one");
+    assert_eq!(link.number, Some(11), "a permission 403 clears nothing");
+    assert!(link.checked(), "the denied row rotates like a checked one");
     let link = link_of(&db, EntityKind::Test, a2).await;
-    let (a2_number, _, a2_checked, _) = (link.number, link.filed, link.checked(), link.closed);
-    assert_eq!(a2_number, Some(12));
-    assert!(a2_checked, "the skipped row rotates too");
+    assert_eq!(link.number, Some(12));
+    assert!(link.checked(), "the skipped row rotates too");
     assert_eq!(
         link_of(&db, EntityKind::Test, b).await.number,
         None,
@@ -1404,14 +1368,13 @@ async fn a_link_replaced_during_the_sync_get_survives() {
     );
 
     let link = link_of(&db, EntityKind::Test, test).await;
-    let (number, _, checked, _) = (link.number, link.filed, link.checked(), link.closed);
     assert_eq!(
-        number,
+        link.number,
         Some(99),
         "the link replaced during the GET stands, whatever the old answer said"
     );
     assert!(
-        !checked,
+        !link.checked(),
         "the old number's answer does not stamp the new link as checked"
     );
 }
@@ -1570,14 +1533,12 @@ async fn the_sync_rearm_clears_the_fixed_note_stamp_but_a_declined_link_keeps_it
     );
     for id in [closed, gone] {
         let link = link_of(&db, EntityKind::Test, id).await;
-        let (number, _, _, _) = (link.number, link.filed, link.checked(), link.closed);
-        assert_eq!(number, None, "the closed or gone link re-arms");
+        assert_eq!(link.number, None, "the closed or gone link re-arms");
         assert!(!noted(&db, "test_cases", id).await);
     }
     let link = link_of(&db, EntityKind::Test, declined).await;
-    let (number, _, _, is_closed) = (link.number, link.filed, link.checked(), link.closed);
-    assert_eq!(number, Some(33), "a declined link is kept");
-    assert!(is_closed);
+    assert_eq!(link.number, Some(33), "a declined link is kept");
+    assert!(link.closed);
     assert!(
         noted(&db, "test_cases", declined).await,
         "the same Issue keeps the comment it already earned"

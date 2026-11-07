@@ -65,12 +65,10 @@ async fn a_flaky_test_is_filed_in_its_own_repo_with_its_evidence() {
     .await;
     assert_eq!(filed.linked.into_iter().collect::<Vec<_>>(), vec![test]);
     let link = link_of(&db, EntityKind::Test, test).await;
-    let (number, is_filed, checked, closed) =
-        (link.number, link.filed, link.checked(), link.closed);
-    assert_eq!(number, Some(7));
-    assert_eq!(is_filed, Some(true), "a filed link is FlakeRadar's own");
-    assert!(!checked);
-    assert!(!closed);
+    assert_eq!(link.number, Some(7));
+    assert_eq!(link.filed, Some(true), "a filed link is FlakeRadar's own");
+    assert!(!link.checked());
+    assert!(!link.closed);
 
     let requests = server
         .received_requests()
@@ -855,14 +853,6 @@ async fn a_kept_not_planned_link_is_never_refiled() {
         stamp().number(11).checked().closed(),
     )
     .await;
-    db.connection()
-        .execute_raw(Statement::from_sql_and_values(
-            DbBackend::Postgres,
-            "UPDATE test_cases SET github_issue_filed = TRUE WHERE id = $1",
-            [Value::from(wont_fix)],
-        ))
-        .await
-        .expect("the flag writes");
     let server = MockServer::start().await;
 
     assert!(
@@ -886,10 +876,9 @@ async fn a_kept_not_planned_link_is_never_refiled() {
         "a kept link is still the dedupe"
     );
     let link = link_of(&db, EntityKind::Test, wont_fix).await;
-    let (number, filed, _, closed) = (link.number, link.filed, link.checked(), link.closed);
-    assert_eq!(number, Some(11));
-    assert_eq!(filed, Some(true));
-    assert!(closed);
+    assert_eq!(link.number, Some(11));
+    assert_eq!(link.filed, Some(true));
+    assert!(link.closed);
 }
 
 #[tokio::test]
@@ -1723,9 +1712,8 @@ async fn a_row_deleted_while_filing_leaves_the_rest_of_the_batch_filed() {
     );
     assert_eq!(link_of(&db, EntityKind::Test, a).await.number, None);
     let link = link_of(&db, EntityKind::Test, b).await;
-    let (number, is_filed, _, _) = (link.number, link.filed, link.checked(), link.closed);
-    assert_eq!(number, Some(88));
-    assert_eq!(is_filed, Some(true));
+    assert_eq!(link.number, Some(88));
+    assert_eq!(link.filed, Some(true));
 }
 
 #[tokio::test]

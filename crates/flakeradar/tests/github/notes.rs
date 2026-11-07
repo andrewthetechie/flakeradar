@@ -1272,11 +1272,10 @@ async fn an_unlink_clears_both_halves_and_a_rearm_keeps_its_stamp() {
     .await
     .expect("the unlink succeeds");
     let link = link_of(&db, EntityKind::Test, unlinked).await;
-    let (number, filed, checked, closed) = (link.number, link.filed, link.checked(), link.closed);
-    assert_eq!(number, None, "unlink drops the number");
-    assert_eq!(filed, None, "and the provenance");
-    assert!(!checked, "and the check stamp");
-    assert!(!closed);
+    assert_eq!(link.number, None, "unlink drops the number");
+    assert_eq!(link.filed, None, "and the provenance");
+    assert!(!link.checked(), "and the check stamp");
+    assert!(!link.closed);
 
     let server = MockServer::start().await;
     mount_state(
@@ -1299,9 +1298,8 @@ async fn an_unlink_clears_both_halves_and_a_rearm_keeps_its_stamp() {
         "the unlinked row is out of the rotation"
     );
     let link = link_of(&db, EntityKind::Test, rearmed).await;
-    let (number, _, checked, _) = (link.number, link.filed, link.checked(), link.closed);
-    assert_eq!(number, None, "the re-arm clears the number");
-    assert!(checked, "and keeps the stamp it just wrote");
+    assert_eq!(link.number, None, "the re-arm clears the number");
+    assert!(link.checked(), "and keeps the stamp it just wrote");
     assert!(
         !link_of(&db, EntityKind::Test, unlinked).await.checked(),
         "and leaves the unlinked row alone"
@@ -1420,10 +1418,9 @@ async fn an_unlink_rearms_a_declined_link_and_the_filer_files_it_again() {
     .await
     .expect("the Test unlink succeeds");
     let link = link_of(&db, EntityKind::Test, test).await;
-    let (number, filed, _, closed) = (link.number, link.filed, link.checked(), link.closed);
-    assert_eq!(number, None);
-    assert_eq!(filed, None, "no provenance without a number");
-    assert!(!closed, "the declined flag goes with the link");
+    assert_eq!(link.number, None);
+    assert_eq!(link.filed, None, "no provenance without a number");
+    assert!(!link.closed, "the declined flag goes with the link");
 
     issue_links::unlink_issue(
         db.connection(),
@@ -1434,9 +1431,8 @@ async fn an_unlink_rearms_a_declined_link_and_the_filer_files_it_again() {
     .await
     .expect("the Job unlink succeeds");
     let link = link_of(&db, EntityKind::Job, job).await;
-    let (number, filed) = (link.number, link.filed);
-    assert_eq!(number, None);
-    assert_eq!(filed, None);
+    assert_eq!(link.number, None);
+    assert_eq!(link.filed, None);
 
     let filing = MockServer::start().await;
     mount_create(
@@ -1453,9 +1449,8 @@ async fn an_unlink_rearms_a_declined_link_and_the_filer_files_it_again() {
     )
     .await;
     let link = link_of(&db, EntityKind::Test, test).await;
-    let (number, _, _, closed) = (link.number, link.filed, link.checked(), link.closed);
-    assert_eq!(number, Some(77), "the filer files the re-armed Test");
-    assert!(!closed, "a fresh link starts unflagged");
+    assert_eq!(link.number, Some(77), "the filer files the re-armed Test");
+    assert!(!link.closed, "a fresh link starts unflagged");
 
     let sync = MockServer::start().await;
     mount_state(
