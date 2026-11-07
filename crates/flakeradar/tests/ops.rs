@@ -16,6 +16,7 @@ use axum::http::StatusCode;
 use flakeradar::app::AppState;
 use flakeradar::app::build_app;
 use flakeradar_core::model::ReportStatus;
+use flakeradar_core::types::Score;
 use flakeradar_db::WORKER_LOCK_KEY;
 use flakeradar_db::entities::projects;
 use flakeradar_test_support::{
@@ -392,7 +393,8 @@ async fn metrics_tiers_classify_like_tier_for() {
 fn tier_counts(scores: &[f64], threshold: f64) -> BTreeMap<String, usize> {
     let mut counts = BTreeMap::new();
     for score in scores {
-        let tier = flakeradar_core::helpers::tier_for(*score, threshold)
+        let score = Score::new(*score).expect("the test states a score");
+        let tier = flakeradar_core::helpers::tier_for(score, threshold)
             .as_str()
             .to_owned();
         *counts.entry(tier).or_insert(0) += 1;

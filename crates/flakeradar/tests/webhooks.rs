@@ -15,6 +15,7 @@ use flakeradar::webhooks::WebhookWorker;
 use flakeradar::worker::LeaderTask;
 use flakeradar_core::{
     model::EntityKind, model::ReportStatus, model::Tier, notify::TierChange, notify::WebhookFormat,
+    types::Score,
 };
 use flakeradar_db::processing::ProcessOutcome;
 use flakeradar_test_support::{
@@ -40,7 +41,7 @@ fn test_change() -> TierChange {
         repo: "acme/app".to_owned(),
         project: Some("backend".to_owned()),
         name: "test_total".to_owned(),
-        flakiness_score: 0.42,
+        flakiness_score: score(0.42),
         tier: Tier::Flaky,
         proven_flake_count: 2,
         classname: Some("tests.test_cart".to_owned()),
@@ -57,7 +58,7 @@ fn job_change() -> TierChange {
         repo: "acme/app".to_owned(),
         project: None,
         name: "unit".to_owned(),
-        flakiness_score: 0.5,
+        flakiness_score: score(0.5),
         tier: Tier::Flaky,
         proven_flake_count: 1,
         classname: None,
@@ -92,6 +93,11 @@ async fn recorded(server: &MockServer) -> usize {
         .received_requests()
         .await
         .map_or(0, |requests| requests.len())
+}
+
+/// A Flakiness score a test states as a literal.
+fn score(value: f64) -> Score {
+    Score::new(value).expect("the test states a score")
 }
 
 #[tokio::test]

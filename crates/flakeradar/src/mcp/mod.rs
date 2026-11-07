@@ -246,7 +246,7 @@ pub(crate) enum ToolAnswer {
 impl ToolAnswer {
     /// The answer of a tool whose `lists` says whether it returns a list.
     ///
-    /// A handler passes the same `LISTS` its own table row gives [`definition`],
+    /// A handler passes the same `LISTS` its own table row gives `definition`,
     /// so the output schema a client reads and the answer it gets are the one
     /// statement in the tool's file: a tool cannot answer in a shape it did not
     /// declare.
@@ -601,7 +601,7 @@ fn score_points(history: &[ScorePointOut]) -> Vec<ScorePointSummary> {
         .skip(start)
         .map(|point| ScorePointSummary {
             day: point.day,
-            flakiness_score: point.flakiness_score,
+            flakiness_score: point.flakiness_score.as_f64(),
         })
         .collect()
 }

@@ -125,6 +125,55 @@ async fn seed(db: &TestDb) {
         .expect("an execution");
 }
 
+/// The plain-text 500 a read layer gives for a row it cannot type.
+const UNUSABLE_ROW: (u16, &str) = (500, "Internal Server Error");
+
+#[tokio::test]
+async fn a_stored_score_that_is_no_score_refuses_the_row() {
+    // `flakiness_score` is a plain `double precision`, so a row written by hand can
+    // hold `NaN`. No rule of this server computes a score outside 0 to 1, so the
+    // read has no truthful number to serve and refuses the row instead of answering
+    // the JSON `null` its own schema says is not a number.
+    let db = TestDb::new().await.expect("a test database");
+    seed(&db).await;
+    sea_orm::ConnectionTrait::execute_unprepared(
+        db.connection(),
+        "UPDATE test_cases SET flakiness_score = 'NaN'",
+    )
+    .await
+    .expect("the score is written");
+    let reply = get(
+        &app(&db, &[]),
+        "/api/tests?repo=andrewthetechie/writers-app",
+    )
+    .await;
+    let (status, body) = UNUSABLE_ROW;
+    assert_eq!(reply.status, status, "{}", reply.text());
+    assert_eq!(reply.text(), body);
+}
+
+#[tokio::test]
+async fn a_stored_fingerprint_that_is_no_digest_refuses_the_row() {
+    // A fingerprint is the SHA-1 of a Test identity, so a 4-character word is not
+    // one: serving it would hand a consumer an id no lookup can repeat.
+    let db = TestDb::new().await.expect("a test database");
+    seed(&db).await;
+    sea_orm::ConnectionTrait::execute_unprepared(
+        db.connection(),
+        "UPDATE test_cases SET fingerprint = 'nope' WHERE id = (SELECT min(id) FROM test_cases)",
+    )
+    .await
+    .expect("the fingerprint is written");
+    let reply = get(
+        &app(&db, &[]),
+        "/api/tests?repo=andrewthetechie/writers-app",
+    )
+    .await;
+    let (status, body) = UNUSABLE_ROW;
+    assert_eq!(reply.status, status, "{}", reply.text());
+    assert_eq!(reply.text(), body);
+}
+
 #[tokio::test]
 async fn repos_endpoint_lists_each_repo_with_its_projects() {
     let db = TestDb::new().await.expect("a test database");

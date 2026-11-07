@@ -18,7 +18,7 @@ use flakeradar_core::{
     dto::Issues, dto::JobHistoryOut, dto::JobPage, dto::JobSummaryOut, dto::NAME_MAX,
     dto::PATH_MAX, dto::PIPELINE_MAX, dto::PROJECT_MAX, dto::QuarantineIn, dto::QuarantineItem,
     dto::RepoOut, dto::SummaryOut, dto::TestOut, dto::TestPage, dto::ValidationIssue,
-    identity::normalize_project, identity::normalize_repo, lax,
+    identity::normalize_project, identity::normalize_repo, lax, types::CiRunId,
 };
 use flakeradar_db::{
     reads::DEFAULT_EXECUTIONS_LIMIT, reads::FAILURES_LIMIT, reads::JobListFilters,
@@ -745,25 +745,28 @@ pub async fn ci_run(
     if path.ci_run_id.is_empty() {
         return Err(RouteError::NotFound("Not Found".to_owned()));
     }
-    let mut issues = Issues::new();
-    let length = path.ci_run_id.chars().count();
-    if length > NAME_MAX {
-        issues.push(ValidationIssue::string_too_long(
-            vec![
-                flakeradar_core::dto::LocSegment::Field("path".to_owned()),
-                flakeradar_core::dto::LocSegment::Field("ci_run_id".to_owned()),
-            ],
-            JsonValue::from(path.ci_run_id.clone()),
-            NAME_MAX,
-        ));
-    }
-    issues.finish().map_err(ApiError::unprocessable)?;
+    // The CI run id's own type is the bound: an id past it is not one the column
+    // can hold, so it is refused with the 422 this route already answers for a too
+    // long path text, and no read has to guard against a value it cannot match.
+    let Ok(ci_run_id) = CiRunId::new(&path.ci_run_id) else {
+        return Err(
+            ApiError::unprocessable(vec![ValidationIssue::string_too_long(
+                vec![
+                    flakeradar_core::dto::LocSegment::Field("path".to_owned()),
+                    flakeradar_core::dto::LocSegment::Field("ci_run_id".to_owned()),
+                ],
+                JsonValue::from(path.ci_run_id.clone()),
+                CiRunId::MAX_LEN,
+            )])
+            .into(),
+        );
+    };
     let repo = normalize_repo(&query.repo).map_err(|error| identity_error(&error))?;
     Ok(Json(
         ci_run_failures(
             state.pool(),
             &repo,
-            &path.ci_run_id,
+            &ci_run_id,
             query.ci_run_attempt,
             &read_settings(&state),
             FAILURES_LIMIT,

@@ -12,14 +12,16 @@
 use std::collections::BTreeMap;
 
 use chrono::{DateTime, FixedOffset, Utc};
-use flakeradar_core::{model::EntityKind, model::ExecutionStatus};
+use flakeradar_core::{
+    model::EntityKind, model::ExecutionStatus, types::Fingerprint, types::Score,
+};
 use sea_orm::sea_query::Value;
 use sea_orm::{ConnectionTrait, QueryResult};
 
 use crate::attribution::{int_array, test_window_ids_overall_sql, unexplained_failure_counts};
 use crate::batching::chunks;
 use crate::error::DbError;
-use crate::sql::{execution_status, get, rows};
+use crate::sql::{execution_status, fingerprint, get, rows, score};
 
 /// The gate every fileable row must pass, as one value.
 ///
@@ -73,9 +75,9 @@ pub struct TestRow {
     /// The line the Test is defined on.
     pub line: Option<i32>,
     /// The Test's stable identity hash.
-    pub fingerprint: String,
+    pub fingerprint: Fingerprint,
     /// The Flakiness score.
-    pub flakiness_score: f64,
+    pub flakiness_score: Score,
     /// The Proven flake count.
     pub confirmed_flake_count: i32,
 }
@@ -88,7 +90,7 @@ pub struct JobRow {
     /// The Job's name within its Pipeline.
     pub name: String,
     /// The Flakiness score.
-    pub flakiness_score: f64,
+    pub flakiness_score: Score,
     /// The Proven flake count.
     pub confirmed_flake_count: i32,
 }
@@ -102,8 +104,8 @@ fn test_row(row: &QueryResult) -> Result<TestRow, DbError> {
         suite: get(row, "suite")?,
         file: get(row, "file")?,
         line: get(row, "line")?,
-        fingerprint: get(row, "fingerprint")?,
-        flakiness_score: get(row, "flakiness_score")?,
+        fingerprint: fingerprint(&get::<String>(row, "fingerprint")?, "fingerprint")?,
+        flakiness_score: score(get(row, "flakiness_score")?, "flakiness_score")?,
         confirmed_flake_count: get(row, "confirmed_flake_count")?,
     })
 }
@@ -113,7 +115,7 @@ fn job_row(row: &QueryResult) -> Result<JobRow, DbError> {
     Ok(JobRow {
         id: get(row, "id")?,
         name: get(row, "name")?,
-        flakiness_score: get(row, "flakiness_score")?,
+        flakiness_score: score(get(row, "flakiness_score")?, "flakiness_score")?,
         confirmed_flake_count: get(row, "confirmed_flake_count")?,
     })
 }
@@ -354,7 +356,7 @@ pub struct NoteCandidate {
     /// The Clean streak the comment names.
     pub clean_streak: i32,
     /// The Flakiness score the comment names.
-    pub score: f64,
+    pub score: Score,
     /// The stored issue number.
     pub number: i32,
 }
@@ -386,7 +388,7 @@ pub async fn note_test_candidates(
                 repo: get(&row, "repo_name")?,
                 default_branch: get(&row, "default_branch")?,
                 clean_streak: get(&row, "clean_streak")?,
-                score: get(&row, "flakiness_score")?,
+                score: score(get(&row, "flakiness_score")?, "flakiness_score")?,
                 number: get(&row, "number")?,
             });
         }
@@ -422,7 +424,7 @@ pub async fn note_job_candidates(
                 repo: get(&row, "repo_name")?,
                 default_branch: get(&row, "default_branch")?,
                 clean_streak: get(&row, "clean_streak")?,
-                score: get(&row, "flakiness_score")?,
+                score: score(get(&row, "flakiness_score")?, "flakiness_score")?,
                 number: get(&row, "number")?,
             });
         }

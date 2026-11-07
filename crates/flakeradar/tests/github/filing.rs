@@ -96,7 +96,7 @@ async fn a_flaky_test_is_filed_in_its_own_repo_with_its_evidence() {
         "pytest backend/tests/test_cart.py::test_total",
         "| failed | `abcdef1234` | main |",
         "Traceback (most recent call last):",
-        "_Fingerprint: `abc123`_",
+        "_Fingerprint: `25cdd150e8f4335ddfb17485d80e2defa6b56643`_",
     ] {
         assert!(
             body_text.contains(expected),

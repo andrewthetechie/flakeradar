@@ -20,7 +20,7 @@ use crate::model::{
     ExecutionStatus, FailedJobOutcome, JobOutcome, JobStatus, ReportKind, ReportStatus, Tier, Trend,
 };
 use crate::py::strip_wire_whitespace;
-use crate::types::CiRunId;
+use crate::types::{CiRunId, Fingerprint, Score};
 
 /// The timestamp shape every response uses.
 ///
@@ -1385,8 +1385,8 @@ pub struct ReportOut {
     pub commit_sha: String,
     /// The branch the commit is on.
     pub branch: String,
-    /// The CI provider's run id.
-    pub ci_run_id: String,
+    /// The CI provider's run id, or the empty id an upload gave no run.
+    pub ci_run_id: CiRunId,
     /// `pending`, `processed` or `failed`.
     pub status: ReportStatus,
     /// Why processing failed, when it did.
@@ -1493,7 +1493,7 @@ pub struct TestOut {
     /// The Project's name.
     pub project: String,
     /// The Test's stable identity hash.
-    pub fingerprint: String,
+    pub fingerprint: Fingerprint,
     /// The suite the runner reported.
     pub suite: String,
     /// The classname the runner reported.
@@ -1505,7 +1505,7 @@ pub struct TestOut {
     /// The line the Test is defined on, when reported.
     pub line: Option<i64>,
     /// The Flakiness score.
-    pub flakiness_score: f64,
+    pub flakiness_score: Score,
     /// The tier the score falls in.
     pub tier: Tier,
     /// How many commit SHAs recorded both outcomes.
@@ -1603,7 +1603,7 @@ pub struct ExecutionOut {
     /// The branch the commit is on.
     pub branch: String,
     /// The CI provider's run id.
-    pub ci_run_id: String,
+    pub ci_run_id: CiRunId,
     /// Which retry inside the Run this is, numbered from 0.
     pub attempt: i64,
     /// The Failure category, when the Execution failed.
@@ -1638,7 +1638,7 @@ pub struct ScorePointOut {
     /// The day the snapshot was taken.
     pub day: NaiveDate,
     /// The Flakiness score at the end of that day.
-    pub flakiness_score: f64,
+    pub flakiness_score: Score,
     /// The Proven flake count at the end of that day.
     pub confirmed_flake_count: i64,
     /// Executions that day.
@@ -1680,7 +1680,7 @@ pub struct JobOut {
     /// The Job's name.
     pub name: String,
     /// The Flakiness score.
-    pub flakiness_score: f64,
+    pub flakiness_score: Score,
     /// The tier the score falls in.
     pub tier: Tier,
     /// How many commit SHAs recorded both outcomes.
@@ -1760,7 +1760,7 @@ pub struct JobExecutionOut {
     /// The branch the commit is on.
     pub branch: String,
     /// The CI provider's run id.
-    pub ci_run_id: String,
+    pub ci_run_id: CiRunId,
     /// Which attempt of the CI run this was.
     pub ci_run_attempt: i64,
     /// The CI provider's Job id.
@@ -1947,7 +1947,7 @@ pub struct QuarantineItem {
     /// The Test's name.
     pub name: String,
     /// The Test's identity hash.
-    pub fingerprint: String,
+    pub fingerprint: Fingerprint,
     /// The file the Test is defined in.
     pub file: Option<String>,
     /// The line the Test is defined on.
@@ -2001,7 +2001,7 @@ pub struct CiRunTestFailureOut {
     /// The tier the score falls in.
     pub tier: Tier,
     /// The Flakiness score.
-    pub flakiness_score: f64,
+    pub flakiness_score: Score,
     /// How many commit SHAs recorded both outcomes.
     pub confirmed_flake_count: i64,
     /// Non-skipped Executions since the newest failure.
@@ -2040,7 +2040,7 @@ pub struct CiRunFailedJobOut {
     /// The tier the score falls in.
     pub tier: Tier,
     /// The Flakiness score.
-    pub flakiness_score: f64,
+    pub flakiness_score: Score,
     /// How many commit SHAs recorded both outcomes.
     pub confirmed_flake_count: i64,
     /// Non-skipped Executions since the newest failure.
@@ -2059,7 +2059,7 @@ pub struct CiRunFailuresOut {
     /// The Repo's `owner/name`.
     pub repo: String,
     /// The CI provider's run id.
-    pub ci_run_id: String,
+    pub ci_run_id: CiRunId,
     /// Which attempt this is.
     pub ci_run_attempt: i64,
     /// The configured Flake threshold.

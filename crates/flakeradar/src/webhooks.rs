@@ -366,7 +366,7 @@ mod tests {
 
     use super::{WebhookShared, WebhookWorker, retry_after_seconds};
     use flakeradar_core::{
-        model::EntityKind, model::Tier, notify::TierChange, notify::WebhookFormat,
+        model::EntityKind, model::Tier, notify::TierChange, notify::WebhookFormat, types::Score,
     };
     use reqwest::header::{HeaderMap, HeaderValue};
     use tokio_util::sync::CancellationToken;
@@ -389,7 +389,7 @@ mod tests {
             repo: "acme/app".to_owned(),
             project: Some("backend".to_owned()),
             name: "test_total".to_owned(),
-            flakiness_score: 0.42,
+            flakiness_score: Score::new(0.42).expect("a score"),
             tier: Tier::Flaky,
             proven_flake_count: 2,
             classname: Some("tests.test_cart".to_owned()),

@@ -180,6 +180,11 @@ async fn history_statuses(db: &TestDb, job_id: i32) -> Vec<String> {
         .collect()
 }
 
+/// A CI run id a test states as a literal.
+fn run_id(text: &str) -> CiRunId {
+    CiRunId::new(text).expect("the test states a CI run id")
+}
+
 #[tokio::test]
 async fn pipeline_first_then_junit_explains() {
     let db = TestDb::new().await.expect("a test database");
@@ -1006,7 +1011,7 @@ async fn summary_explaining_siblings_lists_the_failed_jobs_of_each_pair() {
         .expect("the Repo")
         .expect("the Repo exists");
 
-    let empty = summary_explaining_siblings(db.connection(), repo.id, &[(String::new(), 1)])
+    let empty = summary_explaining_siblings(db.connection(), repo.id, &[(run_id(""), 1)])
         .await
         .expect("the sibling query runs");
     assert!(empty.is_empty(), "an empty ci_run_id explains nothing");
@@ -1014,16 +1019,12 @@ async fn summary_explaining_siblings_lists_the_failed_jobs_of_each_pair() {
     let explained = summary_explaining_siblings(
         db.connection(),
         repo.id,
-        &[
-            ("7".to_owned(), 1),
-            ("8".to_owned(), 1),
-            ("7".to_owned(), 1),
-        ],
+        &[(run_id("7"), 1), (run_id("8"), 1), (run_id("7"), 1)],
     )
     .await
     .expect("the sibling query runs");
     let siblings = explained
-        .get(&("7".to_owned(), 1))
+        .get(&(run_id("7"), 1))
         .expect("the pair with a failure");
     assert_eq!(
         siblings
@@ -1033,7 +1034,7 @@ async fn summary_explaining_siblings_lists_the_failed_jobs_of_each_pair() {
         [("lint", ".github/workflows/ci.yml")]
     );
     assert_eq!(
-        explained.get(&("8".to_owned(), 1)).map(Vec::len),
+        explained.get(&(run_id("8"), 1)).map(Vec::len),
         Some(1),
         "a pair of its own keeps its own failures"
     );
@@ -1065,11 +1066,11 @@ async fn summary_explaining_siblings_lists_at_most_the_cap_per_pair() {
         .await
         .expect("the Repo")
         .expect("the Repo exists");
-    let explained = summary_explaining_siblings(db.connection(), repo.id, &[("7".to_owned(), 1)])
+    let explained = summary_explaining_siblings(db.connection(), repo.id, &[(run_id("7"), 1)])
         .await
         .expect("the sibling query runs");
     assert_eq!(
-        explained.get(&("7".to_owned(), 1)).map(Vec::len),
+        explained.get(&(run_id("7"), 1)).map(Vec::len),
         Some(SIBLING_MAX)
     );
 }

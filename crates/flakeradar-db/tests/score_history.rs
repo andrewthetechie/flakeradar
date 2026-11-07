@@ -15,6 +15,7 @@
 use chrono::{Duration, NaiveDate};
 use flakeradar_core::helpers::TREND_DAYS;
 use flakeradar_core::model::EntityKind;
+use flakeradar_core::types::Score;
 use flakeradar_db::entities::{job_score_history, pipelines, test_score_history};
 use flakeradar_db::{
     score_history::HISTORY_DAYS, score_history::HistoryUpdate,
@@ -35,7 +36,7 @@ fn today() -> NaiveDate {
 fn update(id: i32, score: f64, confirmed: i32, counts: (i32, i32)) -> HistoryUpdate {
     HistoryUpdate {
         id,
-        flakiness_score: score,
+        flakiness_score: Score::new(score).expect("the test states a score"),
         confirmed_flake_count: confirmed,
         executions: counts.0,
         failures: counts.1,
@@ -396,7 +397,7 @@ async fn score_history_reads_agree_for_a_test() {
         .expect("the detail window");
     assert_eq!(
         rows.iter()
-            .map(|row| (row.day, row.flakiness_score))
+            .map(|row| (row.day, row.flakiness_score.as_f64()))
             .collect::<Vec<_>>(),
         vec![
             (today - Duration::days(HISTORY_DAYS - 1), 0.3),
@@ -481,7 +482,7 @@ async fn score_history_reads_agree_for_a_job() {
         .expect("the detail window");
     assert_eq!(
         rows.iter()
-            .map(|row| (row.day, row.flakiness_score))
+            .map(|row| (row.day, row.flakiness_score.as_f64()))
             .collect::<Vec<_>>(),
         vec![
             (today - Duration::days(HISTORY_DAYS - 1), 0.3),

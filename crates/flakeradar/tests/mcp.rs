@@ -1762,12 +1762,11 @@ async fn a_failing_read_of_one_ci_run_is_an_error_result() {
 }
 
 #[tokio::test]
-async fn a_non_finite_score_is_answered_as_null_not_as_a_failure() {
-    // `flakiness_score` is a `double`, so a NaN score is storable even though
-    // nothing this server writes makes one. `serde_json` serializes a
-    // non-finite float as `null` rather than failing, so the answer is still a
-    // well-formed result a client can read, and no answer this file builds can
-    // reach its "does not serialize" arm.
+async fn a_stored_score_that_is_no_score_raises_the_tool() {
+    // `flakiness_score` is a `double precision`, so a hand-written row can hold
+    // `NaN`, which this port used to serve as JSON `null` under a field its own
+    // schema calls a number. A score is a finite number from 0 to 1, so the answer
+    // is now the tool error a failing query gets, and the row says so.
     let db = TestDb::new().await.expect("a test database is available");
     let app = mcp_app(&db);
     let _ = seed(&db).await;
@@ -1787,15 +1786,11 @@ async fn a_non_finite_score_is_answered_as_null_not_as_a_failure() {
         }),
     )
     .await;
-    let body = reply.json();
-    assert!(body.get("error").is_none(), "{body}");
-    let tests = body["result"]["structuredContent"]["result"]
-        .as_array()
-        .expect("the answer is a list");
-    assert_eq!(tests.len(), 4, "{body}");
-    for test in tests {
-        assert_eq!(test["flakiness_score"], Value::Null, "{test}");
-    }
+    let message = assert_raised(&reply, "top_flaky_tests");
+    assert!(
+        message.contains("flakiness_score"),
+        "the refusal names the column: {message}"
+    );
 }
 
 #[tokio::test]

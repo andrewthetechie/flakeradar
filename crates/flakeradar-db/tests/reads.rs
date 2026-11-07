@@ -14,7 +14,9 @@
 use std::sync::Arc;
 
 use chrono::{DateTime, FixedOffset};
-use flakeradar_core::{dto::PipelineReportIn, dto::pipeline_body, model::ExecutionStatus};
+use flakeradar_core::{
+    dto::PipelineReportIn, dto::pipeline_body, model::ExecutionStatus, types::CiRunId,
+};
 use flakeradar_db::{
     processing::ProcessingSettings, processing::process_next, reads::ListOptions,
     reads::ReadSettings, reads::Scope, reads::SortKey, reads::TestListFilters,
@@ -99,6 +101,11 @@ async fn seed_search(db: &TestDb) -> (i32, i32) {
     (wanted.id, app.id)
 }
 
+/// A CI run id a test states as a literal.
+fn run_id(text: &str) -> CiRunId {
+    CiRunId::new(text).expect("the test states a CI run id")
+}
+
 #[tokio::test]
 async fn search_tests_is_a_scoped_literal_substring_worst_first() {
     let db = TestDb::new().await.expect("a test database");
@@ -107,7 +114,7 @@ async fn search_tests_is_a_scoped_literal_substring_worst_first() {
         .await
         .expect("the search");
     assert_eq!(found.len(), 2);
-    assert_eq!(found[0].flakiness_score, 0.6);
+    assert_eq!(found[0].flakiness_score.as_f64(), 0.6);
     let scoped = search_tests(
         db.connection(),
         &Scope::new(Some("acme/app".to_owned()), None).expect("a scope"),
@@ -401,9 +408,16 @@ async fn a_ci_run_listing_caps_its_failures_and_flags_the_rest() {
             .await
             .expect("a failure");
     }
-    let listing = ci_run_failures(db.connection(), "acme/app", "100", None, &settings(), 2)
-        .await
-        .expect("the listing");
+    let listing = ci_run_failures(
+        db.connection(),
+        "acme/app",
+        &run_id("100"),
+        None,
+        &settings(),
+        2,
+    )
+    .await
+    .expect("the listing");
     assert_eq!(listing.total_failures, 3);
     assert!(listing.truncated);
     assert_eq!(listing.failures.len(), 2);
@@ -473,7 +487,7 @@ async fn a_nextest_flaky_fail_is_a_proven_flake_in_its_ci_run() {
     let listing = ci_run_failures(
         db.connection(),
         "acme/app",
-        "38994487107",
+        &run_id("38994487107"),
         None,
         &settings(),
         500,

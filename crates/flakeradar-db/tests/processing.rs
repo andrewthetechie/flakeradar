@@ -17,7 +17,7 @@ use chrono::{DateTime, FixedOffset};
 use flakeradar_core::{
     dto::JobResultIn, dto::PipelineReportIn, dto::pipeline_body, helpers::is_broken,
     helpers::tier_for, model::EntityKind, model::ExecutionStatus, model::JobStatus,
-    model::ReportStatus, scoring::ScoredExecution, types::CiRunId,
+    model::ReportStatus, scoring::ScoredExecution, types::CiRunId, types::Score,
 };
 use flakeradar_db::entities::{
     job_executions, job_score_history, jobs, pipelines, projects, reports, repos, test_cases,
@@ -240,6 +240,11 @@ fn payload(jobs: Vec<JobResultIn>) -> PipelineReportIn {
         ci_run_attempt: 1,
         jobs,
     }
+}
+
+/// The stored score, as the read layer would hand it out.
+fn stored_score(value: f64) -> Score {
+    Score::new(value).expect("a stored score is a score")
 }
 
 #[tokio::test]
@@ -1193,8 +1198,11 @@ async fn an_upward_tier_crossing_is_reported() {
         (change.classname.as_deref(), change.name.as_str()),
         (Some("tests.test_mod"), "t")
     );
-    assert_eq!(change.flakiness_score, row.flakiness_score);
-    assert_eq!(change.tier, tier_for(row.flakiness_score, 0.05));
+    assert_eq!(change.flakiness_score, stored_score(row.flakiness_score));
+    assert_eq!(
+        change.tier,
+        tier_for(stored_score(row.flakiness_score), 0.05)
+    );
     assert_eq!(
         change.proven_flake_count,
         usize::try_from(row.confirmed_flake_count).expect("a count")
@@ -1236,7 +1244,7 @@ async fn a_downward_tier_crossing_is_reported() {
         .expect("a Report");
     let change = outcome.tier_changes.first().expect("a tier change");
     assert_eq!(change.event(), "test.recovered");
-    assert_eq!(change.flakiness_score, 0.0);
+    assert_eq!(change.flakiness_score, Score::ZERO);
 }
 
 #[tokio::test]
@@ -1943,7 +1951,7 @@ async fn a_job_tier_crossing_reports_job_flaky() {
                 (change.pipeline.as_deref(), change.name.as_str()),
                 (Some(".github/workflows/ci.yml"), "test (ubuntu, 3.12)")
             );
-            assert_eq!(change.flakiness_score, row.flakiness_score);
+            assert_eq!(change.flakiness_score, stored_score(row.flakiness_score));
             assert_eq!(change.tier, flakeradar_core::model::Tier::Flaky);
             assert_eq!(
                 (change.classname.as_deref(), change.failure_category),
@@ -1981,7 +1989,7 @@ async fn a_job_recovery_reports_job_recovered() {
         .expect("a Report");
     let change = outcome.tier_changes.first().expect("a tier change");
     assert_eq!(change.event(), "job.recovered");
-    assert_eq!(change.flakiness_score, 0.0);
+    assert_eq!(change.flakiness_score, Score::ZERO);
 }
 
 #[tokio::test]

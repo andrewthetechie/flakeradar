@@ -11,12 +11,13 @@
 
 use chrono::NaiveDate;
 use flakeradar_core::model::EntityKind;
+use flakeradar_core::types::Score;
 use sea_orm::{ConnectionTrait, DbBackend, Statement, Value};
 
 use crate::attribution::int_array;
 use crate::batching::chunks;
 use crate::error::DbError;
-use crate::sql::{get, rows, value_row};
+use crate::sql::{get, rows, score, value_row};
 
 /// How many days of Score history the detail responses embed.
 ///
@@ -51,7 +52,7 @@ pub struct ScoreHistoryRow {
     /// The UTC day the snapshot closes.
     pub day: NaiveDate,
     /// The Flakiness score at the end of that day.
-    pub flakiness_score: f64,
+    pub flakiness_score: Score,
     /// The Proven flake count at the end of that day.
     pub confirmed_flake_count: i32,
     /// Executions recorded that day.
@@ -66,7 +67,7 @@ pub struct HistoryUpdate {
     /// The Test's or Job's id.
     pub id: i32,
     /// The Flakiness score the rescore wrote.
-    pub flakiness_score: f64,
+    pub flakiness_score: Score,
     /// The Proven flake count the rescore wrote.
     pub confirmed_flake_count: i32,
     /// Executions to add to today's row.
@@ -154,7 +155,7 @@ pub async fn window_rows(
     for row in rows(db, sql, vec![Value::from(owner_id), Value::from(cutoff)]).await? {
         history.push(ScoreHistoryRow {
             day: get(&row, "day")?,
-            flakiness_score: get(&row, "flakiness_score")?,
+            flakiness_score: score(get(&row, "flakiness_score")?, "flakiness_score")?,
             confirmed_flake_count: get(&row, "confirmed_flake_count")?,
             executions: get(&row, "executions")?,
             failures: get(&row, "failures")?,
@@ -188,7 +189,7 @@ pub async fn write_today_history(
             values.extend([
                 Value::from(update.id),
                 Value::from(today),
-                Value::from(update.flakiness_score),
+                Value::from(update.flakiness_score.as_f64()),
                 Value::from(update.confirmed_flake_count),
                 Value::from(update.executions),
                 Value::from(update.failures),

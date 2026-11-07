@@ -15,7 +15,7 @@ use flakeradar_core::{
     model::ExecutionStatus, model::JobStatus, model::ReportKind, model::ReportStatus, model::Tier,
     notify::TierChange, parsing::ParseError, parsing::ParsedCase, parsing::parse_junit_xml,
     scoring::ScoredExecution, scoring::branch_scoped_fail_streak, scoring::branch_scoped_score,
-    scoring::branch_scoped_streak, types::Fingerprint,
+    scoring::branch_scoped_streak, types::Fingerprint, types::Score,
 };
 use sea_orm::entity::prelude::DateTimeWithTimeZone;
 use sea_orm::{
@@ -36,7 +36,7 @@ use crate::report_intake::{
     complete_report, fail_report, requeue_report, stored_junit_body, stored_pipeline_report,
 };
 use crate::score_history::{HistoryUpdate, write_today_history};
-use crate::sql::{execution_status, get, placeholder_list, rows, value_row};
+use crate::sql::{execution_status, get, placeholder_list, rows, score, value_row};
 
 /// The longest error text a failed Report keeps, in code points.
 ///
@@ -345,12 +345,12 @@ impl Counts {
 ///
 /// A Test and a Job write the same Flakiness score, Proven flake count, Clean
 /// streak and fixed-note reset. A Test also writes its Fail streak and its
-/// dominant Failure category, which a Job has no column for, so [`TEST_TABLE`]
-/// writes those and [`JOB_TABLE`] leaves them out.
+/// dominant Failure category, which a Job has no column for, so [`TEST_UPDATES`]
+/// writes those and [`JOB_UPDATES`] leaves them out.
 #[derive(Debug, Clone, Copy)]
 struct Update {
     id: i32,
-    flakiness_score: f64,
+    flakiness_score: Score,
     confirmed_flake_count: i32,
     clean_streak: i32,
     clear_fixed_note: bool,
@@ -1261,7 +1261,7 @@ impl Update {
             .collect();
         Self {
             id,
-            flakiness_score: score.as_f64(),
+            flakiness_score: score,
             confirmed_flake_count: i32::try_from(proven).unwrap_or(i32::MAX),
             clean_streak: i32::try_from(streak).unwrap_or(i32::MAX),
             clear_fixed_note: streak == 0,
@@ -1426,7 +1426,7 @@ async fn old_scores(
     db: &impl ConnectionTrait,
     kind: EntityKind,
     ids: &[i32],
-) -> Result<BTreeMap<i32, f64>, DbError> {
+) -> Result<BTreeMap<i32, Score>, DbError> {
     let from = match kind {
         EntityKind::Test => "SELECT id, flakiness_score FROM test_cases WHERE id IN ",
         EntityKind::Job => "SELECT id, flakiness_score FROM jobs WHERE id IN ",
@@ -1436,7 +1436,10 @@ async fn old_scores(
         let sql = format!("{}({})", from, placeholder_list(1, chunk.len()));
         let values = chunk.iter().map(|id| Value::from(*id)).collect();
         for row in rows(db, sql, values).await? {
-            scores.insert(get(&row, "id")?, get(&row, "flakiness_score")?);
+            scores.insert(
+                get(&row, "id")?,
+                score(get(&row, "flakiness_score")?, "flakiness_score")?,
+            );
         }
     }
     Ok(scores)
@@ -1447,9 +1450,9 @@ async fn old_scores(
 /// Only the flaky boundary counts: a move between Stable and Suspect changes the
 /// tier but crosses nothing, so it sends no Notification. A row with no stored
 /// score is new, and new is 0.0.
-fn crossed(update: &Update, old: &BTreeMap<i32, f64>, threshold: f64) -> bool {
-    let before = old.get(&update.id).copied().unwrap_or(0.0);
-    (update.flakiness_score >= threshold) != (before >= threshold)
+fn crossed(update: &Update, old: &BTreeMap<i32, Score>, threshold: f64) -> bool {
+    let before = old.get(&update.id).copied().unwrap_or(Score::ZERO);
+    (update.flakiness_score.as_f64() >= threshold) != (before.as_f64() >= threshold)
 }
 
 /// What differs between a Test's and a Job's Tier change.
@@ -1553,7 +1556,7 @@ async fn tier_changes(
     db: &impl ConnectionTrait,
     notices: &Notices,
     updates: &[Update],
-    old: &BTreeMap<i32, f64>,
+    old: &BTreeMap<i32, Score>,
     settings: &ProcessingSettings,
 ) -> Result<Vec<TierChange>, DbError> {
     let threshold = settings.flake_threshold;
@@ -1622,7 +1625,7 @@ const TEST_UPDATES: BulkUpdate = BulkUpdate {
     row: |update| {
         vec![
             Value::from(update.id),
-            Value::from(update.flakiness_score),
+            Value::from(update.flakiness_score.as_f64()),
             Value::from(update.confirmed_flake_count),
             update
                 .failure_category
@@ -1647,7 +1650,7 @@ const JOB_UPDATES: BulkUpdate = BulkUpdate {
     row: |update| {
         vec![
             Value::from(update.id),
-            Value::from(update.flakiness_score),
+            Value::from(update.flakiness_score.as_f64()),
             Value::from(update.confirmed_flake_count),
             Value::from(update.clean_streak),
             Value::from(update.clear_fixed_note),

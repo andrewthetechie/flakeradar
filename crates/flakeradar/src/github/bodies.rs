@@ -9,7 +9,7 @@
 // Rust guideline compliant 2026-07-21
 
 use flakeradar_core::{
-    dto::JobExecutionOut, dto::JobHistoryOut, helpers::repo_path, model::EntityKind,
+    dto::JobExecutionOut, dto::JobHistoryOut, helpers::repo_path, model::EntityKind, types::Score,
 };
 use flakeradar_db::filing::{JobRow, RecentExecution, TestRow};
 
@@ -96,7 +96,7 @@ pub fn fixed_comment(
     entity: EntityKind,
     id: i64,
     clean_streak: i64,
-    score: f64,
+    score: Score,
     default_branch: Option<&str>,
     public_url: &str,
 ) -> String {
@@ -215,7 +215,7 @@ impl Body {
     }
 
     /// The score and Proven flake bullets, which both bodies carry.
-    fn filing_gate(&mut self, score: f64, proven_flakes: i32, filed_at: f64) {
+    fn filing_gate(&mut self, score: Score, proven_flakes: i32, filed_at: f64) {
         self.bullet(format!(
             "**Flakiness score:** {score:.2} (filed at ≥ {filed_at:.2})"
         ));

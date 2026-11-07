@@ -11,11 +11,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use flakeradar_core::dto::ExplainingJobOut;
+use flakeradar_core::types::CiRunId;
 use sea_orm::{ConnectionTrait, Value};
 
 use crate::batching::chunks;
 use crate::error::DbError;
-use crate::sql::{get, rows, value_row};
+use crate::sql::{ci_run_id, get, rows, value_row};
 
 /// The most explaining sibling Jobs listed per `(ci_run_id, ci_run_attempt)`.
 ///
@@ -252,11 +253,11 @@ pub async fn explained_ci_job_ids(
 pub async fn summary_explaining_siblings(
     db: &impl ConnectionTrait,
     repo_id: i32,
-    pairs: &[(String, i32)],
-) -> Result<BTreeMap<(String, i32), Vec<ExplainingJobOut>>, DbError> {
-    let wanted: Vec<(String, i32)> = pairs
+    pairs: &[(CiRunId, i32)],
+) -> Result<BTreeMap<(CiRunId, i32), Vec<ExplainingJobOut>>, DbError> {
+    let wanted: Vec<(CiRunId, i32)> = pairs
         .iter()
-        .filter(|(run_id, _)| !run_id.is_empty())
+        .filter(|(run_id, _)| !run_id.as_str().is_empty())
         .cloned()
         .collect::<BTreeSet<_>>()
         .into_iter()
@@ -283,14 +284,14 @@ pub async fn summary_explaining_siblings(
     );
     let mut values = Vec::with_capacity(wanted.len() * 2 + 1);
     for (run_id, attempt) in &wanted {
-        values.push(Value::from(run_id.clone()));
+        values.push(Value::from(run_id.as_str().to_owned()));
         values.push(Value::from(*attempt));
     }
     values.push(Value::from(repo_id));
-    let mut by_pair: BTreeMap<(String, i32), Vec<ExplainingJobOut>> = BTreeMap::new();
+    let mut by_pair: BTreeMap<(CiRunId, i32), Vec<ExplainingJobOut>> = BTreeMap::new();
     for row in rows(db, sql, values).await? {
         let key = (
-            get::<String>(&row, "ci_run_id")?,
+            ci_run_id(&get::<String>(&row, "ci_run_id")?, "ci_run_id")?,
             get::<i32>(&row, "ci_run_attempt")?,
         );
         let siblings = by_pair.entry(key).or_default();

@@ -22,7 +22,7 @@ use flakeradar_core::{
     helpers::LocationRef, helpers::escape_like, helpers::is_broken, helpers::issue_url,
     helpers::permalink, helpers::repo_path, helpers::tier_for, helpers::trend_for,
     model::EntityKind, model::ExecutionStatus, model::FailedJobOutcome, model::JobOutcome,
-    model::ReportStatus, model::Trend,
+    model::ReportStatus, model::Trend, types::CiRunId,
 };
 use sea_orm::{ConnectionTrait, DbBackend, QueryResult, Statement, Value};
 use serde_json::Value as JsonValue;
@@ -34,7 +34,9 @@ use crate::attribution::{
 use crate::clock::SharedClock;
 use crate::error::DbError;
 use crate::score_history;
-use crate::sql::{Binds, execution_status, get, one, required_one, rows};
+use crate::sql::{
+    Binds, ci_run_id, execution_status, fingerprint, get, one, required_one, rows, score,
+};
 
 /// The dashboard tiles' "became flaky recently" window, in days.
 ///
@@ -501,7 +503,7 @@ pub(crate) fn test_out(
     broken_streak: i64,
     trend: Option<Trend>,
 ) -> Result<TestOut, DbError> {
-    let score: f64 = get(row, "flakiness_score")?;
+    let score = score(get(row, "flakiness_score")?, "flakiness_score")?;
     let repo: String = get(row, "repo_name")?;
     let issue_number: Option<i32> = get(row, "github_issue_number")?;
     let issue_number = issue_number.map(id);
@@ -511,7 +513,7 @@ pub(crate) fn test_out(
         id: id(get(row, "id")?),
         repo,
         project: get(row, "project_name")?,
-        fingerprint: get(row, "fingerprint")?,
+        fingerprint: fingerprint(&get::<String>(row, "fingerprint")?, "fingerprint")?,
         suite: get(row, "suite")?,
         classname: get(row, "classname")?,
         name: get(row, "name")?,
@@ -545,7 +547,7 @@ pub(crate) fn job_out(
     threshold: f64,
     trend: Option<Trend>,
 ) -> Result<JobOut, DbError> {
-    let score: f64 = get(row, "flakiness_score")?;
+    let score = score(get(row, "flakiness_score")?, "flakiness_score")?;
     let repo: String = get(row, "repo_name")?;
     let provider: String = get(row, "provider")?;
     let issue_number: Option<i32> = get(row, "github_issue_number")?;
@@ -1014,7 +1016,7 @@ fn execution_out(row: &QueryResult) -> Result<ExecutionOut, DbError> {
         created_at: timestamp(row, "created_at")?,
         commit_sha: get(row, "commit_sha")?,
         branch: get(row, "branch")?,
-        ci_run_id: get(row, "ci_run_id")?,
+        ci_run_id: ci_run_id(&get::<String>(row, "ci_run_id")?, "ci_run_id")?,
         attempt: i64::from(get::<i32>(row, "attempt")?),
         failure_category: stored_category(
             get::<Option<String>>(row, "failure_category")?.as_deref(),
@@ -1057,12 +1059,12 @@ pub async fn get_test(
     let stored_id: i32 = get(&row, "id")?;
     let today = settings.today();
     let past = score_history::past_scores(db, EntityKind::Test, &[stored_id], today).await?;
-    let score: f64 = get(&row, "flakiness_score")?;
+    let score = score(get(&row, "flakiness_score")?, "flakiness_score")?;
     let test = test_out(
         &row,
         settings.flake_threshold,
         settings.broken_streak,
-        trend_for(score, past.get(&stored_id).copied()),
+        trend_for(score.as_f64(), past.get(&stored_id).copied()),
     )?;
 
     let exec_sql = format!(
@@ -1271,7 +1273,7 @@ pub async fn quarantine_list(
             suite: get(&row, "suite")?,
             classname: get(&row, "classname")?,
             name: get(&row, "name")?,
-            fingerprint: get(&row, "fingerprint")?,
+            fingerprint: fingerprint(&get::<String>(&row, "fingerprint")?, "fingerprint")?,
             file: get(&row, "file")?,
             line: get::<Option<i32>>(&row, "line")?.map(id),
             quarantined_at: optional_timestamp(&row, "quarantined_at")?,
@@ -1384,11 +1386,11 @@ pub async fn get_job(
     let summary_job: bool = get(&row, "summary")?;
     let today = settings.today();
     let past = score_history::past_scores(db, EntityKind::Job, &[stored_id], today).await?;
-    let score: f64 = get(&row, "flakiness_score")?;
+    let score = score(get(&row, "flakiness_score")?, "flakiness_score")?;
     let job = job_out(
         &row,
         settings.flake_threshold,
-        trend_for(score, past.get(&stored_id).copied()),
+        trend_for(score.as_f64(), past.get(&stored_id).copied()),
     )?;
 
     let exec_sql = "SELECT * FROM job_executions WHERE job_id = $1 \
@@ -1474,7 +1476,7 @@ fn job_executions_out(
             outcome,
             commit_sha: get(execution, "commit_sha")?,
             branch: get(execution, "branch")?,
-            ci_run_id: get(execution, "ci_run_id")?,
+            ci_run_id: ci_run_id(&get::<String>(execution, "ci_run_id")?, "ci_run_id")?,
             ci_run_attempt: i64::from(get::<i32>(execution, "ci_run_attempt")?),
             ci_job_id,
             url: get(execution, "url")?,
@@ -1501,7 +1503,7 @@ async fn attach_explaining_siblings(
     repo_id: i32,
     executions: &mut [JobExecutionOut],
 ) -> Result<(), DbError> {
-    let pairs: Vec<(String, i32)> = executions
+    let pairs: Vec<(CiRunId, i32)> = executions
         .iter()
         .filter(|execution| {
             execution.outcome == JobOutcome::Explained && execution.status == "failed"
@@ -1897,7 +1899,7 @@ struct PairExecution {
 pub async fn ci_run_failures(
     db: &impl ConnectionTrait,
     repo: &str,
-    ci_run_id: &str,
+    ci_run_id: &CiRunId,
     ci_run_attempt: Option<i64>,
     settings: &ReadSettings,
     limit: i64,
@@ -1933,7 +1935,7 @@ pub async fn ci_run_failures(
         ci_run_failed_jobs(db, repo_id, &repo_name, ci_run_id, attempt, settings).await?;
     Ok(CiRunFailuresOut {
         repo: repo_name,
-        ci_run_id: ci_run_id.to_owned(),
+        ci_run_id: ci_run_id.clone(),
         ci_run_attempt: i64::from(attempt),
         flake_threshold: settings.flake_threshold,
         reports: ci_run_report_counts(db, repo_id, ci_run_id, attempt).await?,
@@ -1948,7 +1950,7 @@ pub async fn ci_run_failures(
 async fn ci_run_attempts(
     db: &impl ConnectionTrait,
     repo_id: i32,
-    ci_run_id: &str,
+    ci_run_id: &CiRunId,
 ) -> Result<BTreeSet<i32>, DbError> {
     let mut attempts = BTreeSet::new();
     let statements = [
@@ -1967,7 +1969,10 @@ async fn ci_run_attempts(
         for row in rows(
             db,
             sql,
-            vec![Value::from(repo_id), Value::from(ci_run_id.to_owned())],
+            vec![
+                Value::from(repo_id),
+                Value::from(ci_run_id.as_str().to_owned()),
+            ],
         )
         .await?
         {
@@ -1981,7 +1986,7 @@ async fn ci_run_attempts(
 async fn ci_run_report_counts(
     db: &impl ConnectionTrait,
     repo_id: i32,
-    ci_run_id: &str,
+    ci_run_id: &CiRunId,
     attempt: i32,
 ) -> Result<ReportCountsOut, DbError> {
     let sql = "SELECT status, count(*) AS count FROM reports \
@@ -1997,7 +2002,7 @@ async fn ci_run_report_counts(
         sql,
         vec![
             Value::from(repo_id),
-            Value::from(ci_run_id.to_owned()),
+            Value::from(ci_run_id.as_str().to_owned()),
             Value::from(attempt),
         ],
     )
@@ -2020,14 +2025,14 @@ async fn ci_run_test_failures(
     db: &impl ConnectionTrait,
     repo_id: i32,
     repo_name: &str,
-    ci_run_id: &str,
+    ci_run_id: &CiRunId,
     attempt: i32,
     settings: &ReadSettings,
     limit: i64,
 ) -> Result<(Vec<CiRunTestFailureOut>, i64), DbError> {
     let mut values = vec![
         Value::from(repo_id),
-        Value::from(ci_run_id.to_owned()),
+        Value::from(ci_run_id.as_str().to_owned()),
         Value::from(attempt),
     ];
     let total_sql = "SELECT count(*) AS total FROM ( \
@@ -2134,7 +2139,7 @@ fn ci_run_failure_item(
     let Some(last_failing) = failing.last() else {
         return Ok(None);
     };
-    let score: f64 = get(row, "flakiness_score")?;
+    let score = score(get(row, "flakiness_score")?, "flakiness_score")?;
     let issue_number: Option<i32> = get(row, "github_issue_number")?;
     let issue_number = issue_number.map(id);
     let fail_streak = i64::from(get::<i32>(row, "fail_streak")?);
@@ -2172,7 +2177,7 @@ async fn ci_run_failed_jobs(
     db: &impl ConnectionTrait,
     repo_id: i32,
     repo_name: &str,
-    ci_run_id: &str,
+    ci_run_id: &CiRunId,
     attempt: i32,
     settings: &ReadSettings,
 ) -> Result<Vec<CiRunFailedJobOut>, DbError> {
@@ -2193,7 +2198,7 @@ async fn ci_run_failed_jobs(
         sql,
         vec![
             Value::from(repo_id),
-            Value::from(ci_run_id.to_owned()),
+            Value::from(ci_run_id.as_str().to_owned()),
             Value::from(attempt),
         ],
     )
@@ -2206,7 +2211,7 @@ async fn ci_run_failed_jobs(
     let mut failed = Vec::with_capacity(found.len());
     for row in &found {
         let ci_job_id: String = get(row, "ci_job_id")?;
-        let score: f64 = get(row, "flakiness_score")?;
+        let score = score(get(row, "flakiness_score")?, "flakiness_score")?;
         let provider: String = get(row, "provider")?;
         let issue_number: Option<i32> = get(row, "github_issue_number")?;
         let issue_number = issue_number.map(id);

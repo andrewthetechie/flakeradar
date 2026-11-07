@@ -21,7 +21,7 @@ use sea_orm::{ConnectionTrait, DbBackend, FromQueryResult as _, JsonValue, Set, 
 
 use crate::entities::reports;
 use crate::error::DbError;
-use crate::sql::{Binds, get, one, required_one, rows};
+use crate::sql::{Binds, ci_run_id, get, one, required_one, rows};
 
 /// The JUnit duplicate identity: a CI retry whose response was lost uploads the
 /// same bytes under the same attribution, so it must not queue a second Run.
@@ -311,7 +311,7 @@ impl StoredReport {
             project: self.project,
             commit_sha: self.report.commit_sha,
             branch: self.report.branch,
-            ci_run_id: self.report.ci_run_id,
+            ci_run_id: ci_run_id(&self.report.ci_run_id, "ci_run_id")?,
             status: report_status(&self.report.status)?,
             error: self.report.error,
             counts: self.report.counts,
@@ -438,7 +438,7 @@ fn report_out(row: &sea_orm::QueryResult) -> Result<ReportOut, DbError> {
         project: get(row, "project_name")?,
         commit_sha: get(row, "commit_sha")?,
         branch: get(row, "branch")?,
-        ci_run_id: get(row, "ci_run_id")?,
+        ci_run_id: ci_run_id(&get::<String>(row, "ci_run_id")?, "ci_run_id")?,
         status: report_status(&get::<String>(row, "status")?)?,
         error: get(row, "error")?,
         counts: get(row, "counts")?,

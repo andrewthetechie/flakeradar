@@ -90,6 +90,22 @@ pub enum DbError {
         /// The status the row holds, printed as it was read.
         value: String,
     },
+    /// A stored value is outside the type this version writes into that column.
+    ///
+    /// A score is a `double precision` and a fingerprint or a CI run id is text, so
+    /// a row written by hand can hold a number that is no score or a word that is
+    /// no digest. The newtype is what keeps such a value out of a response, and
+    /// there is no truthful value to serve in its place, so the read refuses the row
+    /// the same way an unknown stored status does.
+    #[error("stored {column} is not {what}: {detail}")]
+    UnusableStoredValue {
+        /// The column the row holds.
+        column: &'static str,
+        /// The type the column's own rule says it holds.
+        what: &'static str,
+        /// What the refused value was, as the newtype's own error states it.
+        detail: String,
+    },
     /// The session that held the processor lock is gone, so this process can no longer lead.
     ///
     /// A session lock belongs to the backend that took it. A connection the

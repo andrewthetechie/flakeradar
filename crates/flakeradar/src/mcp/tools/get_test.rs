@@ -214,7 +214,7 @@ impl From<&ExecutionOut> for ExecutionSummary {
             status: execution.status,
             commit_sha: execution.commit_sha.clone(),
             branch: execution.branch.clone(),
-            ci_run_id: execution.ci_run_id.clone(),
+            ci_run_id: execution.ci_run_id.to_string(),
             created_at: execution.created_at,
             duration: execution.duration,
             message: execution.message.clone(),

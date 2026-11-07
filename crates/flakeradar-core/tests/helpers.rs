@@ -2,18 +2,29 @@
 
 // Rust guideline compliant 2026-07-21
 
+#![expect(
+    clippy::expect_used,
+    reason = "a test fails loudly when a helper or a score is wrong"
+)]
+
 use flakeradar_core::model::{Tier, Trend};
+use flakeradar_core::types::Score;
 use flakeradar_core::{
     helpers::LocationRef, helpers::body_digest, helpers::escape_like, helpers::is_broken,
     helpers::issue_url, helpers::permalink, helpers::repo_path, helpers::tier_for,
     helpers::trend_for,
 };
 
+/// The score a test states as a literal.
+fn score(value: f64) -> Score {
+    Score::new(value).expect("the test states a score")
+}
+
 #[test]
 fn tier_thresholds_are_inclusive_at_the_top() {
-    assert_eq!(tier_for(0.3, 0.3), Tier::Flaky);
-    assert_eq!(tier_for(f64::MIN_POSITIVE, 0.3), Tier::Suspect);
-    assert_eq!(tier_for(0.0, 0.3), Tier::Stable);
+    assert_eq!(tier_for(score(0.3), 0.3), Tier::Flaky);
+    assert_eq!(tier_for(score(f64::MIN_POSITIVE), 0.3), Tier::Suspect);
+    assert_eq!(tier_for(Score::ZERO, 0.3), Tier::Stable);
 }
 
 #[test]

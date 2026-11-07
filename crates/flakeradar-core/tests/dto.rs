@@ -20,6 +20,7 @@ use flakeradar_core::{
     dto::BodyRefusal, dto::IssueLinkIn, dto::JobResultIn, dto::LocSegment, dto::PipelineReportIn,
     dto::QuarantineIn, dto::ReportOut, dto::ScorePointOut, dto::TestOut, dto::ValidationIssue,
     model::ExecutionStatus, model::ReportKind, model::ReportStatus, model::Tier, model::Trend,
+    types::CiRunId, types::Fingerprint, types::Score,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -58,6 +59,16 @@ fn validated(body: &Value) -> Result<PipelineReportIn, Vec<ValidationIssue>> {
     })
 }
 
+/// A Flakiness score a test states as a literal.
+fn score(value: f64) -> Score {
+    Score::new(value).expect("the test states a score")
+}
+
+/// A fingerprint, which is always 40 lowercase hex characters.
+fn fingerprint() -> Fingerprint {
+    Fingerprint::new("0123456789abcdef0123456789abcdef01234567").expect("a fingerprint")
+}
+
 #[test]
 fn a_report_out_writes_timestamps_in_the_one_accepted_shape() {
     let report = ReportOut {
@@ -67,7 +78,7 @@ fn a_report_out_writes_timestamps_in_the_one_accepted_shape() {
         project: Some("default".to_owned()),
         commit_sha: "abc".to_owned(),
         branch: "main".to_owned(),
-        ci_run_id: String::new(),
+        ci_run_id: CiRunId::empty(),
         status: ReportStatus::Pending,
         error: None,
         counts: None,
@@ -138,7 +149,7 @@ fn a_bad_timestamp_is_a_deserialization_error() {
 fn dates_and_tiers_keep_their_wire_spelling() {
     let point = ScorePointOut {
         day: NaiveDate::from_ymd_opt(2026, 10, 20).expect("the date exists"),
-        flakiness_score: 0.5,
+        flakiness_score: score(0.5),
         confirmed_flake_count: 1,
         executions: 4,
         failures: 2,
@@ -156,13 +167,13 @@ fn a_test_out_keeps_every_field_the_consumers_read() {
         id: 1,
         repo: "acme/app".to_owned(),
         project: "default".to_owned(),
-        fingerprint: "abc".to_owned(),
+        fingerprint: fingerprint(),
         suite: "unit".to_owned(),
         classname: "c".to_owned(),
         name: "t".to_owned(),
         file: None,
         line: None,
-        flakiness_score: 0.0,
+        flakiness_score: Score::ZERO,
         tier: Tier::Stable,
         confirmed_flake_count: 0,
         failure_category: None,

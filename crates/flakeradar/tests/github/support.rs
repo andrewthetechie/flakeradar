@@ -70,9 +70,11 @@ pub(crate) fn fixed_settings(pairs: &[(&str, &str)]) -> Settings {
 /// The identity of one seeded flaky Test.
 ///
 /// The filing body carries every part of it — the `root` as the Location's
-/// directory, the `suite`, `classname` and `name` as the Test, and the
-/// `fingerprint` as the line a reader copies — so a fixture that changes one
-/// changes what an issue body says.
+/// directory, and the `suite`, `classname` and `name` as the Test and the
+/// fingerprint line a reader copies — so a fixture that changes one changes what
+/// an issue body says. The fingerprint is never part of the fixture: it is the
+/// digest of the identity, which is what the builder stores and the read layer
+/// serves.
 #[derive(Debug)]
 pub(crate) struct FlakyTest<'a> {
     /// The `owner/name` the Test belongs to.
@@ -87,8 +89,6 @@ pub(crate) struct FlakyTest<'a> {
     pub classname: &'a str,
     /// The Test's name.
     pub name: &'a str,
-    /// The Test's fingerprint.
-    pub fingerprint: &'a str,
 }
 
 /// One flaky Test with `identity`, and one failing Execution it can show.
@@ -105,7 +105,6 @@ async fn seed_flaky_test(db: &TestDb, identity: FlakyTest<'_>) -> i32 {
         .name(identity.name)
         .classname(identity.classname)
         .suite(identity.suite)
-        .fingerprint(identity.fingerprint)
         .flakiness_score(0.5)
         .confirmed_flake_count(2)
         .file("tests/test_cart.py")
@@ -140,7 +139,6 @@ pub(crate) async fn flaky_test(db: &TestDb) -> i32 {
             suite: "unit",
             classname: "tests.test_cart",
             name: "test_total",
-            fingerprint: "abc123",
         },
     )
     .await
@@ -157,7 +155,6 @@ pub(crate) async fn flaky_test_in(db: &TestDb, repo: &str, project: &str, name: 
             suite: "unit",
             classname: &format!("tests.test_{name}"),
             name,
-            fingerprint: name,
         },
     )
     .await
@@ -262,7 +259,7 @@ order, shared/global state, or the network. Re-run the test several times to con
 older details
 ```
 
-_Fingerprint: `abc123`_";
+_Fingerprint: `25cdd150e8f4335ddfb17485d80e2defa6b56643`_";
 
 /// One flaky github-provider Job named `name` in `repo`, under `pipeline`.
 pub(crate) async fn flaky_job_in(db: &TestDb, repo: &str, pipeline: &str, name: &str) -> i32 {

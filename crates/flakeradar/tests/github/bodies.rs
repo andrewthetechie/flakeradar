@@ -3,7 +3,10 @@
 // Rust guideline compliant 2026-07-21
 
 use flakeradar::github;
-use flakeradar_core::{model::EntityKind, model::ExecutionStatus};
+use flakeradar_core::{
+    model::EntityKind, model::ExecutionStatus, parsing::fingerprint, types::CiRunId,
+    types::Fingerprint, types::Score,
+};
 use flakeradar_db::filing::{JobRow, RecentExecution, TestRow};
 use flakeradar_test_support::{
     FIXTURE_INSTANT, TestDb, make_execution, make_job_execution, make_project, make_run,
@@ -31,8 +34,8 @@ async fn a_field_the_body_prices_differently_is_still_the_written_sentence() {
         suite: String::new(),
         file: None,
         line: None,
-        fingerprint: "abc".to_owned(),
-        flakiness_score: 0.5,
+        fingerprint: digest("", "tests.test_cart", "test_total"),
+        flakiness_score: Score::new(0.5).expect("a score"),
         confirmed_flake_count: 0,
     };
     let recent = [RecentExecution {
@@ -65,6 +68,16 @@ async fn a_field_the_body_prices_differently_is_still_the_written_sentence() {
     );
 }
 
+/// A Flakiness score a test states as a literal.
+fn score(value: f64) -> Score {
+    Score::new(value).expect("the test states a score")
+}
+
+/// The fingerprint of one Test identity.
+fn digest(suite: &str, classname: &str, name: &str) -> Fingerprint {
+    fingerprint(suite, classname, name)
+}
+
 #[test]
 fn the_last_failing_commit_has_no_branch_clause_when_no_branch_was_reported() {
     let test = TestRow {
@@ -74,8 +87,8 @@ fn the_last_failing_commit_has_no_branch_clause_when_no_branch_was_reported() {
         suite: "backend".to_owned(),
         file: Some("tests/test_cart.py".to_owned()),
         line: Some(12),
-        fingerprint: "abc".to_owned(),
-        flakiness_score: 0.5,
+        fingerprint: digest("backend", "tests.test_cart", "test_total"),
+        flakiness_score: score(0.5),
         confirmed_flake_count: 1,
     };
     let recent = [RecentExecution {
@@ -107,8 +120,8 @@ fn the_filed_body_matches_the_recorded_bytes() {
         suite: "unit".to_owned(),
         file: Some("tests/test_cart.py".to_owned()),
         line: Some(12),
-        fingerprint: "abc123".to_owned(),
-        flakiness_score: 0.5,
+        fingerprint: digest("unit", "tests.test_cart", "test_total"),
+        flakiness_score: Score::new(0.5).expect("a score"),
         confirmed_flake_count: 2,
     };
     let at = |minute| {
@@ -163,14 +176,14 @@ fn both_bodies_name_the_executions_the_filing_reads() {
         suite: "unit".to_owned(),
         file: Some("tests/test_cart.py".to_owned()),
         line: Some(12),
-        fingerprint: "abc".to_owned(),
-        flakiness_score: 0.5,
+        fingerprint: digest("unit", "tests.test_cart", "test_total"),
+        flakiness_score: Score::new(0.5).expect("a score"),
         confirmed_flake_count: 0,
     };
     let job = JobRow {
         id: 2,
         name: "unit".to_owned(),
-        flakiness_score: 0.5,
+        flakiness_score: Score::new(0.5).expect("a score"),
         confirmed_flake_count: 0,
     };
     let heading = format!("### Last {} executions", github::BODY_EXECUTIONS);
@@ -226,7 +239,7 @@ fn the_fixed_comment_links_a_job_to_the_job_view() {
         EntityKind::Job,
         7,
         3,
-        0.5,
+        score(0.5),
         None,
         "https://flakes.example.com/",
     );
@@ -242,7 +255,7 @@ async fn a_job_body_without_history_still_carries_the_table_heading() {
     let job = JobRow {
         id: 3,
         name: "unit".to_owned(),
-        flakiness_score: 0.5,
+        flakiness_score: score(0.5),
         confirmed_flake_count: 1,
     };
     let body = github::job_issue_body(&job, "ci", "acme/app", None, &gh_settings(&[]));
@@ -278,7 +291,7 @@ fn a_job_body_names_every_outcome_runner_and_link_it_has() {
             outcome,
             commit_sha: "a1b2c3d4".to_owned(),
             branch: "main".to_owned(),
-            ci_run_id: "9".to_owned(),
+            ci_run_id: CiRunId::new("9").expect("a CI run id"),
             ci_run_attempt: 1,
             ci_job_id: "unit".to_owned(),
             url: url.to_owned(),
@@ -295,7 +308,7 @@ fn a_job_body_names_every_outcome_runner_and_link_it_has() {
     let job = JobRow {
         id: 3,
         name: "unit".to_owned(),
-        flakiness_score: 0.5,
+        flakiness_score: score(0.5),
         confirmed_flake_count: 1,
     };
     let history = JobHistoryOut {
@@ -305,7 +318,7 @@ fn a_job_body_names_every_outcome_runner_and_link_it_has() {
             provider: "github".to_owned(),
             pipeline: "ci".to_owned(),
             name: "unit".to_owned(),
-            flakiness_score: 0.5,
+            flakiness_score: Score::new(0.5).expect("a score"),
             tier: flakeradar_core::model::Tier::Suspect,
             confirmed_flake_count: 1,
             clean_streak: 0,

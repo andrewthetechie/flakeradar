@@ -13,6 +13,7 @@ use serde_json::{Map, Value};
 
 use crate::classify::FailureCategory;
 use crate::model::{EntityKind, Tier};
+use crate::types::Score;
 
 /// The format a Webhook URL expects.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,7 +42,7 @@ pub struct TierChange {
     /// The Test's name, or the Job's name.
     pub name: String,
     /// The score the rescore wrote.
-    pub flakiness_score: f64,
+    pub flakiness_score: Score,
     /// The tier the entity is in now.
     pub tier: Tier,
     /// How many commit SHAs recorded both outcomes.
@@ -146,7 +147,7 @@ fn json_payload(change: &TierChange, public_url: &str) -> Value {
     let _ = entity.insert("name".to_owned(), Value::from(change.name.clone()));
     let _ = entity.insert(
         "flakiness_score".to_owned(),
-        Value::from(change.flakiness_score),
+        Value::from(change.flakiness_score.as_f64()),
     );
     let _ = entity.insert("tier".to_owned(), Value::from(change.tier.as_str()));
     let _ = entity.insert(
@@ -249,6 +250,12 @@ mod tests {
     };
     use crate::classify::FailureCategory;
     use crate::model::{EntityKind, Tier};
+    use crate::types::Score;
+
+    /// A score the tests state as a literal.
+    fn score(value: f64) -> Score {
+        Score::new(value).expect("the tests state a score")
+    }
 
     fn test_change() -> TierChange {
         TierChange {
@@ -257,7 +264,7 @@ mod tests {
             repo: "acme/app".to_owned(),
             project: Some("frontend".to_owned()),
             name: "test_login".to_owned(),
-            flakiness_score: 0.5,
+            flakiness_score: score(0.5),
             tier: Tier::Flaky,
             proven_flake_count: 2,
             classname: Some("tests.login".to_owned()),
@@ -273,7 +280,7 @@ mod tests {
             repo: "acme/app".to_owned(),
             project: None,
             name: "test (ubuntu)".to_owned(),
-            flakiness_score: 0.125,
+            flakiness_score: score(0.125),
             tier: Tier::Stable,
             proven_flake_count: 0,
             classname: None,
@@ -387,7 +394,7 @@ mod tests {
             repo: "acme/app".to_owned(),
             project: Some("backend".to_owned()),
             name: "test_login".to_owned(),
-            flakiness_score: 0.42,
+            flakiness_score: score(0.42),
             tier: Tier::Flaky,
             proven_flake_count: 2,
             classname: Some("tests.test_auth".to_owned()),
@@ -405,7 +412,7 @@ mod tests {
             repo: "acme/app".to_owned(),
             project: None,
             name: "test (ubuntu, 3.12)".to_owned(),
-            flakiness_score: 0.51,
+            flakiness_score: score(0.51),
             tier: Tier::Flaky,
             proven_flake_count: 1,
             classname: None,
@@ -450,7 +457,7 @@ mod tests {
     fn a_json_job_event_has_no_project_and_names_its_pipeline() {
         let mut change = recorded_job_change();
         change.tier = Tier::Suspect;
-        change.flakiness_score = 0.1;
+        change.flakiness_score = score(0.1);
         assert_eq!(
             render_json(&[change], PUBLIC_URL),
             [json!({
@@ -507,7 +514,7 @@ mod tests {
     fn a_slack_line_says_recovered_for_the_other_tier() {
         let mut change = recorded_test_change();
         change.tier = Tier::Suspect;
-        change.flakiness_score = 0.1;
+        change.flakiness_score = score(0.1);
         assert_eq!(
             render_slack(&[change], PUBLIC_URL)["text"],
             json!(

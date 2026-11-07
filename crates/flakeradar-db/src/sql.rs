@@ -8,6 +8,7 @@
 //! [`Binds::bind`] rather than counting `$n` by hand.
 
 use flakeradar_core::model::ExecutionStatus;
+use flakeradar_core::types::{CiRunId, Fingerprint, Score};
 use sea_orm::{ConnectionTrait, DbBackend, DbErr, QueryResult, Statement, TryGetable, Value};
 
 use crate::error::DbError;
@@ -22,6 +23,51 @@ pub(crate) fn execution_status(text: &str) -> Result<ExecutionStatus, DbError> {
     ExecutionStatus::from_wire(text).ok_or_else(|| DbError::UnknownExecutionStatus {
         value: text.to_owned(),
     })
+}
+
+/// Reads one stored Flakiness score.
+///
+/// # Errors
+///
+/// Returns [`DbError::UnusableStoredValue`] for a number outside 0 to 1 or one that
+/// is not finite, which no rule of this server writes.
+pub(crate) fn score(value: f64, column: &'static str) -> Result<Score, DbError> {
+    Score::new(value).map_err(|error| unusable(column, "a Flakiness score", &error.to_string()))
+}
+
+/// Reads one stored Test fingerprint.
+///
+/// # Errors
+///
+/// Returns [`DbError::UnusableStoredValue`] for text that is not 40 lowercase hex
+/// characters, which is what a digest of a Test identity always is.
+pub(crate) fn fingerprint(text: &str, column: &'static str) -> Result<Fingerprint, DbError> {
+    Fingerprint::new(text).map_err(|error| {
+        unusable(
+            column,
+            "a Test fingerprint (40 lowercase hex characters)",
+            &error.to_string(),
+        )
+    })
+}
+
+/// Reads one stored CI run id.
+///
+/// # Errors
+///
+/// Returns [`DbError::UnusableStoredValue`] for an id longer than the column's 255
+/// characters.
+pub(crate) fn ci_run_id(text: &str, column: &'static str) -> Result<CiRunId, DbError> {
+    CiRunId::new(text).map_err(|error| unusable(column, "a CI run id", &error.to_string()))
+}
+
+/// The refusal every stored-value reader gives for a value it cannot build.
+fn unusable(column: &'static str, what: &'static str, detail: &str) -> DbError {
+    DbError::UnusableStoredValue {
+        column,
+        what,
+        detail: detail.to_owned(),
+    }
 }
 
 /// Reads one column of a raw row.

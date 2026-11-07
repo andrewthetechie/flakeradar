@@ -7,7 +7,7 @@ use rmcp::model::ToolAnnotations;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use flakeradar_core::{identity::normalize_repo, py::strip_wire_whitespace};
+use flakeradar_core::{identity::normalize_repo, py::strip_wire_whitespace, types::CiRunId};
 use flakeradar_db::reads::{self, FAILURES_LIMIT};
 
 use crate::mcp::{
@@ -80,10 +80,15 @@ pub(super) fn call(server: &McpServer, arguments: Value) -> BoxFuture<'_, ToolRe
             return Err(ToolFailure::Tool("ci_run_id must not be empty".to_owned()));
         }
         let name = normalize_repo(&args.repo)?;
+        // An id past the column's bound names no CI run, so it is refused with the
+        // same message an unknown one is, not with a new one.
+        let Ok(ci_run_id) = CiRunId::new(&args.ci_run_id) else {
+            return Err(ToolFailure::Tool("CI run not found".to_owned()));
+        };
         let result = reads::ci_run_failures(
             server.pool(),
             &name,
-            &args.ci_run_id,
+            &ci_run_id,
             args.ci_run_attempt,
             &server.read_settings(),
             FAILURES_LIMIT,
