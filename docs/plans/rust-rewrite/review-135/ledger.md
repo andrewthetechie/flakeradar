@@ -1,5 +1,16 @@
 # Finding ledger
 
+**The second review reopened rows of this file.** `review-135b/ledger.md` is that review's ledger,
+written against `ac5e6f3`, and its `Reopens` column names each row of this file that one of its
+findings showed was not truly closed: `S5` (`ST16`), `S10` (`SP2`, `SP3`, `SP4` and `SP13`), `H3`
+(`SP1`), `H5` (`SP11`), `H6` (`ST5`), `H10`/`B7`/`C4` (`ST2`/`CC1`), `H11` (`ST1`), `H12` (`ST6`),
+`H14b`/`T5` (`ST8`/`CC7`), `H16` (`ST4`), `H20` (`ST9`), `J4` (`ST17`), `J17` (`ST13`),
+`A3`/`S13c` (`SP6`), `B1` (`CC3`), `B3` (`CC2`), `B4`/`C2` (`CC10`), `B6` (`CC4`), `B9` (`CC11`),
+`B10` (`CC9`), `T2` (`CC5`), `T3` (`ST7`), `T4` (`CC6`) and `E5` (the second review's `E5`). Every
+row below stays as this review wrote it, with its own evidence; what the second review found, and
+the commit and test that closed each finding, are in `review-135b/ledger.md`, which tasks 32–44
+own.
+
 One row per finding. The owning task closes its rows. **State** is `open`, `fixed`, `not reproduced` or `no change`. A `fixed` row needs a commit and a test name. A `not reproduced` row gives its evidence in the last column. `no change` applies only to rows marked accepted here.
 
 `Must` marks the owner's must-fix list from the review.

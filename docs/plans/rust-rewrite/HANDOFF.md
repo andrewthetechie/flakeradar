@@ -212,16 +212,21 @@ what task 31 could not check:
 - **Task 13's packaging legs were not re-run by the review fixes.** A Docker build, the 60 MB
   image size, the five Actions targets and a `workflow_dispatch` rehearsal are CI's (and the
   last cannot run before the workflow exists on the default branch).
-- **`record.py --verify` is gone with `backend/`.** The reconciliation between
-  `differences.md` and `allowed-differences.json` is manual now; an allowance that covers
-  nothing is no longer detected. Task 22's `tests/allowances.rs` checks the fixture against the
-  record, which is narrower than the recorder's check was.
-- **`E5`'s negative controls were never written.** The ledger row cites `binary(parity)` and the
-  `trailing-slash` step 9 replay instead of a function name, and the four controls the task
-  wanted (a retyped field, a dropped `required` entry, a port-only `required` entry, a field
-  widened to nullable) do not exist. The red was real — the comparison found two document
-  defects — but the check is exercised only by the live document. Task 31 could not add them
-  without changing a check task 22 owns.
+- **The reconciliation runs in the suite.** `tests/common/allowances.rs`'s `reconcile`, through
+  `every_allowance_names_its_values_and_cites_a_recorded_difference`, refuses an entry whose
+  `differenceRow` is not text in `differences.md`, whose id repeats, that gives no reason, that
+  names a golden or field that is not there, whose `pythonValue` is not what the golden holds,
+  and an entry that names neither values nor a contract. What nothing checks: no test re-derives
+  a golden from the reference (`record.py --verify` re-recorded and byte-compared them, and went
+  with `backend/`), no test proves that a row changing a recorded answer has an allowance, and an
+  allowance that covers nothing is still undetected — re-measuring which ones are load-bearing is
+  a hand-run replay of `every_scenario_replays_identically` with the harness logging each match.
+- **`E5`'s negative controls exist as of task 43.** `a_retyped_field_fails_the_openapi_contract`,
+  `a_dropped_required_entry_fails_the_openapi_contract`,
+  `a_required_entry_only_the_port_has_fails_the_openapi_contract` and
+  `a_field_widened_to_nullable_fails_the_openapi_contract` each feed one mutated copy of the
+  served document through `compare_openapi`, and each was measured against a comparator with its
+  check removed before it was committed.
 - **Task 29's `T3` row names the pre-rename test.** It explains the rename from
   `a_note_network_error_is_logged_and_never_raises` to
   `a_note_network_error_ends_the_batch_and_never_raises`; the current name exists and passes.
@@ -406,10 +411,11 @@ Collected from the `STATUS.md` rows and the perf record, in substance:
 - **The perf numbers are a debug build on one machine over loopback.** They are conservative in
   the favourable direction for speed, they do not cover a release build, and nothing was
   measured across a network.
-- **The reconciliation between `differences.md` and `allowed-differences.json` is now manual.**
-  `record.py --verify` used to fail on an allowance that names no row, or a golden or field that
-  does not exist; that check went with `backend/`, and re-measuring which allowances are
-  load-bearing is now a hand-run replay. An allowance that covers nothing is no longer detected.
+- **The reconciliation between `differences.md` and `allowed-differences.json` is a test**, and
+  narrower than `record.py --verify` was: it refuses an allowance that names no row, a golden or
+  field that is not there, or a `pythonValue` the golden does not hold, but it cannot re-record a
+  golden from the reference, cannot tell that a row has no allowance, and cannot tell that an
+  allowance covers nothing — re-measuring which ones are load-bearing is a hand-run replay.
 - **The `openapi` contract compares promises, not documents.** It asserts the same paths,
   methods, parameters, response field names and 2xx `$ref` schema, and reports anything else by
   path or schema — not that the two documents are equal, which they cannot be.
@@ -422,7 +428,7 @@ Collected from the `STATUS.md` rows and the perf record, in substance:
   (they were never guaranteed); a parser report past the node or identity budget is refused
   with the 422 a bad report gets, so a pathological upload a CI runner produced would be
   refused rather than parsed; the `github` and `failed-report` scenarios were recorded and
-  replayed on one host; and `E5`'s four negative controls were never written (section 3).
+  replayed on one host. `E5`'s four OpenAPI controls, which task 43 added, are in section 3.
 - **The follow-on issues must be filed by the user after merge**, because they must not carry
   the `agent` label while the branch is off `main`.
 - **The cutover is a fresh install.** The binary refuses an Alembic database, the database URL

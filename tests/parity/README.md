@@ -3,10 +3,15 @@
 The frozen Python backend's answers, recorded once as committed files, replayed
 by `crates/flakeradar/tests/parity.rs`. Python never runs in CI.
 
-The golden files were recorded from the Python server at commit `97b933d`, the
-last commit before the Rust rewrite branched. The recorder is gone with the
-Python code it drove. **A golden file changes only for an intended behaviour
-change, and only together with an entry in
+The golden files were recorded from the Python reference: the JUnit corpus and
+the thirteen scenarios the recorder shipped with, from `97b933d`, the commit the
+Rust rewrite branched from; and `github` (`449b29f`) and `failed-report`
+(`8cea33f`) from `86c98804`, which is `97b933d` plus main's #130 and #131. Those
+two were recorded with the recorder from `57b22b6`, the commit before `fd259c1`
+deleted `tools/parity-record/` — it was already absent from the tree when they
+were recorded — run against a checkout of `86c98804`'s `backend/` outside this
+one. The recorder is gone with the Python code it drove. **A golden file changes
+only for an intended behaviour change, and only together with an entry in
 `docs/plans/rust-rewrite/differences.md`**; a difference the replay must accept
 also needs an entry in `allowed-differences.json`, which
 `record.py --verify` used to reconcile against `differences.md` and no longer
@@ -35,8 +40,9 @@ in the same PR.
 
 ## Recording (historical)
 
-The files were produced by `tools/parity-record/record.py` at `97b933d`, which
-task 15 deleted with `backend/`. The recipe, kept so the fixtures stay
+The files were produced by `tools/parity-record/record.py` against the reference
+at `97b933d` and, for the two scenarios named above, at `86c98804`; task 15
+deleted the recorder with `backend/`. The recipe, kept so the fixtures stay
 readable: the recorder started a throwaway `postgres:17-alpine`, created a
 fresh database per scenario, started one `uvicorn` process against it (the
 lifespan ran the migrations), ran the steps, and stopped the server. If

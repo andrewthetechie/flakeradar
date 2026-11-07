@@ -108,10 +108,11 @@ added by these tasks. The 26 are:
 - **25** — a `reports` row whose stored `status` or `kind` this version never writes answers the
   plain-text 500; a `failure_category` the five categories do not name reads as `null`.
 
-**One of the 26 needs the owner's decision.** A JSON body past 20 MiB answers **413** here where
-the reference validated it and answered 422. The limit is the plan's explicit-limits rule, and the
-route it guards (`POST /api/tests/{id}/quarantine`) has no token; keeping the reference's 422 means
-accepting an unbounded body there. `differences.md` row 23 says so.
+**All 26 are decided, none awaits a decision.** A JSON body past 20 MiB answers **413** here where
+the reference validated it and answered 422; the owner kept the 413, because the plan's
+explicit-limits rule guards a route without a token and keeping the reference's answer means
+accepting an unbounded body there. `differences.md`'s row 23 cites the decision, and the four rows
+this review's first pass could not settle are decided the same way in `00-fixes-2-context.md`.
 
 No allowance was added, removed or widened by tasks 24–30: `git diff 64d42e9..e8563b1 --
 tests/parity/` is empty. Over the whole leg, `git diff f9330fd..e8563b1 -- tests/parity/` names
@@ -156,8 +157,9 @@ Every command below was run at `e8563b1` on the machine that wrote the branch.
 | `review-135/repro/differential/battery/run.sh all` | **529 comparisons** in the default profile and **31** in the retention profile, **0 new differences**; the known ones are the recorded rows |
 | `cargo +nightly-2026-10-25 llvm-cov nextest --branch --all-features --profile ci`, three times | **96.87% of lines** (15445/15944, 499 missed) and **94.62% of branches** (1283/1356, 73 missed) each time; regions 93.38%, functions 97.46% |
 
-The coverage floor stays `{"lines": 96, "branches": 94}`: both totals rounded down are the floor
-already in `coverage-floor.json`, so the measurement raises nothing and lowers nothing.
+The coverage floor is `{"lines": 96, "branches": 93}`: the branch floor is the owner's decision
+of 2026-11-06 recorded at the top of this page, and 94.62% locally (93.95% on CI) clears it, as
+96.87% of lines clears 96. The measurement raises nothing and lowers nothing.
 
 The proofs are the six files in `review-135/repro/proofs/`. They were scratch code that asserted
 each defect at `f9330fd`; they now assert the fix, so a pass means "the defect is gone" rather
@@ -210,10 +212,13 @@ field allowances before and after, 9 `prefix` entries before and 0 after). The r
   `a_note_network_error_is_logged_and_never_raises` to
   `a_note_network_error_ends_the_batch_and_never_raises`; the current name exists and passes, and
   the old name is the one the finding used.
-- **`record.py --verify` is gone with `backend/`.** The reconciliation between
-  `differences.md` and `allowed-differences.json` is manual; an allowance that covers nothing is
-  no longer detected. `differences.md`'s recount (52 rows, 196 field allowances, 183 + 12 + 1 by
-  reader) is a count of the two files, not the recorder's cross-check.
+- **`record.py --verify` is gone with `backend/`, and a narrower check replaced it.** The
+  reconciliation between `differences.md` and `allowed-differences.json` is
+  `tests/common/allowances.rs`'s `reconcile`, run by the suite; it refuses an allowance naming no
+  row, a golden or field that is not there, or a `pythonValue` the golden does not hold, but it
+  cannot re-record a golden from the reference, cannot tell that a row has no allowance, and an
+  allowance that covers nothing is still undetected. `differences.md`'s recount (52 rows, 196
+  field allowances, 183 + 12 + 1 by reader) is a count of the two files.
 - **Task 23's sweep did not stage a deadlock or a literal PostgreSQL restart**, and it did not
   re-record a golden; both are pinned by existing tests instead.
 - **`E7`'s real client is `rmcp`'s own client**, not a desktop MCP client or the Inspector CLI:
@@ -230,7 +235,7 @@ mocked)` and `Dashboard e2e (Playwright, mock install)`.
 1. **`review-135/ledger.md`** — the 90 rows, each with its commit and the test or evidence that
    closed it. The ids are the review's.
 2. **`docs/plans/rust-rewrite/differences.md`** — the 52 behaviour rows, in particular the 26 this
-   work added and the one row that needs the owner's decision (a 20 MiB JSON body).
+   work added, every one of them citing an approved decision or a finding.
 3. **`tests/parity/README.md`, then `tests/parity/scenarios/`** — 15 scenarios, 316 steps, 383
    golden files; `github` and `failed-report` are the two the fixes added, and
    `a_scenario_with_a_github_token_webhooks_and_gates_files_only_the_test_that_qualifies` is the

@@ -55,11 +55,19 @@ def main() -> int:
     battery.idle()
 
     summaries = []
+    cases_before = 0
+    known_before: dict[str, int] = {}
     for phase in [p for p in args.phases.split(",") if p]:
         before = len(battery.differences)
         run(phase, battery)
         summary = battery.summary()
+        # The summary counts the run so far; a row of the report is one phase's own
+        # work, so the comparisons the first line sums stay the run's total.
+        summary["cases"] -= cases_before
+        summary["knownDifferences"] = _since(known_before, battery.known_counts)
         summary["newDifferencesInPhase"] = len(battery.differences) - before
+        cases_before = battery.cases
+        known_before = dict(battery.known_counts)
         summaries.append(summary)
         print(json.dumps(summary), flush=True)
         # Written after every phase, so a phase that fails still leaves the
@@ -96,6 +104,15 @@ def main() -> int:
     (out / f"report-{args.profile}.md").write_text("\n".join(lines) + "\n")
     print("\n".join(lines[:12]))
     return 1 if battery.differences else 0
+
+
+def _since(before: dict[str, int], after: dict[str, int]) -> dict[str, int]:
+    """The counts one phase added, so a report row states that phase's own work."""
+    return {
+        key: count - before.get(key, 0)
+        for key, count in sorted(after.items())
+        if count > before.get(key, 0)
+    }
 
 
 def _write(out: Path, profile: str, summaries: list[dict], battery: Battery) -> None:
