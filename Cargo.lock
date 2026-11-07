@@ -956,6 +956,7 @@ dependencies = [
  "flakeradar-test-support",
  "form_urlencoded",
  "futures-util",
+ "memchr",
  "mimalloc",
  "mime_guess",
  "reqwest",

@@ -9,7 +9,11 @@
 //! The scan is linear in the body however the client shapes it. The boundary is
 //! the client's to choose and the body can be 20 MiB, so a search that re-reads
 //! bytes it has already seen — `slice::windows` and its `position` do — is a
-//! quadratic attack on the thread that serves the upload.
+//! quadratic attack on the thread that serves the upload. The delimiter is
+//! therefore found with [`memchr::memmem::Finder`], whose search is linear in the
+//! haystack whatever the needle is.
+
+use memchr::memmem::{self, Finder};
 
 /// The form field `POST /api/ingest` reads a JUnit XML file from.
 pub const REPORT_FIELD: &str = "report";
@@ -119,7 +123,7 @@ const TOKEN_CHARS: &[u8] = b"!#$%&'*+-.^_`|~";
 /// holds a character RFC 7230 does not allow in a token: either way the body is
 /// no form and the upload is refused.
 fn part_field<'a>(part: &'a [u8], field: &str) -> Result<Option<FieldPart<'a>>, MalformedHeaders> {
-    let Some(header_end) = find(part, HEADER_END) else {
+    let Some(header_end) = memmem::find(part, HEADER_END) else {
         return Ok(None);
     };
     let (Some(headers), Some(payload)) = (
@@ -197,18 +201,13 @@ fn split_once_byte(slice: &[u8], byte: u8) -> Option<(&[u8], &[u8])> {
     tail.split_first().map(|(_, rest)| (head, rest))
 }
 
-/// Where `needle` first appears in `haystack`.
-fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    Needle::new(needle.to_vec()).find(haystack, 0)
-}
-
 /// One form's boundary, and the search for the delimiter that ends a part.
 #[derive(Debug)]
 struct Framing {
     /// The delimiter that introduces a part: two dashes and the boundary.
     delimiter: Vec<u8>,
     /// The delimiter preceded by the CRLF that ends the part before it.
-    end_marker: Needle,
+    end_marker: Finder<'static>,
 }
 
 impl Framing {
@@ -222,7 +221,7 @@ impl Framing {
         end_marker.extend_from_slice(&delimiter);
         Self {
             delimiter,
-            end_marker: Needle::new(end_marker),
+            end_marker: Finder::new(&end_marker).into_owned(),
         }
     }
 
@@ -277,14 +276,14 @@ impl Framing {
     /// the byte after it, and every byte it reads is read a bounded number of
     /// times.
     fn next_end(&self, body: &[u8], from: usize) -> Option<usize> {
+        let marker_len = CRLF.len() + self.delimiter.len();
         let mut at = from;
         loop {
-            let end = self.end_marker.find(body, at)?;
-            let after_delimiter = end.checked_add(self.end_marker.bytes.len())?;
-            if body.get(after_delimiter..).is_some_and(starts_or_closes) {
+            let end = at + self.end_marker.find(body.get(at..)?)?;
+            if body.get(end + marker_len..).is_some_and(starts_or_closes) {
                 return Some(end);
             }
-            at = end.checked_add(1)?;
+            at = end + 1;
         }
     }
 }
@@ -295,84 +294,11 @@ fn starts_or_closes(after: &[u8]) -> bool {
     after.starts_with(CRLF) || after.starts_with(CLOSING)
 }
 
-/// A byte needle with the failure table that makes searching linear.
-///
-/// The table says where to resume inside the needle after a mismatch, so no
-/// haystack byte is compared twice: a search costs at most two comparisons per
-/// byte it reads, whatever the needle and the haystack look like.
-#[derive(Debug)]
-struct Needle {
-    /// The bytes to find.
-    bytes: Vec<u8>,
-    /// For each prefix of `bytes`, the length of its longest proper border.
-    failure: Vec<usize>,
-}
-
-impl Needle {
-    /// The needle `bytes`, with its failure table built once.
-    fn new(bytes: Vec<u8>) -> Self {
-        let mut failure = Vec::with_capacity(bytes.len());
-        // The table has one entry per needle byte, so the first byte's border is
-        // zero and each byte after it gets the border of the prefix up to it.
-        failure.extend(bytes.first().map(|_| 0));
-        let mut border = 0;
-        for at in 1..bytes.len() {
-            let byte = bytes.get(at).copied().unwrap_or_default();
-            while border > 0 && bytes.get(border).copied() != Some(byte) {
-                border = failure.get(border - 1).copied().unwrap_or_default();
-            }
-            if bytes.get(border).copied() == Some(byte) {
-                border += 1;
-            }
-            failure.push(border);
-        }
-        Self { bytes, failure }
-    }
-
-    /// Where this needle first appears in `haystack` at or after `from`.
-    ///
-    /// An empty needle is never found, and neither is one longer than what is
-    /// left of the haystack.
-    fn find(&self, haystack: &[u8], from: usize) -> Option<usize> {
-        self.search(haystack, from).0
-    }
-
-    /// [`Needle::find`], with the byte comparisons the scan made.
-    ///
-    /// The count is what lets a test assert the scan stays linear without timing
-    /// anything. `find` drops it, so a build that never asks pays nothing: the
-    /// counter is a value the compiler removes with the rest of the unused tuple.
-    fn search(&self, haystack: &[u8], from: usize) -> (Option<usize>, usize) {
-        let mut matched = 0;
-        let mut at = from;
-        let mut comparisons = 0;
-        while let Some(byte) = haystack.get(at).copied() {
-            comparisons += 1;
-            if self.bytes.get(matched).copied() == Some(byte) {
-                matched += 1;
-                if matched == self.bytes.len() {
-                    return (Some(at + 1 - matched), comparisons);
-                }
-            } else if matched == 0 {
-                // Nothing of the needle is matched, so this byte is a plain miss.
-            } else {
-                // Resume inside the needle, and try this byte against the
-                // shorter prefix before moving on.
-                matched = self.failure.get(matched - 1).copied().unwrap_or_default();
-                comparisons += 1;
-                continue;
-            }
-            at += 1;
-        }
-        (None, comparisons)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     //! The scanner's own rules, which no public item exposes.
 
-    use super::{Framing, Needle, REPORT_FIELD};
+    use super::REPORT_FIELD;
 
     /// The file field `body` carries, where the test's framing is well formed.
     fn field_of<'a>(body: &'a [u8], content_type: &str) -> Option<&'a [u8]> {
@@ -392,27 +318,14 @@ mod tests {
     }
 
     #[test]
-    fn a_needle_that_repeats_its_own_prefix_is_found() {
-        // A boundary the parser is handed never repeats its own CRLF prefix, so
-        // the part of the KMP search that falls back to a shorter prefix is
-        // exercised here, on a needle that does repeat its prefix.
-        let needle = Needle::new(b"aabaa".to_vec());
-        assert_eq!(needle.find(b"aaaaabaabaa", 0), Some(3));
-        assert_eq!(needle.find(b"aaaaabaabaa", 6), Some(6));
-        assert_eq!(needle.find(b"ababab", 0), None);
-        // A needle longer than the haystack, and an empty one, are never found.
-        assert_eq!(needle.find(b"aab", 0), None);
-        assert_eq!(Needle::new(Vec::new()).find(b"aab", 0), None);
-    }
-
-    #[test]
-    fn a_crafted_body_is_scanned_in_one_pass() {
+    fn a_crafted_body_still_finds_the_field_behind_it() {
         // The boundary is the client's to choose and the body can be 20 MiB, so
-        // a scan that re-reads its haystack is a cheap attack. Here every block
-        // of the body matches all but the last byte of the end marker — a CRLF,
-        // two dashes and 63 of the boundary's 64 `a`s — which is what makes a
-        // scan that compares from the start at every offset do the most work it
-        // can on a megabyte of input.
+        // the scan must stay linear. Here every block of the body matches all but
+        // the last byte of the end marker — a CRLF, two dashes and 63 of the
+        // boundary's 64 `a`s — which is the shape that costs a search comparing
+        // from the start at every offset the most work on a megabyte of input.
+        // `memmem::Finder` guarantees the linear cost, so this pins what a
+        // crafted body must still answer.
         let boundary = "a".repeat(64);
         let content_type = format!("multipart/form-data; boundary={boundary}");
         let mut body = format!("--{boundary}\r\n").into_bytes();
@@ -421,30 +334,13 @@ mod tests {
             body.extend_from_slice(b"a".repeat(63).as_slice());
             body.push(b'b');
         }
-        let mut carrying = body.clone();
-        body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
-
-        // The scan the parser runs for every part, over the body as it arrives.
-        let end_marker = Framing::new(boundary.as_bytes()).end_marker;
-        let (found, near_misses) = end_marker.search(&carrying, 0);
-        assert_eq!(found, None, "no end marker is in the body of near misses");
-        assert!(
-            near_misses < 3 * carrying.len(),
-            "{near_misses} comparisons for a {} byte body of near misses",
-            carrying.len()
-        );
-
-        // The same shape, with the upload behind it, still finds the field.
+        // The body of near misses carries no field, and the upload behind it is
+        // found rather than lost in the blocks that look like a delimiter.
+        assert_eq!(field_of(&body, &content_type), None);
+        let mut carrying = body;
         carrying.extend_from_slice(b"\r\n");
         carrying.extend_from_slice(&file_part(&boundary, REPORT_FIELD, b"<x/>"));
         carrying.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
         assert_eq!(field_of(&carrying, &content_type), Some(&b"<x/>"[..]));
-        let (found, comparisons) = end_marker.search(&carrying, 0);
-        assert!(found.is_some(), "the end marker is in the carrying body");
-        assert!(
-            comparisons < 3 * carrying.len(),
-            "{comparisons} comparisons for a {} byte body that carries the field",
-            carrying.len()
-        );
     }
 }

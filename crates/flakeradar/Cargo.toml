@@ -19,6 +19,7 @@ dotenvy.workspace = true
 flakeradar-core.workspace = true
 flakeradar-db.workspace = true
 form_urlencoded.workspace = true
+memchr = { workspace = true, features = ["std"] }
 mime_guess.workspace = true
 reqwest = { workspace = true, features = ["json", "rustls"] }
 rmcp = { workspace = true, features = ["server", "transport-streamable-http-server"] }

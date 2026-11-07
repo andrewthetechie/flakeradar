@@ -42,6 +42,9 @@ futures-util = { version = "0.3", default-features = false }
 # `flakeradar-db` names this because sea-orm's statement-logging level is a
 # `log::LevelFilter`, and that is the one place that sets it.
 log = { version = "0.4", default-features = false }
+# `flakeradar`'s multipart reader finds a boundary in a 20 MiB body with this,
+# whose `memmem` search is linear in the haystack whatever the needle looks like.
+memchr = { version = "2", default-features = false }
 mime_guess = { version = "2", default-features = false }
 mimalloc = { version = "0.1", default-features = false }
 regex = { version = "1", default-features = false }
