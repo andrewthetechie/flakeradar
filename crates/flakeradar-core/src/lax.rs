@@ -9,20 +9,48 @@
 
 // Rust guideline compliant 2026-07-21
 
-use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
+use chrono::{DateTime, Datelike as _, NaiveDate, NaiveDateTime, Utc};
 use serde_json::{Map, Number, Value};
 
 use crate::dto::lax_bool::{self, Refusal};
 use crate::dto::{LocSegment, ValidationIssue};
 use crate::py::strip_wire_whitespace;
 
-/// `2^63`, the first whole number above `i64::MAX`. The float-to-integer
-/// conversion accepts a float at or above the negative bound and below this one,
-/// and reports `int_parsing_size` outside that range.
-const INTEGER_RANGE: f64 = 9_223_372_036_854_776_000_000_000_000_000.0;
+/// `2^63`, the first whole number above `i64::MAX`. A float at or past it in
+/// magnitude names no `i64`, which the reference reports as `int_parsing_size`.
+/// The comparison is on the float because the cast itself saturates.
+const INTEGER_RANGE: f64 = 9_223_372_036_854_775_808.0;
+
+/// The milliseconds in one second, which a timestamp past [`EPOCH_MILLISECONDS`]
+/// is divided by to reach seconds.
+const MILLIS_PER_SECOND: f64 = 1_000.0;
 
 /// The nanoseconds in one second, the unit a timestamp's fraction is scaled by.
 const NANOS_PER_SECOND: f64 = 1_000_000_000.0;
+
+/// The nanoseconds in one microsecond, the resolution a timestamp keeps.
+///
+/// A datetime holds microseconds, so the reference rounds a fraction to them and
+/// so does this reader: `1767225600000.123456789` is `.000124`, not `.000123`.
+const NANOS_PER_MICROSECOND: f64 = 1_000.0;
+
+/// The magnitude past which a number names milliseconds rather than seconds.
+///
+/// The reference reads `abs(value) > 2e10` as a millisecond count, which is the
+/// shape `Date.now()` gives: `1767225600000` is 2026-01-01, not the year 57971.
+const EPOCH_MILLISECONDS: f64 = 20_000_000_000.0;
+
+/// The last year a datetime names.
+const LAST_YEAR: i32 = 9999;
+
+/// The sentence a timestamp past year 9999 is refused with.
+const AFTER_LAST_YEAR: &str = "dates after 9999 are not supported as unix timestamps";
+
+/// The sentence a timestamp before year 0 is refused with.
+const BEFORE_FIRST_YEAR: &str = "dates before 0000 are not supported as unix timestamps";
+
+/// The sentence the year between the first years is refused with.
+const YEAR_ZERO: &str = "year 0 is out of range";
 
 /// The message a string that spells no integer is refused with, which the
 /// request extractors report as `int_parsing`.
@@ -146,7 +174,7 @@ fn integer_from_number(
             value.clone(),
         )));
     }
-    if !(-INTEGER_RANGE..INTEGER_RANGE).contains(&float) {
+    if float.abs() >= INTEGER_RANGE {
         return Err(Box::new(ValidationIssue::int_parsing_size(
             loc,
             value.clone(),
@@ -238,13 +266,16 @@ pub fn boolean(value: &Value, loc: Vec<LocSegment>) -> Result<bool, Box<Validati
 /// A string is any ISO 8601 form the reader takes: a datetime with or without
 /// seconds, a space or `T` between the date and the time, a `.` or `,` before a
 /// fraction, and `Z`, `z` or an offset with or without its colon; or a date
-/// alone, which is that day's midnight. A number is a Unix timestamp in seconds,
-/// with its fraction when it has one. A naive timestamp is read as UTC.
+/// alone, which is that day's midnight. A number is a Unix timestamp: seconds
+/// when its magnitude is at most `2e10`, and milliseconds past that, which is
+/// the shape `Date.now()` gives. A naive timestamp is read as UTC.
 ///
 /// # Errors
 ///
-/// Returns `datetime_type` for a value of another type and
-/// `datetime_from_date_parsing` for a string that names no instant.
+/// Returns `datetime_type` for a value of another type,
+/// `datetime_from_date_parsing` for a string that names no instant, and
+/// `datetime_parsing` for a timestamp outside the years 1 to 9999, which no
+/// datetime holds.
 pub fn timestamp(
     value: &Value,
     loc: Vec<LocSegment>,
@@ -257,8 +288,13 @@ pub fn timestamp(
                 timestamp_detail(text),
             ))
         }),
-        Value::Number(number) => epoch_instant(number)
-            .ok_or_else(|| Box::new(ValidationIssue::int_parsing_size(loc, value.clone()))),
+        Value::Number(number) => epoch_instant(number).map_err(|sentence| {
+            Box::new(ValidationIssue::datetime_parsing(
+                loc,
+                value.clone(),
+                sentence,
+            ))
+        }),
         _ => Err(Box::new(ValidationIssue::datetime_type(loc, value.clone()))),
     }
 }
@@ -349,27 +385,42 @@ fn timestamp_detail(text: &str) -> &'static str {
     }
 }
 
-/// The instant one Unix timestamp names, in seconds with its fraction.
+/// The instant one Unix timestamp names.
+fn epoch_instant(number: &Number) -> Result<DateTime<Utc>, &'static str> {
+    match number.as_f64() {
+        Some(value) => epoch_of(value),
+        None => Err(AFTER_LAST_YEAR),
+    }
+}
+
+/// The instant a Unix timestamp names, when a datetime holds it.
+///
+/// A magnitude past [`EPOCH_MILLISECONDS`] is a millisecond count, which is the
+/// shape `Date.now()` gives and the one the reference reads that way; anything
+/// smaller is seconds with its fraction. An instant outside the years 1 to 9999
+/// names no datetime, and answers the sentence the reference refuses it with.
 #[expect(
     clippy::cast_possible_truncation,
     reason = "the whole seconds are a finite float inside i64's range, which is checked"
 )]
 #[expect(
     clippy::cast_sign_loss,
-    reason = "the nanosecond count is made positive before it is converted"
+    reason = "the microsecond count is made positive before it is converted"
 )]
-fn epoch_instant(number: &Number) -> Option<DateTime<Utc>> {
-    if let Some(seconds) = number.as_i64() {
-        return DateTime::from_timestamp(seconds, 0);
-    }
-    let seconds = number.as_f64()?;
-    if !seconds.is_finite() {
-        return None;
+fn epoch_of(value: f64) -> Result<DateTime<Utc>, &'static str> {
+    let seconds = if value.abs() > EPOCH_MILLISECONDS {
+        value / MILLIS_PER_SECOND
+    } else {
+        value
+    };
+    if !seconds.is_finite() || seconds.abs() >= INTEGER_RANGE {
+        return Err(if seconds.is_sign_negative() {
+            BEFORE_FIRST_YEAR
+        } else {
+            AFTER_LAST_YEAR
+        });
     }
     let whole = seconds.trunc();
-    if !(-INTEGER_RANGE..INTEGER_RANGE).contains(&whole) {
-        return None;
-    }
     let fraction = seconds - whole;
     let (seconds, nanos) = if fraction < 0.0 {
         (
@@ -379,10 +430,27 @@ fn epoch_instant(number: &Number) -> Option<DateTime<Utc>> {
     } else {
         (whole as i64, (fraction * NANOS_PER_SECOND).round().abs())
     };
-    if nanos >= NANOS_PER_SECOND {
-        return DateTime::from_timestamp(seconds + 1, 0);
+    // A datetime holds microseconds, so the fraction is rounded to them before
+    // the instant is built.
+    let nanos = (nanos / NANOS_PER_MICROSECOND).round() * NANOS_PER_MICROSECOND;
+    let instant = if nanos >= NANOS_PER_SECOND {
+        DateTime::from_timestamp(seconds + 1, 0)
+    } else {
+        DateTime::from_timestamp(seconds, nanos as u32)
+    };
+    let Some(instant) = instant else {
+        return Err(if seconds < 0 {
+            BEFORE_FIRST_YEAR
+        } else {
+            AFTER_LAST_YEAR
+        });
+    };
+    match instant.year() {
+        year if year > LAST_YEAR => Err(AFTER_LAST_YEAR),
+        0 => Err(YEAR_ZERO),
+        year if year < 0 => Err(BEFORE_FIRST_YEAR),
+        _ => Ok(instant),
     }
-    DateTime::from_timestamp(seconds, nanos as u32)
 }
 
 /// The items of the JSON list `value` holds.

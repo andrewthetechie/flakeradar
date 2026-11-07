@@ -1372,3 +1372,35 @@ async fn an_ingested_failure_in_an_empty_namespace_is_stored_as_failed() {
         .collect();
     assert_eq!(statuses, ["failed"]);
 }
+
+#[tokio::test]
+async fn a_millisecond_timestamp_reaches_the_stored_job_execution() {
+    // `1767225600000` is the shape `Date.now()` gives, and the reference reads a
+    // number past 2e10 as milliseconds, so this Job started at 2026-01-01. The
+    // Report used to keep a year past 9999, which failed its own re-read, so the
+    // Job's `started_at` was never stored at all.
+    let db = TestDb::new().await.expect("a test database is available");
+    let reply = pipeline(
+        &test_app(&db),
+        &json!({"jobs": [{"ci_job_id": "100", "name": "test", "status": "passed",
+                          "started_at": 1_767_225_600_000_i64}]}),
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::ACCEPTED, "{}", reply.text());
+    process_all(&db).await;
+
+    let executions = flakeradar_db::entities::job_executions::Entity::find()
+        .all(db.connection())
+        .await
+        .expect("the Job execution rows");
+    let started: Vec<Option<DateTime<FixedOffset>>> = executions
+        .into_iter()
+        .map(|execution| execution.started_at)
+        .collect();
+    assert_eq!(
+        started,
+        [Some(
+            DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z").expect("the fixture instant")
+        )]
+    );
+}

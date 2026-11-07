@@ -519,6 +519,21 @@ impl ValidationIssue {
         }
     }
 
+    /// A timestamp outside the years 1 to 9999, with the reader's reason.
+    ///
+    /// A Unix timestamp is a number of seconds or milliseconds, and the instant
+    /// it names has to be one a datetime holds: the reference refuses the rest
+    /// with this kind and the sentence in its `msg`.
+    #[must_use]
+    pub fn datetime_parsing(loc: Vec<LocSegment>, input: Value, error: &str) -> Self {
+        Self::parsing(
+            "datetime_parsing",
+            &format!("Input should be a valid datetime, {error}"),
+            loc,
+            input,
+        )
+    }
+
     /// A text holding a NUL character, which a `text` column cannot store.
     #[must_use]
     pub fn nul_character(loc: Vec<LocSegment>, input: Value) -> Self {

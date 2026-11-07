@@ -290,6 +290,9 @@ async fn the_pipeline_body_reads_the_attempt_as_documented() {
         (json!(2.5), "int_from_float"),
         (json!(null), "int_type"),
         (json!(""), "int_parsing"),
+        // A float past `i64::MAX` names no integer at all, so the reference
+        // answers the size refusal rather than the range one.
+        (json!(1e19), "int_parsing_size"),
     ] {
         let reply = pipeline(&app, &json!({"ci_run_attempt": value})).await;
         assert_eq!(
@@ -328,7 +331,9 @@ async fn a_pipeline_attempt_past_the_column_is_a_bad_request() {
 async fn the_pipeline_body_reads_a_timestamp_the_way_the_wire_does() {
     let db = TestDb::new().await.expect("a test database is available");
     let app = test_app(&db);
-    // Every spelling the reference accepted, and the instant it means.
+    // Every spelling the reference accepted, and the instant it means. The
+    // epoch rows are the reference's own answers, measured from it rather than
+    // inferred; the command is in `STATUS.md`'s note for this task.
     for (value, instant) in [
         (json!("2026-01-01T00:00:00Z"), "2026-01-01T00:00:00.000000Z"),
         (
@@ -344,8 +349,19 @@ async fn the_pipeline_body_reads_a_timestamp_the_way_the_wire_does() {
             "2026-01-01T00:00:00.500000Z",
         ),
         (json!("2026-01-01T00:00:00z"), "2026-01-01T00:00:00.000000Z"),
+        // A number at or below 2e10 in magnitude is seconds, and past it is
+        // milliseconds: the value `Date.now()` gives is 2026, not the year 57971.
         (json!(1_767_225_600_i64), "2026-01-01T00:00:00.000000Z"),
         (json!(1_767_225_600.5), "2026-01-01T00:00:00.500000Z"),
+        (json!(20_000_000_000_i64), "2603-10-11T11:33:20.000000Z"),
+        (json!(20_000_000_001_i64), "1970-08-20T11:33:20.001000Z"),
+        (json!(-20_000_000_001_i64), "1969-05-14T12:26:39.999000Z"),
+        (json!(1_767_225_600_000_i64), "2026-01-01T00:00:00.000000Z"),
+        (json!(1_767_225_600_000.5), "2026-01-01T00:00:00.000500Z"),
+        (json!(1_767_225_600_123_i64), "2026-01-01T00:00:00.123000Z"),
+        (json!(253_402_300_799_i64), "1978-01-11T21:31:40.799000Z"),
+        (json!(253_402_300_800_i64), "1978-01-11T21:31:40.800000Z"),
+        (json!(1e14), "5138-11-16T09:46:40.000000Z"),
     ] {
         let reply = pipeline(
             &app,
@@ -365,10 +381,12 @@ async fn the_pipeline_body_reads_a_timestamp_the_way_the_wire_does() {
             "{value}"
         );
     }
-    // Refused spellings.
+    // Refused spellings: `1e15` is past the year 9999.
     for (value, kind) in [
         (json!("20260101T000000Z"), "datetime_from_date_parsing"),
         (json!(""), "datetime_from_date_parsing"),
+        (json!(1e15), "datetime_parsing"),
+        (json!(253_402_300_800_000_i64), "datetime_parsing"),
         (json!(true), "datetime_type"),
         (json!([]), "datetime_type"),
     ] {
@@ -390,6 +408,45 @@ async fn the_pipeline_body_reads_a_timestamp_the_way_the_wire_does() {
             "{value}"
         );
     }
+    // `completed_at` goes through the same reader, so it earns the same answer.
+    for (value, instant) in [(json!(1_767_225_600_000_i64), "2026-01-01T00:00:00.000000Z")] {
+        let reply = pipeline(
+            &app,
+            &json!({"jobs": [{"ci_job_id": "1", "name": "n", "status": "passed",
+                              "completed_at": value}]}),
+        )
+        .await;
+        assert_eq!(
+            reply.status,
+            StatusCode::ACCEPTED,
+            "{value}: {}",
+            reply.text()
+        );
+        assert_eq!(
+            stored_pipeline(&db).await.body["jobs"][0]["completed_at"],
+            json!(instant),
+            "{value}"
+        );
+    }
+    let reply = pipeline(
+        &app,
+        &json!({"jobs": [{"ci_job_id": "1", "name": "n", "status": "passed",
+                          "completed_at": 1e15}]}),
+    )
+    .await;
+    assert_eq!(
+        reply.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{}",
+        reply.text()
+    );
+    assert_eq!(
+        issues(&reply),
+        [(
+            "datetime_parsing".to_owned(),
+            json!(["body", "jobs", 0, "completed_at"])
+        )]
+    );
 }
 
 #[tokio::test]
@@ -746,6 +803,11 @@ async fn the_quarantine_body_reads_its_numbers_as_documented() {
             "int_type",
             json!(["body", "expires_in_days"]),
         ),
+        (
+            json!({"quarantined": true, "expires_in_days": 1e19}),
+            "int_parsing_size",
+            json!(["body", "expires_in_days"]),
+        ),
     ] {
         let reply = post(
             &app,
@@ -801,6 +863,24 @@ async fn the_issue_body_reads_its_number_as_documented() {
     assert_eq!(
         issues(&reply),
         [("string_type".to_owned(), json!(["body", "url"]))]
+    );
+    // A float past `i64::MAX` names no integer, so it is the size refusal and
+    // not the ceiling the stored column has.
+    let reply = send(
+        &app,
+        axum::http::Request::builder()
+            .method(axum::http::Method::PUT)
+            .uri(format!("/api/tests/{id}/issue"))
+            .header("x-api-key", TOKEN)
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(json!({"number": 1e19}).to_string()))
+            .expect("the fixture request builds"),
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        issues(&reply),
+        [("int_parsing_size".to_owned(), json!(["body", "number"]))]
     );
 }
 
