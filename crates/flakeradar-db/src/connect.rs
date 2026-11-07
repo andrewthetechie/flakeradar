@@ -40,19 +40,20 @@ impl DbSettings {
     ///
     /// # Errors
     ///
-    /// Returns [`DbError::InvalidTimeout`] when the value is not a finite,
-    /// positive number of seconds, which
-    /// [`Duration::from_secs_f64`] cannot represent.
+    /// Returns [`DbError::InvalidTimeout`] when no `Duration` holds the value or
+    /// it is zero: `1e30` overflows one, `1e-12` rounds it to nothing, and a
+    /// timeout PostgreSQL is never given is not a setting to keep. This is the
+    /// same rule [`Duration::try_from_secs_f64`] applies, so the check and the
+    /// conversion cannot disagree.
     pub fn new(command_timeout_seconds: f64) -> Result<Self, DbError> {
-        if !command_timeout_seconds.is_finite() || command_timeout_seconds <= 0.0 {
-            return Err(DbError::InvalidTimeout {
+        let command_timeout = Duration::try_from_secs_f64(command_timeout_seconds)
+            .ok()
+            .filter(|timeout| !timeout.is_zero())
+            .ok_or_else(|| DbError::InvalidTimeout {
                 variable: "FLAKERADAR_DB_COMMAND_TIMEOUT_SECONDS",
                 value: command_timeout_seconds.to_string(),
-            });
-        }
-        Ok(Self {
-            command_timeout: Duration::from_secs_f64(command_timeout_seconds),
-        })
+            })?;
+        Ok(Self { command_timeout })
     }
 
     /// How long a statement may run before PostgreSQL cancels it.
@@ -286,7 +287,10 @@ mod tests {
 
     #[test]
     fn rejects_a_timeout_postgres_cannot_take() {
-        for value in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+        // `1e30` overflows a `Duration` and `1e-12` rounds to nothing, so neither
+        // is a timeout PostgreSQL can be given: the first used to panic on the
+        // conversion, past the finite-and-positive check.
+        for value in [0.0, -1.0, f64::NAN, f64::INFINITY, 1e30, 1e-12] {
             assert!(matches!(
                 DbSettings::new(value),
                 Err(DbError::InvalidTimeout { .. })

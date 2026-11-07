@@ -10,6 +10,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 use std::path::Path;
+use std::time::Duration;
 
 use flakeradar_core::defaults;
 use flakeradar_core::dto::lax_bool;
@@ -158,16 +159,20 @@ fn fraction(field: &str, value: f64) -> Result<(), SettingsError> {
     Err(out_of_range(field, value, "a number from 0 to 1"))
 }
 
-/// Refuses a wait, a budget or a timeout that is not a positive interval.
-fn interval(field: &str, value: f64) -> Result<(), SettingsError> {
-    if value.is_finite() && value > 0.0 {
-        return Ok(());
-    }
-    Err(out_of_range(
-        field,
-        value,
-        "a number of seconds more than 0",
-    ))
+/// What a field holding a wait accepts, in words.
+const WAIT_EXPECTED: &str = "a number of seconds more than 0";
+
+/// The wait `seconds` names, when a `Duration` holds it and it is not zero.
+///
+/// A finite value above 0 is not enough: `1e30` overflows a `Duration` and
+/// `1e-12` rounds it to nothing, so either would have become a zero wait at the
+/// point of use — a worker querying with no wait, a prune running on every loop.
+/// Both are refused here, by name.
+fn wait_of(field: &str, seconds: f64) -> Result<Duration, SettingsError> {
+    Duration::try_from_secs_f64(seconds)
+        .ok()
+        .filter(|wait| !wait.is_zero())
+        .ok_or_else(|| out_of_range(field, seconds, WAIT_EXPECTED))
 }
 
 /// The refusal for a value the field could never take.
@@ -246,6 +251,53 @@ impl Raw<'_> {
     /// The value of `field` parsed as a number, or `None` when it is unset.
     fn float(&self, field: &str) -> Result<Option<f64>, SettingsError> {
         self.parsed(field, "a number")
+    }
+
+    /// The value of `field` parsed as a number of seconds one of the waits that
+    /// no `Duration` is built from is held as, or `None` when it is unset.
+    ///
+    /// [`Raw::wait`] is the reader for a field that *is* a `Duration`; this one
+    /// keeps the seconds a budget and a statement timeout are spent in, and
+    /// applies the same rule so the refusal names the text as well.
+    fn wait_seconds(&self, field: &str) -> Result<Option<f64>, SettingsError> {
+        let Some(text) = self.trimmed(field) else {
+            return Ok(None);
+        };
+        let seconds: f64 = text.parse().map_err(|_error| SettingsError::InvalidValue {
+            variable: variable(field),
+            value: text.to_owned(),
+            expected: "a number",
+        })?;
+        wait_of(field, seconds).map_err(|_refusal| SettingsError::OutOfRange {
+            variable: variable(field),
+            value: text.to_owned(),
+            expected: WAIT_EXPECTED.to_owned(),
+        })?;
+        Ok(Some(seconds))
+    }
+
+    /// The value of `field` parsed as a wait, or `None` when it is unset.
+    ///
+    /// The refusal names the text the operator typed rather than the float it
+    /// parsed to, so `1e30` is the value the message quotes.
+    fn wait(&self, field: &str) -> Result<Option<Duration>, SettingsError> {
+        let Some(text) = self.trimmed(field) else {
+            return Ok(None);
+        };
+        let seconds: f64 = text.parse().map_err(|_error| SettingsError::InvalidValue {
+            variable: variable(field),
+            value: text.to_owned(),
+            expected: "a number",
+        })?;
+        Duration::try_from_secs_f64(seconds)
+            .ok()
+            .filter(|wait| !wait.is_zero())
+            .map(Some)
+            .ok_or_else(|| SettingsError::OutOfRange {
+                variable: variable(field),
+                value: text.to_owned(),
+                expected: WAIT_EXPECTED.to_owned(),
+            })
     }
 
     /// The value of `field` parsed as a TCP port, or `None` when it is unset.
@@ -335,8 +387,8 @@ pub struct Settings {
     pub webhook_format: WebhookFormat,
     /// The origins `Access-Control-Allow-Origin` may name, comma separated.
     pub cors_origins: String,
-    /// The Report processor's idle poll interval, in seconds.
-    pub worker_poll_seconds: f64,
+    /// The Report processor's idle poll interval.
+    pub worker_poll: Duration,
     /// The statement timeout every pooled connection is set to, in seconds.
     pub db_command_timeout_seconds: f64,
     /// How often a Report may be re-processed after a transient failure.
@@ -349,8 +401,8 @@ pub struct Settings {
     pub execution_retention_days: i64,
     /// How many days Score history rows are kept.
     pub score_history_retention_days: i64,
-    /// How often the processor prunes, in seconds.
-    pub prune_interval_seconds: f64,
+    /// How often the processor prunes.
+    pub prune_interval: Duration,
     /// How many rows one prune batch deletes per table.
     pub prune_batch: i64,
     /// The wall-clock budget of one prune run, in seconds.
@@ -382,14 +434,14 @@ impl Default for Settings {
             webhook_urls: Secret::new(""),
             webhook_format: WebhookFormat::Json,
             cors_origins: "http://localhost:5173".to_owned(),
-            worker_poll_seconds: 1.0,
+            worker_poll: Duration::from_secs(1),
             db_command_timeout_seconds: defaults::DB_COMMAND_TIMEOUT_SECONDS,
             max_report_retries: defaults::MAX_REPORT_RETRIES,
             report_retention_days: defaults::REPORT_RETENTION_DAYS,
             failed_report_retention_days: defaults::FAILED_REPORT_RETENTION_DAYS,
             execution_retention_days: defaults::EXECUTION_RETENTION_DAYS,
             score_history_retention_days: defaults::SCORE_HISTORY_RETENTION_DAYS,
-            prune_interval_seconds: 3600.0,
+            prune_interval: Duration::from_secs(3600),
             prune_batch: defaults::PRUNE_BATCH,
             prune_time_budget_seconds: defaults::PRUNE_TIME_BUDGET_SECONDS,
             host: DEFAULT_HOST.to_owned(),
@@ -506,13 +558,10 @@ impl Settings {
             raw.webhook_format("WEBHOOK_FORMAT")?,
         );
         set_if_some(&mut settings.cors_origins, raw.text("CORS_ORIGINS"));
-        set_if_some(
-            &mut settings.worker_poll_seconds,
-            raw.float("WORKER_POLL_SECONDS")?,
-        );
+        set_if_some(&mut settings.worker_poll, raw.wait("WORKER_POLL_SECONDS")?);
         set_if_some(
             &mut settings.db_command_timeout_seconds,
-            raw.float("DB_COMMAND_TIMEOUT_SECONDS")?,
+            raw.wait_seconds("DB_COMMAND_TIMEOUT_SECONDS")?,
         );
         set_if_some(
             &mut settings.max_report_retries,
@@ -535,13 +584,13 @@ impl Settings {
             raw.whole("SCORE_HISTORY_RETENTION_DAYS")?,
         );
         set_if_some(
-            &mut settings.prune_interval_seconds,
-            raw.float("PRUNE_INTERVAL_SECONDS")?,
+            &mut settings.prune_interval,
+            raw.wait("PRUNE_INTERVAL_SECONDS")?,
         );
         set_if_some(&mut settings.prune_batch, raw.whole("PRUNE_BATCH")?);
         set_if_some(
             &mut settings.prune_time_budget_seconds,
-            raw.float("PRUNE_TIME_BUDGET_SECONDS")?,
+            raw.wait_seconds("PRUNE_TIME_BUDGET_SECONDS")?,
         );
         set_if_some(&mut settings.host, raw.text("HOST"));
         set_if_some(&mut settings.port, raw.port("PORT")?);
@@ -595,8 +644,7 @@ impl Settings {
         at_least("GITHUB_SYNC_BATCH", &self.github_sync_batch, &0)?;
         at_least("GITHUB_FIXED_STREAK", &self.github_fixed_streak, &0)?;
         fraction("FLAKE_THRESHOLD", self.flake_threshold)?;
-        interval("WORKER_POLL_SECONDS", self.worker_poll_seconds)?;
-        interval(
+        wait_of(
             "DB_COMMAND_TIMEOUT_SECONDS",
             self.db_command_timeout_seconds,
         )?;
@@ -617,9 +665,9 @@ impl Settings {
             &self.score_history_retention_days,
             &0,
         )?;
-        interval("PRUNE_INTERVAL_SECONDS", self.prune_interval_seconds)?;
         at_least("PRUNE_BATCH", &self.prune_batch, &1)?;
-        interval("PRUNE_TIME_BUDGET_SECONDS", self.prune_time_budget_seconds)
+        wait_of("PRUNE_TIME_BUDGET_SECONDS", self.prune_time_budget_seconds)?;
+        Ok(())
     }
 
     /// Refuses a non-PostgreSQL database URL.
@@ -891,6 +939,7 @@ mod tests {
 
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
+    use std::time::Duration;
 
     use anyhow::Context as _;
 
@@ -969,14 +1018,14 @@ mod tests {
             flakeradar_core::notify::WebhookFormat::Json
         );
         assert_eq!(settings.cors_origins, "http://localhost:5173");
-        assert_eq!(settings.worker_poll_seconds, 1.0);
+        assert_eq!(settings.worker_poll, Duration::from_secs(1));
         assert_eq!(settings.db_command_timeout_seconds, 30.0);
         assert_eq!(settings.max_report_retries, 3);
         assert_eq!(settings.report_retention_days, 7);
         assert_eq!(settings.failed_report_retention_days, 0);
         assert_eq!(settings.execution_retention_days, 90);
         assert_eq!(settings.score_history_retention_days, 365);
-        assert_eq!(settings.prune_interval_seconds, 3600.0);
+        assert_eq!(settings.prune_interval, Duration::from_secs(3600));
         assert_eq!(settings.prune_batch, 5000);
         assert_eq!(settings.prune_time_budget_seconds, 60.0);
         assert_eq!(settings.host, DEFAULT_HOST);
@@ -1054,14 +1103,14 @@ mod tests {
             settings.cors_origin_list(),
             ["https://a.example.com", " https://b.example.com"]
         );
-        assert_eq!(settings.worker_poll_seconds, 0.05);
+        assert_eq!(settings.worker_poll, Duration::from_millis(50));
         assert_eq!(settings.db_command_timeout_seconds, 5.0);
         assert_eq!(settings.max_report_retries, 9);
         assert_eq!(settings.report_retention_days, 1);
         assert_eq!(settings.failed_report_retention_days, 2);
         assert_eq!(settings.execution_retention_days, 3);
         assert_eq!(settings.score_history_retention_days, 4);
-        assert_eq!(settings.prune_interval_seconds, 6.0);
+        assert_eq!(settings.prune_interval, Duration::from_secs(6));
         assert_eq!(settings.prune_batch, 7);
         assert_eq!(settings.prune_time_budget_seconds, 8.0);
         assert_eq!(settings.host, "0.0.0.0");
@@ -1323,7 +1372,7 @@ mod tests {
                 .database_settings()
                 .ok()
                 .map(flakeradar_db::DbSettings::command_timeout),
-            Some(std::time::Duration::from_secs(30))
+            Some(Duration::from_secs(30))
         );
     }
 
@@ -1449,6 +1498,48 @@ mod tests {
             assert!(
                 text.contains(value),
                 "the refusal names the value it read: {variable}={value}: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_wait_no_duration_can_hold_is_refused_by_name() {
+        // A finite value above 0 is still no wait a `Duration` holds: `1e30`
+        // overflows it and `1e-12` rounds to nothing, so either would have become
+        // a zero wait at the point of use — a worker querying with no wait and a
+        // prune running on every loop. Both are refused at start-up, by name.
+        for (variable, value) in [
+            ("FLAKERADAR_WORKER_POLL_SECONDS", "1e30"),
+            ("FLAKERADAR_WORKER_POLL_SECONDS", "1e-12"),
+            ("FLAKERADAR_PRUNE_INTERVAL_SECONDS", "1e30"),
+            ("FLAKERADAR_PRUNE_INTERVAL_SECONDS", "1e-12"),
+            ("FLAKERADAR_DB_COMMAND_TIMEOUT_SECONDS", "1e30"),
+            ("FLAKERADAR_DB_COMMAND_TIMEOUT_SECONDS", "1e-12"),
+            ("FLAKERADAR_PRUNE_TIME_BUDGET_SECONDS", "1e30"),
+        ] {
+            let error = Settings::from_map(&map(&[(variable, value)]))
+                .expect_err("no Duration holds this wait");
+            assert!(
+                matches!(error, SettingsError::OutOfRange { .. }),
+                "{variable}={value}: {error}"
+            );
+            assert!(
+                error.to_string().contains(variable),
+                "{variable}={value}: {error}"
+            );
+        }
+        // The refusal quotes the value the operator typed, not a rendering of it.
+        for (variable, value) in [
+            ("FLAKERADAR_WORKER_POLL_SECONDS", "1e30"),
+            ("FLAKERADAR_DB_COMMAND_TIMEOUT_SECONDS", "1e30"),
+            ("FLAKERADAR_DB_COMMAND_TIMEOUT_SECONDS", "1e-12"),
+            ("FLAKERADAR_PRUNE_TIME_BUDGET_SECONDS", "1e30"),
+        ] {
+            let error = Settings::from_map(&map(&[(variable, value)]))
+                .expect_err("no Duration holds this wait");
+            assert_eq!(
+                error.to_string(),
+                format!("{variable}: expected a number of seconds more than 0, got '{value}'")
             );
         }
     }

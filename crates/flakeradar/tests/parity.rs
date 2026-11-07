@@ -376,7 +376,7 @@ impl Replay {
                 Arc::new(settings.clone()),
                 Api::new(settings.github_token.clone(), &github.uri())
                     .expect("the mock GitHub client builds"),
-                Duration::try_from_secs_f64(settings.prune_interval_seconds).unwrap_or_default(),
+                settings.prune_interval,
             )));
         }
         let urls = flakeradar_core::notify::parse_urls(settings.webhook_urls.expose());

@@ -497,17 +497,12 @@ impl WorkerSettings {
     #[must_use]
     pub fn from_settings(settings: &Settings) -> Self {
         Self {
-            poll: seconds(settings.worker_poll_seconds),
+            poll: settings.worker_poll,
             standby: STANDBY_WAIT,
-            prune_interval: seconds(settings.prune_interval_seconds),
+            prune_interval: settings.prune_interval,
             max_backoff: MAX_BACKOFF,
         }
     }
-}
-
-/// A configured number of seconds as a duration, never a panic.
-fn seconds(value: f64) -> Duration {
-    Duration::try_from_secs_f64(value).unwrap_or_default()
 }
 
 /// The single elected Report processor of one server process.

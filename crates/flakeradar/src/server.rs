@@ -119,8 +119,7 @@ impl Server {
                 pool.clone(),
                 Arc::new(settings.clone()),
                 Api::production(settings.github_token.clone())?,
-                std::time::Duration::try_from_secs_f64(settings.prune_interval_seconds)
-                    .unwrap_or_default(),
+                settings.prune_interval,
             )
             .with_clock(clock),
         );
