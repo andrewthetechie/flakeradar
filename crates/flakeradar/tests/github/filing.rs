@@ -540,7 +540,7 @@ async fn a_store_failure_leaves_the_issue_open_and_stops_the_batch() {
     .await;
     // The store itself fails: a trigger that raises is what a broken write does, and
     // a savepoint cannot save a statement the server refuses.
-    fail_link_stores(&db).await;
+    fail_link_stores(&db, "test_cases").await;
 
     let (filed, logged) = logged_call(github::file_issues_for(
         db.connection(),

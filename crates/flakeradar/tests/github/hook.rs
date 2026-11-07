@@ -216,7 +216,7 @@ async fn a_store_failure_ends_the_outcome_and_leaves_its_issue_open() {
         ResponseTemplate::new(201).set_body_json(json!({"number": 7})),
     )
     .await;
-    fail_link_stores(&db).await;
+    fail_link_stores(&db, "test_cases").await;
 
     github::on_report_processed(
         db.connection(),
@@ -239,5 +239,40 @@ async fn a_store_failure_ends_the_outcome_and_leaves_its_issue_open() {
         link_of(&db, EntityKind::Test, filing).await.number,
         None,
         "the issue the failed store created stays open and unlinked"
+    );
+}
+
+#[tokio::test]
+async fn a_job_store_failure_also_ends_the_outcome() {
+    let db = TestDb::new().await.expect("a test database");
+    let job = flaky_job(&db).await;
+    let noteable = note_row(&db, EntityKind::Test, "acme/app", "noteable", Some(88), 3).await;
+    let server = MockServer::start().await;
+    mount_create(
+        &server,
+        ResponseTemplate::new(201).set_body_json(json!({"number": 7})),
+    )
+    .await;
+    fail_link_stores(&db, "jobs").await;
+
+    github::on_report_processed(
+        db.connection(),
+        &processed(&[noteable], &[job]),
+        &fixed_settings(&[("FLAKERADAR_GITHUB_ISSUE_MIN_SCORE", "0.3")]),
+        &api(&server),
+        &system_clock(),
+        &unstopped(),
+    )
+    .await;
+
+    assert_eq!(
+        requested_calls(&server).await,
+        vec![("POST".to_owned(), "/repos/acme/app/issues".to_owned())],
+        "the Job's failed store ends the outcome: no comment follows it"
+    );
+    assert_eq!(
+        link_of(&db, EntityKind::Job, job).await.number,
+        None,
+        "the Job's issue stays open and unlinked"
     );
 }
