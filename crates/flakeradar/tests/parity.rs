@@ -3023,3 +3023,91 @@ fn a_missing_path_method_parameter_or_field_fails_the_openapi_contract() {
     assert_eq!(failures.len(), 1, "{failures:?}");
     assert!(failures[0].contains("JobPages"), "{failures:?}");
 }
+
+/// The recorded and the served document, compared clean before a control mutates one.
+fn openapi_documents() -> (Value, Value) {
+    let recorded = recorded_openapi();
+    let actual =
+        serde_json::to_value(flakeradar::docs::document()).expect("the document serializes");
+    assert_eq!(
+        compare_openapi("trailing-slash", 9, &recorded, &actual),
+        Vec::<String>::new(),
+        "the served document matches the recorded one before a control mutates it"
+    );
+    (recorded, actual)
+}
+
+#[test]
+fn a_retyped_field_fails_the_openapi_contract() {
+    let (recorded, actual) = openapi_documents();
+    let mut retyped = actual;
+    retyped["components"]["schemas"]["TestOut"]["properties"]["id"] = json!({"type": "string"});
+    let failures = compare_openapi("trailing-slash", 9, &recorded, &retyped);
+    assert_eq!(failures.len(), 1, "{failures:?}");
+    assert!(
+        failures[0].contains("TestOut.id is string where it is integer"),
+        "{failures:?}"
+    );
+}
+
+#[test]
+fn a_dropped_required_entry_fails_the_openapi_contract() {
+    let (recorded, actual) = openapi_documents();
+    let mut dropped = actual;
+    drop_required(&mut dropped, "TestOut", "id");
+    let failures = compare_openapi("trailing-slash", 9, &recorded, &dropped);
+    assert_eq!(failures.len(), 1, "{failures:?}");
+    assert!(
+        failures[0].contains("TestOut does not require id"),
+        "{failures:?}"
+    );
+}
+
+#[test]
+fn a_required_entry_only_the_port_has_fails_the_openapi_contract() {
+    let (recorded, actual) = openapi_documents();
+    let mut added = actual;
+    added["components"]["schemas"]["JobResultIn"]["required"]
+        .as_array_mut()
+        .expect("the schema has a required list")
+        .push(json!("runner_name"));
+    let failures = compare_openapi("trailing-slash", 9, &recorded, &added);
+    assert_eq!(failures.len(), 1, "{failures:?}");
+    assert!(
+        failures[0]
+            .contains("JobResultIn requires runner_name where the recorded document does not"),
+        "{failures:?}"
+    );
+}
+
+#[test]
+fn a_field_widened_to_nullable_fails_the_openapi_contract() {
+    let (recorded, actual) = openapi_documents();
+    let mut widened = actual;
+    widened["components"]["schemas"]["TestOut"]["properties"]["classname"] =
+        json!({"type": ["string", "null"]});
+    // The port marking the field optional is what its own required rule allows for a
+    // nullable field, so the widened type is the only thing left to catch it: a
+    // control that drops the entry without widening it proves the other half.
+    drop_required(&mut widened, "TestOut", "classname");
+    let failures = compare_openapi("trailing-slash", 9, &recorded, &widened);
+    assert_eq!(failures.len(), 1, "{failures:?}");
+    assert!(
+        failures[0].contains("TestOut.classname is string|null where it is string"),
+        "{failures:?}"
+    );
+}
+
+/// Removes one field from one schema's `required` list.
+fn drop_required(document: &mut Value, schema: &str, field: &str) {
+    let required = ["components", "schemas", schema, "required"]
+        .iter()
+        .try_fold(document, |value, key| value.get_mut(*key))
+        .and_then(Value::as_array_mut)
+        .expect("the schema has a required list");
+    let position = required
+        .iter()
+        .position(|name| name == field)
+        .expect("the schema requires the field");
+    let _ = required.remove(position);
+}
