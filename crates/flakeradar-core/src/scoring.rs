@@ -7,8 +7,6 @@
 //! served score, and so every tier and every Notification, comes from these
 //! rules; `tests/parity` replays the recorded answers.
 
-// Rust guideline compliant 2026-07-21
-
 use std::collections::BTreeMap;
 
 use crate::model::ExecutionStatus;

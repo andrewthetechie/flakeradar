@@ -5,8 +5,6 @@
 //! shared immutably, so no handler can observe a half-applied change and no test
 //! needs a process-wide environment variable.
 
-// Rust guideline compliant 2026-07-21
-
 use std::collections::BTreeMap;
 use std::fmt;
 use std::path::Path;

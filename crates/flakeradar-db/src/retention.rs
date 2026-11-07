@@ -13,8 +13,6 @@
 //! forever. Losing old Executions is not news, so the Tier changes that rescore
 //! produces are dropped and only their count is logged (ADR 0009).
 
-// Rust guideline compliant 2026-07-21
-
 use chrono::{NaiveDate, TimeDelta};
 use flakeradar_core::{defaults, model::ReportStatus};
 use sea_orm::entity::prelude::DateTimeWithTimeZone;

@@ -12,8 +12,6 @@
 //! on a GitHub Pipeline). The two targets select genuinely different row shapes,
 //! which is the one place the engines switch on the target.
 
-// Rust guideline compliant 2026-07-21
-
 use chrono::{DateTime, FixedOffset, Utc};
 use flakeradar_core::{
     dto::JobOut, dto::MAX_ISSUE_NUMBER, dto::TestOut, helpers::issue_url, model::EntityKind,

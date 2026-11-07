@@ -6,8 +6,6 @@
 //! `flakeradar-core`. The 422 shapes are part of the wire, so `tests/parity`
 //! replays each one.
 
-// Rust guideline compliant 2026-07-21
-
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;

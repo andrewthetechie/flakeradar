@@ -6,8 +6,6 @@
 //! slow or failing GitHub API neither holds the transaction nor changes the
 //! answer.
 
-// Rust guideline compliant 2026-07-21
-
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;

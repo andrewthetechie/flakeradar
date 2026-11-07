@@ -16,8 +16,6 @@
 //! the writers-app CI path (`POST /api/ingest` with a raw body and
 //! `Content-Type: application/xml`) is one of the steps it carries.
 
-// Rust guideline compliant 2026-07-21
-
 #![expect(
     clippy::expect_used,
     clippy::panic,

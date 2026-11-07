@@ -9,8 +9,6 @@
 //! Every selection chunks its ids at [`crate::CHUNK`], so one statement never
 //! carries more binds than a PostgreSQL statement accepts.
 
-// Rust guideline compliant 2026-07-21
-
 use std::collections::BTreeMap;
 
 use chrono::{DateTime, FixedOffset, Utc};

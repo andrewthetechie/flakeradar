@@ -7,8 +7,6 @@
 //! reader here applies the coercion itself and builds the issue each refused
 //! value answers with.
 
-// Rust guideline compliant 2026-07-21
-
 use chrono::{DateTime, Datelike as _, NaiveDate, NaiveDateTime, Utc};
 use serde_json::{Map, Number, Value};
 

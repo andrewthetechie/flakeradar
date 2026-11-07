@@ -5,8 +5,6 @@
 //! clients differently about one database. Each bound below is stated once and
 //! read by both; a bound only one surface has stays with that surface.
 
-// Rust guideline compliant 2026-07-21
-
 /// The largest page, or listing, either surface serves: REST `page_size` and
 /// the MCP listing tools' `limit`.
 pub const LIST_LIMIT_MAX: i64 = 100;

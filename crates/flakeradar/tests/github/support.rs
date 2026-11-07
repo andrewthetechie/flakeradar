@@ -1,7 +1,5 @@
 //! The fixtures the GitHub tests share: settings, a client, a stub and its answers.
 
-// Rust guideline compliant 2026-07-21
-
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 

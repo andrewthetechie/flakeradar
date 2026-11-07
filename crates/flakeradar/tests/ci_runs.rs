@@ -2,8 +2,6 @@
 //!
 //! The CI run failure listing: the cap, the counts and the failed Jobs it names.
 
-// Rust guideline compliant 2026-07-21
-
 #![expect(
     clippy::expect_used,
     reason = "a test fails loudly when a fixture or an answer does not behave"

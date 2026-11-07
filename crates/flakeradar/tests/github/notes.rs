@@ -1,7 +1,5 @@
 //! The fixed-note batch, its close, and every link write that clears a stamp.
 
-// Rust guideline compliant 2026-07-21
-
 use std::sync::Arc;
 use std::sync::{Mutex, PoisonError};
 use std::time::Duration;

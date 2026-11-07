@@ -5,8 +5,6 @@
 //! the Report body digest. They live here so the routes, the MCP tools and the
 //! processors cannot answer differently about the same row.
 
-// Rust guideline compliant 2026-07-21
-
 use std::fmt::Write as _;
 
 use sha2::{Digest as _, Sha256};

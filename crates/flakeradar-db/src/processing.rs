@@ -6,8 +6,6 @@
 //! own: a rewritten statement that reordered rows would move served scores.
 //! `tests/parity` replays the recorded answers.
 
-// Rust guideline compliant 2026-07-21
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 

@@ -11,8 +11,6 @@
 //! bytes it has already seen — `slice::windows` and its `position` do — is a
 //! quadratic attack on the thread that serves the upload.
 
-// Rust guideline compliant 2026-07-21
-
 /// The form field `POST /api/ingest` reads a JUnit XML file from.
 pub const REPORT_FIELD: &str = "report";
 

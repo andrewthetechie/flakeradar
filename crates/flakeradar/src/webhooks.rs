@@ -12,8 +12,6 @@
 //! A delivery and the wait before a retry end the moment leadership does, so a
 //! leader that drops never waits out an endpoint's timeout.
 
-// Rust guideline compliant 2026-07-21
-
 use std::sync::Arc;
 use std::time::Duration;
 

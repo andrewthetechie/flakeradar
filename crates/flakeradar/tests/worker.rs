@@ -4,8 +4,6 @@
 //! here waits for a real one. The worker's own seams — the processor, the prune,
 //! the wait, the monotonic clock and the lock session — are the test doubles.
 
-// Rust guideline compliant 2026-07-21
-
 #![expect(
     clippy::expect_used,
     clippy::panic,

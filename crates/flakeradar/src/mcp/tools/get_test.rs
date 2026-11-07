@@ -3,8 +3,6 @@
 //! The name, title, description, argument schema and annotations are the wire
 //! contract `tests/parity` replays, so they stay literals here.
 
-// Rust guideline compliant 2026-07-21
-
 use chrono::{DateTime, Utc};
 use rmcp::model::ToolAnnotations;
 use serde::{Deserialize, Serialize};

@@ -6,8 +6,6 @@
 //! rather than in one test file because several need them and none of them
 //! belongs in a release binary.
 
-// Rust guideline compliant 2026-07-21
-
 #![expect(
     clippy::expect_used,
     clippy::missing_panics_doc,

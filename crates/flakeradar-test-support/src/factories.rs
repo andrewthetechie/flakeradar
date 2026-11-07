@@ -5,8 +5,6 @@
 //! about. Building flushes nothing and opens no transaction: it inserts the rows
 //! the test asked for on the connection it was given.
 
-// Rust guideline compliant 2026-07-21
-
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use chrono::{DateTime, FixedOffset, NaiveDate, Utc};
