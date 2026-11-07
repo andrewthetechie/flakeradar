@@ -327,9 +327,8 @@ async fn a_rate_limit_stops_the_batch_without_storing_anything() {
     let second = make_test_case(&project)
         .name("test_second")
         .flakiness_score(0.5)
-        .build(db.connection())
-        .await
-        .expect("the second Test inserts");
+        .create(&db)
+        .await;
     let server = MockServer::start().await;
     mount_create(
         &server,
@@ -365,15 +364,13 @@ async fn a_permission_403_skips_that_repo_and_files_the_other_one() {
     let other_project = make_project()
         .repo("other/repo")
         .project("default")
-        .build(db.connection())
-        .await
-        .expect("the second Project inserts");
+        .create(&db)
+        .await;
     let allowed = make_test_case(&other_project)
         .name("test_other")
         .flakiness_score(0.5)
-        .build(db.connection())
-        .await
-        .expect("the second Test inserts");
+        .create(&db)
+        .await;
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/repos/acme/app/issues"))
@@ -711,14 +708,9 @@ async fn a_job_of_another_provider_is_never_filed() {
         .repo("acme/app")
         .provider("gitlab")
         .name(".gitlab-ci.yml")
-        .build(db.connection())
-        .await
-        .expect("the Pipeline inserts");
-    let job = make_job(&pipeline)
-        .flakiness_score(0.9)
-        .build(db.connection())
-        .await
-        .expect("the Job inserts");
+        .create(&db)
+        .await;
+    let job = make_job(&pipeline).flakiness_score(0.9).create(&db).await;
     let server = MockServer::start().await;
 
     assert!(
@@ -1373,9 +1365,8 @@ async fn a_second_failure_meets_the_min_failures_gate() {
     let run = make_run(&project)
         .commit_sha("cafe1234")
         .branch("main")
-        .build(db.connection())
-        .await
-        .expect("the Run inserts");
+        .create(&db)
+        .await;
     let row = flakeradar_db::entities::test_cases::Entity::find_by_id(test)
         .one(db.connection())
         .await
@@ -1384,9 +1375,8 @@ async fn a_second_failure_meets_the_min_failures_gate() {
     make_execution(&row, &run)
         .status("failed")
         .details("boom2")
-        .build(db.connection())
-        .await
-        .expect("the Execution inserts");
+        .create(&db)
+        .await;
 
     assert_eq!(
         github::file_for(
@@ -1412,40 +1402,32 @@ async fn only_the_newest_window_counts_a_failure() {
     let project = make_project()
         .repo("acme/win")
         .project("p")
-        .build(db.connection())
-        .await
-        .expect("the Project inserts");
+        .create(&db)
+        .await;
     let old = make_test_case(&project)
         .name("old_failures")
         .flakiness_score(0.5)
         .confirmed_flake_count(0)
-        .build(db.connection())
-        .await
-        .expect("the Test inserts");
+        .create(&db)
+        .await;
     let new = make_test_case(&project)
         .name("new_failures")
         .flakiness_score(0.5)
         .confirmed_flake_count(0)
-        .build(db.connection())
-        .await
-        .expect("the Test inserts");
-    let run = make_run(&project)
-        .build(db.connection())
-        .await
-        .expect("the Run inserts");
+        .create(&db)
+        .await;
+    let run = make_run(&project).create(&db).await;
     let old_statuses = ["failed", "failed", "passed", "passed", "passed"];
     let new_statuses = ["failed", "passed", "failed", "passed", "failed"];
     for (old_status, new_status) in old_statuses.into_iter().zip(new_statuses) {
         make_execution(&old, &run)
             .status(old_status)
-            .build(db.connection())
-            .await
-            .expect("the Execution inserts");
+            .create(&db)
+            .await;
         make_execution(&new, &run)
             .status(new_status)
-            .build(db.connection())
-            .await
-            .expect("the Execution inserts");
+            .create(&db)
+            .await;
     }
     let server = MockServer::start().await;
     Mock::given(method("POST"))
@@ -1486,9 +1468,8 @@ async fn the_failure_gate_counts_the_overall_window_only() {
     let project = make_project()
         .repo("acme/app")
         .project("p")
-        .build(db.connection())
-        .await
-        .expect("the Project inserts");
+        .create(&db)
+        .await;
     // A known Default branch, so a union with the Default-branch window would add
     // rows the overall window does not hold.
     db.connection()
@@ -1502,38 +1483,33 @@ async fn the_failure_gate_counts_the_overall_window_only() {
         .name("old_main_failures")
         .flakiness_score(0.5)
         .confirmed_flake_count(0)
-        .build(db.connection())
-        .await
-        .expect("the Test inserts");
+        .create(&db)
+        .await;
     let main = make_run(&project)
         .commit_sha("main1")
         .branch("main")
-        .build(db.connection())
-        .await
-        .expect("the Run inserts");
+        .create(&db)
+        .await;
     // Five older failures on the Default branch, all outside the newest five.
     for _ in 0..5 {
         make_execution(&test, &main)
             .status("failed")
             .details("boom")
-            .build(db.connection())
-            .await
-            .expect("the Execution inserts");
+            .create(&db)
+            .await;
     }
     let feature = make_run(&project)
         .commit_sha("feat1")
         .branch("feat")
-        .build(db.connection())
-        .await
-        .expect("the Run inserts");
+        .create(&db)
+        .await;
     // The newest five executions hold one failure and four passes, on a feature
     // branch: the gate counts this window alone, so a gate of two is missed.
     for status in ["failed", "passed", "passed", "passed", "passed"] {
         make_execution(&test, &feature)
             .status(status)
-            .build(db.connection())
-            .await
-            .expect("the Execution inserts");
+            .create(&db)
+            .await;
     }
     let server = MockServer::start().await;
     mount_create(
@@ -1853,9 +1829,8 @@ async fn only_unexplained_job_failures_meet_the_min_failures_gate() {
         make_job_execution(&explained_row)
             .status("failed")
             .ci_job_id(&ci_job_id)
-            .build(db.connection())
-            .await
-            .expect("the Job execution inserts");
+            .create(&db)
+            .await;
         explain_job_execution(&db, &ci_job_id).await;
     }
     let server = MockServer::start().await;
@@ -1892,9 +1867,8 @@ async fn only_unexplained_job_failures_meet_the_min_failures_gate() {
         make_job_execution(&mixed_row)
             .status("failed")
             .ci_job_id(ci_job_id)
-            .build(db.connection())
-            .await
-            .expect("the Job execution inserts");
+            .create(&db)
+            .await;
     }
     explain_job_execution(&db, "mix-1").await;
 
@@ -1922,9 +1896,8 @@ async fn the_job_failure_gate_counts_the_overall_window_only() {
     let pipeline = make_pipeline()
         .repo("acme/app")
         .provider("github")
-        .build(db.connection())
-        .await
-        .expect("the Pipeline inserts");
+        .create(&db)
+        .await;
     // A known Default branch, so a union with the Default-branch window would add
     // rows the overall window does not hold.
     db.connection()
@@ -1938,26 +1911,23 @@ async fn the_job_failure_gate_counts_the_overall_window_only() {
         .name("old_main_failures")
         .flakiness_score(0.5)
         .confirmed_flake_count(0)
-        .build(db.connection())
-        .await
-        .expect("the Job inserts");
+        .create(&db)
+        .await;
     // Five older unexplained failures on the Default branch, outside the newest five.
     for _ in 0..5 {
         make_job_execution(&job)
             .status("failed")
             .branch("main")
-            .build(db.connection())
-            .await
-            .expect("the Job execution inserts");
+            .create(&db)
+            .await;
     }
     // The newest five hold one failure and four passes, on a feature branch.
     for status in ["failed", "passed", "passed", "passed", "passed"] {
         make_job_execution(&job)
             .status(status)
             .branch("feat")
-            .build(db.connection())
-            .await
-            .expect("the Job execution inserts");
+            .create(&db)
+            .await;
     }
     let server = MockServer::start().await;
     mount_create(

@@ -24,7 +24,8 @@ use crate::support::{
     CREATED, CapturedLog, Loopback, TOKEN, api, clean_streak_of, fixed_settings, flaky_job,
     flaky_test, flaky_test_in, gh_settings, lines_with, link_of, link_table, mount_comment,
     mount_create, mount_issue, mount_patch, mount_state, note_row, noted, requested_calls,
-    requested_paths, set_clean_streak, stage_mid_request, stamp, stamp_link, stamp_note, unstopped,
+    requested_paths, set_clean_streak, stage_mid_request, stamp, stamp_link, stamp_note, sync,
+    sync_with, unstopped,
 };
 
 /// One Test's stored fixed-note stamp.
@@ -441,15 +442,13 @@ async fn a_note_skips_a_job_of_another_provider() {
     let pipeline = make_pipeline()
         .repo("acme/app")
         .provider("gitlab")
-        .build(db.connection())
-        .await
-        .expect("the Pipeline inserts");
+        .create(&db)
+        .await;
     let job = make_job(&pipeline)
         .name("unit")
         .flakiness_score(0.5)
-        .build(db.connection())
-        .await
-        .expect("the Job inserts");
+        .create(&db)
+        .await;
     stamp_link(&db, EntityKind::Job, job.id, stamp().number(77).checked()).await;
     set_clean_streak(&db, "jobs", job.id, 3).await;
     let server = MockServer::start().await;
@@ -1082,14 +1081,7 @@ async fn job_link_change_and_unlink_reset_the_check_stamp() {
     )
     .await
     .expect("the link succeeds");
-    github::sync_closed_issues(
-        db.connection(),
-        &settings,
-        &api(&server),
-        &system_clock(),
-        &unstopped(),
-    )
-    .await;
+    sync_with(&db, &settings, &server).await;
     assert!(
         link_of(&db, EntityKind::Job, job).await.checked(),
         "an open issue is still a check"
@@ -1111,14 +1103,7 @@ async fn job_link_change_and_unlink_reset_the_check_stamp() {
         !link_of(&db, EntityKind::Job, job).await.checked(),
         "a replaced link is checked first"
     );
-    github::sync_closed_issues(
-        db.connection(),
-        &settings,
-        &api(&server),
-        &system_clock(),
-        &unstopped(),
-    )
-    .await;
+    sync_with(&db, &settings, &server).await;
     assert!(
         link_of(&db, EntityKind::Job, job).await.checked(),
         "the new link is checked"
@@ -1309,14 +1294,7 @@ async fn an_unlink_clears_both_halves_and_a_rearm_keeps_its_stamp() {
             .set_body_json(json!({"state": "closed", "state_reason": "completed"})),
     )
     .await;
-    github::sync_closed_issues(
-        db.connection(),
-        &gh_settings(&[]),
-        &api(&server),
-        &system_clock(),
-        &unstopped(),
-    )
-    .await;
+    sync(&db, &server).await;
     assert_eq!(
         requested_paths(&server).await,
         vec!["/repos/acme/app/issues/22"],
@@ -1352,14 +1330,7 @@ async fn an_unlink_after_a_rearm_clears_the_kept_stamp(kind: EntityKind) {
         ResponseTemplate::new(200).set_body_json(json!({"state": "closed"})),
     )
     .await;
-    github::sync_closed_issues(
-        db.connection(),
-        &gh_settings(&[]),
-        &api(&server),
-        &system_clock(),
-        &unstopped(),
-    )
-    .await;
+    sync(&db, &server).await;
     assert_eq!(
         requested_paths(&server).await,
         vec![format!("/repos/acme/app/issues/{number}")],
@@ -1390,14 +1361,7 @@ async fn an_unlink_after_a_rearm_clears_the_kept_stamp(kind: EntityKind) {
     );
 
     let before = requested_paths(&server).await.len();
-    github::sync_closed_issues(
-        db.connection(),
-        &gh_settings(&[]),
-        &api(&server),
-        &system_clock(),
-        &unstopped(),
-    )
-    .await;
+    sync(&db, &server).await;
     assert_eq!(
         requested_paths(&server).await.len(),
         before,
@@ -1479,22 +1443,15 @@ async fn an_unlink_rearms_a_declined_link_and_the_filer_files_it_again() {
     assert_eq!(link.number, Some(77), "the filer files the re-armed Test");
     assert!(!link.closed, "a fresh link starts unflagged");
 
-    let sync = MockServer::start().await;
+    let resync = MockServer::start().await;
     mount_state(
-        &sync,
+        &resync,
         ResponseTemplate::new(200).set_body_json(json!({"state": "open"})),
     )
     .await;
-    github::sync_closed_issues(
-        db.connection(),
-        &gh_settings(&[]),
-        &api(&sync),
-        &system_clock(),
-        &unstopped(),
-    )
-    .await;
+    sync(&db, &resync).await;
     assert_eq!(
-        requested_paths(&sync).await,
+        requested_paths(&resync).await,
         vec!["/repos/acme/app/issues/77"],
         "only the fresh link remains in the rotation"
     );

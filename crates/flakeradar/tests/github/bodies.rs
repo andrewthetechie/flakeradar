@@ -408,9 +408,8 @@ async fn a_test_with_only_passed_executions_gets_no_failure_evidence() {
     let project = make_project()
         .repo("acme/app")
         .project("backend")
-        .build(db.connection())
-        .await
-        .expect("the Project inserts");
+        .create(&db)
+        .await;
     let quiet = make_test_case(&project)
         .name("t_passed")
         .classname("tests.test_x")
@@ -418,20 +417,17 @@ async fn a_test_with_only_passed_executions_gets_no_failure_evidence() {
         .confirmed_flake_count(1)
         .file("tests/test_x.py")
         .line(7)
-        .build(db.connection())
-        .await
-        .expect("the Test inserts");
+        .create(&db)
+        .await;
     let run = make_run(&project)
         .commit_sha("deadbeef")
         .branch("main")
-        .build(db.connection())
-        .await
-        .expect("the Run inserts");
+        .create(&db)
+        .await;
     make_execution(&quiet, &run)
         .status("passed")
-        .build(db.connection())
-        .await
-        .expect("the Execution inserts");
+        .create(&db)
+        .await;
     let server = MockServer::start().await;
     mount_create(
         &server,
@@ -498,22 +494,19 @@ async fn a_job_body_lists_its_worst_runner_groups_first() {
         make_job_execution(&pipeline)
             .status("failed")
             .runner_labels(&["self-hosted", "gpu"])
-            .build(db.connection())
-            .await
-            .expect("the Job execution inserts");
+            .create(&db)
+            .await;
     }
     make_job_execution(&pipeline)
         .status("failed")
         .runner_labels(&["ubuntu-latest"])
-        .build(db.connection())
-        .await
-        .expect("the Job execution inserts");
+        .create(&db)
+        .await;
     make_job_execution(&pipeline)
         .status("passed")
         .runner_labels(&["windows-latest"])
-        .build(db.connection())
-        .await
-        .expect("the Job execution inserts");
+        .create(&db)
+        .await;
     let server = MockServer::start().await;
     mount_create(
         &server,
@@ -567,17 +560,15 @@ async fn a_job_body_caps_the_runner_groups_at_three() {
             make_job_execution(&row)
                 .status("failed")
                 .runner_labels(&[label])
-                .build(db.connection())
-                .await
-                .expect("the Job execution inserts");
+                .create(&db)
+                .await;
         }
     }
     make_job_execution(&row)
         .status("passed")
         .runner_labels(&["d-lab"])
-        .build(db.connection())
-        .await
-        .expect("the Job execution inserts");
+        .create(&db)
+        .await;
     let server = MockServer::start().await;
     mount_create(
         &server,

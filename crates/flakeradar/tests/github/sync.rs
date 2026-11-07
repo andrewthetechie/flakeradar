@@ -20,7 +20,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 use crate::support::{
     CREATED, Held, Loopback, TOKEN, TRUNCATED, api, flaky_job, flaky_row, flaky_test,
     flaky_test_in, gh_settings, link_of, mount_close, mount_create, mount_issue, mount_state,
-    noted, requested_paths, stamp, stamp_link, stamp_note, sync_batch, unstopped,
+    noted, requested_paths, stamp, stamp_link, stamp_note, sync, sync_with, unstopped,
 };
 
 #[tokio::test]
@@ -86,7 +86,7 @@ async fn the_sync_rearms_a_link_whose_issue_closed() {
     )
     .await;
 
-    sync_batch(&db, &server).await;
+    sync(&db, &server).await;
     let link = link_of(&db, EntityKind::Test, test).await;
     assert_eq!(
         link.number, None,
@@ -114,7 +114,7 @@ async fn the_sync_keeps_a_link_closed_as_not_planned() {
     )
     .await;
 
-    sync_batch(&db, &server).await;
+    sync(&db, &server).await;
     let link = link_of(&db, EntityKind::Test, test).await;
     assert_eq!(
         link.number,
@@ -145,7 +145,7 @@ async fn the_sync_clears_the_flag_when_a_declined_issue_reopens() {
     )
     .await;
 
-    sync_batch(&db, &server).await;
+    sync(&db, &server).await;
     let link = link_of(&db, EntityKind::Test, test).await;
     assert_eq!(link.number, Some(12));
     assert_eq!(link.filed, Some(true), "the link is still ours");
@@ -160,7 +160,7 @@ async fn the_sync_rearms_a_link_whose_issue_is_gone() {
     let server = MockServer::start().await;
     mount_state(&server, ResponseTemplate::new(404)).await;
 
-    sync_batch(&db, &server).await;
+    sync(&db, &server).await;
     let link = link_of(&db, EntityKind::Test, test).await;
     assert_eq!(link.number, None);
     assert_eq!(link.filed, None, "the flag resets with the number");
@@ -189,7 +189,7 @@ async fn the_sync_keeps_a_link_on_a_permission_error_and_stamps_it() {
     )
     .await;
 
-    sync_batch(&db, &server).await;
+    sync(&db, &server).await;
     let link = link_of(&db, EntityKind::Test, test).await;
     assert_eq!(
         link.number,
@@ -237,7 +237,7 @@ async fn the_sync_leaves_an_unreadable_body_alone_and_stamps_it() {
         )
         .await;
 
-        sync_batch(&db, &server).await;
+        sync(&db, &server).await;
         assert_eq!(
             requested_paths(&server).await,
             vec!["/repos/acme/a/issues/11", "/repos/acme/b/issues/22"],
@@ -266,7 +266,7 @@ async fn the_sync_stops_on_a_rate_limit_before_stamping_the_row() {
     )
     .await;
 
-    sync_batch(&db, &server).await;
+    sync(&db, &server).await;
     let link = link_of(&db, EntityKind::Test, test).await;
     assert_eq!(link.number, Some(12));
     assert!(
@@ -315,7 +315,7 @@ async fn a_sync_whose_rotation_list_cannot_be_read_makes_no_request() {
         .mount(&server)
         .await;
 
-    sync_batch(&db, &server).await;
+    sync(&db, &server).await;
 
     assert!(
         server
@@ -348,7 +348,7 @@ async fn the_sync_leaves_an_unknown_issue_state_alone() {
     )
     .await;
 
-    sync_batch(&db, &server).await;
+    sync(&db, &server).await;
     let link = link_of(&db, EntityKind::Test, test).await;
     assert_eq!(link.number, Some(12), "an unknown state says nothing");
     assert_eq!(link.filed, Some(true));
@@ -372,14 +372,7 @@ async fn the_sync_rotates_through_its_links_a_batch_at_a_time() {
         .await;
     let settings = gh_settings(&[("FLAKERADAR_GITHUB_SYNC_BATCH", "2")]);
 
-    github::sync_closed_issues(
-        db.connection(),
-        &settings,
-        &api(&server),
-        &system_clock(),
-        &unstopped(),
-    )
-    .await;
+    sync_with(&db, &settings, &server).await;
     assert_eq!(
         requested_paths(&server).await,
         vec!["/repos/acme/app/issues/11", "/repos/acme/app/issues/22"],
@@ -391,14 +384,7 @@ async fn the_sync_rotates_through_its_links_a_batch_at_a_time() {
         "an open issue is still a check"
     );
 
-    github::sync_closed_issues(
-        db.connection(),
-        &settings,
-        &api(&server),
-        &system_clock(),
-        &unstopped(),
-    )
-    .await;
+    sync_with(&db, &settings, &server).await;
     assert_eq!(
         requested_paths(&server).await,
         vec![
@@ -424,7 +410,7 @@ async fn a_never_checked_link_goes_before_a_stamped_one() {
         .mount(&server)
         .await;
 
-    sync_batch(&db, &server).await;
+    sync(&db, &server).await;
     assert_eq!(
         requested_paths(&server).await.len(),
         2,
@@ -434,14 +420,7 @@ async fn a_never_checked_link_goes_before_a_stamped_one() {
     let fresh = flaky_test_in(&db, "acme/app", "p3", "t3").await;
     stamp_link(&db, EntityKind::Test, fresh, stamp().number(33)).await;
     let settings = gh_settings(&[("FLAKERADAR_GITHUB_SYNC_BATCH", "1")]);
-    github::sync_closed_issues(
-        db.connection(),
-        &settings,
-        &api(&server),
-        &system_clock(),
-        &unstopped(),
-    )
-    .await;
+    sync_with(&db, &settings, &server).await;
     assert_eq!(
         requested_paths(&server).await[2..],
         ["/repos/acme/app/issues/33"],
@@ -512,7 +491,7 @@ async fn a_sync_rate_limit_stops_the_batch_and_keeps_the_stamp_it_made() {
         ResponseTemplate::new(403).insert_header("x-ratelimit-remaining", "0"),
     )
     .await;
-    let report = sync_batch(&db, &server).await;
+    let report = sync(&db, &server).await;
     assert_eq!(
         report.stopped,
         Some(github::BatchStop::RateLimited),
@@ -557,7 +536,7 @@ async fn a_sync_continues_from_the_stamp_a_stopped_run_left() {
         ResponseTemplate::new(403).insert_header("x-ratelimit-remaining", "0"),
     )
     .await;
-    sync_batch(&db, &server).await;
+    sync(&db, &server).await;
 
     // The retried row still sorts first, because nothing stamped it.
     let second_server = MockServer::start().await;
@@ -575,14 +554,7 @@ async fn a_sync_continues_from_the_stamp_a_stopped_run_left() {
         ResponseTemplate::new(200).set_body_json(json!({"state": "open"})),
     )
     .await;
-    github::sync_closed_issues(
-        db.connection(),
-        &gh_settings(&[]),
-        &api(&second_server),
-        &system_clock(),
-        &unstopped(),
-    )
-    .await;
+    sync(&db, &second_server).await;
     assert_eq!(
         requested_paths(&second_server).await,
         vec!["/repos/acme/b/issues/2", "/repos/acme/a/issues/1"],
@@ -617,7 +589,7 @@ async fn a_permission_403_skips_the_later_rows_of_that_repo() {
     )
     .await;
 
-    sync_batch(&db, &server).await;
+    sync(&db, &server).await;
     let mut paths = requested_paths(&server).await;
     paths.sort();
     assert_eq!(
@@ -666,28 +638,14 @@ async fn the_sync_rotates_past_a_denied_repo() {
     .await;
     let settings = gh_settings(&[("FLAKERADAR_GITHUB_SYNC_BATCH", "2")]);
 
-    github::sync_closed_issues(
-        db.connection(),
-        &settings,
-        &api(&server),
-        &system_clock(),
-        &unstopped(),
-    )
-    .await;
+    sync_with(&db, &settings, &server).await;
     assert_eq!(
         requested_paths(&server).await,
         vec!["/repos/acme/a/issues/11"],
         "the cap holds the two denied rows and the second gets no GET"
     );
 
-    github::sync_closed_issues(
-        db.connection(),
-        &settings,
-        &api(&server),
-        &system_clock(),
-        &unstopped(),
-    )
-    .await;
+    sync_with(&db, &settings, &server).await;
     assert_eq!(
         requested_paths(&server).await,
         vec![
@@ -734,7 +692,7 @@ async fn a_sync_definitive_client_error_keeps_the_link_and_skips_the_repo() {
         )
         .await;
 
-        sync_batch(&db, &server).await;
+        sync(&db, &server).await;
         assert_eq!(
             requested_paths(&server).await,
             vec!["/repos/acme/a/issues/11", "/repos/acme/b/issues/22"],
@@ -781,7 +739,7 @@ async fn gone_issue_rearms_its_link(kind: EntityKind) {
         .mount(&server)
         .await;
 
-    sync_batch(&db, &server).await;
+    sync(&db, &server).await;
 
     assert_eq!(
         requested_paths(&server).await,
@@ -816,7 +774,7 @@ async fn an_unusable_answer_keeps_the_link(kind: EntityKind) {
         .mount(&server)
         .await;
 
-    let report = sync_batch(&db, &server).await;
+    let report = sync(&db, &server).await;
 
     assert_eq!(
         requested_paths(&server).await,
@@ -872,14 +830,7 @@ async fn the_job_sync_rearms_a_closed_issue_and_the_filer_files_again() {
         ResponseTemplate::new(200).set_body_json(json!({"state": "closed"})),
     )
     .await;
-    github::sync_closed_issues(
-        db.connection(),
-        &gh_settings(&[]),
-        &api(&sync_server),
-        &system_clock(),
-        &unstopped(),
-    )
-    .await;
+    sync(&db, &sync_server).await;
     assert_eq!(link_of(&db, EntityKind::Job, job).await.number, None);
 
     let refile = MockServer::start().await;
@@ -1274,14 +1225,7 @@ async fn a_test_sync_rearms_its_closed_issue_and_the_filer_files_again() {
     )
     .await;
 
-    github::sync_closed_issues(
-        db.connection(),
-        &gh_settings(&[]),
-        &api(&sync_server),
-        &system_clock(),
-        &unstopped(),
-    )
-    .await;
+    sync(&db, &sync_server).await;
     assert_eq!(
         requested_paths(&sync_server).await,
         vec!["/repos/acme/app/issues/300"]
@@ -1347,7 +1291,7 @@ async fn the_sync_rearm_clears_the_fixed_note_stamp_but_a_declined_link_keeps_it
     )
     .await;
 
-    sync_batch(&db, &server).await;
+    sync(&db, &server).await;
     assert_eq!(
         requested_paths(&server).await,
         vec![

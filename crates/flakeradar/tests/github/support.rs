@@ -97,10 +97,7 @@ async fn seed_flaky_test(db: &TestDb, identity: FlakyTest<'_>) -> i32 {
     if let Some(root) = identity.root {
         project = project.root(root);
     }
-    let project = project
-        .build(db.connection())
-        .await
-        .expect("the Project inserts");
+    let project = project.create(db).await;
     let test = make_test_case(&project)
         .name(identity.name)
         .classname(identity.classname)
@@ -109,22 +106,19 @@ async fn seed_flaky_test(db: &TestDb, identity: FlakyTest<'_>) -> i32 {
         .confirmed_flake_count(2)
         .file("tests/test_cart.py")
         .line(12)
-        .build(db.connection())
-        .await
-        .expect("the Test inserts");
+        .create(db)
+        .await;
     let run = make_run(&project)
         .commit_sha("abcdef1234567890")
         .branch("main")
-        .build(db.connection())
-        .await
-        .expect("the Run inserts");
+        .create(db)
+        .await;
     make_execution(&test, &run)
         .status("failed")
         .message("AssertionError: expected 3")
         .details("Traceback (most recent call last):\n  ...")
-        .build(db.connection())
-        .await
-        .expect("the Execution inserts");
+        .create(db)
+        .await;
     test.id
 }
 
@@ -165,21 +159,15 @@ pub(crate) async fn flaky_job(db: &TestDb) -> i32 {
     let pipeline = make_pipeline()
         .repo("acme/app")
         .provider("github")
-        .build(db.connection())
-        .await
-        .expect("the Pipeline inserts");
+        .create(db)
+        .await;
     let job = make_job(&pipeline)
         .name("unit")
         .flakiness_score(0.5)
         .confirmed_flake_count(1)
-        .build(db.connection())
-        .await
-        .expect("the Job inserts");
-    make_job_execution(&job)
-        .status("failed")
-        .build(db.connection())
-        .await
-        .expect("the Job execution inserts");
+        .create(db)
+        .await;
+    make_job_execution(&job).status("failed").create(db).await;
     job.id
 }
 
@@ -267,22 +255,19 @@ pub(crate) async fn flaky_job_in(db: &TestDb, repo: &str, pipeline: &str, name: 
         .repo(repo)
         .provider("github")
         .name(pipeline)
-        .build(db.connection())
-        .await
-        .expect("the Pipeline inserts");
+        .create(db)
+        .await;
     let job = make_job(&pipeline)
         .name(name)
         .flakiness_score(0.5)
         .confirmed_flake_count(1)
-        .build(db.connection())
-        .await
-        .expect("the Job inserts");
+        .create(db)
+        .await;
     make_job_execution(&job)
         .status("failed")
         .ci_job_id(name)
-        .build(db.connection())
-        .await
-        .expect("the Job execution inserts");
+        .create(db)
+        .await;
     job.id
 }
 
@@ -310,27 +295,23 @@ pub(crate) async fn explain_job_execution(db: &TestDb, ci_job_id: &str) {
     let project = make_project()
         .repo("acme/app")
         .project(&format!("explained-{ci_job_id}"))
-        .build(db.connection())
-        .await
-        .expect("the Project inserts");
+        .create(db)
+        .await;
     let test = make_test_case(&project)
         .name(&format!("t-{ci_job_id}"))
         .flakiness_score(0.0)
         .confirmed_flake_count(0)
-        .build(db.connection())
-        .await
-        .expect("the Test inserts");
+        .create(db)
+        .await;
     let run = make_run(&project)
         .commit_sha("s")
         .ci_job_id(ci_job_id)
-        .build(db.connection())
-        .await
-        .expect("the Run inserts");
+        .create(db)
+        .await;
     make_execution(&test, &run)
         .status("failed")
-        .build(db.connection())
-        .await
-        .expect("the Execution inserts");
+        .create(db)
+        .await;
 }
 
 /// Stamps one Job's link columns, as an earlier pass would have.
@@ -740,11 +721,23 @@ pub(crate) async fn note_batch(
 /// One closed-issue sync over the rows `db` holds, against `server`.
 ///
 /// Every sync scenario makes this call and reads the same report back; what
-/// differs between them is the rows it seeded.
-pub(crate) async fn sync_batch(db: &TestDb, server: &MockServer) -> BatchReport {
+/// differs between them is the rows it seeded. A scenario that picks the batch
+/// size says so with [`sync_with`], and one that picks the clock or the stop
+/// signal calls `github::sync_closed_issues` itself, so those two arguments
+/// stand out where they matter.
+pub(crate) async fn sync(db: &TestDb, server: &MockServer) -> BatchReport {
+    sync_with(db, &gh_settings(&[]), server).await
+}
+
+/// One closed-issue sync under `settings`, over the rows `db` holds.
+pub(crate) async fn sync_with(
+    db: &TestDb,
+    settings: &Settings,
+    server: &MockServer,
+) -> BatchReport {
     github::sync_closed_issues(
         db.connection(),
-        &gh_settings(&[]),
+        settings,
         &api(server),
         &system_clock(),
         &unstopped(),
