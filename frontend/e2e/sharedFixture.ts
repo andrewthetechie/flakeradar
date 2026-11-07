@@ -18,7 +18,7 @@ const label = (path: string, status: number) => `${path} -> ${status}`;
 
 const RESOURCE_FAILURE = /status of (\d{3})/;
 
-export const test = base.extend<{ apiFailures: ApiFailure[] }>({
+export const test = base.extend<{ apiFailures: ApiFailure[]; _watch: void }>({
   /** The failures this test deliberately causes. Two ways to fill it:
    *  `test.use({ apiFailures: [...] })` when a test knows them up front, or a
    *  push during the body, which is what `mockApi` does — a mock that answers

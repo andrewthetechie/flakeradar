@@ -45,15 +45,6 @@ if (runs("ui")) {
     timeout: 30_000,
   });
 }
-if (runs("e2e")) {
-  servers.push({
-    command: "node e2e/scripts/start-mock-install.mjs",
-    url: `http://127.0.0.1:${E2E_PORT}/api/health/ready`,
-    reuseExistingServer: !process.env.CI,
-    // Cold start: pull postgres:17-alpine, migrate, then seed 43 reports.
-    timeout: 600_000,
-  });
-}
 
 export default defineConfig({
   testDir: "./e2e",
@@ -66,6 +57,12 @@ export default defineConfig({
     ? [["github"], ["html", { open: "never" }]]
     : [["line"], ["html", { open: "never" }]],
   outputDir: "test-results/playwright",
+  // The mock install is a `globalSetup`, not a `webServer`: a webServer is
+  // ready as soon as its port answers, which is before the seeder has drained
+  // the queue, and the first test would then read a half-filled leaderboard.
+  // The setup function returns the teardown that stops the binary and removes
+  // the container. Selected the same way as the servers above.
+  globalSetup: runs("e2e") ? "./e2e/scripts/start-mock-install.mjs" : undefined,
   webServer: servers,
   use: {
     // `retries: 0`, so "on-first-retry" would keep nothing: a failing test has
