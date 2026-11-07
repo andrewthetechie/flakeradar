@@ -18,7 +18,9 @@ run = ["fabro-pg-ensure"]
 about = "cargo nextest across the workspace; pass test binaries or test names"
 run = "cargo nextest run --all-features --profile ci"
 watch = ["crates/**", "Cargo.toml", "Cargo.lock"]
-timeout = 900
+# 600 is the most fabro-io accepts for any timeout here (TIMEOUT_MAX_S), and one
+# value above it fails the whole file. ci.sh runs the full suite without this cap.
+timeout = 600
 
 [targets.frontend]
 about = "frontend vitest unit suite; pass test files, relative to frontend/"
@@ -38,7 +40,7 @@ about = "clippy with warnings as errors (ci.sh's clippy step)"
 run = "cargo clippy --all-targets --all-features -- -D warnings"
 watch = ["crates/**", "Cargo.toml", "Cargo.lock"]
 files = false
-timeout = 900
+timeout = 600
 
 [checks.typecheck]
 about = "frontend TypeScript type check (npm run typecheck)"
