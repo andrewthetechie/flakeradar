@@ -108,13 +108,13 @@ async fn test_requests(
             &candidate.root,
             settings,
         );
-        batch.push(FileRequest {
-            target: EntityKind::Test,
-            entity_id: candidate.test.id,
-            repo: candidate.repo,
+        batch.push(FileRequest::new(
+            EntityKind::Test,
+            candidate.test.id,
+            candidate.repo,
             title,
             body,
-        });
+        ));
     }
     batch
 }
@@ -174,13 +174,13 @@ async fn job_requests(
             history.as_ref(),
             settings,
         );
-        batch.push(FileRequest {
-            target: EntityKind::Job,
-            entity_id: candidate.job.id,
-            repo: candidate.repo,
+        batch.push(FileRequest::new(
+            EntityKind::Job,
+            candidate.job.id,
+            candidate.repo,
             title,
             body,
-        });
+        ));
     }
     batch
 }
@@ -193,6 +193,20 @@ struct FileRequest {
     repo: String,
     title: String,
     body: String,
+}
+
+impl FileRequest {
+    /// One rendered issue, from the entity it was rendered for.
+    #[must_use]
+    fn new(target: EntityKind, entity_id: i32, repo: String, title: String, body: String) -> Self {
+        Self {
+            target,
+            entity_id,
+            repo,
+            title,
+            body,
+        }
+    }
 }
 
 /// What one row of the filing batch came to.

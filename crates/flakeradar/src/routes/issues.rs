@@ -75,13 +75,29 @@ pub async fn link_test(
     ApiQuery(query): ApiQuery<LinkQuery>,
     ApiJson(body): ApiJson<IssueLinkIn>,
 ) -> RouteResult<Json<LinkedOut>> {
+    write_link(&state, EntityKind::Test, path.test_id, &body, query.replace).await
+}
+
+/// The two link routes' one write: the kind and the id name the row, and the answer
+/// is that row as the read serves it.
+///
+/// The route owns only the status mapping and the documented path; which columns a
+/// link writes, and what a refusal costs, are `issue_links`' — the same reason the
+/// MCP tools answer with this file's text.
+async fn write_link(
+    state: &AppState,
+    kind: EntityKind,
+    id: i64,
+    body: &IssueLinkIn,
+    replace: Option<bool>,
+) -> RouteResult<Json<LinkedOut>> {
     let out = issue_links::link_issue(
         state.pool(),
-        EntityKind::Test,
-        path.test_id,
+        kind,
+        id,
         body.number,
         body.url.as_deref(),
-        query.replace.unwrap_or(false),
+        replace.unwrap_or(false),
         &state.reads(),
     )
     .await?;
@@ -110,9 +126,12 @@ pub async fn unlink_test(
     State(state): State<AppState>,
     ApiPath(path): ApiPath<TestPath>,
 ) -> RouteResult<Json<LinkedOut>> {
-    let out =
-        issue_links::unlink_issue(state.pool(), EntityKind::Test, path.test_id, &state.reads())
-            .await?;
+    clear_link(&state, EntityKind::Test, path.test_id).await
+}
+
+/// The two unlink routes' one write, for the same reason [`write_link`] is one.
+async fn clear_link(state: &AppState, kind: EntityKind, id: i64) -> RouteResult<Json<LinkedOut>> {
+    let out = issue_links::unlink_issue(state.pool(), kind, id, &state.reads()).await?;
     Ok(Json(out))
 }
 
@@ -146,17 +165,7 @@ pub async fn link_job(
     ApiQuery(query): ApiQuery<LinkQuery>,
     ApiJson(body): ApiJson<IssueLinkIn>,
 ) -> RouteResult<Json<LinkedOut>> {
-    let out = issue_links::link_issue(
-        state.pool(),
-        EntityKind::Job,
-        path.job_id,
-        body.number,
-        body.url.as_deref(),
-        query.replace.unwrap_or(false),
-        &state.reads(),
-    )
-    .await?;
-    Ok(Json(out))
+    write_link(&state, EntityKind::Job, path.job_id, &body, query.replace).await
 }
 
 /// Removes a Job's Issue link.
@@ -181,7 +190,5 @@ pub async fn unlink_job(
     State(state): State<AppState>,
     ApiPath(path): ApiPath<JobPath>,
 ) -> RouteResult<Json<LinkedOut>> {
-    let out = issue_links::unlink_issue(state.pool(), EntityKind::Job, path.job_id, &state.reads())
-        .await?;
-    Ok(Json(out))
+    clear_link(&state, EntityKind::Job, path.job_id).await
 }

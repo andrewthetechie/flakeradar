@@ -199,6 +199,29 @@ async fn window_failures(
     Ok(counts)
 }
 
+/// The gate's binds, in the order both filing statements place them, and whether the
+/// fourth of them exists.
+///
+/// `$1` is the chunk of ids, `$2` and `$3` the score and Proven-flake minimums, and
+/// `$4` the fixed-note streak — bound only when the gate sets one, which is the third
+/// part of the answer because the statement has to leave its clause out at the same
+/// time. Each statement keeps its own clause text, so the SQL stays greppable.
+fn gate_binds(chunk: &[i32], gate: &FilingGate) -> (bool, Vec<Value>) {
+    let mut values = vec![
+        int_array(chunk),
+        Value::from(gate.min_score),
+        Value::from(i32::try_from(gate.min_proven_flakes).unwrap_or(i32::MAX)),
+    ];
+    let streak = match gate.fixed_streak {
+        Some(streak) => {
+            values.push(Value::from(i32::try_from(streak).unwrap_or(i32::MAX)));
+            true
+        }
+        None => false,
+    };
+    (streak, values)
+}
+
 /// One Test that meets the filing gate and still has no open issue.
 #[derive(Debug, Clone)]
 pub struct TestCandidate {
@@ -239,7 +262,8 @@ pub async fn test_candidates(
 ) -> Result<Vec<TestCandidate>, DbError> {
     let mut candidates = Vec::new();
     for chunk in chunks(test_ids) {
-        let fixed = if gate.fixed_streak.is_some() {
+        let (streak, values) = gate_binds(chunk, gate);
+        let fixed = if streak {
             " AND t.clean_streak < $4"
         } else {
             ""
@@ -252,14 +276,6 @@ pub async fn test_candidates(
                AND t.confirmed_flake_count >= $3 AND t.github_issue_number IS NULL{fixed} \
              ORDER BY t.id"
         );
-        let mut values = vec![
-            int_array(chunk),
-            Value::from(gate.min_score),
-            Value::from(i32::try_from(gate.min_proven_flakes).unwrap_or(i32::MAX)),
-        ];
-        if let Some(streak) = gate.fixed_streak {
-            values.push(Value::from(i32::try_from(streak).unwrap_or(i32::MAX)));
-        }
         for row in rows(db, sql, values).await? {
             candidates.push(TestCandidate {
                 test: test_row(&row)?,
@@ -297,7 +313,8 @@ pub async fn job_candidates(
 ) -> Result<Vec<JobCandidate>, DbError> {
     let mut candidates = Vec::new();
     for chunk in chunks(job_ids) {
-        let fixed = if gate.fixed_streak.is_some() {
+        let (streak, values) = gate_binds(chunk, gate);
+        let fixed = if streak {
             " AND j.clean_streak < $4"
         } else {
             ""
@@ -311,14 +328,6 @@ pub async fn job_candidates(
                AND j.github_issue_number IS NULL{fixed} \
              ORDER BY j.id"
         );
-        let mut values = vec![
-            int_array(chunk),
-            Value::from(gate.min_score),
-            Value::from(i32::try_from(gate.min_proven_flakes).unwrap_or(i32::MAX)),
-        ];
-        if let Some(streak) = gate.fixed_streak {
-            values.push(Value::from(i32::try_from(streak).unwrap_or(i32::MAX)));
-        }
         for row in rows(db, sql, values).await? {
             candidates.push(JobCandidate {
                 job: job_row(&row)?,
