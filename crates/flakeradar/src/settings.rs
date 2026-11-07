@@ -1119,8 +1119,8 @@ mod tests {
 
     #[test]
     fn a_boolean_takes_every_spelling_it_documents() {
-        // Every spelling the reference starts with, measured from it: the short
-        // `t`/`f` and `y`/`n` forms are how an operator writes a flag in a shell.
+        // The short `t`/`f` and `y`/`n` forms are how an operator writes a flag
+        // in a shell, so a shell spelling starts the server.
         for text in ["1", "true", "TRUE", "yes", "On", "t", "T", "y", "Y"] {
             let settings = Settings::from_map(&map(&[("FLAKERADAR_GITHUB_CLOSE_FIXED", text)]))
                 .expect("the value is a boolean");
@@ -1135,9 +1135,9 @@ mod tests {
 
     #[test]
     fn a_whole_number_takes_every_spelling_the_wire_does() {
-        // The spellings a request body takes, and the ones the reference starts
-        // with, measured from it: a trailing zero fraction and underscores
-        // between digits are both part of a whole number.
+        // The spellings a request body takes are the spellings an environment
+        // variable takes: a trailing zero fraction and underscores between
+        // digits are both part of a whole number.
         for (text, expected) in [
             ("5", 5),
             ("5.0", 5),

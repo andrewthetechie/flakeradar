@@ -50,7 +50,7 @@ fn classify_names_every_answer_as_one_verdict() {
 }
 
 #[test]
-fn every_operation_judges_every_verdict_as_the_reference_does() {
+fn every_operation_judges_every_verdict_as_the_table_states() {
     use github::Action::{Rearm, SkipRepo, SkipRow, Stop, Use};
     use github::Operation::{CloseDeleted, CloseNote, File, Note, Sync};
     use github::Verdict::{

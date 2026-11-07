@@ -78,7 +78,7 @@ pub fn file_field<'a>(
         }
         let part_start = data_at + CRLF.len();
         // A part whose ending delimiter never arrived is still open when the
-        // body ends, and the reference parser drops what it read of it.
+        // body ends, and an open part contributes no field.
         let Some(part_end) = framing.next_end(body, part_start) else {
             return Ok(found);
         };
@@ -140,8 +140,8 @@ const TOKEN_CHARS: &[u8] = b"!#$%&'*+-.^_`|~";
 /// # Errors
 ///
 /// Returns [`MalformedHeaders`] when a header line is no header line, or its name
-/// holds a character RFC 7230 does not allow in a token, which the reference
-/// parser refused the whole body for.
+/// holds a character RFC 7230 does not allow in a token: either way the body is
+/// no form and the upload is refused.
 fn part_field<'a>(part: &'a [u8], field: &str) -> Result<Option<FieldPart<'a>>, MalformedHeaders> {
     let Some(header_end) = find(part, HEADER_END) else {
         return Ok(None);
@@ -273,11 +273,10 @@ impl Framing {
 
     /// Where the body's opening delimiter starts, when it opens with one.
     ///
-    /// The reference parser skips any run of leading CR and LF, then looks for
-    /// the next `-` and expects the delimiter there; a body whose first byte is
-    /// neither is an error. So `"\n--b…"` and `"\r\n\r\n--b…"` are forms, and
-    /// so is `"\r\nwords--b…"`, which it reads by jumping to that `-`. A body
-    /// that leads nowhere carries no field.
+    /// A body may open with any run of CR and LF, after which the delimiter has
+    /// to start at the next `-`: `"\n--b…"` and `"\r\n\r\n--b…"` are forms, and
+    /// so is `"\r\nwords--b…"`, whose delimiter is found by jumping to that `-`.
+    /// A body that leads nowhere carries no field.
     fn opening(&self, body: &[u8]) -> Option<usize> {
         let skipped = body
             .iter()
@@ -287,8 +286,8 @@ impl Framing {
         if rest.starts_with(&self.delimiter) {
             return Some(skipped);
         }
-        // Only a CR or LF it skipped makes the reference parser look past what
-        // follows it, and there it wants the next `-` to open the delimiter.
+        // Only a leading CR or LF moves the search, and there the next `-` is
+        // where the delimiter has to start.
         if skipped == 0 {
             return None;
         }

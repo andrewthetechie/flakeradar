@@ -140,7 +140,7 @@ pub struct RecentExecution {
 /// The newest Executions of one Test, newest first.
 ///
 /// "Newest" is by Execution id, which is the order the Runs were processed in,
-/// exactly as the reference's `ORDER BY id DESC LIMIT` read it.
+/// so the read is stable however the rows are stored.
 ///
 /// # Errors
 ///
@@ -173,9 +173,9 @@ pub async fn recent_executions(
 
 /// The failed/error Executions per Test over its newest `window` Executions.
 ///
-/// The window is the overall one, with no Default-branch arm: the reference's
-/// `_window_failures` passes no `include_default_branch`, so older Default-branch
-/// failures that the newest `window` Executions no longer reach do not count.
+/// The window is the overall one, with no Default-branch arm, so older
+/// Default-branch failures that the newest `window` Executions no longer reach do
+/// not count.
 async fn window_failures(
     db: &impl ConnectionTrait,
     test_ids: &[i32],

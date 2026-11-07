@@ -2,9 +2,9 @@
 //!
 //! A body is a heading, a bullet list, a paragraph, the execution table and, for a
 //! Test, a sample failure, and both bodies put those blocks in the same order. Every
-//! literal here is the sentence the body has always carried, byte for byte: the
-//! bodies are what an engineer or an agent acts on, so none of them is
-//! paraphrased, and `tests/parity` pins the whole body S7 recorded.
+//! literal here is text a person reads, byte for byte: the bodies are what an
+//! engineer or an agent acts on, so none of them is paraphrased, and
+//! `tests/github/filing.rs` names the lines each body must carry.
 
 // Rust guideline compliant 2026-07-21
 
@@ -143,8 +143,7 @@ struct NewestFailure {
 /// The newest failing Execution among `recent`, or `None` when none failed.
 ///
 /// The commit is the newest failing one, while the sample is the first failing
-/// Execution that has any text, which is what the reference's loop over every
-/// failing row leaves behind: a bare `<failure/>` on the newest commit must not
+/// Execution that has any text: a bare `<failure/>` on the newest commit must not
 /// hide the traceback of an older one.
 fn newest_failure(recent: &[RecentExecution]) -> Option<NewestFailure> {
     let mut newest: Option<&RecentExecution> = None;

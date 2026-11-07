@@ -141,7 +141,7 @@ pub fn count_proven_flakes(executions: &[(&str, ExecutionStatus)]) -> usize {
 /// The score is the flip score, floored and then raised by repeated proof of
 /// nondeterminism, capped at 1 and rounded to four decimals with [`round4`]. A
 /// flip rate that is not a number proves nothing, so it scores 0: `f64::min`
-/// answers the other operand for NaN, which used to turn an undefined rate into a
+/// answers the other operand for NaN, which would otherwise be served as a
 /// perfect score.
 ///
 /// # Examples

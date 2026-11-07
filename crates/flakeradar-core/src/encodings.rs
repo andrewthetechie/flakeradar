@@ -1,6 +1,6 @@
 //! The encoding labels this server reads, and the table each decodes with.
 //!
-//! Generated from the reference's own codecs by
+//! Generated from `CPython`'s codecs by
 //! `docs/plans/rust-rewrite/review-135b/repro/spec/genencodings.py`. Do not
 //! edit by hand: change the generator and run it again, which gives the same
 //! bytes as long as the interpreter's codecs do not change.
@@ -19,10 +19,10 @@ pub(crate) enum Rule {
     Utf16(Utf16Order),
     /// A single-byte code page, decoded through its own table.
     Single(SingleByte),
-    /// A codec the reference cannot read either, so the document falls back
-    /// to the lossy UTF-8 read.
+    /// A single-byte codec with no table: one that rewrites ASCII, so no
+    /// document is read through it and the lossy UTF-8 read takes the text.
     Lossy,
-    /// A codec this server refuses, as the reference refuses its family.
+    /// A multi-byte, stateful or EBCDIC codec, which is refused outright.
     Refused,
 }
 
@@ -50,8 +50,9 @@ pub(crate) struct SingleByte {
 impl SingleByte {
     /// The text `bytes` decode to, or `None` when one of them is undefined.
     ///
-    /// An undefined byte makes the whole document fall back to the lossy UTF-8
-    /// read, which is what the reference does with such a document.
+    /// An undefined byte makes the whole document fall back to the lossy
+    /// UTF-8 read: a code page with no character for the byte has no answer
+    /// for the document.
     pub(crate) fn decode(&self, bytes: &[u8]) -> Option<String> {
         let characters: Vec<char> = self.table.chars().collect();
         let undefined: Vec<u32> = self.undefined.chars().map(u32::from).collect();
@@ -532,7 +533,7 @@ static TABLES: &[(&str, SingleByte)] = &[
     ),
 ];
 
-/// The rule each label decodes by, keyed by the reference's normalized spelling.
+/// The rule each label decodes by, keyed by Python's normalized spelling.
 static RULES: LazyLock<HashMap<&'static str, Rule>> = LazyLock::new(|| {
     let mut rules = HashMap::new();
     rules.insert("037", Rule::Refused);
@@ -962,7 +963,7 @@ static RULES: LazyLock<HashMap<&'static str, Rule>> = LazyLock::new(|| {
     rules
 });
 
-/// The rule `label` decodes by, when the reference's codecs know that label.
+/// The rule `label` decodes by, when `CPython`'s codecs know that label.
 pub(crate) fn rule_for(label: &str) -> Option<Rule> {
     RULES.get(normalized(label).as_str()).copied()
 }
@@ -980,7 +981,7 @@ fn table(name: &str) -> SingleByte {
         .unwrap_or_else(|| panic!("the {name} code page has no table"))
 }
 
-/// The reference's label normalization: lowercase, and every run of non-alphanumeric
+/// Python's label normalization: lowercase, and every run of non-alphanumeric
 /// characters becomes one `_`.
 fn normalized(label: &str) -> String {
     let mut out = String::with_capacity(label.len());

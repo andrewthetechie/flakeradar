@@ -334,8 +334,8 @@ async fn record_filed(
             );
         }
         FiledLink::StoreFailed(error) => {
-            // The reference lets this error propagate: the issue just created stays
-            // open, and the batch ends here.
+            // A link this server cannot store ends the outcome here: the issue
+            // just created stays open, and no later batch runs.
             tracing::error!(
                 name: "github.filing.store_failed",
                 error = %error,

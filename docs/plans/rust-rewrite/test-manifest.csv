@@ -299,7 +299,7 @@ tests/test_mcp.py::test_list_repos_and_projects,11,ported,flakeradar::mcp::list_
 tests/test_mcp.py::test_search_jobs,11,ported,flakeradar::mcp::search_jobs_matches_a_name_and_a_pipeline,
 tests/test_mcp.py::test_search_tests_matches_name_classname_and_file,11,ported,flakeradar::mcp::search_tests_matches_name_classname_and_file,
 tests/test_mcp.py::test_tool_annotations,11,ported,flakeradar::mcp::the_annotations_say_which_tools_write,
-tests/test_mcp.py::test_tool_argument_and_not_found_errors,11,ported,flakeradar::mcp::every_argument_and_not_found_message_is_the_reference_text,
+tests/test_mcp.py::test_tool_argument_and_not_found_errors,11,ported,flakeradar::mcp::every_argument_and_not_found_message_is_the_published_text,
 tests/test_mcp.py::test_tools_are_listed,11,ported,flakeradar::mcp::the_tools_are_the_eleven_the_frozen_server_served,
 tests/test_mcp.py::test_top_flaky_jobs,11,ported,flakeradar::mcp::top_flaky_jobs_lists_worst_first,
 tests/test_mcp.py::test_top_flaky_new_within_days,11,ported,flakeradar::mcp::new_within_days_keeps_what_became_flaky_recently,

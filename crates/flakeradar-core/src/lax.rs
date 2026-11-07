@@ -20,7 +20,7 @@ use crate::py::strip_wire_whitespace;
 ///
 /// It is a power of two, so the float holds it exactly; `i64::MAX` itself is not
 /// a float, which is why the bound is this one. A float at or past it in
-/// magnitude names no `i64`, which the reference reports as `int_parsing_size`;
+/// magnitude names no `i64`, and such a field is refused as `int_parsing_size`;
 /// the comparison is on the float because the cast to an integer saturates
 /// instead.
 #[expect(
@@ -37,8 +37,8 @@ const MILLIS_PER_SECOND_F: f64 = 1_000.0;
 
 /// The microseconds in one second, the resolution a datetime keeps.
 ///
-/// A datetime holds microseconds, so the reference rounds a fraction to them and
-/// so does this reader: `1767225600000.123456789` is `.000124`, not `.000123`.
+/// A datetime holds microseconds, so a fraction is rounded to them:
+/// `1767225600000.123456789` is `.000124`, not `.000123`.
 const MICROS_PER_SECOND: i64 = 1_000_000;
 
 /// [`MICROS_PER_SECOND`] as the float a fraction below a second is scaled by.
@@ -49,8 +49,8 @@ const NANOS_PER_MICROSECOND: u32 = 1_000;
 
 /// The magnitude past which a number names milliseconds rather than seconds.
 ///
-/// The reference reads `abs(value) > 2e10` as a millisecond count, which is the
-/// shape `Date.now()` gives: `1767225600000` is 2026-01-01, not the year 57971.
+/// A magnitude past this bound is a millisecond count, which is the shape
+/// `Date.now()` gives: `1767225600000` is 2026-01-01, not the year 57971.
 const EPOCH_MILLISECONDS: f64 = 20_000_000_000.0;
 
 /// The last year a datetime names.
@@ -323,7 +323,7 @@ enum TimestampRefusal {
     /// The text is no date and no number.
     NotADate,
     /// The text is a number, and the instant it names is outside the years a
-    /// datetime holds, in the sentence the reference refuses it with.
+    /// datetime holds, in the sentence that refuses the instant's side.
     OutOfYears(&'static str),
 }
 
@@ -366,7 +366,7 @@ fn parse_timestamp(text: &str) -> Result<DateTime<Utc>, TimestampRefusal> {
 /// A sign, digits, and a fraction when it has one: `"1767225600"`, `"0"`,
 /// `"-5"` and `"1767225600.5"` are numbers, while `"1e3"`, `"1_000"`,
 /// `" 1767225600"` and `"5.5.5"` are not, so they stay strings that name no
-/// date just as they do on the reference.
+/// date and are refused as one.
 fn numeric_seconds(text: &str) -> Option<f64> {
     let unsigned = text.strip_prefix(['+', '-']).unwrap_or(text);
     let (whole, fraction) = match unsigned.split_once('.') {
@@ -451,12 +451,12 @@ fn epoch_instant(number: &Number) -> Result<DateTime<Utc>, &'static str> {
 /// The instant a Unix timestamp names, when a datetime holds it.
 ///
 /// A magnitude past [`EPOCH_MILLISECONDS`] is a millisecond count, which is the
-/// shape `Date.now()` gives and the one the reference reads that way; anything
-/// smaller is seconds. The whole units are split from the fraction before either
-/// is converted, so an integer keeps the instant it names to the microsecond:
+/// shape `Date.now()` gives; anything smaller is seconds. The whole units are
+/// split from the fraction before either is converted, so an integer keeps the
+/// instant it names to the microsecond:
 /// dividing `253402300799999` by 1000 as a float would round its last
 /// microsecond away. An instant outside the years 1 to 9999 names no datetime,
-/// and answers the sentence the reference refuses it with.
+/// and is refused by the sentence that fits its side.
 fn epoch_of(value: f64) -> Result<DateTime<Utc>, &'static str> {
     let units = value.trunc();
     if units.abs() >= INTEGER_RANGE {
@@ -566,8 +566,8 @@ pub fn expected_list(options: &[&str]) -> String {
 
 /// Records the issue a text holding a NUL character gets.
 ///
-/// A PostgreSQL `text` column cannot store a NUL, so the reference answered 500
-/// and stored nothing; every text field of a request refuses one here instead.
+/// A PostgreSQL `text` column cannot store a NUL, so every text field of a
+/// request refuses one here rather than letting it reach a statement.
 pub fn refuse_nul(text: &str, loc: Vec<LocSegment>, issues: &mut Vec<ValidationIssue>) {
     if text.contains('\0') {
         issues.push(ValidationIssue::nul_character(loc, Value::from(text)));

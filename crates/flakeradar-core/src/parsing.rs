@@ -200,9 +200,8 @@ pub enum ParseError {
     NoTestCases,
     /// A `<testcase time>` attribute that is not a number.
     ///
-    /// An unparsable `time` used to reach the process as an unhandled error and
-    /// answer 500; it is a property of the upload, so the route refuses it with a
-    /// 400 and the error carries the offending value.
+    /// A `time` is a property of the upload, not of the server, so the route
+    /// refuses it with a 400 and the error carries the offending value.
     #[error("Not a valid JUnit XML report: testcase time '{value}' is not a number")]
     InvalidTime {
         /// The attribute value as it was given.
@@ -292,7 +291,7 @@ pub fn parse_junit_xml(content: &[u8], line_base: i64) -> Result<Vec<ParsedCase>
 /// # Errors
 ///
 /// Returns [`ParseError::InvalidXml`] when the declaration names an encoding this
-/// server cannot use: one the reference's codecs do not know, one whose codec is
+/// server cannot use: one no code page answers, one whose codec is
 /// multi-byte, stateful or EBCDIC, or one that contradicts the bytes' own
 /// byte-order mark.
 fn strict_decode(content: &[u8]) -> Result<Option<String>, ParseError> {
@@ -315,9 +314,9 @@ fn strict_decode(content: &[u8]) -> Result<Option<String>, ParseError> {
         // `utf-16` without a mark: the bytes are read as little-endian, which is
         // what a document declaring UTF-16 and holding none of the marks reads as.
         Some(Rule::Utf16(Utf16Order::Any)) => Ok(decode_utf16(content, UTF_16LE)),
-        // A codec the reference cannot read either, and the two labels that name an
-        // endianness on a document that is not UTF-16 at all: the document is read
-        // as lossy UTF-8, which is what the reference answers.
+        // A codec with no code page here either, and the two labels that name an
+        // endianness on a document that is not UTF-16 at all: the document is
+        // read as lossy UTF-8, which is the answer such a label gets.
         Some(Rule::Lossy | Rule::Utf16(Utf16Order::Little | Utf16Order::Big)) => Ok(None),
     }
 }
@@ -344,9 +343,9 @@ fn utf16_mark(content: &[u8]) -> Option<(Utf16Order, bool)> {
 ///
 /// A byte-order mark can only be answered by a label that agrees with it: a
 /// document whose marked bytes are UTF-16 and whose label names another code page,
-/// or the other endianness, is one the reference refuses. A document whose bytes
-/// are UTF-16 only because it starts with `<` is read as UTF-16 whatever the label
-/// says, because the reference has committed to the encoding by then.
+/// or the other endianness, is refused. A document whose bytes are UTF-16 only
+/// because it starts with `<` is read as UTF-16 whatever the label says, because
+/// the mark has already decided the encoding.
 fn decode_marked_utf16(
     content: &[u8],
     mark: Utf16Order,
@@ -410,9 +409,8 @@ fn unsupported_encoding() -> ParseError {
 /// # Errors
 ///
 /// Returns [`ParseError::InvalidXml`] when the label is not an encoding name XML
-/// allows, which the reference reports as a declaration that is not well formed,
-/// and when the reference's codecs do not know it, which is the `unknown encoding` the
-/// reference refuses.
+/// allows, which is the `XML declaration not well-formed` refusal, and when no
+/// code page carries it, which is the `unknown encoding` refusal.
 fn label_rule(label: &str) -> Result<Rule, ParseError> {
     if !is_encoding_name(label) {
         return Err(ParseError::InvalidXml {
@@ -430,7 +428,7 @@ fn label_rule(label: &str) -> Result<Rule, ParseError> {
 /// The rule expat's own encoding names get, spelling and all.
 ///
 /// `utf-16le` and `utf-16be` are expat's names for the two endiannesses;
-/// `utf-16-le` and `utf-16-be` are codecs the reference refuses as multi-byte, and
+/// `utf-16-le` and `utf-16-be` name multi-byte codecs this server refuses, and
 /// the label's spelling, not the normalized form, decides which of the two a
 /// document asked for.
 fn builtin_rule(label: &str) -> Option<Rule> {
@@ -501,9 +499,9 @@ fn parse_text(text: &str, line_base: i64) -> Result<Vec<ParsedCase>, ParseError>
     refuse_expansion_past_the_budget(text)?;
     refuse_namespace_entries_past_the_budget(text)?;
     let options = ParsingOptions {
-        // ElementTree parses a document with a `DOCTYPE`, so the reference
-        // accepted one; external entities stay unfetched and an entity bomb is
-        // refused by the expansion bound above rather than aborted.
+        // A `DOCTYPE` is accepted: external entities stay unfetched, and an
+        // entity bomb is refused by the expansion bound above rather than
+        // aborted.
         allow_dtd: true,
         nodes_limit: NODES_MAX,
         entity_resolver: None,
@@ -533,8 +531,8 @@ fn parse_text(text: &str, line_base: i64) -> Result<Vec<ParsedCase>, ParseError>
 
 /// Refuses a character reference XML cannot carry.
 ///
-/// `roxmltree` reads `&#xD800;` and `&#x110000;` as U+FFFD, while `ElementTree`
-/// raises, so the reference numbers are checked here. A reference inside a
+/// `roxmltree` reads `&#xD800;` and `&#x110000;` as U+FFFD rather than refusing
+/// them, so the representable numbers are checked here. A reference inside a
 /// comment, a CDATA section, a processing instruction or the `DOCTYPE` is
 /// literal text and is left alone.
 fn refuse_unrepresentable_character_references(text: &str) -> Result<(), ParseError> {
@@ -589,8 +587,8 @@ fn check_character_reference(number: &str) -> Result<(), ParseError> {
 /// A comment, a CDATA section and a processing instruction hold text XML does
 /// not read as references, so a `&#xD800;` inside one is literal and stays. An
 /// unterminated region swallows the rest of the document, which the parser then
-/// reports itself. The `DOCTYPE` is deliberately not one of these: the reference
-/// parser validates a character reference in an entity declaration.
+/// reports itself. The `DOCTYPE` is deliberately not one of these: a character
+/// reference in an entity declaration is refused.
 fn literal_region_length(tail: &str) -> Option<usize> {
     const REGIONS: [(&str, &str); 3] = [("<!--", "-->"), ("<![CDATA[", "]]>"), ("<?", "?>")];
     REGIONS.iter().find_map(|(open, close)| {
@@ -754,7 +752,7 @@ fn reference(text: &str) -> (Option<&str>, usize) {
 /// extending characters Unicode adds to them. Every non-ASCII character is
 /// allowed here rather than classified: a name this reads that XML does not is
 /// only ever counted at its own spelling, and the declaration scan uses the same
-/// rule, so no declared name can hide from the reference scan.
+/// rule, so no declared name can hide from the scan.
 fn is_name_char(ch: char) -> bool {
     !ch.is_ascii() || ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | ':')
 }
@@ -794,14 +792,14 @@ fn doctype(text: &str) -> Option<Doctype<'_>> {
 /// entity for removed.
 ///
 /// A `DOCTYPE` that names an external subset may declare entities that subset
-/// holds. Neither parser fetches it, and the reference answers a reference to one
-/// of them in an attribute value by skipping it, so the attribute holds the text
+/// holds, and nothing fetches that subset. A reference to one of those entities
+/// in an attribute value is skipped, so the attribute holds the text
 /// around it: `classname="a&nope;b"` is the classname `ab` and `name="&nope;"`
 /// is the name `""`. `roxmltree` refuses such a reference, so it is removed here
 /// before the parser reads the text.
 ///
-/// A reference in the document's text is not skipped: the reference refuses an
-/// undefined entity there itself, and so does this parser. A document that
+/// A reference in the document's text is not skipped: an undefined entity there
+/// is a refusal, which this parser reports itself. A document that
 /// declares no external subset, or that says `standalone="yes"`, keeps every
 /// reference for the same reason.
 ///
@@ -1112,19 +1110,19 @@ impl CaseCollector {
 
 /// Whether `node` is an element named `tag` in no namespace.
 ///
-/// `ElementTree` matches a fully qualified tag, so `<j:failure>` and
+/// A fully qualified tag names no JUnit element, so `<j:failure>` and
 /// `<failure xmlns="urn:x">` are not JUnit elements and a namespaced suite is
 /// not a suite at all. `xmlns=""` declares no namespace at all, which
 /// `roxmltree` reports as an empty one rather than as none, so an empty
 /// namespace is no namespace here too: a report from a serializer that writes an
-/// explicit empty default namespace still parses as the reference parses it.
+/// explicit empty default namespace still parses.
 fn is_tag(node: Node<'_, '_>, tag: &str) -> bool {
     node.is_element()
         && node.tag_name().namespace().is_none_or(str::is_empty)
         && node.tag_name().name() == tag
 }
 
-/// The un-namespaced attribute `name` of `node`, as `ElementTree`'s `.get` reads it.
+/// The un-namespaced attribute `name` of `node`, so a namespaced `name` is not read.
 fn attribute<'a>(node: Node<'a, '_>, name: &str) -> Option<&'a str> {
     node.attributes()
         .find(|attribute| {
@@ -1133,12 +1131,10 @@ fn attribute<'a>(node: Node<'a, '_>, name: &str) -> Option<&'a str> {
         .map(|attribute| attribute.value())
 }
 
-/// The text of `node` before its first child element.
-///
-/// `ElementTree` merges the text around comments and processing instructions,
-/// because its parser drops them, and its `.text` is everything before the
-/// first child element. `roxmltree` keeps both nodes, so they are skipped here
-/// and the surrounding text is joined back together.
+/// The text before `node`'s first child element, with the text around a comment
+/// or a processing instruction joined together, because neither is markup and a
+/// runner's message can span one. `roxmltree` keeps both nodes, so they are
+/// skipped here and the surrounding text is merged.
 fn leading_text(node: Node<'_, '_>) -> Option<String> {
     let mut merged: Option<String> = None;
     for child in node.children() {
@@ -1445,10 +1441,8 @@ fn invalid_time(raw: &str) -> ParseError {
 
 /// A duration the database and the read API can carry.
 ///
-/// The reference stored a `NaN` or infinite `time` as it read it, which the read
-/// API then served as JSON `null` against a schema that says number; the
-/// approved rule makes a non-finite `time` an upload error like a non-numeric
-/// one.
+/// A `NaN` or infinite `time` is no duration the database or the read API can
+/// carry, so it is refused as an upload error, the way a non-numeric `time` is.
 fn finite_duration(duration: f64, raw: &str) -> Result<f64, ParseError> {
     if duration.is_finite() {
         return Ok(duration);

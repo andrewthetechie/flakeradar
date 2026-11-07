@@ -1448,7 +1448,7 @@ async fn seed_model(db: &TestDb, id: i32) -> flakeradar_db::entities::test_cases
 
 /// Fabro's own view of a Test, copied from `flakeradar.rs` and `scout/flakeradar.rs`.
 ///
-/// Every field Fabro reads is here, with timestamps as the reference sends them, so
+/// Every field Fabro reads is here, with timestamps in the served spelling, so
 /// a missing or reshaped field fails to deserialize.
 #[derive(Debug, serde::Deserialize)]
 struct FabroTest {

@@ -138,8 +138,8 @@ fn the_deepest_allowed_nesting_is_parsed() {
 
 #[test]
 fn an_entity_bomb_is_refused() {
-    // Nine levels of ten-fold expansion: the reference's parser refuses the
-    // amplification, and so does this one, without aborting.
+    // Nine levels of ten-fold expansion: the amplification is refused, not
+    // expanded, and the process is not aborted.
     let bomb = br#"<?xml version="1.0"?>
 <!DOCTYPE testsuite [
 <!ENTITY a "aaaaaaaaaa">
@@ -165,7 +165,7 @@ fn an_entity_bomb_is_refused() {
 
 #[test]
 fn an_internal_entity_within_the_budget_is_expanded() {
-    // The approved rule restores the reference's `DOCTYPE` support, so a body that
+    // A `DOCTYPE` is supported, so a body that
     // declares an entity and stays inside the expansion budget parses exactly as
     // it would without one.
     let xml = r#"<?xml version="1.0"?>

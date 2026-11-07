@@ -1,10 +1,11 @@
-# One row per encoding label and byte: the answer the reference gives for a
-# JUnit document that declares that label and puts that byte in a case's name.
+# One row per encoding label and byte: the answer `CPython`'s codecs give for
+# a JUnit document that declares that label and puts that byte in a case's
+# name.
 # Generated from CPython's codecs by genencodings.py; do not edit by hand.
 #
 # label <TAB> byte (hex, or `ascii` for the printable-ASCII probe) <TAB> answer
 # answer: the code point the case's name holds in hex, or `refuse` for a label
-# the reference refuses. A byte the code page leaves undefined, and a character
+# this server refuses. A byte the code page leaves undefined, and a character
 # the probe document cannot carry unescaped, put the whole document back through
 # the lossy UTF-8 read, so their answer is U+FFFD.
 037	80	refuse

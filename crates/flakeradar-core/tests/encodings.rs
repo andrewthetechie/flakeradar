@@ -1,9 +1,9 @@
-//! Every encoding label and byte decodes as the reference's codecs decode it.
+//! Every encoding label and byte decodes as the generated table says it must.
 //!
-//! `tests/fixtures/encodings.tsv` holds one row per label and byte, generated from
-//! the reference's interpreter by
+//! `tests/fixtures/encodings.tsv` holds one row per label and byte, generated
+//! from `CPython`'s codecs by
 //! `docs/plans/rust-rewrite/review-135b/repro/spec/genencodings.py`.
-//! Each row is replayed through the parser with the reference's answer as the
+//! Each row is replayed through the parser with the recorded answer as the
 //! expectation, which is what keeps a fingerprint from drifting: the label decides
 //! the bytes of a Test's name, and the name decides its fingerprint.
 
@@ -98,7 +98,7 @@ fn document(row: &Row) -> Vec<u8> {
 }
 
 #[test]
-fn every_label_and_byte_decodes_as_the_reference_says() {
+fn every_label_and_byte_decodes_as_its_table_says() {
     let rows = rows();
     assert!(!rows.is_empty(), "the fixture holds rows");
     let mut failures: BTreeMap<String, String> = BTreeMap::new();
@@ -141,7 +141,7 @@ fn every_label_and_byte_decodes_as_the_reference_says() {
 #[test]
 fn the_labels_the_fixture_holds_are_the_ones_this_server_knows() {
     // A row per label for the high bytes, and one for the printable-ASCII body,
-    // which is what the generator writes and what the reference's own sweep used.
+    // which is what the generator writes and what a full sweep of the labels needs.
     let rows = rows();
     let mut per_label: BTreeMap<&str, (usize, usize)> = BTreeMap::new();
     for row in &rows {
@@ -165,9 +165,10 @@ fn the_labels_the_fixture_holds_are_the_ones_this_server_knows() {
 
 #[test]
 fn a_code_page_that_leaves_a_byte_undefined_falls_back_to_the_lossy_read() {
-    // Measured against the reference: `windows-1252` with `0x81` (undefined) and
-    // `0x80` (the euro sign) in one name gives two U+FFFD, so the whole document is
-    // read again as lossy UTF-8 rather than the one byte being replaced.
+    // A code page with no character for `0x81` has no answer for the document, so
+    // `windows-1252` with `0x81` and `0x80` (the euro sign) in one name gives two
+    // U+FFFD: the whole document is read again as lossy UTF-8 rather than the one
+    // byte being replaced.
     let xml = b"<?xml version=\"1.0\" encoding=\"windows-1252\"?><testsuite name=\"s\"><testcase classname=\"c\" name=\"n\x81\x80z\"/></testsuite>";
     assert_eq!(
         parse_junit_xml(xml, 1).expect("the report parses")[0].name,
@@ -177,10 +178,9 @@ fn a_code_page_that_leaves_a_byte_undefined_falls_back_to_the_lossy_read() {
 
 #[test]
 fn a_code_page_that_rewrites_ascii_is_read_lossily() {
-    // `cp864` is single-byte but does not map `A` to `A`, so the reference cannot
-    // build a table from it and reads the whole document lossily. Measured: a
-    // `cp864` document with `0xE9` in a name gives U+FFFD, not the code page's
-    // character.
+    // `cp864` is single-byte but does not map `A` to `A`, so no table can be built
+    // from it and the whole document is read lossily: a `cp864` document with `0xE9`
+    // in a name gives U+FFFD, not the code page's character.
     let xml = b"<?xml version=\"1.0\" encoding=\"cp864\"?><testsuite name=\"s\"><testcase classname=\"c\" name=\"n\xe9z\"/></testsuite>";
     assert_eq!(
         parse_junit_xml(xml, 1).expect("the report parses")[0].name,
@@ -189,11 +189,11 @@ fn a_code_page_that_rewrites_ascii_is_read_lossily() {
 }
 
 #[test]
-fn three_code_pages_keep_the_fingerprints_the_reference_gives() {
+fn three_code_pages_keep_the_fingerprints_their_tables_give() {
     // The labels whose mapping WHATWG disagrees with: ISO-8859-9 and TIS-620 hold
     // U+0080 at 0x80 where windows-1254 and windows-874 hold the euro sign, and
-    // KOI8-U holds `╝` at 0xAE where KOI8-R holds `ў`. The characters and their
-    // fingerprints are what the reference gives for the same bytes.
+    // KOI8-U holds `╝` at 0xAE where KOI8-R holds `ў`. Each character and its
+    // fingerprint is pinned here, so a table that changes spelling fails.
     let cases: [(&str, u8, &str, &str); 3] = [
         (
             "iso-8859-9",

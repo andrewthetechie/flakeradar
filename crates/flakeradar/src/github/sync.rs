@@ -81,9 +81,9 @@ pub async fn sync_closed_issues(
 
 /// Checks one issue and records what the answer meant for its link.
 ///
-/// Stamping stays as the reference's `_clear_if_closed` docstring states: every row
-/// that got an answer is stamped, whatever the answer said, while a rate-limit stop
-/// or a transport error leaves the row unstamped so it is retried first.
+/// Every row that got an answer is stamped, whatever the answer said, so a closed
+/// issue is not asked about again; a rate-limit stop or a transport error leaves
+/// the row unstamped, so it is retried first.
 async fn clear_if_closed(
     db: &impl ConnectionTrait,
     target: EntityKind,

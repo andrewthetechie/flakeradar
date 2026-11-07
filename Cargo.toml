@@ -16,7 +16,9 @@ edition = "2024"
 license = "Apache-2.0"
 # The toolchain `rust-toolchain.toml` pins, and the one CI builds and tests
 # with. Claiming an older minimum would promise a compiler nothing here has run
-# on; a 1.85 or 1.90 floor might hold, but it would be a guess.
+# on; a 1.85 or 1.90 floor might hold, but it would be a guess. Every member
+# inherits this through `rust-version.workspace = true`, which is what makes it
+# visible in `cargo metadata`.
 rust-version = "1.99"
 
 [workspace.dependencies]

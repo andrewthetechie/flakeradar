@@ -213,10 +213,10 @@ tests render, every method by at least one of them: `nested_bullet` and `filing_
 `a_job_body_lists_its_worst_runner_groups_first`, `code` and `section` by both,
 `both_bodies_name_the_executions_the_filing_reads` for the heading `Body::executions` states
 once. The three `location` arms, the two `last_failing_commit` arms and both `permalink`
-refusals have a test each: `a_field_the_body_prices_differently_is_still_the_reference_sentence`
+refusals have a test each: `a_field_the_body_prices_differently_is_still_the_written_sentence`
 (no file, hence no Location and no permalink, and the run-hint fallback),
 `the_last_failing_commit_has_no_branch_clause_when_no_branch_was_reported` (an empty branch) and
-`the_body_matches_the_reference_byte_for_byte` (a file, a line and a branch), which is also the
+`the_filed_body_matches_the_recorded_bytes` (a file, a line and a branch), which is also the
 byte-for-byte comparison against the reference's own output.
 
 One row moved with its code rather than being re-homed here: `github.rs`'s own `get` went to

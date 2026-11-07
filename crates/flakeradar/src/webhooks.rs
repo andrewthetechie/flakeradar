@@ -42,10 +42,12 @@ pub const ATTEMPTS: usize = RETRY_DELAYS.len() + 1;
 ///
 /// A 429 names how long to wait, and a webhook endpoint is free to name minutes
 /// or hours; the queue is one task, so honouring that would stall every other
-/// endpoint's Notifications for the same span. Ten seconds is the longest a
-/// Notification can be held back; past it the batch is retried on the fixed
-/// schedule instead, and a Notification that cannot be delivered is lost by
-/// design.
+/// endpoint's Notifications for the same span. The wait is capped here, and a
+/// Notification that still cannot be delivered is lost by design.
+///
+/// The cap is per retry, not per batch: one endpoint holds its batch for at most
+/// [`ATTEMPTS`] attempts of [`WEBHOOK_TIMEOUT_SECONDS`] each with two capped
+/// waits between them.
 pub const MAX_RETRY_AFTER_SECONDS: f64 = 10.0;
 
 /// How long one Notification attempt may take.

@@ -2,6 +2,7 @@
 name = "flakeradar-core"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 description = "FlakeRadar scoring and DTOs, with no database and no network"
 publish = false

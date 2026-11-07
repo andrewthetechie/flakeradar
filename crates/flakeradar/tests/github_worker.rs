@@ -1489,7 +1489,7 @@ async fn a_database_that_drops_the_leader_files_the_next_proven_flake() {
     mount_open_issue(&server, 7).await;
     // The sync interval is short because a restart leaves dead connections in the
     // pool: the run that begins with the new leadership may lose its first read,
-    // as the reference's does, and the next attempt is one interval away.
+    // and the next attempt is one interval away.
     let github = Arc::new(GitHubWorker::new(
         db.connection().clone(),
         Arc::new(settings()),
@@ -1536,8 +1536,8 @@ async fn a_database_that_drops_the_leader_files_the_next_proven_flake() {
     let claim = claim.granted().await;
     wait_until("leadership is released", || async { !worker.is_leader() }).await;
 
-    // The queue outlives the leadership, as the reference's does: the outcome the
-    // next leader claims is filed even though it was handed over by nobody.
+    // The queue outlives the leadership: the outcome the next leader claims is
+    // filed even though it was handed over by nobody.
     let attempts = lock.attempts();
     processor.hand_over(processed(&[second]));
     // A stand-by worker does nothing but ask for the lock, so that it asked again
@@ -1582,7 +1582,7 @@ async fn a_database_restart_under_the_leader_files_a_real_issue_and_syncs_again(
     mount_open_issue(&server, 12).await;
     // The sync interval is short because a restart leaves dead connections in the
     // pool: the run that begins with the new leadership may lose its first read,
-    // as the reference's does, and the next attempt is one interval away.
+    // and the next attempt is one interval away.
     let github = Arc::new(GitHubWorker::new(
         db.connection().clone(),
         Arc::new(settings()),

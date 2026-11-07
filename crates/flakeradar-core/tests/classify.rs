@@ -8,8 +8,8 @@ use flakeradar_core::{
 
 #[test]
 fn classify_failure_matches_the_recorded_rules() {
-    // Each case is one line of the reference classifier's behaviour at 86c98804, so
-    // the expected category is the requirement rather than a restatement.
+    // Each case is one line of the Failure-category rule, so the expected
+    // category is the requirement rather than a restatement of the code.
     let cases = [
         ("Test timeout of 30000ms exceeded.", "", Timing),
         (

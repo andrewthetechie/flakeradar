@@ -102,13 +102,12 @@ fn assert_answered_ok(reply: &Reply) {
     assert_eq!(
         reply.status,
         StatusCode::OK,
-        "the reference answers 200 for a failed statement: {}",
+        "a failed statement is still an answered request: {}",
         reply.text()
     );
 }
 
-/// Asserts a tool failure is the reference's `isError` result, and answers the
-/// text it carries.
+/// Asserts a tool failure is an `isError` result, and answers the text it carries.
 ///
 /// A tool that raises, a name no tool has and arguments that do not validate all
 /// answer HTTP 200 with a JSON-RPC *result* — never a JSON-RPC `error`, because
@@ -126,7 +125,7 @@ fn error_result_text(reply: &Reply) -> String {
     assert_eq!(result.get("isError"), Some(&Value::Bool(true)), "{body}");
     assert!(
         result.get("structuredContent").is_none(),
-        "the reference sends no structured content on this failure: {body}"
+        "a failed call sends no structured content: {body}"
     );
     result
         .get("content")
@@ -138,8 +137,8 @@ fn error_result_text(reply: &Reply) -> String {
         .to_owned()
 }
 
-/// Asserts a tool-execution failure is the reference's `isError` result, and
-/// answers the text after the `Error calling tool '<tool>': ` prefix.
+/// Asserts a tool-execution failure is an `isError` result, and answers the text
+/// after the `Error calling tool '<tool>': ` prefix.
 fn assert_raised(reply: &Reply, tool: &str) -> String {
     let text = error_result_text(reply);
     let prefix = format!("Error calling tool '{tool}': ");
@@ -223,7 +222,7 @@ fn day(days: i64) -> chrono::NaiveDate {
 
 /// The Repo, Projects, Tests and Executions the read tools are asserted over.
 ///
-/// It is the reference suite's `_seed`: one Repo with two Projects, a flaky Test
+/// It is the read suite's seed: one Repo with two Projects, a flaky Test
 /// in each, a suspect Test, a stable one, and two Executions of the flaky
 /// frontend Test, the failing one carrying a 5000-character traceback.
 async fn seed(db: &TestDb) -> i64 {
@@ -1230,7 +1229,7 @@ async fn ci_run_failures_refuses_what_it_cannot_read() {
 }
 
 #[tokio::test]
-async fn every_argument_and_not_found_message_is_the_reference_text() {
+async fn every_argument_and_not_found_message_is_the_published_text() {
     let db = TestDb::new().await.expect("a test database is available");
     let app = mcp_app(&db);
     for (tool, arguments, message) in [
@@ -1578,8 +1577,8 @@ async fn a_tool_argument_takes_the_documented_spellings() {
 
 #[tokio::test]
 async fn an_unknown_tool_and_an_unreadable_argument_are_error_results() {
-    // Both are HTTP 200 `isError` results in the reference: the request routed
-    // and its JSON-RPC was well formed, so only the tool could not be run.
+    // Both are HTTP 200 `isError` results: the request routed and its JSON-RPC was
+    // well formed, so only the tool could not be run.
     let db = TestDb::new().await.expect("a test database is available");
     let app = mcp_app(&db);
     let unknown = rpc(
@@ -1603,8 +1602,8 @@ async fn an_unknown_tool_and_an_unreadable_argument_are_error_results() {
         "the text opens with the header and the field: {text:?}"
     );
     // The diagnosis is the recorded sentence, without the type, value and
-    // documentation-URL tail the reference appended, which `differences.md`
-    // records as not reproduced.
+    // documentation-URL tail that went with it, which `differences.md` records as
+    // not reproduced.
     assert!(
         text.ends_with("Input should be a valid integer, unable to parse string as an integer"),
         "the diagnosis is the recorded one: {text:?}"
@@ -1631,16 +1630,16 @@ async fn an_unknown_tool_and_an_unreadable_argument_are_error_results() {
 
 #[tokio::test]
 async fn a_body_that_is_not_json_is_a_protocol_error() {
-    // The one case the reference keeps out of the result: measured, a `POST
-    // /mcp/` whose body is not JSON answers 400 with JSON-RPC -32700 and the
-    // same serde message this server gives, because both parse with serde.
+    // The one case kept out of the result: a `POST /mcp/` whose body is not JSON
+    // answers 400 with JSON-RPC -32700 and the same serde message this server
+    // gives, because both parse with serde.
     let db = TestDb::new().await.expect("a test database is available");
     let app = mcp_app(&db);
     let reply = send(&app, raw_post(Body::from("{not json"))).await;
     assert_eq!(
         reply.status,
         StatusCode::BAD_REQUEST,
-        "the reference answers 400: {}",
+        "a body that is no JSON is refused: {}",
         reply.text()
     );
     let body = reply.json();
@@ -1658,7 +1657,7 @@ async fn a_body_that_is_not_json_is_a_protocol_error() {
         )),
         "{body}"
     );
-    // An empty body is the same case in the reference: nothing to parse.
+    // An empty body is the same case: nothing to parse.
     let empty = send(&app, raw_post(Body::from(""))).await;
     assert_eq!(empty.status, StatusCode::BAD_REQUEST, "{}", empty.text());
     let body = empty.json();
@@ -1871,8 +1870,8 @@ async fn the_transport_answers_over_a_real_socket() {
 #[tokio::test]
 async fn a_request_that_is_not_a_post_reaches_the_transport_unchanged() {
     // The JSON check reads a POST body only. A method this transport does not
-    // serve is refused by the transport, with the 405 and the plain-text body
-    // the reference answers a PUT with.
+    // serve is refused by the transport, with the 405 and the plain-text body a
+    // `PUT` gets.
     let db = TestDb::new().await.expect("a test database is available");
     let app = mcp_app(&db);
     let reply = send(

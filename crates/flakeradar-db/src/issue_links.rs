@@ -181,7 +181,7 @@ fn out_for(
     }
 }
 
-/// Applies the written link to the response shape, as the reference's ORM object did.
+/// Applies the written link to the response shape the route answers with.
 ///
 /// Every field comes from the state this call wrote, so a re-link of the same
 /// number answers the `github_issue_closed` the row still holds.

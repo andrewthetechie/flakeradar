@@ -37,9 +37,10 @@ pub struct Server {
     worker: Arc<ReportWorker>,
 }
 
-/// The Notification task, built only when at least one Webhook URL is configured.///
-/// No URLs means no task at all, not an idle one: the reference's lifespan built
-/// `WebhookWorker` only when `parse_urls` answered a non-empty list.
+/// The Notification task, built only when at least one Webhook URL is configured.
+///
+/// No URLs means no task at all, not an idle one: a task with nothing to deliver
+/// would take part of every leader loop for no reader.
 fn webhook_task(settings: &Settings) -> anyhow::Result<Option<Arc<WebhookWorker>>> {
     let urls = flakeradar_core::notify::parse_urls(settings.webhook_urls.expose());
     if urls.is_empty() {
@@ -126,7 +127,7 @@ impl Server {
             processing,
         )));
         // The GitHub task re-checks stored links once per prune interval, the
-        // same interval the reference used for both.
+        // same cadence retention runs on, so one loop drives both.
         let github: Arc<dyn LeaderTask> = Arc::new(
             GitHubWorker::new(
                 pool.clone(),

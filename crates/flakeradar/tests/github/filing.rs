@@ -1543,7 +1543,7 @@ async fn the_failure_gate_counts_the_overall_window_only() {
         .await
         .expect("the Run inserts");
     // The newest five executions hold one failure and four passes, on a feature
-    // branch: the reference counts this window alone, so the gate of two is missed.
+    // branch: the gate counts this window alone, so a gate of two is missed.
     for status in ["failed", "passed", "passed", "passed", "passed"] {
         make_execution(&test, &feature)
             .status(status)
@@ -1576,7 +1576,7 @@ async fn the_failure_gate_counts_the_overall_window_only() {
     );
     assert!(
         requested_paths(&server).await.is_empty(),
-        "no issue is filed for a Test the reference gate refuses"
+        "no issue is filed for a Test the score gate refuses"
     );
 }
 
@@ -1989,7 +1989,7 @@ async fn the_job_failure_gate_counts_the_overall_window_only() {
     );
     assert!(
         requested_paths(&server).await.is_empty(),
-        "no issue is filed for a Job the reference gate refuses"
+        "no issue is filed for a Job the score gate refuses"
     );
 }
 

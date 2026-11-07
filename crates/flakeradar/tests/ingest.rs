@@ -720,9 +720,9 @@ async fn ingest_rejects_empty_and_garbage() {
 
 #[tokio::test]
 async fn a_deeply_nested_report_is_refused_and_the_server_stays_up() {
-    // The reference's parser recursed per level, and 5,000 nested suites aborted
-    // the Rust process (H0). Both depths answer the 422 a bad report gets, and
-    // the next upload is served, so the parser neither overflowed nor stopped.
+    // The parser recursed per level once, and 5,000 nested suites overflowed the
+    // process. Both depths answer the 422 a bad report gets, and the next upload is
+    // served, so the parser neither overflowed nor stopped.
     let db = TestDb::new().await.expect("a test database is available");
     let app = test_app(&db);
     for depth in [5_000_usize, 200_000] {
@@ -1356,7 +1356,7 @@ async fn process_all(db: &TestDb) {
 #[tokio::test]
 async fn an_ingested_failure_in_an_empty_namespace_is_stored_as_failed() {
     // `xmlns=""` means no namespace, so the `<failure>` is the JUnit one and the
-    // Test's stored `last_status` is what the reference stores.
+    // Test's stored `last_status` is `failed`.
     let db = TestDb::new().await.expect("a test database is available");
     let body = br#"<testsuite name="unit"><testcase classname="c" name="ns"><failure xmlns="" message="boom">x</failure></testcase></testsuite>"#.to_vec();
     let reply = ingest(&test_app(&db), &[], body).await;
@@ -1375,10 +1375,10 @@ async fn an_ingested_failure_in_an_empty_namespace_is_stored_as_failed() {
 
 #[tokio::test]
 async fn a_millisecond_timestamp_reaches_the_stored_job_execution() {
-    // `1767225600000` is the shape `Date.now()` gives, and the reference reads a
-    // number past 2e10 as milliseconds, so this Job started at 2026-01-01. The
-    // Report used to keep a year past 9999, which failed its own re-read, so the
-    // Job's `started_at` was never stored at all.
+    // `1767225600000` is the shape `Date.now()` gives, and a number past 2e10 is
+    // read as milliseconds, so this Job started at 2026-01-01. An unbounded
+    // reading put the year past 9999, which no datetime holds, and the Report then
+    // failed its own re-read: the Job's `started_at` was never stored at all.
     let db = TestDb::new().await.expect("a test database is available");
     let reply = pipeline(
         &test_app(&db),

@@ -1010,8 +1010,8 @@ fn compare_framework_422(
 /// `differences.md` records the difference.
 const OPENAPI_SCHEMA_ALIASES: &[(&str, &str)] = &[("ValidationError", "ValidationIssue")];
 
-/// The schemas only the reference's document has.
-const OPENAPI_SCHEMA_ONLY_ON_THE_REFERENCE: &[&str] = &["HTTPValidationError"];
+/// The schemas only the recorded document has.
+const OPENAPI_SCHEMA_ONLY_IN_THE_RECORD: &[&str] = &["HTTPValidationError"];
 
 /// Compares an OpenAPI document against the recorded one, by its promises.
 ///
@@ -1098,7 +1098,7 @@ fn schema_fields(schema: &Value) -> Vec<String> {
     names
 }
 
-/// Compares every component schema the reference declares against the port's.
+/// Compares every component schema the recorded document declares against this one's.
 ///
 /// A schema is compared by the three promises a client reads: its field names,
 /// the type of each field, and which fields the answer always carries.
@@ -1124,7 +1124,7 @@ fn compare_openapi_schemas(
         return;
     }
     for (name, schema) in &recorded_schemas {
-        if OPENAPI_SCHEMA_ONLY_ON_THE_REFERENCE.contains(&name.as_str()) {
+        if OPENAPI_SCHEMA_ONLY_IN_THE_RECORD.contains(&name.as_str()) {
             continue;
         }
         let answered_name = OPENAPI_SCHEMA_ALIASES
@@ -1145,8 +1145,8 @@ fn compare_openapi_schemas(
             )));
         } else if answered_name != name && answered_schemas.contains_key(name.as_str()) {
             // The alias must be a rename and nothing else: the fields are equal
-            // by the comparison above, and the reference spelling must not also
-            // be present, or a client reading it would see a second shape.
+            // by the comparison above, and the recorded spelling must not also be
+            // present, or a client reading it would see a second shape.
             failures.push(describe(format!(
                 "the openapi schema {name} and its port {answered_name} both exist"
             )));
@@ -1167,15 +1167,16 @@ fn compare_openapi_schemas(
 ///
 /// The type is compared as the JSON Schema type a client codes against: the
 /// two documents spell nullability differently (`anyOf` with a `null` member
-/// here, `oneOf` there, a two-entry `type` list in the port) and the port names
-/// a string enumeration with a `$ref` where the reference writes `string`, so
-/// both spellings are canonicalised rather than compared as text.
+/// here, `oneOf` there, a two-entry `type` list in this document) and this
+/// document names a string enumeration with a `$ref` where the recorded one
+/// writes `string`, so both spellings are canonicalised rather than compared as
+/// text.
 ///
 /// The required list is compared with one recorded difference: the recorded
 /// document marks every nullable field required, because a nullable field is
 /// always serialized as an explicit `null` there, and this server documents a
-/// nullable field as optional. So a field the reference requires and the port does not
-/// must be nullable in the port — the mismatch is that one rule and nothing
+/// nullable field as optional. So a field the recorded document requires and this one
+/// does not must be nullable here — the mismatch is that one rule and nothing
 /// else. `differences.md` records it under the `/openapi.json` row.
 fn compare_openapi_fields(
     name: &str,
@@ -1254,7 +1255,7 @@ fn compare_openapi_fields(
             continue;
         }
         failures.push(describe(format!(
-            "the openapi schema {name} requires {field} where the reference does not"
+            "the openapi schema {name} requires {field} where the recorded document does not"
         )));
     }
 }
@@ -1271,8 +1272,8 @@ fn compare_openapi_fields(
 const OPENAPI_TYPE_DIFFERENCES: &[(&str, &str, &str, &str)] =
     &[("ValidationIssue", "ctx", "object|null", "object")];
 
-/// The fields the port documents as required where the reference leaves them
-/// optional.
+/// The fields this server documents as required where the recorded document
+/// leaves them optional.
 ///
 /// `IngestAccepted.duplicate` carries a default in the recorded document, so that
 /// document does not require it, while this server always answers it. The value is
@@ -1336,8 +1337,8 @@ fn collect_types(
                 && component.get("type").and_then(Value::as_str) != Some("object")
         });
         // A `$ref` to a schema that names no object of its own is what it names:
-        // the port spells its string enumerations and its untagged unions as
-        // components where the reference writes the union inline. A `$ref` to an
+        // this document spells its string enumerations and its untagged unions as
+        // components where the recorded one writes the union inline. A `$ref` to an
         // object stays a `$ref`, so a field pointed at the wrong object still
         // fails. `visited` ends a component that only refs another.
         if names_no_object && !visited.iter().any(|seen| seen == target) {
@@ -1449,8 +1450,8 @@ fn compare_openapi_bodies(
 
 /// Compares one operation's parameters and reports every difference.
 ///
-/// A parameter is its place and its name: the reference's `x-api-key` header is
-/// documented beside the query and path parameters, and either side naming an
+/// A parameter is its place and its name: the recorded `x-api-key` header is
+/// documented beside the query and path parameters, and either document naming an
 /// extra or a missing one is a difference a client would trip over.
 fn compare_operation(
     recorded: &Value,
@@ -1844,7 +1845,7 @@ fn instant(value: &Value) -> Option<DateTime<chrono::FixedOffset>> {
     DateTime::parse_from_rfc3339(value.as_str()?).ok()
 }
 
-/// Every way a dump's clock values disagree with the order the reference writes them in.
+/// Every way a dump's clock values disagree with the order this server writes them in.
 ///
 /// A `<timestamp>` placeholder proves a field holds a clock value and nothing
 /// more: two placeholders accept any two timestamps, so a replay could order or
@@ -2376,7 +2377,7 @@ mod tests {
     }
 
     #[test]
-    fn the_clock_values_of_a_dump_keep_the_order_the_reference_writes_them_in() {
+    fn the_clock_values_of_a_dump_keep_the_order_this_server_writes_them_in() {
         // Two Reports, processed oldest first, each completed after it was made.
         let mut dump = json!({"tables": {"reports": [
             {"id": 1, "created_at": "2026-10-20T09:00:00.000000Z", "processed_at": "2026-10-20T09:00:01.000000Z"},
@@ -2490,7 +2491,7 @@ async fn calls(mock: &MockServer, wanted: usize) -> Vec<wiremock::Request> {
 
 #[tokio::test]
 async fn a_scenario_with_a_github_token_webhooks_and_gates_files_only_the_test_that_qualifies() {
-    // The `github` scenario runs the reference's server with a token, a Webhook
+    // The `github` scenario runs a server with a token, a Webhook
     // endpoint and two gates that are not the defaults: an Issue needs a score of
     // 0.5 and at least one Proven flake. `test_proven` meets both and `test_flaky`
     // — at the highest score there is, with no Proven flake — meets neither, so a
@@ -2961,7 +2962,7 @@ fn recorded_openapi() -> Value {
 }
 
 #[test]
-fn the_served_openapi_document_keeps_the_reference_contract() {
+fn the_served_openapi_document_keeps_the_recorded_contract() {
     let actual =
         serde_json::to_value(flakeradar::docs::document()).expect("the document serializes");
     assert_eq!(

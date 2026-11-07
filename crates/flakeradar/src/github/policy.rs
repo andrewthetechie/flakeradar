@@ -147,7 +147,7 @@ impl RemovalReport {
 /// | `Other` | skip row | skip row | skip row | skip row | skip row |
 /// | `Unreachable` | stop | stop | stop | stop | skip row |
 ///
-/// Three cells are the intended differences, and each is the reference's own:
+/// Three cells break the pattern, each for the operation's own reason:
 /// a `404` in the sync is the issue itself being gone, so the link re-arms rather
 /// than the Repo being skipped; a `401` is a per-item failure on the note paths,
 /// because bad credentials are not Repo-wide there; and the post-delete close has

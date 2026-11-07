@@ -220,8 +220,8 @@ fn a_timestamp_refusal_names_the_kind_the_record_used() {
         (json!(true), "datetime_type"),
         (json!([]), "datetime_type"),
         (json!({}), "datetime_type"),
-        // A number past the year 9999 names no datetime: the reference refuses
-        // it with the timestamp's own parsing kind, not the integer's.
+        // A number past the year 9999 names no datetime, and is refused with the
+        // timestamp's own parsing kind, not the integer's.
         (json!(1e300), "datetime_parsing"),
     ] {
         assert_eq!(kind_of(lax::timestamp(&value, at())), expected, "{value}");

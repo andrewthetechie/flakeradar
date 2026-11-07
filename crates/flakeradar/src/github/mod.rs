@@ -41,7 +41,7 @@
 //!   filing: the new issue is commented on and closed best effort.
 //! - A store that fails after a filing POST is not a deleted row: the issue stays
 //!   open, the failure is logged with its Repo and number, and the filing ends
-//!   the outcome — no Job filing and no note batch follows, as in the reference.
+//!   the outcome — no Job filing and no note batch follows.
 //! - An unreadable body is logged and the row is stamped, so an unusable link
 //!   keeps rotating instead of pinning the front of the queue.
 //!

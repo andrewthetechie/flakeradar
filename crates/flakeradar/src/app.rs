@@ -360,8 +360,8 @@ fn content_type(name: &str) -> String {
 
 /// The bytes `%xx` escapes stand for, with anything else kept as written.
 ///
-/// A path is percent-encoded on the wire and the reference read it decoded, so a
-/// request for `/assets/index%2Dabc.js` named the same file as the plain form.
+/// A path is percent-encoded on the wire and the lookup wants the decoded name, so
+/// a request for `/assets/index%2Dabc.js` names the same file as the plain form.
 /// An escape that is not two hexadecimal digits, and a byte sequence that is not
 /// UTF-8, leave the path unreadable, which is the 404 below.
 fn percent_decode(raw: &str) -> Option<String> {

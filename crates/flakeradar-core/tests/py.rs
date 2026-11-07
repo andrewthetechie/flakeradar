@@ -41,7 +41,7 @@ fn cap_counts_code_points_and_keeps_the_marker_inside_the_limit() {
 
 #[test]
 fn round4_rounds_half_to_even() {
-    // Every row is a recorded answer of the reference's rounding.
+    // Every row is a whole number the rounding rule has to answer exactly.
     let table = [
         (0.03125, 0.0312),
         (0.09375, 0.0938),

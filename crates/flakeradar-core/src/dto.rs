@@ -522,9 +522,9 @@ impl ValidationIssue {
     /// A timestamp outside the years 1 to 9999, with the reader's reason.
     ///
     /// A Unix timestamp is a number of seconds or milliseconds, and the instant
-    /// it names has to be one a datetime holds: the reference refuses the rest
-    /// with this kind, the sentence in its `msg` and the same sentence again in
-    /// its `ctx.error`.
+    /// it names has to be one a datetime holds; any other instant is refused with
+    /// this kind, the sentence in its `msg` and the same sentence again in its
+    /// `ctx.error`.
     #[must_use]
     pub fn datetime_parsing(loc: Vec<LocSegment>, input: Value, error: &str) -> Self {
         let mut ctx = serde_json::Map::new();

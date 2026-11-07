@@ -21,7 +21,7 @@ use crate::support::{
 };
 
 #[tokio::test]
-async fn a_field_the_body_prices_differently_is_still_the_reference_sentence() {
+async fn a_field_the_body_prices_differently_is_still_the_written_sentence() {
     // The run hint falls back when no file was reported, and a Test with no line
     // still gets a permalink without an anchor.
     let test = TestRow {
@@ -99,7 +99,7 @@ fn the_last_failing_commit_has_no_branch_clause_when_no_branch_was_reported() {
 }
 
 #[test]
-fn the_body_matches_the_reference_byte_for_byte() {
+fn the_filed_body_matches_the_recorded_bytes() {
     let test = TestRow {
         id: 1,
         classname: "tests.test_cart".to_owned(),

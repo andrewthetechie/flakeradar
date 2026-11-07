@@ -317,7 +317,7 @@ pub struct ListQuery {
 }
 
 impl Validate for ListQuery {
-    /// Checks the range `reports.py` put on `limit`.
+    /// Checks the range `limit` allows.
     ///
     /// The `status` membership check is the handler's own, and answers a
     /// hand-written detail rather than a list of issues.
@@ -402,8 +402,8 @@ pub async fn ingest(
     let root = normalize_root(query.root.as_deref()).map_err(|error| named_error(&error))?;
     let line_base = query.line_base;
     parse_report_body(content.clone(), line_base).await?;
-    // Checked here, where the insert fails on the same value, so every refusal
-    // before this one answers what it always did.
+    // The number `validate` already accepted, or nothing at all: a value past the
+    // column's range is refused there, so this only picks the reading apart.
     let ci_run_attempt = accepted_ci_run_attempt(query.ci_run_attempt.as_ref());
 
     let now = state.clock().now();

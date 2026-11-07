@@ -635,14 +635,15 @@ fn an_external_entity_is_never_fetched() {
 // inputs below. Each expected value was recorded by running the recorded parser
 // over the same bytes.
 
-/// A failing case's details, as the reference parses them.
+/// A failing case's details, read the way this parser joins them.
 fn details(xml: &str) -> String {
     one(xml).details
 }
 
 #[test]
 fn a_comment_inside_a_failure_body_merges_its_text() {
-    // ElementTree drops the comment, so `<failure>a<!-- c -->b` is the body `ab`.
+    // A comment is not text, so `<failure>a<!-- c -->b` is the body `ab`: the text
+    // around the dropped node is joined.
     assert_eq!(
         details(
             r#"<testsuite name="s"><testcase classname="c" name="t"><failure message="m">a<!-- c -->b</failure></testcase></testsuite>"#
@@ -723,7 +724,7 @@ fn us_ascii_falls_back_to_utf_8() {
 
 #[test]
 fn a_namespaced_attribute_is_not_the_identity() {
-    // ElementTree looks `name` up by its exact key, so `j:name` is not the name.
+    // An attribute key is matched exactly, so `j:name` is not the name.
     let xml = r#"<testsuite name="s" xmlns:j="urn:x"><testcase j:name="x" name="u" classname="c"/></testsuite>"#;
     let case = &parse_junit_xml(xml.as_bytes(), 1).unwrap()[0];
     assert_eq!(case.name.as_str(), "u");
@@ -773,10 +774,10 @@ fn a_namespaced_suite_is_refused() {
 
 #[test]
 fn an_empty_namespace_is_no_namespace() {
-    // `xmlns=""` means no namespace, which is how ElementTree reads it and how a
-    // serializer that writes an explicit empty default namespace reports its
-    // elements. Every element the parser matches reads it that way, so these
-    // reports give the reference's Tests, statuses and fingerprints.
+    // `xmlns=""` means no namespace, which is how a serializer that writes an
+    // explicit empty default namespace reports its elements. Every element the
+    // parser matches reads it that way, so these reports give the same Tests,
+    // statuses and fingerprints as a report written without a namespace at all.
     let failed = parse_junit_xml(
         br#"<testsuite><testcase name="a"><failure xmlns="" message="m">b</failure></testcase></testsuite>"#,
         1,
@@ -905,7 +906,8 @@ fn a_utf16_report_without_a_byte_order_mark_is_read_as_utf16() {
 
 #[test]
 fn an_invalid_character_reference_is_refused() {
-    // ElementTree raises on both of these; `roxmltree` reads them as U+FFFD.
+    // XML refuses both numbers; `roxmltree` reads them as U+FFFD, so they are
+    // refused here before the parser sees them.
     for reference in ["&#xD800;", "&#x110000;", "&#55296;"] {
         let xml = format!(
             r#"<testsuite name="s"><testcase classname="c" name="t"><failure message="m">{reference}</failure></testcase></testsuite>"#
@@ -1036,7 +1038,7 @@ fn a_non_finite_retry_time_is_an_upload_error() {
 
 #[test]
 fn text_after_a_child_element_is_not_the_failure_body() {
-    // ElementTree's `.text` is what comes before the first child element, so the
+    // The text before the first child element is what the details hold, so the
     // body here is empty and the message falls back to it (also empty).
     let case = one(
         r#"<testsuite name="s"><testcase classname="c" name="t"><failure message=""><child/>after</failure></testcase></testsuite>"#,
@@ -1073,8 +1075,8 @@ fn an_unterminated_comment_is_the_parsers_error() {
 
 #[test]
 fn a_single_byte_code_page_label_is_decoded_by_its_own_codec() {
-    // The label names a codec the reference knows, so a single-byte code page decodes exactly
-    // as that code page says.
+    // The label names a code page this server has a table for, so the bytes decode
+    // exactly as that code page says.
     let cases: [(&str, &[u8], &str); 3] = [
         ("windows-1252", b"\x80", "n€"),
         ("iso-8859-15", b"\xa4", "n€"),
@@ -1093,9 +1095,10 @@ fn a_single_byte_code_page_label_is_decoded_by_its_own_codec() {
 }
 
 #[test]
-fn a_label_the_reference_does_not_know_is_refused() {
-    // WHATWG's registry has labels the reference's codecs do not: it answers
-    // 422 for each of these, so this server does too.
+fn a_label_this_server_has_no_table_for_is_refused() {
+    // WHATWG's registry has labels no code page here answers for: each of these
+    // is refused, rather than decoded by a table that is not the one the label
+    // names.
     for label in [
         "x-cp1252",
         "windows-874",

@@ -3,10 +3,11 @@
 //! A bad query parameter, path parameter or body is a **422** whose `detail` is a
 //! list of issues, each naming the request part and the field. Axum's own
 //! extractors answer 400 with a sentence and no field name, so the three types
-//! here wrap them and rebuild the published shape: [`ApiQuery`] and [`ApiJson`]
-//! parse with the same `serde` machinery Axum uses, keeping the path to the
-//! failing field, and [`ApiPath`] reads the field name from Axum's typed path
-//! rejection.
+//! here wrap them and rebuild the published shape: [`ApiQuery`] reads with the
+//! same `serde` machinery Axum uses and keeps the path to the failing field,
+//! [`ApiJson`] hands the parsed object to the model's own [`FromJsonObject`], which
+//! names the field in every issue it builds, and [`ApiPath`] reads the field name
+//! from Axum's typed path rejection.
 //!
 //! A value's own range and length rules go in [`Validate`], so a route's limits
 //! report in the same shape and with the same wording as a field's own rules.

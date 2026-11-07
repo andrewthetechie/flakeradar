@@ -700,8 +700,8 @@ fn build_test_executions(
         if case.status.is_failing() {
             entry.failures += 1;
         }
-        // The reference writes a Location only when the report gave a file, so a
-        // line without one is never stored and never has to fit the column.
+        // A Location is stored only when the report gave a file, so a line
+        // without one is never stored and never has to fit the column.
         let line = if case.file.is_some() {
             case.line
                 .map(|line| {

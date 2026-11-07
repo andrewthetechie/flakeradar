@@ -275,9 +275,8 @@ fn a_preamble_of_leading_newlines_is_skipped() {
 
 #[test]
 fn a_skipped_newline_lets_the_parser_look_past_what_follows_it() {
-    // After a leading CR or LF the reference parser searches for the next
-    // `-` instead of reading the bytes between them, so words there still
-    // leave a form it accepts.
+    // After a leading CR or LF the search jumps to the next `-` instead of reading
+    // the bytes between them, so words there still leave a form this parser reads.
     let boundary = "b";
     let framed = form(boundary, &[file_part(boundary, REPORT_FIELD, b"<x/>")]);
     let mut body = b"\r\nwords\r\n".to_vec();
@@ -299,9 +298,8 @@ fn a_skipped_newline_lets_the_parser_look_past_what_follows_it() {
 
 #[test]
 fn a_false_delimiter_in_a_preamble_is_not_the_form() {
-    // The boundary bytes in front of the form are a false delimiter: the
-    // reference parser refuses the body, and they must not be read as the
-    // delimiter that opens it.
+    // The boundary bytes in front of the form are a false delimiter: they are not
+    // the delimiter that opens it, and the body is refused.
     let boundary = "b";
     let mut body = b"junk--bX junk\r\n".to_vec();
     body.extend_from_slice(&form(

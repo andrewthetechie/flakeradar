@@ -174,8 +174,8 @@ async fn the_pipeline_body_lists_every_missing_field() {
 
 #[tokio::test]
 async fn the_pipeline_body_lists_every_job_issue() {
-    // Two bad Jobs, one label each: the reference listed all three, and a label's
-    // `loc` names its Job and its own position.
+    // Two bad Jobs, one label each: every issue is listed, and a label's `loc`
+    // names its Job and its own position.
     let db = TestDb::new().await.expect("a test database is available");
     let reply = pipeline(
         &test_app(&db),
@@ -210,7 +210,8 @@ async fn the_pipeline_body_lists_every_job_issue() {
 
 #[tokio::test]
 async fn the_pipeline_body_names_a_field_of_the_wrong_type() {
-    // One row per shape: the reference's own type name, not `value_error`.
+    // One row per shape: each carries the issue type of the value it read, not
+    // a single `value_error`.
     let db = TestDb::new().await.expect("a test database is available");
     let app = test_app(&db);
     let cases: [(Value, (&str, Value)); 11] = [
@@ -284,7 +285,7 @@ async fn the_pipeline_body_reads_the_attempt_as_documented() {
         );
         assert_eq!(stored_pipeline(&db).await.attempt, Some(attempt), "{value}");
     }
-    // Refused spellings, with the reference's own kind.
+    // Refused spellings, each with the kind that names what was read.
     for (value, kind) in [
         (json!(false), "greater_than_equal"),
         (json!(0), "greater_than_equal"),
@@ -292,8 +293,8 @@ async fn the_pipeline_body_reads_the_attempt_as_documented() {
         (json!(2.5), "int_from_float"),
         (json!(null), "int_type"),
         (json!(""), "int_parsing"),
-        // A float past `i64::MAX` names no integer at all, so the reference
-        // answers the size refusal rather than the range one.
+        // A float past `i64::MAX` names no integer at all, so it is refused for
+        // its size rather than its range.
         (json!(1e19), "int_parsing_size"),
     ] {
         let reply = pipeline(&app, &json!({"ci_run_attempt": value})).await;
@@ -413,7 +414,7 @@ async fn the_pipeline_body_reads_a_timestamp_the_way_the_wire_does() {
         (json!("0"), "1970-01-01T00:00:00.000000Z"),
         (json!("-5"), "1969-12-31T23:59:55.000000Z"),
         // A fraction that rounds up to the whole microsecond carries into the
-        // next second, as the reference's does.
+        // next second.
         (
             json!(1_767_225_600.0 + 0.999_999_9),
             "2026-01-01T00:00:01.000000Z",
@@ -929,7 +930,7 @@ async fn the_issue_body_reads_its_number_as_documented() {
 #[tokio::test]
 async fn the_quarantine_route_describes_its_body() {
     // The route's own topics: a body that is not an object, and one with no
-    // `quarantined`, keep the shapes the reference gave them.
+    // `quarantined`, each keep the shape their rules answer.
     let db = TestDb::new().await.expect("a test database is available");
     let id = one_test(&db).await;
     let app = test_app(&db);

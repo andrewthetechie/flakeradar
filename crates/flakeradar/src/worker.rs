@@ -475,10 +475,10 @@ const STANDBY_WAIT: Duration = Duration::from_secs(5);
 ///
 /// A Report requeued for a retry waits `poll * 2^retry_count`, so the wait grows
 /// with each failure; this ceiling stops that growth at 30 seconds, which keeps
-/// the last of `max_report_retries` retries inside a few minutes and matches the
-/// ceiling the reference's own backoff used. Removing it would let a long
-/// database outage space one Report's retries hours apart; lowering it makes a
-/// still-failing Report spend its retries before the database is back.
+/// the last of `max_report_retries` retries inside a few minutes. Removing it
+/// would let a long database outage space one Report's retries hours apart;
+/// lowering it makes a still-failing Report spend its retries before the
+/// database is back.
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 
 /// The loop's intervals, so no test depends on a real one.
@@ -664,10 +664,10 @@ impl ReportWorker {
 
     /// Cancels the loop, waits for it and then ends leadership.
     ///
-    /// The wait is the graceful part: a Report transaction in flight is rolled
-    /// back by the processor's own transaction, so the Report simply stays
-    /// pending. Leadership actually ends in the worker's own release step, which
-    /// stops the leader tasks before it unlocks.
+    /// The wait is the graceful part: the loop checks the token between Reports,
+    /// not inside one, so a Report whose processing has started runs on to its
+    /// commit and the stop costs at most that one Report. Leadership ends in the
+    /// worker's own release step, which stops the leader tasks before it unlocks.
     pub async fn stop(&self) {
         self.cancel.cancel();
         let handle = self.task.lock().await.take();
@@ -700,8 +700,8 @@ impl ReportWorker {
             // The leader proves its lock is still the session that took it on
             // every loop, on a backlog as well as on an empty queue: a lock
             // connection that died frees the lock for a standby even while
-            // Reports keep arriving. The reference checks only on an empty
-            // queue; see `differences.md`.
+            // Reports keep arriving. Checking only an empty queue would let the
+            // two claim the same Report; see `differences.md`.
             if let Err(error) = self.lock.check().await {
                 self.drop_leadership(&error, self.settings.poll).await;
                 continue;

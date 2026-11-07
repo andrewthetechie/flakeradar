@@ -303,8 +303,8 @@ mod tests {
     #[test]
     fn rejects_a_timeout_postgres_cannot_take() {
         // `1e30` overflows a `Duration` and `1e-12` rounds to nothing, so neither
-        // is a timeout PostgreSQL can be given: the first used to panic on the
-        // conversion, past the finite-and-positive check.
+        // is a timeout PostgreSQL can be given: both are refused before any
+        // `Duration` is built from them.
         for value in [0.0, -1.0, f64::NAN, f64::INFINITY, 1e30, 1e-12] {
             assert!(matches!(
                 DbSettings::new(value),
