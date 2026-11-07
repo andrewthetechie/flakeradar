@@ -129,7 +129,7 @@ pub struct ApiJson<T>(pub T);
 
 impl<T, S> FromRequest<S> for ApiJson<T>
 where
-    T: FromJsonObject + Send,
+    T: FromJsonObject + Send + 'static,
     S: Send + Sync,
 {
     type Rejection = ApiError;
@@ -143,18 +143,16 @@ where
         let bytes = Bytes::from_request(req, state)
             .await
             .map_err(|rejection| body_error(&rejection))?;
-        // A Pipeline body can be 20 MiB, and reading it as JSON is CPU work, so
-        // it runs on a blocking thread: the `Bytes` handle moves for free.
-        let object =
-            tokio::task::spawn_blocking(move || parse_json_object(&bytes, content_type.as_deref()))
-                .await
-                .map_err(|error| {
-                    ApiError::new(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("The JSON body parser did not finish: {error}"),
-                    )
-                })??;
-        Ok(Self(T::from_object(&object)?))
+        // A Pipeline body can be 20 MiB, and reading it as JSON and validating
+        // every Job it names are both CPU work proportional to the body, so both
+        // run on a blocking thread: the `Bytes` handle moves for free, and the
+        // parsed object is dropped there rather than on an async worker.
+        let parsed = off_thread("The JSON body parser", move || {
+            let object = parse_json_object(&bytes, content_type.as_deref())?;
+            T::from_object(&object)
+        })
+        .await?;
+        Ok(Self(parsed))
     }
 }
 
@@ -174,6 +172,29 @@ impl FromJsonObject for flakeradar_core::dto::PipelineReportIn {
     fn from_object(object: &Map<String, Value>) -> ApiResult<Self> {
         Self::from_value(object).map_err(ApiError::from)
     }
+}
+
+/// Runs `work` on a blocking thread, answering the 500 a panic inside it gives.
+///
+/// A request body can be 20 MiB, and reading, validating or serialising it is CPU
+/// work proportional to what the client sent: it runs here rather than on an async
+/// worker that the other requests share. `what` names the work in the error.
+///
+/// # Errors
+///
+/// Answers 500 naming `what` when the blocking task did not finish, which only a
+/// panic inside it causes, and `work`'s own error otherwise.
+pub(crate) async fn off_thread<T, F>(what: &str, work: F) -> ApiResult<T>
+where
+    F: FnOnce() -> ApiResult<T> + Send + 'static,
+    T: Send + 'static,
+{
+    tokio::task::spawn_blocking(work).await.map_err(|error| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("{what} did not finish: {error}"),
+        )
+    })?
 }
 
 /// Parses `query` into `T` and checks its own rules, reporting the failing field
@@ -552,8 +573,19 @@ mod tests {
 
     use super::{
         INTEGER_TYPES, is_integer_failure, is_json_content_type, json_error_position, kind_for,
-        kind_for_type_name, missing_field, path_issue,
+        kind_for_type_name, missing_field, off_thread, path_issue,
     };
+
+    #[tokio::test]
+    async fn cpu_work_leaves_the_thread_that_awaits_it() {
+        // A current-thread runtime, so the awaiting thread is the one the work
+        // would run on if it were inline. The closure reports where it really ran.
+        let here = std::thread::current().id();
+        let there = off_thread("The test's work", move || Ok(std::thread::current().id()))
+            .await
+            .expect("the work finishes");
+        assert_ne!(here, there, "the work ran on the thread that awaited it");
+    }
 
     #[test]
     fn only_a_json_media_type_is_parsed_as_json() {

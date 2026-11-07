@@ -38,7 +38,7 @@ use serde_json::Value as JsonValue;
 
 use crate::app::AppState;
 use crate::error::{ApiError, ApiResult, RouteError, RouteResult};
-use crate::extract::{ApiJson, ApiPath, ApiQuery, Validate, query_loc};
+use crate::extract::{ApiJson, ApiPath, ApiQuery, Validate, off_thread, query_loc};
 use crate::middleware::require_token;
 use crate::multipart::{MalformedHeaders, REPORT_FIELD, file_field};
 
@@ -581,13 +581,20 @@ pub async fn ingest_pipeline(
     ApiJson(payload): ApiJson<PipelineReportIn>,
 ) -> RouteResult<Response> {
     let now = state.clock().now();
+    // The stored body is the whole Report as canonical JSON, which is CPU work
+    // proportional to a body that can be 20 MiB: it runs off the async worker, and
+    // before the transaction opens so no connection is held while it runs.
+    let (body, payload) = off_thread("The pipeline Report body", move || {
+        Ok((pipeline_body(&payload), payload))
+    })
+    .await?;
     // The Repo and the Report are one unit of work, committed once: a failed
     // insert leaves no Repo behind.
     let txn = state.pool().begin().await?;
     let repo = get_or_create_repo(&txn, &payload.repo, now).await?;
     let report = NewPipelineReport {
         repo_id: repo.id,
-        body: pipeline_body(&payload),
+        body,
         commit_sha: payload.commit_sha.clone(),
         branch: payload.branch.clone(),
         ci_run_id: payload.ci_run_id.clone().into_string(),

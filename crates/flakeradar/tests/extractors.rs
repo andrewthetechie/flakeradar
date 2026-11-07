@@ -177,6 +177,20 @@ struct NestedPath {
     fields: std::collections::HashMap<String, String>,
 }
 
+/// A body reader that reports the thread it read the body on.
+#[derive(Debug)]
+struct WatchedBody {
+    read_on: std::thread::ThreadId,
+}
+
+impl FromJsonObject for WatchedBody {
+    fn from_object(_object: &Map<String, Value>) -> Result<Self, ApiError> {
+        Ok(Self {
+            read_on: std::thread::current().id(),
+        })
+    }
+}
+
 /// An app holding one route per extractor.
 fn extractor_app() -> Router {
     Router::new()
@@ -191,6 +205,12 @@ fn extractor_app() -> Router {
         .route(
             "/update",
             post(|ApiJson(body): ApiJson<UpdateBody>| async move { body.number.to_string() }),
+        )
+        .route(
+            "/watched",
+            post(
+                |ApiJson(body): ApiJson<WatchedBody>| async move { format!("{:?}", body.read_on) },
+            ),
         )
         .route(
             "/nested/{fields}",
@@ -520,4 +540,24 @@ async fn a_json_body_over_the_limit_is_refused() {
     )
     .await;
     assert_eq!(reply.status, StatusCode::PAYLOAD_TOO_LARGE);
+}
+
+#[tokio::test]
+async fn a_json_body_is_read_off_the_request_thread() {
+    // A Pipeline body can be 20 MiB, so the read and the model's validation both
+    // leave the thread that serves the request: the model reports the thread it
+    // ran on, and it is not this one.
+    let reply = call(
+        axum::http::Method::POST,
+        "/watched",
+        &[("content-type", "application/json")],
+        "{}",
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.text());
+    assert_ne!(
+        reply.text(),
+        format!("{:?}", std::thread::current().id()),
+        "the model read the body on the request's own thread"
+    );
 }
