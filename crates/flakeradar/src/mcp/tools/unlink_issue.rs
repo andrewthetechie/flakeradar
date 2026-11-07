@@ -10,8 +10,7 @@ use serde_json::{Value, json};
 use flakeradar_db::issue_links;
 
 use crate::mcp::{
-    BoxFuture, McpServer, ToolAnswer, ToolResult, lax_optional_integer, nullable, one_target,
-    parse,
+    BoxFuture, McpServer, ToolAnswer, ToolResult, lax_optional_integer, nullable, one_target, parse,
 };
 
 /// The tool's name on the wire.

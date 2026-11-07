@@ -331,11 +331,7 @@ pub trait FinishIssues {
 
 impl FinishIssues for Issues {
     fn finish(self) -> Result<(), Issues> {
-        if self.is_empty() {
-            Ok(())
-        } else {
-            Err(self)
-        }
+        if self.is_empty() { Ok(()) } else { Err(self) }
     }
 }
 

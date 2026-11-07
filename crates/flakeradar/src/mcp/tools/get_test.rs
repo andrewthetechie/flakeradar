@@ -129,20 +129,23 @@ pub(super) fn call(server: &McpServer, arguments: Value) -> BoxFuture<'_, ToolRe
             return Err(ToolFailure::Tool(format!("No test with id {test_id}.")));
         };
         let failure = reads::latest_failure(server.pool(), test_id).await?;
-        ToolAnswer::shaped(LISTS, &TestDetail {
-            test: history.test,
-            location: history.location,
-            last_failing_sha: history.last_failing_sha,
-            last_failing_branch: history.last_failing_branch,
-            latest_failure: failure.as_ref().map(LatestFailure::from),
-            executions: history
-                .executions
-                .iter()
-                .map(ExecutionSummary::from)
-                .collect(),
-            jobs: history.jobs,
-            score_history: score_points(&history.score_history),
-        })
+        ToolAnswer::shaped(
+            LISTS,
+            &TestDetail {
+                test: history.test,
+                location: history.location,
+                last_failing_sha: history.last_failing_sha,
+                last_failing_branch: history.last_failing_branch,
+                latest_failure: failure.as_ref().map(LatestFailure::from),
+                executions: history
+                    .executions
+                    .iter()
+                    .map(ExecutionSummary::from)
+                    .collect(),
+                jobs: history.jobs,
+                score_history: score_points(&history.score_history),
+            },
+        )
     })
 }
 

@@ -103,18 +103,21 @@ pub(super) fn call(server: &McpServer, arguments: Value) -> BoxFuture<'_, ToolRe
         else {
             return Err(ToolFailure::Tool(format!("No job with id {job_id}.")));
         };
-        ToolAnswer::shaped(LISTS, &JobDetail {
-            job: history.job,
-            unexplained_failures: history.unexplained_failures,
-            explained_failures: history.explained_failures,
-            runners: history.runners,
-            executions: history
-                .executions
-                .iter()
-                .map(JobExecutionSummary::from)
-                .collect(),
-            score_history: score_points(&history.score_history),
-        })
+        ToolAnswer::shaped(
+            LISTS,
+            &JobDetail {
+                job: history.job,
+                unexplained_failures: history.unexplained_failures,
+                explained_failures: history.explained_failures,
+                runners: history.runners,
+                executions: history
+                    .executions
+                    .iter()
+                    .map(JobExecutionSummary::from)
+                    .collect(),
+                score_history: score_points(&history.score_history),
+            },
+        )
     })
 }
 
