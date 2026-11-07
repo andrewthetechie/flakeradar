@@ -1342,3 +1342,33 @@ async fn a_reports_list_counts_only_the_rows_it_holds() {
         1
     );
 }
+
+/// Drains the queue the way the worker does.
+async fn process_all(db: &TestDb) {
+    let settings = flakeradar_db::processing::ProcessingSettings::default();
+    while flakeradar_db::processing::process_next(db.connection(), &settings)
+        .await
+        .expect("processing a queued Report succeeds")
+        .is_some()
+    {}
+}
+
+#[tokio::test]
+async fn an_ingested_failure_in_an_empty_namespace_is_stored_as_failed() {
+    // `xmlns=""` means no namespace, so the `<failure>` is the JUnit one and the
+    // Test's stored `last_status` is what the reference stores.
+    let db = TestDb::new().await.expect("a test database is available");
+    let body = br#"<testsuite name="unit"><testcase classname="c" name="ns"><failure xmlns="" message="boom">x</failure></testcase></testsuite>"#.to_vec();
+    let reply = ingest(&test_app(&db), &[], body).await;
+    assert_eq!(reply.status, StatusCode::ACCEPTED, "{}", reply.text());
+    process_all(&db).await;
+
+    let statuses: Vec<String> = flakeradar_db::entities::test_cases::Entity::find()
+        .all(db.connection())
+        .await
+        .expect("the Test rows")
+        .into_iter()
+        .map(|test| test.last_status)
+        .collect();
+    assert_eq!(statuses, ["failed"]);
+}

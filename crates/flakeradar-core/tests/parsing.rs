@@ -772,6 +772,94 @@ fn a_namespaced_suite_is_refused() {
 }
 
 #[test]
+fn an_empty_namespace_is_no_namespace() {
+    // `xmlns=""` means no namespace, which is how ElementTree reads it and how a
+    // serializer that writes an explicit empty default namespace reports its
+    // elements. Every element the parser matches reads it that way, so these
+    // reports give the reference's Tests, statuses and fingerprints.
+    let failed = parse_junit_xml(
+        br#"<testsuite><testcase name="a"><failure xmlns="" message="m">b</failure></testcase></testsuite>"#,
+        1,
+    )
+    .unwrap();
+    assert_eq!(
+        (
+            failed[0].status,
+            failed[0].message.as_str(),
+            failed[0].details.as_str()
+        ),
+        (ExecutionStatus::Failed, "m", "b")
+    );
+
+    // A retry child in an empty namespace is still a retry, so the run keeps its
+    // failed try before the pass.
+    let retried = parse_junit_xml(
+        br#"<testsuite><testcase name="a"><flakyFailure xmlns="" message="m"/></testcase></testsuite>"#,
+        1,
+    )
+    .unwrap();
+    assert_eq!(
+        retried
+            .iter()
+            .map(|case| case.status)
+            .collect::<Vec<_>>(),
+        [ExecutionStatus::Failed, ExecutionStatus::Passed]
+    );
+
+    // Captured output in an empty namespace still reaches the Failure details.
+    assert_eq!(
+        parse_junit_xml(
+            br#"<testsuite><testcase name="a"><failure message="m"/><system-out xmlns="">o</system-out></testcase></testsuite>"#,
+            1,
+        )
+        .unwrap()[0]
+            .details
+            .as_str(),
+        "--- stdout ---\no"
+    );
+
+    // A case, a suite and a wrapper in an empty namespace are the JUnit elements
+    // they are named for, and a case's attributes are read as usual.
+    for xml in [
+        br#"<testsuite><testcase name="a"/></testsuite>"#.as_slice(),
+        br#"<testsuite xmlns=""><testcase name="a"/></testsuite>"#,
+        br#"<testsuites xmlns=""><testsuite><testcase name="a"/></testsuite></testsuites>"#,
+        br#"<testsuites><testsuite xmlns=""><testcase name="a"/></testsuite></testsuites>"#,
+    ] {
+        let cases = parse_junit_xml(xml, 1).expect("the report parses");
+        assert_eq!(
+            cases
+                .iter()
+                .map(|case| (case.name.as_str(), case.classname.as_str()))
+                .collect::<Vec<_>>(),
+            [("a", "")],
+            "{xml:?}"
+        );
+    }
+    assert_eq!(
+        parse_junit_xml(
+            br#"<testsuite><testcase xmlns="" name="a" classname="c"/></testsuite>"#,
+            1,
+        )
+        .unwrap()[0]
+            .classname
+            .as_str(),
+        "c"
+    );
+
+    // A namespace that is not empty is still not a JUnit element.
+    assert_eq!(
+        parse_junit_xml(
+            br#"<testsuite><testcase name="a"><failure xmlns="urn:x" message="m">b</failure></testcase></testsuite>"#,
+            1,
+        )
+        .unwrap()[0]
+            .status,
+        ExecutionStatus::Passed
+    );
+}
+
+#[test]
 fn a_doctype_is_accepted() {
     // The reference's parser accepts a `DOCTYPE`; the approved rule restores it.
     for xml in [

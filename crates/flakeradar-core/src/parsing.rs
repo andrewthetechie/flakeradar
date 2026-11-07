@@ -948,15 +948,20 @@ impl CaseCollector {
 ///
 /// `ElementTree` matches a fully qualified tag, so `<j:failure>` and
 /// `<failure xmlns="urn:x">` are not JUnit elements and a namespaced suite is
-/// not a suite at all.
+/// not a suite at all. `xmlns=""` declares no namespace at all, which
+/// `roxmltree` reports as an empty one rather than as none, so an empty
+/// namespace is no namespace here too: a report from a serializer that writes an
+/// explicit empty default namespace still parses as the reference parses it.
 fn is_tag(node: Node<'_, '_>, tag: &str) -> bool {
-    node.is_element() && node.tag_name().namespace().is_none() && node.tag_name().name() == tag
+    node.is_element()
+        && node.tag_name().namespace().is_none_or(str::is_empty)
+        && node.tag_name().name() == tag
 }
 
 /// The un-namespaced attribute `name` of `node`, as `ElementTree`'s `.get` reads it.
 fn attribute<'a>(node: Node<'a, '_>, name: &str) -> Option<&'a str> {
     node.attributes()
-        .find(|attribute| attribute.namespace().is_none() && attribute.name() == name)
+        .find(|attribute| attribute.namespace().is_none_or(str::is_empty) && attribute.name() == name)
         .map(|attribute| attribute.value())
 }
 
