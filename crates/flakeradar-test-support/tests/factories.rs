@@ -536,3 +536,25 @@ async fn a_test_and_a_job_store_the_flakiness_score_they_are_given() {
         0.0
     );
 }
+
+#[tokio::test]
+async fn create_returns_the_row_it_stored() {
+    let db = TestDb::new().await.expect("a migrated test database");
+    let project = make_project().project("backend").create(&db).await;
+    let test = make_test_case(&project).name("t_cart").create(&db).await;
+    assert_eq!(test.name, "t_cart");
+    assert_eq!(
+        stored_test_case(db.connection(), test.id).await.name,
+        "t_cart"
+    );
+}
+
+#[tokio::test]
+#[should_panic(expected = "JobBuilder: the Job inserts")]
+async fn create_names_the_builder_that_could_not_insert() {
+    let db = TestDb::new().await.expect("a migrated test database");
+    let pipeline = make_pipeline().create(&db).await;
+    make_job(&pipeline).name("build").create(&db).await;
+    // `uq_jobs_pipeline_name` refuses the second Job of that name.
+    make_job(&pipeline).name("build").create(&db).await;
+}

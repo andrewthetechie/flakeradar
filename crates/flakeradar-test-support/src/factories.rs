@@ -4,6 +4,19 @@
 //! written by the server would have, so a test states only the fields it cares
 //! about. Building flushes nothing and opens no transaction: it inserts the rows
 //! the test asked for on the connection it was given.
+//!
+//! A test that seeds a row wants the row, so it calls `create` and gets the
+//! stored model rather than a `Result` it unwraps on the next line. `build` stays
+//! for the tests that check a builder's own answer and for a site that inserts
+//! on a connection of its own. `create` panics when the insert fails, naming the
+//! builder: an `async fn` cannot carry `#[track_caller]`, so the reported
+//! location is this file and the message is what names the failure, with the
+//! failing test's name in the same panic report.
+
+#![expect(
+    clippy::expect_used,
+    reason = "a builder's create fails loudly, which its doc comment states"
+)]
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -17,7 +30,7 @@ use sea_orm::{
     JsonValue, QueryFilter, Set, entity::prelude::DateTimeWithTimeZone,
 };
 
-use crate::db::hex;
+use crate::db::{TestDb, hex};
 use crate::error::TestError;
 
 /// The time a row is stamped with when a builder is not given one.
@@ -85,6 +98,17 @@ impl ProjectBuilder {
     pub fn root(mut self, root: &str) -> Self {
         root.clone_into(&mut self.root);
         self
+    }
+
+    /// Inserts the Project into `db`, or panics naming this builder.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the insert fails, which the module doc explains.
+    pub async fn create(self, db: &TestDb) -> projects::Model {
+        self.build(db.connection())
+            .await
+            .expect("ProjectBuilder: the Project inserts")
     }
 
     /// Inserts the Project, reusing the Repo when it already exists.
@@ -308,6 +332,17 @@ impl TestCaseBuilder {
         self
     }
 
+    /// Inserts the Test into `db`, or panics naming this builder.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the insert fails, which the module doc explains.
+    pub async fn create(self, db: &TestDb) -> test_cases::Model {
+        self.build(db.connection())
+            .await
+            .expect("TestCaseBuilder: the Test inserts")
+    }
+
     /// Inserts the Test.
     ///
     /// # Errors
@@ -445,6 +480,17 @@ impl RunBuilder {
         self
     }
 
+    /// Inserts the Run into `db`, or panics naming this builder.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the insert fails, which the module doc explains.
+    pub async fn create(self, db: &TestDb) -> test_runs::Model {
+        self.build(db.connection())
+            .await
+            .expect("RunBuilder: the Run inserts")
+    }
+
     /// Inserts the Run.
     ///
     /// # Errors
@@ -543,6 +589,17 @@ impl TestExecutionBuilder {
         self
     }
 
+    /// Inserts the Execution into `db`, or panics naming this builder.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the insert fails, which the module doc explains.
+    pub async fn create(self, db: &TestDb) -> test_executions::Model {
+        self.build(db.connection())
+            .await
+            .expect("TestExecutionBuilder: the Execution inserts")
+    }
+
     /// Inserts the Execution.
     ///
     /// # Errors
@@ -609,6 +666,17 @@ impl PipelineBuilder {
     pub fn name(mut self, name: &str) -> Self {
         name.clone_into(&mut self.name);
         self
+    }
+
+    /// Inserts the Pipeline into `db`, or panics naming this builder.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the insert fails, which the module doc explains.
+    pub async fn create(self, db: &TestDb) -> pipelines::Model {
+        self.build(db.connection())
+            .await
+            .expect("PipelineBuilder: the Pipeline inserts")
     }
 
     /// Inserts the Pipeline.
@@ -710,6 +778,17 @@ impl JobBuilder {
     pub fn github_issue_number(mut self, number: i32) -> Self {
         self.github_issue_number = Some(number);
         self
+    }
+
+    /// Inserts the Job into `db`, or panics naming this builder.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the insert fails, which the module doc explains.
+    pub async fn create(self, db: &TestDb) -> jobs::Model {
+        self.build(db.connection())
+            .await
+            .expect("JobBuilder: the Job inserts")
     }
 
     /// Inserts the Job.
@@ -848,6 +927,17 @@ impl JobExecutionBuilder {
         self
     }
 
+    /// Inserts the Job execution into `db`, or panics naming this builder.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the insert fails, which the module doc explains.
+    pub async fn create(self, db: &TestDb) -> job_executions::Model {
+        self.build(db.connection())
+            .await
+            .expect("JobExecutionBuilder: the Job execution inserts")
+    }
+
     /// Inserts the Job execution.
     ///
     /// # Errors
@@ -935,6 +1025,17 @@ impl TestScoreBuilder {
         self
     }
 
+    /// Inserts the Score history row into `db`, or panics naming this builder.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the insert fails, which the module doc explains.
+    pub async fn create(self, db: &TestDb) -> test_score_history::Model {
+        self.build(db.connection())
+            .await
+            .expect("TestScoreBuilder: the Score history row inserts")
+    }
+
     /// Inserts the Score history row.
     ///
     /// # Errors
@@ -996,6 +1097,17 @@ impl JobScoreBuilder {
     pub fn failures(mut self, failures: i32) -> Self {
         self.failures = failures;
         self
+    }
+
+    /// Inserts the Score history row into `db`, or panics naming this builder.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the insert fails, which the module doc explains.
+    pub async fn create(self, db: &TestDb) -> job_score_history::Model {
+        self.build(db.connection())
+            .await
+            .expect("JobScoreBuilder: the Score history row inserts")
     }
 
     /// Inserts the Score history row.
@@ -1173,6 +1285,17 @@ impl ReportBuilder {
     pub fn processed_at(mut self, processed_at: DateTime<FixedOffset>) -> Self {
         self.processed_at = Some(processed_at);
         self
+    }
+
+    /// Inserts the Report into `db`, or panics naming this builder.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the insert fails, which the module doc explains.
+    pub async fn create(self, db: &TestDb) -> reports::Model {
+        self.build(db.connection())
+            .await
+            .expect("ReportBuilder: the Report inserts")
     }
 
     /// Inserts the Report.
