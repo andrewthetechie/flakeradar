@@ -33,8 +33,9 @@ message and details (traceback, capped at 4 KB), and recent executions.";
 
 /// Whether this tool answers a list, wrapped in `{"result": …}`.
 ///
-/// The definition's output schema and the answer's `_meta` are both derived from
-/// this one statement.
+/// The definition's output schema, the answer's `_meta` and the shape the handler
+/// answers in all come from this one statement, so a tool cannot declare a list
+/// and answer an object.
 pub(super) const LISTS: bool = false;
 
 /// The arguments `get_test` takes.
@@ -128,7 +129,7 @@ pub(super) fn call(server: &McpServer, arguments: Value) -> BoxFuture<'_, ToolRe
             return Err(ToolFailure::Tool(format!("No test with id {test_id}.")));
         };
         let failure = reads::latest_failure(server.pool(), test_id).await?;
-        ToolAnswer::object(&TestDetail {
+        ToolAnswer::shaped(LISTS, &TestDetail {
             test: history.test,
             location: history.location,
             last_failing_sha: history.last_failing_sha,

@@ -19,8 +19,9 @@ pub(super) const DESCRIPTION: &str = "List every Repo with its Projects (name an
 
 /// Whether this tool answers a list, wrapped in `{"result": …}`.
 ///
-/// The definition's output schema and the answer's `_meta` are both derived from
-/// this one statement.
+/// The definition's output schema, the answer's `_meta` and the shape the handler
+/// answers in all come from this one statement, so a tool cannot declare a list
+/// and answer an object.
 pub(super) const LISTS: bool = true;
 
 /// The tool's argument schema.
@@ -37,6 +38,6 @@ pub(super) fn annotations() -> ToolAnnotations {
 pub(super) fn call(server: &McpServer, arguments: Value) -> BoxFuture<'_, ToolResult> {
     Box::pin(async move {
         no_arguments(&arguments)?;
-        ToolAnswer::list(&reads::list_repos(server.pool()).await?)
+        ToolAnswer::shaped(LISTS, &reads::list_repos(server.pool()).await?)
     })
 }

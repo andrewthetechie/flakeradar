@@ -10,8 +10,8 @@ use serde_json::{Value, json};
 use flakeradar_db::issue_links;
 
 use crate::mcp::{
-    BoxFuture, McpServer, ToolResult, lax_boolean, lax_integer, lax_optional_integer,
-    linked_answer, nullable, one_target, parse,
+    BoxFuture, McpServer, ToolAnswer, ToolResult, lax_boolean, lax_integer, lax_optional_integer,
+    nullable, one_target, parse,
 };
 
 /// The tool's name on the wire.
@@ -28,8 +28,9 @@ issue is already linked, unless replace=True. Returns the test or job.";
 
 /// Whether this tool answers a list, wrapped in `{"result": …}`.
 ///
-/// The definition's output schema and the answer's `_meta` are both derived from
-/// this one statement.
+/// The definition's output schema, the answer's `_meta` and the shape the handler
+/// answers in all come from this one statement, so a tool cannot declare a list
+/// and answer an object.
 pub(super) const LISTS: bool = false;
 
 /// The arguments `link_issue` takes.
@@ -89,6 +90,6 @@ pub(super) fn call(server: &McpServer, arguments: Value) -> BoxFuture<'_, ToolRe
             &server.read_settings(),
         )
         .await?;
-        linked_answer(&linked)
+        ToolAnswer::shaped(LISTS, &linked)
     })
 }

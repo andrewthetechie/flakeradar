@@ -32,8 +32,9 @@ executions (outcome, sha, branch, attempt, runner, CI url, explaining tests).";
 
 /// Whether this tool answers a list, wrapped in `{"result": …}`.
 ///
-/// The definition's output schema and the answer's `_meta` are both derived from
-/// this one statement.
+/// The definition's output schema, the answer's `_meta` and the shape the handler
+/// answers in all come from this one statement, so a tool cannot declare a list
+/// and answer an object.
 pub(super) const LISTS: bool = false;
 
 /// The arguments `get_job` takes.
@@ -102,7 +103,7 @@ pub(super) fn call(server: &McpServer, arguments: Value) -> BoxFuture<'_, ToolRe
         else {
             return Err(ToolFailure::Tool(format!("No job with id {job_id}.")));
         };
-        ToolAnswer::object(&JobDetail {
+        ToolAnswer::shaped(LISTS, &JobDetail {
             job: history.job,
             unexplained_failures: history.unexplained_failures,
             explained_failures: history.explained_failures,

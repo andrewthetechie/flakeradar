@@ -22,8 +22,9 @@ pub(super) const DESCRIPTION: &str =
 
 /// Whether this tool answers a list, wrapped in `{"result": …}`.
 ///
-/// The definition's output schema and the answer's `_meta` are both derived from
-/// this one statement.
+/// The definition's output schema, the answer's `_meta` and the shape the handler
+/// answers in all come from this one statement, so a tool cannot declare a list
+/// and answer an object.
 pub(super) const LISTS: bool = true;
 
 /// The arguments `list_projects` takes.
@@ -56,7 +57,7 @@ pub(super) fn call(server: &McpServer, arguments: Value) -> BoxFuture<'_, ToolRe
         let name = normalize_repo(&repo)?;
         for found in reads::list_repos(server.pool()).await? {
             if found.name == name {
-                return ToolAnswer::list(&found.projects);
+                return ToolAnswer::shaped(LISTS, &found.projects);
             }
         }
         Err(ToolFailure::Tool(format!(

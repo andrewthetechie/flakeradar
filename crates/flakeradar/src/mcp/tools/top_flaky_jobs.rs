@@ -29,8 +29,9 @@ threshold now, below it N days ago or with no history that old.";
 
 /// Whether this tool answers a list, wrapped in `{"result": …}`.
 ///
-/// The definition's output schema and the answer's `_meta` are both derived from
-/// this one statement.
+/// The definition's output schema, the answer's `_meta` and the shape the handler
+/// answers in all come from this one statement, so a tool cannot declare a list
+/// and answer an object.
 pub(super) const LISTS: bool = true;
 
 /// The arguments `top_flaky_jobs` takes.
@@ -90,6 +91,6 @@ pub(super) fn call(server: &McpServer, arguments: Value) -> BoxFuture<'_, ToolRe
             &server.read_settings(),
         )
         .await?;
-        ToolAnswer::list(&page.items)
+        ToolAnswer::shaped(LISTS, &page.items)
     })
 }

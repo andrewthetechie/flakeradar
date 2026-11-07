@@ -27,7 +27,7 @@ use flakeradar_core::{
     identity::IdentityError, identity::normalize_project, identity::normalize_repo, lax,
     model::EntityKind, py::TRUNCATION_MARKER, py::strip_wire_whitespace,
 };
-use flakeradar_db::issue_links::{LinkError, LinkedOut};
+use flakeradar_db::issue_links::LinkError;
 use flakeradar_db::reads::{ReadError, ReadSettings, Scope};
 use flakeradar_db::{DbError, clock::SharedClock, clock::SystemClock};
 use rmcp::ErrorData as McpError;
@@ -217,9 +217,9 @@ impl From<IdentityError> for ToolFailure {
 /// What one tool answers: the structured content, and the JSON text a client
 /// shows the model.
 ///
-/// The variant is the tool's shape, so the framework derives the rest of the
-/// wire from it: a [`ToolAnswer::List`] carries the `{"result": …}` wrap, the
-/// `_meta` that announces it, and no content block when it is empty, while an
+/// The variant is the tool's shape, so the framework derives the rest of the wire
+/// from it: a [`ToolAnswer::List`] carries the `{"result": …}` wrap, the `_meta`
+/// that announces it, and no content block when it is empty, while an
 /// [`ToolAnswer::Object`] is the structured content itself. No name is consulted.
 ///
 /// The text is produced from the typed value rather than from the structured
@@ -244,19 +244,22 @@ pub(crate) enum ToolAnswer {
 }
 
 impl ToolAnswer {
-    /// A list-returning tool's answer.
-    pub(crate) fn list<T: Serialize + ?Sized>(items: &T) -> Result<Self, ToolFailure> {
-        Ok(Self::List {
-            text: to_text(items)?,
-            items: to_value(items)?,
-        })
-    }
-
-    /// An object-returning tool's answer.
-    pub(crate) fn object<T: Serialize + ?Sized>(value: &T) -> Result<Self, ToolFailure> {
-        Ok(Self::Object {
-            text: to_text(value)?,
-            value: to_value(value)?,
+    /// The answer of a tool whose `lists` says whether it returns a list.
+    ///
+    /// A handler passes the same `LISTS` its own table row gives [`definition`],
+    /// so the output schema a client reads and the answer it gets are the one
+    /// statement in the tool's file: a tool cannot answer in a shape it did not
+    /// declare.
+    pub(crate) fn shaped<T: Serialize + ?Sized>(
+        lists: bool,
+        value: &T,
+    ) -> Result<Self, ToolFailure> {
+        let text = to_text(value)?;
+        let json = to_value(value)?;
+        Ok(if lists {
+            Self::List { text, items: json }
+        } else {
+            Self::Object { text, value: json }
         })
     }
 }
@@ -629,14 +632,6 @@ fn cap_details(text: &str) -> String {
     let mut capped: String = text.chars().take(DETAILS_MAX).collect();
     capped.push_str(TRUNCATION_MARKER);
     capped
-}
-
-/// A linked Test or Job, in the shape its leaderboard serves.
-fn linked_answer(linked: &LinkedOut) -> Result<ToolAnswer, ToolFailure> {
-    match linked {
-        LinkedOut::Test(test) => ToolAnswer::object(test),
-        LinkedOut::Job(job) => ToolAnswer::object(job),
-    }
 }
 
 /// The annotations a read-only tool carries.
