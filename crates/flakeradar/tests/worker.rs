@@ -16,10 +16,11 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use chrono::{DateTime, FixedOffset};
+use flakeradar::BoxFuture;
 use flakeradar::webhooks::WebhookWorker;
 use flakeradar::worker::{
-    AdvisoryLock, LeaderRun, LockFuture, LockSession, Pruner, ReportProcessor, ReportWorker,
-    SessionFuture, Waiter, WorkerSettings,
+    AdvisoryLock, LeaderRun, LockSession, Pruner, ReportProcessor, ReportWorker, Waiter,
+    WorkerSettings,
 };
 use flakeradar_core::model::ReportStatus;
 use flakeradar_core::notify::WebhookFormat;
@@ -918,7 +919,7 @@ impl ReportProcessor for AlwaysSomeProcessor {
         &self,
         _pool: DatabaseConnection,
         _settings: ProcessingSettings,
-    ) -> flakeradar::worker::ProcessFuture<'static> {
+    ) -> BoxFuture<'static, Result<Option<ProcessOutcome>, DbError>> {
         let claims = Arc::clone(&self.claims);
         Box::pin(async move {
             claims.fetch_add(1, Ordering::SeqCst);
@@ -946,7 +947,7 @@ impl ReportProcessor for AlwaysErrProcessor {
         &self,
         _pool: DatabaseConnection,
         _settings: ProcessingSettings,
-    ) -> flakeradar::worker::ProcessFuture<'static> {
+    ) -> BoxFuture<'static, Result<Option<ProcessOutcome>, DbError>> {
         Box::pin(async {
             Err(DbError::Database(sea_orm::DbErr::Custom(
                 "a persistent processing failure".to_owned(),
@@ -977,12 +978,12 @@ impl DeadLock {
 }
 
 impl LockSession for DeadLock {
-    fn try_lock(&self) -> LockFuture<'_> {
+    fn try_lock(&self) -> BoxFuture<'_, Result<bool, DbError>> {
         self.try_locks.fetch_add(1, Ordering::SeqCst);
         Box::pin(async { Ok(true) })
     }
 
-    fn check(&self) -> SessionFuture<'_> {
+    fn check(&self) -> BoxFuture<'_, Result<(), DbError>> {
         self.checks.fetch_add(1, Ordering::SeqCst);
         Box::pin(async {
             Err(DbError::Database(sea_orm::DbErr::Custom(
@@ -991,7 +992,7 @@ impl LockSession for DeadLock {
         })
     }
 
-    fn unlock(&self) -> SessionFuture<'_> {
+    fn unlock(&self) -> BoxFuture<'_, Result<(), DbError>> {
         Box::pin(async { Ok(()) })
     }
 }

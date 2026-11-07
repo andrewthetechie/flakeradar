@@ -18,7 +18,6 @@
 //! takes, so a test drives the loop without a clock or a real interval.
 
 use std::fmt;
-use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
@@ -34,6 +33,7 @@ use sea_orm::{ConnectionTrait, DatabaseConnection, DbBackend, Statement};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
+use crate::BoxFuture;
 use crate::settings::{Secret, Settings};
 
 /// The advisory lock every process tries to take to become the processor.
@@ -51,9 +51,6 @@ const UNLOCK_SQL: &str = "SELECT pg_advisory_unlock($1) AS released";
 /// A replacement session answers a statement just as happily as the one the
 /// lock was taken on, so the answer is the backend id rather than `SELECT 1`.
 const ALIVE_SQL: &str = "SELECT pg_backend_pid() = $1 AS same_session";
-
-/// What a [`LeaderTask`] does once it is running.
-pub type StartFuture<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
 
 /// One run of a [`LeaderTask`]: the loop's handle and the token that stops it.
 ///
@@ -148,9 +145,6 @@ where
     }
 }
 
-/// What a [`LeaderTask`] does to stop; the error says why it could not.
-pub type StopFuture<'a> = Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
-
 /// Work only the leader runs: it starts with leadership and stops before the lock is released.
 ///
 /// The GitHub issue filer and the Notification sender are the two implementations.
@@ -162,14 +156,14 @@ pub trait LeaderTask: fmt::Debug + Send + Sync {
     fn name(&self) -> &'static str;
 
     /// Starts the task's own background work. Calling it twice is the task's problem.
-    fn start(&self) -> StartFuture<'_>;
+    fn start(&self) -> BoxFuture<'_, ()>;
 
     /// Stops the task, finishing or cancelling whatever it has in flight.
     ///
     /// # Errors
     ///
     /// Returns why the task could not stop. The lock is released anyway.
-    fn stop(&self) -> StopFuture<'_>;
+    fn stop(&self) -> BoxFuture<'_, anyhow::Result<()>>;
 
     /// Hands a processed Report over without waiting for the task's I/O.
     ///
@@ -178,10 +172,6 @@ pub trait LeaderTask: fmt::Debug + Send + Sync {
     /// Returns why the hand-over failed; the worker logs it and carries on.
     fn enqueue(&self, outcome: &ProcessOutcome) -> anyhow::Result<()>;
 }
-
-/// What the loop claims a Report with.
-pub type ProcessFuture<'a> =
-    Pin<Box<dyn Future<Output = Result<Option<ProcessOutcome>, DbError>> + Send + 'a>>;
 
 /// Claims and processes the next pending Report.
 ///
@@ -193,7 +183,7 @@ pub trait ReportProcessor: fmt::Debug + Send + Sync {
         &self,
         pool: DatabaseConnection,
         settings: ProcessingSettings,
-    ) -> ProcessFuture<'static>;
+    ) -> BoxFuture<'static, Result<Option<ProcessOutcome>, DbError>>;
 }
 
 /// The real processor: [`flakeradar_db::processing::process_next`].
@@ -205,18 +195,15 @@ impl ReportProcessor for DatabaseProcessor {
         &self,
         pool: DatabaseConnection,
         settings: ProcessingSettings,
-    ) -> ProcessFuture<'static> {
+    ) -> BoxFuture<'static, Result<Option<ProcessOutcome>, DbError>> {
         Box::pin(async move { process_next(&pool, &settings).await })
     }
 }
 
-/// What one retention run does.
-pub type PruneFuture<'a> = Pin<Box<dyn Future<Output = Result<PruneResult, DbError>> + Send + 'a>>;
-
 /// The retention run the leader repeats once per interval.
 pub trait Pruner: fmt::Debug + Send + Sync {
     /// Prunes one time-budgeted run of the expired backlog.
-    fn prune(&self, pool: DatabaseConnection) -> PruneFuture<'static>;
+    fn prune(&self, pool: DatabaseConnection) -> BoxFuture<'static, Result<PruneResult, DbError>>;
 }
 
 /// The real retention run: [`flakeradar_db::retention::run_prune`] with these settings.
@@ -240,7 +227,7 @@ impl RetentionPrune {
 }
 
 impl Pruner for RetentionPrune {
-    fn prune(&self, pool: DatabaseConnection) -> PruneFuture<'static> {
+    fn prune(&self, pool: DatabaseConnection) -> BoxFuture<'static, Result<PruneResult, DbError>> {
         let retention = self.retention;
         let processing = self.processing.clone();
         let monotonic = Arc::clone(&self.monotonic);
@@ -248,13 +235,10 @@ impl Pruner for RetentionPrune {
     }
 }
 
-/// What the loop waits on between claims, leadership attempts and prunes.
-pub type WaitFuture<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
-
 /// How the loop waits, so a test never spends real time on an interval.
 pub trait Waiter: fmt::Debug + Send + Sync {
     /// Resolves after `delay`, unless the worker is cancelled first.
-    fn wait(&self, delay: Duration) -> WaitFuture<'_>;
+    fn wait(&self, delay: Duration) -> BoxFuture<'_, ()>;
 }
 
 /// The real wait: [`tokio::time::sleep`], which `tokio::time::pause` controls.
@@ -262,16 +246,10 @@ pub trait Waiter: fmt::Debug + Send + Sync {
 pub struct TokioWaiter;
 
 impl Waiter for TokioWaiter {
-    fn wait(&self, delay: Duration) -> WaitFuture<'_> {
+    fn wait(&self, delay: Duration) -> BoxFuture<'_, ()> {
         Box::pin(tokio::time::sleep(delay))
     }
 }
-
-/// What a lock query answers.
-pub type LockFuture<'a> = Pin<Box<dyn Future<Output = Result<bool, DbError>> + Send + 'a>>;
-
-/// What a lock statement answers when it reports no value.
-pub type SessionFuture<'a> = Pin<Box<dyn Future<Output = Result<(), DbError>> + Send + 'a>>;
 
 /// The dedicated connection that carries the processor's advisory lock.
 ///
@@ -279,7 +257,7 @@ pub type SessionFuture<'a> = Pin<Box<dyn Future<Output = Result<(), DbError>> + 
 /// election fail or to count attempts without a database on cue.
 pub trait LockSession: fmt::Debug + Send + Sync {
     /// Tries to take the lock, answering whether this session now holds it.
-    fn try_lock(&self) -> LockFuture<'_>;
+    fn try_lock(&self) -> BoxFuture<'_, Result<bool, DbError>>;
 
     /// Proves the session that took the lock is still the one answering.
     ///
@@ -287,10 +265,10 @@ pub trait LockSession: fmt::Debug + Send + Sync {
     /// the lock is gone: the server releases a session lock with the backend
     /// that held it, and the pool replaces that backend with one that holds
     /// nothing.
-    fn check(&self) -> SessionFuture<'_>;
+    fn check(&self) -> BoxFuture<'_, Result<(), DbError>>;
 
     /// Releases the lock and closes the session. A broken session is reported.
-    fn unlock(&self) -> SessionFuture<'_>;
+    fn unlock(&self) -> BoxFuture<'_, Result<(), DbError>>;
 }
 
 /// The session lock, held on a pool of exactly one connection.
@@ -354,7 +332,7 @@ impl AdvisoryLock {
 }
 
 impl LockSession for AdvisoryLock {
-    fn try_lock(&self) -> LockFuture<'_> {
+    fn try_lock(&self) -> BoxFuture<'_, Result<bool, DbError>> {
         Box::pin(async move {
             let mut guard = self.session.lock().await;
             let mut session = self.open(&mut guard).await?;
@@ -387,7 +365,7 @@ impl LockSession for AdvisoryLock {
         })
     }
 
-    fn check(&self) -> SessionFuture<'_> {
+    fn check(&self) -> BoxFuture<'_, Result<(), DbError>> {
         Box::pin(async move {
             let mut guard = self.session.lock().await;
             let Some(session) = guard.take() else {
@@ -437,7 +415,7 @@ impl LockSession for AdvisoryLock {
         })
     }
 
-    fn unlock(&self) -> SessionFuture<'_> {
+    fn unlock(&self) -> BoxFuture<'_, Result<(), DbError>> {
         Box::pin(async move {
             let Some(session) = self.session.lock().await.take() else {
                 return Ok(());

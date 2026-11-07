@@ -18,7 +18,6 @@
 //! the recorded replay. They are therefore written out as literals in the tool
 //! files rather than derived, so no schema crate can arrange them differently.
 
-use std::pin::Pin;
 use std::sync::Arc;
 
 use chrono::NaiveDate;
@@ -41,6 +40,7 @@ use sea_orm::DatabaseConnection;
 use serde::{Deserialize as _, Serialize};
 use serde_json::{Value, json};
 
+use crate::BoxFuture;
 use crate::settings::Settings;
 
 mod tools;
@@ -51,9 +51,6 @@ pub use transport::{MCP_PATH, router};
 
 /// What one tool's answer is, as the framework carries it.
 pub(crate) type ToolResult = Result<ToolAnswer, ToolFailure>;
-
-/// A future a tool's handler answers with.
-pub(crate) type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 /// The largest `limit` a listing tool accepts.
 ///

@@ -38,12 +38,14 @@ use axum::routing::get;
 use chrono::DateTime;
 use common::allowances::{Allowances, AllowedField, allowed, contract_for};
 use flakeradar::{
-    app::AppState, app::build_app, github::Api, github_worker::GitHubWorker, settings::Settings,
-    webhooks::WebhookWorker, worker::AdvisoryLock, worker::DatabaseProcessor,
+    BoxFuture, app::AppState, app::build_app, github::Api, github_worker::GitHubWorker,
+    settings::Settings, webhooks::WebhookWorker, worker::AdvisoryLock, worker::DatabaseProcessor,
     worker::ReportProcessor, worker::ReportWorker, worker::WorkerSettings,
 };
 use flakeradar_db::entities::repos;
-use flakeradar_db::{DbSettings, processing::ProcessingSettings};
+use flakeradar_db::{
+    DbError, DbSettings, processing::ProcessOutcome, processing::ProcessingSettings,
+};
 use flakeradar_test_support::{FIXTURE_INSTANT, TestDb, app, system_clock, wait_until};
 
 use sea_orm::{ConnectionTrait, DbBackend, EntityTrait, JsonValue, Statement};
@@ -283,7 +285,7 @@ impl ReportProcessor for GatedProcessor {
         &self,
         pool: sea_orm::DatabaseConnection,
         settings: ProcessingSettings,
-    ) -> flakeradar::worker::ProcessFuture<'static> {
+    ) -> BoxFuture<'static, Result<Option<ProcessOutcome>, DbError>> {
         let open = Arc::clone(&self.open);
         Box::pin(async move {
             if open.load(Ordering::SeqCst) {

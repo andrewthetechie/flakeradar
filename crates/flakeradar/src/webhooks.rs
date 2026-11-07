@@ -20,8 +20,9 @@ use flakeradar_core::{notify::TierChange, notify::WebhookFormat, notify::render}
 use flakeradar_db::processing::ProcessOutcome;
 use tokio_util::sync::CancellationToken;
 
+use crate::BoxFuture;
 use crate::queue::BatchQueue;
-use crate::worker::{LeaderRun, LeaderTask, StartFuture, StopFuture, until_stopped};
+use crate::worker::{LeaderRun, LeaderTask, until_stopped};
 
 /// The delays before the second and third Notification attempts, in seconds.
 ///
@@ -337,7 +338,7 @@ impl LeaderTask for WebhookWorker {
         "Notification"
     }
 
-    fn start(&self) -> StartFuture<'_> {
+    fn start(&self) -> BoxFuture<'_, ()> {
         Box::pin(async move {
             let shared = Arc::clone(&self.shared);
             self.run
@@ -346,7 +347,7 @@ impl LeaderTask for WebhookWorker {
         })
     }
 
-    fn stop(&self) -> StopFuture<'_> {
+    fn stop(&self) -> BoxFuture<'_, anyhow::Result<()>> {
         Box::pin(async move { self.run.stop().await })
     }
 

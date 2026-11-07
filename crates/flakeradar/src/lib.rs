@@ -23,6 +23,8 @@
     )
 )]
 
+use std::pin::Pin;
+
 pub mod app;
 pub mod assets;
 pub mod cli;
@@ -44,3 +46,11 @@ pub mod worker;
 
 #[doc(inline)]
 pub use telemetry::init_tracing;
+
+/// A boxed, `Send` future: what this crate's trait seams answer with.
+///
+/// The seams are traits, so their methods cannot be `async`; each builds its
+/// future with `Box::pin` instead. One alias serves all of them, so a signature
+/// states its output — `BoxFuture<'_, Result<(), DbError>>` — rather than
+/// sending the reader to a second name for the same type.
+pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;

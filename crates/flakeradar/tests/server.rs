@@ -13,7 +13,8 @@
               processor panics on purpose to prove a dead worker loop makes serve fail"
 )]
 
-use flakeradar::{server::Server, settings::Settings};
+use flakeradar::{BoxFuture, server::Server, settings::Settings};
+use flakeradar_db::{DbError, processing::ProcessOutcome, processing::ProcessingSettings};
 use flakeradar_test_support::{TestDb, settings, wait_until};
 
 use sea_orm::{ConnectionTrait as _, EntityTrait as _, PaginatorTrait as _};
@@ -339,8 +340,8 @@ impl flakeradar::worker::ReportProcessor for PanickingProcessor {
     fn process_next(
         &self,
         _pool: sea_orm::DatabaseConnection,
-        _settings: flakeradar_db::processing::ProcessingSettings,
-    ) -> flakeradar::worker::ProcessFuture<'static> {
+        _settings: ProcessingSettings,
+    ) -> BoxFuture<'static, Result<Option<ProcessOutcome>, DbError>> {
         Box::pin(async { panic!("the test's processor panics on its first claim") })
     }
 }

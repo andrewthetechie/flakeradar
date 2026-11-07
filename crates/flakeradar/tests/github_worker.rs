@@ -16,9 +16,9 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use flakeradar::worker::{
-    AdvisoryLock, LockSession, ProcessFuture, ReportProcessor, ReportWorker, WorkerSettings,
+    AdvisoryLock, LockSession, ReportProcessor, ReportWorker, WorkerSettings,
 };
-use flakeradar::{github::Api, settings::Secret, settings::Settings};
+use flakeradar::{BoxFuture, github::Api, settings::Secret, settings::Settings};
 use flakeradar::{github_worker::GitHubWorker, worker::LeaderTask};
 use flakeradar_core::model::ReportStatus;
 use flakeradar_db::entities::{projects, reports};
@@ -425,16 +425,16 @@ impl CountingLock {
 }
 
 impl LockSession for CountingLock {
-    fn try_lock(&self) -> flakeradar::worker::LockFuture<'_> {
+    fn try_lock(&self) -> BoxFuture<'_, Result<bool, DbError>> {
         self.attempts.fetch_add(1, Ordering::SeqCst);
         self.inner.try_lock()
     }
 
-    fn check(&self) -> flakeradar::worker::SessionFuture<'_> {
+    fn check(&self) -> BoxFuture<'_, Result<(), DbError>> {
         self.inner.check()
     }
 
-    fn unlock(&self) -> flakeradar::worker::SessionFuture<'_> {
+    fn unlock(&self) -> BoxFuture<'_, Result<(), DbError>> {
         self.inner.unlock()
     }
 }
@@ -483,11 +483,11 @@ impl LeaderTask for Announced {
         self.inner.name()
     }
 
-    fn start(&self) -> flakeradar::worker::StartFuture<'_> {
+    fn start(&self) -> BoxFuture<'_, ()> {
         self.inner.start()
     }
 
-    fn stop(&self) -> flakeradar::worker::StopFuture<'_> {
+    fn stop(&self) -> BoxFuture<'_, anyhow::Result<()>> {
         self.seen.store(true, Ordering::SeqCst);
         self.stopping.notify_waiters();
         self.inner.stop()
@@ -1308,7 +1308,7 @@ impl ReportProcessor for FailsOnce {
         &self,
         _pool: DatabaseConnection,
         _settings: ProcessingSettings,
-    ) -> ProcessFuture<'static> {
+    ) -> BoxFuture<'static, Result<Option<ProcessOutcome>, DbError>> {
         let call = self.calls.fetch_add(1, Ordering::SeqCst);
         let outcome = self.outcome.clone();
         Box::pin(async move {
@@ -1427,7 +1427,7 @@ impl ReportProcessor for HandsOver {
         &self,
         _pool: DatabaseConnection,
         _settings: ProcessingSettings,
-    ) -> ProcessFuture<'static> {
+    ) -> BoxFuture<'static, Result<Option<ProcessOutcome>, DbError>> {
         let handed = self
             .next
             .lock()

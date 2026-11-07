@@ -17,10 +17,8 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use flakeradar::worker::{
-    AdvisoryLock, LeaderTask, LockFuture, LockSession, ProcessFuture, PruneFuture, Pruner,
-    ReportProcessor, SessionFuture, StartFuture, StopFuture, WaitFuture, Waiter,
-};
+use flakeradar::BoxFuture;
+use flakeradar::worker::{AdvisoryLock, LeaderTask, LockSession, Pruner, ReportProcessor, Waiter};
 use flakeradar_core::{model::ReportStatus, notify::TierChange};
 use flakeradar_db::{
     DbError, DbSettings, WORKER_LOCK_KEY, clock::MonotonicClock, connect,
@@ -230,7 +228,7 @@ impl LeaderTask for RecordingTask {
         self.name
     }
 
-    fn start(&self) -> StartFuture<'_> {
+    fn start(&self) -> BoxFuture<'_, ()> {
         Box::pin(async move {
             self.events
                 .lock()
@@ -239,7 +237,7 @@ impl LeaderTask for RecordingTask {
         })
     }
 
-    fn stop(&self) -> StopFuture<'_> {
+    fn stop(&self) -> BoxFuture<'_, anyhow::Result<()>> {
         Box::pin(async move {
             self.events
                 .lock()
@@ -341,17 +339,17 @@ impl CountingLock {
 }
 
 impl LockSession for CountingLock {
-    fn try_lock(&self) -> LockFuture<'_> {
+    fn try_lock(&self) -> BoxFuture<'_, Result<bool, DbError>> {
         self.try_locks.fetch_add(1, Ordering::SeqCst);
         self.inner.try_lock()
     }
 
-    fn check(&self) -> SessionFuture<'_> {
+    fn check(&self) -> BoxFuture<'_, Result<(), DbError>> {
         self.checks.fetch_add(1, Ordering::SeqCst);
         self.inner.check()
     }
 
-    fn unlock(&self) -> SessionFuture<'_> {
+    fn unlock(&self) -> BoxFuture<'_, Result<(), DbError>> {
         self.unlocks.fetch_add(1, Ordering::SeqCst);
         self.inner.unlock()
     }
@@ -386,7 +384,7 @@ impl FailingLock {
 }
 
 impl LockSession for FailingLock {
-    fn try_lock(&self) -> LockFuture<'_> {
+    fn try_lock(&self) -> BoxFuture<'_, Result<bool, DbError>> {
         self.try_locks.fetch_add(1, Ordering::SeqCst);
         Box::pin(async move {
             Err(DbError::Database(sea_orm::DbErr::Custom(
@@ -395,11 +393,11 @@ impl LockSession for FailingLock {
         })
     }
 
-    fn check(&self) -> SessionFuture<'_> {
+    fn check(&self) -> BoxFuture<'_, Result<(), DbError>> {
         Box::pin(async { Ok(()) })
     }
 
-    fn unlock(&self) -> SessionFuture<'_> {
+    fn unlock(&self) -> BoxFuture<'_, Result<(), DbError>> {
         Box::pin(async { Ok(()) })
     }
 }
@@ -422,15 +420,15 @@ impl FailingUnlockLock {
 }
 
 impl LockSession for FailingUnlockLock {
-    fn try_lock(&self) -> LockFuture<'_> {
+    fn try_lock(&self) -> BoxFuture<'_, Result<bool, DbError>> {
         self.inner.try_lock()
     }
 
-    fn check(&self) -> SessionFuture<'_> {
+    fn check(&self) -> BoxFuture<'_, Result<(), DbError>> {
         self.inner.check()
     }
 
-    fn unlock(&self) -> SessionFuture<'_> {
+    fn unlock(&self) -> BoxFuture<'_, Result<(), DbError>> {
         Box::pin(async move {
             // Release the lock for real first, so the test can prove the worker
             // logged the failure and let go anyway.
@@ -494,7 +492,7 @@ impl ReportProcessor for ScriptedProcessor {
         &self,
         _pool: DatabaseConnection,
         _settings: ProcessingSettings,
-    ) -> ProcessFuture<'static> {
+    ) -> BoxFuture<'static, Result<Option<ProcessOutcome>, DbError>> {
         let claims = Arc::clone(&self.claims);
         let outcomes = Arc::clone(&self.outcomes);
         Box::pin(async move {
@@ -535,7 +533,7 @@ impl ReportProcessor for FailingOnceProcessor {
         &self,
         pool: DatabaseConnection,
         settings: ProcessingSettings,
-    ) -> ProcessFuture<'static> {
+    ) -> BoxFuture<'static, Result<Option<ProcessOutcome>, DbError>> {
         if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
             Box::pin(async {
                 Err(DbError::Database(sea_orm::DbErr::Custom(
@@ -566,7 +564,7 @@ impl RecordingWaiter {
 }
 
 impl Waiter for RecordingWaiter {
-    fn wait(&self, delay: Duration) -> WaitFuture<'_> {
+    fn wait(&self, delay: Duration) -> BoxFuture<'_, ()> {
         self.waits
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -609,7 +607,7 @@ impl GateWaiter {
 }
 
 impl Waiter for GateWaiter {
-    fn wait(&self, delay: Duration) -> WaitFuture<'_> {
+    fn wait(&self, delay: Duration) -> BoxFuture<'_, ()> {
         Box::pin(async move {
             while !self.open.load(Ordering::SeqCst) {
                 // Registered before the second look, so an open between the load
@@ -652,7 +650,7 @@ impl CountingPruner {
 }
 
 impl Pruner for CountingPruner {
-    fn prune(&self, _pool: DatabaseConnection) -> PruneFuture<'static> {
+    fn prune(&self, _pool: DatabaseConnection) -> BoxFuture<'static, Result<PruneResult, DbError>> {
         self.runs.fetch_add(1, Ordering::SeqCst);
         let fails = self.fails;
         Box::pin(async move {

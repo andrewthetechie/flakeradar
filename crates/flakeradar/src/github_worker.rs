@@ -31,10 +31,11 @@ use flakeradar_db::{
 use sea_orm::DatabaseConnection;
 use tokio_util::sync::CancellationToken;
 
+use crate::BoxFuture;
 use crate::github::Api;
 use crate::queue::BatchQueue;
 use crate::settings::Settings;
-use crate::worker::{LeaderRun, LeaderTask, StartFuture, StopFuture};
+use crate::worker::{LeaderRun, LeaderTask};
 
 /// How many outcomes the queue holds before it drops the oldest.
 ///
@@ -220,7 +221,7 @@ impl LeaderTask for GitHubWorker {
         "GitHub"
     }
 
-    fn start(&self) -> StartFuture<'_> {
+    fn start(&self) -> BoxFuture<'_, ()> {
         Box::pin(async move {
             let shared = Arc::clone(&self.shared);
             self.run
@@ -229,7 +230,7 @@ impl LeaderTask for GitHubWorker {
         })
     }
 
-    fn stop(&self) -> StopFuture<'_> {
+    fn stop(&self) -> BoxFuture<'_, anyhow::Result<()>> {
         Box::pin(async move { self.run.stop().await })
     }
 
