@@ -186,6 +186,54 @@ async fn job_history_outcomes_and_explained_by() {
 }
 
 #[tokio::test]
+async fn a_stored_job_status_outside_the_three_is_served_and_counts_skipped() {
+    // The reason `JobOut::last_status` and `JobExecutionOut::status` stay `String`
+    // while `JobOutcome` is typed. Both columns are `varchar(16)` with no `CHECK`,
+    // so a hand-written row can hold a word this version never writes; the read
+    // serves that word and folds its outcome into `skipped`. Typing the fields
+    // would either rewrite the stored word or refuse the row, and either is a
+    // behaviour change, so this test pins the fold instead.
+    let db = TestDb::new().await.expect("a test database");
+    let pipeline = make_pipeline()
+        .repo("acme/app")
+        .build(db.connection())
+        .await
+        .expect("the pipeline");
+    let job = make_job(&pipeline)
+        .name("build")
+        .build(db.connection())
+        .await
+        .expect("the job");
+    make_job_execution(&job)
+        .status("passed")
+        .ci_job_id("J-C")
+        .build(db.connection())
+        .await
+        .expect("the execution");
+    sea_orm::ConnectionTrait::execute_unprepared(
+        db.connection(),
+        "UPDATE job_executions SET status = 'cancelled' WHERE ci_job_id = 'J-C'; \
+         UPDATE jobs SET last_status = 'cancelled'",
+    )
+    .await
+    .expect("the status outside the three is written");
+    let app = app(&db, &[]);
+    let body = get(&app, &format!("/api/jobs/{}/history", job.id))
+        .await
+        .json();
+    assert_eq!(body["executions"][0]["status"], "cancelled");
+    assert_eq!(
+        body["job"]["last_status"], "cancelled",
+        "the Job row serves the stored word too"
+    );
+    assert_eq!(body["executions"][0]["outcome"], "skipped");
+    assert_eq!(
+        body["unexplained_failures"], 0,
+        "an unknown word is no one's failure"
+    );
+}
+
+#[tokio::test]
 async fn job_history_lists_at_most_twenty_explaining_tests() {
     let db = TestDb::new().await.expect("a test database");
     let project = make_project()

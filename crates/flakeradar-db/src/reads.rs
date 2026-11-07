@@ -20,9 +20,10 @@ use flakeradar_core::{
     dto::LocationOut, dto::QuarantineItem, dto::RepoOut, dto::ReportCountsOut, dto::RunnerStatOut,
     dto::ScorePointOut, dto::SummaryOut, dto::TestJobLinkOut, dto::TestOut, dto::TestPage,
     helpers::LocationRef, helpers::escape_like, helpers::is_broken, helpers::issue_url,
-    helpers::permalink, helpers::repo_path, helpers::tier_for, helpers::trend_for,
-    model::EntityKind, model::ExecutionStatus, model::FailedJobOutcome, model::JobOutcome,
-    model::ReportStatus, model::Trend, types::CiRunId,
+    helpers::job_issue_url, helpers::permalink, helpers::repo_path, helpers::tier_for,
+    helpers::trend_for, model::EntityKind, model::ExecutionStatus, model::FailedJobOutcome,
+    model::JobOutcome, model::JobStatus, model::ReportStatus, model::Trend, types::CiRunAttempt,
+    types::CiRunId,
 };
 use sea_orm::{ConnectionTrait, DbBackend, QueryResult, Statement, Value};
 use serde_json::Value as JsonValue;
@@ -571,15 +572,6 @@ pub(crate) fn job_out(
         github_issue_url,
         github_issue_closed: get(row, "github_issue_closed")?,
     })
-}
-
-/// The GitHub issue a Job was filed as; only GitHub Pipelines file issues.
-fn job_issue_url(repo: &str, provider: &str, number: Option<i64>) -> Option<String> {
-    if provider == "github" {
-        issue_url(repo, number)
-    } else {
-        None
-    }
 }
 
 impl ListOptions {
@@ -1456,19 +1448,20 @@ fn job_executions_out(
     for execution in exec_rows {
         let status: String = get(execution, "status")?;
         let ci_job_id: String = get(execution, "ci_job_id")?;
-        let outcome = if status == "failed" {
-            if explained.contains(&ci_job_id) {
-                explained_failures += 1;
-                let _ = failed_ci_to_exec.insert(ci_job_id.clone(), get::<i64>(execution, "id")?);
-                JobOutcome::Explained
-            } else {
-                unexplained += 1;
-                JobOutcome::Failed
+        let outcome = match JobStatus::from_stored(&status) {
+            JobStatus::Failed => {
+                if explained.contains(&ci_job_id) {
+                    explained_failures += 1;
+                    let _ =
+                        failed_ci_to_exec.insert(ci_job_id.clone(), get::<i64>(execution, "id")?);
+                    JobOutcome::Explained
+                } else {
+                    unexplained += 1;
+                    JobOutcome::Failed
+                }
             }
-        } else if status == "passed" {
-            JobOutcome::Passed
-        } else {
-            JobOutcome::Skipped
+            JobStatus::Passed => JobOutcome::Passed,
+            JobStatus::Skipped => JobOutcome::Skipped,
         };
         executions.push(JobExecutionOut {
             id: get(execution, "id")?,
@@ -1503,25 +1496,18 @@ async fn attach_explaining_siblings(
     repo_id: i32,
     executions: &mut [JobExecutionOut],
 ) -> Result<(), DbError> {
-    let pairs: Vec<(CiRunId, i32)> = executions
+    let pairs: Vec<CiRunAttempt> = executions
         .iter()
         .filter(|execution| {
-            execution.outcome == JobOutcome::Explained && execution.status == "failed"
+            execution.outcome == JobOutcome::Explained
+                && JobStatus::from_stored(&execution.status) == JobStatus::Failed
         })
-        .map(|execution| {
-            (
-                execution.ci_run_id.clone(),
-                i32::try_from(execution.ci_run_attempt).unwrap_or(i32::MAX),
-            )
-        })
+        .map(CiRunAttempt::of)
         .collect();
     let by_pair = summary_explaining_siblings(db, repo_id, &pairs).await?;
     for execution in executions {
         if execution.outcome == JobOutcome::Explained
-            && let Some(siblings) = by_pair.get(&(
-                execution.ci_run_id.clone(),
-                i32::try_from(execution.ci_run_attempt).unwrap_or(i32::MAX),
-            ))
+            && let Some(siblings) = by_pair.get(&CiRunAttempt::of(execution))
         {
             execution.explained_by_jobs.clone_from(siblings);
         }
@@ -1678,7 +1664,8 @@ fn tally_runners(rows: &[QueryResult]) -> Result<Vec<RunnerStat>, DbError> {
         let labels = runner_labels(row)?;
         let status: String = get(row, "status")?;
         let explained: bool = get(row, "explained")?;
-        let unexplained = i64::from(status == "failed" && !explained);
+        let unexplained =
+            i64::from(JobStatus::from_stored(&status) == JobStatus::Failed && !explained);
         let counts = label_counts.entry(labels.clone()).or_default();
         counts.executions += 1;
         counts.unexplained += unexplained;

@@ -213,6 +213,43 @@ impl fmt::Display for CiRunId {
     }
 }
 
+/// One CI run attempt: the `ci_run_id` and the `ci_run_attempt` that numbers it.
+///
+/// A retried run keeps its id and raises the attempt, so the two columns name a
+/// run together and neither half identifies one. They travel as this pair through
+/// the attribution read, which asks for the sibling Jobs of exactly the attempt a
+/// failing execution belongs to.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct CiRunAttempt {
+    /// The run's id, as the provider gave it.
+    pub run_id: CiRunId,
+    /// Which attempt of that run, as the `int4` column holds it.
+    pub attempt: i32,
+}
+
+impl CiRunAttempt {
+    /// The attempt a read execution names: its `ci_run_id` and `ci_run_attempt`.
+    #[must_use]
+    pub fn of(execution: &crate::dto::JobExecutionOut) -> Self {
+        Self::new(&execution.ci_run_id, execution.ci_run_attempt)
+    }
+
+    /// The attempt `attempt` of the run `run_id` names.
+    #[must_use]
+    pub fn new(run_id: &CiRunId, attempt: i64) -> Self {
+        Self {
+            run_id: run_id.clone(),
+            attempt: i32::try_from(attempt).unwrap_or(i32::MAX),
+        }
+    }
+
+    /// The attempt of an owned id read back from a row.
+    #[must_use]
+    pub fn owned(run_id: CiRunId, attempt: i32) -> Self {
+        Self { run_id, attempt }
+    }
+}
+
 impl<'de> Deserialize<'de> for CiRunId {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let text = String::deserialize(deserializer)?;

@@ -16,7 +16,7 @@ use std::sync::Arc;
 use chrono::{DateTime, FixedOffset};
 use flakeradar_core::{
     dto::JobResultIn, dto::PipelineReportIn, dto::pipeline_body, model::EntityKind,
-    model::JobStatus, types::CiRunId,
+    model::JobStatus, types::CiRunAttempt, types::CiRunId,
 };
 use flakeradar_db::entities::{job_executions, jobs, projects, repos, test_runs};
 use flakeradar_db::{
@@ -1011,20 +1011,28 @@ async fn summary_explaining_siblings_lists_the_failed_jobs_of_each_pair() {
         .expect("the Repo")
         .expect("the Repo exists");
 
-    let empty = summary_explaining_siblings(db.connection(), repo.id, &[(run_id(""), 1)])
-        .await
-        .expect("the sibling query runs");
+    let empty = summary_explaining_siblings(
+        db.connection(),
+        repo.id,
+        &[CiRunAttempt::owned(run_id(""), 1)],
+    )
+    .await
+    .expect("the sibling query runs");
     assert!(empty.is_empty(), "an empty ci_run_id explains nothing");
 
     let explained = summary_explaining_siblings(
         db.connection(),
         repo.id,
-        &[(run_id("7"), 1), (run_id("8"), 1), (run_id("7"), 1)],
+        &[
+            CiRunAttempt::owned(run_id("7"), 1),
+            CiRunAttempt::owned(run_id("8"), 1),
+            CiRunAttempt::owned(run_id("7"), 1),
+        ],
     )
     .await
     .expect("the sibling query runs");
     let siblings = explained
-        .get(&(run_id("7"), 1))
+        .get(&CiRunAttempt::owned(run_id("7"), 1))
         .expect("the pair with a failure");
     assert_eq!(
         siblings
@@ -1034,7 +1042,9 @@ async fn summary_explaining_siblings_lists_the_failed_jobs_of_each_pair() {
         [("lint", ".github/workflows/ci.yml")]
     );
     assert_eq!(
-        explained.get(&(run_id("8"), 1)).map(Vec::len),
+        explained
+            .get(&CiRunAttempt::owned(run_id("8"), 1))
+            .map(Vec::len),
         Some(1),
         "a pair of its own keeps its own failures"
     );
@@ -1066,11 +1076,17 @@ async fn summary_explaining_siblings_lists_at_most_the_cap_per_pair() {
         .await
         .expect("the Repo")
         .expect("the Repo exists");
-    let explained = summary_explaining_siblings(db.connection(), repo.id, &[(run_id("7"), 1)])
-        .await
-        .expect("the sibling query runs");
+    let explained = summary_explaining_siblings(
+        db.connection(),
+        repo.id,
+        &[CiRunAttempt::owned(run_id("7"), 1)],
+    )
+    .await
+    .expect("the sibling query runs");
     assert_eq!(
-        explained.get(&(run_id("7"), 1)).map(Vec::len),
+        explained
+            .get(&CiRunAttempt::owned(run_id("7"), 1))
+            .map(Vec::len),
         Some(SIBLING_MAX)
     );
 }

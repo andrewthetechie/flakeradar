@@ -162,6 +162,21 @@ impl JobStatus {
     pub fn parse(text: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|status| status.as_str() == text)
     }
+
+    /// The status a stored `status` column names, folding anything else into
+    /// [`Self::Skipped`].
+    ///
+    /// [`Self::parse`] is the ingest gate and refuses a spelling outside
+    /// [`Self::ALL`]. This is the read of a `varchar(16)` column with no `CHECK`
+    /// constraint, which can hold a word this version never wrote. A read that
+    /// refused it would turn one stray stored row into an outage, so its outcome
+    /// is folded into `skipped` and its word is served unchanged. That is also why
+    /// `JobExecutionOut::status` and `JobOut::last_status` stay `String` — the
+    /// stored word is served as it is, and only its outcome is folded.
+    #[must_use]
+    pub fn from_stored(text: &str) -> Self {
+        Self::parse(text).unwrap_or(Self::Skipped)
+    }
 }
 
 impl fmt::Display for JobStatus {

@@ -116,6 +116,19 @@ pub fn issue_url(repo: &str, number: Option<i64>) -> Option<String> {
     Some(format!("https://github.com/{repo}/issues/{number}"))
 }
 
+/// The GitHub issue a Job was filed as; only GitHub Pipelines file issues.
+///
+/// A non-GitHub Job has nowhere to link, so its `github_issue_url` is `None` even
+/// when a number was written to it by hand.
+#[must_use]
+pub fn job_issue_url(repo: &str, provider: &str, number: Option<i64>) -> Option<String> {
+    if provider == "github" {
+        issue_url(repo, number)
+    } else {
+        None
+    }
+}
+
 /// A reported file path made relative to the Repo root.
 ///
 /// # Examples

@@ -1058,19 +1058,19 @@ async fn insert_pipeline_job_executions(
             let job_id: i32 = get(&row, "job_id")?;
             let status: String = get(&row, "status")?;
             jobs_with_new_exec.insert(job_id);
-            match status.as_str() {
-                "passed" => new_counts.passed += 1,
-                "failed" => new_counts.failed += 1,
-                "skipped" => new_counts.skipped += 1,
-                other => {
-                    return Err(ProcessError::permanent(format!(
-                        "DataError: unknown Job status {other}"
-                    )));
-                }
+            let Some(status) = JobStatus::parse(&status) else {
+                return Err(ProcessError::permanent(format!(
+                    "DataError: unknown Job status {status}"
+                )));
+            };
+            match status {
+                JobStatus::Passed => new_counts.passed += 1,
+                JobStatus::Failed => new_counts.failed += 1,
+                JobStatus::Skipped => new_counts.skipped += 1,
             }
             let entry = day_counts.entry(job_id).or_default();
             entry.executions += 1;
-            if status == "failed" {
+            if status == JobStatus::Failed {
                 entry.failures += 1;
             }
         }

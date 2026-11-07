@@ -14,8 +14,8 @@
 
 use chrono::{DateTime, FixedOffset, Utc};
 use flakeradar_core::{
-    dto::JobOut, dto::MAX_ISSUE_NUMBER, dto::TestOut, helpers::issue_url, model::EntityKind,
-    py::strip_wire_whitespace,
+    dto::JobOut, dto::MAX_ISSUE_NUMBER, dto::TestOut, helpers::issue_url, helpers::job_issue_url,
+    model::EntityKind, py::strip_wire_whitespace,
 };
 use sea_orm::{ConnectionTrait, DbBackend, Statement, TransactionSession, TransactionTrait, Value};
 use serde::Serialize;
@@ -201,11 +201,7 @@ fn patched_out(mut out: LinkedOut, repo: &str, state: LinkState) -> LinkedOut {
         }
         LinkedOut::Job(job) => {
             job.github_issue_number = number;
-            job.github_issue_url = if job.provider == "github" {
-                issue_url(repo, number)
-            } else {
-                None
-            };
+            job.github_issue_url = job_issue_url(repo, &job.provider, number);
             job.github_issue_closed = state.closed;
         }
     }

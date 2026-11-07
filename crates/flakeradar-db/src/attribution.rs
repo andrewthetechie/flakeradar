@@ -11,7 +11,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use flakeradar_core::dto::ExplainingJobOut;
-use flakeradar_core::types::CiRunId;
+use flakeradar_core::types::CiRunAttempt;
 use sea_orm::{ConnectionTrait, Value};
 
 use crate::batching::chunks;
@@ -240,7 +240,7 @@ pub async fn explained_ci_job_ids(
     Ok(found)
 }
 
-/// The failed non-summary Jobs that explain each `(ci_run_id, ci_run_attempt)` pair.
+/// The failed non-summary Jobs that explain each [`CiRunAttempt`].
 ///
 /// The sibling half of the attribution rule, stated once here: the read API
 /// labels a Summary Job's execution explained with the same clause and lists
@@ -253,11 +253,11 @@ pub async fn explained_ci_job_ids(
 pub async fn summary_explaining_siblings(
     db: &impl ConnectionTrait,
     repo_id: i32,
-    pairs: &[(CiRunId, i32)],
-) -> Result<BTreeMap<(CiRunId, i32), Vec<ExplainingJobOut>>, DbError> {
-    let wanted: Vec<(CiRunId, i32)> = pairs
+    pairs: &[CiRunAttempt],
+) -> Result<BTreeMap<CiRunAttempt, Vec<ExplainingJobOut>>, DbError> {
+    let wanted: Vec<CiRunAttempt> = pairs
         .iter()
-        .filter(|(run_id, _)| !run_id.as_str().is_empty())
+        .filter(|attempt| !attempt.run_id.as_str().is_empty())
         .cloned()
         .collect::<BTreeSet<_>>()
         .into_iter()
@@ -283,14 +283,14 @@ pub async fn summary_explaining_siblings(
         wanted.len() * 2 + 1
     );
     let mut values = Vec::with_capacity(wanted.len() * 2 + 1);
-    for (run_id, attempt) in &wanted {
-        values.push(Value::from(run_id.as_str().to_owned()));
-        values.push(Value::from(*attempt));
+    for attempt in &wanted {
+        values.push(Value::from(attempt.run_id.as_str().to_owned()));
+        values.push(Value::from(attempt.attempt));
     }
     values.push(Value::from(repo_id));
-    let mut by_pair: BTreeMap<(CiRunId, i32), Vec<ExplainingJobOut>> = BTreeMap::new();
+    let mut by_pair: BTreeMap<CiRunAttempt, Vec<ExplainingJobOut>> = BTreeMap::new();
     for row in rows(db, sql, values).await? {
-        let key = (
+        let key = CiRunAttempt::owned(
             ci_run_id(&get::<String>(&row, "ci_run_id")?, "ci_run_id")?,
             get::<i32>(&row, "ci_run_attempt")?,
         );
