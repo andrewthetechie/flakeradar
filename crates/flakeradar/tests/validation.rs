@@ -14,6 +14,8 @@
     reason = "a test fails loudly when a route answers something else"
 )]
 
+use std::fmt::Write as _;
+
 use axum::http::StatusCode;
 use flakeradar_test_support::{
     Reply, TestDb, app_with, get, make_project, make_test_case, post, send, settings,
@@ -726,6 +728,21 @@ async fn a_repeated_query_parameter_takes_the_last_value() {
     assert_eq!(reply.json()["page"], json!(3));
     let reply = get(&app, "/api/tests?include_stable=false&include_stable=true").await;
     assert_eq!(reply.status, StatusCode::OK, "{}", reply.text());
+    // A name that comes back between other names keeps its first position and its
+    // last value, and a query holding thousands of names behaves the same: that
+    // is the shape the name lookup is built for, not a timing claim.
+    let reply = get(&app, "/api/tests?page=1&page_size=10&page=2").await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.text());
+    assert_eq!(reply.json()["page"], json!(2));
+    assert_eq!(reply.json()["page_size"], json!(10));
+    let mut query = String::from("page=1");
+    for name in 0..1_024 {
+        write!(query, "&k{name}={name}").expect("the query builds");
+    }
+    query.push_str("&page=3");
+    let reply = get(&app, &format!("/api/tests?{query}")).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.text());
+    assert_eq!(reply.json()["page"], json!(3));
 }
 
 #[tokio::test]

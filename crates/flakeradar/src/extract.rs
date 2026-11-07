@@ -13,6 +13,7 @@
 
 // Rust guideline compliant 2026-07-21
 
+use std::collections::HashMap;
 use std::future::ready;
 
 use axum::body::Bytes;
@@ -231,12 +232,22 @@ fn with_query_input(error: ApiError, pairs: &[(String, String)]) -> ApiError {
 }
 
 /// The query with one pair per name, each keeping the last value the query gave it.
+///
+/// A name keeps the position it first appeared in, so the pairs stay in the order
+/// the client sent them. The index is a map because a URI may hold tens of
+/// thousands of names (`http`'s own limit), and a scan per name made that
+/// quadratic on the thread serving the request. The keys come from the request,
+/// so the default, DoS-resistant hasher is the right one.
 fn last_value_per_name(query: &str) -> Vec<(String, String)> {
     let mut pairs: Vec<(String, String)> = Vec::new();
+    let mut index: HashMap<String, usize> = HashMap::new();
     for (name, value) in form_urlencoded::parse(query.as_bytes()) {
-        match pairs.iter_mut().find(|(seen, _)| *seen == name) {
-            Some((_, kept)) => *kept = value.into_owned(),
-            None => pairs.push((name.into_owned(), value.into_owned())),
+        let name = name.into_owned();
+        if let Some(pair) = index.get(&name).and_then(|at| pairs.get_mut(*at)) {
+            pair.1 = value.into_owned();
+        } else {
+            index.insert(name.clone(), pairs.len());
+            pairs.push((name, value.into_owned()));
         }
     }
     pairs
