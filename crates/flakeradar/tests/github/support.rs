@@ -3,7 +3,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use flakeradar::github::Api;
+use flakeradar::github::{self, Api, BatchReport};
 use flakeradar::settings::Secret;
 use flakeradar::settings::Settings;
 use flakeradar_core::{model::EntityKind, model::ReportStatus};
@@ -17,7 +17,7 @@ pub(crate) use flakeradar_test_support::{
 };
 use flakeradar_test_support::{
     TestDb, make_execution, make_job, make_job_execution, make_pipeline, make_project, make_run,
-    make_test_case,
+    make_test_case, system_clock,
 };
 use sea_orm::ConnectionTrait as _;
 use sea_orm::{DbBackend, Statement, Value};
@@ -671,6 +671,93 @@ pub(crate) async fn note_row(
     }
     set_clean_streak(db, link_table(kind), id, streak).await;
     id
+}
+
+/// One flaky Test or Job in `repo` named `name`, with one failing Execution.
+///
+/// The filing scenarios need a row of one kind and nothing else about it, so the
+/// kind is the only thing a per-entity test supplies.
+pub(crate) async fn flaky_row(db: &TestDb, kind: EntityKind, repo: &str, name: &str) -> i32 {
+    match kind {
+        EntityKind::Test => flaky_test_in(db, repo, name, name).await,
+        EntityKind::Job => {
+            flaky_job_in(db, repo, &format!(".github/workflows/{name}.yml"), name).await
+        }
+    }
+}
+
+/// One filing batch for `kind`, over `ids`, against `server`.
+///
+/// The two entry points differ only in the clock the Job batch stamps with, so a
+/// scenario runs one call and the entity is the test's whole difference.
+pub(crate) async fn file_batch(
+    kind: EntityKind,
+    db: &TestDb,
+    ids: &[i32],
+    server: &MockServer,
+) -> BatchReport {
+    let settings = gh_settings(&[]);
+    match kind {
+        EntityKind::Test => {
+            github::file_issues_for(db.connection(), ids, &settings, &api(server), &unstopped())
+                .await
+        }
+        EntityKind::Job => {
+            github::file_job_issues_for(
+                db.connection(),
+                ids,
+                &settings,
+                &api(server),
+                &system_clock(),
+                &unstopped(),
+            )
+            .await
+        }
+    }
+}
+
+/// [`file_batch`], with the lines it logged as well.
+pub(crate) async fn file_batch_logged(
+    kind: EntityKind,
+    db: &TestDb,
+    ids: &[i32],
+    server: &MockServer,
+) -> (BatchReport, String) {
+    CapturedLog::during_call(file_batch(kind, db, ids, server)).await
+}
+
+/// One fixed-note batch for `kind`, over `ids`, through `api`.
+pub(crate) async fn note_batch(
+    kind: EntityKind,
+    db: &TestDb,
+    ids: &[i32],
+    api: &Api,
+) -> BatchReport {
+    let settings = fixed_settings(&[]);
+    match kind {
+        EntityKind::Test => {
+            github::note_fixed_issues_for(
+                db.connection(),
+                ids,
+                &settings,
+                api,
+                &system_clock(),
+                &unstopped(),
+            )
+            .await
+        }
+        EntityKind::Job => {
+            github::note_fixed_job_issues_for(
+                db.connection(),
+                ids,
+                &settings,
+                api,
+                &system_clock(),
+                &unstopped(),
+            )
+            .await
+        }
+    }
 }
 
 /// The method and path of every request a stub server was asked for, in order.

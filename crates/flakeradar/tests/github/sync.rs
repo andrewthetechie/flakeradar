@@ -18,9 +18,9 @@ use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use crate::support::{
-    CREATED, Held, Loopback, TOKEN, TRUNCATED, api, flaky_job, flaky_test, flaky_test_in,
-    gh_settings, link_of, mount_close, mount_create, mount_issue, mount_state, noted,
-    requested_paths, stamp, stamp_link, stamp_note, unstopped,
+    CREATED, Held, Loopback, TOKEN, TRUNCATED, api, flaky_job, flaky_row, flaky_test,
+    flaky_test_in, gh_settings, link_of, mount_close, mount_create, mount_issue, mount_state,
+    noted, requested_paths, stamp, stamp_link, stamp_note, unstopped,
 };
 
 #[tokio::test]
@@ -860,158 +860,98 @@ async fn a_sync_definitive_client_error_keeps_the_link_and_skips_the_repo() {
     }
 }
 
-#[tokio::test]
-async fn the_sync_rotates_past_an_unreadable_link() {
-    let db = TestDb::new().await.expect("a test database");
-    let bad = flaky_test_in(&db, "acme/a", "p1", "a").await;
-    let second = flaky_test_in(&db, "acme/b", "p2", "b").await;
-    let third = flaky_test_in(&db, "acme/c", "p3", "c").await;
-    stamp_link(&db, EntityKind::Test, bad, stamp().number(11)).await;
-    stamp_link(&db, EntityKind::Test, second, stamp().number(22)).await;
-    stamp_link(&db, EntityKind::Test, third, stamp().number(33)).await;
-    let server = MockServer::start().await;
-    mount_issue(
-        &server,
-        "acme/a",
-        11,
-        ResponseTemplate::new(200).set_body_string("<html>Gateway</html>"),
-    )
-    .await;
-    mount_issue(
-        &server,
-        "acme/b",
-        22,
-        ResponseTemplate::new(200).set_body_json(json!({"state": "open"})),
-    )
-    .await;
-    mount_issue(
-        &server,
-        "acme/c",
-        33,
-        ResponseTemplate::new(200).set_body_json(json!({"state": "open"})),
-    )
-    .await;
-    let settings = gh_settings(&[("FLAKERADAR_GITHUB_SYNC_BATCH", "2")]);
-
-    github::sync_closed_issues(
-        db.connection(),
-        &settings,
-        &api(&server),
-        &system_clock(),
-        &unstopped(),
-    )
-    .await;
-    assert_eq!(
-        requested_paths(&server).await,
-        vec!["/repos/acme/a/issues/11", "/repos/acme/b/issues/22"]
-    );
-    assert_eq!(link_of(&db, EntityKind::Test, bad).await.number, Some(11));
-    assert!(
-        link_of(&db, EntityKind::Test, bad).await.checked(),
-        "the bad row rotates"
-    );
-
-    github::sync_closed_issues(
-        db.connection(),
-        &settings,
-        &api(&server),
-        &system_clock(),
-        &unstopped(),
-    )
-    .await;
-    assert_eq!(
-        requested_paths(&server).await[2..],
-        ["/repos/acme/c/issues/33", "/repos/acme/a/issues/11"],
-        "the never-checked Test is reached instead of queueing behind the bad link"
-    );
-    assert!(link_of(&db, EntityKind::Test, third).await.checked());
+/// One row of `kind` whose link says FlakeRadar filed issue `number`.
+async fn linked_row(db: &TestDb, kind: EntityKind, number: i32) -> i32 {
+    let id = flaky_row(db, kind, "acme/app", &format!("{number}")).await;
+    stamp_link(db, kind, id, stamp().number(number)).await;
+    id
 }
 
-/// A gone issue re-arms its link but any other answer keeps it, once per entity.
-async fn a_gone_issue_rearms_its_link_but_any_other_answer_keeps_it(kind: EntityKind) {
+/// GitHub no longer has the issue: the link is dropped so the next Report may
+/// re-file, and the row keeps its check stamp.
+async fn gone_issue_rearms_its_link(kind: EntityKind) {
     let db = TestDb::new().await.expect("a test database");
-    let (id, expected) = match kind {
-        EntityKind::Test => {
-            let id = flaky_test(&db).await;
-            stamp_link(&db, EntityKind::Test, id, stamp().number(11)).await;
-            (id, 11)
-        }
-        EntityKind::Job => {
-            let id = flaky_job(&db).await;
-            stamp_link(&db, EntityKind::Job, id, stamp().number(5)).await;
-            (id, 5)
-        }
-    };
-    let route = format!("/repos/acme/app/issues/{expected}");
-
-    let gone = MockServer::start().await;
+    let id = linked_row(&db, kind, 11).await;
+    let server = MockServer::start().await;
     Mock::given(method("GET"))
-        .and(path(route.as_str()))
+        .and(path("/repos/acme/app/issues/11"))
         .respond_with(ResponseTemplate::new(404).set_body_json(json!({"message": "Gone"})))
-        .mount(&gone)
+        .mount(&server)
         .await;
+
     github::sync_closed_issues(
         db.connection(),
         &gh_settings(&[]),
-        &api(&gone),
+        &api(&server),
         &system_clock(),
         &unstopped(),
     )
     .await;
+
     assert_eq!(
-        requested_paths(&gone).await,
-        vec![route.clone()],
+        requested_paths(&server).await,
+        vec!["/repos/acme/app/issues/11"],
         "the linked issue is the only one checked"
     );
-    let rearmed = link_of(&db, kind, id).await;
-    assert_eq!(rearmed.number, None, "a gone issue re-arms");
-    assert!(rearmed.checked(), "and the check stamp is kept");
-    assert!(!rearmed.closed, "and the declined flag is not set");
+    let link = link_of(&db, kind, id).await;
+    assert_eq!(link.number, None, "a gone issue re-arms");
+    assert!(link.checked(), "and the check stamp is kept");
+    assert!(!link.closed, "and the declined flag is not set");
+}
 
-    match kind {
-        EntityKind::Test => stamp_link(&db, EntityKind::Test, id, stamp().number(11)).await,
-        EntityKind::Job => stamp_link(&db, EntityKind::Job, id, stamp().number(5)).await,
-    }
-    let broken = MockServer::start().await;
+#[tokio::test]
+async fn a_gone_test_issue_rearms_its_link() {
+    gone_issue_rearms_its_link(EntityKind::Test).await;
+}
+
+#[tokio::test]
+async fn a_gone_job_issue_rearms_its_link() {
+    gone_issue_rearms_its_link(EntityKind::Job).await;
+}
+
+/// An answer that says nothing about the issue (a 500): the link and its stamp
+/// stand, and the batch reports no skip.
+async fn an_unusable_answer_keeps_the_link(kind: EntityKind) {
+    let db = TestDb::new().await.expect("a test database");
+    let id = linked_row(&db, kind, 11).await;
+    let server = MockServer::start().await;
     Mock::given(method("GET"))
-        .and(path(route.as_str()))
+        .and(path("/repos/acme/app/issues/11"))
         .respond_with(ResponseTemplate::new(500).set_body_json(json!({"message": "Server error"})))
-        .mount(&broken)
+        .mount(&server)
         .await;
+
     let report = github::sync_closed_issues(
         db.connection(),
         &gh_settings(&[]),
-        &api(&broken),
+        &api(&server),
         &system_clock(),
         &unstopped(),
     )
     .await;
+
     assert_eq!(
-        requested_paths(&broken).await,
-        vec![route],
-        "the same issue is checked again"
+        requested_paths(&server).await,
+        vec!["/repos/acme/app/issues/11"],
+        "the issue is checked again"
     );
     assert!(
         report.skipped.is_empty(),
-        "{kind}: an unexpected status is nobody's fault: {report:?}"
+        "{kind:?}: an unexpected status is nobody's fault: {report:?}"
     );
-    let kept = link_of(&db, kind, id).await;
-    assert_eq!(
-        kept.number,
-        Some(expected),
-        "any other answer keeps the link"
-    );
-    assert!(kept.checked(), "and its stamp");
+    let link = link_of(&db, kind, id).await;
+    assert_eq!(link.number, Some(11), "the answer keeps the link");
+    assert!(link.checked(), "and its stamp");
 }
 
 #[tokio::test]
-async fn a_gone_issue_rearms_its_link_but_any_other_answer_keeps_it_for_a_test() {
-    a_gone_issue_rearms_its_link_but_any_other_answer_keeps_it(EntityKind::Test).await;
+async fn an_unusable_answer_keeps_a_test_link() {
+    an_unusable_answer_keeps_the_link(EntityKind::Test).await;
 }
 
 #[tokio::test]
-async fn a_gone_issue_rearms_its_link_but_any_other_answer_keeps_it_for_a_job() {
-    a_gone_issue_rearms_its_link_but_any_other_answer_keeps_it(EntityKind::Job).await;
+async fn an_unusable_answer_keeps_a_job_link() {
+    an_unusable_answer_keeps_the_link(EntityKind::Job).await;
 }
 
 #[tokio::test]

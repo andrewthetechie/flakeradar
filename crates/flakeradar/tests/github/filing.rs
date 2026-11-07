@@ -16,8 +16,9 @@ use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use crate::support::{
-    CapturedLog, TOKEN, api, explain_job_execution, fail_link_stores, fixed_settings, flaky_job,
-    flaky_job_in, flaky_test, flaky_test_in, gh_settings, lines_with, link_of, mount_create,
+    CapturedLog, TOKEN, api, explain_job_execution, fail_link_stores, file_batch,
+    file_batch_logged, fixed_settings, flaky_job, flaky_job_in, flaky_row, flaky_test,
+    flaky_test_in, gh_settings, lines_with, link_of, link_table, mount_create, note_batch,
     requested_paths, stamp, stamp_link, unstopped,
 };
 
@@ -695,65 +696,54 @@ async fn a_job_of_another_provider_is_never_filed() {
     );
 }
 
-#[tokio::test]
-async fn a_candidate_read_that_fails_logs_and_reports_an_empty_batch() {
+/// A filing and a note batch whose candidate read fails: both report an empty
+/// batch rather than raising, for one entity kind.
+///
+/// The tables go away, so the failure is the driver's and no `Api` call is made.
+async fn unreadable_candidate_scenario(kind: EntityKind) {
     let db = TestDb::new().await.expect("a test database");
-    let test = flaky_test(&db).await;
-    let job = flaky_job(&db).await;
+    let row = flaky_row(&db, kind, "acme/app", "dropped").await;
     db.connection()
         .execute_unprepared("DROP TABLE test_cases, jobs CASCADE")
         .await
         .expect("the tables are dropped");
     let api = Api::new(Secret::new(TOKEN), "http://127.0.0.1:1").expect("the HTTP client builds");
 
-    let fired = github::file_issues_for(
-        db.connection(),
-        &[test],
-        &gh_settings(&[]),
-        &api,
-        &unstopped(),
-    )
-    .await;
+    let settings = gh_settings(&[]);
+    let fired = match kind {
+        EntityKind::Test => {
+            github::file_issues_for(db.connection(), &[row], &settings, &api, &unstopped()).await
+        }
+        EntityKind::Job => {
+            github::file_job_issues_for(
+                db.connection(),
+                &[row],
+                &settings,
+                &api,
+                &system_clock(),
+                &unstopped(),
+            )
+            .await
+        }
+    };
     assert!(
         fired.linked.is_empty(),
         "a batch it could not read files nothing"
     );
-    let fired = github::file_job_issues_for(
-        db.connection(),
-        &[job],
-        &gh_settings(&[]),
-        &api,
-        &system_clock(),
-        &unstopped(),
-    )
-    .await;
-    assert!(fired.linked.is_empty());
 
-    // The note step reads the same two tables, and reports an empty batch rather
-    // than raising.
-    let settings = fixed_settings(&[]);
-    for report in [
-        github::note_fixed_issues_for(
-            db.connection(),
-            &[test],
-            &settings,
-            &api,
-            &system_clock(),
-            &unstopped(),
-        )
-        .await,
-        github::note_fixed_job_issues_for(
-            db.connection(),
-            &[job],
-            &settings,
-            &api,
-            &system_clock(),
-            &unstopped(),
-        )
-        .await,
-    ] {
-        assert_eq!(report, github::BatchReport::default());
-    }
+    // The note step reads the same tables and answers the same way.
+    let noted = note_batch(kind, &db, &[row], &api).await;
+    assert_eq!(noted, github::BatchReport::default(), "and notes nothing");
+}
+
+#[tokio::test]
+async fn a_failed_test_candidate_read_reports_an_empty_batch() {
+    unreadable_candidate_scenario(EntityKind::Test).await;
+}
+
+#[tokio::test]
+async fn a_failed_job_candidate_read_reports_an_empty_batch() {
+    unreadable_candidate_scenario(EntityKind::Job).await;
 }
 
 #[tokio::test]
@@ -795,13 +785,16 @@ async fn the_filing_gate_reads_the_configured_minimums() {
     assert_eq!(off.fixed_streak, None, "0 disables the fixed-note signal");
 }
 
-/// Drops one Test's link, as an unlink would.
-async fn unlink_test(db: &TestDb, id: i32) {
+/// Drops one row's link, as an unlink would.
+async fn unlink(db: &TestDb, kind: EntityKind, id: i32) {
     db.connection()
         .execute_raw(Statement::from_sql_and_values(
             DbBackend::Postgres,
-            "UPDATE test_cases SET github_issue_number = NULL, github_issue_filed = NULL, \
-             github_issue_checked_at = NULL, github_issue_closed = FALSE WHERE id = $1",
+            format!(
+                "UPDATE {} SET github_issue_number = NULL, github_issue_filed = NULL, \
+                 github_issue_checked_at = NULL, github_issue_closed = FALSE WHERE id = $1",
+                link_table(kind)
+            ),
             [Value::from(id)],
         ))
         .await
@@ -881,111 +874,87 @@ async fn a_kept_not_planned_link_is_never_refiled() {
     assert!(link.closed);
 }
 
-#[tokio::test]
-async fn a_rate_limit_stops_the_test_and_job_batches() {
+/// The rate-limit refusal, as a stub answer: a 403 that says the quota is spent.
+fn rate_limited() -> ResponseTemplate {
+    ResponseTemplate::new(403)
+        .insert_header("x-ratelimit-remaining", "0")
+        .set_body_json(json!({"message": "API rate limit exceeded"}))
+}
+
+/// Two Repos in one batch, the first refused in a way that ends the run: exactly
+/// one `POST` goes out and neither row is stored.
+///
+/// One function holds the scenario and each entity has its own test, so a fault in
+/// one half cannot hide behind the other and a failure names its entity.
+async fn one_request_per_run(kind: EntityKind, answer: ResponseTemplate, why: &str) {
     let db = TestDb::new().await.expect("a test database");
-    let a = flaky_test_in(&db, "acme/a", "p1", "a").await;
-    let b = flaky_test_in(&db, "acme/b", "p2", "b").await;
+    let first = flaky_row(&db, kind, "acme/a", "a").await;
+    let second = flaky_row(&db, kind, "acme/b", "b").await;
     let server = MockServer::start().await;
     Mock::given(method("POST"))
-        .respond_with(
-            ResponseTemplate::new(403)
-                .insert_header("x-ratelimit-remaining", "0")
-                .set_body_json(json!({"message": "API rate limit exceeded"})),
-        )
+        .respond_with(answer)
         .mount(&server)
         .await;
 
-    github::file_issues_for(
-        db.connection(),
-        &[a, b],
-        &gh_settings(&[]),
-        &api(&server),
-        &unstopped(),
-    )
-    .await;
-    assert_eq!(requested_paths(&server).await.len(), 1);
+    file_batch(kind, &db, &[first, second], &server).await;
 
-    let ja = flaky_job_in(&db, "acme/c", ".github/workflows/a.yml", "a").await;
-    let jb = flaky_job_in(&db, "acme/d", ".github/workflows/b.yml", "b").await;
-    let jobs = MockServer::start().await;
-    Mock::given(method("POST"))
-        .respond_with(
-            ResponseTemplate::new(403)
-                .insert_header("x-ratelimit-remaining", "0")
-                .set_body_json(json!({"message": "API rate limit exceeded"})),
-        )
-        .mount(&jobs)
-        .await;
-
-    github::file_job_issues_for(
-        db.connection(),
-        &[ja, jb],
-        &gh_settings(&[]),
-        &api(&jobs),
-        &system_clock(),
-        &unstopped(),
-    )
-    .await;
-    assert_eq!(requested_paths(&jobs).await.len(), 1);
+    assert_eq!(
+        requested_paths(&server).await,
+        vec!["/repos/acme/a/issues"],
+        "the {kind:?} batch ended at its {why} instead of trying the second Repo"
+    );
+    assert_eq!(
+        link_of(&db, kind, first).await.number,
+        None,
+        "the refused row stores no link"
+    );
+    assert_eq!(
+        link_of(&db, kind, second).await.number,
+        None,
+        "the row the run never reached stores no link"
+    );
 }
 
 #[tokio::test]
-async fn a_429_stops_the_test_and_job_batches() {
-    let db = TestDb::new().await.expect("a test database");
-    let ta = flaky_test_in(&db, "acme/a", "p1", "a").await;
-    let tb = flaky_test_in(&db, "acme/b", "p2", "b").await;
-    let server = MockServer::start().await;
-    Mock::given(method("POST"))
-        .respond_with(ResponseTemplate::new(429))
-        .mount(&server)
-        .await;
-
-    github::file_issues_for(
-        db.connection(),
-        &[ta, tb],
-        &gh_settings(&[]),
-        &api(&server),
-        &unstopped(),
-    )
-    .await;
-    assert_eq!(requested_paths(&server).await.len(), 1);
-
-    let ja = flaky_job_in(&db, "acme/c", ".github/workflows/a.yml", "a").await;
-    let jb = flaky_job_in(&db, "acme/d", ".github/workflows/b.yml", "b").await;
-    let jobs = MockServer::start().await;
-    Mock::given(method("POST"))
-        .respond_with(ResponseTemplate::new(429))
-        .mount(&jobs)
-        .await;
-
-    github::file_job_issues_for(
-        db.connection(),
-        &[ja, jb],
-        &gh_settings(&[]),
-        &api(&jobs),
-        &system_clock(),
-        &unstopped(),
-    )
-    .await;
-    assert_eq!(requested_paths(&jobs).await.len(), 1);
+async fn a_rate_limit_stops_the_test_batch() {
+    one_request_per_run(EntityKind::Test, rate_limited(), "rate limit").await;
 }
 
 #[tokio::test]
-async fn a_permission_403_costs_only_the_denied_repo() {
-    let db = TestDb::new().await.expect("a test database");
-    let a1 = flaky_test_in(&db, "acme/a", "p1", "a1").await;
-    let a2 = flaky_test_in(&db, "acme/a", "p2", "a2").await;
-    let b = flaky_test_in(&db, "acme/b", "p3", "b").await;
+async fn a_rate_limit_stops_the_job_batch() {
+    one_request_per_run(EntityKind::Job, rate_limited(), "rate limit").await;
+}
+
+#[tokio::test]
+async fn a_429_stops_the_test_batch() {
+    one_request_per_run(EntityKind::Test, ResponseTemplate::new(429), "429").await;
+}
+
+#[tokio::test]
+async fn a_429_stops_the_job_batch() {
+    one_request_per_run(EntityKind::Job, ResponseTemplate::new(429), "429").await;
+}
+
+/// A body past the 300 characters the log keeps, as GitHub might send one.
+fn long_denial_body() -> String {
     let detail = format!(
         "Resource not accessible by personal access token{}",
         "x".repeat(400)
     );
-    let body = serde_json::to_string(&json!({ "message": detail })).expect("a JSON body");
+    serde_json::to_string(&json!({ "message": detail })).expect("a JSON body")
+}
+
+/// Two rows in a denied Repo and one in an allowed Repo: the run skips the denied
+/// Repo for the rest of its rows, files the allowed one, and stores no link.
+async fn denied_repo_scenario(kind: EntityKind) {
+    let db = TestDb::new().await.expect("a test database");
+    let a1 = flaky_row(&db, kind, "acme/a", "a1").await;
+    let a2 = flaky_row(&db, kind, "acme/a", "a2").await;
+    let b = flaky_row(&db, kind, "acme/b", "b").await;
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/repos/acme/a/issues"))
-        .respond_with(ResponseTemplate::new(403).set_body_string(body.clone()))
+        .respond_with(ResponseTemplate::new(403).set_body_string(long_denial_body()))
         .mount(&server)
         .await;
     Mock::given(method("POST"))
@@ -994,31 +963,60 @@ async fn a_permission_403_costs_only_the_denied_repo() {
         .mount(&server)
         .await;
 
-    let (report, logged) = CapturedLog::during_call(github::file_issues_for(
-        db.connection(),
-        &[a1, a2, b],
-        &gh_settings(&[]),
-        &api(&server),
-        &unstopped(),
-    ))
-    .await;
+    let report = file_batch_logged(kind, &db, &[a1, a2, b], &server).await.0;
 
     assert_eq!(
         requested_paths(&server).await,
         vec!["/repos/acme/a/issues", "/repos/acme/b/issues"],
-        "the second Test of the denied Repo is never retried"
+        "the second row of the denied Repo is never retried"
     );
-    assert_eq!(link_of(&db, EntityKind::Test, a1).await.number, None);
-    assert_eq!(link_of(&db, EntityKind::Test, a2).await.number, None);
-    assert_eq!(link_of(&db, EntityKind::Test, b).await.number, Some(88));
-
+    assert_eq!(
+        link_of(&db, kind, a1).await.number,
+        None,
+        "the denied row stores no link"
+    );
+    assert_eq!(
+        link_of(&db, kind, a2).await.number,
+        None,
+        "the row skipped with it stores no link either"
+    );
+    assert_eq!(
+        link_of(&db, kind, b).await.number,
+        Some(88),
+        "the other Repo is filed"
+    );
     assert_eq!(
         report.skipped,
         std::collections::BTreeSet::from(["acme/a".to_owned()]),
         "the denied Repo is the one the batch skipped"
     );
-    // The cap on a GitHub body is this project's own logging rule, so it is the one
-    // part of this case asserted from the log.
+}
+
+#[tokio::test]
+async fn a_permission_403_costs_only_the_denied_test_repo() {
+    denied_repo_scenario(EntityKind::Test).await;
+}
+
+#[tokio::test]
+async fn a_permission_403_costs_only_the_denied_job_repo() {
+    denied_repo_scenario(EntityKind::Job).await;
+}
+
+#[tokio::test]
+async fn a_denied_repos_answer_is_logged_up_to_three_hundred_characters() {
+    // The cap on a logged body is this project's own logging rule, so it is a test
+    // of the event rather than of the filing policy: no returned value carries it.
+    let db = TestDb::new().await.expect("a test database");
+    let body = long_denial_body();
+    let a1 = flaky_test_in(&db, "acme/a", "a1", "a1").await;
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(403).set_body_string(body.clone()))
+        .mount(&server)
+        .await;
+
+    let logged = CapturedLog::during(file_batch(EntityKind::Test, &db, &[a1], &server)).await;
+
     let warnings = lines_with(&logged, "skipped for this Repo");
     assert_eq!(warnings.len(), 1, "{logged}");
     let kept: String = body.chars().take(300).collect();
@@ -1028,55 +1026,17 @@ async fn a_permission_403_costs_only_the_denied_repo() {
         "only the first 300 characters are logged: {logged}"
     );
     assert!(!warnings[0].contains(&cut), "the rest is cut: {logged}");
-
-    let ja1 = flaky_job_in(&db, "acme/a", ".github/workflows/a1.yml", "a1").await;
-    let ja2 = flaky_job_in(&db, "acme/a", ".github/workflows/a2.yml", "a2").await;
-    let jb = flaky_job_in(&db, "acme/b", ".github/workflows/b.yml", "b").await;
-    let jobs = MockServer::start().await;
-    Mock::given(method("POST"))
-        .and(path("/repos/acme/a/issues"))
-        .respond_with(ResponseTemplate::new(403).set_body_string(body.clone()))
-        .mount(&jobs)
-        .await;
-    Mock::given(method("POST"))
-        .and(path("/repos/acme/b/issues"))
-        .respond_with(ResponseTemplate::new(201).set_body_json(json!({"number": 88})))
-        .mount(&jobs)
-        .await;
-
-    let (report, logged) = CapturedLog::during_call(github::file_job_issues_for(
-        db.connection(),
-        &[ja1, ja2, jb],
-        &gh_settings(&[]),
-        &api(&jobs),
-        &system_clock(),
-        &unstopped(),
-    ))
-    .await;
-    assert_eq!(
-        requested_paths(&jobs).await,
-        vec!["/repos/acme/a/issues", "/repos/acme/b/issues"]
-    );
-    assert_eq!(link_of(&db, EntityKind::Job, ja1).await.number, None);
-    assert_eq!(link_of(&db, EntityKind::Job, ja2).await.number, None);
-    assert_eq!(link_of(&db, EntityKind::Job, jb).await.number, Some(88));
-    assert_eq!(
-        report.skipped,
-        std::collections::BTreeSet::from(["acme/a".to_owned()])
-    );
-    let warnings = lines_with(&logged, "skipped for this Repo");
-    assert_eq!(warnings.len(), 1, "{logged}");
-    let cut: String = body.chars().skip(300).collect();
-    assert!(!warnings[0].contains(&cut), "the rest is cut: {logged}");
 }
 
-#[tokio::test]
-async fn a_repo_whose_issues_are_disabled_is_skipped_for_the_rest_of_the_batch() {
+/// Two rows in a Repo whose Issues are off and one in a Repo that works, at each
+/// status that means "this Repo has no Issues": the whole first Repo is skipped for
+/// the rest of the run, and the second one is still filed.
+async fn disabled_repo_scenario(kind: EntityKind) {
     let db = TestDb::new().await.expect("a test database");
-    let a1 = flaky_test_in(&db, "acme/a", "p1", "a1").await;
-    let a2 = flaky_test_in(&db, "acme/a", "p2", "a2").await;
-    let b = flaky_test_in(&db, "acme/b", "p3", "b").await;
     for status in [404, 410] {
+        let a1 = flaky_row(&db, kind, "acme/a", &format!("a1-{status}")).await;
+        let a2 = flaky_row(&db, kind, "acme/a", &format!("a2-{status}")).await;
+        let b = flaky_row(&db, kind, "acme/b", &format!("b-{status}")).await;
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/repos/acme/a/issues"))
@@ -1087,89 +1047,49 @@ async fn a_repo_whose_issues_are_disabled_is_skipped_for_the_rest_of_the_batch()
             .await;
         Mock::given(method("POST"))
             .and(path("/repos/acme/b/issues"))
-            .respond_with(ResponseTemplate::new(201).set_body_json(json!({"number": 99})))
+            .respond_with(ResponseTemplate::new(201).set_body_json(json!({"number": status})))
             .mount(&server)
             .await;
 
-        let report = github::file_issues_for(
-            db.connection(),
-            &[a1, a2, b],
-            &gh_settings(&[]),
-            &api(&server),
-            &unstopped(),
-        )
-        .await;
+        let report = file_batch(kind, &db, &[a1, a2, b], &server).await;
+
         assert_eq!(
             requested_paths(&server).await,
             vec!["/repos/acme/a/issues", "/repos/acme/b/issues"],
             "the whole Repo is skipped on {status}"
         );
-        assert_eq!(link_of(&db, EntityKind::Test, a1).await.number, None);
-        assert_eq!(link_of(&db, EntityKind::Test, a2).await.number, None);
-        assert_eq!(link_of(&db, EntityKind::Test, b).await.number, Some(99));
+        assert_eq!(
+            link_of(&db, kind, a1).await.number,
+            None,
+            "the refused row stores nothing on {status}"
+        );
+        assert_eq!(
+            link_of(&db, kind, a2).await.number,
+            None,
+            "its neighbour is skipped, not tried, on {status}"
+        );
+        assert_eq!(
+            link_of(&db, kind, b).await.number,
+            Some(i32::from(status)),
+            "the other Repo is filed on {status}"
+        );
         assert_eq!(
             report.skipped,
             std::collections::BTreeSet::from(["acme/a".to_owned()]),
             "the Repo whose Issues are off is skipped on {status}"
         );
-        unlink_test(&db, b).await;
-
-        let ja1 = flaky_job_in(
-            &db,
-            "acme/a",
-            &format!(".github/workflows/a1-{status}.yml"),
-            "a1",
-        )
-        .await;
-        let ja2 = flaky_job_in(
-            &db,
-            "acme/a",
-            &format!(".github/workflows/a2-{status}.yml"),
-            "a2",
-        )
-        .await;
-        let jb = flaky_job_in(
-            &db,
-            "acme/b",
-            &format!(".github/workflows/b-{status}.yml"),
-            "b",
-        )
-        .await;
-        let jobs = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/repos/acme/a/issues"))
-            .respond_with(
-                ResponseTemplate::new(status).set_body_json(json!({"message": "Not Found"})),
-            )
-            .mount(&jobs)
-            .await;
-        Mock::given(method("POST"))
-            .and(path("/repos/acme/b/issues"))
-            .respond_with(ResponseTemplate::new(201).set_body_json(json!({"number": 99})))
-            .mount(&jobs)
-            .await;
-        let report = github::file_job_issues_for(
-            db.connection(),
-            &[ja1, ja2, jb],
-            &gh_settings(&[]),
-            &api(&jobs),
-            &system_clock(),
-            &unstopped(),
-        )
-        .await;
-        assert_eq!(
-            requested_paths(&jobs).await,
-            vec!["/repos/acme/a/issues", "/repos/acme/b/issues"]
-        );
-        assert_eq!(link_of(&db, EntityKind::Job, ja1).await.number, None);
-        assert_eq!(link_of(&db, EntityKind::Job, ja2).await.number, None);
-        assert_eq!(link_of(&db, EntityKind::Job, jb).await.number, Some(99));
-        assert_eq!(
-            report.skipped,
-            std::collections::BTreeSet::from(["acme/a".to_owned()]),
-            "the Job batch skips the same Repo on {status}"
-        );
+        unlink(&db, kind, b).await;
     }
+}
+
+#[tokio::test]
+async fn a_disabled_test_repo_is_skipped_for_the_rest_of_the_batch() {
+    disabled_repo_scenario(EntityKind::Test).await;
+}
+
+#[tokio::test]
+async fn a_disabled_job_repo_is_skipped_for_the_rest_of_the_batch() {
+    disabled_repo_scenario(EntityKind::Job).await;
 }
 
 #[tokio::test]
@@ -1978,14 +1898,14 @@ async fn the_job_failure_gate_counts_the_overall_window_only() {
     );
 }
 
-#[tokio::test]
-async fn a_linked_test_and_a_linked_job_are_never_filed() {
+/// A row that already has an Issue link and a row that has none: the linked one is
+/// left alone, its link untouched, and the other is filed.
+async fn linked_row_scenario(kind: EntityKind) {
     let db = TestDb::new().await.expect("a test database");
-    let linked = flaky_test(&db).await;
-    let other = flaky_test_in(&db, "acme/other", "backend", "other").await;
-    stamp_link(&db, EntityKind::Test, linked, stamp().number(300).checked()).await;
-    let job = flaky_job(&db).await;
-    stamp_link(&db, EntityKind::Job, job, stamp().number(301).checked()).await;
+    let linked = flaky_row(&db, kind, "acme/app", "linked").await;
+    let other = flaky_row(&db, kind, "acme/other", "other").await;
+    let number = if kind == EntityKind::Test { 300 } else { 301 };
+    stamp_link(&db, kind, linked, stamp().number(number).checked()).await;
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/repos/acme/other/issues"))
@@ -1993,38 +1913,31 @@ async fn a_linked_test_and_a_linked_job_are_never_filed() {
         .mount(&server)
         .await;
 
-    let filed = github::file_issues_for(
-        db.connection(),
-        &[linked, other],
-        &gh_settings(&[]),
-        &api(&server),
-        &unstopped(),
-    )
-    .await;
-    assert_eq!(filed.linked.into_iter().collect::<Vec<_>>(), vec![other]);
+    let filed = file_batch(kind, &db, &[linked, other], &server).await;
+
+    assert_eq!(
+        filed.linked.into_iter().collect::<Vec<_>>(),
+        vec![other],
+        "only the unlinked row is filed"
+    );
     assert_eq!(
         requested_paths(&server).await,
         vec!["/repos/acme/other/issues"],
-        "the linked Test is skipped and the other Repo is filed"
+        "the linked row is skipped and the other Repo is filed"
     );
     assert_eq!(
-        link_of(&db, EntityKind::Test, linked).await.number,
-        Some(300)
+        link_of(&db, kind, linked).await.number,
+        Some(number),
+        "the link that was there already stands"
     );
+}
 
-    let jobs = github::file_job_issues_for(
-        db.connection(),
-        &[job],
-        &gh_settings(&[]),
-        &api(&server),
-        &system_clock(),
-        &unstopped(),
-    )
-    .await;
-    assert!(jobs.linked.is_empty(), "a linked Job is never filed");
-    assert!(
-        server.received_requests().await.expect("a record").len() == 1,
-        "no request for the linked Job"
-    );
-    assert_eq!(link_of(&db, EntityKind::Job, job).await.number, Some(301));
+#[tokio::test]
+async fn a_linked_test_is_never_filed() {
+    linked_row_scenario(EntityKind::Test).await;
+}
+
+#[tokio::test]
+async fn a_linked_job_is_never_filed() {
+    linked_row_scenario(EntityKind::Job).await;
 }
