@@ -15,8 +15,8 @@ use axum::Router;
 use axum::http::{Method, StatusCode};
 use flakeradar::{app::AppState, app::build_app, github::Api};
 use flakeradar_test_support::{
-    Reply, TestDb, get, make_execution, make_job, make_job_execution, make_pipeline, make_project,
-    make_report, make_run, make_test_case, request, request_with_headers, settings,
+    CapturedLog, Reply, TestDb, get, make_execution, make_job, make_job_execution, make_pipeline,
+    make_project, make_report, make_run, make_test_case, request, request_with_headers, settings,
 };
 
 use sea_orm::ConnectionTrait as _;
@@ -567,26 +567,6 @@ async fn a_repo_delete_comments_on_and_closes_every_issue_flakeradar_filed() {
 
 #[tokio::test]
 async fn a_confirming_stub_proves_the_token_never_reaches_a_log_line() {
-    use std::io::Write as _;
-    use std::sync::Mutex;
-
-    /// An `io::Write` that appends to the shared buffer.
-    struct Sink(Arc<Mutex<Vec<u8>>>);
-
-    impl std::io::Write for Sink {
-        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            self.0
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .extend_from_slice(buf);
-            Ok(buf.len())
-        }
-
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
     let db = TestDb::new().await.expect("a test database");
     let server = MockServer::start().await;
     // A failing answer, so every log path of a refused close runs.
@@ -597,23 +577,12 @@ async fn a_confirming_stub_proves_the_token_never_reaches_a_log_line() {
     seed_filed_issues(&db).await;
     let app = app_with_github(&db, &server.uri());
 
-    let lines = Arc::new(Mutex::new(Vec::new()));
-    let sink = Arc::clone(&lines);
-    let subscriber = tracing_subscriber::fmt()
-        .with_ansi(false)
-        .with_writer(move || Sink(Arc::clone(&sink)))
-        .finish();
-    let guard = tracing::subscriber::set_default(subscriber);
-    let reply = delete(&app, "/api/repos/acme/app").await;
-    drop(guard);
+    let logged = CapturedLog::during(async {
+        let reply = delete(&app, "/api/repos/acme/app").await;
+        assert_eq!(reply.status, StatusCode::OK);
+    })
+    .await;
 
-    assert_eq!(reply.status, StatusCode::OK);
-    let logged = String::from_utf8_lossy(
-        &lines
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner),
-    )
-    .into_owned();
     assert!(!logged.is_empty(), "the refused close logged something");
     assert!(
         !logged.contains(GITHUB_TOKEN),
@@ -623,7 +592,6 @@ async fn a_confirming_stub_proves_the_token_never_reaches_a_log_line() {
         !logged.contains(&server.uri()),
         "no log line carries the API base URL: {logged}"
     );
-    let _ = std::io::stdout().flush();
 }
 
 #[tokio::test]

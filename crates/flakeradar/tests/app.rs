@@ -9,7 +9,7 @@
 use axum::http::{Method, StatusCode};
 use flakeradar::app::AppState;
 use flakeradar::app::build_app;
-use flakeradar_test_support::{TestDb, app, get, post, request, send, settings};
+use flakeradar_test_support::{CapturedLog, TestDb, app, get, post, request, send, settings};
 
 use serde_json::json;
 
@@ -306,56 +306,4 @@ async fn the_app_state_debug_names_no_database_password() {
     assert!(!printed.contains("real-token"), "{printed}");
     assert!(!printed.contains("hooks.example.com"), "{printed}");
     assert!(printed.contains("Secret(..)"), "{printed}");
-}
-
-/// A log sink a test can read back.
-///
-/// The subscriber is installed for the current thread only, so it sees the
-/// requests this test makes and no others.
-struct CapturedLog {
-    lines: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
-    _guard: tracing::subscriber::DefaultGuard,
-}
-
-impl CapturedLog {
-    /// Starts capturing this thread's log.
-    fn install() -> Self {
-        use std::sync::{Arc, Mutex};
-
-        let lines = Arc::new(Mutex::new(Vec::new()));
-        let sink = Arc::clone(&lines);
-        let subscriber = tracing_subscriber::fmt()
-            .with_ansi(false)
-            .with_writer(move || SharedWriter(Arc::clone(&sink)))
-            .finish();
-        let guard = tracing::subscriber::set_default(subscriber);
-        Self {
-            lines,
-            _guard: guard,
-        }
-    }
-
-    /// Everything logged so far.
-    fn lines(&self) -> String {
-        let guard = self.lines.lock().expect("the log sink is not poisoned");
-        String::from_utf8_lossy(&guard).into_owned()
-    }
-}
-
-/// A `io::Write` that appends to the shared buffer.
-struct SharedWriter(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
-
-impl std::io::Write for SharedWriter {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let mut guard = self
-            .0
-            .lock()
-            .map_err(|_error| std::io::Error::other("the log sink is poisoned"))?;
-        guard.extend_from_slice(buf);
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
 }

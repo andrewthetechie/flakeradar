@@ -13,7 +13,7 @@ use flakeradar_db::processing::ProcessOutcome;
     reason = "the module's own users name these helpers through it"
 )]
 pub(crate) use flakeradar_test_support::{
-    IssueLink as Link, link_of, link_table, stamp, stamp_link, stamp_note,
+    CapturedLog, IssueLink as Link, link_of, link_table, stamp, stamp_link, stamp_note,
 };
 use flakeradar_test_support::{
     TestDb, make_execution, make_job, make_job_execution, make_pipeline, make_project, make_run,
@@ -67,20 +67,45 @@ pub(crate) fn fixed_settings(pairs: &[(&str, &str)]) -> Settings {
     Settings::from_map(&map).expect("the test's settings are valid")
 }
 
-/// One flaky Test in `acme/app`, with one failing Execution it can show.
-pub(crate) async fn flaky_test(db: &TestDb) -> i32 {
-    let project = make_project()
-        .repo("acme/app")
-        .project("backend")
-        .root("backend")
+/// The identity of one seeded flaky Test.
+///
+/// The filing body carries every part of it — the `root` as the Location's
+/// directory, the `suite`, `classname` and `name` as the Test, and the
+/// `fingerprint` as the line a reader copies — so a fixture that changes one
+/// changes what an issue body says.
+#[derive(Debug)]
+pub(crate) struct FlakyTest<'a> {
+    /// The `owner/name` the Test belongs to.
+    pub repo: &'a str,
+    /// The Project the Test lives in.
+    pub project: &'a str,
+    /// The Project's directory, or `None` for the Repo root.
+    pub root: Option<&'a str>,
+    /// The suite half of the Test's identity.
+    pub suite: &'a str,
+    /// The classname half of the Test's identity.
+    pub classname: &'a str,
+    /// The Test's name.
+    pub name: &'a str,
+    /// The Test's fingerprint.
+    pub fingerprint: &'a str,
+}
+
+/// One flaky Test with `identity`, and one failing Execution it can show.
+async fn seed_flaky_test(db: &TestDb, identity: FlakyTest<'_>) -> i32 {
+    let mut project = make_project().repo(identity.repo).project(identity.project);
+    if let Some(root) = identity.root {
+        project = project.root(root);
+    }
+    let project = project
         .build(db.connection())
         .await
         .expect("the Project inserts");
     let test = make_test_case(&project)
-        .name("test_total")
-        .classname("tests.test_cart")
-        .suite("unit")
-        .fingerprint("abc123")
+        .name(identity.name)
+        .classname(identity.classname)
+        .suite(identity.suite)
+        .fingerprint(identity.fingerprint)
         .flakiness_score(0.5)
         .confirmed_flake_count(2)
         .file("tests/test_cart.py")
@@ -102,6 +127,40 @@ pub(crate) async fn flaky_test(db: &TestDb) -> i32 {
         .await
         .expect("the Execution inserts");
     test.id
+}
+
+/// One flaky Test in `acme/app`'s `backend` Project, with one failing Execution.
+pub(crate) async fn flaky_test(db: &TestDb) -> i32 {
+    seed_flaky_test(
+        db,
+        FlakyTest {
+            repo: "acme/app",
+            project: "backend",
+            root: Some("backend"),
+            suite: "unit",
+            classname: "tests.test_cart",
+            name: "test_total",
+            fingerprint: "abc123",
+        },
+    )
+    .await
+}
+
+/// One flaky Test named `name` in `repo`/`project`, with one failing Execution.
+pub(crate) async fn flaky_test_in(db: &TestDb, repo: &str, project: &str, name: &str) -> i32 {
+    seed_flaky_test(
+        db,
+        FlakyTest {
+            repo,
+            project,
+            root: None,
+            suite: "unit",
+            classname: &format!("tests.test_{name}"),
+            name,
+            fingerprint: name,
+        },
+    )
+    .await
 }
 
 /// One flaky github-provider Job in `acme/app`.
@@ -205,41 +264,6 @@ older details
 
 _Fingerprint: `abc123`_";
 
-/// One flaky Test named `name` in `repo`/`project`, with one failing Execution.
-pub(crate) async fn flaky_test_in(db: &TestDb, repo: &str, project: &str, name: &str) -> i32 {
-    let project = make_project()
-        .repo(repo)
-        .project(project)
-        .build(db.connection())
-        .await
-        .expect("the Project inserts");
-    let test = make_test_case(&project)
-        .name(name)
-        .classname(format!("tests.test_{name}").as_str())
-        .fingerprint(name)
-        .flakiness_score(0.5)
-        .confirmed_flake_count(2)
-        .file("tests/test_cart.py")
-        .line(12)
-        .build(db.connection())
-        .await
-        .expect("the Test inserts");
-    let run = make_run(&project)
-        .commit_sha("abcdef1234567890")
-        .branch("main")
-        .build(db.connection())
-        .await
-        .expect("the Run inserts");
-    make_execution(&test, &run)
-        .status("failed")
-        .message("AssertionError: expected 3")
-        .details("Traceback (most recent call last):\n  ...")
-        .build(db.connection())
-        .await
-        .expect("the Execution inserts");
-    test.id
-}
-
 /// One flaky github-provider Job named `name` in `repo`, under `pipeline`.
 pub(crate) async fn flaky_job_in(db: &TestDb, repo: &str, pipeline: &str, name: &str) -> i32 {
     let pipeline = make_pipeline()
@@ -263,65 +287,6 @@ pub(crate) async fn flaky_job_in(db: &TestDb, repo: &str, pipeline: &str, name: 
         .await
         .expect("the Job execution inserts");
     job.id
-}
-
-/// The `github_issue_*` columns of one Job.
-/// `call`'s answer and the log lines it wrote.
-///
-/// A test that has a returned value and a log rule asserts both: the value is the
-/// outcome, and the log is checked only where the wording is a requirement of its
-/// own, such as the cap on a GitHub body.
-pub(crate) async fn logged_call<T>(call: impl Future<Output = T>) -> (T, String) {
-    let mut answer = None;
-    let lines = {
-        let slot = &mut answer;
-        logged_from(async move {
-            *slot = Some(call.await);
-        })
-        .await
-    };
-    (answer.expect("the call answered"), lines)
-}
-
-/// The log lines `future` writes, with a subscriber installed for this thread.
-pub(crate) async fn logged_from(future: impl Future) -> String {
-    use std::io::Write as _;
-    use std::sync::Mutex;
-
-    /// An `io::Write` that appends to the shared buffer.
-    struct Sink(Arc<Mutex<Vec<u8>>>);
-
-    impl std::io::Write for Sink {
-        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            self.0
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .extend_from_slice(buf);
-            Ok(buf.len())
-        }
-
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
-    let lines = Arc::new(Mutex::new(Vec::new()));
-    let sink = Arc::clone(&lines);
-    let subscriber = tracing_subscriber::fmt()
-        .with_ansi(false)
-        .with_writer(move || Sink(Arc::clone(&sink)))
-        .finish();
-    let guard = tracing::subscriber::set_default(subscriber);
-    future.await;
-    drop(guard);
-    let text = String::from_utf8_lossy(
-        &lines
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner),
-    )
-    .into_owned();
-    let _ = std::io::stdout().flush();
-    text
 }
 
 /// The lines of `logged` that carry `needle`.

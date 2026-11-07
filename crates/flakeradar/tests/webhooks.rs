@@ -8,7 +8,7 @@
     reason = "a test fails loudly when a stub or a delivery does not behave"
 )]
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use flakeradar::webhooks::WebhookWorker;
@@ -17,7 +17,9 @@ use flakeradar_core::{
     model::EntityKind, model::ReportStatus, model::Tier, notify::TierChange, notify::WebhookFormat,
 };
 use flakeradar_db::processing::ProcessOutcome;
-use flakeradar_test_support::{Unanswered, dropped, queued, until_finished, wait_until, within};
+use flakeradar_test_support::{
+    CapturedLog, Unanswered, dropped, queued, until_finished, wait_until, within,
+};
 
 use serde_json::{Value, json};
 use wiremock::matchers::{method, path};
@@ -90,50 +92,6 @@ async fn recorded(server: &MockServer) -> usize {
         .received_requests()
         .await
         .map_or(0, |requests| requests.len())
-}
-
-/// An `io::Write` that appends to the shared buffer.
-struct Sink(Arc<Mutex<Vec<u8>>>);
-
-impl std::io::Write for Sink {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .extend_from_slice(buf);
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
-/// A subscriber that records every level, and the buffer it writes to.
-fn captured() -> (tracing::subscriber::DefaultGuard, Arc<Mutex<Vec<u8>>>) {
-    let lines = Arc::new(Mutex::new(Vec::new()));
-    let sink = Arc::clone(&lines);
-    let subscriber = tracing_subscriber::fmt()
-        .with_ansi(false)
-        .with_writer(move || Sink(Arc::clone(&sink)))
-        .with_max_level(tracing::Level::TRACE)
-        .finish();
-    (tracing::subscriber::set_default(subscriber), lines)
-}
-
-/// The log text recorded so far.
-fn logged(lines: &Arc<Mutex<Vec<u8>>>) -> String {
-    String::from_utf8_lossy(
-        &lines
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner),
-    )
-    .into_owned()
-}
-
-/// How many times `needle` appears in the log so far.
-fn log_count(lines: &Arc<Mutex<Vec<u8>>>, needle: &str) -> usize {
-    logged(lines).matches(needle).count()
 }
 
 #[tokio::test]
@@ -345,7 +303,7 @@ async fn three_attempts_then_the_task_keeps_serving() {
 #[tokio::test]
 async fn an_unreachable_endpoint_is_tried_three_times_and_the_task_keeps_serving() {
     // Nothing is listening on this port: every attempt fails to connect.
-    let (guard, lines) = captured();
+    let log = CapturedLog::install();
     let worker = Arc::new(
         WebhookWorker::with_retry_delays(
             vec!["http://127.0.0.1:1/hook".to_owned()],
@@ -365,12 +323,11 @@ async fn an_unreachable_endpoint_is_tried_three_times_and_the_task_keeps_serving
     LeaderTask::stop(worker.as_ref())
         .await
         .expect("the task stops");
-    drop(guard);
     assert_eq!(
-        log_count(&lines, "Webhook endpoint unreachable"),
+        log.lines().matches("Webhook endpoint unreachable").count(),
         6,
         "three attempts per batch, and the task delivered the second one: {}",
-        logged(&lines)
+        log.lines()
     );
 }
 
@@ -379,7 +336,7 @@ async fn an_endpoint_that_is_not_a_url_is_retried_and_never_logged() {
     /// A credential no log line may carry.
     const SECRET: &str = "SECRETTOKEN";
 
-    let (guard, lines) = captured();
+    let log = CapturedLog::install();
     let worker = Arc::new(
         WebhookWorker::with_retry_delays(
             vec![format!("not a url/{SECRET}")],
@@ -396,11 +353,10 @@ async fn an_endpoint_that_is_not_a_url_is_retried_and_never_logged() {
     LeaderTask::stop(worker.as_ref())
         .await
         .expect("the task stops");
-    drop(guard);
 
-    let logged = logged(&lines);
+    let logged = log.lines();
     assert!(
-        log_count(&lines, "endpoint=endpoint") >= 3,
+        logged.matches("endpoint=endpoint").count() >= 3,
         "a URL that cannot be parsed is named by its fallback label: {logged}"
     );
     assert!(
@@ -571,7 +527,7 @@ async fn a_webhook_url_is_never_logged_at_any_level() {
     let url = format!("{}/{SECRET}/hook", server.uri());
     let worker = Arc::new(worker(vec![url]));
 
-    let (guard, lines) = captured();
+    let log = CapturedLog::install();
 
     LeaderTask::start(worker.as_ref()).await;
     LeaderTask::enqueue(worker.as_ref(), &outcome(vec![test_change()]))
@@ -580,9 +536,8 @@ async fn a_webhook_url_is_never_logged_at_any_level() {
     LeaderTask::stop(worker.as_ref())
         .await
         .expect("the task stops");
-    drop(guard);
 
-    let logged = logged(&lines);
+    let logged = log.lines();
     assert!(!logged.is_empty(), "the rejected batch logged something");
     assert!(
         !logged.contains(SECRET),

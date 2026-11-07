@@ -27,9 +27,9 @@ use flakeradar_db::{
     processing::ProcessingSettings,
 };
 use flakeradar_test_support::{
-    FixedClock, ScriptedMonotonic, TestDb, Unanswered, app, database_name, dropped, end_session,
-    lock_holder, lock_holder_pid, lock_is_free, make_job, make_junit, make_pipeline, make_project,
-    make_report, make_test_case, post, queued, until_finished, wait_until, within,
+    CapturedLog, FixedClock, ScriptedMonotonic, TestDb, Unanswered, app, database_name, dropped,
+    end_session, lock_holder, lock_holder_pid, lock_is_free, make_job, make_junit, make_pipeline,
+    make_project, make_report, make_test_case, post, queued, until_finished, wait_until, within,
 };
 use sea_orm::ConnectionTrait as _;
 use sea_orm::{
@@ -802,42 +802,6 @@ async fn report_statuses(db: &TestDb) -> Vec<String> {
         .collect()
 }
 
-/// The log lines `future` writes, with a subscriber installed for this thread.
-async fn logged_while(future: impl Future) -> String {
-    use std::io::Write as _;
-
-    /// An `io::Write` that appends to the shared buffer.
-    struct Sink(Arc<Mutex<Vec<u8>>>);
-
-    impl std::io::Write for Sink {
-        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            self.0
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .extend_from_slice(buf);
-            Ok(buf.len())
-        }
-
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
-    let lines = Arc::new(Mutex::new(Vec::new()));
-    let sink = Arc::clone(&lines);
-    let subscriber = tracing_subscriber::fmt()
-        .with_ansi(false)
-        .with_writer(move || Sink(Arc::clone(&sink)))
-        .finish();
-    let guard = tracing::subscriber::set_default(subscriber);
-    future.await;
-    drop(guard);
-    let text =
-        String::from_utf8_lossy(&lines.lock().unwrap_or_else(PoisonError::into_inner)).into_owned();
-    let _ = std::io::stdout().flush();
-    text
-}
-
 #[tokio::test]
 async fn a_failing_filing_is_logged_and_the_next_outcome_still_files() {
     let db = TestDb::new().await.expect("a test database");
@@ -864,7 +828,7 @@ async fn a_failing_filing_is_logged_and_the_next_outcome_still_files() {
         Duration::from_secs(3600),
     );
 
-    let logged = logged_while(async {
+    let logged = CapturedLog::during(async {
         LeaderTask::start(&worker).await;
         LeaderTask::enqueue(&worker, &processed(&[test]))
             .expect("the queue takes the first outcome");

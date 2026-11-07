@@ -19,8 +19,8 @@ use flakeradar_core::model::ReportStatus;
 use flakeradar_db::WORKER_LOCK_KEY;
 use flakeradar_db::entities::projects;
 use flakeradar_test_support::{
-    Reply, TestDb, app, get, make_job, make_pipeline, make_project, make_report, make_test_case,
-    settings,
+    CapturedLog, Reply, TestDb, app, get, make_job, make_pipeline, make_project, make_report,
+    make_test_case, settings,
 };
 
 use sea_orm::{ConnectionTrait, DatabaseConnection, DbBackend, Statement, TransactionTrait as _};
@@ -457,7 +457,7 @@ async fn metrics_logs_the_error_it_answers_503_for() {
         .expect("the reports table is dropped");
     let app = app_for(&db);
 
-    let logged = logged_from(async {
+    let logged = CapturedLog::during(async {
         let reply: Reply = get(&app, "/metrics").await;
         assert_eq!(reply.status, StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(reply.text(), "");
@@ -469,42 +469,4 @@ async fn metrics_logs_the_error_it_answers_503_for() {
         .collect();
     assert_eq!(warnings.len(), 1, "{logged}");
     assert!(warnings[0].contains("reports"), "{logged}");
-}
-
-/// Runs `future` with a log sink installed and answers everything it logged.
-async fn logged_from(future: impl Future) -> String {
-    use std::sync::{Arc, Mutex};
-
-    /// An `io::Write` that appends to the shared buffer.
-    struct Sink(Arc<Mutex<Vec<u8>>>);
-
-    impl std::io::Write for Sink {
-        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            self.0
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .extend_from_slice(buf);
-            Ok(buf.len())
-        }
-
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
-    let lines = Arc::new(Mutex::new(Vec::new()));
-    let sink = Arc::clone(&lines);
-    let subscriber = tracing_subscriber::fmt()
-        .with_ansi(false)
-        .with_writer(move || Sink(Arc::clone(&sink)))
-        .finish();
-    let guard = tracing::subscriber::set_default(subscriber);
-    future.await;
-    drop(guard);
-    String::from_utf8_lossy(
-        &lines
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner),
-    )
-    .into_owned()
 }

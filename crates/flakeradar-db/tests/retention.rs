@@ -8,7 +8,7 @@
     reason = "a test fails loudly when a fixture or a prune round does not behave"
 )]
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use chrono::{DateTime, FixedOffset, TimeDelta, Utc};
 use flakeradar_db::entities::{
@@ -20,9 +20,9 @@ use flakeradar_db::{
     retention::run_prune,
 };
 use flakeradar_test_support::{
-    FixedClock, ScriptedMonotonic, TestDb, make_execution, make_job, make_job_execution,
-    make_job_score, make_pipeline, make_project, make_report, make_run, make_test_case,
-    make_test_score,
+    CapturedLog, FixedClock, ScriptedMonotonic, TestDb, make_execution, make_job,
+    make_job_execution, make_job_score, make_pipeline, make_project, make_report, make_run,
+    make_test_case, make_test_score,
 };
 use sea_orm::{ConnectionTrait as _, EntityTrait, QueryOrder as _};
 
@@ -1187,52 +1187,4 @@ async fn a_retention_window_past_the_calendar_is_clamped() {
     assert_eq!(all.reports, 1);
     assert_eq!(count::<reports::Entity>(&db).await, 0);
     let _ = ancient;
-}
-
-/// A log sink a test can read back, installed for the current thread only.
-struct CapturedLog {
-    lines: Arc<Mutex<Vec<u8>>>,
-    _guard: tracing::subscriber::DefaultGuard,
-}
-
-impl CapturedLog {
-    fn install() -> Self {
-        let lines = Arc::new(Mutex::new(Vec::new()));
-        let sink = Arc::clone(&lines);
-        let subscriber = tracing_subscriber::fmt()
-            .with_ansi(false)
-            .with_writer(move || SharedWriter(Arc::clone(&sink)))
-            .finish();
-        let guard = tracing::subscriber::set_default(subscriber);
-        Self {
-            lines,
-            _guard: guard,
-        }
-    }
-
-    fn lines(&self) -> String {
-        let guard = self
-            .lines
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        String::from_utf8_lossy(&guard).into_owned()
-    }
-}
-
-/// An `io::Write` that appends to the shared buffer.
-struct SharedWriter(Arc<Mutex<Vec<u8>>>);
-
-impl std::io::Write for SharedWriter {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let mut guard = self
-            .0
-            .lock()
-            .map_err(|_error| std::io::Error::other("the log sink is poisoned"))?;
-        guard.extend_from_slice(buf);
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
 }

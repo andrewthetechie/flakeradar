@@ -555,7 +555,10 @@ async fn a_failing_leader_task_stop_is_logged_and_the_lock_released_anyway() {
     let log = CapturedLog::install();
     worker.stop().await;
     let line = log.only_line_holding("a leader task failed to stop");
-    assert!(line.contains("task=\"GitHub\""), "the failed stop names its task: {line}");
+    assert!(
+        line.contains("task=\"GitHub\""),
+        "the failed stop names its task: {line}"
+    );
     assert!(
         line.contains("error=GitHub could not stop"),
         "the failed stop carries the reason it gave: {line}"
@@ -668,7 +671,10 @@ async fn a_failing_hook_does_not_stop_processing() {
         .map(|report| report.id)
         .collect();
     for line in &failures {
-        assert!(line.contains("task=\"hook\""), "the line names its task: {line}");
+        assert!(
+            line.contains("task=\"hook\""),
+            "the line names its task: {line}"
+        );
         assert!(
             line.contains("error=hook could not take the outcome"),
             "the line carries the reason it gave: {line}"

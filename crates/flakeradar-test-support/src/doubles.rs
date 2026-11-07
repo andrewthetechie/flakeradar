@@ -751,14 +751,26 @@ impl CapturedLog {
     /// Runs `future` with this capture installed and answers what it logged.
     ///
     /// The subscriber is installed for the current thread and removed again before
-    /// the answer is read, so a test asserts on the work one call wrote rather
-    /// than on everything the process has logged.
+    /// the answer is read, so a test asserts on the work of one call rather than on
+    /// everything the process has logged. Where the call has an answer as well, a
+    /// test asserts both: the answer is the outcome, and the lines are checked only
+    /// where the event itself is the requirement — a cap on an outgoing body, or a
+    /// refusal no returned value carries.
     pub async fn during(future: impl Future) -> String {
+        Self::during_call(async {
+            future.await;
+        })
+        .await
+        .1
+    }
+
+    /// [`CapturedLog::during`] for a call whose answer the test asserts as well.
+    pub async fn during_call<T>(future: impl Future<Output = T>) -> (T, String) {
         let log = Self::install();
-        future.await;
+        let answer = future.await;
         let lines = log.lines();
         drop(log);
-        lines
+        (answer, lines)
     }
 }
 

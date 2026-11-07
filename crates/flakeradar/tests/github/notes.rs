@@ -21,8 +21,8 @@ use wiremock::matchers::{any, method, path};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
 use crate::support::{
-    CREATED, Loopback, TOKEN, api, clean_streak_of, fixed_settings, flaky_job, flaky_test,
-    flaky_test_in, gh_settings, lines_with, link_of, link_table, logged_call, mount_comment,
+    CREATED, CapturedLog, Loopback, TOKEN, api, clean_streak_of, fixed_settings, flaky_job,
+    flaky_test, flaky_test_in, gh_settings, lines_with, link_of, link_table, mount_comment,
     mount_create, mount_issue, mount_patch, mount_state, note_row, noted, requested_calls,
     requested_paths, set_clean_streak, stage_mid_request, stamp, stamp_link, stamp_note, unstopped,
 };
@@ -1182,7 +1182,7 @@ async fn a_clean_streak_reset_mid_post_is_not_undone_by_the_stamp(kind: EntityKi
         .await;
     let settings = fixed_settings(&[("FLAKERADAR_GITHUB_CLOSE_FIXED", "true")]);
 
-    let (report, logged) = logged_call(Box::pin(note_entity_value(
+    let (report, logged) = CapturedLog::during_call(Box::pin(note_entity_value(
         &db,
         kind,
         &[obj],

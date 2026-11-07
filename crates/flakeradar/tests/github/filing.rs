@@ -16,9 +16,9 @@ use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use crate::support::{
-    TOKEN, api, explain_job_execution, fail_link_stores, fixed_settings, flaky_job, flaky_job_in,
-    flaky_test, flaky_test_in, gh_settings, lines_with, link_of, logged_call, logged_from,
-    mount_create, requested_paths, stamp, stamp_link, unstopped,
+    CapturedLog, TOKEN, api, explain_job_execution, fail_link_stores, fixed_settings, flaky_job,
+    flaky_job_in, flaky_test, flaky_test_in, gh_settings, lines_with, link_of, mount_create,
+    requested_paths, stamp, stamp_link, unstopped,
 };
 
 #[tokio::test]
@@ -539,7 +539,7 @@ async fn a_store_failure_leaves_the_issue_open_and_stops_the_batch() {
     // a savepoint cannot save a statement the server refuses.
     fail_link_stores(&db, "test_cases").await;
 
-    let (filed, logged) = logged_call(github::file_issues_for(
+    let (filed, logged) = CapturedLog::during_call(github::file_issues_for(
         db.connection(),
         &[first, second],
         &gh_settings(&[]),
@@ -1005,7 +1005,7 @@ async fn a_permission_403_costs_only_the_denied_repo() {
         .mount(&server)
         .await;
 
-    let (report, logged) = logged_call(github::file_issues_for(
+    let (report, logged) = CapturedLog::during_call(github::file_issues_for(
         db.connection(),
         &[a1, a2, b],
         &gh_settings(&[]),
@@ -1055,7 +1055,7 @@ async fn a_permission_403_costs_only_the_denied_repo() {
         .mount(&jobs)
         .await;
 
-    let (report, logged) = logged_call(github::file_job_issues_for(
+    let (report, logged) = CapturedLog::during_call(github::file_job_issues_for(
         db.connection(),
         &[ja1, ja2, jb],
         &gh_settings(&[]),
@@ -1201,7 +1201,7 @@ async fn an_unusable_status_costs_one_issue_and_the_batch_goes_on() {
         .mount(&server)
         .await;
 
-    let (report, logged) = logged_call(github::file_issues_for(
+    let (report, logged) = CapturedLog::during_call(github::file_issues_for(
         db.connection(),
         &[a1, a2],
         &gh_settings(&[]),
@@ -1261,7 +1261,7 @@ async fn a_malformed_201_body_keeps_the_batch_and_stores_nothing() {
             .mount(&server)
             .await;
 
-        let (report, logged) = logged_call(github::file_issues_for(
+        let (report, logged) = CapturedLog::during_call(github::file_issues_for(
             db.connection(),
             &[a, b],
             &gh_settings(&[]),
@@ -1593,7 +1593,7 @@ async fn a_job_history_that_cannot_be_read_is_logged_and_the_issue_still_files()
         .await
         .expect("the Job executions table is dropped");
 
-    let logged = logged_from(async {
+    let logged = CapturedLog::during(async {
         let filed = github::file_job_issues_for(
             db.connection(),
             &[job],

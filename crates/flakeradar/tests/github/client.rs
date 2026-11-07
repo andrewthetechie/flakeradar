@@ -7,7 +7,7 @@ use flakeradar::settings::Secret;
 use serde_json::json;
 use wiremock::MockServer;
 
-use crate::support::{TOKEN, logged_from, mount_close, requested_paths};
+use crate::support::{CapturedLog, TOKEN, mount_close, requested_paths};
 
 #[test]
 fn an_issue_state_reason_that_is_not_text_reads_as_none() {
@@ -54,7 +54,8 @@ async fn a_token_the_header_cannot_carry_goes_out_with_no_credentials() {
     // header at all: the request still goes out, carrying no credentials.
     let api = Api::new(Secret::new("tok\nen"), &server.uri()).expect("the HTTP client builds");
 
-    let logged = logged_from(github::close_issues_after_removal("acme/app", &[123], &api)).await;
+    let logged =
+        CapturedLog::during(github::close_issues_after_removal("acme/app", &[123], &api)).await;
 
     let requests = server
         .received_requests()
