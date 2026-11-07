@@ -62,27 +62,7 @@ pub fn file_field<'a>(
         return Ok(None);
     };
     let mut found = None;
-    loop {
-        let Some(data_at) = delimiter_at.checked_add(framing.delimiter.len()) else {
-            return Ok(found);
-        };
-        // A delimiter followed by anything but a CRLF closes the form, or is no
-        // delimiter at all; the form's parts carry no field from here on.
-        if !body
-            .get(data_at..)
-            .is_some_and(|rest| rest.starts_with(CRLF))
-        {
-            return Ok(found);
-        }
-        let part_start = data_at + CRLF.len();
-        // A part whose ending delimiter never arrived is still open when the
-        // body ends, and an open part contributes no field.
-        let Some(part_end) = framing.next_end(body, part_start) else {
-            return Ok(found);
-        };
-        let Some(part) = body.get(part_start..part_end) else {
-            return Ok(found);
-        };
+    while let Some((part, next_at)) = framing.next_part(body, delimiter_at) {
         match part_field(part, field)? {
             // A part that names no field, or whose headers cannot be read,
             // leaves the field where the parts before it put it.
@@ -90,11 +70,9 @@ pub fn file_field<'a>(
             Some(FieldPart::Value) => found = None,
             Some(FieldPart::File(bytes)) => found = Some(bytes),
         }
-        match part_end.checked_add(CRLF.len()) {
-            Some(next) => delimiter_at = next,
-            None => return Ok(found),
-        }
+        delimiter_at = next_at;
     }
+    Ok(found)
 }
 
 /// The bytes of the boundary parameter in `content_type`.
@@ -291,6 +269,25 @@ impl Framing {
         }
         let at = skipped.checked_add(rest.iter().position(|byte| *byte == b'-')?)?;
         body.get(at..)?.starts_with(&self.delimiter).then_some(at)
+    }
+
+    /// The part that starts at `delimiter_at`, and where the delimiter after it
+    /// starts.
+    ///
+    /// `delimiter_at` is a delimiter this framing found, so the offsets below sit
+    /// inside `body` and plain arithmetic on them cannot overflow. A delimiter
+    /// followed by anything but a CRLF closes the form, or is no delimiter at
+    /// all, and a part whose ending delimiter never arrived is still open: neither
+    /// carries a part.
+    fn next_part<'a>(&self, body: &'a [u8], delimiter_at: usize) -> Option<(&'a [u8], usize)> {
+        let data_at = delimiter_at + self.delimiter.len();
+        let part_start = data_at + CRLF.len();
+        if !body.get(data_at..)?.starts_with(CRLF) {
+            return None;
+        }
+        let part_end = self.next_end(body, part_start)?;
+        body.get(part_start..part_end)
+            .map(|part| (part, part_end + CRLF.len()))
     }
 
     /// Where the part that starts at `from` ends: the CRLF in front of the next
