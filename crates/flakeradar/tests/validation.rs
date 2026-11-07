@@ -392,6 +392,17 @@ async fn the_pipeline_body_reads_a_timestamp_the_way_the_wire_does() {
         (json!(253_402_300_799_i64), "1978-01-11T21:31:40.799000Z"),
         (json!(253_402_300_800_i64), "1978-01-11T21:31:40.800000Z"),
         (json!(1e14), "5138-11-16T09:46:40.000000Z"),
+        // The exact edges of the years a datetime holds: the last millisecond of
+        // 9999 is accepted and the first of the year 10000 is not, as is the
+        // first instant of year 1.
+        (
+            json!(253_402_300_799_999_i64),
+            "9999-12-31T23:59:59.999000Z",
+        ),
+        (
+            json!(-62_135_596_800_000_i64),
+            "0001-01-01T00:00:00.000000Z",
+        ),
         // A string holding a plain decimal number is the same value.
         (json!("1767225600"), "2026-01-01T00:00:00.000000Z"),
         (json!("1767225600.5"), "2026-01-01T00:00:00.500000Z"),

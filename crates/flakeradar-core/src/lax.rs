@@ -29,18 +29,23 @@ use crate::py::strip_wire_whitespace;
 )]
 const INTEGER_RANGE: f64 = 9_223_372_036_854_775_808.0;
 
-/// The milliseconds in one second, which a timestamp past [`EPOCH_MILLISECONDS`]
-/// is divided by to reach seconds.
-const MILLIS_PER_SECOND: f64 = 1_000.0;
+/// The milliseconds in one second, which a millisecond count is split by.
+const MILLIS_PER_SECOND: i64 = 1_000;
 
-/// The nanoseconds in one second, the unit a timestamp's fraction is scaled by.
-const NANOS_PER_SECOND: f64 = 1_000_000_000.0;
+/// [`MILLIS_PER_SECOND`] as the float the magnitude is compared in.
+const MILLIS_PER_SECOND_F: f64 = 1_000.0;
 
-/// The nanoseconds in one microsecond, the resolution a timestamp keeps.
+/// The microseconds in one second, the resolution a datetime keeps.
 ///
 /// A datetime holds microseconds, so the reference rounds a fraction to them and
 /// so does this reader: `1767225600000.123456789` is `.000124`, not `.000123`.
-const NANOS_PER_MICROSECOND: f64 = 1_000.0;
+const MICROS_PER_SECOND: i64 = 1_000_000;
+
+/// [`MICROS_PER_SECOND`] as the float a fraction below a second is scaled by.
+const MICROS_PER_SECOND_F: f64 = 1_000_000.0;
+
+/// The nanoseconds in one microsecond, which `chrono` counts a fraction in.
+const NANOS_PER_MICROSECOND: u32 = 1_000;
 
 /// The magnitude past which a number names milliseconds rather than seconds.
 ///
@@ -447,59 +452,71 @@ fn epoch_instant(number: &Number) -> Result<DateTime<Utc>, &'static str> {
 ///
 /// A magnitude past [`EPOCH_MILLISECONDS`] is a millisecond count, which is the
 /// shape `Date.now()` gives and the one the reference reads that way; anything
-/// smaller is seconds with its fraction. An instant outside the years 1 to 9999
-/// names no datetime, and answers the sentence the reference refuses it with.
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "the whole seconds are a finite float inside i64's range, which is checked"
-)]
-#[expect(
-    clippy::cast_sign_loss,
-    reason = "the microsecond count is made positive before it is converted"
-)]
+/// smaller is seconds. The whole units are split from the fraction before either
+/// is converted, so an integer keeps the instant it names to the microsecond:
+/// dividing `253402300799999` by 1000 as a float would round its last
+/// microsecond away. An instant outside the years 1 to 9999 names no datetime,
+/// and answers the sentence the reference refuses it with.
 fn epoch_of(value: f64) -> Result<DateTime<Utc>, &'static str> {
-    let seconds = if value.abs() > EPOCH_MILLISECONDS {
-        value / MILLIS_PER_SECOND
-    } else {
-        value
-    };
-    if !seconds.is_finite() || seconds.abs() >= INTEGER_RANGE {
-        return Err(if seconds.is_sign_negative() {
-            BEFORE_FIRST_YEAR
-        } else {
-            AFTER_LAST_YEAR
-        });
+    let units = value.trunc();
+    if units.abs() >= INTEGER_RANGE {
+        return Err(side_of(units));
     }
-    let whole = seconds.trunc();
-    let fraction = seconds - whole;
-    let (seconds, nanos) = if fraction < 0.0 {
+    let whole = whole_units(units);
+    let fraction = value - units;
+    let (seconds, micros) = if units.abs() > EPOCH_MILLISECONDS {
+        let millis = whole.rem_euclid(MILLIS_PER_SECOND);
         (
-            whole as i64 - 1,
-            ((1.0 + fraction) * NANOS_PER_SECOND).round().abs(),
+            whole.div_euclid(MILLIS_PER_SECOND),
+            millis * 1_000 + round_micros(fraction * MILLIS_PER_SECOND_F),
         )
     } else {
-        (whole as i64, (fraction * NANOS_PER_SECOND).round().abs())
+        (whole, round_micros(fraction * MICROS_PER_SECOND_F))
     };
-    // A datetime holds microseconds, so the fraction is rounded to them before
-    // the instant is built.
-    let nanos = (nanos / NANOS_PER_MICROSECOND).round() * NANOS_PER_MICROSECOND;
-    let instant = if nanos >= NANOS_PER_SECOND {
-        DateTime::from_timestamp(seconds + 1, 0)
-    } else {
-        DateTime::from_timestamp(seconds, nanos as u32)
-    };
-    let Some(instant) = instant else {
-        return Err(if seconds < 0 {
-            BEFORE_FIRST_YEAR
-        } else {
-            AFTER_LAST_YEAR
-        });
-    };
+    // A fraction that rounds up to a whole second carries into it, so the
+    // microseconds below the second always stay in `0..MICROS_PER_SECOND`. The
+    // wide integer is what a second of year 5138 needs to hold its micros.
+    let scale = i128::from(MICROS_PER_SECOND);
+    let micros = i128::from(seconds) * scale + i128::from(micros);
+    let seconds = micros.div_euclid(scale);
+    let below = micros.rem_euclid(scale);
+    let whole = i64::try_from(seconds).map_err(|_overflow| side_of(units))?;
+    let below = u32::try_from(below).unwrap_or_default();
+    let instant = DateTime::from_timestamp(whole, below * NANOS_PER_MICROSECOND)
+        .ok_or_else(|| side_of(units))?;
     match instant.year() {
         year if year > LAST_YEAR => Err(AFTER_LAST_YEAR),
         0 => Err(YEAR_ZERO),
         year if year < 0 => Err(BEFORE_FIRST_YEAR),
         _ => Ok(instant),
+    }
+}
+
+/// `seconds` as the whole units a timestamp is counted in.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the caller checked the magnitude is inside i64's range"
+)]
+fn whole_units(seconds: f64) -> i64 {
+    seconds as i64
+}
+
+/// The microseconds `micros` names, rounded to the nearest one.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the caller scaled a fraction below one second, so it is under a million"
+)]
+fn round_micros(micros: f64) -> i64 {
+    micros.round() as i64
+}
+
+/// The sentence a timestamp at `seconds` is refused with: one side of the range
+/// or the other, which is all that separates the two.
+fn side_of(seconds: f64) -> &'static str {
+    if seconds.is_sign_negative() {
+        BEFORE_FIRST_YEAR
+    } else {
+        AFTER_LAST_YEAR
     }
 }
 
