@@ -3,10 +3,11 @@
 //! The MCP transport proved with a real client, which every other MCP test in
 //! this repo writes its own JSON-RPC documents. This one uses the official
 //! `rmcp` SDK: its Streamable HTTP client performs the `initialize` handshake,
-//! then lists the tools, reads a Test, links an Issue and unlinks it, and the
-//! rows are read back from the database. Nothing here is hand-written protocol,
-//! so the lifecycle a client library insists on — the handshake, the `_meta` a
-//! request carries, the `mcp-*` headers — is exercised as a client sends it.
+//! and each test then drives one thing a client does — list the tools, read a
+//! Test, read a tool error, link an Issue and unlink it — with the rows read
+//! back from the database. Nothing here is hand-written protocol, so the
+//! lifecycle a client library insists on — the handshake, the `_meta` a request
+//! carries, the `mcp-*` headers — is exercised as a client sends it.
 //!
 //! What the client is and where it ran: `rmcp` 3.8.0's
 //! `StreamableHttpClientTransport` with `transport-streamable-http-client-reqwest`
@@ -23,7 +24,7 @@ use flakeradar_db::entities::test_cases;
 use flakeradar_test_support::{TestDb, app, make_project, make_test_case};
 
 use rmcp::RoleClient;
-use rmcp::model::{CallToolRequestParams, JsonObject};
+use rmcp::model::{CallToolRequestParams, CallToolResult, JsonObject};
 use rmcp::service::RunningService;
 use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
@@ -38,17 +39,15 @@ async fn seed(db: &TestDb) -> i64 {
     let project = make_project()
         .repo("acme/app")
         .project("frontend")
-        .build(db.connection())
-        .await
-        .expect("the Project");
+        .create(db)
+        .await;
     make_test_case(&project)
         .name("renders")
         .classname("src/app.test.ts")
         .flakiness_score(0.7)
         .confirmed_flake_count(1)
-        .build(db.connection())
+        .create(db)
         .await
-        .expect("the Test")
         .id
         .into()
 }
@@ -75,8 +74,22 @@ async fn connect(db: &TestDb) -> (RunningService<RoleClient, ()>, tokio::task::J
     (client, serving)
 }
 
+/// One `tools/call` by tool name, answering the result the client received.
+async fn call(
+    client: &RunningService<RoleClient, ()>,
+    name: &str,
+    arguments: Value,
+) -> CallToolResult {
+    client
+        .call_tool(
+            CallToolRequestParams::new(name.to_owned()).with_arguments(arguments_from(&arguments)),
+        )
+        .await
+        .expect("a tool call answers")
+}
+
 /// The tool arguments a call sends, as the client serializes them.
-fn arguments(value: &Value) -> JsonObject {
+fn arguments_from(value: &Value) -> JsonObject {
     value
         .as_object()
         .cloned()
@@ -95,9 +108,8 @@ async fn stored_issue(db: &TestDb, name: &str) -> Option<i32> {
 }
 
 #[tokio::test]
-async fn a_real_mcp_client_initializes_lists_its_tools_and_reads_a_test() {
+async fn a_real_mcp_client_completes_the_handshake() {
     let db = TestDb::new().await.expect("a test database is available");
-    let _ = seed(&db).await;
     let (client, serving) = connect(&db).await;
 
     let peer = client
@@ -111,6 +123,15 @@ async fn a_real_mcp_client_initializes_lists_its_tools_and_reads_a_test() {
             .is_some_and(|instructions| !instructions.is_empty()),
         "the handshake carries the instructions an agent reads: {peer:?}"
     );
+
+    client.cancel().await.expect("the client stops");
+    serving.abort();
+}
+
+#[tokio::test]
+async fn a_real_mcp_client_lists_the_tools() {
+    let db = TestDb::new().await.expect("a test database is available");
+    let (client, serving) = connect(&db).await;
 
     let listed = client.list_tools(None).await.expect("tools/list answers");
     let mut names: Vec<&str> = listed.tools.iter().map(|tool| &*tool.name).collect();
@@ -132,17 +153,22 @@ async fn a_real_mcp_client_initializes_lists_its_tools_and_reads_a_test() {
         ]
     );
 
-    // A read tool, by the name a person would use.
-    let read = client
-        .call_tool(
-            CallToolRequestParams::new("get_test").with_arguments(arguments(&json!({
-                "repo": "acme/app",
-                "project": "frontend",
-                "name": "renders",
-            }))),
-        )
-        .await
-        .expect("get_test answers");
+    client.cancel().await.expect("the client stops");
+    serving.abort();
+}
+
+#[tokio::test]
+async fn a_real_mcp_client_reads_a_test() {
+    let db = TestDb::new().await.expect("a test database is available");
+    let _ = seed(&db).await;
+    let (client, serving) = connect(&db).await;
+
+    let read = call(
+        &client,
+        "get_test",
+        json!({"repo": "acme/app", "project": "frontend", "name": "renders"}),
+    )
+    .await;
     assert_ne!(read.is_error, Some(true), "{read:?}");
     let test = read
         .structured_content
@@ -153,16 +179,19 @@ async fn a_real_mcp_client_initializes_lists_its_tools_and_reads_a_test() {
     assert_eq!(test["flakiness_score"], json!(0.7), "{test}");
     assert_eq!(test["github_issue_number"], Value::Null, "{test}");
 
+    client.cancel().await.expect("the client stops");
+    serving.abort();
+}
+
+#[tokio::test]
+async fn a_real_mcp_client_reads_a_tool_error() {
     // A tool error is an ordinary result with `isError`, and a client library
     // surfaces it as one rather than as a protocol failure: this is the shape an
     // agent reads when it asks for a Test that is not there.
-    let missing = client
-        .call_tool(
-            CallToolRequestParams::new("get_test")
-                .with_arguments(arguments(&json!({"test_id": 999}))),
-        )
-        .await
-        .expect("a tool error is an answer, not a protocol failure");
+    let db = TestDb::new().await.expect("a test database is available");
+    let (client, serving) = connect(&db).await;
+
+    let missing = call(&client, "get_test", json!({"test_id": 999})).await;
     assert_eq!(missing.is_error, Some(true), "{missing:?}");
     assert!(
         format!("{missing:?}").contains("999"),
@@ -179,15 +208,12 @@ async fn a_real_mcp_client_links_and_unlinks_an_issue() {
     let test_id = seed(&db).await;
     let (client, serving) = connect(&db).await;
 
-    let link = client
-        .call_tool(
-            CallToolRequestParams::new("link_issue").with_arguments(arguments(&json!({
-                "test_id": test_id,
-                "number": 31,
-            }))),
-        )
-        .await
-        .expect("link_issue answers");
+    let link = call(
+        &client,
+        "link_issue",
+        json!({"test_id": test_id, "number": 31}),
+    )
+    .await;
     assert_ne!(link.is_error, Some(true), "{link:?}");
     assert_eq!(
         stored_issue(&db, "renders").await,
@@ -195,13 +221,7 @@ async fn a_real_mcp_client_links_and_unlinks_an_issue() {
         "link_issue must write the Issue number the client sent"
     );
 
-    let unlink = client
-        .call_tool(
-            CallToolRequestParams::new("unlink_issue")
-                .with_arguments(arguments(&json!({"test_id": test_id}))),
-        )
-        .await
-        .expect("unlink_issue answers");
+    let unlink = call(&client, "unlink_issue", json!({"test_id": test_id})).await;
     assert_ne!(unlink.is_error, Some(true), "{unlink:?}");
     assert_eq!(
         stored_issue(&db, "renders").await,
