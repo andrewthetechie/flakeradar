@@ -16,7 +16,8 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Router, middleware};
 use flakeradar_core::{
-    dto::AttemptIn, dto::COMMIT_SHA_MAX, dto::IngestAccepted, dto::NAME_MAX, dto::PATH_MAX,
+    dto::AttemptIn, dto::COMMIT_SHA_MAX, dto::FinishIssues, dto::IngestAccepted, dto::Issues,
+    dto::NAME_MAX, dto::PATH_MAX,
     dto::PIPELINE_MAX, dto::PROJECT_MAX, dto::PipelineReportIn, dto::ReportOut,
     dto::ReportSummaryOut, dto::ValidationIssue, dto::ci_run_attempt_too_large, dto::pipeline_body,
     dto::read_ci_run_attempt, identity::normalize_project, identity::normalize_repo,
@@ -35,7 +36,7 @@ use serde::Deserialize;
 use serde_json::Value as JsonValue;
 
 use crate::app::AppState;
-use crate::error::{ApiError, ApiResult, RouteError, RouteResult};
+use crate::error::{ApiError, ApiResult, RouteError, RouteResult, identity_error};
 use crate::extract::{ApiJson, ApiPath, ApiQuery, Validate, off_thread, query_loc};
 use crate::middleware::require_token;
 use crate::multipart::{MalformedHeaders, REPORT_FIELD, file_field};
@@ -172,7 +173,7 @@ impl Validate for IngestQuery {
     /// before the body is read, and the issues come in the order the parameters are
     /// declared.
     fn validate(&self) -> ApiResult<()> {
-        let mut issues = Vec::new();
+        let mut issues = Issues::new();
         check_max(&self.repo, NAME_MAX, "repo", &mut issues);
         if let Some(project) = &self.project {
             check_max(project, PROJECT_MAX, "project", &mut issues);
@@ -215,9 +216,7 @@ impl Validate for IngestQuery {
         if let Some(pipeline) = &self.pipeline {
             check_max(pipeline, PIPELINE_MAX, "pipeline", &mut issues);
         }
-        if !issues.is_empty() {
-            return Err(ApiError::unprocessable(issues));
-        }
+        issues.finish().map_err(ApiError::unprocessable)?;
         // An attempt past the column's range is not a body this server can store,
         // and answering it late crashed after creating rows the Request would have
         // to undo. It is refused with 400, the same way an unparsable `time` is,
@@ -320,7 +319,7 @@ impl Validate for ListQuery {
     /// The `status` membership check is the handler's own, and answers a
     /// hand-written detail rather than a list of issues.
     fn validate(&self) -> ApiResult<()> {
-        let mut issues = Vec::new();
+        let mut issues = Issues::new();
         if self.limit < 1 {
             issues.push(ValidationIssue::greater_than_equal(
                 query_loc("limit"),
@@ -334,11 +333,7 @@ impl Validate for ListQuery {
                 MAX_REPORT_LIMIT,
             ));
         }
-        if issues.is_empty() {
-            Ok(())
-        } else {
-            Err(ApiError::unprocessable(issues))
-        }
+        issues.finish().map_err(ApiError::unprocessable)
     }
 }
 
@@ -394,10 +389,10 @@ pub async fn ingest(
             ApiError::new(StatusCode::PAYLOAD_TOO_LARGE, "Report exceeds 20 MB limit").into(),
         );
     }
-    let repo_name = normalize_repo(&query.repo).map_err(|error| named_error(&error))?;
+    let repo_name = normalize_repo(&query.repo).map_err(|error| identity_error(&error))?;
     let project_name =
-        normalize_project(query.project.as_deref()).map_err(|error| named_error(&error))?;
-    let root = normalize_root(query.root.as_deref()).map_err(|error| named_error(&error))?;
+        normalize_project(query.project.as_deref()).map_err(|error| identity_error(&error))?;
+    let root = normalize_root(query.root.as_deref()).map_err(|error| identity_error(&error))?;
     let line_base = query.line_base;
     parse_report_body(content.clone(), line_base).await?;
     // The number `validate` already accepted, or nothing at all: a value past the
@@ -535,11 +530,6 @@ async fn parse_report_body(content: Bytes, line_base: i64) -> ApiResult<()> {
             error.to_string(),
         )),
     }
-}
-
-/// The 422 for a Repo, Project or root name the server cannot accept.
-fn named_error(error: &flakeradar_core::identity::IdentityError) -> ApiError {
-    ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, error.to_string())
 }
 
 /// A query parameter's value with the surrounding whitespace trimmed, or `None`

@@ -14,11 +14,11 @@ use axum::{Router, middleware};
 use flakeradar_core::defaults;
 use flakeradar_core::limits::{LIST_LIMIT_MAX, NEW_WITHIN_DAYS_MAX};
 use flakeradar_core::{
-    classify::FailureCategory, dto::CiRunFailuresOut, dto::HistoryOut, dto::JobHistoryOut,
-    dto::JobPage, dto::JobSummaryOut, dto::NAME_MAX, dto::PATH_MAX, dto::PIPELINE_MAX,
-    dto::PROJECT_MAX, dto::QuarantineIn, dto::QuarantineItem, dto::RepoOut, dto::SummaryOut,
-    dto::TestOut, dto::TestPage, dto::ValidationIssue, identity::normalize_project,
-    identity::normalize_repo, lax,
+    classify::FailureCategory, dto::CiRunFailuresOut, dto::FinishIssues, dto::HistoryOut,
+    dto::Issues, dto::JobHistoryOut, dto::JobPage, dto::JobSummaryOut, dto::NAME_MAX,
+    dto::PATH_MAX, dto::PIPELINE_MAX, dto::PROJECT_MAX, dto::QuarantineIn, dto::QuarantineItem,
+    dto::RepoOut, dto::SummaryOut, dto::TestOut, dto::TestPage, dto::ValidationIssue,
+    identity::normalize_project, identity::normalize_repo, lax,
 };
 use flakeradar_db::{
     reads::DEFAULT_EXECUTIONS_LIMIT, reads::FAILURES_LIMIT, reads::JobListFilters,
@@ -32,7 +32,7 @@ use serde::Deserialize;
 use serde_json::Value as JsonValue;
 
 use crate::app::AppState;
-use crate::error::{ApiError, ApiResult, RouteError, RouteResult};
+use crate::error::{ApiError, ApiResult, RouteError, RouteResult, identity_error};
 use crate::extract::{ApiJson, ApiPath, ApiQuery, Validate, query_loc};
 use crate::middleware::require_token;
 use crate::routes::{JobPath, TestPath};
@@ -60,11 +60,6 @@ pub fn router(state: AppState) -> Router<AppState> {
 /// The read settings the configuration holds.
 fn read_settings(state: &AppState) -> ReadSettings {
     state.reads()
-}
-
-/// A 422 from an identity rule, as `{"detail": "<message>"}`.
-fn identity_error(error: &flakeradar_core::identity::IdentityError) -> ApiError {
-    ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, error.to_string())
 }
 
 /// A 422 message the route writes itself.
@@ -205,14 +200,10 @@ pub struct ScopeQuery {
 
 impl Validate for ScopeQuery {
     fn validate(&self) -> ApiResult<()> {
-        let mut issues = Vec::new();
+        let mut issues = Issues::new();
         check_max(self.repo.as_ref(), NAME_MAX, "repo", &mut issues);
         check_max(self.project.as_ref(), PROJECT_MAX, "project", &mut issues);
-        if issues.is_empty() {
-            Ok(())
-        } else {
-            Err(ApiError::unprocessable(issues))
-        }
+        issues.finish().map_err(ApiError::unprocessable)
     }
 }
 
@@ -262,7 +253,7 @@ pub struct TestsQuery {
 
 impl Validate for TestsQuery {
     fn validate(&self) -> ApiResult<()> {
-        let mut issues = Vec::new();
+        let mut issues = Issues::new();
         check_max(self.repo.as_ref(), NAME_MAX, "repo", &mut issues);
         check_max(self.project.as_ref(), PROJECT_MAX, "project", &mut issues);
         validate_sort(self.sort.as_ref(), &mut issues);
@@ -271,11 +262,7 @@ impl Validate for TestsQuery {
         validate_category(self.category.as_ref(), &mut issues);
         check_max(self.q.as_ref(), QUERY_MAX, "q", &mut issues);
         validate_new_within_days(self.new_within_days, &mut issues);
-        if issues.is_empty() {
-            Ok(())
-        } else {
-            Err(ApiError::unprocessable(issues))
-        }
+        issues.finish().map_err(ApiError::unprocessable)
     }
 }
 
@@ -334,7 +321,7 @@ pub struct JobsQuery {
 
 impl Validate for JobsQuery {
     fn validate(&self) -> ApiResult<()> {
-        let mut issues = Vec::new();
+        let mut issues = Issues::new();
         check_max(self.repo.as_ref(), NAME_MAX, "repo", &mut issues);
         validate_sort(self.sort.as_ref(), &mut issues);
         validate_paging(self.page, self.page_size, &mut issues);
@@ -346,11 +333,7 @@ impl Validate for JobsQuery {
             &mut issues,
         );
         validate_new_within_days(self.new_within_days, &mut issues);
-        if issues.is_empty() {
-            Ok(())
-        } else {
-            Err(ApiError::unprocessable(issues))
-        }
+        issues.finish().map_err(ApiError::unprocessable)
     }
 }
 
@@ -364,13 +347,9 @@ pub struct HistoryQuery {
 
 impl Validate for HistoryQuery {
     fn validate(&self) -> ApiResult<()> {
-        let mut issues = Vec::new();
+        let mut issues = Issues::new();
         validate_limit(self.limit, &mut issues);
-        if issues.is_empty() {
-            Ok(())
-        } else {
-            Err(ApiError::unprocessable(issues))
-        }
+        issues.finish().map_err(ApiError::unprocessable)
     }
 }
 
@@ -400,14 +379,10 @@ pub struct CiRunFailuresQuery {
 
 impl Validate for CiRunFailuresQuery {
     fn validate(&self) -> ApiResult<()> {
-        let mut issues = Vec::new();
+        let mut issues = Issues::new();
         check_max(Some(&self.repo), NAME_MAX, "repo", &mut issues);
         check_ge(self.ci_run_attempt, 1, "ci_run_attempt", &mut issues);
-        if issues.is_empty() {
-            Ok(())
-        } else {
-            Err(ApiError::unprocessable(issues))
-        }
+        issues.finish().map_err(ApiError::unprocessable)
     }
 }
 
@@ -423,14 +398,10 @@ pub struct QuarantineQuery {
 
 impl Validate for QuarantineQuery {
     fn validate(&self) -> ApiResult<()> {
-        let mut issues = Vec::new();
+        let mut issues = Issues::new();
         check_max(Some(&self.repo), NAME_MAX, "repo", &mut issues);
         check_max(self.project.as_ref(), PROJECT_MAX, "project", &mut issues);
-        if issues.is_empty() {
-            Ok(())
-        } else {
-            Err(ApiError::unprocessable(issues))
-        }
+        issues.finish().map_err(ApiError::unprocessable)
     }
 }
 
@@ -774,7 +745,7 @@ pub async fn ci_run(
     if path.ci_run_id.is_empty() {
         return Err(RouteError::NotFound("Not Found".to_owned()));
     }
-    let mut issues = Vec::new();
+    let mut issues = Issues::new();
     let length = path.ci_run_id.chars().count();
     if length > NAME_MAX {
         issues.push(ValidationIssue::string_too_long(
@@ -786,9 +757,7 @@ pub async fn ci_run(
             NAME_MAX,
         ));
     }
-    if !issues.is_empty() {
-        return Err(ApiError::unprocessable(issues).into());
-    }
+    issues.finish().map_err(ApiError::unprocessable)?;
     let repo = normalize_repo(&query.repo).map_err(|error| identity_error(&error))?;
     Ok(Json(
         ci_run_failures(

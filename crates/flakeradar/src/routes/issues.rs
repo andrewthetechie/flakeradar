@@ -10,12 +10,12 @@ use axum::routing::put;
 use axum::{Router, middleware};
 use flakeradar_core::dto::lax_bool;
 use flakeradar_core::{dto::IssueLinkIn, dto::JobOut, dto::TestOut, model::EntityKind};
-use flakeradar_db::issue_links::{self, IssueLinkError, LinkedOut};
+use flakeradar_db::issue_links::{self, LinkedOut};
 
 use serde::Deserialize;
 
 use crate::app::AppState;
-use crate::error::{ApiResult, RouteError, RouteResult};
+use crate::error::{ApiResult, RouteResult};
 use crate::extract::{ApiJson, ApiPath, ApiQuery, Validate};
 use crate::middleware::require_token;
 use crate::routes::{JobPath, TestPath};
@@ -74,7 +74,7 @@ pub async fn link_test(
     ApiPath(path): ApiPath<TestPath>,
     ApiQuery(query): ApiQuery<LinkQuery>,
     ApiJson(body): ApiJson<IssueLinkIn>,
-) -> RouteResult<Json<TestOut>> {
+) -> RouteResult<Json<LinkedOut>> {
     let out = issue_links::link_issue(
         state.pool(),
         EntityKind::Test,
@@ -85,12 +85,7 @@ pub async fn link_test(
         &state.reads(),
     )
     .await?;
-    match out {
-        LinkedOut::Test(test) => Ok(Json(test)),
-        LinkedOut::Job(_) => Err(RouteError::Refused(IssueLinkError::NotFound(
-            "Test not found".to_owned(),
-        ))),
-    }
+    Ok(Json(out))
 }
 
 /// Removes a Test's Issue link.
@@ -114,16 +109,11 @@ pub async fn link_test(
 pub async fn unlink_test(
     State(state): State<AppState>,
     ApiPath(path): ApiPath<TestPath>,
-) -> RouteResult<Json<TestOut>> {
+) -> RouteResult<Json<LinkedOut>> {
     let out =
         issue_links::unlink_issue(state.pool(), EntityKind::Test, path.test_id, &state.reads())
             .await?;
-    match out {
-        LinkedOut::Test(test) => Ok(Json(test)),
-        LinkedOut::Job(_) => Err(RouteError::Refused(IssueLinkError::NotFound(
-            "Test not found".to_owned(),
-        ))),
-    }
+    Ok(Json(out))
 }
 
 /// Links a GitHub issue to a Job.
@@ -155,7 +145,7 @@ pub async fn link_job(
     ApiPath(path): ApiPath<JobPath>,
     ApiQuery(query): ApiQuery<LinkQuery>,
     ApiJson(body): ApiJson<IssueLinkIn>,
-) -> RouteResult<Json<JobOut>> {
+) -> RouteResult<Json<LinkedOut>> {
     let out = issue_links::link_issue(
         state.pool(),
         EntityKind::Job,
@@ -166,12 +156,7 @@ pub async fn link_job(
         &state.reads(),
     )
     .await?;
-    match out {
-        LinkedOut::Job(job) => Ok(Json(job)),
-        LinkedOut::Test(_) => Err(RouteError::Refused(IssueLinkError::NotFound(
-            "Job not found".to_owned(),
-        ))),
-    }
+    Ok(Json(out))
 }
 
 /// Removes a Job's Issue link.
@@ -195,13 +180,8 @@ pub async fn link_job(
 pub async fn unlink_job(
     State(state): State<AppState>,
     ApiPath(path): ApiPath<JobPath>,
-) -> RouteResult<Json<JobOut>> {
+) -> RouteResult<Json<LinkedOut>> {
     let out = issue_links::unlink_issue(state.pool(), EntityKind::Job, path.job_id, &state.reads())
         .await?;
-    match out {
-        LinkedOut::Job(job) => Ok(Json(job)),
-        LinkedOut::Test(_) => Err(RouteError::Refused(IssueLinkError::NotFound(
-            "Job not found".to_owned(),
-        ))),
-    }
+    Ok(Json(out))
 }

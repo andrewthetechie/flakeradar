@@ -304,6 +304,41 @@ pub struct ValidationIssue {
     pub ctx: Option<Value>,
 }
 
+/// Every issue one request's checks found, in the order they found them.
+///
+/// A validator pushes what it finds and ends with [`FinishIssues::finish`], so
+/// "nothing found is an accepted request" is a rule stated once for both front
+/// doors rather than an `is_empty` test at each site.
+pub type Issues = Vec<ValidationIssue>;
+
+/// How a request's checks reach their end.
+///
+/// Every validator on either front door collects an [`Issues`] list and ends with
+/// this method, so the rule that an empty list is an accepted request is stated
+/// once.
+pub trait FinishIssues {
+    /// Whether the checks found anything.
+    ///
+    /// The issues come back rather than a refusal because what a refusal costs
+    /// belongs to the surface: a route answers its 422 body, a request model
+    /// answers its own refusal kind.
+    ///
+    /// # Errors
+    ///
+    /// Returns the whole list when it is not empty, and `Ok(())` when it is.
+    fn finish(self) -> Result<(), Issues>;
+}
+
+impl FinishIssues for Issues {
+    fn finish(self) -> Result<(), Issues> {
+        if self.is_empty() {
+            Ok(())
+        } else {
+            Err(self)
+        }
+    }
+}
+
 impl ValidationIssue {
     /// A string shorter than its minimum length.
     #[must_use]
@@ -790,9 +825,7 @@ impl JobResultIn {
         let completed_at = read_optional_timestamp(&fields, "completed_at", &mut issues);
         let summary = read_defaulted_bool(&fields, "summary", &mut issues).unwrap_or(false);
 
-        if !issues.is_empty() {
-            return Err(issues);
-        }
+        issues.finish()?;
         Ok(Self {
             ci_job_id,
             name,
@@ -1162,9 +1195,7 @@ impl PipelineReportIn {
                 issues.push(ValidationIssue::model_error("duplicate ci_job_id in jobs"));
             }
         }
-        if !issues.is_empty() {
-            return Err(BodyRefusal::Issues(issues));
-        }
+        issues.finish().map_err(BodyRefusal::Issues)?;
         if attempt_past_column {
             return Err(BodyRefusal::AttemptPastColumn);
         }
@@ -1886,15 +1917,11 @@ impl QuarantineIn {
             }
         }
 
-        if issues.is_empty() {
-            Ok(Self {
-                quarantined,
-                reason,
-                expires_in_days,
-            })
-        } else {
-            Err(issues)
-        }
+        issues.finish().map(|()| Self {
+            quarantined,
+            reason,
+            expires_in_days,
+        })
     }
 }
 
@@ -2116,11 +2143,7 @@ impl IssueLinkIn {
             }
         }
 
-        if issues.is_empty() {
-            Ok(Self { number, url })
-        } else {
-            Err(issues)
-        }
+        issues.finish().map(|()| Self { number, url })
     }
 }
 

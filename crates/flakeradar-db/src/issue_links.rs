@@ -18,6 +18,7 @@ use flakeradar_core::{
     py::strip_wire_whitespace,
 };
 use sea_orm::{ConnectionTrait, DbBackend, Statement, TransactionSession, TransactionTrait, Value};
+use serde::Serialize;
 
 use crate::error::DbError;
 use crate::reads::{
@@ -40,7 +41,14 @@ const fn github_provider_only(kind: EntityKind) -> bool {
 }
 
 /// What a link or unlink answered: the target's own response shape.
-#[derive(Debug, Clone)]
+///
+/// A caller asks for one target and gets that target's row, so the variant is
+/// settled by the query that ran and no handler has to guess. `untagged` means the
+/// wire is the wrapped DTO exactly: the same `TestOut` or `JobOut` body its
+/// leaderboard serves, which is why the routes answer `Json<LinkedOut>` rather than
+/// reaching into a variant. `utoipa` still names the concrete body per route.
+#[derive(Debug, Clone, Serialize)]
+#[serde(untagged)]
 pub enum LinkedOut {
     /// A Test, in the leaderboard shape.
     Test(TestOut),

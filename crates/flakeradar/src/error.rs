@@ -176,6 +176,15 @@ impl IntoResponse for RouteError {
     }
 }
 
+/// The 422 an identity rule refuses a Repo, Project or root name with.
+///
+/// A name the identity rules reject is bad input on every surface that takes one,
+/// so both route groups answer the same `{"detail": "<rule>"}` body from this one
+/// function rather than each keeping its own copy.
+pub(crate) fn identity_error(error: &flakeradar_core::identity::IdentityError) -> ApiError {
+    ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, error.to_string())
+}
+
 /// The status an Issue-link refusal answers with.
 ///
 /// The database layer states the refusal's kind and its text; which HTTP status a

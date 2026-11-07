@@ -19,7 +19,7 @@ use flakeradar_db::ProjectDelete;
 use serde::Deserialize;
 
 use crate::app::AppState;
-use crate::error::{ApiError, RouteResult};
+use crate::error::{ApiError, RouteResult, identity_error};
 use crate::extract::ApiPath;
 use crate::middleware::require_token;
 
@@ -53,11 +53,6 @@ pub struct ProjectPath {
     name: String,
     /// The Project's name.
     project: String,
-}
-
-/// A 422 from an identity rule, as `{"detail": "<message>"}`.
-fn identity_error(error: &flakeradar_core::identity::IdentityError) -> ApiError {
-    ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, error.to_string())
 }
 
 /// Deletes a Repo and, by cascade, everything in it.
