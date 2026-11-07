@@ -14,7 +14,7 @@
 //! produces are dropped and only their count is logged (ADR 0009).
 
 use chrono::{NaiveDate, TimeDelta};
-use flakeradar_core::{defaults, model::ReportStatus};
+use flakeradar_core::{defaults, model::EntityKind, model::ReportStatus};
 use sea_orm::entity::prelude::DateTimeWithTimeZone;
 use sea_orm::sea_query::{Expr, ExprTrait as _, Order, Query};
 use sea_orm::{
@@ -26,7 +26,7 @@ use tracing::info;
 use crate::clock::MonotonicClock;
 use crate::entities::{reports, test_executions, test_runs};
 use crate::error::DbError;
-use crate::processing::{ProcessingSettings, rescore, rescore_jobs};
+use crate::processing::{ProcessingSettings, rescore};
 use crate::sql::{bigint_array, get, rows};
 
 /// The largest retention window a setting may ask for, in days.
@@ -425,10 +425,14 @@ async fn drop_silent_tier_changes(
 ) -> Result<u64, DbError> {
     let mut dropped = 0usize;
     if !stale_tests.is_empty() {
-        dropped += rescore(db, stale_tests, None, processing).await?.len();
+        dropped += rescore(db, EntityKind::Test, stale_tests, None, processing)
+            .await?
+            .len();
     }
     if !stale_jobs.is_empty() {
-        dropped += rescore_jobs(db, stale_jobs, None, processing).await?.len();
+        dropped += rescore(db, EntityKind::Job, stale_jobs, None, processing)
+            .await?
+            .len();
     }
     if dropped > 0 {
         info!(

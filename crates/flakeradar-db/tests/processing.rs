@@ -16,8 +16,8 @@ use std::sync::Arc;
 use chrono::{DateTime, FixedOffset};
 use flakeradar_core::{
     dto::JobResultIn, dto::PipelineReportIn, dto::pipeline_body, helpers::is_broken,
-    helpers::tier_for, model::ExecutionStatus, model::JobStatus, model::ReportStatus,
-    scoring::ScoredExecution, types::CiRunId,
+    helpers::tier_for, model::EntityKind, model::ExecutionStatus, model::JobStatus,
+    model::ReportStatus, scoring::ScoredExecution, types::CiRunId,
 };
 use flakeradar_db::entities::{
     job_executions, job_score_history, jobs, pipelines, projects, reports, repos, test_cases,
@@ -25,7 +25,7 @@ use flakeradar_db::entities::{
 };
 use flakeradar_db::{
     get_or_create_project, processing::ProcessingSettings, processing::claim_next_report,
-    processing::process_next, processing::rescore, processing::rescore_jobs,
+    processing::process_next, processing::rescore,
 };
 use flakeradar_test_support::{
     FixedClock, TestDb, make_job, make_job_execution, make_junit, make_pipeline, make_report,
@@ -973,9 +973,15 @@ async fn a_rescore_matches_the_branch_scoped_score_over_all_rows() {
             status: ExecutionStatus::Passed,
         });
     }
-    rescore(db.connection(), &[row.id], None, &settings)
-        .await
-        .expect("the rescore");
+    rescore(
+        db.connection(),
+        EntityKind::Test,
+        &[row.id],
+        None,
+        &settings,
+    )
+    .await
+    .expect("the rescore");
     let stored = test(&db).await;
     history.reverse();
     let history = history;
@@ -1333,6 +1339,7 @@ async fn tier_changes_are_emitted_in_id_order() {
     // events go out in id order whatever order the caller lists the ids in.
     let changes = rescore(
         db.connection(),
+        EntityKind::Test,
         &[second.id, first.id],
         None,
         &notify_settings(),
@@ -1382,8 +1389,9 @@ async fn job_tier_changes_are_emitted_in_id_order() {
                 .expect("a Job execution");
         }
     }
-    let changes = rescore_jobs(
+    let changes = rescore(
         db.connection(),
+        EntityKind::Job,
         &[second.id, first.id],
         None,
         &notify_settings(),

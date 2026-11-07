@@ -15,12 +15,13 @@ use std::sync::Arc;
 
 use chrono::{DateTime, FixedOffset};
 use flakeradar_core::{
-    dto::JobResultIn, dto::PipelineReportIn, dto::pipeline_body, model::JobStatus, types::CiRunId,
+    dto::JobResultIn, dto::PipelineReportIn, dto::pipeline_body, model::EntityKind,
+    model::JobStatus, types::CiRunId,
 };
 use flakeradar_db::entities::{job_executions, jobs, projects, repos, test_runs};
 use flakeradar_db::{
     SIBLING_MAX, explained_ci_job_ids, get_or_create_project, processing::ProcessingSettings,
-    processing::job_history, processing::process_next, processing::rescore_jobs,
+    processing::job_history, processing::process_next, processing::rescore,
     summary_explaining_siblings, unexplained_failure_counts,
 };
 use flakeradar_test_support::{
@@ -452,9 +453,15 @@ async fn explained_failure_does_not_break_clean_streak() {
         .await
         .expect("an Execution");
 
-    rescore_jobs(db.connection(), &[job.id], None, &settings())
-        .await
-        .expect("the rescore");
+    rescore(
+        db.connection(),
+        EntityKind::Job,
+        &[job.id],
+        None,
+        &settings(),
+    )
+    .await
+    .expect("the rescore");
     let stored = job_named(&db, "e2e").await;
     assert_eq!(stored.clean_streak, 2);
 }
@@ -480,9 +487,15 @@ async fn unexplained_failure_breaks_clean_streak() {
             .await
             .expect("a Job execution");
     }
-    rescore_jobs(db.connection(), &[job.id], None, &settings())
-        .await
-        .expect("the rescore");
+    rescore(
+        db.connection(),
+        EntityKind::Job,
+        &[job.id],
+        None,
+        &settings(),
+    )
+    .await
+    .expect("the rescore");
     assert_eq!(job_named(&db, "e2e").await.clean_streak, 1);
 }
 
@@ -547,9 +560,15 @@ async fn old_explained_failures_beyond_the_window_do_not_change_the_score() {
         }
     }
 
-    rescore_jobs(db.connection(), &[twin.id, full.id], None, &settings)
-        .await
-        .expect("the rescore");
+    rescore(
+        db.connection(),
+        EntityKind::Job,
+        &[twin.id, full.id],
+        None,
+        &settings,
+    )
+    .await
+    .expect("the rescore");
     let twin = job_named(&db, "recent-only").await;
     let full = job_named(&db, "with-old-explained").await;
     assert_eq!(full.flakiness_score, twin.flakiness_score);
@@ -605,7 +624,7 @@ async fn job_default_branch_window_survives_newer_feature_rows() {
             .expect("a Job execution");
     }
 
-    rescore_jobs(db.connection(), &[job.id], None, &settings)
+    rescore(db.connection(), EntityKind::Job, &[job.id], None, &settings)
         .await
         .expect("the rescore");
     // The 3 newest main flips still score despite 10 newer feat rows.

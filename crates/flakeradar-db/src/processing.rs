@@ -478,7 +478,14 @@ async fn process_junit_report(
     // are emitted in.
     let mut touched: Vec<i32> = built.latest.iter().map(|row| row.id).collect();
     touched.sort_unstable();
-    let mut tier_changes = rescore(db, &touched, Some(&built.day_counts), settings).await?;
+    let mut tier_changes = rescore(
+        db,
+        EntityKind::Test,
+        &touched,
+        Some(&built.day_counts),
+        settings,
+    )
+    .await?;
     if branch_changed {
         rescore_repo(db, report.repo_id, settings).await?;
     }
@@ -900,7 +907,14 @@ async fn process_pipeline_report(
     update_job_last_status(db, &pipeline, &job_ids, &jobs_with_new_exec, now).await?;
 
     let touched_job_ids: Vec<i32> = jobs_with_new_exec.union(&flag_changed).copied().collect();
-    let tier_changes = rescore_jobs(db, &touched_job_ids, Some(&day_counts), settings).await?;
+    let tier_changes = rescore(
+        db,
+        EntityKind::Job,
+        &touched_job_ids,
+        Some(&day_counts),
+        settings,
+    )
+    .await?;
     if branch_changed {
         rescore_repo(db, report.repo_id, settings).await?;
     }
@@ -1188,18 +1202,6 @@ struct PipelineExecution {
 /// also clears `github_issue_fixed_noted_at`; any other streak leaves it alone,
 /// which is what the bulk update's per-row reset flag does.
 ///
-/// # Errors
-///
-/// Returns [`DbError::Database`] when a read or write fails.
-pub async fn rescore(
-    db: &impl ConnectionTrait,
-    test_case_ids: &[i32],
-    day_counts: Option<&BTreeMap<i32, DayCounts>>,
-    settings: &ProcessingSettings,
-) -> Result<Vec<TierChange>, DbError> {
-    rescore_kind(db, EntityKind::Test, test_case_ids, day_counts, settings).await
-}
-
 /// One entity's scoring window: its newest Executions and its Repo's branch.
 #[derive(Debug, Clone, Default)]
 struct Window {
@@ -1354,14 +1356,6 @@ async fn job_windows(
     Ok(windows)
 }
 
-/// The `UpdateTable` that holds `kind`'s rows.
-fn table_of(kind: EntityKind) -> &'static UpdateTable {
-    match kind {
-        EntityKind::Test => &TEST_TABLE,
-        EntityKind::Job => &JOB_TABLE,
-    }
-}
-
 /// The `Notices` that report `kind`'s Tier changes.
 fn notices_of(kind: EntityKind) -> &'static Notices {
     match kind {
@@ -1373,11 +1367,14 @@ fn notices_of(kind: EntityKind) -> &'static Notices {
 /// Recomputes flakiness for `kind`'s rows, and writes the Tier changes it makes.
 ///
 /// Every rule a rescore applies is here, once: the window scores the row, the
-/// old score says whether the tier crossed, the bulk update writes the row and
+/// old score says whether the tier crossed, the bulk write stores the row and
 /// today's Score history gains the day's counts. What differs between a Test and
-/// a Job is a window statement, a table and a set of Notices, which the
-/// descriptors carry.
-async fn rescore_kind(
+/// a Job is a window statement, a write statement and a set of Notices.
+///
+/// # Errors
+///
+/// Returns [`DbError::Database`] when a read or write fails.
+pub async fn rescore(
     db: &impl ConnectionTrait,
     kind: EntityKind,
     ids: &[i32],
@@ -1391,7 +1388,7 @@ async fn rescore_kind(
         .collect();
     let old = old_scores(db, kind, ids).await?;
     let changes = tier_changes(db, notices_of(kind), &updates, &old, settings).await?;
-    write_updates(db, table_of(kind), &updates).await?;
+    write_updates(db, updates_of(kind), &updates).await?;
     write_day_counts(db, kind, &updates, day_counts, settings).await?;
     Ok(changes)
 }
@@ -1424,27 +1421,19 @@ async fn write_day_counts(
     write_today_history(db, kind, &history_updates, settings.clock.today()).await
 }
 
-/// The table that holds `kind`'s scored rows.
-fn scored_table(kind: EntityKind) -> &'static str {
-    match kind {
-        EntityKind::Test => "test_cases",
-        EntityKind::Job => "jobs",
-    }
-}
-
 /// The scores a rescore is about to replace, read before the update.
 async fn old_scores(
     db: &impl ConnectionTrait,
     kind: EntityKind,
     ids: &[i32],
 ) -> Result<BTreeMap<i32, f64>, DbError> {
-    let table = scored_table(kind);
+    let from = match kind {
+        EntityKind::Test => "SELECT id, flakiness_score FROM test_cases WHERE id IN ",
+        EntityKind::Job => "SELECT id, flakiness_score FROM jobs WHERE id IN ",
+    };
     let mut scores = BTreeMap::new();
     for chunk in chunks(ids) {
-        let sql = format!(
-            "SELECT id, flakiness_score FROM {table} WHERE id IN ({})",
-            placeholder_list(1, chunk.len())
-        );
+        let sql = format!("{}({})", from, placeholder_list(1, chunk.len()));
         let values = chunk.iter().map(|id| Value::from(*id)).collect();
         for row in rows(db, sql, values).await? {
             scores.insert(get(&row, "id")?, get(&row, "flakiness_score")?);
@@ -1453,18 +1442,14 @@ async fn old_scores(
     Ok(scores)
 }
 
-/// The updates that crossed the Flake threshold, in either direction.
+/// Whether one update crossed the Flake threshold, in either direction.
 ///
 /// Only the flaky boundary counts: a move between Stable and Suspect changes the
-/// tier but crosses nothing, so it sends no Notification.
-fn crossed<T: Copy>(updates: &[(i32, f64, T)], old: &BTreeMap<i32, f64>, threshold: f64) -> Vec<T> {
-    updates
-        .iter()
-        .filter(|(id, score, _)| {
-            (*score >= threshold) != (old.get(id).copied().unwrap_or(0.0) >= threshold)
-        })
-        .map(|(_, _, value)| *value)
-        .collect()
+/// tier but crosses nothing, so it sends no Notification. A row with no stored
+/// score is new, and new is 0.0.
+fn crossed(update: &Update, old: &BTreeMap<i32, f64>, threshold: f64) -> bool {
+    let before = old.get(&update.id).copied().unwrap_or(0.0);
+    (update.flakiness_score >= threshold) != (before >= threshold)
 }
 
 /// What differs between a Test's and a Job's Tier change.
@@ -1572,25 +1557,23 @@ async fn tier_changes(
     settings: &ProcessingSettings,
 ) -> Result<Vec<TierChange>, DbError> {
     let threshold = settings.flake_threshold;
-    let scored: Vec<(i32, f64, Update)> = updates
+    let mut crossing: Vec<Update> = updates
         .iter()
-        .map(|update| (update.id, update.flakiness_score, *update))
-        .collect();
-    let mut crossed: Vec<Update> = crossed(&scored, old, threshold)
-        .into_iter()
         .filter(|update| {
-            tier_for(update.flakiness_score, threshold) == Tier::Flaky
-                || (notices.recovered)(update, settings)
+            crossed(update, old, threshold)
+                && (tier_for(update.flakiness_score, threshold) == Tier::Flaky
+                    || (notices.recovered)(update, settings))
         })
+        .copied()
         .collect();
-    if crossed.is_empty() {
+    if crossing.is_empty() {
         return Ok(Vec::new());
     }
     // The events go out in id order whatever order the caller listed the ids in:
     // the named rows are read back into a map keyed by id.
-    crossed.sort_unstable_by_key(|update| update.id);
-    let by_id: BTreeMap<i32, Update> = crossed.iter().map(|update| (update.id, *update)).collect();
-    let ids: Vec<i32> = crossed.iter().map(|update| update.id).collect();
+    crossing.sort_unstable_by_key(|update| update.id);
+    let by_id: BTreeMap<i32, Update> = crossing.iter().map(|update| (update.id, *update)).collect();
+    let ids: Vec<i32> = crossing.iter().map(|update| update.id).collect();
     let mut named: BTreeMap<i32, TierChange> = BTreeMap::new();
     for chunk in chunks(&ids) {
         let placeholders = placeholder_list(1, chunk.len());
@@ -1605,144 +1588,107 @@ async fn tier_changes(
         }
     }
     // A row deleted before this read names nothing, so it sends nothing.
-    Ok(crossed
+    Ok(crossing
         .iter()
         .filter_map(|update| named.get(&update.id).cloned())
         .collect())
 }
 
-/// One column of a bulk rescore write, and the value it binds.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Column {
-    /// The row the update is for.
-    Id,
-    /// The Flakiness score.
-    Score,
-    /// The Proven flake count.
-    Proven,
-    /// The dominant Failure category.
-    Category,
-    /// The Clean streak.
-    CleanStreak,
-    /// The Fail streak.
-    FailStreak,
-    /// Whether the rescore clears the fixed note.
-    ResetNote,
+/// One rescore write: the statement, and the values one row binds into it.
+///
+/// The two halves are the SQL as PostgreSQL receives it, so a statement can be
+/// grepped for what it sets. The rows go between them, and one row's own length
+/// numbers the next row's placeholders, so the two statements cannot drift from
+/// their binds.
+struct BulkUpdate {
+    /// The `UPDATE ... FROM (VALUES` the rows follow.
+    head: &'static str,
+    /// The `) AS v(...) WHERE ...` the rows precede.
+    tail: &'static str,
+    /// The values one update binds, in the order `tail` names its columns.
+    row: fn(&Update) -> Vec<Value>,
 }
 
-impl Column {
-    /// The stored name of the column this binds.
-    fn name(self) -> &'static str {
-        match self {
-            Self::Id => "id",
-            Self::Score => "flakiness_score",
-            Self::Proven => "confirmed_flake_count",
-            Self::Category => "failure_category",
-            Self::CleanStreak => "clean_streak",
-            Self::FailStreak => "fail_streak",
-            Self::ResetNote => "reset_note",
-        }
-    }
-
-    /// The value this column takes in `update`.
-    fn value(self, update: &Update) -> Value {
-        match self {
-            Self::Id => Value::from(update.id),
-            Self::Score => Value::from(update.flakiness_score),
-            Self::Proven => Value::from(update.confirmed_flake_count),
-            Self::Category => update
+/// The Tests' rescore write, which also stores the Failure category and Fail streak.
+const TEST_UPDATES: BulkUpdate = BulkUpdate {
+    head: "UPDATE test_cases AS t SET flakiness_score = v.flakiness_score, \
+             confirmed_flake_count = v.confirmed_flake_count, \
+             failure_category = v.failure_category, clean_streak = v.clean_streak, \
+             fail_streak = v.fail_streak, \
+             github_issue_fixed_noted_at = CASE WHEN v.reset_note THEN NULL ELSE t.github_issue_fixed_noted_at END \
+           FROM (VALUES ",
+    tail: ") AS v(id, flakiness_score, confirmed_flake_count, failure_category, clean_streak, \
+             fail_streak, reset_note) WHERE t.id = v.id",
+    row: |update| {
+        vec![
+            Value::from(update.id),
+            Value::from(update.flakiness_score),
+            Value::from(update.confirmed_flake_count),
+            update
                 .failure_category
                 .map_or(Value::String(None), |category| {
                     Value::from(category.as_str())
                 }),
-            Self::CleanStreak => Value::from(update.clean_streak),
-            Self::FailStreak => Value::from(update.fail_streak),
-            Self::ResetNote => Value::from(update.clear_fixed_note),
-        }
+            Value::from(update.clean_streak),
+            Value::from(update.fail_streak),
+            Value::from(update.clear_fixed_note),
+        ]
+    },
+};
+
+/// The Jobs' rescore write: no Failure category is scored and no Fail streak kept.
+const JOB_UPDATES: BulkUpdate = BulkUpdate {
+    head: "UPDATE jobs AS j SET flakiness_score = v.flakiness_score, \
+             confirmed_flake_count = v.confirmed_flake_count, clean_streak = v.clean_streak, \
+             github_issue_fixed_noted_at = CASE WHEN v.reset_note THEN NULL ELSE j.github_issue_fixed_noted_at END \
+           FROM (VALUES ",
+    tail: ") AS v(id, flakiness_score, confirmed_flake_count, clean_streak, reset_note) \
+           WHERE j.id = v.id",
+    row: |update| {
+        vec![
+            Value::from(update.id),
+            Value::from(update.flakiness_score),
+            Value::from(update.confirmed_flake_count),
+            Value::from(update.clean_streak),
+            Value::from(update.clear_fixed_note),
+        ]
+    },
+};
+
+/// The rescore write for `kind`'s rows.
+const fn updates_of(kind: EntityKind) -> &'static BulkUpdate {
+    match kind {
+        EntityKind::Test => &TEST_UPDATES,
+        EntityKind::Job => &JOB_UPDATES,
     }
 }
 
-/// A table a rescore writes, and the columns one row of it binds.
-struct UpdateTable {
-    /// The table's name.
-    table: &'static str,
-    /// The alias the statement gives it.
-    alias: &'static str,
-    /// The columns of one `VALUES` row, in order.
-    columns: &'static [Column],
-}
-
-/// The Tests table, which also holds a Fail streak and a Failure category.
-const TEST_TABLE: UpdateTable = UpdateTable {
-    table: "test_cases",
-    alias: "t",
-    columns: &[
-        Column::Id,
-        Column::Score,
-        Column::Proven,
-        Column::Category,
-        Column::CleanStreak,
-        Column::FailStreak,
-        Column::ResetNote,
-    ],
-};
-
-/// The Jobs table, which scores no Failure category and keeps no Fail streak.
-const JOB_TABLE: UpdateTable = UpdateTable {
-    table: "jobs",
-    alias: "j",
-    columns: &[
-        Column::Id,
-        Column::Score,
-        Column::Proven,
-        Column::CleanStreak,
-        Column::ResetNote,
-    ],
-};
-
-/// Writes one chunk-set of rescores to `table`.
+/// Writes one chunk-set of rescores, one statement per chunk.
 ///
-/// One statement per chunk assigns every column the table holds, and the
-/// fixed-note reset is the same `CASE` for both entities: a Clean streak of 0
+/// The fixed-note reset is the same `CASE` in both statements: a Clean streak of 0
 /// clears the note and any other streak leaves it alone.
 async fn write_updates(
     db: &impl ConnectionTrait,
-    table: &UpdateTable,
-    updates: &[Update],
+    updates: &BulkUpdate,
+    rows: &[Update],
 ) -> Result<(), DbError> {
-    let width = table.columns.len();
-    let names: Vec<&str> = table.columns.iter().map(|column| column.name()).collect();
-    let mut assignments: Vec<String> = table
-        .columns
-        .iter()
-        .filter(|column| !matches!(column, Column::Id | Column::ResetNote))
-        .map(|column| format!("{} = v.{}", column.name(), column.name()))
-        .collect();
-    assignments.push(format!(
-        "github_issue_fixed_noted_at = CASE WHEN v.{} THEN NULL ELSE {}.github_issue_fixed_noted_at END",
-        Column::ResetNote.name(),
-        table.alias
-    ));
-    let statement = |rows: &str| {
-        format!(
-            "UPDATE {} AS {} SET {} FROM (VALUES {rows}) AS v({}) WHERE {}.id = v.id",
-            table.table,
-            table.alias,
-            assignments.join(", "),
-            names.join(", "),
-            table.alias
-        )
-    };
-    for chunk in chunks(updates) {
-        let mut values = Vec::with_capacity(chunk.len() * width);
+    for chunk in chunks(rows) {
+        let mut values = Vec::new();
         let mut placeholders = Vec::with_capacity(chunk.len());
-        for (index, update) in chunk.iter().enumerate() {
-            placeholders.push(value_row(index * width + 1, width));
-            values.extend(table.columns.iter().map(|column| column.value(update)));
+        for update in chunk {
+            let row = (updates.row)(update);
+            placeholders.push(value_row(values.len() + 1, row.len()));
+            values.extend(row);
         }
+        let sql = format!(
+            "{}{}{}",
+            updates.head,
+            placeholders.join(", "),
+            updates.tail
+        );
         db.execute_raw(Statement::from_sql_and_values(
             DbBackend::Postgres,
-            statement(&placeholders.join(", ")),
+            sql,
             values,
         ))
         .await?;
@@ -1790,20 +1736,6 @@ pub async fn job_history(
         .collect())
 }
 
-/// Recomputes flakiness for Jobs with the Default-branch rule.
-///
-/// # Errors
-///
-/// Returns [`DbError::Database`] when a read or write fails.
-pub async fn rescore_jobs(
-    db: &impl ConnectionTrait,
-    job_ids: &[i32],
-    day_counts: Option<&BTreeMap<i32, DayCounts>>,
-    settings: &ProcessingSettings,
-) -> Result<Vec<TierChange>, DbError> {
-    rescore_kind(db, EntityKind::Job, job_ids, day_counts, settings).await
-}
-
 /// Rescales every Job that carries this `ci_job_id` in the Repo.
 async fn rescore_jobs_for_ci_job_id(
     db: &impl ConnectionTrait,
@@ -1823,7 +1755,7 @@ async fn rescore_jobs_for_ci_job_id(
     if job_ids.is_empty() {
         return Ok((job_ids, Vec::new()));
     }
-    let changes = rescore_jobs(db, &job_ids, None, settings).await?;
+    let changes = rescore(db, EntityKind::Job, &job_ids, None, settings).await?;
     Ok((job_ids, changes))
 }
 
@@ -1861,8 +1793,12 @@ async fn rescore_repo(
     }
     test_ids.sort_unstable();
     job_ids.sort_unstable();
-    let mut dropped = rescore(db, &test_ids, None, settings).await?.len();
-    dropped += rescore_jobs(db, &job_ids, None, settings).await?.len();
+    let mut dropped = rescore(db, EntityKind::Test, &test_ids, None, settings)
+        .await?
+        .len();
+    dropped += rescore(db, EntityKind::Job, &job_ids, None, settings)
+        .await?
+        .len();
     if dropped > 0 {
         // One event per changed Test would flood the channel, so only the count
         // is reported (ADR 0009).
