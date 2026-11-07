@@ -13,6 +13,11 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     setupFiles: ["./src/test/setup.ts"],
+    // The Playwright specs in `e2e/` are `.spec.ts` too, and only a real browser
+    // can run them: vitest's own discovery is the component tests under `src/`.
+    // The coverage `include` below is already `src/**`, so the vitest coverage
+    // gates neither see nor count the Playwright files.
+    include: ["src/**/*.{test,spec}.?(c|m)[jt]s?(x)"],
     // Coverage is measured on CI only. Local runs stay fast; opt in with
     // `npx vitest run --coverage.enabled --coverage.reporter=text`. Thresholds
     // are the measured baseline rounded down; raise them as coverage grows,

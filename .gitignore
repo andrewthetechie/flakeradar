@@ -23,3 +23,6 @@ context/
 
 # Rust
 target/
+
+# Playwright artifacts (traces, screenshots, the HTML report)
+frontend/playwright-report/

@@ -1,0 +1,18 @@
+{
+  "total_tests": 9,
+  "flaky_tests": 2,
+  "suspect_tests": 1,
+  "confirmed_flaky_tests": 2,
+  "new_flaky_7d": 1,
+  "total_runs": 14,
+  "executions_30d": 126,
+  "failures_30d": 31,
+  "flake_threshold": 0.5,
+  "category_counts": {
+    "network": 0,
+    "environment": 0,
+    "timing": 2,
+    "assertion": 0,
+    "other": 0
+  }
+}
