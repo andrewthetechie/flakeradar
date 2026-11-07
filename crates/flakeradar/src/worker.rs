@@ -363,12 +363,13 @@ impl LockSession for AdvisoryLock {
                 TRY_LOCK_SQL,
                 [WORKER_LOCK_KEY.into()],
             );
-            let row = match session.connection.query_one_raw(statement).await {
-                Ok(row) => row,
-                // A session the server closed has already lost the lock, so it
-                // must not be reused: dropping the pool ends it for good.
-                Err(error) => return Err(DbError::Database(error)),
-            };
+            // A session the server closed has already lost the lock, so it
+            // must not be reused: dropping the pool ends it for good.
+            let row = session
+                .connection
+                .query_one_raw(statement)
+                .await
+                .map_err(DbError::Database)?;
             // A query with no FROM clause always answers one row; the arm for a
             // missing one is logged in coverage-gaps.md and means "not locked".
             let Some(row) = row else {
@@ -404,19 +405,17 @@ impl LockSession for AdvisoryLock {
             };
             let statement =
                 Statement::from_sql_and_values(DbBackend::Postgres, ALIVE_SQL, [locked.into()]);
-            let answer = session.connection.query_one_raw(statement).await;
-            let same_session = match &answer {
-                Ok(Some(row)) => row
-                    .try_get::<bool>("", "same_session")
-                    .is_ok_and(|same| same),
-                // No answer, or a column that is not there, cannot prove the lock.
-                Ok(None) | Err(_) => false,
-            };
-            if same_session {
-                *guard = Some(session);
-                return Ok(());
-            }
-            match answer {
+            match session.connection.query_one_raw(statement).await {
+                // The statement answered as the backend that took the lock, so
+                // this session still holds it and is kept.
+                Ok(Some(row))
+                    if row
+                        .try_get::<bool>("", "same_session")
+                        .is_ok_and(|same| same) =>
+                {
+                    *guard = Some(session);
+                    Ok(())
+                }
                 // The statement failed, so the lock is lost either way. The pool
                 // is not what broke: sqlx replaces a connection the server
                 // closed, and it is that replacement's answer to the next check
@@ -426,8 +425,9 @@ impl LockSession for AdvisoryLock {
                     Err(DbError::Database(error))
                 }
                 // A statement that answered as another backend is a replacement
-                // the pool opened over a session the server had already closed.
-                // It holds nothing, so the session is dropped rather than kept.
+                // the pool opened over a session the server had already closed,
+                // and no answer at all proves nothing either. Neither holds the
+                // lock, so the session is dropped rather than kept.
                 Ok(_) => Err(DbError::LockSessionLost {
                     detail: format!(
                         "the connection no longer answers as backend {locked}, which took the lock"
