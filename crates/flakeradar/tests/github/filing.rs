@@ -378,9 +378,8 @@ async fn a_permission_403_skips_that_repo_and_files_the_other_one() {
 
 /// A bad-credentials 401 is Repo-scoped for filing, like a permission 403.
 ///
-/// The reference learned this after the Rust port's branch point (the classified
-/// client seam, `backend` #130/#131): the token is refused for every Repo the same
-/// way, so a second candidate in that Repo is never posted to.
+/// The token is refused for every Repo the same way, so a second candidate in that
+/// Repo is never posted to.
 #[tokio::test]
 async fn a_bad_credentials_401_skips_that_repo_and_files_the_other_one() {
     let db = TestDb::new().await.expect("a test database");

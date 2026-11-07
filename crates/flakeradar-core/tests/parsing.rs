@@ -859,7 +859,7 @@ fn an_empty_namespace_is_no_namespace() {
 
 #[test]
 fn a_doctype_is_accepted() {
-    // The reference's parser accepts a `DOCTYPE`; the approved rule restores it.
+    // A `DOCTYPE` is accepted, with its external subset left unfetched.
     for xml in [
         "<!DOCTYPE testsuite>\n<testsuite name=\"s\"><testcase classname=\"c\" name=\"t\"/></testsuite>",
         "<!DOCTYPE testsuite SYSTEM \"http://example.invalid/x.dtd\">\n<testsuite name=\"s\"><testcase classname=\"c\" name=\"t\"/></testsuite>",
@@ -1008,9 +1008,8 @@ fn a_digit_from_a_wide_decimal_block_keeps_its_value() {
 
 #[test]
 fn a_non_finite_time_is_an_upload_error() {
-    // The reference stored `NaN` and infinities as it read them, and the read API
-    // then served JSON `null` against a schema that says number; the approved
-    // rule makes them upload errors like a non-numeric `time`.
+    // A `NaN` or infinite `time` is no duration the database or the read API can
+    // carry, so each is an upload error, like a non-numeric `time`.
     for time in ["NaN", "inf", "-inf", "1e999"] {
         let xml = format!(
             r#"<testsuite name="s"><testcase classname="c" name="t" time="{time}"/></testsuite>"#

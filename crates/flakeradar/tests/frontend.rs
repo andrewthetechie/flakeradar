@@ -174,8 +174,8 @@ async fn an_api_path_never_reaches_the_assets() {
 #[tokio::test]
 async fn an_api_route_wins_over_an_asset_of_the_same_path() {
     let db = TestDb::new().await.expect("a test database is available");
-    // The reference mounted the frontend after every API route, so a route
-    // answered first even when the built frontend held a file of that name.
+    // The frontend is mounted after every API route, so a route answers first
+    // even when the built frontend holds a file of that name.
     let files: &[(&str, &[u8], &str)] = &[
         ("index.html", PAGE, "\"index-1\""),
         ("api/health", b"page", "\"health-1\""),

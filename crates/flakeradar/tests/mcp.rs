@@ -1718,7 +1718,7 @@ fn raw_post(body: Body) -> Request<Body> {
 
 #[tokio::test]
 async fn a_broken_database_is_an_error_result_rather_than_a_protocol_error() {
-    // The reference puts a tool's own failure inside the answer, not beside it:
+    // A tool's own failure goes inside the answer, not beside it:
     // `Error calling tool 'list_repos': <what failed>`, with `isError` true.
     let db = TestDb::new().await.expect("a test database is available");
     let app = mcp_app(&db);

@@ -155,7 +155,7 @@ async fn one_test(db: &TestDb) -> i32 {
 
 #[tokio::test]
 async fn the_pipeline_body_lists_every_missing_field() {
-    // The reference's `{}` answer: all six required fields, in field order.
+    // An empty body is one issue per required field, in field order.
     let db = TestDb::new().await.expect("a test database is available");
     let reply = pipeline_body(&test_app(&db), b"{}").await;
     assert_eq!(reply.status, StatusCode::UNPROCESSABLE_ENTITY);

@@ -344,7 +344,7 @@ async fn a_stored_null_line_base_reads_as_one() {
 #[tokio::test]
 async fn the_duplicate_lookup_matches_a_null_attribution_with_a_null() {
     // An upload with no ci_job_id or ci_run_attempt is a duplicate of a stored
-    // row that also has none: SQLAlchemy rendered `column == None` as IS NULL.
+    // row that also has none, which SQL spells `IS NOT DISTINCT FROM`.
     let db = TestDb::new().await.expect("a migrated test database");
     let project = project(&db).await;
     let anonymous = NewJunitReport {

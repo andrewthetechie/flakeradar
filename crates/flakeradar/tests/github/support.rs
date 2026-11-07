@@ -165,12 +165,13 @@ pub(crate) async fn mount_state(server: &MockServer, answer: ResponseTemplate) {
         .await;
 }
 
-/// The reference's body for `S7`'s input, generated from `_issue_body` at 86c98804.
+/// The issue body the fixture input must produce, line for line.
 ///
 /// The input is a `<failure message="boom older">` with details, then a bare
 /// `<failure/>` on the next commit, then a pass on that same commit. The newest
-/// failing row carries no text, so the sample comes from the older one.
-pub(crate) const S7_BODY: &str = "FlakeRadar detected a flaky test: `tests.test_cart::test_total`
+/// failing row carries no text, so the sample comes from the older one, and
+/// `wire-notes.md` records where the body's text comes from.
+pub(crate) const RECORDED_BODY: &str = "FlakeRadar detected a flaky test: `tests.test_cart::test_total`
 
 - **Repo / project:** `acme/app` / `backend`
 - **Location:** `backend/tests/test_cart.py` line 12

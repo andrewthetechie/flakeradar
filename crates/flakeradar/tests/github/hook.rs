@@ -228,8 +228,8 @@ async fn a_store_failure_ends_the_outcome_and_leaves_its_issue_open() {
     )
     .await;
 
-    // The reference lets the store's error out of `on_report_processed`, so the
-    // Job filing and both note batches never run for this outcome.
+    // A store failure ends the outcome, so the Job filing and both note batches
+    // never run for it.
     assert_eq!(
         requested_calls(&server).await,
         vec![("POST".to_owned(), "/repos/acme/app/issues".to_owned())],

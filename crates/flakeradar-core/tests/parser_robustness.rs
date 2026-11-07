@@ -104,9 +104,9 @@ fn nested_suites(depth: usize) -> Vec<u8> {
 
 #[test]
 fn deep_nesting_is_refused_rather_than_overflowing_the_stack() {
-    // The reference recursed once per level and aborted the process at 5,000
-    // (H0); the walk here is a `Vec`, so the answer is a refusal at any depth.
-    // Each parse runs on a 2 MiB stack, which is what a blocking thread gets.
+    // A recursive walk aborts the process at a few thousand levels; this walk is a
+    // `Vec`, so the answer is the 422 a bad report gets at any depth. Each parse
+    // runs on a 2 MiB stack, which is what a blocking thread gets.
     for depth in [5_000, 200_000] {
         let body = nested_suites(depth);
         let parsed = std::thread::Builder::new()

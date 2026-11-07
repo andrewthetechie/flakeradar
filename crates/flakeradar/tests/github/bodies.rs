@@ -16,7 +16,7 @@ use serde_json::{Value as Json, json};
 use wiremock::{MockServer, ResponseTemplate};
 
 use crate::support::{
-    S7_BODY, api, explain_job_execution, flaky_job_in, flaky_test_in, gh_settings, link_of,
+    RECORDED_BODY, api, explain_job_execution, flaky_job_in, flaky_test_in, gh_settings, link_of,
     mount_create, unstopped,
 };
 
@@ -148,7 +148,7 @@ fn the_filed_body_matches_the_recorded_bytes() {
         "backend",
         &gh_settings(&[]),
     );
-    assert_eq!(body, S7_BODY);
+    assert_eq!(body, RECORDED_BODY);
 }
 
 #[test]

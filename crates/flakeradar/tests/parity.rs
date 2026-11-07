@@ -1849,9 +1849,8 @@ fn instant(value: &Value) -> Option<DateTime<chrono::FixedOffset>> {
 ///
 /// A `<timestamp>` placeholder proves a field holds a clock value and nothing
 /// more: two placeholders accept any two timestamps, so a replay could order or
-/// reuse them wrongly and still match its golden. The reference's own processing
-/// gives the values a shape the goldens show as placeholders, so a `dump_db` step
-/// checks it:
+/// reuse them wrongly and still match its golden. Processing gives the values a
+/// shape the goldens show as placeholders, so a `dump_db` step checks it:
 ///
 /// - `created_at` never decreases down a table listed by `id`, because each
 ///   Report is processed after the one before it;
@@ -2953,7 +2952,7 @@ fn every_scenario_step_has_a_golden_and_no_golden_is_orphaned() {
     }
 }
 
-/// The reference's `/openapi.json`, as the replay compares it.
+/// The recorded `/openapi.json`, as the replay compares it.
 fn recorded_openapi() -> Value {
     golden("trailing-slash", 9)
         .get("body")
