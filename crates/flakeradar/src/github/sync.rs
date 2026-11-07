@@ -13,9 +13,9 @@ use flakeradar_db::{clock::SharedClock, issue_links};
 use sea_orm::ConnectionTrait;
 use tokio_util::sync::CancellationToken;
 
-use super::client::{Answer, Api, Success};
+use super::client::{Answer, Api, Success, TransportError};
 use super::policy::{
-    Action, BatchReport, BatchStop, Operation, RemovalReport, Verdict, action, batch_stop,
+    Action, BatchReport, BatchStop, Call, Operation, RemovalReport, Verdict, batch_stop, step,
 };
 use crate::settings::Settings;
 use crate::worker::until_stopped;
@@ -91,27 +91,40 @@ async fn clear_if_closed(
     now: DateTime<Utc>,
     stop: &CancellationToken,
 ) -> ControlFlow<BatchStop> {
-    let Some(answered) = until_stopped(stop, api.get_issue(&row.repo, row.number)).await else {
+    let Some(call) = until_stopped(
+        stop,
+        step(
+            Operation::Sync,
+            Success::Fetched,
+            Box::pin(api.get_issue(&row.repo, row.number)),
+            |error| {
+                tracing::warn!(
+                    name: "github.sync.unreachable",
+                    error = %error,
+                    "GitHub unreachable, skipping issue-state sync",
+                );
+            },
+        ),
+    )
+    .await
+    else {
         tracing::info!(
             name: "github.sync.stopped",
             "stopping the GitHub issue-state sync: leadership ended",
         );
         return ControlFlow::Break(BatchStop::Stopped);
     };
-    let answer = match answered {
-        Ok(answer) => answer,
-        Err(error) => {
-            // No answer at all, so this row goes unstamped and the run stops here.
-            tracing::warn!(
-                name: "github.sync.unreachable",
-                error = %error,
-                "GitHub unreachable, skipping issue-state sync",
-            );
-            return ControlFlow::Break(batch_stop(Verdict::Unreachable));
-        }
+    let (answer, checked, verdict) = match call {
+        Call::Answered {
+            answer,
+            verdict,
+            action,
+        } => (answer, action, verdict),
+        // No answer at all, so this row goes unstamped. The table's `Sync` row
+        // answers an outage by ending the batch.
+        Call::Unreachable { .. } => return ControlFlow::Break(call.stop()),
     };
-    let verdict = answer.classify(Success::Fetched);
-    let checked = match action(Operation::Sync, verdict) {
+    let checked = match checked {
         Action::Use => sync_decision(&answer, row, target),
         Action::Rearm => {
             tracing::info!(
@@ -233,54 +246,39 @@ pub async fn close_issues_after_removal(repo: &str, numbers: &[i32], api: &Api) 
         return report;
     }
     for number in numbers {
-        let comment = match api.comment(repo, *number, CLOSE_COMMENT).await {
-            Ok(comment) => comment,
-            Err(error) => {
-                tracing::warn!(
-                    name: "github.sync.close_skipped",
-                    error = %error,
-                    repo = %repo,
-                    number,
-                    "GitHub post-delete close skipped for one issue"
-                );
-                report.refused.insert(*number, Verdict::Unreachable);
-                continue;
-            }
-        };
-        let verdict = comment.classify(Success::Created);
-        match action(Operation::CloseDeleted, verdict) {
-            Action::Use => {}
-            Action::Stop => {
+        // The comment lands, or this number is settled: the close only follows a
+        // comment that landed, so that the issue is never closed without a word.
+        match removed(
+            Success::Created,
+            &mut report,
+            repo,
+            *number,
+            |repo, number| api.comment(repo, number, CLOSE_COMMENT),
+        )
+        .await
+        {
+            Removed::Landed => {}
+            Removed::Refused => continue,
+            Removed::RateLimited(answer) => {
                 tracing::warn!(
                     name: "github.sync.close_rate_limited",
-                    remaining = %comment.remaining_text(),
+                    remaining = %answer.remaining_text(),
                     "GitHub rate limit; stopping the post-delete close batch"
                 );
-                report.stopped = Some(batch_stop(verdict));
+                report.stopped = Some(BatchStop::RateLimited);
                 break;
             }
-            Action::SkipRow | Action::SkipRepo | Action::Rearm => {
-                note_refused(&mut report, repo, *number, verdict, &comment);
-                continue;
-            }
         }
-        let close = match api.close_issue(repo, *number, None).await {
-            Ok(close) => close,
-            Err(error) => {
-                tracing::warn!(
-                    name: "github.sync.close_skipped",
-                    error = %error,
-                    repo = %repo,
-                    number,
-                    "GitHub post-delete close skipped for one issue"
-                );
-                report.refused.insert(*number, Verdict::Unreachable);
-                continue;
-            }
-        };
-        let verdict = close.classify(Success::Fetched);
-        match action(Operation::CloseDeleted, verdict) {
-            Action::Use => {
+        match removed(
+            Success::Fetched,
+            &mut report,
+            repo,
+            *number,
+            |repo, number| api.close_issue(repo, number, None),
+        )
+        .await
+        {
+            Removed::Landed => {
                 report.closed.insert(*number);
                 tracing::info!(
                     name: "github.sync.closed",
@@ -289,7 +287,8 @@ pub async fn close_issues_after_removal(repo: &str, numbers: &[i32], api: &Api) 
                     "closed an issue after an admin delete",
                 );
             }
-            Action::Stop => {
+            Removed::Refused => {}
+            Removed::RateLimited(close) => {
                 tracing::warn!(
                     name: "github.sync.close_rate_limited",
                     remaining = %close.remaining_text(),
@@ -297,16 +296,78 @@ pub async fn close_issues_after_removal(repo: &str, numbers: &[i32], api: &Api) 
                     number,
                     "GitHub rate limit; stopping the post-delete close batch"
                 );
-                report.stopped = Some(batch_stop(verdict));
+                report.stopped = Some(BatchStop::RateLimited);
                 break;
-            }
-            Action::SkipRow | Action::SkipRepo | Action::Rearm => {
-                note_refused(&mut report, repo, *number, verdict, &close);
             }
         }
     }
     report.log();
     report
+}
+
+/// What one call of the post-delete close batch came to.
+enum Removed {
+    /// The call landed, and the batch has an answer to act on.
+    Landed,
+    /// This number cost the batch nothing but a refusal, which is recorded.
+    Refused,
+    /// GitHub is throttling. The answer carries the remainder each line names.
+    RateLimited(Answer),
+}
+
+/// Makes one post-delete call and records what it cost this number.
+///
+/// Both calls of this batch — the comment and the close — have the same policy and
+/// the same refusal line, so the transport failure, the refusal and its log live
+/// here once. Only the two outcomes the batch reports differ, and they go back to
+/// the loop: a rate limit, whose line names different fields per call, and the
+/// landing, which is what the next call depends on.
+async fn removed<'a, F>(
+    success: Success,
+    report: &mut RemovalReport,
+    repo: &'a str,
+    number: i32,
+    request: impl FnOnce(&'a str, i32) -> F,
+) -> Removed
+where
+    F: Future<Output = Result<Answer, TransportError>>,
+{
+    let call = step(
+        Operation::CloseDeleted,
+        success,
+        Box::pin(request(repo, number)),
+        |error| {
+            tracing::warn!(
+                name: "github.sync.close_skipped",
+                error = %error,
+                repo,
+                number,
+                "GitHub post-delete close skipped for one issue"
+            );
+        },
+    )
+    .await;
+    let (answer, action, verdict) = match call {
+        Call::Answered {
+            answer,
+            verdict,
+            action,
+        } => (answer, action, verdict),
+        // The table costs an outage here one issue, not the batch: this close is
+        // best effort, and the next number is still tried.
+        Call::Unreachable { .. } => {
+            report.refused.insert(number, Verdict::Unreachable);
+            return Removed::Refused;
+        }
+    };
+    match action {
+        Action::Use => Removed::Landed,
+        Action::Stop => Removed::RateLimited(answer),
+        Action::SkipRow | Action::SkipRepo | Action::Rearm => {
+            note_refused(report, repo, number, verdict, &answer);
+            Removed::Refused
+        }
+    }
 }
 
 /// Records an issue this batch refused, and says which way it went.
@@ -321,7 +382,7 @@ fn note_refused(
     verdict: Verdict,
     answer: &Answer,
 ) {
-    if already_gone(answer) {
+    if already_gone(verdict) {
         tracing::info!(
             name: "github.sync.close_already_gone",
             repo = %repo,
@@ -341,10 +402,13 @@ fn note_refused(
     report.refused.insert(number, verdict);
 }
 
-/// Whether a post-delete answer is the issue already being gone.
+/// Whether a verdict is the issue already being gone.
 ///
 /// That is the outcome this batch wanted: it costs that one number and the next is
-/// still tried, exactly as a failure other than a rate limit does.
-fn already_gone(answer: &Answer) -> bool {
-    matches!(answer.status(), 404 | 410)
+/// still tried, exactly as a failure other than a rate limit does. The verdict is
+/// read rather than the status, because [`Verdict`] has already decided which
+/// statuses mean gone — a `404` and a `410` — and this file does not judge a status
+/// a second time.
+fn already_gone(verdict: Verdict) -> bool {
+    matches!(verdict, Verdict::NotFound | Verdict::Gone)
 }

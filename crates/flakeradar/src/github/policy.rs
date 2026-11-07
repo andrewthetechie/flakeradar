@@ -7,6 +7,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use super::client::{Answer, Success, TransportError};
+
 /// What GitHub said, as one verdict every operation reads the same way.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verdict {
@@ -192,5 +194,73 @@ pub(super) fn batch_stop(verdict: Verdict) -> BatchStop {
         BatchStop::Unreachable
     } else {
         BatchStop::RateLimited
+    }
+}
+
+/// One GitHub call, sent and judged.
+#[derive(Debug)]
+pub(super) enum Call {
+    /// GitHub answered, and the table says what this operation does with it.
+    Answered {
+        /// What GitHub sent back.
+        answer: Answer,
+        /// The verdict the answer got.
+        verdict: Verdict,
+        /// What the operation does with the answer.
+        action: Action,
+    },
+    /// Nothing answered. The same table judged that, so an outage costs what the
+    /// operation's `Unreachable` cell says rather than what a call site assumed.
+    Unreachable {
+        /// What the operation does with no answer at all.
+        action: Action,
+    },
+}
+
+impl Call {
+    /// The verdict this call got: the one GitHub's answer carried, or the one an
+    /// outage always carries.
+    #[must_use]
+    pub(super) fn verdict(&self) -> Verdict {
+        match self {
+            Self::Answered { verdict, .. } => *verdict,
+            Self::Unreachable { .. } => Verdict::Unreachable,
+        }
+    }
+
+    /// Why this call ends its batch, when the table says it does.
+    #[must_use]
+    pub(super) fn stop(&self) -> BatchStop {
+        batch_stop(self.verdict())
+    }
+}
+
+/// Runs one GitHub call to the end of its policy: send, classify, judge.
+///
+/// A transport failure is [`Verdict::Unreachable`] here, so the table's own
+/// `Unreachable` column decides what an outage costs the batch. The line it is
+/// logged as stays the call site's words, because a tracing event name must be a
+/// literal — `log` runs only on that path, with the failure to name.
+pub(super) async fn step(
+    operation: Operation,
+    success: Success,
+    call: impl Future<Output = Result<Answer, TransportError>>,
+    log: impl FnOnce(&TransportError),
+) -> Call {
+    match call.await {
+        Ok(answer) => {
+            let verdict = answer.classify(success);
+            Call::Answered {
+                action: action(operation, verdict),
+                answer,
+                verdict,
+            }
+        }
+        Err(error) => {
+            log(&error);
+            Call::Unreachable {
+                action: action(operation, Verdict::Unreachable),
+            }
+        }
     }
 }

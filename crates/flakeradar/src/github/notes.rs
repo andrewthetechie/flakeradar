@@ -4,9 +4,6 @@
 //! posted is stamped before anything else happens, and only a comment that never
 //! reached GitHub leaves the row noteable for the next Report. Never raises.
 
-use std::collections::BTreeSet;
-use std::ops::ControlFlow;
-
 use chrono::{DateTime, Utc};
 use flakeradar_core::model::EntityKind;
 use flakeradar_db::clock::SharedClock;
@@ -17,7 +14,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::bodies::fixed_comment;
 use super::client::{Api, Success};
-use super::policy::{Action, BatchReport, BatchStop, Operation, Verdict, action, batch_stop};
+use super::policy::{Action, BatchReport, BatchStop, Call, Operation, batch_stop, step};
 use crate::settings::Settings;
 
 /// Comments once on the linked issue of each `kind` row whose fix appears to hold.
@@ -60,13 +57,27 @@ pub async fn note_fixed_for(
     report
 }
 
+/// What one row of the fixed-note batch came to.
+///
+/// The batch keeps its own state — which Repos it stopped asking — so a row
+/// answers what happened instead of writing into the report behind its back.
+enum Noted {
+    /// On to the next row.
+    Next,
+    /// GitHub will not take this Repo's calls for the rest of the batch.
+    ///
+    /// `after_close` says which call refused it. A refusal from the comment leaves
+    /// the row there; one from the close is followed by the stop check every
+    /// answered close gets, because the close has already run by then.
+    SkipRepo { after_close: bool },
+    /// The batch is over, because of this.
+    Stop(BatchStop),
+}
+
 /// Notes (and maybe closes) one batch of fixed issues, whichever entity they describe.
 ///
-/// A comment and the close it may ask for both run to their answer, because a call
-/// dropped mid-flight can have landed at GitHub: a comment that landed unseen would
-/// be posted again on the next Report, and a close nobody saw would leave a fixed
-/// issue open. The batch stops after the call that was in flight, so a stop costs
-/// at most the one request it was waiting on.
+/// The batch holds only the state that spans rows: the Repos it has stopped asking,
+/// and why it ended. [`note_row`] does one row, and says which way it went.
 async fn note_batch(
     db: &(impl ConnectionTrait + TransactionTrait),
     rows: Vec<NoteCandidate>,
@@ -86,82 +97,21 @@ async fn note_batch(
             report.stopped = Some(BatchStop::Stopped);
             break;
         }
-        let body = fixed_comment(
-            row.target,
-            i64::from(row.entity_id),
-            i64::from(row.clean_streak),
-            row.score,
-            row.default_branch.as_deref(),
-            &settings.public_url,
-        );
-        let answered = api.comment(&row.repo, row.number, &body).await;
-        let comment = match answered {
-            Ok(comment) => comment,
-            Err(error) => {
-                tracing::warn!(
-                    name: "github.notes.unreachable",
-                    error = %error,
-                    entity = row.target.as_str(),
-                    "GitHub unreachable, skipping fixed-note comments",
-                );
-                report.stopped = Some(batch_stop(Verdict::Unreachable));
-                break;
-            }
-        };
-        let verdict = comment.classify(Success::Created);
-        match action(Operation::Note, verdict) {
-            Action::Use => {
-                if !stamp_note(db, &row, settings, clock.now().with_timezone(&Utc)).await
-                    || !settings.github_close_fixed
-                {
-                    continue;
-                }
-                // A stop that heard about the comment but not the stamp ends here:
-                // the comment is recorded, and the issue stays open.
-                if stop.is_cancelled() {
-                    report.stopped = Some(BatchStop::Stopped);
-                    break;
-                }
-                if let ControlFlow::Break(stop_reason) =
-                    close_note(&row, api, &mut report.skipped).await
-                {
-                    report.stopped = Some(stop_reason);
-                    break;
-                }
-                if stop.is_cancelled() {
-                    report.stopped = Some(BatchStop::Stopped);
-                    break;
-                }
-            }
-            Action::Stop => {
-                tracing::warn!(
-                    name: "github.notes.rate_limited",
-                    remaining = %comment.remaining_text(),
-                    "GitHub rate limit; stopping the fixed-note batch"
-                );
-                report.stopped = Some(batch_stop(verdict));
-                break;
-            }
-            Action::SkipRepo => {
-                tracing::warn!(
-                    name: "github.notes.repo_skipped",
-                    repo = %row.repo,
-                    status = comment.status(),
-                    body = %comment.short_text(),
-                    "GitHub fixed-note skipped for this Repo"
-                );
+        match note_row(db, &row, settings, api, clock, stop).await {
+            Noted::Next => {}
+            Noted::SkipRepo { after_close: false } => {
                 report.skipped.insert(row.repo.clone());
             }
-            Action::SkipRow | Action::Rearm => {
-                tracing::warn!(
-                    name: "github.notes.comment_failed",
-                    entity = row.target.as_str(),
-                    entity_id = row.entity_id,
-                    repo = %row.repo,
-                    status = comment.status(),
-                    body = %comment.short_text(),
-                    "GitHub fixed-note comment failed"
-                );
+            Noted::SkipRepo { after_close: true } => {
+                report.skipped.insert(row.repo.clone());
+                if stop.is_cancelled() {
+                    report.stopped = Some(BatchStop::Stopped);
+                    break;
+                }
+            }
+            Noted::Stop(stop_reason) => {
+                report.stopped = Some(stop_reason);
+                break;
             }
         }
     }
@@ -173,6 +123,110 @@ async fn note_batch(
         );
     }
     report
+}
+
+/// Comments on one row's issue, stamps the note, and closes it when asked to.
+///
+/// A comment and the close it may ask for both run to their answer, because a call
+/// dropped mid-flight can have landed at GitHub: a comment that landed unseen would
+/// be posted again on the next Report, and a close nobody saw would leave a fixed
+/// issue open. The batch stops after the call that was in flight, so a stop costs
+/// at most the one request it was waiting on.
+async fn note_row(
+    db: &(impl ConnectionTrait + TransactionTrait),
+    row: &NoteCandidate,
+    settings: &Settings,
+    api: &Api,
+    clock: &SharedClock,
+    stop: &CancellationToken,
+) -> Noted {
+    let body = fixed_comment(
+        row.target,
+        i64::from(row.entity_id),
+        i64::from(row.clean_streak),
+        row.score,
+        row.default_branch.as_deref(),
+        &settings.public_url,
+    );
+    let call = step(
+        Operation::Note,
+        Success::Created,
+        Box::pin(api.comment(&row.repo, row.number, &body)),
+        |error| {
+            tracing::warn!(
+                name: "github.notes.unreachable",
+                error = %error,
+                entity = row.target.as_str(),
+                "GitHub unreachable, skipping fixed-note comments",
+            );
+        },
+    )
+    .await;
+    let (comment, note, verdict) = match call {
+        Call::Answered {
+            answer,
+            verdict,
+            action,
+        } => (answer, action, verdict),
+        Call::Unreachable { action } => {
+            // The table's `Note` row answers an outage by ending the batch.
+            return match action {
+                Action::Stop => Noted::Stop(call.stop()),
+                Action::SkipRepo => Noted::SkipRepo { after_close: false },
+                _ => Noted::Next,
+            };
+        }
+    };
+    match note {
+        Action::Use => {
+            if !stamp_note(db, row, settings, clock.now().with_timezone(&Utc)).await
+                || !settings.github_close_fixed
+            {
+                return Noted::Next;
+            }
+            // A stop that heard about the comment but not the stamp ends here: the
+            // comment is recorded, and the issue stays open.
+            if stop.is_cancelled() {
+                return Noted::Stop(BatchStop::Stopped);
+            }
+            match close_note(row, api).await {
+                Closed::Stop(stop_reason) => Noted::Stop(stop_reason),
+                Closed::SkipRepo => Noted::SkipRepo { after_close: true },
+                Closed::Done if stop.is_cancelled() => Noted::Stop(BatchStop::Stopped),
+                Closed::Done => Noted::Next,
+            }
+        }
+        Action::Stop => {
+            tracing::warn!(
+                name: "github.notes.rate_limited",
+                remaining = %comment.remaining_text(),
+                "GitHub rate limit; stopping the fixed-note batch"
+            );
+            Noted::Stop(batch_stop(verdict))
+        }
+        Action::SkipRepo => {
+            tracing::warn!(
+                name: "github.notes.repo_skipped",
+                repo = %row.repo,
+                status = comment.status(),
+                body = %comment.short_text(),
+                "GitHub fixed-note skipped for this Repo"
+            );
+            Noted::SkipRepo { after_close: false }
+        }
+        Action::SkipRow | Action::Rearm => {
+            tracing::warn!(
+                name: "github.notes.comment_failed",
+                entity = row.target.as_str(),
+                entity_id = row.entity_id,
+                repo = %row.repo,
+                status = comment.status(),
+                body = %comment.short_text(),
+                "GitHub fixed-note comment failed"
+            );
+            Noted::Next
+        }
+    }
 }
 
 /// Lands the fixed-note stamp for one row, answering whether it landed.
@@ -240,33 +294,55 @@ fn log_note_stamp_failure(state: Option<NoteRowState>, row: &NoteCandidate) {
     }
 }
 
+/// What one fixed-close answered, in the terms its batch needs.
+///
+/// `SkipRepo` is the answer the caller folds into its own skipped set, which keeps
+/// the batch's state inside the batch instead of an output parameter.
+enum Closed {
+    /// The close landed, or cost this row only.
+    Done,
+    /// GitHub will not take this Repo's calls for the rest of the batch.
+    SkipRepo,
+    /// The batch is over, because of this.
+    Stop(BatchStop),
+}
+
 /// Closes the issue a fix was noted on, when the configuration asks for it.
 ///
 /// A close that was already sent runs to its answer, so a stop cannot leave an
 /// issue open after its fix was noted. A rate limit ends the whole batch rather
 /// than only this issue.
-async fn close_note(
-    row: &NoteCandidate,
-    api: &Api,
-    skipped: &mut BTreeSet<String>,
-) -> ControlFlow<BatchStop> {
-    let answered = api
-        .close_issue(&row.repo, row.number, Some("completed"))
-        .await;
-    let close = match answered {
-        Ok(close) => close,
-        Err(error) => {
+async fn close_note(row: &NoteCandidate, api: &Api) -> Closed {
+    let call = step(
+        Operation::CloseNote,
+        Success::Fetched,
+        Box::pin(api.close_issue(&row.repo, row.number, Some("completed"))),
+        |error| {
             tracing::warn!(
                 name: "github.notes.close_unreachable",
                 error = %error,
                 entity = row.target.as_str(),
                 "GitHub unreachable, skipping the close",
             );
-            return ControlFlow::Break(batch_stop(Verdict::Unreachable));
+        },
+    )
+    .await;
+    let (close, note, verdict) = match call {
+        Call::Answered {
+            answer,
+            verdict,
+            action,
+        } => (answer, action, verdict),
+        Call::Unreachable { action } => {
+            // The table's `CloseNote` row answers an outage by ending the batch.
+            return match action {
+                Action::Stop => Closed::Stop(call.stop()),
+                Action::SkipRepo => Closed::SkipRepo,
+                _ => Closed::Done,
+            };
         }
     };
-    let verdict = close.classify(Success::Fetched);
-    match action(Operation::CloseNote, verdict) {
+    match note {
         Action::Use => {
             tracing::info!(
                 name: "github.notes.closed",
@@ -274,7 +350,7 @@ async fn close_note(
                 number = row.number,
                 "closed an issue after noting the fix"
             );
-            ControlFlow::Continue(())
+            Closed::Done
         }
         Action::Stop => {
             tracing::warn!(
@@ -284,7 +360,7 @@ async fn close_note(
                 number = row.number,
                 "GitHub rate limit; stopping the fixed-close batch"
             );
-            ControlFlow::Break(batch_stop(verdict))
+            Closed::Stop(batch_stop(verdict))
         }
         Action::SkipRepo => {
             tracing::warn!(
@@ -294,8 +370,7 @@ async fn close_note(
                 body = %close.short_text(),
                 "GitHub issue close skipped for this Repo"
             );
-            skipped.insert(row.repo.clone());
-            ControlFlow::Continue(())
+            Closed::SkipRepo
         }
         Action::SkipRow | Action::Rearm => {
             tracing::warn!(
@@ -306,7 +381,7 @@ async fn close_note(
                 body = %close.short_text(),
                 "GitHub close after noting the fix failed"
             );
-            ControlFlow::Continue(())
+            Closed::Done
         }
     }
 }

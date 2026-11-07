@@ -5,8 +5,6 @@
 //! stranded; the batch stops before the next one once the leader's stop signal
 //! fires. Never raises: an outage costs filings, not Report processing.
 
-use std::ops::ControlFlow;
-
 use flakeradar_core::model::EntityKind;
 use flakeradar_db::filing::{self, FilingGate};
 use flakeradar_db::issue_links;
@@ -16,7 +14,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::bodies::{BODY_EXECUTIONS, job_issue_body, job_title, test_issue_body, test_title};
 use super::client::{Answer, Api, Success};
-use super::policy::{Action, BatchReport, BatchStop, Operation, Verdict, action, batch_stop};
+use super::policy::{Action, BatchReport, BatchStop, Call, Operation, batch_stop, step};
 use super::sync::close_issues_after_removal;
 use crate::settings::Settings;
 
@@ -55,8 +53,8 @@ pub async fn file_for(
         return BatchReport::default();
     }
     let batch = match kind {
-        EntityKind::Test => test_requests(db, ids, settings).await,
-        EntityKind::Job => job_requests(db, ids, settings, clock).await,
+        EntityKind::Test => Box::pin(test_requests(db, ids, settings)).await,
+        EntityKind::Job => Box::pin(job_requests(db, ids, settings, clock)).await,
     };
     if batch.is_empty() {
         return BatchReport::default();
@@ -197,6 +195,22 @@ struct FileRequest {
     body: String,
 }
 
+/// What one row of the filing batch came to.
+///
+/// The batch holds the state that spans rows — which Repos it stopped asking, and
+/// why it ended — so a row answers what happened rather than writing into the
+/// report behind its back.
+enum Filed {
+    /// The link to the issue GitHub just created is stored on this entity.
+    Linked(i32),
+    /// Nothing was filed for this row, and the batch carries on.
+    Next,
+    /// GitHub will not take this Repo's calls for the rest of the batch.
+    SkipRepo,
+    /// The batch is over, because of this.
+    Stop(BatchStop),
+}
+
 /// Files one batch of rendered issues, whichever entity they describe.
 ///
 /// A filing `POST` is never interrupted, because its issue would be stranded; the
@@ -222,72 +236,90 @@ async fn file_batch(
         if report.skipped.contains(&request.repo) {
             continue;
         }
-        let answered = api
-            .create_issue(
-                &request.repo,
-                &request.title,
-                &request.body,
-                &settings.github_issue_label,
-            )
-            .await;
-        let answer = match answered {
-            Ok(answer) => answer,
-            Err(error) => {
-                // Filing never carries on without an answer, which is the table's
-                // `File`/`Unreachable` cell.
-                tracing::warn!(
-                    name: "github.filing.unreachable",
-                    error = %error,
-                    entity = request.target.as_str(),
-                    "GitHub unreachable, skipping issue filing",
-                );
-                report.stopped = Some(batch_stop(Verdict::Unreachable));
-                break;
+        match file_one(db, &request, settings, api).await {
+            Filed::Linked(entity_id) => {
+                report.linked.insert(entity_id);
             }
-        };
-        let verdict = answer.classify(Success::Created);
-        match action(Operation::File, verdict) {
-            Action::Use => {
-                if let ControlFlow::Break(stop) =
-                    record_filed(db, &request, &answer, api, &mut report).await
-                {
-                    report.stopped = Some(stop);
-                    break;
-                }
-            }
-            Action::Stop => {
-                tracing::warn!(
-                    name: "github.filing.rate_limited",
-                    remaining = %answer.remaining_text(),
-                    "GitHub rate limit; stopping the filing batch"
-                );
-                report.stopped = Some(batch_stop(verdict));
-                break;
-            }
-            Action::SkipRepo => {
-                tracing::warn!(
-                    name: "github.filing.repo_skipped",
-                    repo = %request.repo,
-                    status = answer.status(),
-                    body = %answer.short_text(),
-                    "GitHub issue creation skipped for this Repo"
-                );
+            Filed::Next => {}
+            Filed::SkipRepo => {
                 report.skipped.insert(request.repo.clone());
             }
-            Action::SkipRow | Action::Rearm => {
-                tracing::warn!(
-                    name: "github.filing.create_failed",
-                    entity = request.target.as_str(),
-                    entity_id = request.entity_id,
-                    repo = %request.repo,
-                    status = answer.status(),
-                    body = %answer.short_text(),
-                    "GitHub issue creation failed"
-                );
+            Filed::Stop(stop_reason) => {
+                report.stopped = Some(stop_reason);
+                break;
             }
         }
     }
     report
+}
+
+/// Files one issue and stores its number, answering which way the batch goes.
+async fn file_one(
+    db: &(impl ConnectionTrait + TransactionTrait),
+    request: &FileRequest,
+    settings: &Settings,
+    api: &Api,
+) -> Filed {
+    let call = step(
+        Operation::File,
+        Success::Created,
+        // Boxed so the batch's frame holds a pointer rather than the request's own
+        // future while `step` runs.
+        Box::pin(api.create_issue(
+            &request.repo,
+            &request.title,
+            &request.body,
+            &settings.github_issue_label,
+        )),
+        |error| {
+            tracing::warn!(
+                name: "github.filing.unreachable",
+                error = %error,
+                entity = request.target.as_str(),
+                "GitHub unreachable, skipping issue filing",
+            );
+        },
+    )
+    .await;
+    let (answer, filing) = match call {
+        Call::Answered { answer, action, .. } => (answer, action),
+        // Filing never carries on without an answer, which is the table's own
+        // `File`/`Unreachable` cell.
+        Call::Unreachable { .. } => return Filed::Stop(call.stop()),
+    };
+    match filing {
+        Action::Use => record_filed(db, request, &answer, api).await,
+        Action::Stop => {
+            tracing::warn!(
+                name: "github.filing.rate_limited",
+                remaining = %answer.remaining_text(),
+                "GitHub rate limit; stopping the filing batch"
+            );
+            Filed::Stop(batch_stop(answer.classify(Success::Created)))
+        }
+        Action::SkipRepo => {
+            tracing::warn!(
+                name: "github.filing.repo_skipped",
+                repo = %request.repo,
+                status = answer.status(),
+                body = %answer.short_text(),
+                "GitHub issue creation skipped for this Repo"
+            );
+            Filed::SkipRepo
+        }
+        Action::SkipRow | Action::Rearm => {
+            tracing::warn!(
+                name: "github.filing.create_failed",
+                entity = request.target.as_str(),
+                entity_id = request.entity_id,
+                repo = %request.repo,
+                status = answer.status(),
+                body = %answer.short_text(),
+                "GitHub issue creation failed"
+            );
+            Filed::Next
+        }
+    }
 }
 
 /// What storing one filed issue's number found.
@@ -310,8 +342,7 @@ async fn record_filed(
     request: &FileRequest,
     answer: &Answer,
     api: &Api,
-    report: &mut BatchReport,
-) -> ControlFlow<BatchStop> {
+) -> Filed {
     let Some(number) = answer.issue_number() else {
         tracing::warn!(
             name: "github.filing.create_without_number",
@@ -319,11 +350,10 @@ async fn record_filed(
             body = %answer.short_text(),
             "GitHub issue creation returned 201 with no issue number"
         );
-        return ControlFlow::Continue(());
+        return Filed::Next;
     };
     match commit_filed_link(db, request, number).await {
         FiledLink::Stored => {
-            report.linked.insert(request.entity_id);
             tracing::info!(
                 name: "github.filing.filed",
                 repo = %request.repo,
@@ -332,6 +362,7 @@ async fn record_filed(
                 entity_id = request.entity_id,
                 "filed a GitHub issue"
             );
+            Filed::Linked(request.entity_id)
         }
         FiledLink::RowGone => {
             // The row vanished mid-filing: the number is referenced nowhere, so
@@ -345,6 +376,7 @@ async fn record_filed(
                 number,
                 "row deleted (admin delete) while filing; closed the new issue"
             );
+            Filed::Next
         }
         FiledLink::StoreFailed(error) => {
             // A link this server cannot store ends the outcome here: the issue
@@ -359,10 +391,9 @@ async fn record_filed(
                 "GitHub filing could not store its link; the issue stays open and the \
                  batch stops"
             );
-            return ControlFlow::Break(BatchStop::StoreFailed);
+            Filed::Stop(BatchStop::StoreFailed)
         }
     }
-    ControlFlow::Continue(())
 }
 
 /// Stores the number GitHub just created, reporting what became of the row.
