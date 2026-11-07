@@ -19,7 +19,7 @@
 //! the parser's own table. For a body at the 20 MiB ingest limit, the parser
 //! therefore allocates under [`PARSE_BYTES_MAX`], whatever shape the body takes:
 //! `every_shape_a_body_can_take_answers_within_the_budget` measures the peak of
-//! eight of them with a counting allocator, and of each pair of bounds the one
+//! ten of them with a counting allocator, and of each pair of bounds the one
 //! that moves is the pre-scan's, which runs before the parser reads a byte.
 
 // Rust guideline compliant 2026-07-21
@@ -97,7 +97,7 @@ const IDENTITY_BYTES_MAX: usize = 64 * 1024 * 1024;
 /// The most heap one report's parse uses, in bytes.
 ///
 /// This is the budget the module doc promises for a body at the 20 MiB ingest
-/// limit, measured with a counting allocator over the eight shapes
+/// limit, measured with a counting allocator over the ten shapes
 /// `every_shape_a_body_can_take_answers_within_the_budget` runs: 20.4 times the
 /// body for a body of a million minimal cases (the most cases such an upload can
 /// carry), 8 times for one long identity repeated across cases, 7.6 times for a
