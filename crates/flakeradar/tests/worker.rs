@@ -1058,6 +1058,66 @@ async fn a_persistent_process_error_backs_off_up_to_the_cap() {
 }
 
 #[tokio::test]
+async fn a_second_start_of_a_running_run_starts_no_second_loop() {
+    // The run counts its own loops, so a second `start` that spawned is seen
+    // rather than merely waited for: `stop` awaits the loop it was given, and a
+    // second spawn leaves the first running with nothing to stop it.
+    let loops = Arc::new(AtomicUsize::new(0));
+    let run = LeaderRun::new();
+
+    let counted = Arc::clone(&loops);
+    run.start(move |stop| async move {
+        counted.fetch_add(1, Ordering::SeqCst);
+        stop.cancelled().await;
+    })
+    .await;
+    wait_until("the first loop ran", || async {
+        loops.load(Ordering::SeqCst) >= 1
+    })
+    .await;
+
+    let counted = Arc::clone(&loops);
+    run.start(move |stop| async move {
+        counted.fetch_add(1, Ordering::SeqCst);
+        stop.cancelled().await;
+    })
+    .await;
+    run.stop().await.expect("the run stops");
+
+    assert_eq!(
+        loops.load(Ordering::SeqCst),
+        1,
+        "a start while a loop is going is a no-op"
+    );
+}
+
+#[tokio::test]
+async fn a_run_starts_again_after_the_stop() {
+    // A `CancellationToken` cannot be reset, so a run that kept its old token
+    // would end the moment a re-elected leader started it a second time.
+    let loops = Arc::new(AtomicUsize::new(0));
+    let run = LeaderRun::new();
+    for round in 1..=2 {
+        let counted = Arc::clone(&loops);
+        run.start(move |stop| async move {
+            counted.fetch_add(1, Ordering::SeqCst);
+            stop.cancelled().await;
+        })
+        .await;
+        wait_until("this round's loop ran", || async {
+            loops.load(Ordering::SeqCst) >= round
+        })
+        .await;
+        run.stop().await.expect("the run stops");
+    }
+    assert_eq!(
+        loops.load(Ordering::SeqCst),
+        2,
+        "each run after a stop loops"
+    );
+}
+
+#[tokio::test]
 async fn a_run_whose_loop_panicked_is_reported_when_it_is_stopped() {
     let run = LeaderRun::new();
     run.start(|stop| async move {

@@ -550,22 +550,22 @@ async fn a_webhook_url_is_never_logged_at_any_level() {
 }
 
 #[tokio::test]
-async fn stop_ends_the_task_without_starting_one_twice() {
+async fn a_task_that_never_ran_stops_cleanly() {
+    // What a second `start` does is the `LeaderRun`'s rule, and
+    // `tests/worker.rs::a_second_start_of_a_running_run_starts_no_second_loop`
+    // counts the loops it spawns. This is the other half: a stop with no run at
+    // all, which every process that starts a task and never elects it hits.
     let worker = worker(vec!["http://127.0.0.1:1/hook".to_owned()]);
     LeaderTask::stop(&worker)
         .await
         .expect("stopping a task that never ran is fine");
-
-    let worker = Arc::new(worker);
-    LeaderTask::start(worker.as_ref()).await;
-    LeaderTask::start(worker.as_ref()).await;
-    LeaderTask::stop(worker.as_ref())
-        .await
-        .expect("the task stops");
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn an_http_date_retry_after_uses_the_default_wait_and_still_retries() {
+    // The clock is paused, so the schedule this worker was built with — the
+    // shipped `RETRY_DELAYS` — is what the test costs nothing to wait out, and a
+    // retry that never happened cannot hide behind an unfinished sleep.
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/hook"))
@@ -589,6 +589,13 @@ async fn an_http_date_retry_after_uses_the_default_wait_and_still_retries() {
     LeaderTask::stop(worker.as_ref())
         .await
         .expect("the task stops");
+    // Two rate limits and the acceptance that followed them. A 429 carrying this
+    // header were treated as permanent would have stopped at the first request.
+    assert_eq!(
+        recorded(&server).await,
+        3,
+        "an unusable `retry-after` falls back to the default wait and retries"
+    );
 }
 
 #[tokio::test]
