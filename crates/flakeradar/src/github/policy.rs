@@ -29,7 +29,7 @@ pub enum Verdict {
     /// No answer at all.
     ///
     /// [`Answer::classify`](super::client::Answer::classify) never returns this: a
-    /// caller turns a [`TransportError`](super::client::TransportError) into it, so a
+    /// caller turns a [`TransportError`] into it, so a
     /// batch's policy covers it too.
     Unreachable,
 }
