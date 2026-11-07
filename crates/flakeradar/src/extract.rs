@@ -208,7 +208,7 @@ fn parse_query<T: DeserializeOwned + Validate>(pairs: &[(String, String)]) -> Ap
     let deserializer =
         serde_urlencoded::Deserializer::new(form_urlencoded::parse(collapsed.as_bytes()));
     let value: T = serde_path_to_error::deserialize(deserializer).map_err(|error| {
-        let mut issue = issue_for("query", error.path(), &error.inner().to_string());
+        let mut issue = issue_for(error.path(), &error.inner().to_string());
         attach_query_input(&mut issue, pairs);
         ApiError::unprocessable(vec![issue])
     })?;
@@ -384,21 +384,19 @@ fn json_error_position(bytes: &[u8], error: &serde_json::Error) -> usize {
         .map_or(offset, |prefix| prefix.chars().count())
 }
 
-/// Builds the issue for a `serde` failure at `path`.
-fn issue_for(scope: &str, path: &ErrorPath, message: &str) -> ValidationIssue {
+/// Builds the issue for a `serde` failure at `path` in the query.
+fn issue_for(path: &ErrorPath, message: &str) -> ValidationIssue {
     let kind = kind_for(message);
-    let mut loc = scope_loc(scope);
+    let mut loc = scope_loc("query");
     loc.extend(path.iter().filter_map(|segment| match segment {
         Segment::Map { key } => Some(LocSegment::Field(key.clone())),
         Segment::Seq { index } => Some(LocSegment::Index(*index)),
         Segment::Enum { .. } | Segment::Unknown => None,
     }));
-    if kind == "missing"
-        && let Some(field) = missing_field(message)
-    {
-        loc.push(LocSegment::Field(field));
-    }
     if kind == "missing" {
+        if let Some(field) = missing_field(message) {
+            loc.push(LocSegment::Field(field));
+        }
         return ValidationIssue::missing(loc);
     }
     ValidationIssue {
@@ -441,16 +439,6 @@ fn kind_for(message: &str) -> &'static str {
         "missing"
     } else {
         "value_error"
-    }
-}
-
-/// The error kind for a type name `serde` or Axum printed.
-fn kind_for_type_name(name: &str) -> &'static str {
-    match name {
-        "bool" => "bool_parsing",
-        "f32" | "f64" => "float_parsing",
-        other if is_integer_failure(&format!("expected {other}")) => "int_parsing",
-        _ => "value_error",
     }
 }
 
@@ -540,14 +528,22 @@ fn path_error(rejection: axum::extract::rejection::PathRejection) -> ApiError {
 fn path_issue(tail: Vec<LocSegment>, value: &str, expected_type: &str) -> ValidationIssue {
     let mut loc = scope_loc("path");
     loc.extend(tail);
-    match kind_for_type_name(expected_type) {
-        "int_parsing" => ValidationIssue::int_parsing(loc, Value::from(value)),
-        "float_parsing" => ValidationIssue::float_parsing(loc, Value::from(value)),
-        "bool_parsing" => ValidationIssue::bool_parsing(loc, Value::from(value)),
+    match expected_type {
+        "bool" => ValidationIssue::bool_parsing(loc, Value::from(value)),
+        "f32" | "f64" => ValidationIssue::float_parsing(loc, Value::from(value)),
+        // `INTEGER_TYPES` holds the sentences `serde` prints, so a type this
+        // path parameter asked for is one of them when its name is the sentence
+        // without the prefix.
+        name if INTEGER_TYPES
+            .iter()
+            .any(|sentence| sentence.strip_prefix("expected ") == Some(name)) =>
+        {
+            ValidationIssue::int_parsing(loc, Value::from(value))
+        }
         other => ValidationIssue {
-            r#type: other.to_owned(),
+            r#type: "value_error".to_owned(),
             loc,
-            msg: format!("Input should be a valid {expected_type}, got '{value}'"),
+            msg: format!("Input should be a valid {other}, got '{value}'"),
             input: Some(Value::from(value)),
             ctx: None,
         },
@@ -583,7 +579,7 @@ mod tests {
 
     use super::{
         INTEGER_TYPES, is_integer_failure, is_json_content_type, json_error_position, kind_for,
-        kind_for_type_name, missing_field, off_thread, path_issue,
+        missing_field, off_thread, path_issue,
     };
 
     #[tokio::test]
@@ -653,17 +649,6 @@ mod tests {
     }
 
     #[test]
-    fn a_type_name_maps_to_its_kind() {
-        assert_eq!(kind_for_type_name("bool"), "bool_parsing");
-        for name in ["f32", "f64"] {
-            assert_eq!(kind_for_type_name(name), "float_parsing");
-        }
-        assert_eq!(kind_for_type_name("i64"), "int_parsing");
-        assert_eq!(kind_for_type_name("u128"), "int_parsing");
-        assert_eq!(kind_for_type_name("char"), "value_error");
-    }
-
-    #[test]
     fn every_integer_width_serde_prints_is_an_integer_failure() {
         for name in INTEGER_TYPES {
             assert!(is_integer_failure(name), "{name}");
@@ -688,11 +673,15 @@ mod tests {
             LocSegment::Field("path".to_owned()),
             LocSegment::Field("id".to_owned()),
         ];
-        let issue = path_issue(loc[1..].to_vec(), "abc", "i64");
-        assert_eq!(issue.r#type, "int_parsing");
-        assert_eq!(issue.loc, loc);
-        let issue = path_issue(loc[1..].to_vec(), "abc", "f64");
-        assert_eq!(issue.r#type, "float_parsing");
+        for name in ["i64", "u128", "usize"] {
+            let issue = path_issue(loc[1..].to_vec(), "abc", name);
+            assert_eq!(issue.r#type, "int_parsing", "{name}");
+            assert_eq!(issue.loc, loc);
+        }
+        for name in ["f32", "f64"] {
+            let issue = path_issue(loc[1..].to_vec(), "abc", name);
+            assert_eq!(issue.r#type, "float_parsing", "{name}");
+        }
         let issue = path_issue(loc[1..].to_vec(), "abc", "bool");
         assert_eq!(issue.r#type, "bool_parsing");
         let issue = path_issue(loc[1..].to_vec(), "abc", "char");
