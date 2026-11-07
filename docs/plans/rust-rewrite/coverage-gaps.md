@@ -423,3 +423,29 @@ The stop handling this leg adds is reached by `stopping_waits_for_a_comment_post
 `a_repeated_query_parameter_takes_the_last_value`; and both store-failure returns by
 `a_store_failure_ends_the_outcome_and_leaves_its_issue_open` and
 `a_job_store_failure_also_ends_the_outcome`.
+
+## Task 36: the leader loop and shutdown
+
+Measured with `cargo +nightly-2026-10-25 llvm-cov nextest --branch --all-features --profile default`
+on a local `postgres:17-alpine`: suite **lines 96.93%** (17039, 523 missed) and **regions 93.84%**
+(19922, 1227 missed), functions 97.46%. `coverage-floor.json` stays `{"lines": 96, "branches": 93}`
+and the gate passes at them.
+
+Per file this leg touched:
+
+| File | Lines | Branches | What the misses are |
+|---|---|---|---|
+| `crates/flakeradar/src/worker.rs` | 94.51% (401, 22) | 100.00% (61, 0) | the new `ended()` never-started arm (row below), the existing `AdvisoryLock` no-row arms (row 08), and the structured-`tracing` event lines `elected` (740), `process.failed` (748-749), `leader_task.enqueue_failed` (765-766), `prune.failed` (804-805), `stop_failed` (823-824), `lock_lost` (833-834) and the new supervisor `process.panicked` (637-638) — all events whose expanded closures llvm-cov does not attribute to source lines, reached by the tests this leg names below |
+| `crates/flakeradar/src/server.rs` | 83.22% (149, 25) | 92.31% (13, 1) | the serve socket-error arm (224) and the new `serve`'s structured-`tracing` event lines (the `drain_timed_out` warn, the `worker.processor.dead` error, the `pool_close_failed` warn and the `server.stopped` info), reached by the shutdown and drain tests |
+
+The new code leaves one genuinely unreached arm, a row of its own:
+
+| Task | File | Function | Kind | Why it is not covered | Closed by |
+|---|---|---|---|---|---|
+| 36 | `crates/flakeradar/src/worker.rs` | `ended` | unreached arm | The `None` for a worker that was never started. `serve` always calls `ended` on a worker `Server::start` started, so the arm exists only so a caller that forgets to start the loop does not hang; it is the never-started shape `stopping_a_worker_that_never_started_is_a_no_op` pins in reverse | — |
+
+The new loop behaviour is reached by the tests it names in `STATUS.md` row 36: the top-of-loop
+lock check by `a_leader_with_a_backlog_checks_its_lock_between_reports`, the consecutive-error
+backoff by `a_persistent_process_error_backs_off_up_to_the_cap`, the dead-worker serve error by
+`a_worker_loop_that_died_makes_serve_return_an_error_and_release_the_lock` (which also enters the
+supervisor's panic event), and the drain bound by `a_stalled_upload_does_not_stop_serve_from_returning`.
