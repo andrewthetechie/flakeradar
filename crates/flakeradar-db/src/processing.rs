@@ -1064,18 +1064,26 @@ async fn insert_pipeline_job_executions(
     Ok((new_counts, jobs_with_new_exec, day_counts))
 }
 
+/// The columns one `job_executions` row of the statement below binds.
+///
+/// It is the width of a `VALUES` row, so it is also the stride of the placeholder
+/// numbering: a bind out of step with it lands in the wrong column rather than
+/// failing loudly. The row is therefore a fixed-size array typed with this count,
+/// which makes a mismatch a compile error. It equals the column list of the
+/// `INSERT` in [`insert_job_executions_sql`], and a new column changes both.
+const JOB_EXECUTION_COLUMNS: usize = 13;
+
 /// The `INSERT ... ON CONFLICT DO NOTHING RETURNING job_id, status` for one
 /// chunk, so only the rows that were actually inserted come back.
 fn insert_job_executions_sql(
     chunk: &[PipelineExecution],
     now: DateTimeWithTimeZone,
 ) -> (String, Vec<Value>) {
-    let mut values = Vec::with_capacity(chunk.len() * 13);
+    let mut values = Vec::with_capacity(chunk.len() * JOB_EXECUTION_COLUMNS);
     let mut placeholders = Vec::with_capacity(chunk.len());
     for (index, row) in chunk.iter().enumerate() {
-        let base = index * 13;
-        placeholders.push(value_row(base + 1, 13));
-        values.extend([
+        let base = index * JOB_EXECUTION_COLUMNS;
+        let row_values: [Value; JOB_EXECUTION_COLUMNS] = [
             Value::from(row.job_id),
             Value::from(row.ci_job_id.clone()),
             Value::from(row.ci_run_id.clone()),
@@ -1096,7 +1104,9 @@ fn insert_job_executions_sql(
             row.completed_at
                 .map_or(Value::ChronoDateTimeWithTimeZone(None), Value::from),
             Value::from(now),
-        ]);
+        ];
+        placeholders.push(value_row(base + 1, row_values.len()));
+        values.extend(row_values);
     }
     let sql = format!(
         "INSERT INTO job_executions (job_id, ci_job_id, ci_run_id, ci_run_attempt, commit_sha, \

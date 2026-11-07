@@ -26,6 +26,17 @@ fn naming_rule(pattern: &str) -> Regex {
 /// A Repo name must look like a lowercase `owner/name`.
 static REPO_RE: LazyLock<Regex> = LazyLock::new(|| naming_rule("^[a-z0-9_.-]+/[a-z0-9_.-]+$"));
 
+/// The longest a Repo name may be, in code points.
+///
+/// It is the width of `repos.name`, so a longer value cannot be stored: the
+/// request validator answers the 422 that names the field before this rule sees
+/// the text, and the rule is what refuses a name that reaches it any other way.
+/// Widening it is a schema change, not a constant change; narrowing it would
+/// refuse a real `owner/name` that every stored Report already carries. The
+/// ingest, read and MCP routes reach it through `NAME_MAX`, which states the same
+/// bound as the published contract.
+const REPO_MAX: usize = 255;
+
 /// A Project name is a short lowercase label.
 static PROJECT_RE: LazyLock<Regex> = LazyLock::new(|| naming_rule("^[a-z0-9_.-]{1,100}$"));
 
@@ -65,8 +76,8 @@ pub enum IdentityError {
 ///
 /// # Errors
 ///
-/// Returns [`IdentityError::Repo`] when the value is longer than 255
-/// characters or does not match `owner/name`.
+/// Returns [`IdentityError::Repo`] when the value will not fit the `repos.name`
+/// column or does not match `owner/name`.
 ///
 /// # Examples
 ///
@@ -78,7 +89,7 @@ pub enum IdentityError {
 /// ```
 pub fn normalize_repo(raw: &str) -> Result<String, IdentityError> {
     let value = strip_wire_whitespace(raw).to_lowercase();
-    if value.chars().count() > 255 || !REPO_RE.is_match(&value) {
+    if value.chars().count() > REPO_MAX || !REPO_RE.is_match(&value) {
         return Err(IdentityError::Repo {
             raw: raw.to_owned(),
         });

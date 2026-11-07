@@ -364,12 +364,18 @@ pub struct Settings {
     /// The label applied to every auto-filed GitHub issue.
     pub github_issue_label: String,
     /// The Flakiness score a Test must reach before FlakeRadar files an issue.
+    ///
+    /// Its shipped value is [`defaults::GITHUB_ISSUE_MIN_SCORE`], which says why it
+    /// starts at the tier's score but is its own knob.
     pub github_issue_min_score: f64,
     /// The Proven flake count a Test must reach before an issue is filed. `0` skips the gate.
     pub github_issue_min_proven_flakes: i64,
     /// The recent failure count a Test must reach before an issue is filed. `0` skips it.
     pub github_issue_min_failures: i64,
     /// How many linked Tests, and separately Jobs, one maintenance sync checks.
+    ///
+    /// Its shipped value is [`defaults::GITHUB_SYNC_BATCH`], whose doc says what a
+    /// change costs at GitHub.
     pub github_sync_batch: i64,
     /// The Clean streak at which FlakeRadar comments once that a fix appears to hold.
     pub github_fixed_streak: i64,
@@ -386,6 +392,9 @@ pub struct Settings {
     /// The origins `Access-Control-Allow-Origin` may name, comma separated.
     pub cors_origins: String,
     /// The Report processor's idle poll interval.
+    ///
+    /// Its shipped value is [`defaults::WORKER_POLL`]: the wait an upload pays
+    /// when the queue read empty.
     pub worker_poll: Duration,
     /// The statement timeout every pooled connection is set to, in seconds.
     pub db_command_timeout_seconds: f64,
@@ -400,6 +409,9 @@ pub struct Settings {
     /// How many days Score history rows are kept.
     pub score_history_retention_days: i64,
     /// How often the processor prunes.
+    ///
+    /// Its shipped value is [`defaults::PRUNE_INTERVAL`]: retention's windows are
+    /// days, so this only bounds how long a due delete waits.
     pub prune_interval: Duration,
     /// How many rows one prune batch deletes per table.
     pub prune_batch: i64,
@@ -421,10 +433,10 @@ impl Default for Settings {
             broken_streak: defaults::BROKEN_STREAK,
             github_token: Secret::new(""),
             github_issue_label: "flakeradar".to_owned(),
-            github_issue_min_score: 0.30,
+            github_issue_min_score: defaults::GITHUB_ISSUE_MIN_SCORE,
             github_issue_min_proven_flakes: 0,
             github_issue_min_failures: 0,
-            github_sync_batch: 2000,
+            github_sync_batch: defaults::GITHUB_SYNC_BATCH,
             github_fixed_streak: 0,
             github_close_fixed: false,
             public_url: String::new(),
@@ -432,14 +444,14 @@ impl Default for Settings {
             webhook_urls: Secret::new(""),
             webhook_format: WebhookFormat::Json,
             cors_origins: "http://localhost:5173".to_owned(),
-            worker_poll: Duration::from_secs(1),
+            worker_poll: defaults::WORKER_POLL,
             db_command_timeout_seconds: defaults::DB_COMMAND_TIMEOUT_SECONDS,
             max_report_retries: defaults::MAX_REPORT_RETRIES,
             report_retention_days: defaults::REPORT_RETENTION_DAYS,
             failed_report_retention_days: defaults::FAILED_REPORT_RETENTION_DAYS,
             execution_retention_days: defaults::EXECUTION_RETENTION_DAYS,
             score_history_retention_days: defaults::SCORE_HISTORY_RETENTION_DAYS,
-            prune_interval: Duration::from_secs(3600),
+            prune_interval: defaults::PRUNE_INTERVAL,
             prune_batch: defaults::PRUNE_BATCH,
             prune_time_budget_seconds: defaults::PRUNE_TIME_BUDGET_SECONDS,
             host: DEFAULT_HOST.to_owned(),

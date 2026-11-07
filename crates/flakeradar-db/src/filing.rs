@@ -135,7 +135,7 @@ pub struct RecentExecution {
     pub created_at: DateTime<Utc>,
 }
 
-/// The newest Executions of one Test, newest first.
+/// The newest Executions of one Test, newest first, at most `limit` of them.
 ///
 /// "Newest" is by Execution id, which is the order the Runs were processed in,
 /// so the read is stable however the rows are stored.
@@ -146,13 +146,12 @@ pub struct RecentExecution {
 pub async fn recent_executions(
     db: &impl ConnectionTrait,
     test_id: i32,
-    limit: usize,
+    limit: i64,
 ) -> Result<Vec<RecentExecution>, DbError> {
     let sql = format!(
         "SELECT e.status, e.message, e.details, e.created_at, r.commit_sha, r.branch \
          FROM test_executions e JOIN test_runs r ON r.id = e.test_run_id \
-         WHERE e.test_case_id = $1 ORDER BY e.id DESC LIMIT {}",
-        i64::try_from(limit).unwrap_or(i64::MAX)
+         WHERE e.test_case_id = $1 ORDER BY e.id DESC LIMIT {limit}"
     );
     let mut recent = Vec::new();
     for row in rows(db, sql, vec![Value::from(test_id)]).await? {

@@ -11,6 +11,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Router, middleware};
+use flakeradar_core::defaults;
 use flakeradar_core::limits::{LIST_LIMIT_MAX, NEW_WITHIN_DAYS_MAX};
 use flakeradar_core::{
     classify::FailureCategory, dto::CiRunFailuresOut, dto::HistoryOut, dto::JobHistoryOut,
@@ -299,7 +300,7 @@ impl TestsQuery {
                 .and_then(SortKey::parse)
                 .unwrap_or(SortKey::Score),
             page: self.page.unwrap_or(1),
-            page_size: self.page_size.unwrap_or(50),
+            page_size: self.page_size.unwrap_or(defaults::DEFAULT_PAGE_SIZE),
             q: self.q.clone(),
             has_issue: self.has_issue,
             new_within_days: self.new_within_days,
@@ -661,7 +662,7 @@ pub async fn jobs(
             .and_then(SortKey::parse)
             .unwrap_or(SortKey::Score),
         page: query.page.unwrap_or(1),
-        page_size: query.page_size.unwrap_or(50),
+        page_size: query.page_size.unwrap_or(defaults::DEFAULT_PAGE_SIZE),
         q: query.q.clone(),
         has_issue: query.has_issue,
         new_within_days: query.new_within_days,

@@ -133,7 +133,7 @@ pub async fn file_job_issues_for(
             db,
             i64::from(candidate.job.id),
             &settings.reads(std::sync::Arc::clone(clock)),
-            i64::try_from(BODY_EXECUTIONS).unwrap_or(10),
+            BODY_EXECUTIONS,
         )
         .await
         {

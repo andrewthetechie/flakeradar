@@ -1,15 +1,18 @@
-//! The shipped value of every setting more than one layer reads.
+//! The shipped value of every setting the server starts with.
 //!
 //! A default that is written in four places is a default that silently
 //! disagrees with itself in three: `Settings`, the processor's settings, the read
 //! layer's settings and retention each restated `0.30`, `50` and `5`. Each value
 //! below is written once and read by all of them, and each doc comment says why
-//! that number and what a change costs.
+//! that number, what a change costs and what reads it.
 //!
 //! Every value is the shipped default, so an install that sets nothing gets these
-//! scores, tiers and retention windows.
+//! scores, tiers and retention windows. `README.md` and `.env.example` state the
+//! same numbers, and `every_setting_defaults_to_the_documented_value` pins them.
 
 // Rust guideline compliant 2026-07-21
+
+use std::time::Duration;
 
 /// How many recent Executions the Flakiness score weighs.
 ///
@@ -41,6 +44,61 @@ pub const BROKEN_STREAK: i64 = 5;
 /// filing gate and the Tier changes that produce Notifications all read it, so a
 /// change here moves Tests between tiers and announces the move.
 pub const FLAKE_THRESHOLD: f64 = 0.30;
+
+/// The Flakiness score a Test or Job must reach before FlakeRadar files an Issue.
+///
+/// It ships at [`FLAKE_THRESHOLD`]'s value on purpose: an Issue is the record of a
+/// flake the leaderboard already calls flaky, so the two start as one question. It
+/// is a separate setting because an operator who wants fewer Issues can raise the
+/// filing gate without moving the tier boundary; the shipped `github` parity
+/// scenario files at 0.5 for that reason. Lowering it files Issues for Suspect
+/// rows; raising it leaves Flaky tests untracked. The filing gate reads it, and
+/// `FLAKERADAR_GITHUB_ISSUE_MIN_SCORE` sets it.
+pub const GITHUB_ISSUE_MIN_SCORE: f64 = 0.30;
+
+/// How many linked Tests, and separately linked Jobs, one maintenance sync asks
+/// GitHub about.
+///
+/// The sync rotates: the rows checked longest ago go first, so 2000 is how much of
+/// that queue one run drains, and a deployment with thousands of linked Tests
+/// still reaches every row within a few runs. A smaller batch leaves rows
+/// unanswered for longer, so a closed Issue is kept longer; a larger one is more
+/// requests per run against GitHub's secondary rate limit, which stops the batch.
+/// `github::sync` reads it and `FLAKERADAR_GITHUB_SYNC_BATCH` sets it.
+pub const GITHUB_SYNC_BATCH: i64 = 2000;
+
+/// How long the Report processor waits after a claim that found nothing.
+///
+/// One second is the longest an upload should wait behind a queue it believes is
+/// empty, and the claim is one indexed `SELECT ... FOR UPDATE SKIP LOCKED`, so an
+/// idle instance costs one statement a second. Shortening it multiplies that read
+/// by every running instance; lengthening it is latency a person sees as a Report
+/// stuck `pending`. The worker loop sleeps on it, and
+/// `FLAKERADAR_WORKER_POLL_SECONDS` sets it as a number of seconds (`1.0`).
+pub const WORKER_POLL: Duration = Duration::from_secs(1);
+
+/// How often the processor runs the retention prune.
+///
+/// An hour is the coarsest thing retention has to be: every window it enforces is
+/// measured in days, so a run up to an hour late deletes nothing that should
+/// already have gone, while a run every few minutes holds rows in `DELETE` that
+/// the processor is still writing. Shortening it buys nothing a reader sees;
+/// lengthening it lets the tables grow past one batch's reach. The worker loop
+/// compares it against the clock, and `FLAKERADAR_PRUNE_INTERVAL_SECONDS` sets it
+/// as a number of seconds (`3600.0`).
+pub const PRUNE_INTERVAL: Duration = Duration::from_secs(3600);
+
+/// The `page_size` either leaderboard serves when a request names none, in rows.
+///
+/// One page is what the dashboard loads and what a person scans, so 50 rows is the
+/// worst flakiness with room to see a pattern; `frontend`'s pager sends the same
+/// number, so a request that names no `page_size` and one the dashboard makes
+/// agree. It is a shipped default, not a bound: `limits::LIST_LIMIT_MAX` is the
+/// largest a request may ask for, and the MCP listing tools have their own smaller
+/// `DEFAULT_LIMIT` because a model reads those answers. Raising it grows every
+/// answer that names no page; lowering it buries the rows past the fold. Both route
+/// groups read it, and `tests/parity` replays the paging fields it decides.
+pub const DEFAULT_PAGE_SIZE: i64 = 50;
 
 /// How many times a Report may be re-processed after a transient failure.
 ///

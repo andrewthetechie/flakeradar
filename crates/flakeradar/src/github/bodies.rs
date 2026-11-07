@@ -23,7 +23,11 @@ use crate::settings::Settings;
 /// commit and a message, and GitHub caps an issue body at 65536 characters, which
 /// ten rows cannot reach. Raising it lengthens every filed issue; lowering it can
 /// hide the flip the body exists to show.
-pub const BODY_EXECUTIONS: usize = 10;
+///
+/// It is the `i64` a history read takes as its `limit`, because the body quotes
+/// exactly what that read returns; the count is far below `i64::MAX`, so no
+/// statement has to widen or clamp it.
+pub const BODY_EXECUTIONS: i64 = 10;
 
 /// How many run commands a Job body lists.
 ///
