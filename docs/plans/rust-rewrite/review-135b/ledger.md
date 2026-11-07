@@ -74,7 +74,7 @@ One row per finding. The owning task closes its rows. **State** is `open`, `fixe
 ## Closed at the third-review handoff (44)
 
 Every row above is `fixed`, and task 44 closed the ledger by re-running each row's named test at
-`@@HEAD@@` rather than by reading its evidence again. Two runs cover the rows that name a test:
+`840c180` rather than by reading its evidence again. Two runs cover the rows that name a test:
 
 ```
 cargo nextest run --all-features --profile ci -E 'test(/(a_429_stops_the_job_batch|…|the_sync_rotates_through_its_links_a_batch_at_a_time)/)'

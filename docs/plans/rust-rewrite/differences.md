@@ -114,7 +114,7 @@ adding one. The replay itself still runs: `every_scenario_replays_identically` c
 against its golden, and `every_scenario_step_has_a_golden_and_no_golden_is_orphaned` fails on a
 golden that no step names.
 
-## Added by the review fixes (tasks 16–31)
+## Added by the review fixes (tasks 16–31, and 32, 33, 36, 40 and 43)
 
 Each row here cites `00-fixes-context.md`, whose table the owner approved by commissioning the
 plan, or the finding `review-135/ledger.md` names.

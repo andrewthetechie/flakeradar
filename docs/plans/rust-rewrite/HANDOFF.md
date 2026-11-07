@@ -18,7 +18,7 @@ Not re-derivable, and quoted from the document named beside it: the coverage per
 (`coverage-gaps.md`), the audit histories and older CI run ids (`STATUS.md`'s rows), and the
 performance and reliability numbers (`docs/perf/22`).
 
-The head this file describes is `@@HEAD@@`, the commit that carries it. The last commit that
+The head this file describes is `840c180`, the commit that carries it. The last commit that
 changes code or fixtures is `3cee932`; everything after it is documentation. There have been two
 reviews: `review-135/RE-REVIEW.md` is the page for the first review's fixes (tasks 16–31), and
 `review-135b/RE-REVIEW.md` is the page to start from now, for the second review's fixes (tasks
@@ -27,7 +27,7 @@ reviews: `review-135/RE-REVIEW.md` is the page for the first review's fixes (tas
 
 | | |
 | --- | --- |
-| Branch | `feat/rust-rewrite`, head `@@HEAD@@` |
+| Branch | `feat/rust-rewrite`, head `840c180` |
 | Python reference | `97b933d`, the last Python commit; `86c98804` for the review fixes, which is `97b933d` plus `main`'s #130 and #131 |
 | Branch point | `33703f7` (the plan documents); task 01's work starts at `1179fe3` |
 | Commits in `97b933d..HEAD` | 409, of which 2 (`bfd3fc4`, `86c9880`) are `main`'s #130 and #131 brought in by the merge `182ab4a` |

@@ -1,11 +1,11 @@
-# Third review handoff: PR #135 at `@@HEAD@@`
+# Third review handoff: PR #135 at `840c180`
 
 This is the page to start from. It says what the second review's fixes (tasks 32–44) changed, the
 numbers they were measured at, every intentional difference they added, what is still unverified,
 and the surface neither review reached — which is where the third review starts. The second
 review's findings are in `review-135b/`, the first review's in `review-135/`.
 
-**Head: `@@HEAD@@`, pushed to `feat/rust-rewrite`.** The last commit that changes code or a test is
+**Head: `840c180`, pushed to `feat/rust-rewrite`.** The last commit that changes code or a test is
 `3cee932`; every commit after it is documentation. The head this page names is the commit that
 carries it; the one commit after that only fills in this line, and `STATUS.md`'s task 44 row carries
 the CI run ids, so a later push cannot leave a stale run id on this page.
