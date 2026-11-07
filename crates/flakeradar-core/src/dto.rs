@@ -1690,7 +1690,12 @@ pub struct JobOut {
     /// The score's direction over the trend window.
     #[serde(default)]
     pub trend: Option<Trend>,
-    /// The newest Job execution's status.
+    /// The newest Job execution's status, as the column stores it.
+    ///
+    /// A `JobStatus`, except that the column is a `varchar(16)` with no `CHECK` and
+    /// a hand-written row can hold a word the three variants do not name. Serving
+    /// the stored word is the behaviour, so the field stays a `String` and only
+    /// [`JobOutcome`] is folded — see [`JobStatus::from_stored`](crate::model::JobStatus::from_stored).
     pub last_status: String,
     /// When the Job last ran.
     #[serde(with = "timestamp")]
@@ -1751,7 +1756,8 @@ pub struct ExplainingJobOut {
 pub struct JobExecutionOut {
     /// The Job execution's id.
     pub id: i64,
-    /// The stored status.
+    /// The stored status, as the column stores it; see [`JobOut::last_status`] for
+    /// why this is not a `JobStatus`.
     pub status: String,
     /// What the execution counts as once Explained failures are attributed.
     pub outcome: JobOutcome,
