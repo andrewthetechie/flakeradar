@@ -26,11 +26,14 @@ schema.sql                pg_dump of Alembic head, minus alembic_version
 allowed-differences.json  the only mismatches a replay may accept
 ```
 
-At `e8563b1` this holds **15 scenarios with 316 steps**, a **33-file** JUnit corpus, **66** JUnit
+At `@@HEAD@@` this holds **15 scenarios with 316 steps**, a **33-file** JUnit corpus, **66** JUnit
 goldens (one per corpus file at each `line_base`), **382 JSON goldens** in all and `schema.sql` —
 383 golden files, one per step — beside `allowed-differences.json`, which is not a golden. A count
 of `steps` in `scenarios/*.json` and of `golden/**/*.json` derives them; `every_scenario_step_has_a_golden_and_no_golden_is_orphaned`
-fails when the two disagree, so the numbers cannot drift unnoticed.
+fails when the two disagree, so the numbers cannot drift unnoticed. Nothing here changed after
+`ac5e6f3` except `allowed-differences.json`'s two `rustValue`s (task 32's parser pre-scan refuses
+`bad-nested-entities` with its own sentence) and this file (task 43 corrected which commit recorded
+which scenario), so a diff against that review's head reads those two files and nothing else.
 
 Nothing here is edited by hand: a replay compares against these files byte for
 byte, so a hand edit is an unreviewed behaviour change. When a difference is

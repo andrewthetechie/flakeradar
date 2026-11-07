@@ -55,7 +55,6 @@ Task 14 works through this list and closes what it can. Task 15 files a follow-o
 | 09 | `crates/flakeradar-db/src/reads.rs` | `ci_run_report_counts` | unreached arm | The `_ => {}` for a Report status outside `pending`, `processed` and `failed`. `ck_reports_status` allows only those three, so no row reaches it | — |
 | 09 | `crates/flakeradar-db/src/reads.rs` | `ci_run_test_failures` | unreached arm | The `ok_or_else` for the pair-count aggregate that answered no row, the same shape as the summaries above | — |
 | 09 | `crates/flakeradar-db/src/reads.rs` | `ci_run_failure_item` | unreached arms | The two `return Ok(None)` arms for a pair with no Execution, or none failing. The pair was counted as failing in the same listing, so both need a concurrent `DELETE` between the count and the execution read | — |
-| 09 | `crates/flakeradar/src/routes/reads.rs` | `From<DbError>`, `From<DbErr>`, `From<ReadError> for ReadRouteError` | measurement artifact | Every read test executes these conversions (a failed query reaches the 500 path, and an unknown CI run reaches the 404 path), but `llvm-cov` attributes the inlined conversion bodies to their callers, so the `impl` lines themselves report zero. The 500 and 404 bodies are covered by `a_failed_read_query_answers_the_plain_text_500` and the unknown-repo/run tests | — |
 | 09 | `crates/flakeradar/src/routes/reads.rs` | `category_expected` | unreached arm | The `None` arm of `split_last`. `FailureCategory::ALL` holds five variants, so the list is never empty | — |
 | 09 | `crates/flakeradar-core/src/dto.rs` | `timestamp::deserialize`, `optional_timestamp::deserialize`, `lax_bool::deserialize`, `lax_bool::optional` | unreached arm | The `?` that would propagate a failure of `String::deserialize`, `Option::<String>::deserialize` or `Value::deserialize`. Every caller reads a field of a body `serde_json` has already decoded or of a query string, and both sinks answer every one of those methods, so the read cannot fail; a format that refused one (a binary one) would reach the arm, and no route uses one. The decoding and rejecting each reader does afterwards is measured, including `a_bad_timestamp_is_a_deserialization_error` and the lax-bool tables | — |
 | 09 | `crates/flakeradar-core/src/dto.rs` | `lax_bool::interpret_number` | unreached arm | The `else` of `let Some(float) = number.as_f64()`. `serde_json::Number` holds a `u64`, an `i64` or an `f64`, and `as_f64` answers all three, so the arm needs a number shape the crate does not build; `serde_json`'s `arbitrary_precision` feature is what adds one, and no member enables it | — |
@@ -64,10 +63,6 @@ Task 14 works through this list and closes what it can. Task 15 files a follow-o
 | 10 | `crates/flakeradar-db/src/deletes.rs` | `issue_numbers` | unreached arm | The `continue` for `one_many` answering `None`, which it never does: it builds `Some` out of the rows `query_all_raw` returned | — |
 | 10 | `crates/flakeradar-db/src/issue_links.rs` | `From<sea_orm::DbErr> for LinkError` | measurement artifact | Inlined into its `?` sites, the same shape as the `deletes.rs` row above | — |
 | 10 | `crates/flakeradar-db/src/issue_links.rs` | `link_issue`, `unlink_issue` | measurement artifact | The field-argument lines of the two `tracing::info!` events. `tracing` evaluates those arguments lazily inside the macro, and `llvm-cov` counts them zero although the events fire; each event's own statement line is covered | — |
-| 10 | `crates/flakeradar/src/routes/issues.rs` | `From<ApiError>`, `From<DbError>`, `From<DbErr>`, `From<IssueLinkError>`, the `IssueRouteError::Rejected` response arm | dead conversion | No caller: `ApiPath`, `ApiQuery` and `LinkBody` answer their own rejection before a handler returns, and the two engines fail with `LinkError`, whose `From<LinkError>` is the conversion the routes do use. `Rejected` is never constructed; the `LinkError::Database` arm and the 500 body are covered by `a_failed_link_query_answers_the_plain_text_500` | — |
-| 10 | `crates/flakeradar/src/routes/issues.rs` | `link_test`, `unlink_test`, `link_job`, `unlink_job` | unreachable arms | The four `LinkedOut` mismatch arms (200-202, 235-237, 282-284, 317-319). `link_issue` and `unlink_issue` build the variant from the target they are handed, and each route passes one target, so a Test route cannot get a `LinkedOut::Job` back (or the reverse) | — |
-| 10 | `crates/flakeradar/src/routes/issues.rs` | `IssueRouteError::into_response` | unreachable arm | `StatusCode::from_u16(error.status()).unwrap_or(StatusCode::UNPROCESSABLE_ENTITY)`: `IssueLinkError::status` answers 404, 409 or 422 only, so the fallback cannot be taken (line 78 is covered; the unreachable part is the closure's body) | — |
-| 10 | `crates/flakeradar/src/routes/admin.rs` | `From<DbError>`, `From<DbErr> for AdminRouteError` | dead conversion | No caller: every delete fails with `DeleteError`, which has its own conversion (covered by the deadlock and 503 tests), and the extractors answer themselves | — |
 | 40 | `crates/flakeradar-db/src/sql.rs` | `ci_run_id` | unreached branch | The refusal, for a stored CI run id past [`CiRunId::MAX_LEN`]. `reports.ci_run_id` and `job_executions.ci_run_id` are `character varying(255)`, so no row can hold one: the constructor's bound is the column's own, and only the score and fingerprint arms of the three stored-value constructors can fire. `score` and `fingerprint` are reached, by `a_stored_score_that_is_no_score_refuses_the_row` and `a_stored_fingerprint_that_is_no_digest_refuses_the_row` | — |
 | 10 | `crates/flakeradar-db/src/sql.rs` | `get` | unreached arm | The `.map_err` on a column read. Every column is named by the statement that selected it, so only a schema change fails it; the same shape as task 07's `processing.rs` row. The row named `crates/flakeradar/src/github.rs`, which held its own `get` until task 24 moved it here | — |
 | 10 | `crates/flakeradar/src/github/filing.rs` | `commit_filed_link` | unreached arms | The savepoint's start and its commit failing, each needing the driver to fail between statements of a filing that is already in progress. Task 18 covered the third arm this row used to name, the link `UPDATE` itself failing: `a_store_failure_leaves_the_issue_open_and_stops_the_batch` raises from a `BEFORE UPDATE` trigger | — |
@@ -446,3 +441,49 @@ lock check by `a_leader_with_a_backlog_checks_its_lock_between_reports`, the con
 backoff by `a_persistent_process_error_backs_off_up_to_the_cap`, the dead-worker serve error by
 `a_worker_loop_that_died_makes_serve_return_an_error_and_release_the_lock` (which also enters the
 supervisor's panic event), and the drain bound by `a_stalled_upload_does_not_stop_serve_from_returning`.
+
+## Task 44: the final measurement, and five rows the record had outlived
+
+The suite was measured three times with CI's own command —
+`cargo +nightly-2026-10-25 llvm-cov nextest --branch --all-features --profile ci --no-report`,
+then `cargo +nightly-2026-10-25 llvm-cov report --branch --summary-only` — against a local
+`postgres:17-alpine` with `FLAKERADAR_TEST_DATABASE_URL` set, which is the configuration CI
+measures in. Each run executed 1180 tests with no failure and no retry:
+
+| Run | Regions | Functions | Lines | Branches |
+|---|---|---|---|---|
+| 1 | 93.64% (19,222; 1,222 missed) | 97.41% (2,125; 55) | 96.96% (16,671; 506) | 93.80% (1,452; 90) |
+| 2 | 93.64% (19,222; 1,222) | 97.41% (2,125; 55) | 96.96% (16,671; 506) | 93.80% (1,452; 90) |
+| 3 | 93.65% (19,222; 1,220) | 97.41% (2,125; 55) | 96.97% (16,671; 505) | 93.87% (1,452; 89) |
+
+`coverage-floor.json` stays `{"lines": 96, "branches": 93}` and every run clears both floors by
+about one point of lines and nearly a point of branches.
+
+The third run differs from the first two by one line and one branch, and a fourth run repeated the
+third exactly: `crates/flakeradar/src/github/sync.rs` misses 48 of 226 lines in runs 3 and 4 and 49
+in runs 1 and 2, and `crates/flakeradar-db/src/issue_links.rs` loses one region in runs 1 and 2
+only. Neither is a gap this file should carry: the code is the same, the totals are export
+attribution of a lazily evaluated `tracing` argument, and the one candidate that could make it
+timing-dependent is `a_database_restart_under_the_leader_files_a_real_issue_and_syncs_again`,
+whose sync statement races the database it kills. The line was not identified, and the floors are
+unaffected: this is recorded so the third review knows the totals are not byte-identical run to
+run.
+
+Five rows in the table above were deleted here, because they described code task 40 removed and
+task 44 is the task that has to say so:
+
+- the `From<DbError>`, `From<DbErr>` and `From<ReadError> for ReadRouteError` conversions in
+  `crates/flakeradar/src/routes/reads.rs` (the file's only remaining miss is
+  `category_expected`'s `None` arm, line 165, which its own row still records);
+- the `From<ApiError>`, `From<DbError>`, `From<DbErr>` and `From<IssueLinkError>` conversions, the
+  `IssueRouteError::Rejected` arm, the four `LinkedOut` mismatch arms and
+  `IssueRouteError::into_response`'s status fallback in `crates/flakeradar/src/routes/issues.rs`;
+- the `From<DbError>` and `From<DbErr> for AdminRouteError` conversions in
+  `crates/flakeradar/src/routes/admin.rs`.
+
+None of the three files has an `impl From<…>` left (`grep -rn 'impl From<' crates/flakeradar/src/routes/`
+answers nothing; the one conversion a route needs is `error::RouteError`'s), and the measurement
+now reports
+`routes/issues.rs` and `routes/admin.rs` at 100% of regions, lines and branches and
+`routes/reads.rs` at 99.16% of lines. Tasks 37–43 added no row of their own: 37 added browser tests,
+39 and 42 moved tests and test support, and 38, 40 and 41 corrected the rows whose code they moved.

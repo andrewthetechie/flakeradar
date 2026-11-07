@@ -8,28 +8,33 @@ this file is the summary you need before you read it.
 Facts that can be re-derived from the repository were re-derived rather than copied from
 `STATUS.md`, and where a `STATUS.md` claim could not be confirmed it says so. Verified here:
 `git log` and `git rev-list --count` for every range, `cargo nextest list --all-features` for the
-test count (1103), `cargo test --doc --all-features` for the doctests (24), file counts under
-`tests/parity` for the goldens (382 JSON files plus `schema.sql`), `git diff --shortstat` for the
-size, `gh run view` for the CI claims, pydantic 2.14.2 and junitparser 5.0.3 for the two
-disproven findings, and two targeted `cargo nextest` runs for the tests those findings concern.
+test count (1180, re-counted by the suite's own summary at this head), `cargo test --doc
+--all-features` for the doctests (24), file counts under `tests/parity` for the goldens (382 JSON
+files plus `schema.sql`), `git diff --shortstat` for the size, `gh run view` for the CI claims,
+pydantic 2.14.2 and junitparser 5.0.3 for the two disproven findings, and `dups.py 8`,
+`battery/run.sh all`, four coverage runs and the two Playwright projects for the measurements
+tasks 32–44 rest on.
 Not re-derivable, and quoted from the document named beside it: the coverage percentages
 (`coverage-gaps.md`), the audit histories and older CI run ids (`STATUS.md`'s rows), and the
 performance and reliability numbers (`docs/perf/22`).
 
-The head this file describes is `e8563b1`, the last commit that changes code or fixtures. The
-commits after it are documentation only — this file, `review-135/RE-REVIEW.md`, and `STATUS.md`'s
-row for task 31 — and the review of the fixes is `review-135/RE-REVIEW.md`, which is the page to
-start from. Section 2 covers tasks 01–15 and section 2b tasks 16–31, the review fixes.
+The head this file describes is `@@HEAD@@`, the commit that carries it. The last commit that
+changes code or fixtures is `3cee932`; everything after it is documentation. There have been two
+reviews: `review-135/RE-REVIEW.md` is the page for the first review's fixes (tasks 16–31), and
+`review-135b/RE-REVIEW.md` is the page to start from now, for the second review's fixes (tasks
+32–44) and for the surface neither review reached. Section 2 covers tasks 01–15, section 2b tasks
+16–31 and section 2c tasks 32–44.
 
 | | |
 | --- | --- |
-| Branch | `feat/rust-rewrite`, head `e8563b1` (plus the documentation commits after it) |
+| Branch | `feat/rust-rewrite`, head `@@HEAD@@` |
 | Python reference | `97b933d`, the last Python commit; `86c98804` for the review fixes, which is `97b933d` plus `main`'s #130 and #131 |
 | Branch point | `33703f7` (the plan documents); task 01's work starts at `1179fe3` |
-| Commits in `97b933d..HEAD` | 311, of which 2 (`bfd3fc4`, `86c9880`) are `main`'s #130 and #131 brought in by the merge `182ab4a` |
-| Diff against `97b933d` | 834 files, +116721 / -24793; `backend/` alone is 96 files and 24535 deletions |
-| Reviewed head | `f9330fd`, the head the review in `review-135/` was written against |
-| Diff of the review fixes | `f9330fd..e8563b1` is 121 commits over 257 files, +34960 / -16075 |
+| Commits in `97b933d..HEAD` | 409, of which 2 (`bfd3fc4`, `86c9880`) are `main`'s #130 and #131 brought in by the merge `182ab4a` |
+| Diff against `97b933d` | 919 files, +181114 / -24794; `backend/` alone is 96 files and 24535 deletions, and 54,309 of the insertions are `crates/flakeradar-core/tests/fixtures/encodings.tsv`, the reference's codec table |
+| Reviewed heads | `f9330fd`, which `review-135/` was written against, and `ac5e6f3`, which `review-135b/` was written against |
+| Diff of the first review's fixes | `f9330fd..ac5e6f3` is 129 commits over 261 files, +35480 / -16132 |
+| Diff of the second review's fixes | `ac5e6f3..HEAD` is 90 commits over 225 files, +71718 / -7789, with the codec fixture as most of the insertions |
 | Pull request | #135, *feat: replace the Python backend with one Rust binary*, open, unmerged, untagged |
 
 ## 1. What landed
@@ -38,7 +43,7 @@ The Python service is gone: `backend/`, `tools/parity-record/`, `ruff.toml` and 
 checker are deleted, along with the CI jobs that drove them. One Rust binary now serves
 everything the Python server did — the API, the dashboard embedded out of `rust-embed`, the MCP
 server over stateless Streamable HTTP, and the report worker (plus the GitHub and webhook leader
-tasks inside the same process) — and the workspace's gate is 1103 tests, 24 doctests, `cargo fmt`,
+tasks inside the same process) — and the workspace's gate is 1180 tests, 24 doctests, `cargo fmt`,
 `clippy -D warnings`, `cargo doc` with warnings denied, and `cargo audit`. All 383 parity files
 replay: 316 recorded scenario steps across 15 scenarios, 66 JUnit parse goldens, and `schema.sql`,
 which `crates/flakeradar-db/tests/schema_parity.rs` compares against a freshly migrated database,
@@ -104,6 +109,37 @@ is the page that summarizes what each one closed.
 | 29 | Clock and test hygiene | `8b7de67..40ee134` | 12 | `AppState` carries the clock and `Utc::now` is gone from the routes and `github/`; both leader tasks drain one queue that counts finished batches; the test helpers are `flakeradar-test-support`'s; `close_issues_after_removal` answers a `RemovalReport` instead of a log line | `b6472fc` |
 | 30 | Docs, lints and compliance markers | `2275fee..2fa6e6d` | 14 | Both lint opt-outs and the one `#[allow]` gone, one path per item across 102 files, every bound a named constant with a reason, every log event named and unformatted, `cargo doc` with warnings denied in CI, and two tests that read the source for the rules a compiler cannot see | `dd3924b` |
 | 31 | Hand off for re-review | `512e466..` | 3+ | The ledger closed with every named test re-run, the proofs rewritten against this head, the differential battery re-run, three coverage runs, this file and `RE-REVIEW.md` corrected, and the PR body updated | this row |
+
+## 2c. The second review's fixes: per-task commit ranges for 32–44
+
+The review of `ac5e6f3` found four must-fix defects and a list of should-fix work, and
+`docs/plans/rust-rewrite/00-fixes-2-context.md` turns each finding into one task. The ranges below
+are contiguous the same way: the twelve counts sum to 90, which with nothing else after `ac5e6f3`
+is the 90 commits in `ac5e6f3..HEAD`. The plan commit that added the task files, `1fbf1e5`, is
+numbered inside task 32's range, as `0e0fc57` was inside task 16's. The "landed" column repeats
+`STATUS.md`'s Commit cell. `review-135b/RE-REVIEW.md` is the page that summarizes what each one
+closed.
+
+| Task | Title | Range (first..last) | n | Delivered | Landed |
+| --- | --- | --- | --- | --- | --- |
+| 32 | Parser budget that holds for every shape | `1fbf1e5..8b626c7` | 4 | The pre-scan bounds entity expansion at 64 MiB and namespace declarations at 4,194,304 entries before `roxmltree` reads a byte, so a hostile body is a 422 instead of a dead server; ten shapes are measured under a counting allocator with a 1 GiB hard stop | `ff8ae02` |
+| 33 | Parser parity: empty namespace, encodings, declarations | `986904e..0484a9e` | 4 | An explicit empty namespace is no namespace, so `<failure xmlns="">` is a failure; every encoding label decodes from the reference's own codecs (54,309-fixture rows over 421 labels and 66 code pages); and `DOCTYPE` and declaration handling is pinned case by case | `bc8f000` |
+| 34 | Timestamps, settings and the database URL | `4cd7e06..b99959d` | 11 | A number past `2e10` is a millisecond count and the years a datetime cannot hold are refused, numeric strings are read as instants, the settings take the request body's spellings, a wait no `Duration` holds refuses by name, and a database URL's password never reaches the output | `080be67` |
+| 35 | GitHub stop rules, off-thread JSON work, the SQL log | `23dcb25..400d0ee` | 7 | A store failure ends the GitHub outcome; a comment and its close each run through their answer; a JSON body's parse and a Pipeline body's serialisation leave the async thread; the query-name lookup is a map; and SQL statements log at `debug` | `8964291` |
+| 36 | The leader loop and shutdown | `e949ca7..d5ff9c5` | 3 | The leader checks its lock session on every loop, a dead worker loop makes `serve` return an error and release the lock, a failed Ctrl-C listener no longer shuts the server down, the drain is bounded at 25 s, and a persistent `process_next` error backs off to the cap | `2d57ca9` |
+| 37 | Playwright tests for the dashboard | `9c08e65..c872fde` | 6 | `frontend/e2e/` is two Playwright 1.65.0 projects — five mocked-UI tests and eight end-to-end tests against a mock install — and each is its own required CI job | `5d6eb3e` |
+| 38 | Comments, compliance markers and the hygiene guard | `8480d6f..6a3b4dd` | 7 | 65 files lost a compliance marker a still-open finding contradicted, the comments describe the code as it stands, and both source-hygiene tests became rules that fail by file and line | `df679b2` |
+| 39 | Log events and test shape | `8931cc6..645e4e4` | 10 | The last five log events carry their values as fields, `PruneResult::notifications_dropped` replaces a logged count, one `CapturedLog` replaces seven private sinks, the public-API tests leave `src/`, and Test and Job bodies split per entity | `5fc8585` |
+| 40 | Finish the types and the plumbing | `6541866..ab611b0` | 16 | `Score`, `Fingerprint` and `CiRunId` travel through every read; every shipped number is a named constant; `policy::step` reads the action table's `Unreachable` column; one note and one filing entry point; `LinkedOut` is untagged; `TEST_UPDATES`/`JOB_UPDATES` are literal SQL; `ToolAnswer::shaped`; and a stored `NaN` score is refused — the one behaviour change, approved on 2026-11-07 | `a410e70` |
+| 41 | Structure of the request and worker modules | `3aa7768..a44b0cf` | 12 | Nine structure rows: one match for the lock's three outcomes, one `BoxFuture` alias, `post` as attempt/match/wait, `lax::recorded`, `path_issue` deciding on the type, `Framing::next_part`, one split helper, `memmem::Finder` instead of the hand-written search, and `worker/{leader_task,lock}.rs` | `b0274bf` |
+| 42 | Test helpers that remove the most lines | `96fc09b..e9fe17d` | 7 | A seeded row is one `create` call (733 of them against 45 `build` calls kept), a sync is `sync`/`sync_with`, and four local helpers carry the validation ceremony; one MCP client test became four | `c3c64c8` |
+| 43 | The record and the missing controls | `3cee932..4b42e61` | 3 | The four self-approved rows cite the approved decisions, the OpenAPI comparison gained its four negative controls, `tests/parity/README.md` names the commit that recorded each scenario, and `review-135/ledger.md` names the rows the second review reopened | `0a3224f` |
+| 44 | Hand off for the third review | this commit and the record one | 2 | The ledger closed by re-running every named test, the battery, the four coverage runs and `dups.py` re-measured, the record corrected (`differences.md`, `coverage-gaps.md`, `tests/parity/README.md`, this file, `README.md`, `CONTRIBUTING.md`), the PR body rewritten and `review-135b/RE-REVIEW.md` written | this row |
+
+`e949ca7`, the first commit of task 36's range, is a `.fabro/test.toml` change made by the relay
+runner between tasks, not a task deliverable: fabro-io rejects a timeout above 600 seconds, so the
+900-second values in `targets.rust` and `checks.clippy` failed the file's own check. It is inside
+the range because every commit on the branch belongs to one.
 
 ## 3. Every UNVERIFIED item
 
@@ -250,6 +286,43 @@ Playwright projects the new `Frontend UI (Playwright, mocked)` and `Dashboard e2
 mock install)` CI jobs run, the second of which drives the dashboard out of the binary against
 a seeded database (see section 3 item 5).
 
+### The second review's fixes' unverified items
+
+Task 44 re-ran the checks at the head this file describes and closed `review-135b/ledger.md`; that
+file's closing section and `review-135b/RE-REVIEW.md` say what each row was proved with. What is
+still not verified, and matters to a reviewer:
+
+- **Every performance, coverage and load figure is this host's.** The four coverage runs in section
+  7 used a local `postgres:17-alpine`, not CI's service, and two of the four differ from the other
+  two by one line and one branch in `github/sync.rs` and `db/src/issue_links.rs`. The line was not
+  identified. The floors are unaffected in every run.
+- **The Windows leg, the Docker image and the `workflow_dispatch` rehearsal are still CI's.**
+  Nothing changed here: section 3's items 1 and 2 stand, and `ac5e6f3..HEAD` touches no packaging
+  file except `.fabro/test.toml`.
+- **The differential battery needs the Python reference outside the tree.** Task 44 ran
+  `battery/run.sh all` from `/tmp/python-base` and `/tmp/pyref` with `OUT` outside the repository;
+  a reviewer offline can check out `86c98804` but cannot replay it from the repository alone.
+- **Twelve rows closed on evidence that is not a test**, each for a reason the row itself gives:
+  `ST30` (a failed Ctrl-C listener is process-level wiring a test cannot raise against itself),
+  `ST1` (the marker set is text, held by a count and by `ST3`'s guard), `ST13` (`cargo metadata`
+  reports the inherited `rust-version`), `CC16` and `ST29` (doc text, held by `cargo doc -D
+  warnings` and by the code the doc describes), `SP5`, `SP7`, `SP13` and `SP15` (record rows in
+  `differences.md`, `tests/parity/README.md` and `review-135/ledger.md`), `ST8` (one
+  `CapturedLog` whose lines the log tests assert), `ST9` (tests that moved) and `CC6` (a helper
+  name and three deleted fixtures). `SP4` names a file, whose 25 cases ran; `CC19` and `CC20` name
+  their seams' tests in a second evidence cell, and those ran; `R1`'s evidence is the two
+  Playwright projects, which ran.
+- **The surface neither review reached is named, not reviewed.** `review-135b/RE-REVIEW.md` lists
+  it under "What the third review starts on": the untested spec edges (MCP integer arguments
+  beyond task 34's two, most settings fields, a real token in logs, a real serialization conflict,
+  `uvicorn --workers 2`), the unread code (`extract.rs` from line 420, the unit tests in
+  `multipart.rs` and `webhooks.rs`, `settings.rs`'s env parsing, most of `tests/worker.rs` and
+  `tests/webhooks.rs`, `ms-rust`'s `11_universal_guidelines.md` other than its headings, `dto.rs`
+  beyond the `CC17` arms, `settings.rs` outside lines 405-614, test clusters past the top 12), and
+  the `martin-clean-code` skill, which is user-invocation-only and was never applied.
+- **CI at the head is recorded in `STATUS.md` only.** Task 44 pushed the page first and wrote the
+  run id afterwards, so the page cannot name a run that a later commit invalidates.
+
 ## 4. Checker findings and their resolution
 
 One line each: what the independent checker found, and what fixed it or why it was accepted.
@@ -279,7 +352,7 @@ wrong and the code was right — please do not re-open those two on a later pass
 | 19 | 07 | The parity harness decoded a hex `body` column anywhere, including inside HTTP bodies | Decoding is limited to a dumped table column (`names_a_dumped_column`), with `hex_is_decoded_in_a_dumped_table_column_and_nowhere_else` as the negative control |
 | 20 | 07 | `flaky-tests` was deferred wholesale although its ingest steps needed nothing task 07 had not landed | Steps 1-12 and 48 replay with no allowance entry on that scenario; `DEFERRED_STEPS` 236 → 223 |
 | 21 | 08 | The gap list was thin: two added lines were missing from it | The test-only `Sink::flush` in `settings.rs` and the shutdown warning in `server.rs` are logged; the fixture quarantine flag and the Job fixture's fixed-noted setter are covered by new tests instead of logged |
-| 22 | 08 | A failing test (`run_prune_stops_at_time_budget`) was a test bug, not an implementation bug | It asserted a substring the log line does not contain; it now pins the whole `Retention prune hit its 60s budget; the rest waits for the next interval`. The row's claim that the line was Python's verbatim was corrected: Python prints `60.0s` |
+| 22 | 08 | A failing test (`run_prune_stops_at_time_budget`) was a test bug, not an implementation bug | It asserted a substring the log line does not contain. Since task 39 the line is a static message carrying `budget_seconds` as a field, and the test asserts the outcome instead — `result.executions == 2` against four surviving rows — so no wording is pinned. The claim that the line was Python's verbatim is withdrawn rather than corrected: Python prints the budget as a float, `60.0s`, and neither spelling exists here now |
 | 23 | 08 | Task 08's Done was claimed at `f408d64` on a tree that was not green | The work lands at `ff83ba3`; the failure was the test refusing new connections before ending its own lock session, and both cases now order the statements correctly and prove the drop rather than assuming it |
 | 24 | 08 | P1: the leader proved it still led with `SELECT 1` on a one-connection pool that replaces a connection the server closed, so a replacement holding no lock could answer | `AdvisoryLock` records `pg_backend_pid()` in the locking statement and `check()` compares it; a killed session, a statement answered by another backend and a never-elected session all drop leadership (`DbError::LockSessionLost`). `a_killed_lock_session_is_never_alive_again` fails against the old `SELECT 1` |
 | 25 | 08 | `rescore_jobs`' id ordering was not covered | `job_tier_changes_are_emitted_in_id_order` fails with `[2, 1]` when the sort is removed |
@@ -379,6 +452,21 @@ found one more defect while measuring: the `github` scenario's test read the sto
 the moment the GitHub stand-in recorded the `POST`, before the filing had stored the link, and it
 failed once in three instrumented runs; the read is now a bounded `wait_until` (`e8563b1`).
 
+### The second review's fix legs that needed more than one round
+
+- **33** rewrote its own record once: `0484a9e`'s commit message says the namespace budget test
+  pointed at the wrong owner, and the message was corrected in a commit of its own.
+- **36**'s range opens with the relay runner's `.fabro/test.toml` timeout cap (`e949ca7`), which
+  is a build fix rather than a task deliverable.
+- **40** stopped mid-verification on its first pass; a second leg re-read every row's code itself,
+  found the last untyped stored read (`a410e70`) and closed the nine rows.
+- **41** took three record commits after its nine code commits, because two of its own measures
+  made three `coverage-gaps.md` rows stale and the record had to name the tests it removed.
+- **42** had to land the builders' `create` (`96fc09b`) before the four refactors that use it, so
+  its six commits are one feature, two crates' sweeps, two helper refactors and its record.
+- **43** was measured against the reviewer's own controls: the four OpenAPI negative controls
+  (`3cee932`) came first, then the record (`0a3224f`).
+
 ## 6. Risks workers listed
 
 Collected from the `STATUS.md` rows and the perf record, in substance:
@@ -419,9 +507,18 @@ Collected from the `STATUS.md` rows and the perf record, in substance:
 - **The `openapi` contract compares promises, not documents.** It asserts the same paths,
   methods, parameters, response field names and 2xx `$ref` schema, and reports anything else by
   path or schema — not that the two documents are equal, which they cannot be.
-- **87 coverage gaps remain**, three of whose groups (process edges, test-only `flush` bodies,
+- **82 coverage gaps remain**, three of whose groups (process edges, test-only `flush` bodies,
   `llvm-cov` artifacts) are not real work; the rest are missing seams or arms that should be
-  deleted. 78 have a drafted follow-on issue and nine do not (section 7).
+  deleted. 73 have a drafted follow-on issue and nine do not (section 7).
+- **The coverage totals are not byte-identical run to run.** One line in `github/sync.rs` and one
+  `issue_links.rs` region were counted covered in two of four otherwise identical runs; the line
+  was not identified. The floors clear by about a point, so the gate cannot flip, but a reviewer
+  comparing two local reports will see 96.96% and 96.97%.
+- **A leader task's panic surfaces only at `LeaderRun::stop`.** `serve` supervises the worker loop,
+  not the two leader tasks, so a panic inside `GitHubWorker` or `WebhookWorker` stops that task and
+  is reported when the run is stopped. Task 36 left it accepted; task 44 says in
+  `review-135b/RE-REVIEW.md` that it still looks right, because the loop that panics loses its
+  processing and the token it leaves is noticed at the next stop.
 - **The review fixes' own risks**, in substance: a leadership change lets the filing `POST`
   finish, so a stop can take up to one GitHub timeout (`S5`'s one exception); the GitHub queue
   drops its oldest outcome past 1000 with a log line, so a long outage loses notifications
@@ -441,46 +538,44 @@ Collected from the `STATUS.md` rows and the perf record, in substance:
 
 ## 7. Final coverage
 
-Measured at `e8563b1` with `cargo +nightly-2026-10-25 llvm-cov nextest --branch --all-features
---profile ci` against a PostgreSQL service with `FLAKERADAR_TEST_DATABASE_URL` set — the
-configuration CI measures in — three times, and the three summaries agree on every figure below:
+Measured at the head this file describes with CI's own command — `cargo +nightly-2026-10-25
+llvm-cov nextest --branch --all-features --profile ci --no-report`, then `llvm-cov report
+--branch` — against a PostgreSQL service with `FLAKERADAR_TEST_DATABASE_URL` set, which is the
+configuration CI measures in. Three runs are the record, and a fourth confirmed the third; every
+one executed 1180 tests with no failure and no retry:
 
-- **96.87% of lines** (15445/15944, 499 missed) and **94.62% of branches** (1283/1356, 73
-  missed); regions 93.38% (16863/18059), functions 97.46% (1999/2051). The third run's
-  `instantiations` count differs by two (6323 against 6321), which is a generic instantiation
-  count and not a line or branch figure.
-- The floor is `coverage-floor.json`'s `{"lines": 96, "branches": 93}`. Lines is **rounded down**
-  from 96.87 and was not lowered. Branches is 93 by the **owner's decision of 2026-11-06**: CI's
-  own configuration measures 93.95% (1274/1356) on the merged tree, 9 branches below a run on a
-  machine that takes the test-support Docker path, and all nine are in `postgres.rs` and `db.rs` —
-  the path `coverage-gaps.md` already logs as unreachable in CI. The alternative the owner did not
-  take was moving the coverage job onto the Docker path, which measured 94.62% here. Both floors
-  stay above the `{95, 80}` minimum the plan sets, and the floor sits below the measurement because
-  a gate set at the measurement could fail on a figure the same code did not reach on that run:
-  some arms are state-dependent, and the gap list names them — `TestDb::new`'s template-build
-  branch is reported as missed on a server that already holds the template, which is why that row
-  is logged as state-dependent rather than unreachable.
-- The floor follows the **lower** of the two honest configurations: with
-  `FLAKERADAR_TEST_DATABASE_URL` unset the suite starts its own containers, that file's Docker
-  path is covered, and the same tree reports more of both. CI takes the URL-set path, so that is
-  the figure the gate is set from.
-- The 499 missed lines and 73 missed branches are the **87 rows** in `coverage-gaps.md` and no
-  others: `coverage(off)` process edges, arms PostgreSQL cannot produce (an aggregate with no
-  `GROUP BY` answering no row, a foreign key making a row impossible, a schema change
-  mid-query), `tracing` field-argument lines that `llvm-cov` counts zero although the event
-  fires, test-only `flush` bodies, and the Docker path above.
-- 78 of the 87 rows are drafted as follow-on issues in `coverage-follow-ups.md` — file, function,
+| Run | Regions | Functions | Lines | Branches |
+|---|---|---|---|---|
+| 1 | 93.64% (19,222; 1,222 missed) | 97.41% (2,125; 55) | 96.96% (16,671; 506) | 93.80% (1,452; 90) |
+| 2 | 93.64% (19,222; 1,222) | 97.41% (2,125; 55) | 96.96% (16,671; 506) | 93.80% (1,452; 90) |
+| 3 | 93.65% (19,222; 1,220) | 97.41% (2,125; 55) | 96.97% (16,671; 505) | 93.87% (1,452; 89) |
+
+- The floor is `coverage-floor.json`'s `{"lines": 96, "branches": 93}` — the owner's decision of
+  2026-11-06, unchanged. Every run clears both by about one point of lines and nearly one of
+  branches, and no path was dropped to reach them.
+- Runs 1 and 2 differ from 3 and 4 by one line and one branch, both export attribution of a
+  lazily evaluated `tracing` argument: `github/sync.rs` misses 49 of 226 lines in the first two and
+  48 in the last two, and `db/src/issue_links.rs` loses one region in the first two only. The line
+  was not identified; the one candidate that could make it timing-dependent is
+  `a_database_restart_under_the_leader_files_a_real_issue_and_syncs_again`, whose sync statement
+  races the database it kills. `coverage-gaps.md`'s task 44 section records this.
+- The 505–506 missed lines and 89–90 missed branches are the **82 rows** in `coverage-gaps.md` and
+  no others: `coverage(off)` process edges, arms PostgreSQL cannot produce, `tracing`
+  field-argument lines `llvm-cov` counts zero although the event fires, test-only `flush` bodies,
+  and the Docker path the CI configuration never takes. Five rows left the file in task 44 because
+  they described conversions and arms task 40 deleted.
+- 73 of the 82 rows have a drafted follow-on issue in `coverage-follow-ups.md` — file, function,
   why it is not covered, what would cover it, and labels — for the user to file after this PR
-  merges. The nine without a draft are the five task 18 added (the client-build arms) and the
-  four task 20 added (the lax and multipart guards): task 15 drafted the list it left, and no
-  later task drafted its own. Nothing is filed yet.
+  merges. The nine without a draft are the five task 18 added (the client-build arms) and the four
+  task 20 added (the lax and multipart guards): task 15 drafted only the list it left. The five
+  rows task 44 deleted were not among the drafted ones. Nothing is filed yet.
 
 ## 8. Rows added to `differences.md`
 
-Fifty-two rows in total: twelve pre-approved, fourteen added during the port, and twenty-six
-added by the review fixes (tasks 16–25), against 5 allowance entries holding 196 field
-allowances. The recount at the handoff head is in `differences.md` itself. In file order, the
-fourteen from the port:
+Seventy-one rows in total: twelve pre-approved, fourteen added during the port, and forty-five
+added by the two reviews' fixes (tasks 16–25, 32, 33, 36, 40 and 43), against 5 allowance entries
+holding 196 field allowances. The recount at this head is in `differences.md` itself, with the
+per-task breakdown. In file order, the fourteen from the port:
 
 1. **`<testcase time>` that is not a number (02).** Python raises inside junitparser and
    answers 500 storing nothing; Rust validates and answers **400** with the usual
@@ -542,18 +637,34 @@ The twenty-six the review fixes added, by the task that logged each one:
 - **25** — two: a `reports` row whose stored `status` or `kind` this version never writes is a
   plain-text 500, and a `failure_category` the five categories do not name reads as `null`.
 
-One of the twenty-six needs the owner's decision and is marked as such in `differences.md`: a
-JSON body past 20 MiB answers **413** here where the reference validated it and answered 422.
-The limit is the plan's explicit-limits rule and it guards an unauthenticated route, so the
-alternative is accepting an unbounded body on `POST /api/tests/{id}/quarantine`.
+The nineteen the second review's fixes added, with the commit that landed each:
+
+- **32** — two: the parser's entity-expansion budget is a 422 rather than a dead server, and its
+  namespace-declaration budget is the same; both refuse a body before `roxmltree` reads a byte.
+- **33** — twelve: one for the stateful and EBCDIC codec labels this port keeps at 422, and one
+  for each shape of the `SP4` table `roxmltree` cannot express (the three `ATTLIST` defaults and
+  their normalization, the two parameter-entity shapes, and eight malformed forms it accepts).
+- **36** — four: a dead worker loop ends `serve` with an error and releases the lock; a leader
+  checks its lock on a backlog as well as an empty queue; a failed Ctrl-C listener no longer shuts
+  the server down; and the graceful drain is bounded at 25 seconds.
+- **40** — one: a stored `flakiness_score` that is not a score answers the plain-text 500 (and an
+  MCP `isError` result) instead of serving `null`. *Approved by the user on 2026-11-07.*
+- **43** — one: a multipart body the reference's form parser refused, or one past its own limits,
+  answers the status this port's own reader gives (the row lists every measured shape).
+
+No row in this file waits for a decision any more: `SP5` gave each of the four that did its
+approved decision's citation, including the 20 MiB row, which keeps the **413** because the
+plan's explicit-limits rule guards an unauthenticated route.
 
 ## 9. How to review this PR
 
 Read in this order; each one tells you what the others assume.
 
-- **`review-135/RE-REVIEW.md` first.** It is the page for the review of the fixes: the head, one
-  line per task with its commit range, every difference the fixes added, every `not reproduced`
-  and `no change` row with its evidence, what was not verified, and where to start reading.
+- **`review-135b/RE-REVIEW.md` first, then `review-135/RE-REVIEW.md`.** The first is the page for
+  the second review's fixes: the head, one line per task with its commit range, every difference
+  the fixes added, what each ledger row now shows a reader or user, what was not verified, and
+  the surface neither review reached, which is where the third review starts. The second is the
+  same page for the first review's fixes (tasks 16–31).
 - **The parity corpus: `tests/parity/README.md`, then `tests/parity/scenarios/`, then
   `tests/parity/golden/`.** 316 recorded steps across 15 scenarios plus 66 JUnit parse goldens
   from a 33-file corpus at two `line_base` values, plus `schema.sql`. This is the strongest
@@ -568,8 +679,8 @@ Read in this order; each one tells you what the others assume.
 - **`docs/plans/rust-rewrite/differences.md`.** Every intentional difference with its reason,
   and a section reconciling the two lists that says which allowances are load-bearing, which
   rows no replay can reach, and what the deleted `record.py --verify` used to check.
-- **`docs/plans/rust-rewrite/coverage-gaps.md`**, then `coverage-follow-ups.md`. 87 rows, each
-  with a reason; 78 of them have a drafted issue in the second file, which is what the user
+- **`docs/plans/rust-rewrite/coverage-gaps.md`**, then `coverage-follow-ups.md`. 82 rows, each
+  with a reason; 73 of them have a drafted issue in the second file, which is what the user
   files after merge.
 - **`docs/cutover-v2.md`.** The runbook this branch is cut over with: tag `v1.0.0` at
   `97b933d`, stop the old deployment, close the open `flakeradar` issues, create an empty
@@ -590,12 +701,14 @@ Both are places where Python 500s, so a reviewer who finds them surprising shoul
 rows and the `STATUS.md` row that records the decision, not the tests, which are downstream of
 it.
 
-To reproduce the gate: `cargo nextest run --all-features --profile ci` (1103 tests),
+To reproduce the gate: `cargo nextest run --all-features --profile ci` (1180 tests),
 `cargo test --doc --all-features` (24 doctests), `cargo fmt --all -- --check`,
 `cargo clippy --all-targets --all-features -- -D warnings`,
 `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features --document-private-items
 --workspace`, `cargo audit`, `node --test scripts/*.test.mjs` (49 tests), then the coverage
-command in section 7 against a PostgreSQL service. The test suite needs a database: set
+command in section 7 against a PostgreSQL service, and the two Playwright projects in
+`CONTRIBUTING.md` (13 tests, `retries: 0`). The test suite needs a database: set
 `FLAKERADAR_TEST_DATABASE_URL` or let it start its own container. The CI evidence for the
 reviewed head `130691c` is run `42071653737` (15 jobs, all green) and Docker run `42071653733`;
-the evidence for the review fixes' head is the run `review-135/RE-REVIEW.md` names.
+`STATUS.md`'s rows for tasks 31, 37, 39 and 43 name the runs at their heads, and task 44's row
+names the run at this one.
