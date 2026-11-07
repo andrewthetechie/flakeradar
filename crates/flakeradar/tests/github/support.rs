@@ -635,6 +635,28 @@ pub(crate) fn stage_mid_request(db: &sea_orm::DatabaseConnection, sql: String) {
         .expect("the staged statement commits");
 }
 
+/// Makes every write to `test_cases` fail, the way a broken link store does.
+///
+/// A trigger that raises is a statement the server refuses, which no savepoint
+/// can rescue: that is what separates a store failure from a row deleted between
+/// the filing `POST` and its store.
+pub(crate) async fn fail_link_stores(db: &TestDb) {
+    for statement in [
+        "CREATE FUNCTION fail_link() RETURNS trigger AS $$ BEGIN \
+         RAISE EXCEPTION 'the link store is broken'; END; $$ LANGUAGE plpgsql",
+        "CREATE TRIGGER fail_link BEFORE UPDATE ON test_cases \
+         FOR EACH ROW EXECUTE FUNCTION fail_link()",
+    ] {
+        db.connection()
+            .execute_raw(Statement::from_string(
+                DbBackend::Postgres,
+                statement.to_owned(),
+            ))
+            .await
+            .expect("the failing trigger installs");
+    }
+}
+
 /// Drives one future to completion on the current thread.
 ///
 /// The stub's `Respond::respond` is synchronous, so a mid-request database change

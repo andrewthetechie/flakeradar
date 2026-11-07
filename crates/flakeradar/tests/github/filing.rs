@@ -18,9 +18,9 @@ use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use crate::support::{
-    TOKEN, api, explain_job_execution, fixed_settings, flaky_job, flaky_job_in, flaky_test,
-    flaky_test_in, gh_settings, lines_with, link_of, logged_call, logged_from, mount_create,
-    requested_paths, stamp, stamp_link, unstopped,
+    TOKEN, api, explain_job_execution, fail_link_stores, fixed_settings, flaky_job, flaky_job_in,
+    flaky_test, flaky_test_in, gh_settings, lines_with, link_of, logged_call, logged_from,
+    mount_create, requested_paths, stamp, stamp_link, unstopped,
 };
 
 #[tokio::test]
@@ -540,24 +540,7 @@ async fn a_store_failure_leaves_the_issue_open_and_stops_the_batch() {
     .await;
     // The store itself fails: a trigger that raises is what a broken write does, and
     // a savepoint cannot save a statement the server refuses.
-    db.connection()
-        .execute_raw(Statement::from_string(
-            DbBackend::Postgres,
-            "CREATE FUNCTION fail_link() RETURNS trigger AS $$ BEGIN \
-             RAISE EXCEPTION 'the link store is broken'; END; $$ LANGUAGE plpgsql"
-                .to_owned(),
-        ))
-        .await
-        .expect("the failing trigger installs");
-    db.connection()
-        .execute_raw(Statement::from_string(
-            DbBackend::Postgres,
-            "CREATE TRIGGER fail_link BEFORE UPDATE ON test_cases \
-             FOR EACH ROW EXECUTE FUNCTION fail_link()"
-                .to_owned(),
-        ))
-        .await
-        .expect("the failing trigger installs");
+    fail_link_stores(&db).await;
 
     let (filed, logged) = logged_call(github::file_issues_for(
         db.connection(),

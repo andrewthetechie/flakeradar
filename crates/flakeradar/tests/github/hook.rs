@@ -10,9 +10,9 @@ use wiremock::matchers::{any, method, path};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
 use crate::support::{
-    api, clean_streak_of, fixed_settings, flaky_test, gh_settings, link_of, link_table,
-    mount_comment, mount_create, mount_patch, note_row, noted, number_of, processed, processed_for,
-    requested_calls, stage_mid_request, unstopped,
+    api, clean_streak_of, fail_link_stores, fixed_settings, flaky_job, flaky_test, gh_settings,
+    link_of, link_table, mount_comment, mount_create, mount_patch, note_row, noted, number_of,
+    processed, processed_for, requested_calls, stage_mid_request, unstopped,
 };
 
 #[tokio::test]
@@ -200,4 +200,44 @@ async fn a_processed_report_never_notes_the_issue_it_filed_for_a_test() {
 #[tokio::test]
 async fn a_processed_report_never_notes_the_issue_it_filed_for_a_job() {
     a_processed_report_never_notes_the_issue_it_filed(EntityKind::Job).await;
+}
+
+#[tokio::test]
+async fn a_store_failure_ends_the_outcome_and_leaves_its_issue_open() {
+    let db = TestDb::new().await.expect("a test database");
+    // Three rows, one of each kind of work this pass could do: a Test over the
+    // filing gate, a Test at the note streak with a link, and a Job over the gate.
+    let filing = flaky_test(&db).await;
+    let noteable = note_row(&db, EntityKind::Test, "acme/app", "noteable", Some(88), 3).await;
+    let job = flaky_job(&db).await;
+    let server = MockServer::start().await;
+    mount_create(
+        &server,
+        ResponseTemplate::new(201).set_body_json(json!({"number": 7})),
+    )
+    .await;
+    fail_link_stores(&db).await;
+
+    github::on_report_processed(
+        db.connection(),
+        &processed(&[filing, noteable], &[job]),
+        &fixed_settings(&[("FLAKERADAR_GITHUB_ISSUE_MIN_SCORE", "0.3")]),
+        &api(&server),
+        &system_clock(),
+        &unstopped(),
+    )
+    .await;
+
+    // The reference lets the store's error out of `on_report_processed`, so the
+    // Job filing and both note batches never run for this outcome.
+    assert_eq!(
+        requested_calls(&server).await,
+        vec![("POST".to_owned(), "/repos/acme/app/issues".to_owned())],
+        "a failed store ends the outcome: no Job is filed and nothing is commented on"
+    );
+    assert_eq!(
+        link_of(&db, EntityKind::Test, filing).await.number,
+        None,
+        "the issue the failed store created stays open and unlinked"
+    );
 }

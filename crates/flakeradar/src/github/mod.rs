@@ -40,7 +40,8 @@
 //! - A row deleted between a filing POST and the filer's commit costs that
 //!   filing: the new issue is commented on and closed best effort.
 //! - A store that fails after a filing POST is not a deleted row: the issue stays
-//!   open, the failure is logged with its Repo and number, and the batch stops.
+//!   open, the failure is logged with its Repo and number, and the filing ends
+//!   the outcome — no Job filing and no note batch follows, as in the reference.
 //! - An unreadable body is logged and the row is stamped, so an unusable link
 //!   keeps rotating instead of pinning the front of the queue.
 //!
@@ -111,6 +112,10 @@ use crate::settings::Settings;
 /// note streak, and the ids this pass linked are dropped from the note step too,
 /// in case a concurrent Report lifted a fresh link's streak between the two
 /// selects.
+///
+/// A store that failed ends the whole outcome: the issue it created stays open,
+/// and neither the Job filing nor a note batch runs after it, which is what the
+/// reference's propagating exception does.
 pub async fn on_report_processed(
     db: &(impl ConnectionTrait + TransactionTrait),
     outcome: &ProcessOutcome,
@@ -123,8 +128,14 @@ pub async fn on_report_processed(
         return;
     }
     let filed = file_issues_for(db, &outcome.touched_test_ids, settings, api, stop).await;
+    if filed.stopped == Some(BatchStop::StoreFailed) {
+        return;
+    }
     let filed_jobs =
         file_job_issues_for(db, &outcome.touched_job_ids, settings, api, clock, stop).await;
+    if filed_jobs.stopped == Some(BatchStop::StoreFailed) {
+        return;
+    }
     let note_ids: Vec<i32> = outcome
         .touched_test_ids
         .iter()
