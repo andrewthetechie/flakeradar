@@ -190,3 +190,40 @@ async fn a_closed_port_fails_naming_the_url() {
         "the failure names the URL it polled: {message}"
     );
 }
+
+#[test]
+fn the_binarys_error_path_never_names_the_password() {
+    // The process output is what an operator and a CI log see, so the password a
+    // database URL holds must not reach it when the URL cannot be parsed. A
+    // password holding an unescaped `/` is both the case that makes the URL
+    // unparseable and the one the redaction used to miss.
+    let directory = std::env::temp_dir().join(format!("flakeradar-cli-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).expect("a scratch directory for the run");
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_flakeradar"))
+        // A `.env` beside the process would configure it as well, so the run
+        // starts from a directory that has none.
+        .current_dir(&directory)
+        .env_clear()
+        .env("FLAKERADAR_API_TOKEN", "cli-token")
+        .env("FLAKERADAR_PORT", "0")
+        .env(
+            "FLAKERADAR_DATABASE_URL",
+            "postgresql://u:s3cretpw/x@db:5432/flakeradar",
+        )
+        .output()
+        .expect("the binary runs");
+    let printed = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!output.status.success(), "the run fails: {printed}");
+    assert!(
+        !printed.contains("s3cretpw"),
+        "the password reached the output: {printed}"
+    );
+    assert!(
+        printed.contains("postgresql://u:***@db:5432/flakeradar"),
+        "the output names the URL with the password removed: {printed}"
+    );
+}

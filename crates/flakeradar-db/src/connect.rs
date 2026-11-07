@@ -111,22 +111,25 @@ fn shared_options(url: &str, settings: DbSettings) -> Result<ConnectOptions, DbE
 /// The URL with its password replaced, so it can name itself in an error.
 ///
 /// The scheme, user, host, port and database stay readable, because one of them
-/// is the typo an operator has to fix; only the password is removed. An
+/// is the typo an operator has to fix; only the password is removed. The
+/// userinfo runs to the last `@` in the whole string, so a password holding an
+/// unescaped `/` — which is what makes a URL unparseable in the first place —
+/// is found like any other. Nothing of the query or the fragment is printed,
+/// because a URL that carries its password there carries it nowhere else. An
 /// unparseable URL still has an authority section often enough to keep it.
 fn redact(url: &str) -> String {
     let Some((scheme, rest)) = url.split_once("://") else {
         return "an unparseable URL".to_owned();
     };
-    let (authority, tail) = rest
-        .find('/')
-        .map_or((rest, ""), |index| rest.split_at(index));
-    let Some((userinfo, host)) = authority.rsplit_once('@') else {
-        return format!("{scheme}://{authority}{tail}");
+    let rest = rest.split(['?', '#']).next().unwrap_or_default();
+    let Some(at) = rest.rfind('@') else {
+        return format!("{scheme}://{rest}");
     };
+    let (userinfo, host) = rest.split_at(at);
     let user = userinfo
         .split_once(':')
         .map_or(userinfo, |(user, _password)| user);
-    format!("{scheme}://{user}:***@{host}{tail}")
+    format!("{scheme}://{user}:***{host}")
 }
 
 /// Applies the settings both pools share to a new option set.
@@ -229,22 +232,48 @@ mod tests {
 
     #[test]
     fn a_database_url_that_cannot_be_parsed_never_names_its_password() {
-        let error = shared_options(
-            "postgresql://flakeradar:s3cret-password@db:notaport/flakeradar",
-            DbSettings::default(),
-        )
-        .expect_err("a port that is not a number is not a URL");
-        let text = error.to_string();
-        assert!(!text.contains("s3cret-password"), "{text}");
-        // The rest of the URL stays readable, because it is the typo to fix.
-        assert!(text.contains("db:notaport"), "{text}");
+        // Every shape of a password, and the URL an operator sees instead: the
+        // userinfo runs to the last `@` in the whole string, so a password with
+        // an unescaped `/` or a Base64 tail is hidden like any other, and no part
+        // of the query is printed, because that is where a password sits when the
+        // URL holds none.
+        for (url, printed) in [
+            (
+                "postgresql://flakeradar:s3cret-password@db:notaport/flakeradar",
+                "postgresql://flakeradar:***@db:notaport/flakeradar",
+            ),
+            (
+                "postgresql://u:s3cretpw/x@db:5432/d",
+                "postgresql://u:***@db:5432/d",
+            ),
+            (
+                "postgresql://u:ab+c/s3cretpw==@db:5432/d",
+                "postgresql://u:***@db:5432/d",
+            ),
+            (
+                "postgresql://db:notaport/d?password=s3cretpw",
+                "postgresql://db:notaport/d",
+            ),
+            (
+                "postgresql://u@db:notaport/d?password=s3cretpw",
+                "postgresql://u:***@db:notaport/d",
+            ),
+        ] {
+            let error =
+                shared_options(url, DbSettings::default()).expect_err("this URL cannot be parsed");
+            let text = error.to_string();
+            assert!(!text.contains("s3cret"), "{url}: {text}");
+            assert!(text.ends_with(printed), "{url}: {text}");
+        }
     }
 
     #[test]
-    fn a_redacted_url_keeps_everything_but_the_password() {
+    fn a_redacted_url_keeps_the_typo_and_drops_the_password() {
+        // The query is where a password sits when the URL carries none, so no
+        // part of it is printed: `?sslmode=require` goes with it.
         assert_eq!(
             redact("postgresql://flakeradar:s3cret@db:5432/flakeradar?sslmode=require"),
-            "postgresql://flakeradar:***@db:5432/flakeradar?sslmode=require"
+            "postgresql://flakeradar:***@db:5432/flakeradar"
         );
         // No userinfo at all, and a URL with no scheme: neither has a password
         // to remove, and neither can panic on the way through.
