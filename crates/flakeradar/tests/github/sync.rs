@@ -852,8 +852,9 @@ async fn the_job_sync_rearms_a_closed_issue_and_the_filer_files_again() {
         ResponseTemplate::new(201).set_body_json(json!({"number": 77})),
     )
     .await;
-    github::file_job_issues_for(
+    github::file_for(
         db.connection(),
+        EntityKind::Job,
         &[job],
         &gh_settings(&[]),
         &api(&server),
@@ -888,8 +889,9 @@ async fn the_job_sync_rearms_a_closed_issue_and_the_filer_files_again() {
     )
     .await;
     assert_eq!(
-        github::file_job_issues_for(
+        github::file_for(
             db.connection(),
+            EntityKind::Job,
             &[job],
             &gh_settings(&[]),
             &api(&refile),
@@ -1292,11 +1294,13 @@ async fn a_test_sync_rearms_its_closed_issue_and_the_filer_files_again() {
         ResponseTemplate::new(201).set_body_json(json!({"number": 77})),
     )
     .await;
-    let filed = github::file_issues_for(
+    let filed = github::file_for(
         db.connection(),
+        EntityKind::Test,
         &[test],
         &gh_settings(&[]),
         &api(&filing),
+        &system_clock(),
         &unstopped(),
     )
     .await;

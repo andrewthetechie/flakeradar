@@ -82,7 +82,7 @@ mod notes;
 mod policy;
 mod sync;
 
-use flakeradar_core::model::ReportStatus;
+use flakeradar_core::model::{EntityKind, ReportStatus};
 use flakeradar_db::{clock::SharedClock, processing::ProcessOutcome};
 use sea_orm::{ConnectionTrait, TransactionTrait};
 use tokio_util::sync::CancellationToken;
@@ -97,9 +97,9 @@ pub use client::{
     API_BASE, API_VERSION, Answer, Api, RESPONSE_TEXT_MAX, Success, TIMEOUT_SECONDS, TransportError,
 };
 #[doc(inline)]
-pub use filing::{file_issues_for, file_job_issues_for, filing_gate};
+pub use filing::{file_for, filing_gate};
 #[doc(inline)]
-pub use notes::{note_fixed_issues_for, note_fixed_job_issues_for};
+pub use notes::note_fixed_for;
 #[doc(inline)]
 pub use policy::{Action, BatchReport, BatchStop, Operation, RemovalReport, Verdict, action};
 #[doc(inline)]
@@ -129,12 +129,29 @@ pub async fn on_report_processed(
     if outcome.status != ReportStatus::Processed || !api.configured() {
         return;
     }
-    let filed = file_issues_for(db, &outcome.touched_test_ids, settings, api, stop).await;
+    let filed = file_for(
+        db,
+        EntityKind::Test,
+        &outcome.touched_test_ids,
+        settings,
+        api,
+        clock,
+        stop,
+    )
+    .await;
     if filed.stopped == Some(BatchStop::StoreFailed) {
         return;
     }
-    let filed_jobs =
-        file_job_issues_for(db, &outcome.touched_job_ids, settings, api, clock, stop).await;
+    let filed_jobs = file_for(
+        db,
+        EntityKind::Job,
+        &outcome.touched_job_ids,
+        settings,
+        api,
+        clock,
+        stop,
+    )
+    .await;
     if filed_jobs.stopped == Some(BatchStop::StoreFailed) {
         return;
     }
@@ -150,6 +167,15 @@ pub async fn on_report_processed(
         .copied()
         .filter(|id| !filed_jobs.linked.contains(id))
         .collect();
-    note_fixed_issues_for(db, &note_ids, settings, api, clock, stop).await;
-    note_fixed_job_issues_for(db, &note_job_ids, settings, api, clock, stop).await;
+    note_fixed_for(db, EntityKind::Test, &note_ids, settings, api, clock, stop).await;
+    note_fixed_for(
+        db,
+        EntityKind::Job,
+        &note_job_ids,
+        settings,
+        api,
+        clock,
+        stop,
+    )
+    .await;
 }

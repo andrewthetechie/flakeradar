@@ -57,8 +57,9 @@ async fn a_fixed_note_is_stamped_with_the_clock_it_was_given() {
         .fixed_offset();
     let clock: SharedClock = Arc::new(FixedClock::new(instant));
 
-    let report = github::note_fixed_issues_for(
+    let report = github::note_fixed_for(
         db.connection(),
+        EntityKind::Test,
         &[test],
         &fixed_settings(&[]),
         &api(&server),
@@ -96,8 +97,9 @@ async fn the_fixed_note_comments_once_with_the_configured_sentence() {
         .await;
 
     let settings = fixed_settings(&[("FLAKERADAR_PUBLIC_URL", "https://flakes.example.com/")]);
-    github::note_fixed_issues_for(
+    github::note_fixed_for(
         db.connection(),
+        EntityKind::Test,
         &[test],
         &settings,
         &api(&server),
@@ -117,8 +119,9 @@ async fn the_fixed_note_comments_once_with_the_configured_sentence() {
     );
 
     // A second pass finds the stamp and posts nothing more.
-    github::note_fixed_issues_for(
+    github::note_fixed_for(
         db.connection(),
+        EntityKind::Test,
         &[test],
         &settings,
         &api(&server),
@@ -137,8 +140,9 @@ async fn the_fixed_note_comments_once_with_the_configured_sentence() {
         ))
         .await
         .expect("the stamp clears");
-    github::note_fixed_issues_for(
+    github::note_fixed_for(
         db.connection(),
+        EntityKind::Test,
         &[test],
         &settings,
         &api(&server),
@@ -177,8 +181,9 @@ async fn the_fixed_note_names_the_default_branch_when_it_is_known() {
         .mount(&server)
         .await;
 
-    github::note_fixed_issues_for(
+    github::note_fixed_for(
         db.connection(),
+        EntityKind::Test,
         &[test],
         &fixed_settings(&[]),
         &api(&server),
@@ -223,8 +228,9 @@ async fn the_fixed_note_closes_the_issue_only_when_asked() {
         .await;
 
     // CLOSE_FIXED off: a comment alone.
-    github::note_fixed_issues_for(
+    github::note_fixed_for(
         db.connection(),
+        EntityKind::Test,
         &[test],
         &fixed_settings(&[]),
         &api(&server),
@@ -247,8 +253,9 @@ async fn the_fixed_note_closes_the_issue_only_when_asked() {
         .await
         .expect("the stamp clears");
     let settings = fixed_settings(&[("FLAKERADAR_GITHUB_CLOSE_FIXED", "true")]);
-    github::note_fixed_issues_for(
+    github::note_fixed_for(
         db.connection(),
+        EntityKind::Test,
         &[test],
         &settings,
         &api(&server),
@@ -292,8 +299,9 @@ async fn the_fixed_note_is_disabled_while_the_streak_is_zero() {
         .expect("the streak writes");
     let server = MockServer::start().await;
 
-    github::note_fixed_issues_for(
+    github::note_fixed_for(
         db.connection(),
+        EntityKind::Test,
         &[test],
         &gh_settings(&[]),
         &api(&server),
@@ -321,8 +329,9 @@ async fn a_job_issue_is_noted_and_closed_with_the_same_wording() {
     mount_patch(&server, "acme/app", 77, ResponseTemplate::new(200)).await;
     let settings = fixed_settings(&[("FLAKERADAR_GITHUB_CLOSE_FIXED", "true")]);
 
-    github::note_fixed_job_issues_for(
+    github::note_fixed_for(
         db.connection(),
+        EntityKind::Job,
         &[job],
         &settings,
         &api(&server),
@@ -376,8 +385,9 @@ async fn a_note_ignores_a_row_with_no_live_note() {
     set_clean_streak(&db, "test_cases", declined, 9).await;
     let server = MockServer::start().await;
 
-    github::note_fixed_issues_for(
+    github::note_fixed_for(
         db.connection(),
+        EntityKind::Test,
         &[short, unlinked, declined],
         &fixed_settings(&[]),
         &api(&server),
@@ -405,8 +415,9 @@ async fn a_note_ignores_a_row_with_no_live_note() {
     .await;
     set_clean_streak(&db, "test_cases", at_streak, 9).await;
     let off = fixed_settings(&[("FLAKERADAR_GITHUB_FIXED_STREAK", "0")]);
-    github::note_fixed_issues_for(
+    github::note_fixed_for(
         db.connection(),
+        EntityKind::Test,
         &[at_streak],
         &off,
         &api(&server),
@@ -443,8 +454,9 @@ async fn a_note_skips_a_job_of_another_provider() {
     set_clean_streak(&db, "jobs", job.id, 3).await;
     let server = MockServer::start().await;
 
-    github::note_fixed_job_issues_for(
+    github::note_fixed_for(
         db.connection(),
+        EntityKind::Job,
         &[job.id],
         &fixed_settings(&[]),
         &api(&server),
@@ -479,8 +491,9 @@ async fn a_note_close_that_fails_keeps_the_stamp() {
     .await;
     let settings = fixed_settings(&[("FLAKERADAR_GITHUB_CLOSE_FIXED", "true")]);
 
-    let report = github::note_fixed_issues_for(
+    let report = github::note_fixed_for(
         db.connection(),
+        EntityKind::Test,
         &[test],
         &settings,
         &api(&server),
@@ -506,8 +519,9 @@ async fn a_note_close_that_fails_keeps_the_stamp() {
         "a 500 on one close is neither a stop nor a skipped Repo"
     );
 
-    github::note_fixed_issues_for(
+    github::note_fixed_for(
         db.connection(),
+        EntityKind::Test,
         &[test],
         &settings,
         &api(&server),
@@ -565,8 +579,9 @@ async fn stopping_waits_for_the_close_and_reads_its_answer() {
         let api = api(&server);
         let ids = vec![test];
         tokio::spawn(async move {
-            github::note_fixed_issues_for(
+            github::note_fixed_for(
                 &connection,
+                EntityKind::Test,
                 &ids,
                 &settings,
                 &api,
@@ -622,8 +637,9 @@ async fn a_note_rate_limit_stops_the_batch() {
             .mount(&server)
             .await;
 
-        github::note_fixed_issues_for(
+        github::note_fixed_for(
             db.connection(),
+            EntityKind::Test,
             &[first, second],
             &fixed_settings(&[]),
             &api(&server),
@@ -660,8 +676,9 @@ async fn a_note_rate_limit_stops_the_batch() {
     )
     .await;
     let settings = fixed_settings(&[("FLAKERADAR_GITHUB_CLOSE_FIXED", "true")]);
-    let report = github::note_fixed_issues_for(
+    let report = github::note_fixed_for(
         db.connection(),
+        EntityKind::Test,
         &[first, second],
         &settings,
         &api(&server),
@@ -710,8 +727,9 @@ async fn a_note_permission_403_skips_only_that_repo() {
     mount_comment(&server, "acme/b", 72, ResponseTemplate::new(201)).await;
     mount_comment(&server, "acme/a", 73, ResponseTemplate::new(201)).await;
 
-    github::note_fixed_issues_for(
+    github::note_fixed_for(
         db.connection(),
+        EntityKind::Test,
         &[a1, other, a2],
         &fixed_settings(&[]),
         &api(&server),
@@ -750,8 +768,9 @@ async fn a_note_permission_403_skips_only_that_repo() {
     .await;
     mount_patch(&server, "acme/b", 72, ResponseTemplate::new(200)).await;
     let settings = fixed_settings(&[("FLAKERADAR_GITHUB_CLOSE_FIXED", "true")]);
-    let report = github::note_fixed_issues_for(
+    let report = github::note_fixed_for(
         db.connection(),
+        EntityKind::Test,
         &[a, b],
         &settings,
         &api(&server),
@@ -786,8 +805,9 @@ async fn a_note_network_error_ends_the_batch() {
     // Nothing listens on this port.
     let api = Api::new(Secret::new(TOKEN), "http://127.0.0.1:1").expect("the HTTP client builds");
 
-    let report = github::note_fixed_issues_for(
+    let report = github::note_fixed_for(
         db.connection(),
+        EntityKind::Test,
         &[test],
         &fixed_settings(&[]),
         &api,
@@ -817,8 +837,9 @@ async fn a_transport_error_on_a_fixed_note_close_ends_the_batch() {
     let loopback = Loopback::answering(CREATED.to_owned()).await;
     let settings = fixed_settings(&[("FLAKERADAR_GITHUB_CLOSE_FIXED", "true")]);
 
-    let report = github::note_fixed_issues_for(
+    let report = github::note_fixed_for(
         db.connection(),
+        EntityKind::Test,
         &[first, second],
         &settings,
         &Api::new(Secret::new(TOKEN), &loopback.base).expect("the HTTP client builds"),
@@ -858,8 +879,9 @@ async fn a_fixed_note_close_whose_connection_dies_keeps_the_stamp() {
     let api = Api::new(Secret::new(TOKEN), &loopback.base).expect("the HTTP client builds");
     let settings = fixed_settings(&[("FLAKERADAR_GITHUB_CLOSE_FIXED", "true")]);
 
-    let report = github::note_fixed_issues_for(
+    let report = github::note_fixed_for(
         db.connection(),
+        EntityKind::Test,
         &[test],
         &settings,
         &api,
@@ -899,8 +921,9 @@ async fn an_unusable_note_comment_status_leaves_the_row_unstamped() {
         .mount(&server)
         .await;
 
-    let report = github::note_fixed_issues_for(
+    let report = github::note_fixed_for(
         db.connection(),
+        EntityKind::Test,
         &[bad, other],
         &fixed_settings(&[]),
         &api(&server),
@@ -940,8 +963,9 @@ async fn note_entity_value(
 ) -> github::BatchReport {
     match kind {
         EntityKind::Test => {
-            github::note_fixed_issues_for(
+            github::note_fixed_for(
                 db.connection(),
+                EntityKind::Test,
                 ids,
                 settings,
                 api,
@@ -951,8 +975,9 @@ async fn note_entity_value(
             .await
         }
         EntityKind::Job => {
-            github::note_fixed_job_issues_for(
+            github::note_fixed_for(
                 db.connection(),
+                EntityKind::Job,
                 ids,
                 settings,
                 api,
@@ -1440,11 +1465,13 @@ async fn an_unlink_rearms_a_declined_link_and_the_filer_files_it_again() {
         ResponseTemplate::new(201).set_body_json(json!({"number": 77})),
     )
     .await;
-    github::file_issues_for(
+    github::file_for(
         db.connection(),
+        EntityKind::Test,
         &[test],
         &gh_settings(&[]),
         &api(&filing),
+        &system_clock(),
         &unstopped(),
     )
     .await;

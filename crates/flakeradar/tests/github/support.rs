@@ -685,8 +685,7 @@ pub(crate) async fn flaky_row(db: &TestDb, kind: EntityKind, repo: &str, name: &
 
 /// One filing batch for `kind`, over `ids`, against `server`.
 ///
-/// The two entry points differ only in the clock the Job batch stamps with, so a
-/// scenario runs one call and the entity is the test's whole difference.
+/// One entry point takes the entity, so a scenario's only difference is `kind`.
 pub(crate) async fn file_batch(
     kind: EntityKind,
     db: &TestDb,
@@ -694,23 +693,16 @@ pub(crate) async fn file_batch(
     server: &MockServer,
 ) -> BatchReport {
     let settings = gh_settings(&[]);
-    match kind {
-        EntityKind::Test => {
-            github::file_issues_for(db.connection(), ids, &settings, &api(server), &unstopped())
-                .await
-        }
-        EntityKind::Job => {
-            github::file_job_issues_for(
-                db.connection(),
-                ids,
-                &settings,
-                &api(server),
-                &system_clock(),
-                &unstopped(),
-            )
-            .await
-        }
-    }
+    github::file_for(
+        db.connection(),
+        kind,
+        ids,
+        &settings,
+        &api(server),
+        &system_clock(),
+        &unstopped(),
+    )
+    .await
 }
 
 /// [`file_batch`], with the lines it logged as well.
@@ -724,6 +716,8 @@ pub(crate) async fn file_batch_logged(
 }
 
 /// One fixed-note batch for `kind`, over `ids`, through `api`.
+///
+/// The entity is the scenario's only difference, so one call states the batch.
 pub(crate) async fn note_batch(
     kind: EntityKind,
     db: &TestDb,
@@ -731,30 +725,16 @@ pub(crate) async fn note_batch(
     api: &Api,
 ) -> BatchReport {
     let settings = fixed_settings(&[]);
-    match kind {
-        EntityKind::Test => {
-            github::note_fixed_issues_for(
-                db.connection(),
-                ids,
-                &settings,
-                api,
-                &system_clock(),
-                &unstopped(),
-            )
-            .await
-        }
-        EntityKind::Job => {
-            github::note_fixed_job_issues_for(
-                db.connection(),
-                ids,
-                &settings,
-                api,
-                &system_clock(),
-                &unstopped(),
-            )
-            .await
-        }
-    }
+    github::note_fixed_for(
+        db.connection(),
+        kind,
+        ids,
+        &settings,
+        api,
+        &system_clock(),
+        &unstopped(),
+    )
+    .await
 }
 
 /// One closed-issue sync over the rows `db` holds, against `server`.

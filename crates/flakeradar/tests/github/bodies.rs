@@ -380,11 +380,13 @@ async fn a_file_without_a_line_still_gets_a_permalink() {
     )
     .await;
 
-    github::file_issues_for(
+    github::file_for(
         db.connection(),
+        EntityKind::Test,
         &[row_id],
         &gh_settings(&[]),
         &api(&server),
+        &system_clock(),
         &unstopped(),
     )
     .await;
@@ -437,11 +439,13 @@ async fn a_test_with_only_passed_executions_gets_no_failure_evidence() {
     )
     .await;
 
-    github::file_issues_for(
+    github::file_for(
         db.connection(),
+        EntityKind::Test,
         &[quiet.id],
         &gh_settings(&[]),
         &api(&server),
+        &system_clock(),
         &unstopped(),
     )
     .await;
@@ -517,8 +521,9 @@ async fn a_job_body_lists_its_worst_runner_groups_first() {
     )
     .await;
 
-    github::file_job_issues_for(
+    github::file_for(
         db.connection(),
+        EntityKind::Job,
         &[job],
         &gh_settings(&[]),
         &api(&server),
@@ -580,8 +585,9 @@ async fn a_job_body_caps_the_runner_groups_at_three() {
     )
     .await;
 
-    github::file_job_issues_for(
+    github::file_for(
         db.connection(),
+        EntityKind::Job,
         &[job],
         &gh_settings(&[]),
         &api(&server),
@@ -620,8 +626,9 @@ async fn a_job_body_omits_the_runner_section_without_an_unexplained_failure() {
     )
     .await;
 
-    github::file_job_issues_for(
+    github::file_for(
         db.connection(),
+        EntityKind::Job,
         &[job],
         &gh_settings(&[]),
         &api(&server),

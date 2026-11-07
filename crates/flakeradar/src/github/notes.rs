@@ -20,68 +20,44 @@ use super::client::{Api, Success};
 use super::policy::{Action, BatchReport, BatchStop, Operation, Verdict, action, batch_stop};
 use crate::settings::Settings;
 
-/// Comments once on the linked issue of each Test whose fix appears to hold.
+/// Comments once on the linked issue of each `kind` row whose fix appears to hold.
 ///
-/// Disabled while `github_fixed_streak` is 0. Never raises.
-pub async fn note_fixed_issues_for(
+/// Disabled while `github_fixed_streak` is 0. The Test and Job paths are the same
+/// batch over different stored rows — `filing::note_candidates` states one
+/// selection per entity and maps both the same way — so the batch, its stop rules
+/// and its log lines are written once.
+///
+/// Never raises.
+pub async fn note_fixed_for(
     db: &(impl ConnectionTrait + TransactionTrait),
-    test_ids: &[i32],
+    kind: EntityKind,
+    ids: &[i32],
     settings: &Settings,
     api: &Api,
     clock: &SharedClock,
     stop: &CancellationToken,
 ) -> BatchReport {
-    if !api.configured() || settings.github_fixed_streak <= 0 || test_ids.is_empty() {
+    if !api.configured() || settings.github_fixed_streak <= 0 || ids.is_empty() {
         return BatchReport::default();
     }
-    match filing::note_test_candidates(db, test_ids, settings.github_fixed_streak).await {
-        Ok(candidates) if !candidates.is_empty() => {
-            let report =
-                note_batch(db, candidates, EntityKind::Test, settings, api, clock, stop).await;
-            report.log(Operation::Note);
-            report
-        }
-        Ok(_) => BatchReport::default(),
-        Err(error) => {
-            tracing::warn!(
-                name: "github.notes.candidates_unreadable",
-                error = %error,
-                "GitHub fixed-note could not read its candidates",
-            );
-            BatchReport::default()
-        }
-    }
-}
-
-/// Comments once on the linked issue of each Job whose fix appears to hold.
-pub async fn note_fixed_job_issues_for(
-    db: &(impl ConnectionTrait + TransactionTrait),
-    job_ids: &[i32],
-    settings: &Settings,
-    api: &Api,
-    clock: &SharedClock,
-    stop: &CancellationToken,
-) -> BatchReport {
-    if !api.configured() || settings.github_fixed_streak <= 0 || job_ids.is_empty() {
+    let candidates =
+        match filing::note_candidates(db, kind, ids, settings.github_fixed_streak).await {
+            Ok(candidates) => candidates,
+            Err(error) => {
+                tracing::warn!(
+                    name: "github.notes.candidates_unreadable",
+                    error = %error,
+                    "GitHub fixed-note could not read its candidates",
+                );
+                return BatchReport::default();
+            }
+        };
+    if candidates.is_empty() {
         return BatchReport::default();
     }
-    match filing::note_job_candidates(db, job_ids, settings.github_fixed_streak).await {
-        Ok(candidates) if !candidates.is_empty() => {
-            let report =
-                note_batch(db, candidates, EntityKind::Job, settings, api, clock, stop).await;
-            report.log(Operation::Note);
-            report
-        }
-        Ok(_) => BatchReport::default(),
-        Err(error) => {
-            tracing::warn!(
-                name: "github.notes.candidates_unreadable",
-                error = %error,
-                "GitHub fixed-note could not read its candidates",
-            );
-            BatchReport::default()
-        }
-    }
+    let report = note_batch(db, candidates, settings, api, clock, stop).await;
+    report.log(Operation::Note);
+    report
 }
 
 /// Notes (and maybe closes) one batch of fixed issues, whichever entity they describe.
@@ -94,13 +70,14 @@ pub async fn note_fixed_job_issues_for(
 async fn note_batch(
     db: &(impl ConnectionTrait + TransactionTrait),
     rows: Vec<NoteCandidate>,
-    entity: EntityKind,
     settings: &Settings,
     api: &Api,
     clock: &SharedClock,
     stop: &CancellationToken,
 ) -> BatchReport {
     let mut report = BatchReport::default();
+    // One batch is one entity: `note_fixed_for` selects the candidates for one kind.
+    let entity = rows.first().map_or("", |row| row.target.as_str());
     for row in rows {
         if report.skipped.contains(&row.repo) {
             continue;
@@ -110,7 +87,7 @@ async fn note_batch(
             break;
         }
         let body = fixed_comment(
-            entity,
+            row.target,
             i64::from(row.entity_id),
             i64::from(row.clean_streak),
             row.score,
@@ -124,7 +101,7 @@ async fn note_batch(
                 tracing::warn!(
                     name: "github.notes.unreachable",
                     error = %error,
-                    entity = entity.as_str(),
+                    entity = row.target.as_str(),
                     "GitHub unreachable, skipping fixed-note comments",
                 );
                 report.stopped = Some(batch_stop(Verdict::Unreachable));
@@ -134,7 +111,7 @@ async fn note_batch(
         let verdict = comment.classify(Success::Created);
         match action(Operation::Note, verdict) {
             Action::Use => {
-                if !stamp_note(db, &row, entity, settings, clock.now().with_timezone(&Utc)).await
+                if !stamp_note(db, &row, settings, clock.now().with_timezone(&Utc)).await
                     || !settings.github_close_fixed
                 {
                     continue;
@@ -146,7 +123,7 @@ async fn note_batch(
                     break;
                 }
                 if let ControlFlow::Break(stop_reason) =
-                    close_note(&row, entity, api, &mut report.skipped).await
+                    close_note(&row, api, &mut report.skipped).await
                 {
                     report.stopped = Some(stop_reason);
                     break;
@@ -178,7 +155,7 @@ async fn note_batch(
             Action::SkipRow | Action::Rearm => {
                 tracing::warn!(
                     name: "github.notes.comment_failed",
-                    entity = entity.as_str(),
+                    entity = row.target.as_str(),
                     entity_id = row.entity_id,
                     repo = %row.repo,
                     status = comment.status(),
@@ -191,7 +168,7 @@ async fn note_batch(
     if report.stopped == Some(BatchStop::Stopped) {
         tracing::info!(
             name: "github.notes.stopped",
-            entity = entity.as_str(),
+            entity,
             "stopping the fixed-note batch: leadership ended"
         );
     }
@@ -202,7 +179,6 @@ async fn note_batch(
 async fn stamp_note(
     db: &impl ConnectionTrait,
     row: &NoteCandidate,
-    entity: EntityKind,
     settings: &Settings,
     now: DateTime<Utc>,
 ) -> bool {
@@ -228,14 +204,14 @@ async fn stamp_note(
         }
     };
     if !stamp.stamped {
-        log_note_stamp_failure(stamp.state, entity, row);
+        log_note_stamp_failure(stamp.state, row);
         return false;
     }
     tracing::info!(
         name: "github.notes.noted",
         repo = %row.repo,
         number = row.number,
-        entity = entity.as_str(),
+        entity = row.target.as_str(),
         entity_id = row.entity_id,
         "noted that the fix appears to hold"
     );
@@ -243,11 +219,11 @@ async fn stamp_note(
 }
 
 /// Logs why a note's stamp did not land: the row vanished or stopped being noteable.
-fn log_note_stamp_failure(state: Option<NoteRowState>, entity: EntityKind, row: &NoteCandidate) {
+fn log_note_stamp_failure(state: Option<NoteRowState>, row: &NoteCandidate) {
     match state {
         None => tracing::warn!(
             name: "github.notes.row_gone",
-            entity = entity.as_str(),
+            entity = row.target.as_str(),
             entity_id = row.entity_id,
             repo = %row.repo,
             number = row.number,
@@ -255,7 +231,7 @@ fn log_note_stamp_failure(state: Option<NoteRowState>, entity: EntityKind, row: 
         ),
         Some(state) => tracing::warn!(
             name: "github.notes.no_longer_noteable",
-            entity = entity.as_str(),
+            entity = row.target.as_str(),
             entity_id = row.entity_id,
             streak = state.clean_streak,
             number = ?state.issue_number,
@@ -271,7 +247,6 @@ fn log_note_stamp_failure(state: Option<NoteRowState>, entity: EntityKind, row: 
 /// than only this issue.
 async fn close_note(
     row: &NoteCandidate,
-    entity: EntityKind,
     api: &Api,
     skipped: &mut BTreeSet<String>,
 ) -> ControlFlow<BatchStop> {
@@ -284,7 +259,7 @@ async fn close_note(
             tracing::warn!(
                 name: "github.notes.close_unreachable",
                 error = %error,
-                entity = entity.as_str(),
+                entity = row.target.as_str(),
                 "GitHub unreachable, skipping the close",
             );
             return ControlFlow::Break(batch_stop(Verdict::Unreachable));

@@ -30,8 +30,16 @@ async fn no_token_is_a_silent_no_op() {
     let settings = Settings::from_map(&std::collections::BTreeMap::new()).expect("the defaults");
     let api = Api::new(Secret::new(""), &server.uri()).expect("the HTTP client builds");
 
-    let filed =
-        github::file_issues_for(db.connection(), &[test], &settings, &api, &unstopped()).await;
+    let filed = github::file_for(
+        db.connection(),
+        EntityKind::Test,
+        &[test],
+        &settings,
+        &api,
+        &system_clock(),
+        &unstopped(),
+    )
+    .await;
     assert!(filed.linked.is_empty());
     assert_eq!(link_of(&db, EntityKind::Test, test).await.number, None);
     assert!(
@@ -56,11 +64,13 @@ async fn a_flaky_test_is_filed_in_its_own_repo_with_its_evidence() {
     .await;
     let settings = gh_settings(&[]);
 
-    let filed = github::file_issues_for(
+    let filed = github::file_for(
         db.connection(),
+        EntityKind::Test,
         &[test],
         &settings,
         &api(&server),
+        &system_clock(),
         &unstopped(),
     )
     .await;
@@ -143,11 +153,13 @@ async fn a_test_below_the_score_gate_is_not_filed() {
     .await;
     let settings = gh_settings(&[("FLAKERADAR_GITHUB_ISSUE_MIN_SCORE", "0.9")]);
 
-    let filed = github::file_issues_for(
+    let filed = github::file_for(
         db.connection(),
+        EntityKind::Test,
         &[test],
         &settings,
         &api(&server),
+        &system_clock(),
         &unstopped(),
     )
     .await;
@@ -174,11 +186,13 @@ async fn the_proven_flake_gate_and_the_failure_gate_each_withhold_a_filing() {
 
     let flakes = gh_settings(&[("FLAKERADAR_GITHUB_ISSUE_MIN_PROVEN_FLAKES", "3")]);
     assert!(
-        github::file_issues_for(
+        github::file_for(
             db.connection(),
+            EntityKind::Test,
             &[test],
             &flakes,
             &api(&server),
+            &system_clock(),
             &unstopped()
         )
         .await
@@ -187,11 +201,13 @@ async fn the_proven_flake_gate_and_the_failure_gate_each_withhold_a_filing() {
     );
     let failures = gh_settings(&[("FLAKERADAR_GITHUB_ISSUE_MIN_FAILURES", "2")]);
     assert!(
-        github::file_issues_for(
+        github::file_for(
             db.connection(),
+            EntityKind::Test,
             &[test],
             &failures,
             &api(&server),
+            &system_clock(),
             &unstopped()
         )
         .await
@@ -201,10 +217,18 @@ async fn the_proven_flake_gate_and_the_failure_gate_each_withhold_a_filing() {
     // One failure in the window meets a gate of one.
     let one = gh_settings(&[("FLAKERADAR_GITHUB_ISSUE_MIN_FAILURES", "1")]);
     assert_eq!(
-        github::file_issues_for(db.connection(), &[test], &one, &api(&server), &unstopped())
-            .await
-            .linked
-            .len(),
+        github::file_for(
+            db.connection(),
+            EntityKind::Test,
+            &[test],
+            &one,
+            &api(&server),
+            &system_clock(),
+            &unstopped()
+        )
+        .await
+        .linked
+        .len(),
         1
     );
 }
@@ -217,11 +241,13 @@ async fn a_link_a_human_made_is_never_refiled() {
     let server = MockServer::start().await;
     let settings = gh_settings(&[]);
 
-    let filed = github::file_issues_for(
+    let filed = github::file_for(
         db.connection(),
+        EntityKind::Test,
         &[test],
         &settings,
         &api(&server),
+        &system_clock(),
         &unstopped(),
     )
     .await;
@@ -259,11 +285,13 @@ async fn a_row_at_the_fixed_note_streak_has_no_live_flake_to_file() {
     .await;
     let settings = fixed_settings(&[]);
 
-    let filed = github::file_issues_for(
+    let filed = github::file_for(
         db.connection(),
+        EntityKind::Test,
         &[at_streak, below],
         &settings,
         &api(&server),
+        &system_clock(),
         &unstopped(),
     )
     .await;
@@ -311,11 +339,13 @@ async fn a_rate_limit_stops_the_batch_without_storing_anything() {
     )
     .await;
 
-    let filed = github::file_issues_for(
+    let filed = github::file_for(
         db.connection(),
+        EntityKind::Test,
         &[first, second.id],
         &gh_settings(&[]),
         &api(&server),
+        &system_clock(),
         &unstopped(),
     )
     .await;
@@ -358,11 +388,13 @@ async fn a_permission_403_skips_that_repo_and_files_the_other_one() {
         .mount(&server)
         .await;
 
-    let filed = github::file_issues_for(
+    let filed = github::file_for(
         db.connection(),
+        EntityKind::Test,
         &[denied, allowed.id],
         &gh_settings(&[]),
         &api(&server),
+        &system_clock(),
         &unstopped(),
     )
     .await;
@@ -400,11 +432,13 @@ async fn a_bad_credentials_401_skips_that_repo_and_files_the_other_one() {
         .mount(&server)
         .await;
 
-    let filed = github::file_issues_for(
+    let filed = github::file_for(
         db.connection(),
+        EntityKind::Test,
         &[first, second, allowed],
         &gh_settings(&[]),
         &api(&server),
+        &system_clock(),
         &unstopped(),
     )
     .await;
@@ -421,11 +455,13 @@ async fn issues_disabled_skips_the_rest_of_that_repo() {
     mount_create(&server, ResponseTemplate::new(410)).await;
 
     assert!(
-        github::file_issues_for(
+        github::file_for(
             db.connection(),
+            EntityKind::Test,
             &[test],
             &gh_settings(&[]),
             &api(&server),
+            &system_clock(),
             &unstopped()
         )
         .await
@@ -447,11 +483,13 @@ async fn a_201_without_a_number_stores_no_link() {
     .await;
 
     assert!(
-        github::file_issues_for(
+        github::file_for(
             db.connection(),
+            EntityKind::Test,
             &[test],
             &gh_settings(&[]),
             &api(&server),
+            &system_clock(),
             &unstopped()
         )
         .await
@@ -503,11 +541,13 @@ async fn a_row_deleted_while_filing_closes_the_issue_it_just_created() {
         .await
         .expect("the vanish trigger installs");
 
-    let filed = github::file_issues_for(
+    let filed = github::file_for(
         db.connection(),
+        EntityKind::Test,
         &[test],
         &gh_settings(&[]),
         &api(&server),
+        &system_clock(),
         &unstopped(),
     )
     .await;
@@ -538,11 +578,13 @@ async fn a_store_failure_leaves_the_issue_open_and_stops_the_batch() {
     // a savepoint cannot save a statement the server refuses.
     fail_link_stores(&db, "test_cases").await;
 
-    let (filed, logged) = CapturedLog::during_call(github::file_issues_for(
+    let (filed, logged) = CapturedLog::during_call(github::file_for(
         db.connection(),
+        EntityKind::Test,
         &[first, second],
         &gh_settings(&[]),
         &api(&server),
+        &system_clock(),
         &unstopped(),
     ))
     .await;
@@ -572,11 +614,13 @@ async fn a_network_error_stops_the_batch_and_stores_nothing() {
     // Nothing listens on this port.
     let api = Api::new(Secret::new(TOKEN), "http://127.0.0.1:1").expect("the HTTP client builds");
 
-    let filed = github::file_issues_for(
+    let filed = github::file_for(
         db.connection(),
+        EntityKind::Test,
         &[test],
         &gh_settings(&[]),
         &api,
+        &system_clock(),
         &unstopped(),
     )
     .await;
@@ -601,11 +645,13 @@ async fn the_configured_label_is_used() {
     .await;
     let settings = gh_settings(&[("FLAKERADAR_GITHUB_ISSUE_LABEL", "flaky-test")]);
 
-    github::file_issues_for(
+    github::file_for(
         db.connection(),
+        EntityKind::Test,
         &[test],
         &settings,
         &api(&server),
+        &system_clock(),
         &unstopped(),
     )
     .await;
@@ -625,8 +671,9 @@ async fn a_flaky_job_is_filed_with_its_pipeline_and_unexplained_failures() {
     )
     .await;
 
-    let filed = github::file_job_issues_for(
+    let filed = github::file_for(
         db.connection(),
+        EntityKind::Job,
         &[job],
         &gh_settings(&[]),
         &api(&server),
@@ -675,8 +722,9 @@ async fn a_job_of_another_provider_is_never_filed() {
     let server = MockServer::start().await;
 
     assert!(
-        github::file_job_issues_for(
+        github::file_for(
             db.connection(),
+            EntityKind::Job,
             &[job.id],
             &gh_settings(&[]),
             &api(&server),
@@ -712,11 +760,21 @@ async fn unreadable_candidate_scenario(kind: EntityKind) {
     let settings = gh_settings(&[]);
     let fired = match kind {
         EntityKind::Test => {
-            github::file_issues_for(db.connection(), &[row], &settings, &api, &unstopped()).await
+            github::file_for(
+                db.connection(),
+                EntityKind::Test,
+                &[row],
+                &settings,
+                &api,
+                &system_clock(),
+                &unstopped(),
+            )
+            .await
         }
         EntityKind::Job => {
-            github::file_job_issues_for(
+            github::file_for(
                 db.connection(),
+                EntityKind::Job,
                 &[row],
                 &settings,
                 &api,
@@ -761,11 +819,13 @@ async fn a_test_whose_executions_cannot_be_read_is_still_filed_without_them() {
     )
     .await;
 
-    let fired = github::file_issues_for(
+    let fired = github::file_for(
         db.connection(),
+        EntityKind::Test,
         &[test],
         &gh_settings(&[]),
         &api(&server),
+        &system_clock(),
         &unstopped(),
     )
     .await;
@@ -817,11 +877,13 @@ async fn a_linked_row_and_a_calm_row_are_both_left_alone() {
         .expect("the score writes");
     let server = MockServer::start().await;
 
-    let filed_ids = github::file_issues_for(
+    let filed_ids = github::file_for(
         db.connection(),
+        EntityKind::Test,
         &[filed, calm],
         &gh_settings(&[]),
         &api(&server),
+        &system_clock(),
         &unstopped(),
     )
     .await;
@@ -849,12 +911,14 @@ async fn a_kept_not_planned_link_is_never_refiled() {
     let server = MockServer::start().await;
 
     assert!(
-        github::file_issues_for(
+        github::file_for(
             db.connection(),
+            EntityKind::Test,
             &[wont_fix],
             &gh_settings(&[]),
             &api(&server),
-            &unstopped(),
+            &system_clock(),
+            &unstopped()
         )
         .await
         .linked
@@ -1110,11 +1174,13 @@ async fn an_unusable_status_costs_one_issue_and_the_batch_goes_on() {
         .mount(&server)
         .await;
 
-    let (report, logged) = CapturedLog::during_call(github::file_issues_for(
+    let (report, logged) = CapturedLog::during_call(github::file_for(
         db.connection(),
+        EntityKind::Test,
         &[a1, a2],
         &gh_settings(&[]),
         &api(&server),
+        &system_clock(),
         &unstopped(),
     ))
     .await;
@@ -1170,11 +1236,13 @@ async fn a_malformed_201_body_keeps_the_batch_and_stores_nothing() {
             .mount(&server)
             .await;
 
-        let (report, logged) = CapturedLog::during_call(github::file_issues_for(
+        let (report, logged) = CapturedLog::during_call(github::file_for(
             db.connection(),
+            EntityKind::Test,
             &[a, b],
             &gh_settings(&[]),
             &api(&server),
+            &system_clock(),
             &unstopped(),
         ))
         .await;
@@ -1228,11 +1296,13 @@ async fn two_proven_flakes_meet_the_proven_flake_gate() {
     let settings = gh_settings(&[("FLAKERADAR_GITHUB_ISSUE_MIN_PROVEN_FLAKES", "2")]);
 
     assert!(
-        github::file_issues_for(
+        github::file_for(
             db.connection(),
+            EntityKind::Test,
             &[under],
             &settings,
             &api(&server),
+            &system_clock(),
             &unstopped()
         )
         .await
@@ -1250,11 +1320,13 @@ async fn two_proven_flakes_meet_the_proven_flake_gate() {
         .await
         .expect("the count writes");
     assert_eq!(
-        github::file_issues_for(
+        github::file_for(
             db.connection(),
+            EntityKind::Test,
             &[over],
             &settings,
             &api(&server),
+            &system_clock(),
             &unstopped()
         )
         .await
@@ -1278,11 +1350,13 @@ async fn a_second_failure_meets_the_min_failures_gate() {
     let settings = gh_settings(&[("FLAKERADAR_GITHUB_ISSUE_MIN_FAILURES", "2")]);
 
     assert!(
-        github::file_issues_for(
+        github::file_for(
             db.connection(),
+            EntityKind::Test,
             &[test],
             &settings,
             &api(&server),
+            &system_clock(),
             &unstopped()
         )
         .await
@@ -1315,11 +1389,13 @@ async fn a_second_failure_meets_the_min_failures_gate() {
         .expect("the Execution inserts");
 
     assert_eq!(
-        github::file_issues_for(
+        github::file_for(
             db.connection(),
+            EntityKind::Test,
             &[test],
             &settings,
             &api(&server),
+            &system_clock(),
             &unstopped()
         )
         .await
@@ -1382,11 +1458,13 @@ async fn only_the_newest_window_counts_a_failure() {
         ("FLAKERADAR_SCORE_WINDOW", "3"),
     ]);
 
-    let filed = github::file_issues_for(
+    let filed = github::file_for(
         db.connection(),
+        EntityKind::Test,
         &[old.id, new.id],
         &settings,
         &api(&server),
+        &system_clock(),
         &unstopped(),
     )
     .await;
@@ -1468,11 +1546,13 @@ async fn the_failure_gate_counts_the_overall_window_only() {
         ("FLAKERADAR_SCORE_WINDOW", "5"),
     ]);
 
-    let filed = github::file_issues_for(
+    let filed = github::file_for(
         db.connection(),
+        EntityKind::Test,
         &[test.id],
         &settings,
         &api(&server),
+        &system_clock(),
         &unstopped(),
     )
     .await;
@@ -1503,8 +1583,9 @@ async fn a_job_history_that_cannot_be_read_is_logged_and_the_issue_still_files()
         .expect("the Job executions table is dropped");
 
     let logged = CapturedLog::during(async {
-        let filed = github::file_job_issues_for(
+        let filed = github::file_for(
             db.connection(),
+            EntityKind::Job,
             &[job],
             &gh_settings(&[]),
             &api(&server),
@@ -1543,11 +1624,13 @@ async fn a_huge_id_list_stays_under_the_bind_limit() {
     let mut ids = vec![test];
     ids.extend(10_000_000..10_040_000);
 
-    github::file_issues_for(
+    github::file_for(
         db.connection(),
+        EntityKind::Test,
         &ids,
         &gh_settings(&[]),
         &api(&server),
+        &system_clock(),
         &unstopped(),
     )
     .await;
@@ -1611,11 +1694,13 @@ async fn a_row_deleted_while_filing_leaves_the_rest_of_the_batch_filed() {
         .mount(&server)
         .await;
 
-    let filed = github::file_issues_for(
+    let filed = github::file_for(
         db.connection(),
+        EntityKind::Test,
         &[a, b],
         &gh_settings(&[]),
         &api(&server),
+        &system_clock(),
         &unstopped(),
     )
     .await;
@@ -1658,8 +1743,9 @@ async fn the_job_row_deleted_while_filing_closes_the_new_issue() {
         .mount(&server)
         .await;
 
-    github::file_job_issues_for(
+    github::file_for(
         db.connection(),
+        EntityKind::Job,
         &[job],
         &gh_settings(&[]),
         &api(&server),
@@ -1692,8 +1778,9 @@ async fn a_job_that_was_reported_is_not_filed_twice() {
     .await;
 
     assert_eq!(
-        github::file_job_issues_for(
+        github::file_for(
             db.connection(),
+            EntityKind::Job,
             &[job],
             &gh_settings(&[]),
             &api(&server),
@@ -1706,8 +1793,9 @@ async fn a_job_that_was_reported_is_not_filed_twice() {
         1
     );
     assert!(
-        github::file_job_issues_for(
+        github::file_for(
             db.connection(),
+            EntityKind::Job,
             &[job],
             &gh_settings(&[]),
             &api(&server),
@@ -1730,8 +1818,9 @@ async fn a_job_filing_without_a_token_is_silent() {
     let api = Api::new(Secret::new(""), &server.uri()).expect("the HTTP client builds");
 
     assert!(
-        github::file_job_issues_for(
+        github::file_for(
             db.connection(),
+            EntityKind::Job,
             &[job],
             &settings,
             &api,
@@ -1778,8 +1867,9 @@ async fn only_unexplained_job_failures_meet_the_min_failures_gate() {
     let settings = gh_settings(&[("FLAKERADAR_GITHUB_ISSUE_MIN_FAILURES", "2")]);
 
     assert!(
-        github::file_job_issues_for(
+        github::file_for(
             db.connection(),
+            EntityKind::Job,
             &[all_explained],
             &settings,
             &api(&server),
@@ -1809,8 +1899,9 @@ async fn only_unexplained_job_failures_meet_the_min_failures_gate() {
     explain_job_execution(&db, "mix-1").await;
 
     assert_eq!(
-        github::file_job_issues_for(
+        github::file_for(
             db.connection(),
+            EntityKind::Job,
             &[mixed],
             &settings,
             &api(&server),
@@ -1879,8 +1970,9 @@ async fn the_job_failure_gate_counts_the_overall_window_only() {
         ("FLAKERADAR_SCORE_WINDOW", "5"),
     ]);
 
-    let filed = github::file_job_issues_for(
+    let filed = github::file_for(
         db.connection(),
+        EntityKind::Job,
         &[job.id],
         &settings,
         &api(&server),

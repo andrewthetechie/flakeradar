@@ -32,23 +32,51 @@ pub fn filing_gate(settings: &Settings) -> FilingGate {
     )
 }
 
-/// Files issues for Tests that now meet the filing gate. Never raises.
+/// Files issues for the `kind` rows that now meet the filing gate. Never raises.
 ///
-/// The report names the Test ids it linked, so the caller can keep the fixed-note
+/// The two entities share the batch and differ in what an issue body reads: a Test
+/// quotes its own Executions, a Job quotes its history, which the read settings
+/// build from `clock` — the Test arm never reads it. One entry point states the
+/// gate, the emptiness and the finished log once; `test_requests` and
+/// `job_requests` keep the two candidate selections.
+///
+/// The report names the entity ids it linked, so the caller can keep the fixed-note
 /// step off a link this same Report created.
-pub async fn file_issues_for(
+pub async fn file_for(
     db: &(impl ConnectionTrait + TransactionTrait),
-    test_ids: &[i32],
+    kind: EntityKind,
+    ids: &[i32],
     settings: &Settings,
     api: &Api,
+    clock: &SharedClock,
     stop: &CancellationToken,
 ) -> BatchReport {
-    if !api.configured() || test_ids.is_empty() {
+    if !api.configured() || ids.is_empty() {
         return BatchReport::default();
     }
+    let batch = match kind {
+        EntityKind::Test => test_requests(db, ids, settings).await,
+        EntityKind::Job => job_requests(db, ids, settings, clock).await,
+    };
+    if batch.is_empty() {
+        return BatchReport::default();
+    }
+    let report = file_batch(db, batch, settings, api, stop).await;
+    report.log(Operation::File);
+    report
+}
+
+/// The Tests that pass the gate, each with the body its Executions make.
+///
+/// An Execution read that fails costs the body its table, not the filing: the
+/// gate already decided this Test is worth an issue.
+async fn test_requests(
+    db: &(impl ConnectionTrait + TransactionTrait),
+    ids: &[i32],
+    settings: &Settings,
+) -> Vec<FileRequest> {
     let candidates =
-        match filing::test_candidates(db, test_ids, &filing_gate(settings), settings.score_window)
-            .await
+        match filing::test_candidates(db, ids, &filing_gate(settings), settings.score_window).await
         {
             Ok(candidates) => candidates,
             Err(error) => {
@@ -57,12 +85,9 @@ pub async fn file_issues_for(
                     error = %error,
                     "GitHub issue filing could not read its Test candidates",
                 );
-                return BatchReport::default();
+                return Vec::new();
             }
         };
-    if candidates.is_empty() {
-        return BatchReport::default();
-    }
     let mut batch = Vec::new();
     for candidate in candidates {
         let recent = match filing::recent_executions(db, candidate.test.id, BODY_EXECUTIONS).await {
@@ -93,40 +118,34 @@ pub async fn file_issues_for(
             body,
         });
     }
-    let report = file_batch(db, batch, EntityKind::Test, settings, api, stop).await;
-    report.log(Operation::File);
-    report
+    batch
 }
 
-/// Files issues for github-provider Jobs that now meet the filing gate. Never raises.
-pub async fn file_job_issues_for(
+/// The github-provider Jobs that pass the gate, each with the body its history makes.
+async fn job_requests(
     db: &(impl ConnectionTrait + TransactionTrait),
-    job_ids: &[i32],
+    ids: &[i32],
     settings: &Settings,
-    api: &Api,
     clock: &SharedClock,
-    stop: &CancellationToken,
-) -> BatchReport {
-    if !api.configured() || job_ids.is_empty() {
-        return BatchReport::default();
-    }
-    let candidates =
-        match filing::job_candidates(db, job_ids, &filing_gate(settings), settings.score_window)
-            .await
-        {
-            Ok(candidates) => candidates,
-            Err(error) => {
-                tracing::warn!(
-                    name: "github.filing.job_candidates_unreadable",
-                    error = %error,
-                    "GitHub issue filing could not read its Job candidates",
-                );
-                return BatchReport::default();
-            }
-        };
-    if candidates.is_empty() {
-        return BatchReport::default();
-    }
+) -> Vec<FileRequest> {
+    let candidates = match filing::job_candidates(
+        db,
+        ids,
+        &filing_gate(settings),
+        settings.score_window,
+    )
+    .await
+    {
+        Ok(candidates) => candidates,
+        Err(error) => {
+            tracing::warn!(
+                name: "github.filing.job_candidates_unreadable",
+                error = %error,
+                "GitHub issue filing could not read its Job candidates",
+            );
+            return Vec::new();
+        }
+    };
     let mut batch = Vec::new();
     for candidate in candidates {
         let history = match get_job(
@@ -165,9 +184,7 @@ pub async fn file_job_issues_for(
             body,
         });
     }
-    let report = file_batch(db, batch, EntityKind::Job, settings, api, stop).await;
-    report.log(Operation::File);
-    report
+    batch
 }
 
 /// One rendered issue to file.
@@ -187,7 +204,6 @@ struct FileRequest {
 async fn file_batch(
     db: &(impl ConnectionTrait + TransactionTrait),
     batch: Vec<FileRequest>,
-    entity: EntityKind,
     settings: &Settings,
     api: &Api,
     stop: &CancellationToken,
@@ -197,7 +213,7 @@ async fn file_batch(
         if stop.is_cancelled() {
             tracing::info!(
                 name: "github.filing.stopped",
-                entity = entity.as_str(),
+                entity = request.target.as_str(),
                 "stopping the issue-filing batch: leadership ended"
             );
             report.stopped = Some(BatchStop::Stopped);
@@ -222,7 +238,7 @@ async fn file_batch(
                 tracing::warn!(
                     name: "github.filing.unreachable",
                     error = %error,
-                    entity = entity.as_str(),
+                    entity = request.target.as_str(),
                     "GitHub unreachable, skipping issue filing",
                 );
                 report.stopped = Some(batch_stop(Verdict::Unreachable));
@@ -233,7 +249,7 @@ async fn file_batch(
         match action(Operation::File, verdict) {
             Action::Use => {
                 if let ControlFlow::Break(stop) =
-                    record_filed(db, &request, &answer, entity, api, &mut report).await
+                    record_filed(db, &request, &answer, api, &mut report).await
                 {
                     report.stopped = Some(stop);
                     break;
@@ -261,7 +277,7 @@ async fn file_batch(
             Action::SkipRow | Action::Rearm => {
                 tracing::warn!(
                     name: "github.filing.create_failed",
-                    entity = entity.as_str(),
+                    entity = request.target.as_str(),
                     entity_id = request.entity_id,
                     repo = %request.repo,
                     status = answer.status(),
@@ -293,7 +309,6 @@ async fn record_filed(
     db: &(impl ConnectionTrait + TransactionTrait),
     request: &FileRequest,
     answer: &Answer,
-    entity: EntityKind,
     api: &Api,
     report: &mut BatchReport,
 ) -> ControlFlow<BatchStop> {
@@ -313,7 +328,7 @@ async fn record_filed(
                 name: "github.filing.filed",
                 repo = %request.repo,
                 number,
-                entity = entity.as_str(),
+                entity = request.target.as_str(),
                 entity_id = request.entity_id,
                 "filed a GitHub issue"
             );
@@ -324,7 +339,7 @@ async fn record_filed(
             let _ = close_issues_after_removal(&request.repo, &[number], api).await;
             tracing::warn!(
                 name: "github.filing.row_gone",
-                entity = entity.as_str(),
+                entity = request.target.as_str(),
                 entity_id = request.entity_id,
                 repo = %request.repo,
                 number,
@@ -337,7 +352,7 @@ async fn record_filed(
             tracing::error!(
                 name: "github.filing.store_failed",
                 error = %error,
-                entity = entity.as_str(),
+                entity = request.target.as_str(),
                 entity_id = request.entity_id,
                 repo = %request.repo,
                 number,

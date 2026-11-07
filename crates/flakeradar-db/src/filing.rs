@@ -4,7 +4,7 @@
 //! qualify is a question about the schema, so those statements live here. Three
 //! selections make up the module: the Tests and Jobs that pass [`FilingGate`],
 //! the newest Executions an issue body quotes, and the linked rows whose fix
-//! appears to hold ([`note_test_candidates`], [`note_job_candidates`]).
+//! appears to hold ([`note_candidates`]).
 //!
 //! Every selection chunks its ids at [`crate::CHUNK`], so one statement never
 //! carries more binds than a PostgreSQL statement accepts.
@@ -361,65 +361,61 @@ pub struct NoteCandidate {
     pub number: i32,
 }
 
-/// The linked Tests at the note threshold whose fix has not been noted yet.
+/// The fixed-note selection, per entity: both statements name their columns the
+/// same way (`id`, `number`, `clean_streak`, `flakiness_score`, `repo_name`,
+/// `default_branch`), so [`note_candidates`] reads either with one mapper.
 ///
-/// # Errors
-///
-/// Returns [`DbError::Database`] when a statement fails.
-pub async fn note_test_candidates(
-    db: &impl ConnectionTrait,
-    test_ids: &[i32],
-    fixed_streak: i64,
-) -> Result<Vec<NoteCandidate>, DbError> {
-    let mut candidates = Vec::new();
-    for chunk in chunks(test_ids) {
-        let sql = "SELECT t.id AS id, t.github_issue_number AS number, t.clean_streak, \
-                   t.flakiness_score, r.name AS repo_name, r.default_branch \
-                   FROM test_cases t JOIN projects p ON p.id = t.project_id \
-                   JOIN repos r ON r.id = p.repo_id \
-                   WHERE t.id = ANY($1::INTEGER[]) AND t.github_issue_number IS NOT NULL \
-                     AND t.github_issue_fixed_noted_at IS NULL AND t.github_issue_closed IS FALSE \
-                     AND t.clean_streak >= $2 ORDER BY t.id";
-        let threshold = i32::try_from(fixed_streak).unwrap_or(i32::MAX);
-        for row in rows(db, sql, vec![int_array(chunk), Value::from(threshold)]).await? {
-            candidates.push(NoteCandidate {
-                target: EntityKind::Test,
-                entity_id: get(&row, "id")?,
-                repo: get(&row, "repo_name")?,
-                default_branch: get(&row, "default_branch")?,
-                clean_streak: get(&row, "clean_streak")?,
-                score: score(get(&row, "flakiness_score")?, "flakiness_score")?,
-                number: get(&row, "number")?,
-            });
-        }
-    }
-    Ok(candidates)
-}
+/// A Job is selected only from a github-provider Pipeline, because a Job of
+/// another provider has no issue to note.
+const NOTE_CANDIDATES: [(EntityKind, &str); 2] = [
+    (
+        EntityKind::Test,
+        "SELECT t.id AS id, t.github_issue_number AS number, t.clean_streak, \
+                t.flakiness_score, r.name AS repo_name, r.default_branch \
+           FROM test_cases t JOIN projects p ON p.id = t.project_id \
+           JOIN repos r ON r.id = p.repo_id \
+          WHERE t.id = ANY($1::INTEGER[]) AND t.github_issue_number IS NOT NULL \
+            AND t.github_issue_fixed_noted_at IS NULL AND t.github_issue_closed IS FALSE \
+            AND t.clean_streak >= $2 ORDER BY t.id",
+    ),
+    (
+        EntityKind::Job,
+        "SELECT j.id AS id, j.github_issue_number AS number, j.clean_streak, \
+                j.flakiness_score, r.name AS repo_name, r.default_branch \
+           FROM jobs j JOIN pipelines p ON p.id = j.pipeline_id \
+           JOIN repos r ON r.id = p.repo_id \
+          WHERE j.id = ANY($1::INTEGER[]) AND p.provider = 'github' \
+            AND j.github_issue_number IS NOT NULL \
+            AND j.github_issue_fixed_noted_at IS NULL AND j.github_issue_closed IS FALSE \
+            AND j.clean_streak >= $2 ORDER BY j.id",
+    ),
+];
 
-/// The linked github-provider Jobs at the note threshold.
+/// The linked rows of `kind` at the note threshold whose fix has not been noted yet.
+///
+/// The Tests and the Jobs are two statements — they read different tables and the
+/// Job one insists on a github Pipeline — and one mapper, because every column the
+/// note needs is named the same in both.
 ///
 /// # Errors
 ///
 /// Returns [`DbError::Database`] when a statement fails.
-pub async fn note_job_candidates(
+pub async fn note_candidates(
     db: &impl ConnectionTrait,
-    job_ids: &[i32],
+    kind: EntityKind,
+    ids: &[i32],
     fixed_streak: i64,
 ) -> Result<Vec<NoteCandidate>, DbError> {
+    let (_, sql) = NOTE_CANDIDATES
+        .into_iter()
+        .find(|(entity, _)| *entity == kind)
+        .unwrap_or(NOTE_CANDIDATES[0]);
+    let threshold = i32::try_from(fixed_streak).unwrap_or(i32::MAX);
     let mut candidates = Vec::new();
-    for chunk in chunks(job_ids) {
-        let sql = "SELECT j.id AS id, j.github_issue_number AS number, j.clean_streak, \
-                   j.flakiness_score, r.name AS repo_name, r.default_branch \
-                   FROM jobs j JOIN pipelines p ON p.id = j.pipeline_id \
-                   JOIN repos r ON r.id = p.repo_id \
-                   WHERE j.id = ANY($1::INTEGER[]) AND p.provider = 'github' \
-                     AND j.github_issue_number IS NOT NULL \
-                     AND j.github_issue_fixed_noted_at IS NULL AND j.github_issue_closed IS FALSE \
-                     AND j.clean_streak >= $2 ORDER BY j.id";
-        let threshold = i32::try_from(fixed_streak).unwrap_or(i32::MAX);
+    for chunk in chunks(ids) {
         for row in rows(db, sql, vec![int_array(chunk), Value::from(threshold)]).await? {
             candidates.push(NoteCandidate {
-                target: EntityKind::Job,
+                target: kind,
                 entity_id: get(&row, "id")?,
                 repo: get(&row, "repo_name")?,
                 default_branch: get(&row, "default_branch")?,
