@@ -230,15 +230,13 @@ async fn seed(db: &TestDb) -> i64 {
         .repo("andrewthetechie/writers-app")
         .project("frontend")
         .root("frontend")
-        .build(db.connection())
-        .await
-        .expect("the frontend Project");
+        .create(db)
+        .await;
     let backend = make_project()
         .repo("andrewthetechie/writers-app")
         .project("backend")
-        .build(db.connection())
-        .await
-        .expect("the backend Project");
+        .create(db)
+        .await;
     let flaky = make_test_case(&frontend)
         .name("renders")
         .classname("src/app.test.ts")
@@ -246,48 +244,41 @@ async fn seed(db: &TestDb) -> i64 {
         .line(12)
         .flakiness_score(0.7)
         .confirmed_flake_count(1)
-        .build(db.connection())
-        .await
-        .expect("the flaky Test");
+        .create(db)
+        .await;
     make_test_case(&frontend)
         .name("suspect_one")
         .flakiness_score(0.1)
-        .build(db.connection())
-        .await
-        .expect("the suspect Test");
+        .create(db)
+        .await;
     make_test_case(&backend)
         .name("renders")
         .classname("tests.test_views")
         .file("tests/test_views.py")
         .flakiness_score(0.4)
-        .build(db.connection())
-        .await
-        .expect("the backend Test");
+        .create(db)
+        .await;
     make_test_case(&backend)
         .name("calm")
         .flakiness_score(0.0)
-        .build(db.connection())
-        .await
-        .expect("the stable Test");
+        .create(db)
+        .await;
     let run = make_run(&frontend)
         .commit_sha("aaa111")
         .branch("main")
-        .build(db.connection())
-        .await
-        .expect("the Run");
+        .create(db)
+        .await;
     make_execution(&flaky, &run)
         .status("failed")
         .message("expected 3")
         .details(&format!("Traceback\n{}", "x".repeat(5000)))
         .failure_category("assertion")
-        .build(db.connection())
-        .await
-        .expect("the failing Execution");
+        .create(db)
+        .await;
     make_execution(&flaky, &run)
         .status("passed")
-        .build(db.connection())
-        .await
-        .expect("the passing Execution");
+        .create(db)
+        .await;
     i64::from(flaky.id)
 }
 
@@ -529,9 +520,8 @@ async fn top_flaky_tests_filters_by_category() {
     let project = make_project()
         .repo("acme/app")
         .project("backend")
-        .build(db.connection())
-        .await
-        .expect("the Project");
+        .create(&db)
+        .await;
     for (name, score, category) in [
         ("A", 0.8, "timing"),
         ("B", 0.2, "network"),
@@ -541,9 +531,8 @@ async fn top_flaky_tests_filters_by_category() {
             .name(name)
             .flakiness_score(score)
             .failure_category(category)
-            .build(db.connection())
-            .await
-            .expect("a Test");
+            .create(&db)
+            .await;
     }
     let network = call(
         &app,
@@ -566,57 +555,42 @@ async fn seed_new_within_days(db: &TestDb) {
     let project = make_project()
         .repo("acme/app")
         .project("backend")
-        .build(db.connection())
-        .await
-        .expect("the Project");
+        .create(db)
+        .await;
     let crossed = make_test_case(&project)
         .name("crossed")
         .flakiness_score(0.6)
-        .build(db.connection())
-        .await
-        .expect("crossed");
+        .create(db)
+        .await;
     let old_flaky = make_test_case(&project)
         .name("old_flaky")
         .flakiness_score(0.6)
-        .build(db.connection())
-        .await
-        .expect("old_flaky");
-    let pipeline = make_pipeline()
-        .repo("acme/app")
-        .build(db.connection())
-        .await
-        .expect("the Pipeline");
+        .create(db)
+        .await;
+    let pipeline = make_pipeline().repo("acme/app").create(db).await;
     let job_crossed = make_job(&pipeline)
         .name("crossed")
         .flakiness_score(0.6)
-        .build(db.connection())
-        .await
-        .expect("the crossed Job");
+        .create(db)
+        .await;
     let job_old = make_job(&pipeline)
         .name("old_flaky")
         .flakiness_score(0.6)
-        .build(db.connection())
-        .await
-        .expect("the old Job");
+        .create(db)
+        .await;
     for (entity, days, score) in [
         (&crossed, 20, 0.1),
         (&crossed, 3, 0.6),
         (&old_flaky, 30, 0.6),
     ] {
-        make_test_score(entity, day(days), score)
-            .build(db.connection())
-            .await
-            .expect("a Score row");
+        make_test_score(entity, day(days), score).create(db).await;
     }
     for (entity, days, score) in [
         (&job_crossed, 20, 0.1),
         (&job_crossed, 3, 0.6),
         (&job_old, 30, 0.6),
     ] {
-        make_job_score(entity, day(days), score)
-            .build(db.connection())
-            .await
-            .expect("a Job Score row");
+        make_job_score(entity, day(days), score).create(db).await;
     }
 }
 
@@ -755,21 +729,18 @@ async fn get_test_narrows_an_ambiguous_name_by_classname() {
     let project = make_project()
         .repo("acme/app")
         .project("backend")
-        .build(db.connection())
-        .await
-        .expect("the Project");
+        .create(&db)
+        .await;
     let first = make_test_case(&project)
         .name("dup")
         .classname("a")
-        .build(db.connection())
-        .await
-        .expect("the first Test");
+        .create(&db)
+        .await;
     let second = make_test_case(&project)
         .name("dup")
         .classname("b")
-        .build(db.connection())
-        .await
-        .expect("the second Test");
+        .create(&db)
+        .await;
     let narrowed = call(
         &app,
         "get_test",
@@ -799,23 +770,14 @@ async fn a_test_with_no_failures_has_no_latest_failure() {
     let project = make_project()
         .repo("acme/app")
         .project("backend")
-        .build(db.connection())
-        .await
-        .expect("the Project");
-    let steady = make_test_case(&project)
-        .name("steady")
-        .build(db.connection())
-        .await
-        .expect("the Test");
-    let run = make_run(&project)
-        .build(db.connection())
-        .await
-        .expect("the Run");
+        .create(&db)
+        .await;
+    let steady = make_test_case(&project).name("steady").create(&db).await;
+    let run = make_run(&project).create(&db).await;
     make_execution(&steady, &run)
         .status("passed")
-        .build(db.connection())
-        .await
-        .expect("the Execution");
+        .create(&db)
+        .await;
     let data = call(&app, "get_test", json!({"test_id": steady.id})).await;
     assert_eq!(data["latest_failure"], Value::Null);
     assert_eq!(data["last_failing_sha"], Value::Null);
@@ -827,61 +789,48 @@ async fn seed_jobs(db: &TestDb) -> (i32, i32, i32) {
     let project = make_project()
         .repo("acme/app")
         .project("backend")
-        .build(db.connection())
-        .await
-        .expect("the Project");
+        .create(db)
+        .await;
     let pipeline = make_pipeline()
         .repo("acme/app")
         .name("ci.yml")
-        .build(db.connection())
-        .await
-        .expect("the Pipeline");
+        .create(db)
+        .await;
     let e2e = make_job(&pipeline)
         .name("e2e (ubuntu-latest)")
         .flakiness_score(0.4)
-        .build(db.connection())
-        .await
-        .expect("the e2e Job");
+        .create(db)
+        .await;
     make_job_execution(&e2e)
         .status("failed")
         .ci_job_id("e2e-1")
-        .build(db.connection())
-        .await
-        .expect("the unexplained execution");
+        .create(db)
+        .await;
     let explained_job = make_job(&pipeline)
         .name("test")
         .flakiness_score(0.1)
-        .build(db.connection())
-        .await
-        .expect("the explained Job");
-    let test = make_test_case(&project)
-        .name("t1")
-        .build(db.connection())
-        .await
-        .expect("the Test");
+        .create(db)
+        .await;
+    let test = make_test_case(&project).name("t1").create(db).await;
     let run = make_run(&project)
         .commit_sha("s")
         .ci_job_id("ex-1")
-        .build(db.connection())
-        .await
-        .expect("the Run");
+        .create(db)
+        .await;
     make_execution(&test, &run)
         .status("failed")
-        .build(db.connection())
-        .await
-        .expect("the failing Execution");
+        .create(db)
+        .await;
     make_job_execution(&explained_job)
         .status("failed")
         .ci_job_id("ex-1")
-        .build(db.connection())
-        .await
-        .expect("the explained execution");
+        .create(db)
+        .await;
     make_job_execution(&explained_job)
         .status("passed")
         .ci_job_id("ex-2")
-        .build(db.connection())
-        .await
-        .expect("the passing execution");
+        .create(db)
+        .await;
     (e2e.id, explained_job.id, test.id)
 }
 
@@ -1023,31 +972,24 @@ async fn get_job_groups_failures_by_runner() {
     let pipeline = make_pipeline()
         .repo("acme/app")
         .name("ci.yml")
-        .build(db.connection())
-        .await
-        .expect("the Pipeline");
-    let job = make_job(&pipeline)
-        .name("test")
-        .build(db.connection())
-        .await
-        .expect("the Job");
+        .create(&db)
+        .await;
+    let job = make_job(&pipeline).name("test").create(&db).await;
     for index in 0..2 {
         make_job_execution(&job)
             .status("failed")
             .ci_job_id(&format!("sh-{index}"))
             .runner_name(&format!("self-hosted-{index}"))
             .runner_labels(&["self-hosted"])
-            .build(db.connection())
-            .await
-            .expect("a self-hosted execution");
+            .create(&db)
+            .await;
     }
     make_job_execution(&job)
         .status("passed")
         .ci_job_id("gh-1")
         .runner_labels(&["ubuntu-latest"])
-        .build(db.connection())
-        .await
-        .expect("the hosted execution");
+        .create(&db)
+        .await;
     let data = call(&app, "get_job", json!({"job_id": job.id})).await;
     // A runner name seen once is not grouped, so the label set is the item.
     assert_eq!(
@@ -1066,25 +1008,15 @@ async fn get_job_narrows_an_ambiguous_name_by_pipeline() {
     let first_pipeline = make_pipeline()
         .repo("acme/app")
         .name("a.yml")
-        .build(db.connection())
-        .await
-        .expect("the first Pipeline");
+        .create(&db)
+        .await;
     let second_pipeline = make_pipeline()
         .repo("acme/app")
         .name("b.yml")
-        .build(db.connection())
-        .await
-        .expect("the second Pipeline");
-    let first = make_job(&first_pipeline)
-        .name("build")
-        .build(db.connection())
-        .await
-        .expect("the first Job");
-    let second = make_job(&second_pipeline)
-        .name("build")
-        .build(db.connection())
-        .await
-        .expect("the second Job");
+        .create(&db)
+        .await;
+    let first = make_job(&first_pipeline).name("build").create(&db).await;
+    let second = make_job(&second_pipeline).name("build").create(&db).await;
     let result = call_result(
         &app,
         "get_job",
@@ -1124,27 +1056,23 @@ async fn ci_run_failures_lists_the_failing_tests_of_one_attempt() {
     let project = make_project()
         .repo("acme/app")
         .project("backend")
-        .build(db.connection())
-        .await
-        .expect("the Project");
+        .create(&db)
+        .await;
     let test = make_test_case(&project)
         .name("t1")
         .flakiness_score(0.5)
-        .build(db.connection())
-        .await
-        .expect("the Test");
+        .create(&db)
+        .await;
     let run = make_run(&project)
         .ci_run_id("100")
         .ci_run_attempt(1)
-        .build(db.connection())
-        .await
-        .expect("the Run");
+        .create(&db)
+        .await;
     make_execution(&test, &run)
         .status("failed")
         .message("boom")
-        .build(db.connection())
-        .await
-        .expect("the Execution");
+        .create(&db)
+        .await;
     let data = call(
         &app,
         "ci_run_failures",
@@ -1172,25 +1100,18 @@ async fn ci_run_failures_refuses_what_it_cannot_read() {
     let project = make_project()
         .repo("acme/app")
         .project("backend")
-        .build(db.connection())
-        .await
-        .expect("the Project");
-    let test = make_test_case(&project)
-        .name("t1")
-        .build(db.connection())
-        .await
-        .expect("the Test");
+        .create(&db)
+        .await;
+    let test = make_test_case(&project).name("t1").create(&db).await;
     let run = make_run(&project)
         .ci_run_id("100")
         .ci_run_attempt(1)
-        .build(db.connection())
-        .await
-        .expect("the Run");
+        .create(&db)
+        .await;
     make_execution(&test, &run)
         .status("failed")
-        .build(db.connection())
-        .await
-        .expect("the Execution");
+        .create(&db)
+        .await;
     refused(
         &app,
         "ci_run_failures",
@@ -1341,16 +1262,8 @@ async fn re_linking_a_declined_issue_reports_the_stored_closed_flag() {
 async fn link_and_unlink_a_job_issue() {
     let db = TestDb::new().await.expect("a test database is available");
     let app = mcp_app(&db);
-    let pipeline = make_pipeline()
-        .repo("acme/app")
-        .build(db.connection())
-        .await
-        .expect("the Pipeline");
-    let job = make_job(&pipeline)
-        .name("e2e")
-        .build(db.connection())
-        .await
-        .expect("the Job");
+    let pipeline = make_pipeline().repo("acme/app").create(&db).await;
+    let job = make_job(&pipeline).name("e2e").create(&db).await;
     let linked = call(&app, "link_issue", json!({"number": 9, "job_id": job.id})).await;
     assert_eq!(linked["id"], job.id);
     assert_eq!(linked["github_issue_number"], 9);
@@ -1368,28 +1281,15 @@ async fn link_issue_refuses_what_the_rules_refuse() {
     let db = TestDb::new().await.expect("a test database is available");
     let app = mcp_app(&db);
     let flaky = seed(&db).await;
-    let pipeline = make_pipeline()
-        .repo("acme/app")
-        .build(db.connection())
-        .await
-        .expect("the Pipeline");
-    let job = make_job(&pipeline)
-        .name("e2e")
-        .build(db.connection())
-        .await
-        .expect("the Job");
+    let pipeline = make_pipeline().repo("acme/app").create(&db).await;
+    let job = make_job(&pipeline).name("e2e").create(&db).await;
     let gitlab_pipeline = make_pipeline()
         .repo("acme/app")
         .provider("gitlab")
         .name(".gitlab-ci.yml")
-        .build(db.connection())
-        .await
-        .expect("the GitLab Pipeline");
-    let gitlab = make_job(&gitlab_pipeline)
-        .name("gl")
-        .build(db.connection())
-        .await
-        .expect("the GitLab Job");
+        .create(&db)
+        .await;
+    let gitlab = make_job(&gitlab_pipeline).name("gl").create(&db).await;
     refused(
         &app,
         "link_issue",

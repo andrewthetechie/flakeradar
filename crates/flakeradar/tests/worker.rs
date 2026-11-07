@@ -121,9 +121,8 @@ async fn queue(db: &TestDb, project: &projects::Model, sha: &str) {
     make_report(project, project.repo_id)
         .commit_sha(sha)
         .body(&make_junit(&[("t", "passed")]))
-        .build(db.connection())
-        .await
-        .expect("a queued Report");
+        .create(db)
+        .await;
 }
 
 /// A Project in `acme/app`, created through the worker's own get-or-create.
@@ -131,9 +130,8 @@ async fn project(db: &TestDb) -> projects::Model {
     make_project()
         .repo("acme/app")
         .project("backend")
-        .build(db.connection())
+        .create(db)
         .await
-        .expect("a Project")
 }
 
 #[tokio::test]
@@ -835,9 +833,8 @@ async fn a_tier_change_reaches_the_webhook_task() {
         make_report(&project, project.repo_id)
             .commit_sha(sha)
             .body(&make_junit(&[("t", status)]))
-            .build(db.connection())
-            .await
-            .expect("a queued Report");
+            .create(&db)
+            .await;
     }
     let server = MockServer::start().await;
     Mock::given(method("POST"))

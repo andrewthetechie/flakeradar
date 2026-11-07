@@ -152,76 +152,42 @@ async fn projects_of(app: &Router, repo: &str) -> Vec<String> {
 }
 
 #[tokio::test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "the test walks one Project delete end to end, including what survives"
-)]
 async fn deleting_a_project_removes_only_its_own_rows() {
     let db = TestDb::new().await.expect("a test database");
     let project = make_project()
         .repo("acme/app")
         .project("backend")
-        .build(db.connection())
-        .await
-        .expect("the Project inserts");
+        .create(&db)
+        .await;
     let tests = [
-        make_test_case(&project)
-            .name("t0")
-            .build(db.connection())
-            .await
-            .expect("a Test"),
-        make_test_case(&project)
-            .name("t1")
-            .build(db.connection())
-            .await
-            .expect("a Test"),
+        make_test_case(&project).name("t0").create(&db).await,
+        make_test_case(&project).name("t1").create(&db).await,
     ];
-    let run = make_run(&project)
-        .commit_sha("sha0")
-        .build(db.connection())
-        .await
-        .expect("the Run inserts");
+    let run = make_run(&project).commit_sha("sha0").create(&db).await;
     make_execution(&tests[0], &run)
         .status("failed")
-        .build(db.connection())
-        .await
-        .expect("the Execution inserts");
+        .create(&db)
+        .await;
     make_execution(&tests[1], &run)
         .status("passed")
-        .build(db.connection())
-        .await
-        .expect("the Execution inserts");
+        .create(&db)
+        .await;
     make_report(&project, project.repo_id)
         .commit_sha("sha1")
-        .build(db.connection())
-        .await
-        .expect("the pending Report inserts");
+        .create(&db)
+        .await;
     let sibling = make_project()
         .repo("acme/app")
         .project("frontend")
-        .build(db.connection())
-        .await
-        .expect("the sibling Project inserts");
-    let sibling_test = make_test_case(&sibling)
-        .name("ui")
-        .build(db.connection())
-        .await
-        .expect("the sibling Test inserts");
+        .create(&db)
+        .await;
+    let sibling_test = make_test_case(&sibling).name("ui").create(&db).await;
     let pipeline_report = make_report(&project, project.repo_id)
         .kind("pipeline")
-        .build(db.connection())
-        .await
-        .expect("the pipeline Report inserts");
-    let pipeline = make_pipeline()
-        .repo("acme/app")
-        .build(db.connection())
-        .await
-        .expect("the Pipeline inserts");
-    let job = make_job(&pipeline)
-        .name("test")
-        .build(db.connection())
-        .await
-        .expect("the Job inserts");
+        .create(&db)
+        .await;
+    let pipeline = make_pipeline().repo("acme/app").create(&db).await;
+    let job = make_job(&pipeline).name("test").create(&db).await;
     let app = app_without_github(&db);
 
     let reply = delete(&app, "/api/repos/acme/app/projects/backend").await;
@@ -274,76 +240,39 @@ async fn deleting_a_repo_removes_everything_in_it() {
     let backend = make_project()
         .repo("acme/app")
         .project("backend")
-        .build(db.connection())
-        .await
-        .expect("the Project inserts");
+        .create(&db)
+        .await;
     let tests = [
-        make_test_case(&backend)
-            .name("t0")
-            .build(db.connection())
-            .await
-            .expect("a Test"),
-        make_test_case(&backend)
-            .name("t1")
-            .build(db.connection())
-            .await
-            .expect("a Test"),
+        make_test_case(&backend).name("t0").create(&db).await,
+        make_test_case(&backend).name("t1").create(&db).await,
     ];
     let runs = [
-        make_run(&backend)
-            .commit_sha("sha0")
-            .build(db.connection())
-            .await
-            .expect("a Run"),
-        make_run(&backend)
-            .commit_sha("sha1")
-            .build(db.connection())
-            .await
-            .expect("a Run"),
+        make_run(&backend).commit_sha("sha0").create(&db).await,
+        make_run(&backend).commit_sha("sha1").create(&db).await,
     ];
     for (index, run) in runs.iter().enumerate() {
         make_execution(&tests[index % 2], run)
             .status("failed")
-            .build(db.connection())
-            .await
-            .expect("the Execution inserts");
+            .create(&db)
+            .await;
     }
     let frontend = make_project()
         .repo("acme/app")
         .project("frontend")
-        .build(db.connection())
-        .await
-        .expect("the sibling Project inserts");
-    make_test_case(&frontend)
-        .name("ui")
-        .build(db.connection())
-        .await
-        .expect("the sibling Test inserts");
-    let pipeline = make_pipeline()
-        .repo("acme/app")
-        .build(db.connection())
-        .await
-        .expect("the Pipeline inserts");
-    let job = make_job(&pipeline)
-        .name("test")
-        .build(db.connection())
-        .await
-        .expect("the Job inserts");
-    make_job_execution(&job)
-        .status("failed")
-        .build(db.connection())
-        .await
-        .expect("the Job execution inserts");
+        .create(&db)
+        .await;
+    make_test_case(&frontend).name("ui").create(&db).await;
+    let pipeline = make_pipeline().repo("acme/app").create(&db).await;
+    let job = make_job(&pipeline).name("test").create(&db).await;
+    make_job_execution(&job).status("failed").create(&db).await;
     make_report(&backend, backend.repo_id)
         .commit_sha("sha1")
-        .build(db.connection())
-        .await
-        .expect("the pending Report inserts");
+        .create(&db)
+        .await;
     make_report(&backend, backend.repo_id)
         .kind("pipeline")
-        .build(db.connection())
-        .await
-        .expect("the pipeline Report inserts");
+        .create(&db)
+        .await;
     let app = app_without_github(&db);
 
     let reply = delete(&app, "/api/repos/acme/app").await;
@@ -378,25 +307,18 @@ async fn a_project_delete_reports_its_tests_issue_numbers_and_strands_no_job() {
     let project = make_project()
         .repo("acme/app")
         .project("backend")
-        .build(db.connection())
-        .await
-        .expect("the Project inserts");
+        .create(&db)
+        .await;
     make_test_case(&project)
         .name("t0")
         .github_issue_number(123)
-        .build(db.connection())
-        .await
-        .expect("the Test inserts");
-    let pipeline = make_pipeline()
-        .repo("acme/app")
-        .build(db.connection())
-        .await
-        .expect("the Pipeline inserts");
+        .create(&db)
+        .await;
+    let pipeline = make_pipeline().repo("acme/app").create(&db).await;
     let job = make_job(&pipeline)
         .github_issue_number(456)
-        .build(db.connection())
-        .await
-        .expect("the Job inserts");
+        .create(&db)
+        .await;
     let app = app_without_github(&db);
 
     let reply = delete(&app, "/api/repos/acme/app/projects/backend").await;
@@ -410,41 +332,28 @@ async fn a_repo_delete_reports_both_scopes_sorted_and_deduplicated() {
     let backend = make_project()
         .repo("acme/app")
         .project("backend")
-        .build(db.connection())
-        .await
-        .expect("the Project inserts");
+        .create(&db)
+        .await;
     make_test_case(&backend)
         .github_issue_number(123)
-        .build(db.connection())
-        .await
-        .expect("the Test inserts");
+        .create(&db)
+        .await;
     let frontend = make_project()
         .repo("acme/app")
         .project("frontend")
-        .build(db.connection())
-        .await
-        .expect("the sibling Project inserts");
+        .create(&db)
+        .await;
     make_test_case(&frontend)
         .name("ui")
         .github_issue_number(123)
-        .build(db.connection())
-        .await
-        .expect("the Test inserts");
-    make_test_case(&frontend)
-        .name("ui2")
-        .build(db.connection())
-        .await
-        .expect("the Test inserts");
-    let pipeline = make_pipeline()
-        .repo("acme/app")
-        .build(db.connection())
-        .await
-        .expect("the Pipeline inserts");
+        .create(&db)
+        .await;
+    make_test_case(&frontend).name("ui2").create(&db).await;
+    let pipeline = make_pipeline().repo("acme/app").create(&db).await;
     make_job(&pipeline)
         .github_issue_number(456)
-        .build(db.connection())
-        .await
-        .expect("the Job inserts");
+        .create(&db)
+        .await;
     let app = app_without_github(&db);
 
     let reply = delete(&app, "/api/repos/acme/app").await;
@@ -489,25 +398,18 @@ async fn seed_filed_issues(db: &TestDb) {
     let project = make_project()
         .repo("acme/app")
         .project("backend")
-        .build(db.connection())
-        .await
-        .expect("the Project inserts");
+        .create(db)
+        .await;
     let test = make_test_case(&project)
         .name("t0")
         .github_issue_number(123)
-        .build(db.connection())
-        .await
-        .expect("the Test inserts");
-    let pipeline = make_pipeline()
-        .repo("acme/app")
-        .build(db.connection())
-        .await
-        .expect("the Pipeline inserts");
+        .create(db)
+        .await;
+    let pipeline = make_pipeline().repo("acme/app").create(db).await;
     let job = make_job(&pipeline)
         .github_issue_number(456)
-        .build(db.connection())
-        .await
-        .expect("the Job inserts");
+        .create(db)
+        .await;
     for (table, id) in [("test_cases", test.id), ("jobs", job.id)] {
         db.connection()
             .execute_raw(Statement::from_sql_and_values(
@@ -646,21 +548,18 @@ async fn an_issue_a_human_linked_is_reported_but_never_closed() {
     let project = make_project()
         .repo("acme/app")
         .project("backend")
-        .build(db.connection())
-        .await
-        .expect("the Project inserts");
+        .create(&db)
+        .await;
     let filed = make_test_case(&project)
         .name("filed")
         .github_issue_number(123)
-        .build(db.connection())
-        .await
-        .expect("the filed Test inserts");
+        .create(&db)
+        .await;
     make_test_case(&project)
         .name("linked")
         .github_issue_number(124)
-        .build(db.connection())
-        .await
-        .expect("the linked Test inserts");
+        .create(&db)
+        .await;
     db.connection()
         .execute_raw(Statement::from_sql_and_values(
             DbBackend::Postgres,
@@ -724,9 +623,8 @@ async fn a_project_delete_refuses_a_name_the_identity_rules_refuse() {
     make_project()
         .repo("acme/app")
         .project("backend")
-        .build(db.connection())
-        .await
-        .expect("the Project inserts");
+        .create(&db)
+        .await;
     let app = app_without_github(&db);
 
     let refused = delete(&app, "/api/repos/acme/app%20name/projects/backend").await;
@@ -747,9 +645,8 @@ async fn the_admin_routes_need_the_token() {
     let project = make_project()
         .repo("acme/app")
         .project("backend")
-        .build(db.connection())
-        .await
-        .expect("the Project inserts");
+        .create(&db)
+        .await;
     let _ = project;
     let app = app_without_github(&db);
 
@@ -777,9 +674,8 @@ async fn unknown_names_are_404s_that_name_what_is_missing() {
     make_project()
         .repo("acme/app")
         .project("backend")
-        .build(db.connection())
-        .await
-        .expect("the Project inserts");
+        .create(&db)
+        .await;
     let app = app_without_github(&db);
 
     let missing_repo = delete(&app, "/api/repos/acme/none").await;
@@ -802,9 +698,8 @@ async fn malformed_names_are_refused_before_anything_is_deleted() {
     make_project()
         .repo("acme/app")
         .project("backend")
-        .build(db.connection())
-        .await
-        .expect("the Project inserts");
+        .create(&db)
+        .await;
     let app = app_without_github(&db);
 
     let bad_repo = delete(&app, "/api/repos/ac!me/app").await;
@@ -826,9 +721,8 @@ async fn the_names_are_normalized_before_the_lookup() {
     make_project()
         .repo("acme/app")
         .project("backend")
-        .build(db.connection())
-        .await
-        .expect("the Project inserts");
+        .create(&db)
+        .await;
     let app = app_without_github(&db);
 
     let reply = delete(&app, "/api/repos/ACME/App").await;
@@ -843,9 +737,8 @@ async fn a_deadlock_with_the_processor_is_a_retryable_503() {
     make_project()
         .repo("acme/app")
         .project("backend")
-        .build(db.connection())
-        .await
-        .expect("the Project inserts");
+        .create(&db)
+        .await;
     raise_on_delete(&db, "repos", "40P01").await;
     let app = app_without_github(&db);
 
@@ -866,9 +759,8 @@ async fn a_serialization_failure_is_the_same_retryable_503() {
     make_project()
         .repo("acme/app")
         .project("backend")
-        .build(db.connection())
-        .await
-        .expect("the Project inserts");
+        .create(&db)
+        .await;
     raise_on_delete(&db, "projects", "40001").await;
     let app = app_without_github(&db);
 
@@ -887,9 +779,8 @@ async fn any_other_database_error_is_a_500() {
         make_project()
             .repo("acme/app")
             .project("backend")
-            .build(db.connection())
-            .await
-            .expect("the Project inserts");
+            .create(&db)
+            .await;
         raise_on_delete(&db, table, "23503").await;
         let app = app_without_github(&db);
 
@@ -989,9 +880,8 @@ async fn a_deadlock_at_commit_is_the_same_retryable_503() {
         make_project()
             .repo("acme/app")
             .project("backend")
-            .build(db.connection())
-            .await
-            .expect("the Project inserts");
+            .create(&db)
+            .await;
         raise_on_commit(&db, table, sqlstate).await;
         let app = app_without_github(&db);
 
@@ -1017,9 +907,8 @@ async fn a_deadlock_at_commit_is_the_same_retryable_503() {
         make_project()
             .repo("acme/app")
             .project("backend")
-            .build(db.connection())
-            .await
-            .expect("the Project inserts");
+            .create(&db)
+            .await;
         raise_on_commit(&db, table, "23503").await;
         let app = app_without_github(&db);
 

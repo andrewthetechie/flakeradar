@@ -56,15 +56,13 @@ async fn one_test(db: &TestDb) -> flakeradar_db::entities::test_cases::Model {
     let project = make_project()
         .repo("acme/app")
         .project("default")
-        .build(db.connection())
-        .await
-        .expect("the Project inserts");
+        .create(db)
+        .await;
     make_test_case(&project)
         .name("test_total")
         .classname("tests.test_cart")
-        .build(db.connection())
+        .create(db)
         .await
-        .expect("the Test inserts")
 }
 
 /// A Job whose Pipeline is GitHub's, so a GitHub issue can be linked to it.
@@ -72,14 +70,9 @@ async fn one_job(db: &TestDb) -> flakeradar_db::entities::jobs::Model {
     let pipeline = make_pipeline()
         .repo("acme/app")
         .provider("github")
-        .build(db.connection())
-        .await
-        .expect("the Pipeline inserts");
-    make_job(&pipeline)
-        .name("unit")
-        .build(db.connection())
-        .await
-        .expect("the Job inserts")
+        .create(db)
+        .await;
+    make_job(&pipeline).name("unit").create(db).await
 }
 
 /// The link columns of one Job, with its exact check stamp.
@@ -526,27 +519,20 @@ async fn only_a_github_pipelines_job_can_link_an_issue() {
     let github = make_pipeline()
         .repo("acme/app")
         .provider("github")
-        .build(db.connection())
-        .await
-        .expect("the Pipeline inserts");
-    let job = make_job(&github)
-        .name("unit")
-        .build(db.connection())
-        .await
-        .expect("the Job inserts");
+        .create(&db)
+        .await;
+    let job = make_job(&github).name("unit").create(&db).await;
     let gitlab = make_pipeline()
         .repo("acme/app")
         .provider("gitlab")
         .name(".gitlab-ci.yml")
-        .build(db.connection())
-        .await
-        .expect("the Pipeline inserts");
+        .create(&db)
+        .await;
     let other = make_job(&gitlab)
         .name("deploy")
         .github_issue_number(3)
-        .build(db.connection())
-        .await
-        .expect("the Job inserts");
+        .create(&db)
+        .await;
     let app = app(&db, &[("FLAKERADAR_API_TOKEN", TOKEN)]);
 
     let linked = put(

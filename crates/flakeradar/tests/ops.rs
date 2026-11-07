@@ -249,15 +249,13 @@ async fn metrics_names_every_series_with_its_labels() {
     let failed = make_report(&project, project.repo_id)
         .commit_sha("failed")
         .status("failed")
-        .build(db.connection())
-        .await
-        .expect("a Report");
+        .create(&db)
+        .await;
     let processed = make_report(&project, project.repo_id)
         .commit_sha("done")
         .status("processed")
-        .build(db.connection())
-        .await
-        .expect("a Report");
+        .create(&db)
+        .await;
     db.connection()
         .execute_raw(Statement::from_sql_and_values(
             DbBackend::Postgres,
@@ -273,21 +271,16 @@ async fn metrics_names_every_series_with_its_labels() {
         make_test_case(&project)
             .name(name)
             .flakiness_score(score)
-            .build(db.connection())
-            .await
-            .expect("a Test");
+            .create(&db)
+            .await;
     }
-    let pipeline = make_pipeline()
-        .build(db.connection())
-        .await
-        .expect("a Pipeline");
+    let pipeline = make_pipeline().create(&db).await;
     for (name, score) in [("j_flaky", 0.4), ("j_stable", 0.0)] {
         make_job(&pipeline)
             .name(name)
             .flakiness_score(score)
-            .build(db.connection())
-            .await
-            .expect("a Job");
+            .create(&db)
+            .await;
     }
 
     let reply = get(&app_for(&db), "/metrics").await;
@@ -341,27 +334,19 @@ async fn metrics_tiers_classify_like_tier_for() {
     let db = TestDb::new().await.expect("a test database is available");
     let threshold: f64 = 0.30;
     let scores = [0.0, f64::from_bits(threshold.to_bits() - 1), threshold, 1.0];
-    let project = make_project()
-        .build(db.connection())
-        .await
-        .expect("a Project");
-    let pipeline = make_pipeline()
-        .build(db.connection())
-        .await
-        .expect("a Pipeline");
+    let project = make_project().create(&db).await;
+    let pipeline = make_pipeline().create(&db).await;
     for (index, score) in scores.iter().enumerate() {
         make_test_case(&project)
             .name(&format!("t{index}"))
             .flakiness_score(*score)
-            .build(db.connection())
-            .await
-            .expect("a Test");
+            .create(&db)
+            .await;
         make_job(&pipeline)
             .name(&format!("j{index}"))
             .flakiness_score(*score)
-            .build(db.connection())
-            .await
-            .expect("a Job");
+            .create(&db)
+            .await;
     }
     let expected = tier_counts(&scores, threshold);
 

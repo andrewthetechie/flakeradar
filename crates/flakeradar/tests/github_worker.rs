@@ -73,15 +73,13 @@ async fn flaky_test_in(db: &TestDb, project: &str) -> i32 {
     let project = make_project()
         .repo("acme/app")
         .project(project)
-        .build(db.connection())
-        .await
-        .expect("the Project inserts");
+        .create(db)
+        .await;
     let test = make_test_case(&project)
         .name("test_total")
         .flakiness_score(0.5)
-        .build(db.connection())
-        .await
-        .expect("the Test inserts");
+        .create(db)
+        .await;
     test.id
 }
 
@@ -90,15 +88,13 @@ async fn flaky_job(db: &TestDb) -> i32 {
     let pipeline = make_pipeline()
         .repo("acme/app")
         .provider("github")
-        .build(db.connection())
-        .await
-        .expect("the Pipeline inserts");
+        .create(db)
+        .await;
     make_job(&pipeline)
         .name("unit")
         .flakiness_score(0.5)
-        .build(db.connection())
+        .create(db)
         .await
-        .expect("the Job inserts")
         .id
 }
 
@@ -596,19 +592,13 @@ async fn linked_test(db: &TestDb, number: i32) -> i32 {
 
 /// A linked Test in the Repo `repo` at issue `number`, so a sync has work to do.
 async fn linked_test_in(db: &TestDb, repo: &str, number: i32) -> i32 {
-    let project = make_project()
-        .repo(repo)
-        .project("linked")
-        .build(db.connection())
-        .await
-        .expect("the Project inserts");
+    let project = make_project().repo(repo).project("linked").create(db).await;
     make_test_case(&project)
         .name("test_linked")
         .flakiness_score(0.5)
         .github_issue_number(number)
-        .build(db.connection())
+        .create(db)
         .await
-        .expect("the Test inserts")
         .id
 }
 
@@ -622,17 +612,15 @@ async fn noteable_test_in(db: &TestDb, repo: &str, number: i32, streak: i32) -> 
     let project = make_project()
         .repo(repo)
         .project("noteable")
-        .build(db.connection())
-        .await
-        .expect("the Project inserts");
+        .create(db)
+        .await;
     make_test_case(&project)
         .name("test_noteable")
         .flakiness_score(0.5)
         .clean_streak(streak)
         .github_issue_number(number)
-        .build(db.connection())
+        .create(db)
         .await
-        .expect("the Test inserts")
         .id
 }
 
@@ -785,9 +773,8 @@ async fn queue_flaky(db: &TestDb, project: &projects::Model, sha: &str) {
     make_report(project, project.repo_id)
         .commit_sha(sha)
         .body(&make_junit(&[("t", "failed"), ("t", "passed")]))
-        .build(db.connection())
-        .await
-        .expect("a queued Report");
+        .create(db)
+        .await;
 }
 
 /// The statuses of every Report, ordered by id.
@@ -1064,9 +1051,8 @@ async fn a_slow_github_call_does_not_block_processing() {
     let project = make_project()
         .repo("acme/app")
         .project("backend")
-        .build(db.connection())
-        .await
-        .expect("the Project inserts");
+        .create(&db)
+        .await;
     queue_flaky(&db, &project, "a").await;
 
     let (arrived, arrived_rx) = tokio::sync::oneshot::channel();
@@ -1861,9 +1847,8 @@ async fn a_sync_holds_no_row_lock_across_its_get() {
     make_report(&project, project.repo_id)
         .commit_sha("s1")
         .body(&make_junit(&[("test_linked", "failed")]))
-        .build(db.connection())
-        .await
-        .expect("a queued Report");
+        .create(&db)
+        .await;
     let outcome =
         flakeradar_db::processing::process_next(db.connection(), &ProcessingSettings::default())
             .await

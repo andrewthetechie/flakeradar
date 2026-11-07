@@ -1307,10 +1307,7 @@ async fn pipeline_ingest_answers_a_body_that_fails_while_it_is_read() {
 #[tokio::test]
 async fn a_reports_list_counts_only_the_rows_it_holds() {
     let db = TestDb::new().await.expect("a test database is available");
-    let project = make_project()
-        .build(db.connection())
-        .await
-        .expect("a Project");
+    let project = make_project().create(&db).await;
     reports::Entity::insert(
         flakeradar_db::NewJunitReport {
             project_id: project.id,

@@ -42,11 +42,7 @@ async fn an_invalid_repo_is_a_422() {
 #[tokio::test]
 async fn an_unknown_ci_run_is_a_404() {
     let db = TestDb::new().await.expect("a test database");
-    make_project()
-        .repo("acme/app")
-        .build(db.connection())
-        .await
-        .expect("the project");
+    make_project().repo("acme/app").create(&db).await;
     let reply = get(&app(&db, &[]), &url("100", "acme/app", "")).await;
     assert_eq!(reply.status, 404);
     assert_eq!(reply.json(), json!({"detail": "CI run not found"}));
@@ -55,17 +51,12 @@ async fn an_unknown_ci_run_is_a_404() {
 #[tokio::test]
 async fn an_unknown_attempt_is_a_404() {
     let db = TestDb::new().await.expect("a test database");
-    let project = make_project()
-        .repo("acme/app")
-        .build(db.connection())
-        .await
-        .expect("the project");
+    let project = make_project().repo("acme/app").create(&db).await;
     make_run(&project)
         .ci_run_id("100")
         .ci_run_attempt(1)
-        .build(db.connection())
-        .await
-        .expect("the run");
+        .create(&db)
+        .await;
     let reply = get(&app(&db, &[]), &url("100", "acme/app", "&ci_run_attempt=3")).await;
     assert_eq!(reply.status, 404);
     assert_eq!(reply.json(), json!({"detail": "CI run attempt not found"}));
@@ -74,27 +65,21 @@ async fn an_unknown_attempt_is_a_404() {
 #[tokio::test]
 async fn the_attempt_defaults_to_the_latest_including_a_pending_one() {
     let db = TestDb::new().await.expect("a test database");
-    let project = make_project()
-        .repo("acme/app")
-        .build(db.connection())
-        .await
-        .expect("the project");
+    let project = make_project().repo("acme/app").create(&db).await;
     make_report(&project, project.repo_id)
         .body(b"<x/>")
         .ci_run_id("100")
         .status("processed")
         .ci_run_attempt(1)
-        .build(db.connection())
-        .await
-        .expect("the processed report");
+        .create(&db)
+        .await;
     make_report(&project, project.repo_id)
         .body(b"<y/>")
         .ci_run_id("100")
         .status("pending")
         .ci_run_attempt(2)
-        .build(db.connection())
-        .await
-        .expect("the pending report");
+        .create(&db)
+        .await;
     let app = app(&db, &[]);
     let body = get(&app, &url("100", "acme/app", "")).await.json();
     assert_eq!(body["ci_run_attempt"], 2);
@@ -114,18 +99,13 @@ async fn the_attempt_defaults_to_the_latest_including_a_pending_one() {
 #[tokio::test]
 async fn a_null_attempt_counts_as_one() {
     let db = TestDb::new().await.expect("a test database");
-    let project = make_project()
-        .repo("acme/app")
-        .build(db.connection())
-        .await
-        .expect("the project");
+    let project = make_project().repo("acme/app").create(&db).await;
     make_report(&project, project.repo_id)
         .body(b"<x/>")
         .ci_run_id("100")
         .status("processed")
-        .build(db.connection())
-        .await
-        .expect("the report");
+        .create(&db)
+        .await;
     let body = get(&app(&db, &[]), &url("100", "acme/app", ""))
         .await
         .json();
@@ -136,27 +116,21 @@ async fn a_null_attempt_counts_as_one() {
 #[tokio::test]
 async fn pipeline_reports_are_counted() {
     let db = TestDb::new().await.expect("a test database");
-    let project = make_project()
-        .repo("acme/app")
-        .build(db.connection())
-        .await
-        .expect("the project");
+    let project = make_project().repo("acme/app").create(&db).await;
     make_report(&project, project.repo_id)
         .body(b"<x/>")
         .ci_run_id("1")
         .status("processed")
         .ci_run_attempt(1)
-        .build(db.connection())
-        .await
-        .expect("the junit report");
+        .create(&db)
+        .await;
     make_report(&project, project.repo_id)
         .kind("pipeline")
         .body(b"{}")
         .ci_run_id("1")
         .ci_run_attempt(1)
-        .build(db.connection())
-        .await
-        .expect("the pipeline report");
+        .create(&db)
+        .await;
     let body = get(&app(&db, &[]), &url("1", "acme/app", "")).await.json();
     assert_eq!(
         body["reports"],
@@ -169,20 +143,15 @@ async fn a_failed_report_is_counted_and_lists_no_failures() {
     // The summary action and Fabro read `reports.failed`; a Report kept after a
     // failed processing must be counted without inventing a failure entry.
     let db = TestDb::new().await.expect("a test database");
-    let project = make_project()
-        .repo("acme/app")
-        .build(db.connection())
-        .await
-        .expect("the project");
+    let project = make_project().repo("acme/app").create(&db).await;
     make_report(&project, project.repo_id)
         .body(b"<not xml")
         .ci_run_id("300")
         .ci_run_attempt(1)
         .status("failed")
         .error("Not a valid JUnit XML report")
-        .build(db.connection())
-        .await
-        .expect("the failed report");
+        .create(&db)
+        .await;
     let body = get(&app(&db, &[]), &url("300", "acme/app", ""))
         .await
         .json();
@@ -199,17 +168,12 @@ async fn a_failed_report_is_counted_and_lists_no_failures() {
 #[tokio::test]
 async fn a_run_is_found_after_its_reports_are_pruned() {
     let db = TestDb::new().await.expect("a test database");
-    let project = make_project()
-        .repo("acme/app")
-        .build(db.connection())
-        .await
-        .expect("the project");
+    let project = make_project().repo("acme/app").create(&db).await;
     make_run(&project)
         .ci_run_id("200")
         .ci_run_attempt(1)
-        .build(db.connection())
-        .await
-        .expect("the run");
+        .create(&db)
+        .await;
     let reply = get(&app(&db, &[]), &url("200", "acme/app", "")).await;
     assert_eq!(reply.status, 200);
     let body = reply.json();
@@ -226,22 +190,13 @@ async fn a_run_is_found_after_its_reports_are_pruned() {
 #[tokio::test]
 async fn a_run_is_found_by_a_job_execution() {
     let db = TestDb::new().await.expect("a test database");
-    let pipeline = make_pipeline()
-        .repo("acme/app")
-        .build(db.connection())
-        .await
-        .expect("the pipeline");
-    let job = make_job(&pipeline)
-        .name("backend")
-        .build(db.connection())
-        .await
-        .expect("the job");
+    let pipeline = make_pipeline().repo("acme/app").create(&db).await;
+    let job = make_job(&pipeline).name("backend").create(&db).await;
     make_job_execution(&job)
         .ci_run_id("300")
         .ci_run_attempt(2)
-        .build(db.connection())
-        .await
-        .expect("the execution");
+        .create(&db)
+        .await;
     let body = get(&app(&db, &[]), &url("300", "acme/app", ""))
         .await
         .json();
@@ -251,23 +206,14 @@ async fn a_run_is_found_by_a_job_execution() {
 #[tokio::test]
 async fn a_ci_run_id_is_scoped_to_its_repo() {
     let db = TestDb::new().await.expect("a test database");
-    let other = make_project()
-        .repo("other/repo")
-        .build(db.connection())
-        .await
-        .expect("the other project");
+    let other = make_project().repo("other/repo").create(&db).await;
     make_report(&other, other.repo_id)
         .body(b"<x/>")
         .ci_run_id("100")
         .status("processed")
-        .build(db.connection())
-        .await
-        .expect("the report");
-    make_project()
-        .repo("acme/app")
-        .build(db.connection())
-        .await
-        .expect("the project");
+        .create(&db)
+        .await;
+    make_project().repo("acme/app").create(&db).await;
     let reply = get(&app(&db, &[]), &url("100", "acme/app", "")).await;
     assert_eq!(reply.status, 404);
     assert_eq!(reply.json(), json!({"detail": "CI run not found"}));
@@ -297,17 +243,12 @@ async fn an_ingest_then_an_ask_sees_the_pending_report() {
 #[tokio::test]
 async fn the_top_level_fields_echo_the_request() {
     let db = TestDb::new().await.expect("a test database");
-    let project = make_project()
-        .repo("acme/app")
-        .build(db.connection())
-        .await
-        .expect("the project");
+    let project = make_project().repo("acme/app").create(&db).await;
     make_run(&project)
         .ci_run_id("100")
         .ci_run_attempt(1)
-        .build(db.connection())
-        .await
-        .expect("the run");
+        .create(&db)
+        .await;
     let body = get(&app(&db, &[]), &url("100", "ACME/App", ""))
         .await
         .json();
@@ -322,49 +263,30 @@ async fn each_attempt_lists_its_own_failures() {
     let project = make_project()
         .repo("acme/app")
         .project("backend")
-        .build(db.connection())
-        .await
-        .expect("the project");
-    let t1 = make_test_case(&project)
-        .name("t1")
-        .build(db.connection())
-        .await
-        .expect("t1");
-    let t2 = make_test_case(&project)
-        .name("t2")
-        .build(db.connection())
-        .await
-        .expect("t2");
+        .create(&db)
+        .await;
+    let t1 = make_test_case(&project).name("t1").create(&db).await;
+    let t2 = make_test_case(&project).name("t2").create(&db).await;
     let first = make_run(&project)
         .ci_run_id("100")
         .ci_run_attempt(1)
-        .build(db.connection())
-        .await
-        .expect("the first run");
+        .create(&db)
+        .await;
     make_execution(&t1, &first)
         .status("failed")
-        .build(db.connection())
-        .await
-        .expect("a failure");
-    make_execution(&t2, &first)
-        .build(db.connection())
-        .await
-        .expect("a pass");
+        .create(&db)
+        .await;
+    make_execution(&t2, &first).create(&db).await;
     let second = make_run(&project)
         .ci_run_id("100")
         .ci_run_attempt(2)
-        .build(db.connection())
-        .await
-        .expect("the second run");
-    make_execution(&t1, &second)
-        .build(db.connection())
-        .await
-        .expect("a pass");
+        .create(&db)
+        .await;
+    make_execution(&t1, &second).create(&db).await;
     make_execution(&t2, &second)
         .status("failed")
-        .build(db.connection())
-        .await
-        .expect("a failure");
+        .create(&db)
+        .await;
 
     let app = app(&db, &[]);
     let latest = get(&app, &url("100", "acme/app", "")).await.json();
@@ -382,9 +304,8 @@ async fn a_failure_entry_carries_every_field() {
     let project = make_project()
         .repo("acme/app")
         .project("backend")
-        .build(db.connection())
-        .await
-        .expect("the project");
+        .create(&db)
+        .await;
     let t1 = make_test_case(&project)
         .name("t1")
         .flakiness_score(0.5)
@@ -392,23 +313,20 @@ async fn a_failure_entry_carries_every_field() {
         .clean_streak(3)
         .quarantined()
         .github_issue_number(9)
-        .build(db.connection())
-        .await
-        .expect("the test");
+        .create(&db)
+        .await;
     let run = make_run(&project)
         .ci_run_id("100")
         .ci_run_attempt(1)
         .ci_job_id("J1")
-        .build(db.connection())
-        .await
-        .expect("the run");
+        .create(&db)
+        .await;
     make_execution(&t1, &run)
         .status("error")
         .message("boom")
         .failure_category("network")
-        .build(db.connection())
-        .await
-        .expect("the failure");
+        .create(&db)
+        .await;
 
     let body = get(&app(&db, &[]), &url("100", "acme/app", ""))
         .await
@@ -449,26 +367,19 @@ async fn a_failure_entry_marks_a_broken_test() {
     let project = make_project()
         .repo("acme/app")
         .project("backend")
-        .build(db.connection())
-        .await
-        .expect("the project");
+        .create(&db)
+        .await;
     let t1 = make_test_case(&project)
         .name("t1")
         .fail_streak(5)
-        .build(db.connection())
-        .await
-        .expect("the test");
+        .create(&db)
+        .await;
     let run = make_run(&project)
         .ci_run_id("100")
         .ci_run_attempt(1)
-        .build(db.connection())
-        .await
-        .expect("the run");
-    make_execution(&t1, &run)
-        .status("failed")
-        .build(db.connection())
-        .await
-        .expect("the failure");
+        .create(&db)
+        .await;
+    make_execution(&t1, &run).status("failed").create(&db).await;
     let body = get(&app(&db, &[]), &url("100", "acme/app", ""))
         .await
         .json();
@@ -482,60 +393,36 @@ async fn retries_inside_one_run_are_one_entry() {
     let project = make_project()
         .repo("acme/app")
         .project("backend")
-        .build(db.connection())
-        .await
-        .expect("the project");
-    let t1 = make_test_case(&project)
-        .name("t1")
-        .build(db.connection())
-        .await
-        .expect("t1");
-    let t2 = make_test_case(&project)
-        .name("t2")
-        .build(db.connection())
-        .await
-        .expect("t2");
-    let t3 = make_test_case(&project)
-        .name("t3")
-        .build(db.connection())
-        .await
-        .expect("t3");
+        .create(&db)
+        .await;
+    let t1 = make_test_case(&project).name("t1").create(&db).await;
+    let t2 = make_test_case(&project).name("t2").create(&db).await;
+    let t3 = make_test_case(&project).name("t3").create(&db).await;
     let run = make_run(&project)
         .ci_run_id("100")
         .ci_run_attempt(1)
-        .build(db.connection())
-        .await
-        .expect("the run");
+        .create(&db)
+        .await;
     make_execution(&t1, &run)
         .status("failed")
         .message("first")
         .failure_category("timing")
-        .build(db.connection())
-        .await
-        .expect("t1 first attempt");
-    make_execution(&t1, &run)
-        .attempt(1)
-        .build(db.connection())
-        .await
-        .expect("t1 retry");
+        .create(&db)
+        .await;
+    make_execution(&t1, &run).attempt(1).create(&db).await;
     make_execution(&t2, &run)
         .status("failed")
         .message("a")
-        .build(db.connection())
-        .await
-        .expect("t2 first attempt");
+        .create(&db)
+        .await;
     make_execution(&t2, &run)
         .status("failed")
         .message("b")
         .attempt(1)
         .failure_category("assertion")
-        .build(db.connection())
-        .await
-        .expect("t2 retry");
-    make_execution(&t3, &run)
-        .build(db.connection())
-        .await
-        .expect("t3");
+        .create(&db)
+        .await;
+    make_execution(&t3, &run).create(&db).await;
 
     let body = get(&app(&db, &[]), &url("100", "acme/app", ""))
         .await
@@ -568,38 +455,29 @@ async fn the_same_test_in_two_runs_is_two_entries() {
     let project = make_project()
         .repo("acme/app")
         .project("backend")
-        .build(db.connection())
-        .await
-        .expect("the project");
-    let t1 = make_test_case(&project)
-        .name("t1")
-        .build(db.connection())
-        .await
-        .expect("the test");
+        .create(&db)
+        .await;
+    let t1 = make_test_case(&project).name("t1").create(&db).await;
     let run_a = make_run(&project)
         .ci_run_id("100")
         .ci_run_attempt(1)
         .ci_job_id("A")
-        .build(db.connection())
-        .await
-        .expect("the first run");
+        .create(&db)
+        .await;
     let run_b = make_run(&project)
         .ci_run_id("100")
         .ci_run_attempt(1)
         .ci_job_id("B")
-        .build(db.connection())
-        .await
-        .expect("the second run");
+        .create(&db)
+        .await;
     make_execution(&t1, &run_a)
         .status("failed")
-        .build(db.connection())
-        .await
-        .expect("the first failure");
+        .create(&db)
+        .await;
     make_execution(&t1, &run_b)
         .status("failed")
-        .build(db.connection())
-        .await
-        .expect("the second failure");
+        .create(&db)
+        .await;
     let body = get(&app(&db, &[]), &url("100", "acme/app", ""))
         .await
         .json();
@@ -625,34 +503,20 @@ async fn skipped_and_passing_tests_are_not_listed() {
     let project = make_project()
         .repo("acme/app")
         .project("backend")
-        .build(db.connection())
-        .await
-        .expect("the project");
-    let t1 = make_test_case(&project)
-        .name("t1")
-        .build(db.connection())
-        .await
-        .expect("t1");
-    let t2 = make_test_case(&project)
-        .name("t2")
-        .build(db.connection())
-        .await
-        .expect("t2");
+        .create(&db)
+        .await;
+    let t1 = make_test_case(&project).name("t1").create(&db).await;
+    let t2 = make_test_case(&project).name("t2").create(&db).await;
     let run = make_run(&project)
         .ci_run_id("100")
         .ci_run_attempt(1)
-        .build(db.connection())
-        .await
-        .expect("the run");
-    make_execution(&t1, &run)
-        .build(db.connection())
-        .await
-        .expect("a pass");
+        .create(&db)
+        .await;
+    make_execution(&t1, &run).create(&db).await;
     make_execution(&t2, &run)
         .status("skipped")
-        .build(db.connection())
-        .await
-        .expect("a skip");
+        .create(&db)
+        .await;
     let body = get(&app(&db, &[]), &url("100", "acme/app", ""))
         .await
         .json();
@@ -666,26 +530,19 @@ async fn a_message_is_capped_at_one_thousand_and_twenty_four_characters() {
     let project = make_project()
         .repo("acme/app")
         .project("backend")
-        .build(db.connection())
-        .await
-        .expect("the project");
-    let t1 = make_test_case(&project)
-        .name("t1")
-        .build(db.connection())
-        .await
-        .expect("the test");
+        .create(&db)
+        .await;
+    let t1 = make_test_case(&project).name("t1").create(&db).await;
     let run = make_run(&project)
         .ci_run_id("100")
         .ci_run_attempt(1)
-        .build(db.connection())
-        .await
-        .expect("the run");
+        .create(&db)
+        .await;
     make_execution(&t1, &run)
         .status("failed")
         .message(&"x".repeat(5000))
-        .build(db.connection())
-        .await
-        .expect("the failure");
+        .create(&db)
+        .await;
     let body = get(&app(&db, &[]), &url("100", "acme/app", ""))
         .await
         .json();
@@ -704,45 +561,38 @@ async fn failures_are_ordered_by_project_then_identity() {
     let api = make_project()
         .repo("acme/app")
         .project("api")
-        .build(db.connection())
-        .await
-        .expect("the api project");
+        .create(&db)
+        .await;
     let backend = make_project()
         .repo("acme/app")
         .project("backend")
-        .build(db.connection())
-        .await
-        .expect("the backend project");
+        .create(&db)
+        .await;
     let z = make_test_case(&backend)
         .name("z")
         .classname("tests.b")
-        .build(db.connection())
-        .await
-        .expect("z");
+        .create(&db)
+        .await;
     let y = make_test_case(&backend)
         .name("y")
         .classname("tests.a")
-        .build(db.connection())
-        .await
-        .expect("y");
+        .create(&db)
+        .await;
     let x = make_test_case(&api)
         .name("x")
         .classname("tests.a")
-        .build(db.connection())
-        .await
-        .expect("x");
+        .create(&db)
+        .await;
     let run = make_run(&api)
         .ci_run_id("100")
         .ci_run_attempt(1)
-        .build(db.connection())
-        .await
-        .expect("the run");
+        .create(&db)
+        .await;
     for test in [&z, &y, &x] {
         make_execution(test, &run)
             .status("failed")
-            .build(db.connection())
-            .await
-            .expect("a failure");
+            .create(&db)
+            .await;
     }
     let body = get(&app(&db, &[]), &url("100", "acme/app", ""))
         .await
@@ -767,35 +617,24 @@ async fn other_ci_runs_are_ignored() {
     let project = make_project()
         .repo("acme/app")
         .project("backend")
-        .build(db.connection())
-        .await
-        .expect("the project");
-    let t1 = make_test_case(&project)
-        .name("t1")
-        .build(db.connection())
-        .await
-        .expect("the test");
+        .create(&db)
+        .await;
+    let t1 = make_test_case(&project).name("t1").create(&db).await;
     let other = make_run(&project)
         .ci_run_id("999")
         .ci_run_attempt(1)
-        .build(db.connection())
-        .await
-        .expect("the other run");
+        .create(&db)
+        .await;
     make_execution(&t1, &other)
         .status("failed")
-        .build(db.connection())
-        .await
-        .expect("the other failure");
+        .create(&db)
+        .await;
     let this = make_run(&project)
         .ci_run_id("100")
         .ci_run_attempt(1)
-        .build(db.connection())
-        .await
-        .expect("this run");
-    make_execution(&t1, &this)
-        .build(db.connection())
-        .await
-        .expect("a pass");
+        .create(&db)
+        .await;
+    make_execution(&t1, &this).create(&db).await;
     let body = get(&app(&db, &[]), &url("100", "acme/app", ""))
         .await
         .json();
@@ -808,29 +647,12 @@ async fn failed_jobs_are_explained_or_unexplained() {
     let project = make_project()
         .repo("acme/app")
         .project("backend")
-        .build(db.connection())
-        .await
-        .expect("the project");
-    let pipeline = make_pipeline()
-        .repo("acme/app")
-        .build(db.connection())
-        .await
-        .expect("the pipeline");
-    let backend = make_job(&pipeline)
-        .name("backend")
-        .build(db.connection())
-        .await
-        .expect("the backend job");
-    let e2e = make_job(&pipeline)
-        .name("e2e")
-        .build(db.connection())
-        .await
-        .expect("the e2e job");
-    let lint = make_job(&pipeline)
-        .name("lint")
-        .build(db.connection())
-        .await
-        .expect("the lint job");
+        .create(&db)
+        .await;
+    let pipeline = make_pipeline().repo("acme/app").create(&db).await;
+    let backend = make_job(&pipeline).name("backend").create(&db).await;
+    let e2e = make_job(&pipeline).name("e2e").create(&db).await;
+    let lint = make_job(&pipeline).name("lint").create(&db).await;
     for (job, status, ci_job_id) in [
         (&backend, "failed", "J-B"),
         (&e2e, "failed", "J-E"),
@@ -840,27 +662,17 @@ async fn failed_jobs_are_explained_or_unexplained() {
             .status(status)
             .ci_job_id(ci_job_id)
             .ci_run_id("100")
-            .build(db.connection())
-            .await
-            .expect("a job execution");
+            .create(&db)
+            .await;
     }
-    let t1 = make_test_case(&project)
-        .name("t1")
-        .build(db.connection())
-        .await
-        .expect("the test");
+    let t1 = make_test_case(&project).name("t1").create(&db).await;
     let run = make_run(&project)
         .ci_run_id("100")
         .ci_run_attempt(1)
         .ci_job_id("J-B")
-        .build(db.connection())
-        .await
-        .expect("the run");
-    make_execution(&t1, &run)
-        .status("failed")
-        .build(db.connection())
-        .await
-        .expect("the failure");
+        .create(&db)
+        .await;
+    make_execution(&t1, &run).status("failed").create(&db).await;
     let body = get(&app(&db, &[]), &url("100", "acme/app", ""))
         .await
         .json();
@@ -882,23 +694,14 @@ async fn failed_jobs_are_explained_or_unexplained() {
 #[tokio::test]
 async fn a_red_run_without_failing_tests_still_lists_its_jobs() {
     let db = TestDb::new().await.expect("a test database");
-    let pipeline = make_pipeline()
-        .repo("acme/app")
-        .build(db.connection())
-        .await
-        .expect("the pipeline");
-    let e2e = make_job(&pipeline)
-        .name("e2e")
-        .build(db.connection())
-        .await
-        .expect("the job");
+    let pipeline = make_pipeline().repo("acme/app").create(&db).await;
+    let e2e = make_job(&pipeline).name("e2e").create(&db).await;
     make_job_execution(&e2e)
         .status("failed")
         .ci_job_id("J-E")
         .ci_run_id("100")
-        .build(db.connection())
-        .await
-        .expect("the failure");
+        .create(&db)
+        .await;
     let body = get(&app(&db, &[]), &url("100", "acme/app", ""))
         .await
         .json();
@@ -914,28 +717,22 @@ async fn a_red_run_without_failing_tests_still_lists_its_jobs() {
 #[tokio::test]
 async fn a_failed_job_carries_every_field() {
     let db = TestDb::new().await.expect("a test database");
-    let pipeline = make_pipeline()
-        .repo("acme/app")
-        .build(db.connection())
-        .await
-        .expect("the pipeline");
+    let pipeline = make_pipeline().repo("acme/app").create(&db).await;
     let job = make_job(&pipeline)
         .name("e2e")
         .flakiness_score(0.1)
         .confirmed_flake_count(1)
         .clean_streak(2)
         .github_issue_number(4)
-        .build(db.connection())
-        .await
-        .expect("the job");
+        .create(&db)
+        .await;
     make_job_execution(&job)
         .status("failed")
         .ci_job_id("J-E")
         .ci_run_id("100")
         .url("https://ci/1")
-        .build(db.connection())
-        .await
-        .expect("the failure");
+        .create(&db)
+        .await;
     let body = get(&app(&db, &[]), &url("100", "acme/app", ""))
         .await
         .json();
@@ -966,57 +763,45 @@ async fn a_summary_job_is_explained_by_a_failed_sibling() {
     let project = make_project()
         .repo("acme/app")
         .project("backend")
-        .build(db.connection())
-        .await
-        .expect("the project");
+        .create(&db)
+        .await;
     let pipeline = make_pipeline()
         .repo("acme/app")
         .name(".github/workflows/playwright.yml")
-        .build(db.connection())
-        .await
-        .expect("the pipeline");
+        .create(&db)
+        .await;
     let tests = make_job(&pipeline)
         .name("test-playwright")
-        .build(db.connection())
-        .await
-        .expect("the tests job");
+        .create(&db)
+        .await;
     let summary = make_job(&pipeline)
         .name("alls-green-playwright")
         .summary(true)
-        .build(db.connection())
-        .await
-        .expect("the summary job");
+        .create(&db)
+        .await;
     make_job_execution(&tests)
         .status("failed")
         .ci_job_id("J-T")
         .ci_run_id("38973797537")
-        .build(db.connection())
-        .await
-        .expect("the tests failure");
+        .create(&db)
+        .await;
     make_job_execution(&summary)
         .status("failed")
         .ci_job_id("J-G")
         .ci_run_id("38973797537")
-        .build(db.connection())
-        .await
-        .expect("the summary failure");
+        .create(&db)
+        .await;
     let t1 = make_test_case(&project)
         .name("Squad screen controls renders stat tile values unbroken")
-        .build(db.connection())
-        .await
-        .expect("the test");
+        .create(&db)
+        .await;
     let run = make_run(&project)
         .ci_run_id("38973797537")
         .ci_run_attempt(1)
         .ci_job_id("J-T")
-        .build(db.connection())
-        .await
-        .expect("the run");
-    make_execution(&t1, &run)
-        .status("failed")
-        .build(db.connection())
-        .await
-        .expect("the failure");
+        .create(&db)
+        .await;
+    make_execution(&t1, &run).status("failed").create(&db).await;
 
     let body = get(&app(&db, &[]), &url("38973797537", "acme/app", ""))
         .await
@@ -1049,36 +834,25 @@ async fn a_summary_job_is_explained_by_a_failed_sibling() {
 #[tokio::test]
 async fn a_summary_job_alone_is_unexplained() {
     let db = TestDb::new().await.expect("a test database");
-    let pipeline = make_pipeline()
-        .repo("acme/app")
-        .build(db.connection())
-        .await
-        .expect("the pipeline");
+    let pipeline = make_pipeline().repo("acme/app").create(&db).await;
     let summary = make_job(&pipeline)
         .name("alls-green")
         .summary(true)
-        .build(db.connection())
-        .await
-        .expect("the summary job");
+        .create(&db)
+        .await;
     make_job_execution(&summary)
         .status("failed")
         .ci_job_id("J-G")
         .ci_run_id("100")
-        .build(db.connection())
-        .await
-        .expect("the summary failure");
-    let lint = make_job(&pipeline)
-        .name("lint")
-        .build(db.connection())
-        .await
-        .expect("the lint job");
+        .create(&db)
+        .await;
+    let lint = make_job(&pipeline).name("lint").create(&db).await;
     make_job_execution(&lint)
         .status("passed")
         .ci_job_id("J-L")
         .ci_run_id("100")
-        .build(db.connection())
-        .await
-        .expect("the lint pass");
+        .create(&db)
+        .await;
     let body = get(&app(&db, &[]), &url("100", "acme/app", ""))
         .await
         .json();
@@ -1110,22 +884,19 @@ async fn a_non_github_job_has_no_issue_url() {
         .repo("acme/app")
         .name("ci.yml")
         .provider("gitlab")
-        .build(db.connection())
-        .await
-        .expect("the pipeline");
+        .create(&db)
+        .await;
     let job = make_job(&pipeline)
         .name("e2e")
         .github_issue_number(4)
-        .build(db.connection())
-        .await
-        .expect("the job");
+        .create(&db)
+        .await;
     make_job_execution(&job)
         .status("failed")
         .ci_job_id("J-E")
         .ci_run_id("100")
-        .build(db.connection())
-        .await
-        .expect("the failure");
+        .create(&db)
+        .await;
     let body = get(&app(&db, &[]), &url("100", "acme/app", ""))
         .await
         .json();
@@ -1136,32 +907,22 @@ async fn a_non_github_job_has_no_issue_url() {
 #[tokio::test]
 async fn failed_jobs_of_another_attempt_are_ignored() {
     let db = TestDb::new().await.expect("a test database");
-    let pipeline = make_pipeline()
-        .repo("acme/app")
-        .build(db.connection())
-        .await
-        .expect("the pipeline");
-    let e2e = make_job(&pipeline)
-        .name("e2e")
-        .build(db.connection())
-        .await
-        .expect("the job");
+    let pipeline = make_pipeline().repo("acme/app").create(&db).await;
+    let e2e = make_job(&pipeline).name("e2e").create(&db).await;
     make_job_execution(&e2e)
         .status("failed")
         .ci_job_id("J-1")
         .ci_run_id("100")
         .ci_run_attempt(1)
-        .build(db.connection())
-        .await
-        .expect("the first attempt");
+        .create(&db)
+        .await;
     make_job_execution(&e2e)
         .status("passed")
         .ci_job_id("J-2")
         .ci_run_id("100")
         .ci_run_attempt(2)
-        .build(db.connection())
-        .await
-        .expect("the second attempt");
+        .create(&db)
+        .await;
     let app = app(&db, &[]);
     let latest = get(&app, &url("100", "acme/app", "")).await.json();
     assert_eq!(latest["failed_jobs"], json!([]));

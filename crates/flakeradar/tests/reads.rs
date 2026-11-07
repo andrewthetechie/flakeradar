@@ -333,20 +333,17 @@ async fn the_broken_filter_lists_broken_stable_tests() {
     let project = make_project()
         .repo("andrewthetechie/writers-app")
         .project("backend")
-        .build(db.connection())
-        .await
-        .expect("the project");
+        .create(&db)
+        .await;
     make_test_case(&project)
         .name("test_broken")
         .fail_streak(5)
-        .build(db.connection())
-        .await
-        .expect("the broken test");
+        .create(&db)
+        .await;
     make_test_case(&project)
         .name("test_passing")
-        .build(db.connection())
-        .await
-        .expect("the passing test");
+        .create(&db)
+        .await;
 
     let app = app(&db, &[]);
     let default = get(&app, "/api/tests?repo=andrewthetechie/writers-app")
@@ -371,15 +368,13 @@ async fn the_broken_filter_lists_nothing_when_detection_is_disabled() {
     let project = make_project()
         .repo("andrewthetechie/writers-app")
         .project("backend")
-        .build(db.connection())
-        .await
-        .expect("the project");
+        .create(&db)
+        .await;
     make_test_case(&project)
         .name("test_broken")
         .fail_streak(5)
-        .build(db.connection())
-        .await
-        .expect("the broken test");
+        .create(&db)
+        .await;
     let broken = get(
         &app(&db, &[("FLAKERADAR_BROKEN_STREAK", "0")]),
         "/api/tests?repo=andrewthetechie/writers-app&broken=true",
@@ -429,43 +424,37 @@ async fn the_summary_sums_the_last_thirty_days_in_scope() {
     let backend = make_project()
         .repo("acme/app")
         .project("backend")
-        .build(db.connection())
-        .await
-        .expect("the backend project");
+        .create(&db)
+        .await;
     let elsewhere = make_project()
         .repo("acme/other")
         .project("backend")
-        .build(db.connection())
-        .await
-        .expect("the other project");
+        .create(&db)
+        .await;
     let test = make_test_case(&backend)
         .name("test_flaky")
         .flakiness_score(0.6)
-        .build(db.connection())
-        .await
-        .expect("the test");
+        .create(&db)
+        .await;
     let other = make_test_case(&elsewhere)
         .name("test_elsewhere")
         .flakiness_score(0.6)
-        .build(db.connection())
-        .await
-        .expect("the other test");
+        .create(&db)
+        .await;
     for (entity, days, executions, failures) in
         [(&test, 0, 10, 2), (&test, 3, 5, 1), (&test, 31, 100, 50)]
     {
         make_test_score(entity, day(days), 0.6)
             .executions(executions)
             .failures(failures)
-            .build(db.connection())
-            .await
-            .expect("a score row");
+            .create(&db)
+            .await;
     }
     make_test_score(&other, day(0), 0.6)
         .executions(7)
         .failures(7)
-        .build(db.connection())
-        .await
-        .expect("the other score row");
+        .create(&db)
+        .await;
 
     let app = app(&db, &[]);
     let everything = get(&app, "/api/summary").await.json();
@@ -485,21 +474,18 @@ async fn new_flaky_seven_days_counts_a_test_with_no_old_history() {
     let backend = make_project()
         .repo("acme/app")
         .project("backend")
-        .build(db.connection())
-        .await
-        .expect("the backend project");
+        .create(&db)
+        .await;
     let frontend = make_project()
         .repo("acme/app")
         .project("frontend")
-        .build(db.connection())
-        .await
-        .expect("the frontend project");
+        .create(&db)
+        .await;
     let other = make_project()
         .repo("acme/other")
         .project("backend")
-        .build(db.connection())
-        .await
-        .expect("the other project");
+        .create(&db)
+        .await;
     let mut made = Vec::new();
     for name in [
         "crossed",
@@ -514,29 +500,25 @@ async fn new_flaky_seven_days_counts_a_test_with_no_old_history() {
             make_test_case(&backend)
                 .name(name)
                 .flakiness_score(0.6)
-                .build(db.connection())
-                .await
-                .expect("a flaky test"),
+                .create(&db)
+                .await,
         );
     }
     make_test_case(&backend)
         .name("suspect")
         .flakiness_score(0.1)
-        .build(db.connection())
-        .await
-        .expect("the suspect test");
+        .create(&db)
+        .await;
     make_test_case(&frontend)
         .name("fresh")
         .flakiness_score(0.6)
-        .build(db.connection())
-        .await
-        .expect("the fresh test");
+        .create(&db)
+        .await;
     make_test_case(&other)
         .name("elsewhere")
         .flakiness_score(0.6)
-        .build(db.connection())
-        .await
-        .expect("the other test");
+        .create(&db)
+        .await;
     let crossed = &made[0];
     let at_threshold = &made[1];
     let old_flaky = &made[2];
@@ -556,10 +538,7 @@ async fn new_flaky_seven_days_counts_a_test_with_no_old_history() {
         (newest_old_high, 25, 0.1),
         (newest_old_high, 10, 0.6),
     ] {
-        make_test_score(entity, day(days), score)
-            .build(db.connection())
-            .await
-            .expect("a score row");
+        make_test_score(entity, day(days), score).create(&db).await;
     }
 
     let app = app(&db, &[]);
@@ -584,9 +563,8 @@ async fn the_category_filter_and_the_counts_agree() {
     let project = make_project()
         .repo("acme/app")
         .project("backend")
-        .build(db.connection())
-        .await
-        .expect("the project");
+        .create(&db)
+        .await;
     for (name, score, category) in [
         ("A", 0.8, "timing"),
         ("B", 0.2, "network"),
@@ -597,9 +575,8 @@ async fn the_category_filter_and_the_counts_agree() {
             .name(name)
             .flakiness_score(score)
             .failure_category(category)
-            .build(db.connection())
-            .await
-            .expect("a test");
+            .create(&db)
+            .await;
     }
 
     let app = app(&db, &[]);
@@ -629,29 +606,20 @@ async fn the_trend_comes_from_the_score_history() {
     let project = make_project()
         .repo("acme/app")
         .project("backend")
-        .build(db.connection())
-        .await
-        .expect("the project");
+        .create(&db)
+        .await;
     let a = make_test_case(&project)
         .name("A")
         .flakiness_score(0.5)
-        .build(db.connection())
-        .await
-        .expect("the first test");
+        .create(&db)
+        .await;
     let b = make_test_case(&project)
         .name("B")
         .flakiness_score(0.5)
-        .build(db.connection())
-        .await
-        .expect("the second test");
-    make_test_score(&a, day(20), 0.1)
-        .build(db.connection())
-        .await
-        .expect("the old row");
-    make_test_score(&b, day(3), 0.5)
-        .build(db.connection())
-        .await
-        .expect("the recent row");
+        .create(&db)
+        .await;
+    make_test_score(&a, day(20), 0.1).create(&db).await;
+    make_test_score(&b, day(3), 0.5).create(&db).await;
 
     let page = get(&app(&db, &[]), "/api/tests?repo=acme/app").await.json();
     let by_name: std::collections::BTreeMap<String, Value> = page["items"]
@@ -676,49 +644,40 @@ async fn new_within_days_filters_before_paging() {
     let project = make_project()
         .repo("acme/app")
         .project("backend")
-        .build(db.connection())
-        .await
-        .expect("the project");
+        .create(&db)
+        .await;
     let crossed = make_test_case(&project)
         .name("crossed")
         .flakiness_score(0.6)
-        .build(db.connection())
-        .await
-        .expect("crossed");
+        .create(&db)
+        .await;
     let old_flaky = make_test_case(&project)
         .name("old_flaky")
         .flakiness_score(0.6)
-        .build(db.connection())
-        .await
-        .expect("old_flaky");
+        .create(&db)
+        .await;
     let brand_new = make_test_case(&project)
         .name("brand_new")
         .flakiness_score(0.6)
-        .build(db.connection())
-        .await
-        .expect("brand_new");
+        .create(&db)
+        .await;
     make_test_case(&project)
         .name("no_history")
         .flakiness_score(0.6)
-        .build(db.connection())
-        .await
-        .expect("no_history");
+        .create(&db)
+        .await;
     make_test_case(&project)
         .name("suspect")
         .flakiness_score(0.1)
-        .build(db.connection())
-        .await
-        .expect("suspect");
+        .create(&db)
+        .await;
     for (entity, days, score) in [
         (&crossed, 20, 0.1),
         (&crossed, 3, 0.6),
         (&old_flaky, 30, 0.6),
         (&brand_new, 1, 0.6),
     ] {
-        make_test_score(entity, day(days), score)
-            .build(db.connection())
-            .await
-            .expect("a score row");
+        make_test_score(entity, day(days), score).create(&db).await;
     }
 
     let app = app(&db, &[]);
@@ -830,35 +789,27 @@ async fn seed_quarantine(db: &TestDb) {
     let project = make_project()
         .repo("acme/app")
         .project("backend")
-        .build(db.connection())
-        .await
-        .expect("the project");
+        .create(db)
+        .await;
     make_test_case(&project)
         .name("quarantined_stable")
         .quarantined()
         .github_issue_number(3)
-        .build(db.connection())
-        .await
-        .expect("the quarantined stable test");
-    make_test_case(&project)
-        .name("stable")
-        .build(db.connection())
-        .await
-        .expect("the stable test");
+        .create(db)
+        .await;
+    make_test_case(&project).name("stable").create(db).await;
     make_test_case(&project)
         .name("quarantined_flaky")
         .flakiness_score(0.8)
         .quarantined()
-        .build(db.connection())
-        .await
-        .expect("the quarantined flaky test");
+        .create(db)
+        .await;
     make_test_case(&project)
         .name("flaky")
         .flakiness_score(0.6)
         .github_issue_number(4)
-        .build(db.connection())
-        .await
-        .expect("the flaky test");
+        .create(db)
+        .await;
 }
 
 #[tokio::test]
@@ -938,9 +889,8 @@ async fn q_composes_with_a_category_and_keeps_a_stable_match() {
     let project = make_project()
         .repo("acme/app")
         .project("backend")
-        .build(db.connection())
-        .await
-        .expect("the project");
+        .create(&db)
+        .await;
     // No classname carries a "d", so q=D can only hit a name.
     for (name, score, category) in [
         ("A", 0.8, "timing"),
@@ -953,9 +903,8 @@ async fn q_composes_with_a_category_and_keeps_a_stable_match() {
             .classname("grp")
             .flakiness_score(score)
             .failure_category(category)
-            .build(db.connection())
-            .await
-            .expect("a test");
+            .create(&db)
+            .await;
     }
     let page = get(
         &app(&db, &[]),
@@ -973,9 +922,8 @@ async fn seed_detail(db: &TestDb, file: Option<&str>, line: Option<i32>, root: &
         .repo("andrewthetechie/writers-app")
         .project("frontend")
         .root(root)
-        .build(db.connection())
-        .await
-        .expect("the project");
+        .create(db)
+        .await;
     let mut builder = make_test_case(&project)
         .name("renders")
         .classname("src/app.test.ts")
@@ -988,34 +936,30 @@ async fn seed_detail(db: &TestDb, file: Option<&str>, line: Option<i32>, root: &
     if let Some(line) = line {
         builder = builder.line(line);
     }
-    let test = builder.build(db.connection()).await.expect("the test");
+    let test = builder.create(db).await;
     let failing = make_run(&project)
         .commit_sha("aaa111")
         .ci_run_id("1")
-        .build(db.connection())
-        .await
-        .expect("the failing run");
+        .create(db)
+        .await;
     make_execution(&test, &failing)
         .status("failed")
         .message("expected 3")
         .details("Traceback\n  at src/app.test.ts:14")
         .failure_category("assertion")
-        .build(db.connection())
-        .await
-        .expect("the failing execution");
+        .create(db)
+        .await;
     let passing = make_run(&project)
         .commit_sha("bbb222")
         .branch("feat")
         .ci_run_id("2")
-        .build(db.connection())
-        .await
-        .expect("the passing run");
+        .create(db)
+        .await;
     make_execution(&test, &passing)
         .status("passed")
         .attempt(1)
-        .build(db.connection())
-        .await
-        .expect("the passing execution");
+        .create(db)
+        .await;
     test.id
 }
 
@@ -1103,24 +1047,14 @@ async fn no_file_means_no_location() {
 #[tokio::test]
 async fn a_test_that_never_failed_has_a_path_but_no_url() {
     let db = TestDb::new().await.expect("a test database");
-    let project = make_project()
-        .build(db.connection())
-        .await
-        .expect("project");
+    let project = make_project().create(&db).await;
     let test = make_test_case(&project)
         .file("tests/test_a.py")
         .line(3)
-        .build(db.connection())
-        .await
-        .expect("the test");
-    let run = make_run(&project)
-        .build(db.connection())
-        .await
-        .expect("run");
-    make_execution(&test, &run)
-        .build(db.connection())
-        .await
-        .expect("the execution");
+        .create(&db)
+        .await;
+    let run = make_run(&project).create(&db).await;
+    make_execution(&test, &run).create(&db).await;
     let body = get(&app(&db, &[]), &format!("/api/tests/{}/history", test.id))
         .await
         .json();
@@ -1167,15 +1101,13 @@ async fn quarantine_toggles_and_lists_one_project() {
     let other = make_project()
         .repo("andrewthetechie/writers-app")
         .project("backend")
-        .build(db.connection())
-        .await
-        .expect("the other project");
+        .create(&db)
+        .await;
     make_test_case(&other)
         .name("renders")
         .quarantined()
-        .build(db.connection())
-        .await
-        .expect("the other test");
+        .create(&db)
+        .await;
 
     let app = token_app(&db);
     let on = post(
@@ -1460,10 +1392,7 @@ async fn score_history_is_embedded_oldest_first() {
     let test_id = seed_detail(&db, Some("src/app.test.ts"), Some(12), "frontend").await;
     let test = seed_model(&db, test_id).await;
     for (days, score) in [(100, 0.9), (5, 0.5), (0, 0.2)] {
-        make_test_score(&test, day(days), score)
-            .build(db.connection())
-            .await
-            .expect("a score row");
+        make_test_score(&test, day(days), score).create(&db).await;
     }
     let body = get(&app(&db, &[]), &format!("/api/tests/{test_id}/history"))
         .await

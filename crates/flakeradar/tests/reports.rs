@@ -37,37 +37,30 @@ fn auth() -> [(&'static str, &'static str); 1] {
 ///
 /// Returns the ids in the order they were written, which is also ascending.
 async fn seed(db: &TestDb) -> [i32; 4] {
-    let project = make_project()
-        .build(db.connection())
-        .await
-        .expect("a Project");
+    let project = make_project().create(db).await;
     let pending = make_report(&project, project.repo_id)
         .commit_sha("a")
-        .build(db.connection())
-        .await
-        .expect("a pending Report");
+        .create(db)
+        .await;
     let failed = make_report(&project, project.repo_id)
         .commit_sha("b")
         .status("failed")
         .error("ParseError: boom")
         .retry_count(3)
-        .build(db.connection())
-        .await
-        .expect("a failed Report");
+        .create(db)
+        .await;
     let done = make_report(&project, project.repo_id)
         .commit_sha("c")
         .status("processed")
-        .build(db.connection())
-        .await
-        .expect("a processed Report");
+        .create(db)
+        .await;
     let pipeline = make_report(&project, project.repo_id)
         .kind("pipeline")
         .commit_sha("p")
         .status("processed")
         .ci_run_attempt(2)
-        .build(db.connection())
-        .await
-        .expect("a Pipeline Report");
+        .create(db)
+        .await;
     [pending.id, failed.id, done.id, pipeline.id]
 }
 
@@ -296,16 +289,12 @@ async fn a_report_whose_stored_status_this_version_never_wrote_is_a_server_error
     // another writer made it: the route reports that rather than serve a value
     // its own queue filter and counter would ignore.
     let db = TestDb::new().await.expect("a test database is available");
-    let project = make_project()
-        .build(db.connection())
-        .await
-        .expect("a Project");
+    let project = make_project().create(&db).await;
     let report = make_report(&project, project.repo_id)
         .commit_sha("a")
         .status("retrying")
-        .build(db.connection())
-        .await
-        .expect("a Report");
+        .create(&db)
+        .await;
     let reply = get(&test_app(&db), &format!("/api/reports/{}", report.id)).await;
     assert_eq!(reply.status, StatusCode::INTERNAL_SERVER_ERROR);
     assert_eq!(reply.text(), "Internal Server Error");
@@ -317,16 +306,12 @@ async fn a_report_whose_stored_kind_this_version_never_wrote_is_a_server_error()
     // `reports` row, so a kind that is neither `junit` nor `pipeline` means
     // another writer made it.
     let db = TestDb::new().await.expect("a test database is available");
-    let project = make_project()
-        .build(db.connection())
-        .await
-        .expect("a Project");
+    let project = make_project().create(&db).await;
     let report = make_report(&project, project.repo_id)
         .commit_sha("a")
         .kind("xml")
-        .build(db.connection())
-        .await
-        .expect("a Report");
+        .create(&db)
+        .await;
     let reply = get(&test_app(&db), &format!("/api/reports/{}", report.id)).await;
     assert_eq!(reply.status, StatusCode::INTERNAL_SERVER_ERROR);
     assert_eq!(reply.text(), "Internal Server Error");
@@ -354,23 +339,18 @@ async fn a_report_query_that_fails_is_a_server_error() {
 #[tokio::test]
 async fn the_summary_counts_each_status_once() {
     let db = TestDb::new().await.expect("a test database is available");
-    let project = make_project()
-        .build(db.connection())
-        .await
-        .expect("a Project");
+    let project = make_project().create(&db).await;
     for sha in ["a", "b"] {
         make_report(&project, project.repo_id)
             .commit_sha(sha)
-            .build(db.connection())
-            .await
-            .expect("a pending Report");
+            .create(&db)
+            .await;
     }
     make_report(&project, project.repo_id)
         .commit_sha("c")
         .status("failed")
-        .build(db.connection())
-        .await
-        .expect("a failed Report");
+        .create(&db)
+        .await;
     assert_eq!(
         get(&test_app(&db), "/api/reports/summary").await.json(),
         json!({"pending": 2, "failed": 1})
