@@ -1,4 +1,5 @@
-//! Middleware: the shared-token check, the CORS policy and the request log line.
+//! Middleware: the shared-token check, the CORS policy, the request log line and
+//! the arrival signal a drain test waits on.
 
 // Rust guideline compliant 2026-07-21
 
@@ -49,6 +50,21 @@ pub async fn require_token(
     ) {
         return ApiError::new(StatusCode::UNAUTHORIZED, INVALID_TOKEN_DETAIL).into_response();
     }
+    next.run(request).await
+}
+
+/// Reports to the state that one request has entered the app.
+///
+/// This is a test seam, and the only way to wait for the state the graceful drain
+/// is proved against: a stop fired mid-upload needs to know the handler holds an
+/// unfinished body, which no answer, row or queue reports. A deployment installs
+/// no signal, so the call costs one branch. See [`AppState::with_request_signal`].
+pub async fn report_arrival(
+    State(state): State<AppState>,
+    request: Request,
+    next: Next,
+) -> Response {
+    state.request_arrived();
     next.run(request).await
 }
 

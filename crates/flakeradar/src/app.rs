@@ -9,6 +9,8 @@
 
 use std::sync::Arc;
 
+use tokio::sync::Notify;
+
 use axum::Router;
 use axum::extract::{DefaultBodyLimit, State};
 use axum::http::header::{self, HeaderValue};
@@ -20,7 +22,7 @@ use sea_orm::DatabaseConnection;
 use crate::assets::{Asset, AssetSource, NoAssets};
 use crate::error::ApiError;
 use crate::github::Api;
-use crate::middleware::{cors_layer, request_log_layer};
+use crate::middleware::{cors_layer, report_arrival, request_log_layer};
 use crate::routes;
 use crate::settings::Settings;
 
@@ -59,6 +61,7 @@ pub struct AppState {
     github: Api,
     assets: Arc<dyn AssetSource>,
     clock: SharedClock,
+    request_signal: Option<Arc<Notify>>,
 }
 
 impl AppState {
@@ -83,6 +86,7 @@ impl AppState {
             github,
             assets: Arc::new(NoAssets),
             clock: Arc::new(SystemClock),
+            request_signal: None,
         })
     }
 
@@ -143,6 +147,27 @@ impl AppState {
         self.assets = assets;
         self
     }
+
+    /// Fires `signal` when a request enters the app, for the one test that must
+    /// know a body is being read.
+    ///
+    /// A graceful drain is proved by stopping the server mid-request, and no other
+    /// observable says the handler has the request: the answer has not been
+    /// written, the queue has moved on, and a socket that accepted a connection
+    /// says nothing about the body. A deployment sets no signal, so the arrival
+    /// check is one branch and no allocation.
+    #[must_use]
+    pub fn with_request_signal(mut self, signal: Arc<Notify>) -> Self {
+        self.request_signal = Some(signal);
+        self
+    }
+
+    /// Marks the arrival of one request, when a test is waiting for it.
+    pub(crate) fn request_arrived(&self) {
+        if let Some(signal) = &self.request_signal {
+            signal.notify_one();
+        }
+    }
 }
 
 /// Builds the server's router over `state`.
@@ -152,7 +177,12 @@ pub fn build_app(state: AppState) -> Router {
         .merge(routes::router(state.clone()))
         .fallback(not_found)
         .method_not_allowed_fallback(method_not_allowed);
-    with_common_layers(router, &settings).with_state(state)
+    with_common_layers(router, &settings)
+        .with_state(state.clone())
+        // Applied to the finished app, so it is the outermost layer and an arrival
+        // is reported even for a request the body limit or the CORS policy refuses
+        // before a route runs.
+        .layer(axum::middleware::from_fn_with_state(state, report_arrival))
 }
 
 /// Applies the middleware every route runs under.

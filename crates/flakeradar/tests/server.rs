@@ -18,8 +18,9 @@ use flakeradar_test_support::{TestDb, settings, wait_until};
 
 use sea_orm::{ConnectionTrait as _, EntityTrait as _, PaginatorTrait as _};
 use serde_json::json;
+use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::oneshot;
+use tokio::sync::{Notify, oneshot};
 
 /// Settings for a server on `db`, on the kernel's choice of port.
 fn settings_for(db: &TestDb) -> Settings {
@@ -219,10 +220,10 @@ async fn the_readiness_probe_reports_the_worker_leading_and_releases_it_on_shutd
     // The worker elects itself on its first poll, so the probe reports the leader
     // once that has happened; the wait bounds a failure, not a duration.
     let client = reqwest::Client::new();
-    let answers = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let answers = Arc::new(std::sync::Mutex::new(Vec::new()));
     wait_until("the worker leads the running server", || {
         let client = &client;
-        let answers = std::sync::Arc::clone(&answers);
+        let answers = Arc::clone(&answers);
         async move {
             let body: serde_json::Value = client
                 .get(format!("http://{address}/api/health/ready"))
@@ -268,7 +269,10 @@ async fn a_shutdown_finishes_an_in_flight_request_and_stops_the_worker() {
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
     let db = TestDb::new().await.expect("a test database");
-    let server = Server::start(settings_for(&db))
+    // The seam fires when the app takes a request, so the test knows the handler
+    // holds an unfinished body rather than guessing it from yields.
+    let arrived = Arc::new(Notify::new());
+    let server = Server::start_with_request_signal(settings_for(&db), Some(Arc::clone(&arrived)))
         .await
         .expect("the server starts");
     let address = server.local_addr();
@@ -294,9 +298,10 @@ async fn a_shutdown_finishes_an_in_flight_request_and_stops_the_worker() {
         .expect("the request head is written");
     let (sent, rest) = body.split_at(body.len() / 2);
     stream.write_all(sent).await.expect("half the body is sent");
-    for _ in 0..4 {
-        tokio::task::yield_now().await;
-    }
+    // The signal is a permit the moment the app takes the request, so this waits
+    // for the fact and not for a share of the CPU: the drain that follows starts
+    // with the handler sitting on the second half of the upload.
+    arrived.notified().await;
 
     let _ = stop.send(());
     stream

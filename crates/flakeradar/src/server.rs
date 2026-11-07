@@ -81,6 +81,25 @@ impl Server {
     /// cannot be built, or the address cannot be bound. Each carries the setting
     /// or address it failed on.
     pub async fn start(settings: Settings) -> anyhow::Result<Self> {
+        Self::start_with_request_signal(settings, None).await
+    }
+
+    /// [`Server::start`], reporting each arriving request to `signal` when one is
+    /// given.
+    ///
+    /// The seam exists for the graceful-drain test, which has to start a shutdown
+    /// while an upload is still being read; [`AppState::with_request_signal`] says
+    /// what no other observable can. A deployment calls [`Server::start`] and gives
+    /// no signal.
+    ///
+    /// # Errors
+    ///
+    /// As [`Server::start`].
+    #[doc(hidden)]
+    pub async fn start_with_request_signal(
+        settings: Settings,
+        signal: Option<Arc<tokio::sync::Notify>>,
+    ) -> anyhow::Result<Self> {
         let pool = flakeradar_db::connect(
             settings.database_url.expose(),
             settings.database_settings()?,
@@ -90,10 +109,12 @@ impl Server {
         flakeradar_db::run_migrations(&pool)
             .await
             .context("migrating the database")?;
-        let app = build_app(
-            AppState::new(pool.clone(), Arc::new(settings.clone()))?
-                .with_assets(crate::assets::embedded()),
-        );
+        let mut state = AppState::new(pool.clone(), Arc::new(settings.clone()))?
+            .with_assets(crate::assets::embedded());
+        if let Some(signal) = signal {
+            state = state.with_request_signal(signal);
+        }
+        let app = build_app(state);
         let requested = format!("{}:{}", settings.host, settings.port);
         let listener = TcpListener::bind(&requested)
             .await
