@@ -89,6 +89,11 @@ pub struct PruneResult {
     pub job_score_history: u64,
     /// Quarantines whose human-set expiry had passed, cleared in this round.
     pub expired_quarantines: u64,
+    /// Tier changes the rescore of a deleted Execution's Test or Job dropped.
+    ///
+    /// A prune is not news, so these Notifications are never sent (ADR 0009);
+    /// the count is the only record that a change was dropped at all.
+    pub notifications_dropped: u64,
 }
 
 impl PruneResult {
@@ -108,6 +113,7 @@ impl PruneResult {
         self.test_score_history += round.test_score_history;
         self.job_score_history += round.job_score_history;
         self.expired_quarantines += round.expired_quarantines;
+        self.notifications_dropped += round.notifications_dropped;
     }
 
     /// Whether one of this round's tables deleted a full batch, so more may remain.
@@ -194,7 +200,8 @@ pub async fn prune(
     )
     .await?;
 
-    drop_silent_tier_changes(db, &stale_tests, &stale_jobs, processing).await?;
+    let notifications_dropped =
+        drop_silent_tier_changes(db, &stale_tests, &stale_jobs, processing).await?;
     let expired_quarantines = clear_expired_quarantines(db, now).await?;
 
     Ok(PruneResult {
@@ -206,6 +213,7 @@ pub async fn prune(
         test_score_history,
         job_score_history,
         expired_quarantines,
+        notifications_dropped,
     })
 }
 
@@ -404,7 +412,7 @@ async fn delete_history(
     Ok(result.rows_affected())
 }
 
-/// Rescores what lost Executions, dropping the Tier changes that causes.
+/// Rescores what lost Executions, answering how many Notifications that dropped.
 ///
 /// A Test with no Executions left scores 0 and leaves the leaderboard, and one
 /// with Executions left is scored on what remains. Losing old Executions is not
@@ -414,8 +422,8 @@ async fn drop_silent_tier_changes(
     stale_tests: &[i32],
     stale_jobs: &[i32],
     processing: &ProcessingSettings,
-) -> Result<(), DbError> {
-    let mut dropped = 0;
+) -> Result<u64, DbError> {
+    let mut dropped = 0usize;
     if !stale_tests.is_empty() {
         dropped += rescore(db, stale_tests, None, processing).await?.len();
     }
@@ -429,7 +437,7 @@ async fn drop_silent_tier_changes(
             "Prune dropped Notifications",
         );
     }
-    Ok(())
+    Ok(u64::try_from(dropped).unwrap_or(u64::MAX))
 }
 
 /// Clears every quarantine whose human-set expiry has passed, all in this round.
@@ -499,7 +507,7 @@ pub async fn run_prune(
             info!(
                 name: "retention.prune.budget_reached",
                 budget_seconds = budget,
-                "Retention prune hit its {budget}s budget; the rest waits for the next interval",
+                "Retention prune hit its budget; the rest waits for the next interval",
             );
             break;
         }
@@ -511,6 +519,7 @@ pub async fn run_prune(
     let runs = totals.runs;
     let score_history_rows = totals.score_history();
     let expired_quarantines = totals.expired_quarantines;
+    let notifications_dropped = totals.notifications_dropped;
     info!(
         name: "retention.prune.finished",
         reports,
@@ -520,9 +529,8 @@ pub async fn run_prune(
         runs,
         score_history_rows,
         expired_quarantines,
-        "Pruned {reports} reports, {failed_reports} failed reports, {executions} executions, \
-         {job_executions} job executions, {runs} runs, {score_history_rows} score history rows, \
-         cleared {expired_quarantines} expired quarantines",
+        notifications_dropped,
+        "Retention prune finished",
     );
     Ok(totals)
 }

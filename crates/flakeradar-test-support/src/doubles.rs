@@ -715,6 +715,51 @@ impl CapturedLog {
         let guard = self.lines.lock().unwrap_or_else(PoisonError::into_inner);
         String::from_utf8_lossy(&guard).into_owned()
     }
+
+    /// The captured lines whose text holds `needle`, in log order.
+    #[must_use]
+    pub fn lines_holding(&self, needle: &str) -> Vec<String> {
+        self.lines()
+            .lines()
+            .filter(|line| line.contains(needle))
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// The one captured line whose text holds `needle`.
+    ///
+    /// A test names the event by the static message only that event carries, then
+    /// asserts the values beside it, so the fields are what the test checks rather
+    /// than the sentence. The `tracing` fmt layer prints an event's `name:` as
+    /// metadata, not as text, so the message is the handle a text capture has.
+    ///
+    /// # Panics
+    ///
+    /// Panics when no line or more than one line holds `needle`.
+    #[must_use]
+    #[track_caller]
+    pub fn only_line_holding(&self, needle: &str) -> String {
+        let found = self.lines_holding(needle);
+        assert!(
+            found.len() == 1,
+            "expected exactly one line holding {needle:?}, got {}",
+            found.len()
+        );
+        found.into_iter().next().expect("one line was found")
+    }
+
+    /// Runs `future` with this capture installed and answers what it logged.
+    ///
+    /// The subscriber is installed for the current thread and removed again before
+    /// the answer is read, so a test asserts on the work one call wrote rather
+    /// than on everything the process has logged.
+    pub async fn during(future: impl Future) -> String {
+        let log = Self::install();
+        future.await;
+        let lines = log.lines();
+        drop(log);
+        lines
+    }
 }
 
 /// An `io::Write` that appends to the shared buffer.

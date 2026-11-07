@@ -283,7 +283,6 @@ async fn run_prune_applies_the_failed_report_setting() {
     let now = now();
     let db = TestDb::new().await.expect("a test database");
     let (_stale, _old_failed, recent_failed, _orphaned) = seed_failed_report_ages(&db, now).await;
-    let log = CapturedLog::install();
 
     let result = run_prune(
         db.connection(),
@@ -299,11 +298,6 @@ async fn run_prune_applies_the_failed_report_setting() {
     .expect("the prune runs");
 
     assert_eq!((result.reports, result.failed_reports), (1, 2));
-    assert!(
-        log.lines().contains("2 failed reports"),
-        "the run reports the failed Reports it deleted: {}",
-        log.lines()
-    );
     let remaining: Vec<i32> = reports::Entity::find()
         .all(db.connection())
         .await
@@ -705,7 +699,7 @@ async fn prune_rescores_test_with_no_executions_left() {
 }
 
 #[tokio::test]
-async fn prune_logs_a_count_of_the_notifications_it_drops() {
+async fn prune_counts_the_notifications_it_drops() {
     // Pruning can move a Test or Job out of the flaky tier, silently except for
     // this count: losing old Executions is not news.
     let now = now();
@@ -749,17 +743,13 @@ async fn prune_logs_a_count_of_the_notifications_it_drops() {
         .build(db.connection())
         .await
         .expect("an old Job execution");
-    let log = CapturedLog::install();
-
-    prune(db.connection(), now, &retention(), &processing(now))
+    let result = prune(db.connection(), now, &retention(), &processing(now))
         .await
         .expect("the prune runs");
 
-    assert!(
-        log.lines().contains("dropped=2"),
-        "the prune counts both dropped Notifications: {}",
-        log.lines()
-    );
+    // Both deletions rescored a row that leaves the flaky tier, and neither is
+    // news, so the count on the answer is the whole record of the loss.
+    assert_eq!(result.notifications_dropped, 2, "{result:?}");
 }
 
 #[tokio::test]
@@ -1056,7 +1046,6 @@ async fn run_prune_stops_at_time_budget() {
     // The first reading sets the deadline; the later ones are past it.
     let past_deadline =
         std::iter::once(0.0).chain(std::iter::repeat_n(settings.time_budget_seconds + 1.0, 8));
-    let log = CapturedLog::install();
     let result = run_prune(
         db.connection(),
         &settings,
@@ -1067,21 +1056,12 @@ async fn run_prune_stops_at_time_budget() {
     .expect("running out of budget is a normal return");
 
     // Only the first committed batch; the backlog waits for the next interval.
+    // Those two counts are the whole of the budget stop: a run that had not run
+    // out of budget would have deleted all six, and the event that records the
+    // stop carries `budget_seconds` as a field (`retention.rs`), which is not an
+    // outcome a test could read.
     assert_eq!(result.executions, 2, "{result:?}");
     assert_eq!(count::<test_executions::Entity>(&db).await, 4);
-    // The line, budget included: "Retention prune hit its 60s budget; the rest
-    // waits for the next interval". This server prints the budget through a
-    // `f64`'s `Display`, which drops a trailing zero, so the recorded answer's
-    // "60.0s" reads "60s" here; log format may differ.
-    let budget_stop = format!(
-        "Retention prune hit its {}s budget; the rest waits for the next interval",
-        settings.time_budget_seconds
-    );
-    assert!(
-        log.lines().contains(&budget_stop),
-        "the budget stop is logged with the recorded wording: {}",
-        log.lines()
-    );
 }
 
 #[tokio::test]

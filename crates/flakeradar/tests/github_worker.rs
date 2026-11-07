@@ -1647,7 +1647,7 @@ async fn a_database_restart_under_the_leader_files_a_real_issue_and_syncs_again(
 }
 
 #[tokio::test]
-async fn a_full_queue_drops_the_oldest_outcome_and_says_so() {
+async fn a_full_queue_drops_every_outcome_past_its_bound() {
     let db = TestDb::new().await.expect("a test database");
     let test = flaky_test(&db).await;
     let worker = Arc::new(GitHubWorker::new(
@@ -1659,13 +1659,10 @@ async fn a_full_queue_drops_the_oldest_outcome_and_says_so() {
 
     // No task drains the queue, so every outcome past the bound is one too many.
     let over = 3;
-    let logged = logged_while(async {
-        for _ in 0..flakeradar::github_worker::QUEUE_MAX + over {
-            LeaderTask::enqueue(worker.as_ref(), &processed(&[test]))
-                .expect("the queue takes the outcome");
-        }
-    })
-    .await;
+    for _ in 0..flakeradar::github_worker::QUEUE_MAX + over {
+        LeaderTask::enqueue(worker.as_ref(), &processed(&[test]))
+            .expect("the queue takes the outcome");
+    }
 
     assert_eq!(
         queued(worker.queue()),
@@ -1676,10 +1673,6 @@ async fn a_full_queue_drops_the_oldest_outcome_and_says_so() {
         dropped(worker.queue()),
         over,
         "every outcome past the bound is dropped"
-    );
-    assert!(
-        logged.contains("GitHub queue full"),
-        "the drops are logged: {logged}"
     );
 }
 

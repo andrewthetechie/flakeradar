@@ -761,7 +761,7 @@ impl ReportWorker {
                     task,
                     report_id,
                     error = %error,
-                    "the {task} leader task failed to take processed Report {report_id}: {error}",
+                    "a leader task failed to take a processed Report",
                 );
             }
         }
@@ -819,7 +819,7 @@ impl ReportWorker {
                     name: "worker.leader_task.stop_failed",
                     task,
                     error = %error,
-                    "stopping the {task} leader task failed; releasing the lock anyway: {error}",
+                    "a leader task failed to stop; the lock is released anyway",
                 );
             }
         }

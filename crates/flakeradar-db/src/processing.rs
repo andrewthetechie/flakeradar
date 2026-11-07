@@ -1858,7 +1858,9 @@ async fn rescore_repo(
         // is reported (ADR 0009).
         tracing::info!(
             name: "db.processing.notifications_dropped",
-            "Rescore of Repo {repo_id} dropped {dropped} Notification(s)",
+            repo_id,
+            dropped,
+            "Rescore of a Repo dropped Notifications",
         );
     }
     Ok(())

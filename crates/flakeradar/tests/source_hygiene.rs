@@ -549,22 +549,13 @@ fn every_log_event_is_named_and_unformatted() {
         "these events carry no name:\n{}",
         unnamed.join("\n")
     );
-    assert_eq!(
-        interpolated.len(),
-        FORMATTED_MESSAGES,
-        "these events format their message; each one is listed once, so a static \
-         message lowers the count and a new one raises it: {}",
+    assert!(
+        interpolated.is_empty(),
+        "these events format a value into their message instead of naming it as a field; \
+         M-LOG-STRUCTURED wants the values beside a static template:\n{}",
         interpolated.join("\n")
     );
 }
-
-/// The events whose message formats a value into its text.
-///
-/// The rule is M-LOG-STRUCTURED: the message is a template and the values are the
-/// named properties beside it. Each of these already carries its values that way,
-/// so its text prints them twice. One task per file turns them static, and the
-/// count only falls; see `docs/plans/rust-rewrite/review-135b/ledger.md` `ST4`.
-const FORMATTED_MESSAGES: usize = 5;
 
 /// The violation shapes the logging check is named for, each fed through it.
 #[test]
