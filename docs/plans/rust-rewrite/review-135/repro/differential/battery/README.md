@@ -45,7 +45,8 @@ a difference is not one `differences.md` records.
 | `d3` | `D3`: a Report that cannot be stored (`line` past `int4` beside a `file`), its `failed` state, the rows it leaves, and every status the retry and dismiss routes answer |
 | `d5` | `D5`: ingest at and past every boundary — the 34 multipart shapes `t8.py` sent, eight raw content types, gzip, the writers-app `curl`, both ingest-route limits, the query parameters, and the order the route checks things in |
 | `d4` | `D4`: an admin delete racing the processor three times, then a second instance of each server on the same database: exactly one of the two holds the advisory lock, and a Report is processed once |
-| `d3r` | `D3`: the retry path, staged with a `BEFORE INSERT` trigger raising SQLSTATE 40001. Last, because the retries consume sequence values the earlier phases compare |
+| `d3r` | `D3`: the retry path, staged with a `BEFORE INSERT` trigger raising SQLSTATE 40001. Then `d7`, because the retries consume sequence values the earlier phases compare |
+| `d7` | `D7`, default profile only: the epoch timestamps `SP8` and `SP9` name, as numbers and as strings holding one, accepted and refused, with the Job time each one left. Its own phase, so its Reports never reach `d5`'s report dump, whose byte comparison cannot normalise the timestamp spelling both servers record |
 | `d6` | `D6`, retention profile only: every window stays at its default while the fixture is built, then one statement pair ages rows past each window, and what the prune deleted, what it left, the scores its rescore wrote and the Notifications both servers posted are compared |
 
 ## How a difference is classified

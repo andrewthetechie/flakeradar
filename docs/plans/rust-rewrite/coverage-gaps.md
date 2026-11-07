@@ -369,12 +369,14 @@ New in this task, all arms that keep a reader total rather than behaviour a body
 ## Task 34: one unreachable arm in the epoch reader
 
 Measured with `cargo +nightly-2026-10-25 llvm-cov nextest --branch --all-features --profile ci`
-on a local `postgres:17-alpine` via the test-support Docker path: **lines 96.91%** (16917, 523
-missed) and **branches 94.11%** (1510, 89 missed), regions 93.80% and functions 97.40%.
+on a local `postgres:17-alpine` via the test-support Docker path: **lines 97.01%** (16921, 506
+missed) and **branches 94.30%** (1510, 86 missed), regions 93.90% and functions 97.49%.
 `coverage-floor.json` stays `{"lines": 96, "branches": 93}` and the gate passes at them.
 
-`crates/flakeradar-core/src/lax.rs` is at 98.95% of lines and 89.13% of branches, and
-`crates/flakeradar-db/src/connect.rs` at 99.32% / 91.67%. The reader's new refusals are all
+`crates/flakeradar-core/src/lax.rs` is at 98.95% of lines (286, 3 missed) and 89.13% of branches,
+`crates/flakeradar-db/src/connect.rs` at 99.32% / 91.67%, `crates/flakeradar/src/settings.rs` at
+97.92% of lines (963, 20 missed) and 97.06% of branches, and `crates/flakeradar-core/src/dto.rs` at
+99.87% of lines (788, 1 missed). The reader's new refusals are all
 reached from the reference's own measured rows in
 `the_pipeline_body_reads_a_timestamp_the_way_the_wire_does`: past year 9999 (`1e15`, `1e16`), the
 year 0 window (`-62135596800001`), before year 0 (`-1e16`, `-1e30`, `-62200000000000`), the

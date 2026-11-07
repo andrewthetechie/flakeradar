@@ -361,9 +361,9 @@ async fn refused_timestamp(
 async fn the_pipeline_body_reads_a_timestamp_the_way_the_wire_does() {
     let db = TestDb::new().await.expect("a test database is available");
     let app = test_app(&db);
-    // Every spelling the reference accepted, and the instant it means. The
-    // epoch rows are the reference's own answers, measured from it rather than
-    // inferred; the command is in `STATUS.md`'s note for this task.
+    // Every spelling this reader takes, and the instant it means, with the
+    // reference's own answer for each. The epoch rows are measured from it
+    // rather than inferred; the command is in `STATUS.md`'s note for this task.
     for (value, instant) in [
         (json!("2026-01-01T00:00:00Z"), "2026-01-01T00:00:00.000000Z"),
         (

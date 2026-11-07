@@ -73,6 +73,9 @@ def cases(battery: Battery) -> list[tuple[str, dict, str | None]]:
         ("top_flaky_tests", {"repo": REPO, "limit": 101}, None),
         ("top_flaky_tests", {"repo": REPO, "limit": -1}, None),
         ("top_flaky_tests", {"repo": REPO, "limit": "many"}, "K-mcp-error-text"),
+        # A float past `i64::MAX` names no integer at all, so both refuse it as
+        # one that exceeded the size rather than a value outside the tool's range.
+        ("top_flaky_tests", {"repo": REPO, "limit": 1e19}, "K-mcp-error-text"),
         ("top_flaky_tests", {"repo": REPO, "category": "bogus"}, None),
         ("top_flaky_tests", {"repo": REPO, "new_within_days": 0}, None),
         ("top_flaky_tests", {"repo": REPO, "new_within_days": 91}, None),
@@ -86,6 +89,7 @@ def cases(battery: Battery) -> list[tuple[str, dict, str | None]]:
         # get_test: by id, by name, ambiguous name, bad id, both ends of the limit.
         ("get_test", {"test_id": flaky}, None),
         ("get_test", {"test_id": flaky, "executions_limit": 1}, None),
+        ("get_test", {"test_id": flaky, "executions_limit": 1e19}, "K-mcp-error-text"),
         ("get_test", {"repo": REPO, "project": PROJECT, "name": "test_timing_flake"}, None),
         ("get_test", {"repo": REPO, "project": PROJECT, "name": "dup_name"}, None),
         ("get_test", {"repo": REPO, "project": PROJECT, "name": "dup_name", "classname": "first"}, None),

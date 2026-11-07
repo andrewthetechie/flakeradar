@@ -100,7 +100,7 @@ run_profile() {
   shift
   case "$profile" in
     default)
-      phases="seed,d2,d1,d3,d5,d4,d3r"
+      phases="seed,d2,d1,d3,d5,d4,d3r,d7"
       env_extra=()
       ;;
     retention)

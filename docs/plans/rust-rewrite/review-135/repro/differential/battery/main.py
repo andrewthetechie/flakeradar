@@ -29,6 +29,7 @@ PHASES = {
     "d4": ("d4_concurrency", "concurrency"),
     "d5": ("d5_ingest", "ingest"),
     "d6": ("d6_retention", "retention"),
+    "d7": ("d7_epochs", "epochs"),
 }
 
 
