@@ -58,8 +58,11 @@ export const test = base.extend<{ apiFailures: ApiFailure[]; _watch: void }>({
       }
 
       await use();
-      expect(consoleErrors, `console/page errors:\n${consoleErrors.join("\n")}`).toEqual([]);
+      // The named-response rule first: a deliberate-but-undeclared 500 trips both
+      // rules, and "unexpected /api response: /api/x -> 500" says more than the
+      // browser's generic "failed to load resource" line.
       expect(unexpected, `unexpected /api response:\n${unexpected.join("\n")}`).toEqual([]);
+      expect(consoleErrors, `console/page errors:\n${consoleErrors.join("\n")}`).toEqual([]);
     },
     { auto: true },
   ],

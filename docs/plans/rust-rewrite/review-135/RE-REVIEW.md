@@ -194,9 +194,6 @@ field allowances before and after, 9 `prefix` entries before and 0 after). The r
 - **CI itself.** The gate above is this machine's, against a local `postgres:17-alpine`, not
   CI's `postgres` service on Linux. The pushed head's run is the evidence for CI, and the
   coverage percentages are this host's.
-- **The frontend in a browser.** Nothing loads `frontend/dist` in a browser against the Rust
-  server; tasks 09, 12, 22 and 25 record the same gap. The served shapes are pinned by the ported
-  API tests and by `fabro_reads_every_field_of_the_test_reads`.
 - **The packaging legs.** A Docker build, the 60 MB image size, the five Actions targets and a
   `release.yml` `workflow_dispatch` were not re-run; the last cannot run before the workflow
   exists on the default branch.
@@ -221,6 +218,12 @@ field allowances before and after, 9 `prefix` entries before and 0 after). The r
   re-record a golden; both are pinned by existing tests instead.
 - **`E7`'s real client is `rmcp`'s own client**, not a desktop MCP client or the Inspector CLI:
   none is installed here.
+
+Closed since this page was written, so it is no longer a gap: **the frontend in a** browser,
+which tasks 09, 12, 22 and 25 each recorded. Task 37 added `frontend/e2e/` — the `ui` project
+mocks every read from fixtures, and the `e2e` project drives the dashboard out of the real
+binary against a seeded `postgres:17-alpine`. CI runs both as `Frontend UI (Playwright,
+mocked)` and `Dashboard e2e (Playwright, mock install)`.
 
 ## 8. Where to start reading
 

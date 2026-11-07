@@ -35,7 +35,9 @@ cd frontend && npm install && npm run dev
 ## Test gate
 
 All must pass before a PR is merged. CI runs the same commands, in the `rust`
-and `frontend` jobs of `.github/workflows/ci.yml`.
+and `frontend` jobs of `.github/workflows/ci.yml`. The dashboard's two
+Playwright suites are also required; their commands are under "Dashboard tests
+(Playwright)" below, because each needs a built `frontend/dist` first.
 
 ```bash
 cargo fmt --all -- --check
@@ -98,6 +100,31 @@ CI fails the frontend job in two cases:
 - On a PR, any of the four is lower than the newest push to `main`. Each push
   to `main` uploads `coverage-summary.json` as the `frontend-coverage`
   artifact for this comparison.
+
+## Dashboard tests (Playwright)
+
+Two Chromium projects, both against the built `frontend/dist`, both in
+`frontend/`. Vitest covers the components; these cover the running dashboard, and
+CI's `Frontend UI (Playwright, mocked)` and `Dashboard e2e (Playwright, mock
+install)` jobs are what keep it working.
+
+```bash
+cd frontend
+npm ci && npm run build
+npx playwright install chromium     # once; the version is pinned in package.json
+
+npx playwright test --project=ui    # dist, with every /api/* call mocked from e2e/fixtures/
+npx playwright test --project=e2e   # the real binary, a throwaway postgres, seeded by samples/simulate_ci.py
+```
+
+`--project=e2e` needs a built binary as well as `dist`, because it loads the
+page out of the binary rather than from a dev server, so run `cargo build -p
+flakeradar` after `npm run build` (`build.rs` embeds whatever `frontend/dist`
+held at build time). It then starts and stops everything itself: one
+`postgres:17-alpine` container, the server, the seed, and the teardown. To hold
+that same install open while writing a test, run `node
+e2e/scripts/start-mock-install.mjs` and stop it with Ctrl-C; `node
+e2e/scripts/serve-dist.mjs` is the `ui` project's static server on its own.
 
 ## Database migrations
 

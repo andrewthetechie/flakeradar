@@ -108,8 +108,9 @@ is the page that summarizes what each one closed.
 ## 3. Every UNVERIFIED item
 
 Collected from the `UNVERIFIED` notes in `STATUS.md`'s rows and from the workers' reports in
-those rows. Nothing is softened. Items 1-10 are still open; 11-16 were closed after they were
-written, and the paragraph after them names the CI run that closed three of them.
+those rows. Nothing is softened. Items 1-4 and 6-10 are still open; 5 and 11-16 were closed
+after they were written, and the paragraph after them names the CI run that closed three of
+them.
 
 1. **`x86_64-pc-windows-msvc` cannot be built on this macOS host.** There is no MSVC toolchain,
    no Windows SDK and no `link.exe` here, so the leg is declared in the matrix but only ever
@@ -130,11 +131,13 @@ written, and the paragraph after them names the CI run that closed three of them
    drafted issues and the user files them after this PR merges, because they must not carry the
    `agent` label while the branch is off `main`. Nothing is filed yet, so the 78 gaps have no
    tracker entry.
-5. **Task 09's Done-when browser check was not run.** The condition asked for the frontend
-   against the Rust server under `npm run dev` plus Playwright. What was done instead is the
-   ported API tests plus `fabro_reads_every_field_of_the_test_reads`. Task 12's headless-browser
-   run loaded the dashboard from `target/debug/flakeradar`, which is a different check against a
-   different server and does not discharge this one.
+5. **Task 09's Done-when browser check now runs in CI.** The condition asked for the frontend
+   against the Rust server under Playwright. Tasks 09, 12, 22 and 25 each recorded it as not
+   run; task 37 wrote the suites. `frontend/e2e/e2e.spec.ts` loads `frontend/dist` out of the
+   real `flakeradar` binary against a seeded database (that is the check task 12 had run by
+   hand, now repeated on every push), and `frontend/e2e/ui.spec.ts` covers the states a real
+   server rarely produces. The two CI jobs are `Frontend UI (Playwright, mocked)` and
+   `Dashboard e2e (Playwright, mock install)`.
 6. **Task 11's Done-when real-client check was not run.** A local Claude Code MCP config pointed
    at `http://localhost:8000/mcp/`, listing tools and calling `list_repos` and
    `top_flaky_tests`, was never tried: no such client is installed here. The transport is
@@ -206,9 +209,6 @@ what task 31 could not check:
 - **The coverage figures come from a local `postgres:17-alpine`, not CI's service.** Every leg
   that measured coverage says so. CI measures on Linux against its own `postgres` service, so
   the percentages in section 7 are this host's.
-- **The frontend browser check was never run.** Tasks 09, 12, 22 and 25 record it: nothing loads
-  `frontend/dist` in a browser against the Rust server. The served shapes are pinned by the
-  ported API tests and by `fabro_reads_every_field_of_the_test_reads`.
 - **Task 13's packaging legs were not re-run by the review fixes.** A Docker build, the 60 MB
   image size, the five Actions targets and a `workflow_dispatch` rehearsal are CI's (and the
   last cannot run before the workflow exists on the default branch).
@@ -238,6 +238,12 @@ what task 31 could not check:
 - **The differential battery needs the Python reference outside the tree.** Task 31 ran it from
   `/tmp/python-base` and `/tmp/pyref`; a reviewer offline can check out `86c98804` but cannot
   replay it from the repository alone.
+
+Closed since task 31, so it is no longer on this list: **the frontend browser check** that
+tasks 09, 12, 22 and 25 each recorded as unverified. Task 37 added `frontend/e2e/` — the two
+Playwright projects the new `Frontend UI (Playwright, mocked)` and `Dashboard e2e (Playwright,
+mock install)` CI jobs run, the second of which drives the dashboard out of the binary against
+a seeded database (see section 3 item 5).
 
 ## 4. Checker findings and their resolution
 

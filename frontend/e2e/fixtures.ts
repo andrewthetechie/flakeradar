@@ -25,7 +25,11 @@ export function answerFields(answer: unknown): string[] {
   const names = Object.keys(row).sort();
   const items = (row as { items?: unknown }).items;
   if (Array.isArray(items) && items.length > 0 && typeof items[0] === "object") {
-    names.push(`items[].${Object.keys(items[0] as object).sort().join(",")}`);
+    names.push(
+      `items[].${Object.keys(items[0] as object)
+        .sort()
+        .join(",")}`,
+    );
   }
   return names;
 }
