@@ -841,6 +841,173 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  # The dashboard in a browser. Nothing else in CI ever opened one, so tasks 09,
+  # 12, 22 and 25 each recorded the browser check as unverified; these two jobs
+  # are what keeps it working, and both are required for the PR. They reuse the
+  # `frontend-dist` artifact rather than building Vite twice, and they run under
+  # the same `changes` filter that already names `crates/**` and `frontend/**`,
+  # so a Rust or frontend change always triggers both.
+  frontend-ui:
+    name: Frontend UI (Playwright, mocked)
+    needs: [changes, frontend-dist]
+    if: >-
+      always() && (github.event_name != 'pull_request' ||
+      needs.changes.outputs.relevant == 'true') &&
+      needs.frontend-dist.result == 'success'
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Download the built dashboard
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist
+
+      - name: Read the pinned Playwright version
+        id: playwright
+        # `@playwright/test` is pinned exactly, and the Chromium build number
+        # follows from it, so the pin is what the browser cache is keyed by.
+        run: echo "version=$(node -p 'require("./package.json").devDependencies["@playwright/test"]')" >> "$GITHUB_OUTPUT"
+
+      - name: Cache the Chromium download
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}-chromium
+
+      - name: Install Chromium
+        # Always run: with a cache hit it only verifies the build is there, and
+        # `--with-deps` is what puts the system libraries on the runner.
+        run: npx playwright install --with-deps chromium
+
+      - name: Test the dashboard with every API read mocked
+        run: npx playwright test --project=ui
+
+      - name: Upload the trace and the report (failures only)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-ui
+          path: |
+            frontend/playwright-report
+            frontend/test-results/playwright
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # The shipped binary, with this commit's dashboard embedded, against a real
+  # database seeded by `samples/simulate_ci.py`.
+  dashboard-e2e:
+    name: Dashboard e2e (Playwright, mock install)
+    needs: [changes, frontend-dist]
+    if: >-
+      always() && (github.event_name != 'pull_request' ||
+      needs.changes.outputs.relevant == 'true') &&
+      needs.frontend-dist.result == 'success'
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: flakeradar
+          POSTGRES_PASSWORD: flakeradar
+          POSTGRES_DB: flakeradar
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U flakeradar"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # The mock install owns this database and seeds it; it refuses to start if
+      # the seed is not the only thing in it.
+      E2E_DATABASE_URL: postgresql://flakeradar:flakeradar@localhost:5432/flakeradar
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          # The seeder is the demo simulator, which reads its results over httpx.
+          python-version: "3.12"
+
+      - name: Install the seeder's dependency
+        run: pip install httpx
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Download the built dashboard
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "cargo"
+
+      - name: Build the binary with that dashboard embedded
+        # `frontend/dist/index.html` exists now, so the build script sets
+        # `cfg(has_frontend)` and rust-embed carries the dashboard in: this is
+        # the artifact the browser then loads from the binary, not from a proxy.
+        working-directory: .
+        run: cargo build -p flakeradar --locked
+
+      - name: Read the pinned Playwright version
+        id: playwright
+        run: echo "version=$(node -p 'require("./package.json").devDependencies["@playwright/test"]')" >> "$GITHUB_OUTPUT"
+
+      - name: Cache the Chromium download
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}-chromium
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Test the shipped dashboard end to end
+        run: npx playwright test --project=e2e
+
+      - name: Upload the trace and the report (failures only)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-e2e
+          path: |
+            frontend/playwright-report
+            frontend/test-results/playwright
+          retention-days: 7
+          if-no-files-found: ignore
+
   # A real binary for each target, run against a real database: the smoke test
   # starts it, uploads a Report, waits for the processor and checks every surface
   # the binary carries. Building natively on each runner means no cross toolchain

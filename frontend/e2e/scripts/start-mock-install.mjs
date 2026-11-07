@@ -14,9 +14,13 @@
 //
 //   node e2e/scripts/start-mock-install.mjs    # then Ctrl-C to stop
 //
-//   FLAKERADAR_BIN  the binary to run (default: newest build under target/)
-//   E2E_CORE_PORT   the dashboard's port (default 8543)
-//   E2E_PG_PORT     postgres's host port (default 15432)
+//   FLAKERADAR_BIN    the binary to run (default: newest build under target/)
+//   E2E_CORE_PORT     the dashboard's port (default 8543)
+//   E2E_PG_PORT       postgres's host port (default 15432)
+//   E2E_DATABASE_URL  Postgres to use instead of starting a container, for CI's
+//                     `postgres` service. The database must be empty: a second
+//                     seed would double every count the tests then assert.
+//   E2E_VERBOSE       also echo the binary's own log while the install runs
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { request } from "node:http";
@@ -33,6 +37,9 @@ const TOKEN = "e2e-install-token";
 const PG_CONTAINER = "fr-e2e-pg";
 const PG_IMAGE = "postgres:17-alpine";
 const REPO = "demo/shop";
+/** Set when CI provides Postgres as a service instead of this script owning a
+ *  container; the database it names must be empty. */
+const DATABASE_URL = process.env.E2E_DATABASE_URL;
 
 function requireInstall() {
   const bin =
@@ -95,6 +102,11 @@ function getJson(path) {
 }
 
 async function startPostgres() {
+  if (DATABASE_URL) {
+    // CI's `postgres` service already owns the database, and the runner's
+    // health check has waited for it; there is no container of ours to remove.
+    return;
+  }
   try {
     run("docker", ["rm", "-f", PG_CONTAINER]);
   } catch {
@@ -126,6 +138,11 @@ async function startPostgres() {
   );
 }
 
+/** The Postgres this install writes to. */
+function databaseUrl() {
+  return DATABASE_URL ?? `postgresql://flakeradar:flakeradar@${HOST}:${PG_PORT}/flakeradar`;
+}
+
 /** The seeded state every test asserts: 10 Tests in the demo Repo, nothing queued. */
 async function seeded() {
   const [summary, queue] = await Promise.all([
@@ -144,7 +161,7 @@ export default async function startMockInstall() {
     cwd: ROOT,
     env: {
       ...process.env,
-      FLAKERADAR_DATABASE_URL: `postgresql://flakeradar:flakeradar@${HOST}:${PG_PORT}/flakeradar`,
+      FLAKERADAR_DATABASE_URL: databaseUrl(),
       FLAKERADAR_API_TOKEN: TOKEN,
       FLAKERADAR_HOST: HOST,
       FLAKERADAR_PORT: String(PORT),
@@ -166,6 +183,7 @@ export default async function startMockInstall() {
 
   const stop = async () => {
     if (core.exitCode === null && core.signalCode === null) core.kill("SIGTERM");
+    if (DATABASE_URL) return; // CI's service outlives this process either way.
     try {
       run("docker", ["rm", "-f", PG_CONTAINER]);
     } catch {
@@ -178,6 +196,13 @@ export default async function startMockInstall() {
       await getJson("/api/health/ready");
       return true;
     }, "the server to answer /api/health/ready");
+    // The seed's counts are only the seed's counts on an empty database.
+    const repos = await getJson("/api/repos");
+    if (repos.length > 0) {
+      throw new Error(
+        `${databaseUrl()} already holds ${repos.map((r) => r.name).join(", ")}: the mock install needs an empty database`,
+      );
+    }
     // 14 CI runs of demo/shop: 43 Reports, then the worker drains the queue.
     run("python3", [join(ROOT, "samples", "simulate_ci.py"), `http://${HOST}:${PORT}`, TOKEN]);
     await waitFor(seeded, `the seed to show 10 Tests of ${REPO} with an empty queue`);

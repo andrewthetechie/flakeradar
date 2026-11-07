@@ -10,12 +10,13 @@ import { defineConfig, type TestConfigWebServer } from "@playwright/test";
 // `retries: 0` is the task's contract: three consecutive local runs of both
 // projects must pass under CPU stress with no retries.
 //
-// One static server and one mock install, so the two `webServer` entries cannot
-// both be started by one Playwright run — but Playwright 1.65 only reads
-// `webServer` from the top-level config, never from a project (see
-// `TestProject` in `playwright/types/test.d.ts`). So the entries are picked here
-// from the `--project` flags: `--project=ui` must not boot a Docker container, a
-// Rust binary and a seeded database, and a full run starts both.
+// One static server and one mock install, and neither may be started by a run
+// that does not need it — but Playwright 1.65 reads `webServer` and
+// `globalSetup` only from the top-level config, never from a project (see
+// `TestProject` in `playwright/types/test.d.ts`). So both are picked here from
+// the `--project` flags: `--project=ui` must not boot a Docker container, a
+// Rust binary and a seeded database, and `--project=e2e` must not need a static
+// server it never talks to.
 
 const UI_PORT = 4173;
 const E2E_PORT = 8543;
@@ -65,6 +66,7 @@ export default defineConfig({
   globalSetup: runs("e2e") ? "./e2e/scripts/start-mock-install.mjs" : undefined,
   webServer: servers,
   use: {
+    browserName: "chromium",
     // `retries: 0`, so "on-first-retry" would keep nothing: a failing test has
     // to leave a trace for CI to upload.
     trace: "retain-on-failure",
