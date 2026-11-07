@@ -297,3 +297,29 @@ The 499 missed lines and 73 missed branches are these rows and no others. The ga
 counts is the same one the earlier sections describe: a row can be a branch, an arm inside a
 covered line, or a group of `tracing` field-argument lines that `llvm-cov` counts zero although
 the event fires.
+
+## Task 32: three unreachable arms in the parser's pre-scan
+
+Task 32 added `parsing.rs`'s pre-scan: `refuse_expansion_past_the_budget` with `Expansion`,
+`refuse_namespace_entries_past_the_budget` with `NamespaceScope`, and the `DOCTYPE`,
+`entity_values`, `start_tag` and `split_name` readers under them. With the tests this task adds,
+`parsing.rs` measures 99.47% of lines (754/758) and 97.20% of branches (208/214), and it misses
+four lines: the one above, which is `nextest_marker`'s compile-time panic, and the three below.
+None is a behaviour a body inside the 20 MiB ingest limit can reach:
+
+- `Expansion::length`'s own `total > self.cap` check, and `refuse_expansion_past_the_budget`'s
+  check on the two parts summed. Both are the same budget checked where the loop cannot see it:
+  `cap` is the body's own size plus `EXPANSION_BYTES_MAX` (64 MiB), so the initial total — the
+  text's length, before any reference is added — can only pass it for a body over 64 MiB, which
+  the ingest route refuses before the parser sees it. They stay because `parse_junit_xml` has no
+  size limit of its own, so a caller outside the route (`flakeradar-core`'s own tests, a future
+  batch importer) still gets the bound.
+- `entity_values`'s `body.find(quote)` failure: a declaration whose value has no closing quote.
+  `declaration_extent` reads the same quotes and ends the subset at the first `]` outside them, so
+  an unterminated quote swallows the rest of the declaration and the subset never holds one. It
+  is the guard that keeps the two readers agreeing rather than a case either can see.
+
+One arm that *was* unreachable is gone rather than logged: `Expansion::length` looked an entity's
+value up again after checking it was declared, and that second lookup's `None` could not happen.
+`entity_length` now answers `None` for an undeclared name itself, which is the case a predefined
+entity such as `&lt;` reaches, and a test covers it.

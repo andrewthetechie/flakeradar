@@ -83,13 +83,13 @@
         "file": "golden/junit/bad-nested-entities.line_base0.json",
         "field": "error",
         "pythonValue": "Not a valid JUnit XML report: limit on input amplification factor (from DTD and entities) breached: line 14, column 108",
-        "rustValue": "Not a valid JUnit XML report: a possible entity reference loop is detected at 4:25"
+        "rustValue": "Not a valid JUnit XML report: the entity references in this report expand past the 67108864 byte budget"
       },
       {
         "file": "golden/junit/bad-nested-entities.line_base1.json",
         "field": "error",
         "pythonValue": "Not a valid JUnit XML report: limit on input amplification factor (from DTD and entities) breached: line 14, column 108",
-        "rustValue": "Not a valid JUnit XML report: a possible entity reference loop is detected at 4:25"
+        "rustValue": "Not a valid JUnit XML report: the entity references in this report expand past the 67108864 byte budget"
       },
       {
         "file": "golden/ingest-junit/05.json",

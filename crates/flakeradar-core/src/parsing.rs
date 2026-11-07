@@ -9,15 +9,24 @@
 //! here rather than left to the upload's own limit. Failure messages keep
 //! [`MESSAGE_MAX`] code points and Failure details keep [`DETAILS_MAX`];
 //! `<testsuite>` nesting stops at [`SUITE_DEPTH_MAX`] levels; a document holds
-//! at most `NODES_MAX` XML nodes; and the Test identities copied out of it (the
+//! at most `NODES_MAX` XML nodes; the Test identities copied out of it (the
 //! suite, classname, name and file strings) are held to `IDENTITY_BYTES_MAX` in
 //! total, so one long attribute repeated across many cases cannot ask for more
-//! memory than that budget. For a body at the 20 MiB ingest limit, the parser
-//! therefore allocates under [`PARSE_BYTES_MAX`].
+//! memory than that budget; a `time` holds at most [`TIME_CHARS_MAX`] code
+//! points; and, before the parser reads the text, a pre-scan refuses a body
+//! whose internal entities would expand past `EXPANSION_BYTES_MAX` or whose
+//! namespace declarations would put more than `NAMESPACE_ENTRIES_MAX` entries in
+//! the parser's own table. For a body at the 20 MiB ingest limit, the parser
+//! therefore allocates under [`PARSE_BYTES_MAX`], whatever shape the body takes:
+//! `every_shape_a_body_can_take_answers_within_the_budget` measures the peak of
+//! eight of them with a counting allocator, and of each pair of bounds the one
+//! that moves is the pre-scan's, which runs before the parser reads a byte.
 
 // Rust guideline compliant 2026-07-21
 
+use std::collections::HashMap;
 use std::fmt::Write as _;
+use std::ops::Range;
 use std::sync::LazyLock;
 
 use encoding_rs::{Encoding, UTF_8, UTF_16BE, UTF_16LE};
@@ -44,6 +53,18 @@ pub const MESSAGE_MAX: usize = 2000;
 /// reads to find the cause. The truncation marker is reserved inside this limit,
 /// so a capped value is exactly this long.
 pub const DETAILS_MAX: usize = 16384;
+
+/// The longest `<testcase time>` or retry `time` this server reads, in code
+/// points.
+///
+/// A duration is seconds with an optional fraction, and the longest value a CI
+/// runner writes is a dozen characters. Every Unicode decimal digit in the value
+/// is rewritten before the number is parsed, so the cost is one pass per
+/// character of the attribute: a 20 MiB `time` of mathematical digits spent 19.5
+/// s of a blocking thread. Past this bound the value is not a number this server
+/// reads, so a case's `time` answers the 400 a non-numeric one answers and a
+/// retry's reads 0.0, which is what every unreadable retry `time` reads.
+pub const TIME_CHARS_MAX: usize = 64;
 
 /// The deepest `<testsuite>` nesting one report may have.
 ///
@@ -76,12 +97,43 @@ const IDENTITY_BYTES_MAX: usize = 64 * 1024 * 1024;
 /// The most heap one report's parse uses, in bytes.
 ///
 /// This is the budget the module doc promises for a body at the 20 MiB ingest
-/// limit, measured with a counting allocator over the shapes that reach it: 20.4
-/// times the body for a body of a million minimal cases (the most cases such an
-/// upload can carry), 8 times for one long identity repeated across cases, and
-/// 3.2 times for a failure-heavy report. The constant is the first round figure
-/// with headroom over the worst of those.
+/// limit, measured with a counting allocator over the eight shapes
+/// `every_shape_a_body_can_take_answers_within_the_budget` runs: 20.4 times the
+/// body for a body of a million minimal cases (the most cases such an upload can
+/// carry), 8 times for one long identity repeated across cases, 7.6 times for a
+/// body of two hundred attributes per case, 3.2 times for a failure-heavy
+/// report, and about the body's own size for each of the four the pre-scan
+/// refuses. The constant is the first round figure with headroom over the worst
+/// of those.
 pub const PARSE_BYTES_MAX: usize = 512 * 1024 * 1024;
+
+/// The most bytes the entity references in one report may expand to.
+///
+/// `roxmltree` expands every `&name;` in place and bounds only how deeply
+/// references may nest, not how many one attribute or text node may hold: a 1
+/// MiB body holding one 512 KiB internal entity referenced 178,000 times asks it
+/// for 85 GiB. A real report declares no internal entities at all, so this
+/// admits an eighth of [`PARSE_BYTES_MAX`] of expansion and refuses the rest as
+/// a bad report, which is the 422 the ingest route answers.
+const EXPANSION_BYTES_MAX: usize = 64 * 1024 * 1024;
+
+/// The most entries one report's namespace declarations may put in the parser's
+/// own table.
+///
+/// `roxmltree` copies every namespace in scope into each element that declares
+/// one, so 60,000 nested declarations followed by siblings at that depth cost it
+/// billions of entries and minutes of CPU. An element that declares nothing
+/// costs nothing, so a real report's namespaces (one or two, on the root) stay in
+/// the low tens; this admits a hundred thousand declaring elements below a few
+/// prefixes and refuses the quadratic shape before the parser builds it.
+const NAMESPACE_ENTRIES_MAX: usize = 4 * 1024 * 1024;
+
+/// The deepest nesting of entity references the pre-scan measures.
+///
+/// `roxmltree`'s own loop detector refuses a reference nested more than ten
+/// levels deep, so a declaration cycle is a body it refuses as well; stopping
+/// here keeps the measurement from walking that cycle forever.
+const ENTITY_NESTING_MAX: usize = 16;
 
 /// Retry children that ran before the case's own result.
 const RETRY_BEFORE: [&str; 2] = ["flakyFailure", "flakyError"];
@@ -392,10 +444,12 @@ fn declared_encoding(content: &[u8]) -> Option<String> {
 /// Parses already-decoded text into Executions.
 fn parse_text(text: &str, line_base: i64) -> Result<Vec<ParsedCase>, ParseError> {
     refuse_unrepresentable_character_references(text)?;
+    refuse_expansion_past_the_budget(text)?;
+    refuse_namespace_entries_past_the_budget(text)?;
     let options = ParsingOptions {
         // ElementTree parses a document with a `DOCTYPE`, so the reference
         // accepted one; external entities stay unfetched and an entity bomb is
-        // refused by the amplification limit rather than aborted.
+        // refused by the expansion bound above rather than aborted.
         allow_dtd: true,
         nodes_limit: NODES_MAX,
         entity_resolver: None,
@@ -507,6 +561,358 @@ fn digits_while(text: &str, is_hex: bool) -> &str {
         })
         .count();
     text.get(..len).unwrap_or_default()
+}
+
+/// Refuses a report whose internal entities would expand past the budget.
+///
+/// The bytes a body holds and the bytes it asks the parser for are two
+/// different numbers: `roxmltree` copies each `&name;`'s value in place and
+/// bounds only how deeply references may nest, so one 512 KiB entity referenced
+/// 178,000 times turns a 1 MiB upload into 85 GiB of text. The declared entities
+/// are summed with each nested reference at its own expanded length, and the
+/// references outside the `DOCTYPE` are counted, before the parser reads the
+/// text.
+fn refuse_expansion_past_the_budget(text: &str) -> Result<(), ParseError> {
+    let Some(doctype) = doctype(text) else {
+        return Ok(());
+    };
+    let entities = entity_values(doctype.subset);
+    if entities.is_empty() {
+        return Ok(());
+    }
+    let declared = doctype.end.saturating_sub(doctype.start);
+    let cap = text
+        .len()
+        .saturating_sub(declared)
+        .saturating_add(EXPANSION_BYTES_MAX);
+    let mut expansion = Expansion {
+        entities,
+        sizes: HashMap::new(),
+        cap,
+    };
+    let mut expanded = 0_usize;
+    for part in [text.get(..doctype.start), text.get(doctype.end..)] {
+        expanded = expanded.saturating_add(expansion.length(part.unwrap_or_default(), 0)?);
+    }
+    if expanded > cap {
+        return Err(past_the_expansion_budget());
+    }
+    Ok(())
+}
+
+/// The refusal a body whose entity references expand past the budget gets.
+fn past_the_expansion_budget() -> ParseError {
+    ParseError::InvalidXml {
+        detail: format!(
+            "the entity references in this report expand past the \
+             {EXPANSION_BYTES_MAX} byte budget"
+        ),
+    }
+}
+
+/// The text one document's entity references expand to.
+struct Expansion<'a> {
+    /// The internal entities the document's `DOCTYPE` declares, by name.
+    entities: HashMap<&'a str, &'a str>,
+    /// The expanded byte length of each entity measured so far.
+    sizes: HashMap<&'a str, usize>,
+    /// The expanded length the document may reach, past which the scan stops.
+    cap: usize,
+}
+
+impl<'a> Expansion<'a> {
+    /// The bytes `text` holds once every entity reference in it is expanded.
+    ///
+    /// A character reference and a predefined entity (`&lt;`) are counted at
+    /// their own spelling, which is never shorter than what they stand for, so
+    /// this over-estimates and never under-estimates. The scan stops at the first
+    /// total past the cap rather than counting the rest of 178,000 references
+    /// that have already passed it.
+    fn length(&mut self, text: &'a str, depth: usize) -> Result<usize, ParseError> {
+        let mut total = text.len();
+        if total > self.cap {
+            return Err(past_the_expansion_budget());
+        }
+        let mut at = 0_usize;
+        while let Some(offset) = text.get(at..).and_then(|rest| rest.find('&')) {
+            let start = at.saturating_add(offset);
+            let tail = text.get(start.saturating_add(1)..).unwrap_or_default();
+            let (name, consumed) = reference(tail);
+            at = start.saturating_add(1).saturating_add(consumed);
+            let Some(name) = name else {
+                continue;
+            };
+            let Some(expansion) = self.entity_length(name, depth)? else {
+                continue;
+            };
+            let spelling = name.len().saturating_add(2);
+            total = total.saturating_sub(spelling).saturating_add(expansion);
+            if total > self.cap {
+                return Err(past_the_expansion_budget());
+            }
+        }
+        Ok(total)
+    }
+
+    /// The bytes one entity's value holds once its own references are expanded,
+    /// or `None` when the document does not declare that entity.
+    fn entity_length(&mut self, name: &'a str, depth: usize) -> Result<Option<usize>, ParseError> {
+        if let Some(size) = self.sizes.get(name) {
+            return Ok(Some(*size));
+        }
+        let Some(value) = self.entities.get(name).copied() else {
+            return Ok(None);
+        };
+        if depth > ENTITY_NESTING_MAX {
+            return Err(ParseError::InvalidXml {
+                detail: "the entity references in this report nest in a loop".to_owned(),
+            });
+        }
+        let size = self.length(value, depth.saturating_add(1))?;
+        self.sizes.insert(name, size);
+        Ok(Some(size))
+    }
+}
+
+/// The entity reference `text` starts, and the bytes it spans.
+///
+/// `None` when `text` does not start a reference this scan reads — a character
+/// reference (`&#38;`), a `&` the document leaves bare, or a run of name
+/// characters with no `;` — so the caller counts those bytes as literal text. A
+/// run is stepped over whole either way, which keeps the scan linear.
+fn reference(text: &str) -> (Option<&str>, usize) {
+    let mut end = 0_usize;
+    for (offset, ch) in text.char_indices() {
+        if ch == ';' && end > 0 {
+            return (text.get(..end), offset.saturating_add(1));
+        }
+        if !is_name_char(ch) {
+            return (None, end.max(1));
+        }
+        end = offset.saturating_add(ch.len_utf8());
+    }
+    (None, end.max(1))
+}
+
+/// Whether `ch` may appear in an XML name.
+///
+/// XML's own set is letters, digits, `.`, `-`, `_`, `:` and the combining and
+/// extending characters Unicode adds to them. Every non-ASCII character is
+/// allowed here rather than classified: a name this reads that XML does not is
+/// only ever counted at its own spelling, and the declaration scan uses the same
+/// rule, so no declared name can hide from the reference scan.
+fn is_name_char(ch: char) -> bool {
+    !ch.is_ascii() || ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | ':')
+}
+
+/// The `DOCTYPE` a document declares, if it declares one.
+struct Doctype<'a> {
+    /// The internal subset between `[` and `]`, empty when there is none.
+    subset: &'a str,
+    /// The byte offset `<!DOCTYPE` starts at.
+    start: usize,
+    /// The byte offset just past the `>` that ends the declaration.
+    end: usize,
+}
+
+/// The `DOCTYPE` `text` declares, if it declares one.
+fn doctype(text: &str) -> Option<Doctype<'_>> {
+    let start = text.find("<!DOCTYPE")?;
+    let rest = text.get(start..)?;
+    let (length, inside) = declaration_extent(rest);
+    Some(Doctype {
+        subset: inside.and_then(|range| rest.get(range)).unwrap_or_default(),
+        start,
+        end: start.saturating_add(length),
+    })
+}
+
+/// The bytes the markup declaration `text` starts span, and where its internal
+/// subset sits inside them.
+///
+/// A `DOCTYPE`'s internal subset may hold `>` and `]` inside a quoted entity
+/// value, so the declaration ends at the first `>` outside a quote and outside
+/// brackets, and the subset is the text between the first `[` and the `]` that
+/// closes it.
+fn declaration_extent(text: &str) -> (usize, Option<Range<usize>>) {
+    let mut quote: Option<char> = None;
+    let mut depth = 0_usize;
+    let mut subset_start: Option<usize> = None;
+    let mut subset_end: Option<usize> = None;
+    for (offset, ch) in text.char_indices() {
+        match quote {
+            Some(open) if ch == open => quote = None,
+            Some(_) => {}
+            None => match ch {
+                '"' | '\'' => quote = Some(ch),
+                '[' => {
+                    if subset_start.is_none() {
+                        subset_start = Some(offset.saturating_add(1));
+                    }
+                    depth = depth.saturating_add(1);
+                }
+                ']' => {
+                    if depth == 1 {
+                        subset_end = Some(offset);
+                    }
+                    depth = depth.saturating_sub(1);
+                }
+                '>' if depth == 0 => {
+                    let subset = subset_start.zip(subset_end).map(|(from, to)| from..to);
+                    return (offset.saturating_add(1), subset);
+                }
+                _ => {}
+            },
+        }
+    }
+    (text.len(), None)
+}
+
+/// The internal entities a `DOCTYPE`'s subset declares, by name.
+///
+/// An external entity (`SYSTEM` or `PUBLIC`) is never fetched, so the parser
+/// holds no value for it and refuses a reference to one itself. A parameter
+/// entity's value is read by the same `&name;` expansion as a general one's,
+/// because the parser stores every declaration it reads.
+fn entity_values(subset: &str) -> HashMap<&str, &str> {
+    const OPEN: &str = "<!ENTITY";
+    let mut entities = HashMap::new();
+    let mut at = 0_usize;
+    while let Some(offset) = subset.get(at..).and_then(|rest| rest.find(OPEN)) {
+        at = at.saturating_add(offset).saturating_add(OPEN.len());
+        let mut rest = subset.get(at..).unwrap_or_default().trim_start();
+        rest = rest.strip_prefix('%').map_or(rest, str::trim_start);
+        let (name, after_name) = split_name(rest);
+        if name.is_empty() {
+            continue;
+        }
+        let Some((quote, body)) = after_name.trim_start().split_at_checked(1) else {
+            continue;
+        };
+        if !matches!(quote, "\"" | "'") {
+            continue;
+        }
+        let Some(end) = body.find(quote) else {
+            continue;
+        };
+        entities.insert(name, body.get(..end).unwrap_or_default());
+    }
+    entities
+}
+
+/// Refuses a report whose namespace declarations would make the parser's table
+/// quadratic.
+fn refuse_namespace_entries_past_the_budget(text: &str) -> Result<(), ParseError> {
+    if !text.contains("xmlns") {
+        return Ok(());
+    }
+    let mut scope = NamespaceScope::default();
+    let mut at = 0_usize;
+    while let Some(offset) = text.get(at..).and_then(|rest| rest.find('<')) {
+        let start = at.saturating_add(offset);
+        let tail = text.get(start..).unwrap_or_default();
+        if let Some(length) = literal_region_length(tail) {
+            at = start.saturating_add(length);
+        } else if tail.starts_with("<!") {
+            at = start.saturating_add(declaration_extent(tail).0);
+        } else if let Some(end) = tail.strip_prefix("</").and_then(|rest| rest.find('>')) {
+            scope.close_element();
+            at = start.saturating_add(end).saturating_add(3);
+        } else if let Some((declarations, self_closing, length)) = start_tag(tail) {
+            scope.open_element(declarations, self_closing)?;
+            at = start.saturating_add(length);
+        } else {
+            at = start.saturating_add(1);
+        }
+    }
+    Ok(())
+}
+
+/// The namespace declarations a document's elements put in scope.
+#[derive(Default)]
+struct NamespaceScope {
+    /// The declarations each open element made, innermost last.
+    open: Vec<usize>,
+    /// The declarations in scope, being the sum of `open`.
+    in_scope: usize,
+    /// The entries the parser's namespace table holds for the document.
+    entries: usize,
+}
+
+impl NamespaceScope {
+    /// Records one element, refusing the document once its table passes the
+    /// bound.
+    fn open_element(&mut self, declarations: usize, self_closing: bool) -> Result<(), ParseError> {
+        let in_scope = self.in_scope.saturating_add(declarations);
+        if declarations > 0 {
+            self.entries = self.entries.saturating_add(in_scope);
+            if self.entries > NAMESPACE_ENTRIES_MAX {
+                return Err(ParseError::InvalidXml {
+                    detail: format!(
+                        "the namespace declarations in this report exceed the \
+                         {NAMESPACE_ENTRIES_MAX} entry budget"
+                    ),
+                });
+            }
+        }
+        if !self_closing {
+            self.open.push(declarations);
+            self.in_scope = in_scope;
+        }
+        Ok(())
+    }
+
+    /// Records the end of the innermost open element.
+    fn close_element(&mut self) {
+        if let Some(declarations) = self.open.pop() {
+            self.in_scope = self.in_scope.saturating_sub(declarations);
+        }
+    }
+}
+
+/// A start tag's namespace declarations, whether it closes itself, and the bytes
+/// it spans.
+///
+/// `None` when the text is not a start tag this scan reads, which leaves the
+/// document to the parser's own refusal.
+fn start_tag(text: &str) -> Option<(usize, bool, usize)> {
+    let mut rest = text.strip_prefix('<')?;
+    rest = split_name(rest).1;
+    let mut declarations = 0_usize;
+    loop {
+        rest = rest.trim_start();
+        if rest.starts_with('>') {
+            return Some((declarations, false, text.len() - rest.len() + 1));
+        }
+        if rest.starts_with("/>") {
+            return Some((declarations, true, text.len() - rest.len() + 2));
+        }
+        let (name, after_name) = split_name(rest);
+        if name.is_empty() {
+            return None;
+        }
+        rest = after_name.trim_start().strip_prefix('=')?.trim_start();
+        let quote = rest.chars().next()?;
+        if quote != '"' && quote != '\'' {
+            return None;
+        }
+        let end = rest.get(1..)?.find(quote)?;
+        rest = rest.get(end.saturating_add(2)..)?;
+        if name == "xmlns" || name.starts_with("xmlns:") {
+            declarations = declarations.saturating_add(1);
+        }
+    }
+}
+
+/// The name `text` starts, and the rest after it.
+fn split_name(text: &str) -> (&str, &str) {
+    let end = text
+        .find(|ch: char| !is_name_char(ch))
+        .unwrap_or(text.len());
+    (
+        text.get(..end).unwrap_or_default(),
+        text.get(end..).unwrap_or_default(),
+    )
 }
 
 /// One report's cases and the identity bytes they hold, refused past a budget.
@@ -827,13 +1233,41 @@ fn case_duration(case: Node<'_, '_>) -> Result<f64, ParseError> {
     if raw.is_empty() {
         return Ok(0.0);
     }
+    let Some(readable) = readable_time(raw) else {
+        return Err(invalid_time(raw));
+    };
     // A thousands separator is not part of a number here, so every comma goes
     // before the value is parsed.
-    let without_commas = raw.replace(',', "");
-    let duration = parse_seconds(&without_commas).ok_or_else(|| ParseError::InvalidTime {
-        value: strip_wire_whitespace(raw).to_owned(),
-    })?;
+    let without_commas = readable.replace(',', "");
+    let duration = parse_seconds(&without_commas).ok_or_else(|| invalid_time(raw))?;
     finite_duration(duration, raw)
+}
+
+/// The `time` value this server reads, or `None` when it is past
+/// [`TIME_CHARS_MAX`].
+///
+/// The bound is the first thing every reader of the attribute checks, so a 20
+/// MiB `time` never reaches the comma removal or the digit rewriting that made
+/// one blocking thread spend 19.5 s on it.
+fn readable_time(raw: &str) -> Option<&str> {
+    let trimmed = raw.trim();
+    if trimmed.chars().nth(TIME_CHARS_MAX).is_some() {
+        return None;
+    }
+    Some(trimmed)
+}
+
+/// The refusal a `time` that is not a number this server reads makes.
+///
+/// The detail quotes the value, so it quotes at most [`TIME_CHARS_MAX`] code
+/// points of it: a 20 MiB attribute is not worth a 20 MiB error message.
+fn invalid_time(raw: &str) -> ParseError {
+    ParseError::InvalidTime {
+        value: strip_wire_whitespace(raw)
+            .chars()
+            .take(TIME_CHARS_MAX)
+            .collect(),
+    }
 }
 
 /// A duration the database and the read API can carry.
@@ -846,9 +1280,7 @@ fn finite_duration(duration: f64, raw: &str) -> Result<f64, ParseError> {
     if duration.is_finite() {
         return Ok(duration);
     }
-    Err(ParseError::InvalidTime {
-        value: strip_wire_whitespace(raw).to_owned(),
-    })
+    Err(invalid_time(raw))
 }
 
 /// Matches one Unicode decimal digit, the characters the reader rewrites.
@@ -874,7 +1306,7 @@ fn decimal_digit() -> Regex {
 /// and the retry path does not, which is why a retry with `<retry time="1,5">`
 /// reads 0.0.
 fn parse_seconds(raw: &str) -> Option<f64> {
-    let trimmed = raw.trim();
+    let trimmed = readable_time(raw)?;
     if trimmed.is_empty() {
         return None;
     }

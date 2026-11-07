@@ -13,10 +13,14 @@
     reason = "a test fails loudly when the parser panics or the corpus is missing"
 )]
 
+use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use flakeradar_core::{parsing::ParseError, parsing::SUITE_DEPTH_MAX, parsing::parse_junit_xml};
+use flakeradar_core::{
+    parsing::ParseError, parsing::SUITE_DEPTH_MAX, parsing::TIME_CHARS_MAX,
+    parsing::parse_junit_xml,
+};
 
 /// Every corpus file, sorted so a failure names a stable file.
 fn corpus() -> Vec<PathBuf> {
@@ -156,5 +160,155 @@ fn an_entity_bomb_is_refused() {
             .to_string()
             .starts_with("Not a valid JUnit XML report: "),
         "{error}"
+    );
+}
+
+#[test]
+fn an_internal_entity_within_the_budget_is_expanded() {
+    // The approved rule restores the reference's `DOCTYPE` support, so a body that
+    // declares an entity and stays inside the expansion budget parses exactly as
+    // it would without one.
+    let xml = r#"<?xml version="1.0"?>
+<!DOCTYPE testsuite [<!ENTITY name "expanded">]>
+<testsuite name="s"><testcase classname="c" name="&name;"><failure message="m">&name;</failure></testcase></testsuite>"#;
+    let cases = parse_junit_xml(xml.as_bytes(), 1).expect("a small expansion parses");
+    assert_eq!(cases[0].name, "expanded");
+    assert_eq!(cases[0].message, "m");
+    assert_eq!(cases[0].details, "expanded");
+}
+
+#[test]
+fn an_entity_that_references_itself_is_refused() {
+    // A declared cycle has no expanded length to measure, so the pre-scan refuses
+    // it instead of walking it forever: the answer is a bad report, not a hang.
+    let xml = br#"<!DOCTYPE testsuite [<!ENTITY a "&b;"><!ENTITY b "&a;">]>
+<testsuite name="s"><testcase classname="&a;" name="t"/></testsuite>"#;
+    assert_eq!(
+        parse_junit_xml(xml, 1),
+        Err(ParseError::InvalidXml {
+            detail: "the entity references in this report nest in a loop".to_owned()
+        })
+    );
+}
+
+#[test]
+fn a_reference_with_no_terminator_is_refused() {
+    // `&e` with no `;` is not a reference the scan counts, and the parser refuses
+    // the document itself. What matters is that the answer is a refusal rather
+    // than a mis-measured expansion.
+    let xml = br#"<!DOCTYPE t [<!ENTITY e "aaaa">]><testsuite name="s"><testcase name="a" classname="&e"/></testsuite>"#;
+    let error = parse_junit_xml(xml, 1).expect_err("the unterminated reference is refused");
+    assert!(
+        error
+            .to_string()
+            .starts_with("Not a valid JUnit XML report: "),
+        "{error}"
+    );
+}
+
+#[test]
+fn a_namespace_declaration_on_every_case_is_parsed() {
+    // Namespaces are what the second bound is about, and the parser's own answer
+    // for them must not change: a declaration under the budget costs nothing and
+    // the case is still a case. `<failure xmlns="">` reads as no namespace at all,
+    // which is the SP2 case the parser's `is_tag` owns.
+    let mut xml = String::from("<testsuite name=\"s\">");
+    for index in 0..1000 {
+        let _ = write!(xml, "<testcase xmlns:p{index}=\"u\" name=\"a{index}\"/>");
+    }
+    xml.push_str("</testsuite>");
+    let cases = parse_junit_xml(xml.as_bytes(), 1).expect("the declarations parse");
+    assert_eq!(cases.len(), 1000);
+}
+
+#[test]
+fn a_time_past_the_readable_length_is_a_typed_error() {
+    // Five million mathematical digits used to spend 19.5 s of a blocking thread
+    // rewriting every one of them; past the bound the value is not a number this
+    // server reads, so the answer is the same 400 a non-numeric `time` gets.
+    let mut xml = String::from("<testsuite name=\"s\"><testcase name=\"a\" time=\"");
+    xml.push_str(&"\u{1d7ff}".repeat(100_000));
+    xml.push_str("\"/></testsuite>");
+    let error = parse_junit_xml(xml.as_bytes(), 1).expect_err("the value is not readable");
+    let ParseError::InvalidTime { value } = &error else {
+        panic!("a time past the bound is a typed time error: {error}");
+    };
+    assert_eq!(
+        value.chars().count(),
+        TIME_CHARS_MAX,
+        "the refusal quotes a bounded value"
+    );
+}
+
+#[test]
+fn a_retry_time_past_the_readable_length_reads_zero() {
+    // A retry's `time` is context rather than the case's own duration, so an
+    // unreadable one reads 0.0, as every other unreadable retry `time` does.
+    let mut xml = String::from("<testsuite name=\"s\"><testcase name=\"a\"><rerunFailure time=\"");
+    xml.push_str(&"9".repeat(100_000));
+    xml.push_str("\"/></testcase></testsuite>");
+    let cases = parse_junit_xml(xml.as_bytes(), 1).expect("the case still parses");
+    assert_eq!(cases[0].duration, 0.0);
+}
+
+#[test]
+fn a_namespace_declaration_bound_counts_what_the_parser_copies() {
+    // The bound is the parser's own table, not the body's size: 600 nested
+    // declarations, and then siblings that inherit them, stay under it.
+    let mut xml = String::from("<testsuite name=\"s\">");
+    for index in 0..600 {
+        let _ = write!(xml, "<x xmlns:p{index}=\"u\">");
+    }
+    xml.push_str(&"<y xmlns:p0=\"u\"/>".repeat(600));
+    xml.push_str(&"</x>".repeat(600));
+    xml.push_str("<testcase name=\"a\"/></testsuite>");
+    assert_eq!(
+        parse_junit_xml(xml.as_bytes(), 1)
+            .expect("the declarations parse")
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn a_reference_at_the_end_of_a_body_is_measured_without_a_terminator() {
+    // The scan stops where the text does, so a declared entity referenced in the
+    // last bytes is counted as a bare `&` and the parser refuses the document
+    // rather than the scan mis-reading an expansion of it.
+    let xml =
+        br#"<!DOCTYPE t [<!ENTITY e "aaaa">]><testsuite name="s"><testcase name="a" classname="&e"#;
+    assert!(
+        parse_junit_xml(xml, 1).is_err(),
+        "the truncation is refused"
+    );
+}
+
+#[test]
+fn a_declaration_the_prescan_cannot_read_is_left_to_the_parser() {
+    // The expansion and namespace bounds read the `DOCTYPE` themselves, so a
+    // declaration they cannot read must be the parser's refusal rather than a
+    // guessed size. These are also the shapes that make the scan give up: a
+    // declaration with no name or no value, an unterminated value, a nested `[`,
+    // a stray `]`, and a markup declaration in the document body.
+    for subset in [
+        "<!ENTITY >",
+        "<!ENTITY e",
+        "<!ENTITY e>",
+        "<!ENTITY e \"unterminated>",
+        "[[<!ENTITY e \"x\">]]",
+        "]",
+    ] {
+        let xml = format!(
+            "<!DOCTYPE t [{subset}]><testsuite name=\"s\"><testcase name=\"a\"/></testsuite>"
+        );
+        assert!(
+            parse_junit_xml(xml.as_bytes(), 1).is_err(),
+            "{subset} must be refused"
+        );
+    }
+    let body = br#"<testsuite xmlns:j="u" name="s"><!ELEMENT x><testcase name="a"/></testsuite>"#;
+    assert!(
+        parse_junit_xml(body, 1).is_err(),
+        "a declaration in the body is refused"
     );
 }
