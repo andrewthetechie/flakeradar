@@ -18,6 +18,7 @@ use std::time::Duration;
 use anyhow::Context as _;
 use flakeradar_core::{notify::TierChange, notify::WebhookFormat, notify::render};
 use flakeradar_db::processing::ProcessOutcome;
+use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
 use crate::BoxFuture;
@@ -166,71 +167,116 @@ impl WebhookShared {
         let body = render(batch, self.format, &self.public_url);
         let label = Self::endpoint(url);
         for attempt in 0..ATTEMPTS {
-            let mut delay = self.retry_delays.get(attempt).copied().unwrap_or_default();
-            let answer = until_stopped(stop, self.client.post(url).json(&body).send()).await;
-            let Some(answer) = answer else {
-                tracing::info!(
-                    name: "webhook.task.stopped",
-                    endpoint = %label,
-                    "the Notification task stopped with a delivery in flight"
-                );
-                return;
+            let delay = self.retry_delays.get(attempt).copied().unwrap_or_default();
+            let after = match self
+                .attempt(url, &body, &label, batch.len(), attempt, stop)
+                .await
+            {
+                Attempt::Stopped | Attempt::Finished => return,
+                Attempt::Retry { after } => after.unwrap_or(delay),
             };
-            let answer = answer.map_err(|error| error.without_url().to_string());
-            match answer {
-                Err(error) => {
-                    tracing::warn!(
-                        name: "webhook.delivery.unreachable",
-                        endpoint = %label,
-                        attempt = attempt + 1,
-                        attempts = ATTEMPTS,
-                        error = %error,
-                        "Webhook endpoint unreachable"
-                    );
-                }
-                Ok(response) => {
-                    let status = response.status().as_u16();
-                    if (200..300).contains(&status) {
-                        tracing::info!(
-                            name: "webhook.delivery.sent",
-                            notifications = batch.len(),
-                            endpoint = %label,
-                            "sent a batch of Tier changes"
-                        );
-                        return;
-                    }
-                    if !RETRYABLE_STATUSES.contains(&status) && status < 500 {
-                        tracing::warn!(
-                            name: "webhook.delivery.rejected",
-                            endpoint = %label,
-                            status,
-                            "Webhook endpoint rejected the batch"
-                        );
-                        return;
-                    }
-                    tracing::warn!(
-                        name: "webhook.delivery.failed",
-                        endpoint = %label,
-                        status,
-                        attempt = attempt + 1,
-                        attempts = ATTEMPTS,
-                        "Webhook delivery failed"
-                    );
-                    if let Some(after) = retry_after_seconds(response.headers()) {
-                        delay = after;
-                    }
-                }
+            // The last attempt has nothing left to wait for.
+            if attempt + 1 == ATTEMPTS {
+                return;
             }
-            if attempt + 1 < ATTEMPTS {
-                let wait = tokio::time::sleep(
-                    Duration::try_from_secs_f64(delay.max(0.0)).unwrap_or_default(),
-                );
-                if until_stopped(stop, wait).await.is_none() {
-                    return;
-                }
+            let wait =
+                tokio::time::sleep(Duration::try_from_secs_f64(after.max(0.0)).unwrap_or_default());
+            if until_stopped(stop, wait).await.is_none() {
+                return;
             }
         }
     }
+
+    /// One POST of `body` to `url`, and what its answer means for the policy.
+    ///
+    /// `events` is how many Tier changes the batch holds, and `attempt` is which
+    /// try this is, both of which the endpoint's log line carries.
+    async fn attempt(
+        &self,
+        url: &str,
+        body: &Value,
+        label: &str,
+        events: usize,
+        attempt: usize,
+        stop: &CancellationToken,
+    ) -> Attempt {
+        let answer = until_stopped(stop, self.client.post(url).json(body).send()).await;
+        let Some(answer) = answer else {
+            tracing::info!(
+                name: "webhook.task.stopped",
+                endpoint = %label,
+                "the Notification task stopped with a delivery in flight"
+            );
+            return Attempt::Stopped;
+        };
+        let response = match answer.map_err(|error| error.without_url().to_string()) {
+            Ok(response) => response,
+            Err(error) => {
+                tracing::warn!(
+                    name: "webhook.delivery.unreachable",
+                    endpoint = %label,
+                    attempt = attempt + 1,
+                    attempts = ATTEMPTS,
+                    error = %error,
+                    "Webhook endpoint unreachable"
+                );
+                return Attempt::Retry { after: None };
+            }
+        };
+        let status = response.status().as_u16();
+        if (200..300).contains(&status) {
+            tracing::info!(
+                name: "webhook.delivery.sent",
+                notifications = events,
+                endpoint = %label,
+                "sent a batch of Tier changes"
+            );
+            return Attempt::Finished;
+        }
+        if is_permanent(status) {
+            tracing::warn!(
+                name: "webhook.delivery.rejected",
+                endpoint = %label,
+                status,
+                "Webhook endpoint rejected the batch"
+            );
+            return Attempt::Finished;
+        }
+        tracing::warn!(
+            name: "webhook.delivery.failed",
+            endpoint = %label,
+            status,
+            attempt = attempt + 1,
+            attempts = ATTEMPTS,
+            "Webhook delivery failed"
+        );
+        Attempt::Retry {
+            after: retry_after_seconds(response.headers()),
+        }
+    }
+}
+
+/// What one Notification attempt did, and whether another is worth making.
+#[derive(Debug, Clone, Copy)]
+enum Attempt {
+    /// The leader stopped while the request was in flight, so it ends here.
+    Stopped,
+    /// The endpoint took the batch, or refused it for good.
+    Finished,
+    /// Another attempt may succeed, after the `retry-after` the endpoint named
+    /// or the policy's own delay when it named none.
+    Retry { after: Option<f64> },
+}
+
+/// Whether `status` is the same on the next attempt, so a retry cannot help.
+///
+/// 408 is a request the endpoint timed out on and 429 is its rate limit, and both
+/// describe a moment rather than the message; every server error may be a moment
+/// too. Any other refusal (404 for a deleted hook, 400 for a body the endpoint
+/// dislikes) is the same on the next attempt, so the queue does not spend
+/// retries on it.
+fn is_permanent(status: u16) -> bool {
+    !RETRYABLE_STATUSES.contains(&status) && status < 500
 }
 
 /// The `retry-after` a rate limit asked for, capped; `None` when absent or unusable.
