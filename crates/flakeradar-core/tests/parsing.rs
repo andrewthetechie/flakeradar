@@ -799,10 +799,7 @@ fn an_empty_namespace_is_no_namespace() {
     )
     .unwrap();
     assert_eq!(
-        retried
-            .iter()
-            .map(|case| case.status)
-            .collect::<Vec<_>>(),
+        retried.iter().map(|case| case.status).collect::<Vec<_>>(),
         [ExecutionStatus::Failed, ExecutionStatus::Passed]
     );
 
@@ -1076,13 +1073,12 @@ fn an_unterminated_comment_is_the_parsers_error() {
 
 #[test]
 fn a_single_byte_code_page_label_is_decoded_by_its_own_codec() {
-    // The label goes to the codec registry, so a single-byte code page decodes
-    // exactly as that code page says.
-    let cases: [(&str, &[u8], &str); 4] = [
+    // The label names a codec the reference knows, so a single-byte code page decodes exactly
+    // as that code page says.
+    let cases: [(&str, &[u8], &str); 3] = [
         ("windows-1252", b"\x80", "n€"),
         ("iso-8859-15", b"\xa4", "n€"),
         ("koi8-r", b"\xc1", "nа"),
-        ("unicode-1-1-utf-8", b"\xc3\xa9", "né"),
     ];
     for (label, bytes, expected) in cases {
         let mut xml = format!(
@@ -1093,5 +1089,31 @@ fn a_single_byte_code_page_label_is_decoded_by_its_own_codec() {
         xml.extend_from_slice(b"\"/></testsuite>");
         let case = &parse_junit_xml(&xml, 1).unwrap()[0];
         assert_eq!(case.name.as_str(), expected, "{label}");
+    }
+}
+
+#[test]
+fn a_label_the_reference_does_not_know_is_refused() {
+    // WHATWG's registry has labels the reference's codecs do not: it answers
+    // 422 for each of these, so this server does too.
+    for label in [
+        "x-cp1252",
+        "windows-874",
+        "x-user-defined",
+        "x-mac-cyrillic",
+        "unicode-1-1-utf-8",
+        "logical",
+        "visual",
+    ] {
+        let xml = format!(
+            "<?xml version=\"1.0\" encoding=\"{label}\"?><testsuite name=\"s\"><testcase classname=\"c\" name=\"t\"/></testsuite>"
+        );
+        assert_eq!(
+            parse_junit_xml(xml.as_bytes(), 1),
+            Err(ParseError::InvalidXml {
+                detail: format!("unknown encoding: {label}")
+            }),
+            "{label}"
+        );
     }
 }

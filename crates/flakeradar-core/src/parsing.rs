@@ -34,6 +34,7 @@ use regex::Regex;
 use roxmltree::{Document, Node, ParsingOptions};
 use sha1::{Digest as _, Sha1};
 
+use crate::encodings::{Rule, Utf16Order, rule_for};
 use crate::model::ExecutionStatus;
 use crate::py::{cap, py_splitlines, strip_wire_whitespace};
 use crate::types::Fingerprint;
@@ -276,45 +277,109 @@ pub fn parse_junit_xml(content: &[u8], line_base: i64) -> Result<Vec<ParsedCase>
     }
 }
 
-/// Decodes the bytes with their declared encoding, or reports that they are not
-/// valid in it.
+/// Decodes the bytes with the encoding they declare, or reports that they are
+/// not valid in it.
 ///
 /// `Ok(None)` means the bytes are not valid in the encoding they declare, and the
 /// caller reads them again as lossy UTF-8.
 ///
+/// The bytes decide the encoding before the label does: a byte-order mark or a
+/// leading `<` says the document is UTF-16, and a UTF-8 byte-order mark is
+/// stripped from the text every other rule decodes. What the label still decides
+/// is which code page reads the bytes at all, and whether the document is refused
+/// before it is read.
+///
 /// # Errors
 ///
 /// Returns [`ParseError::InvalidXml`] when the declaration names an encoding this
-/// server cannot use at all: one its codec list does not know, or a multi-byte
-/// one.
+/// server cannot use: one the reference's codecs do not know, one whose codec is
+/// multi-byte, stateful or EBCDIC, or one that contradicts the bytes' own
+/// byte-order mark.
 fn strict_decode(content: &[u8]) -> Result<Option<String>, ParseError> {
-    // XML settles the encoding before the declaration is read: a byte-order mark
-    // decides it, and so does the first byte of a document that starts with `<`.
-    // A leading `0x3C 0x00` is `<` in UTF-16LE, which is why a UTF-16 report
-    // without a byte-order mark is still read as UTF-16.
-    match content {
-        [0xFF, 0xFE, ..] | [0x3C, 0x00, ..] => return Ok(decode_utf16(content, UTF_16LE)),
-        [0xFE, 0xFF, ..] | [0x00, 0x3C, ..] => return Ok(decode_utf16(content, UTF_16BE)),
-        _ => {}
+    // A UTF-16 document's declaration is UTF-16 too, so the mark has to be read
+    // before the label can be, out of the text the mark decodes to.
+    if let Some((mark, marked)) = utf16_mark(content) {
+        return decode_marked_utf16(content, mark, marked);
     }
-    let Some(label) = declared_encoding(content) else {
-        let (text, _, had_errors) = UTF_8.decode(content);
-        return Ok((!had_errors).then(|| text.into_owned()));
+    let rule = match declared_encoding(content) {
+        Some(label) => Some(label_rule(&label)?),
+        None => None,
     };
-    let Some(encoding) = encoding_rule(&label)? else {
+    // A UTF-8 byte-order mark is not text, so every rule reads the bytes after
+    // it; the declaration still decides which rule that is.
+    let body = content.strip_prefix(UTF8_MARK).unwrap_or(content);
+    match rule {
+        None | Some(Rule::Utf8) => Ok(strict_utf8(body)),
+        Some(Rule::Single(table)) => Ok(table.decode(body)),
+        Some(Rule::Refused) => Err(unsupported_encoding()),
+        // `utf-16` without a mark: the bytes are read as little-endian, which is
+        // what a document declaring UTF-16 and holding none of the marks reads as.
+        Some(Rule::Utf16(Utf16Order::Any)) => Ok(decode_utf16(content, UTF_16LE)),
+        // A codec the reference cannot read either, and the two labels that name an
+        // endianness on a document that is not UTF-16 at all: the document is read
+        // as lossy UTF-8, which is what the reference answers.
+        Some(Rule::Lossy | Rule::Utf16(Utf16Order::Little | Utf16Order::Big)) => Ok(None),
+    }
+}
+
+/// The byte-order mark that starts a UTF-8 document.
+const UTF8_MARK: &[u8] = &[0xEF, 0xBB, 0xBF];
+
+/// The endianness the bytes themselves name, when they name one.
+///
+/// A byte-order mark says so outright, and so does the first byte of a document
+/// that starts with `<`: a leading `0x3C 0x00` is `<` in UTF-16LE, which is why a
+/// UTF-16 report without a byte-order mark is still read as UTF-16.
+fn utf16_mark(content: &[u8]) -> Option<(Utf16Order, bool)> {
+    match content {
+        [0xFF, 0xFE, ..] => Some((Utf16Order::Little, true)),
+        [0xFE, 0xFF, ..] => Some((Utf16Order::Big, true)),
+        [0x3C, 0x00, ..] => Some((Utf16Order::Little, false)),
+        [0x00, 0x3C, ..] => Some((Utf16Order::Big, false)),
+        _ => None,
+    }
+}
+
+/// Decodes a document the bytes say is UTF-16, checking the declaration agrees.
+///
+/// A byte-order mark can only be answered by a label that agrees with it: a
+/// document whose marked bytes are UTF-16 and whose label names another code page,
+/// or the other endianness, is one the reference refuses. A document whose bytes
+/// are UTF-16 only because it starts with `<` is read as UTF-16 whatever the label
+/// says, because the reference has committed to the encoding by then.
+fn decode_marked_utf16(
+    content: &[u8],
+    mark: Utf16Order,
+    marked: bool,
+) -> Result<Option<String>, ParseError> {
+    let Some(text) = decode_utf16(content, flavour(mark)) else {
         return Ok(None);
     };
-    match encoding {
-        EncodingRule::Latin1 => Ok(Some(content.iter().map(|byte| char::from(*byte)).collect())),
-        EncodingRule::Ascii => Ok(std::str::from_utf8(content)
-            .ok()
-            .filter(|text| text.is_ascii())
-            .map(ToOwned::to_owned)),
-        EncodingRule::Utf16 => Ok(decode_utf16(content, UTF_16LE)),
-        EncodingRule::Other(encoding) => {
-            let (text, _, had_errors) = encoding.decode(content);
-            Ok((!had_errors).then(|| text.into_owned()))
-        }
+    let rule = match declaration_label(&text) {
+        Some(label) => Some(label_rule(&label)?),
+        None => None,
+    };
+    if !marked {
+        return Ok(Some(text));
+    }
+    match rule {
+        None | Some(Rule::Utf16(Utf16Order::Any)) => Ok(Some(text)),
+        Some(Rule::Utf16(order)) if order == mark => Ok(Some(text)),
+        Some(Rule::Utf16(_)) => Err(ParseError::InvalidXml {
+            detail: "the byte-order mark contradicts the declared encoding".to_owned(),
+        }),
+        Some(Rule::Refused | Rule::Lossy) => Err(unsupported_encoding()),
+        Some(Rule::Utf8 | Rule::Single(_)) => Err(ParseError::InvalidXml {
+            detail: "the bytes are UTF-16 and the declaration names another encoding".to_owned(),
+        }),
+    }
+}
+
+/// The `encoding_rs` decoder one endianness reads with.
+fn flavour(order: Utf16Order) -> &'static Encoding {
+    match order {
+        Utf16Order::Big => UTF_16BE,
+        Utf16Order::Any | Utf16Order::Little => UTF_16LE,
     }
 }
 
@@ -327,109 +392,96 @@ fn decode_utf16(content: &[u8], encoding: &'static Encoding) -> Option<String> {
     (!had_errors).then(|| text.into_owned())
 }
 
-/// The rule a declared encoding's label is decoded by.
-#[derive(Debug, Clone, Copy)]
-enum EncodingRule {
-    /// True Latin-1: every byte is its own code point, including `0x80`-`0x9F`.
-    Latin1,
-    /// US-ASCII: a byte past `0x7F` is not valid in it.
-    Ascii,
-    /// UTF-16, which is read only from a byte-order mark or a leading `<`.
-    Utf16,
-    /// Any other single-byte encoding the two agree on, decoded by `encoding_rs`.
-    Other(&'static Encoding),
+/// Reads bytes that must be valid UTF-8, or reports that they are not.
+fn strict_utf8(content: &[u8]) -> Option<String> {
+    let (text, _, had_errors) = UTF_8.decode(content);
+    (!had_errors).then(|| text.into_owned())
 }
 
-/// The encoding labels read as true Latin-1, without punctuation.
-const LATIN1_LABELS: [&str; 9] = [
-    "iso88591",
-    "iso8859",
-    "8859",
-    "latin1",
-    "latin",
-    "l1",
-    "cp819",
-    "ibm819",
-    "csisolatin1",
-];
-
-/// The encoding labels read as US-ASCII, without punctuation.
-const ASCII_LABELS: [&str; 6] = [
-    "usascii",
-    "ascii",
-    "ansix341968",
-    "iso646us",
-    "cp367",
-    "csascii",
-];
+/// The refusal a codec this server does not read gets.
+fn unsupported_encoding() -> ParseError {
+    ParseError::InvalidXml {
+        detail: "the declared encoding is not one this server reads".to_owned(),
+    }
+}
 
 /// The rule a declaration's label names.
 ///
-/// The label set is the one an XML reader's own codec list defines, which is why
-/// Latin-1 is the real Latin-1 rather than WHATWG's windows-1252 alias for it,
-/// and why US-ASCII refuses the bytes Latin-1 accepts. A label the table here
-/// does not name goes to [`encoding_rs`]'s registry.
+/// # Errors
 ///
-/// `Ok(None)` covers a label whose bytes are then read lossily instead, such as
-/// the endian-specific UTF-16 spellings: the declaration decides nothing there.
-fn encoding_rule(label: &str) -> Result<Option<EncodingRule>, ParseError> {
-    let lowercase = label.to_ascii_lowercase();
-    match lowercase.as_str() {
-        "utf-16" => return Ok(Some(EncodingRule::Utf16)),
-        // These spellings name an endianness the byte-order mark already
-        // decides, so the declaration decides nothing and the bytes are read
-        // lossily.
-        "utf-16le" | "utf-16be" => return Ok(None),
-        // The unhyphenated spelling names a multi-byte encoding this server
-        // cannot read, so the upload is refused rather than decoded wrongly.
-        "utf16" => {
-            return Err(ParseError::InvalidXml {
-                detail: "multi-byte encodings are not supported".to_owned(),
-            });
+/// Returns [`ParseError::InvalidXml`] when the label is not an encoding name XML
+/// allows, which the reference reports as a declaration that is not well formed,
+/// and when the reference's codecs do not know it, which is the `unknown encoding` the
+/// reference refuses.
+fn label_rule(label: &str) -> Result<Rule, ParseError> {
+    if !is_encoding_name(label) {
+        return Err(ParseError::InvalidXml {
+            detail: "XML declaration not well-formed".to_owned(),
+        });
+    }
+    if let Some(rule) = builtin_rule(label) {
+        return Ok(rule);
+    }
+    rule_for(label).ok_or_else(|| ParseError::InvalidXml {
+        detail: format!("unknown encoding: {label}"),
+    })
+}
+
+/// The rule expat's own encoding names get, spelling and all.
+///
+/// `utf-16le` and `utf-16be` are expat's names for the two endiannesses;
+/// `utf-16-le` and `utf-16-be` are codecs the reference refuses as multi-byte, and
+/// the label's spelling, not the normalized form, decides which of the two a
+/// document asked for.
+fn builtin_rule(label: &str) -> Option<Rule> {
+    for (name, order) in [
+        ("utf-16", Utf16Order::Any),
+        ("utf-16le", Utf16Order::Little),
+        ("utf-16be", Utf16Order::Big),
+    ] {
+        if label.eq_ignore_ascii_case(name) {
+            return Some(Rule::Utf16(order));
         }
-        _ => {}
     }
-    let squashed: String = lowercase
-        .chars()
-        .filter(|ch| !matches!(ch, '-' | '_' | ' '))
-        .collect();
-    if squashed == "utf8" {
-        return Ok(Some(EncodingRule::Other(UTF_8)));
-    }
-    if LATIN1_LABELS.contains(&squashed.as_str()) {
-        return Ok(Some(EncodingRule::Latin1));
-    }
-    if ASCII_LABELS.contains(&squashed.as_str()) {
-        return Ok(Some(EncodingRule::Ascii));
-    }
-    match Encoding::for_label(label.as_bytes()) {
-        Some(encoding) if encoding == UTF_8 => Ok(Some(EncodingRule::Other(UTF_8))),
-        Some(encoding) if encoding.is_single_byte() => Ok(Some(EncodingRule::Other(encoding))),
-        Some(_) => Err(ParseError::InvalidXml {
-            detail: "multi-byte encodings are not supported".to_owned(),
-        }),
-        None => Err(ParseError::InvalidXml {
-            detail: format!("unknown encoding: {label}"),
-        }),
-    }
+    None
+}
+
+/// Whether `label` is a name a declaration may carry: a letter, then letters,
+/// digits, `.`, `_` and `-`.
+fn is_encoding_name(label: &str) -> bool {
+    let mut chars = label.chars();
+    chars
+        .next()
+        .is_some_and(|first| first.is_ascii_alphabetic())
+        && chars.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
 }
 
 /// The encoding an XML declaration names, when there is one.
 ///
-/// Reads only the declaration, which XML requires to be ASCII, so a file whose
-/// body is in another encoding is still recognized.
+/// Reads only the declaration, which XML requires to be ASCII, so a document
+/// whose body is in another encoding is still recognized.
 fn declared_encoding(content: &[u8]) -> Option<String> {
-    let start = if content.starts_with(&[0xEF, 0xBB, 0xBF]) {
-        3
-    } else {
-        0
-    };
-    let head = content.get(start..).unwrap_or_default();
-    if !head.starts_with(b"<?xml") {
+    let body = content.strip_prefix(UTF8_MARK).unwrap_or(content);
+    if !body.starts_with(b"<?xml") {
         return None;
     }
-    let end = head.windows(2).position(|pair| pair == b"?>")?;
-    let declaration = std::str::from_utf8(head.get(..end).unwrap_or_default()).ok()?;
+    let end = body.windows(2).position(|pair| pair == b"?>")?;
+    let head = std::str::from_utf8(body.get(..end.saturating_add(2)).unwrap_or_default()).ok()?;
+    declaration_label(head)
+}
+
+/// The label the XML declaration at the start of `text` names, when it holds one.
+///
+/// The declaration is `<?xml` followed by whitespace: `<?xml-stylesheet
+/// href="a" encoding="bogus"?>` is a processing instruction whose target merely
+/// starts with `xml`, and its pseudo-attributes are not the document's
+/// declaration.
+fn declaration_label(text: &str) -> Option<String> {
+    let rest = text.strip_prefix("<?xml")?;
+    if !rest.starts_with([' ', '\t', '\r', '\n']) {
+        return None;
+    }
+    let declaration = rest.get(..rest.find("?>")?)?;
     let mut rest = declaration.split_once("encoding")?.1.trim_start();
     rest = rest.strip_prefix('=')?.trim_start();
     let quote = rest.chars().next().unwrap_or_default();
@@ -443,6 +495,8 @@ fn declared_encoding(content: &[u8]) -> Option<String> {
 
 /// Parses already-decoded text into Executions.
 fn parse_text(text: &str, line_base: i64) -> Result<Vec<ParsedCase>, ParseError> {
+    let skipped = drop_skipped_entity_references(text);
+    let text = skipped.as_deref().unwrap_or(text);
     refuse_unrepresentable_character_references(text)?;
     refuse_expansion_past_the_budget(text)?;
     refuse_namespace_entries_past_the_budget(text)?;
@@ -713,18 +767,130 @@ struct Doctype<'a> {
     start: usize,
     /// The byte offset just past the `>` that ends the declaration.
     end: usize,
+    /// Whether the declaration names an external subset, `SYSTEM` or `PUBLIC`.
+    external: bool,
 }
 
 /// The `DOCTYPE` `text` declares, if it declares one.
 fn doctype(text: &str) -> Option<Doctype<'_>> {
-    let start = text.find("<!DOCTYPE")?;
+    const OPEN: &str = "<!DOCTYPE";
+    let start = text.find(OPEN)?;
     let rest = text.get(start..)?;
     let (length, inside) = declaration_extent(rest);
+    let after_name = rest
+        .get(OPEN.len()..)
+        .map(|tail| split_name(tail.trim_start()).1)
+        .unwrap_or_default()
+        .trim_start();
     Some(Doctype {
         subset: inside.and_then(|range| rest.get(range)).unwrap_or_default(),
         start,
         end: start.saturating_add(length),
+        external: after_name.starts_with("SYSTEM") || after_name.starts_with("PUBLIC"),
     })
+}
+
+/// The document's text with the references in attribute values it declares no
+/// entity for removed.
+///
+/// A `DOCTYPE` that names an external subset may declare entities that subset
+/// holds. Neither parser fetches it, and the reference answers a reference to one
+/// of them in an attribute value by skipping it, so the attribute holds the text
+/// around it: `classname="a&nope;b"` is the classname `ab` and `name="&nope;"`
+/// is the name `""`. `roxmltree` refuses such a reference, so it is removed here
+/// before the parser reads the text.
+///
+/// A reference in the document's text is not skipped: the reference refuses an
+/// undefined entity there itself, and so does this parser. A document that
+/// declares no external subset, or that says `standalone="yes"`, keeps every
+/// reference for the same reason.
+///
+/// `None` when the document keeps every reference, which is every report a CI
+/// runner writes.
+fn drop_skipped_entity_references(text: &str) -> Option<String> {
+    if !text.contains('&') {
+        return None;
+    }
+    let doctype = doctype(text)?;
+    if !doctype.external || standalone_yes(text) {
+        return None;
+    }
+    let entities = entity_values(doctype.subset);
+    let mut kept = String::new();
+    let mut copied = 0_usize;
+    let mut at = 0_usize;
+    let mut dropped = false;
+    while let Some(rest) = text.get(at..) {
+        if at == doctype.start {
+            at = doctype.end;
+            continue;
+        }
+        if let Some(length) = literal_region_length(rest) {
+            at = at.saturating_add(length);
+            continue;
+        }
+        // Only an attribute value holds a reference that can be skipped, so only
+        // a start tag is read for one.
+        let Some((_, _, length)) = rest.starts_with('<').then(|| start_tag(rest)).flatten() else {
+            at = at.saturating_add(rest.chars().next().map_or(1, char::len_utf8));
+            continue;
+        };
+        let end = at.saturating_add(length);
+        let tag = text.get(at..end).unwrap_or_default();
+        let mut inside = 0_usize;
+        while let Some(offset) = tag.get(inside..).and_then(|tail| tail.find('&')) {
+            let reference_start = inside.saturating_add(offset);
+            let tail = tag
+                .get(reference_start.saturating_add(1)..)
+                .unwrap_or_default();
+            let (name, consumed) = reference(tail);
+            let reference_end = reference_start.saturating_add(1).saturating_add(consumed);
+            if let Some(name) = name
+                && !is_predefined(name)
+                && !entities.contains_key(name)
+            {
+                kept.push_str(
+                    text.get(copied..at.saturating_add(reference_start))
+                        .unwrap_or_default(),
+                );
+                copied = at.saturating_add(reference_end);
+                dropped = true;
+            }
+            inside = reference_end;
+        }
+        at = end;
+    }
+    if !dropped {
+        return None;
+    }
+    kept.push_str(text.get(copied..).unwrap_or_default());
+    Some(kept)
+}
+
+/// Whether `name` is one of XML's predefined entities.
+fn is_predefined(name: &str) -> bool {
+    matches!(name, "amp" | "lt" | "gt" | "apos" | "quot")
+}
+
+/// Whether the document's XML declaration says `standalone="yes"`.
+fn standalone_yes(text: &str) -> bool {
+    let Some(rest) = text.strip_prefix("<?xml") else {
+        return false;
+    };
+    let Some(declaration) = rest.get(..rest.find("?>").unwrap_or_default()) else {
+        return false;
+    };
+    let Some((_, tail)) = declaration.split_once("standalone") else {
+        return false;
+    };
+    let Some(tail) = tail.trim_start().strip_prefix('=') else {
+        return false;
+    };
+    let tail = tail.trim_start();
+    let quote = tail.chars().next().unwrap_or_default();
+    let body = tail.get(1..).unwrap_or_default();
+    body.get(..body.find(quote).unwrap_or_default())
+        .is_some_and(|value| value.trim() == "yes")
 }
 
 /// The bytes the markup declaration `text` starts span, and where its internal
@@ -961,7 +1127,9 @@ fn is_tag(node: Node<'_, '_>, tag: &str) -> bool {
 /// The un-namespaced attribute `name` of `node`, as `ElementTree`'s `.get` reads it.
 fn attribute<'a>(node: Node<'a, '_>, name: &str) -> Option<&'a str> {
     node.attributes()
-        .find(|attribute| attribute.namespace().is_none_or(str::is_empty) && attribute.name() == name)
+        .find(|attribute| {
+            attribute.namespace().is_none_or(str::is_empty) && attribute.name() == name
+        })
         .map(|attribute| attribute.value())
 }
 

@@ -323,3 +323,45 @@ One arm that *was* unreachable is gone rather than logged: `Expansion::length` l
 value up again after checking it was declared, and that second lookup's `None` could not happen.
 `entity_length` now answers `None` for an undeclared name itself, which is the case a predefined
 entity such as `&lt;` reaches, and a test covers it.
+
+## Task 33: the encoding tables, and the declaration and `DOCTYPE` arms around them
+
+Task 33 replaced the encoding-label lookup with a table generated from the reference's own
+codecs (`crates/flakeradar-core/src/encodings.rs`, 462 lines) and taught the parser what a
+byte-order mark, a declaration that is not a declaration, and an external subset mean. With the
+tests this task adds — 54,309 fixture rows replayed through `parse_junit_xml`, 25 declaration
+cases and the 23-row encoding fixture — `parsing.rs` measures **99.32% of lines (876/882) and
+96.03% of branches (242/252)** and `encodings.rs` **99.78% of lines (461/462) and 87.5% of
+branches (7/8)**. Every miss is one of the rows below or one this file already carries.
+
+Already carried by task 32's section above: `nextest_marker`'s compile-time panic,
+`refuse_expansion_past_the_budget`'s own budget check, `Expansion::length`'s, and
+`entity_values`'s unterminated-quote guard.
+
+New in this task, all arms that keep a reader total rather than behaviour a body can reach:
+
+- `encodings.rs` `SingleByte::decode`'s `characters.get(..)?`: the table is exactly 256
+  characters by construction, so the byte always has an entry. It stays because indexing would
+  panic where the `?` cannot.
+- `encodings.rs` `table()`'s `panic!`: every name in `RULES` is in `TABLES` in the same generated
+  file, so a missing one is a generator bug rather than a body.
+- `declared_encoding`'s `std::str::from_utf8(..).ok()?`: a declaration whose text up to `?>` holds
+  a byte that is not UTF-8. XML requires the declaration to be ASCII, so such a document is one
+  the parser refuses for its declaration anyway.
+- `declaration_label`'s `rest.find("?>")?`: reached only from the UTF-16 path, on a document whose
+  `<?xml` never closes. The parser refuses that document too.
+- `declaration_label`'s `strip_prefix('=')?`: a declaration that says `encoding` and then something
+  that is not `=`. Reachable, and deliberately unpinned: `SP4`'s table does not name the shape, so
+  no row of `differences.md` may claim it, and pinning it would freeze an answer nobody has
+  reviewed. The reference refuses such a declaration as not well formed and this server reads the
+  words as no declaration at all; the third review's list of what to attack starts here.
+- `doctype`'s `text.get(start..)?`: the offset comes from `find`, so it is always a character
+  boundary.
+- `standalone_yes`'s two remaining `return false`s: a document whose `<?xml` never closes, and one
+  that says `standalone` with no `=`. Both are declarations the parser refuses.
+- `start_tag`'s four `?` arms: a `<` that does not start a tag, an attribute with no name, and an
+  attribute with no quote or no value. The scan answers "not a tag" and leaves the refusal to the
+  parser, which is what the doc comment says it is for.
+- `collect_case`'s `)?)?` in both retry loops: the identity-budget error raised while a *retry*
+  copy is pushed. `parse_budget.rs`'s `long_identity` shape reaches the budget through cases only,
+  because a retry adds no identity a case did not already copy.

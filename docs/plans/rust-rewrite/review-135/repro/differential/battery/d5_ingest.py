@@ -18,6 +18,13 @@ from harness import API_KEY, Battery
 from seed import PROJECT, REPO
 
 XML = b'<testsuite name="s"><testcase name="t" classname="c"/></testsuite>'
+# A serializer that writes an explicit empty default namespace: `xmlns=""` means
+# no namespace, so the `<failure>` is JUnit's and the Test is stored as failed.
+# The second review found this stored as `passed`.
+XML_EMPTY_NAMESPACE = (
+    b'<testsuite name="ns"><testcase name="ns" classname="c">'
+    b'<failure xmlns="" message="boom">x</failure></testcase></testsuite>'
+)
 BOUNDARY = "BOUND"
 FILE_PART = b'Content-Disposition: form-data; name="report"; filename="r.xml"'
 
@@ -122,6 +129,7 @@ def ingest(battery: Battery) -> None:
     # The raw body under each content type: not multipart, so the body is the report.
     raw = [
         ("raw xml", XML, {"Content-Type": "application/xml"}),
+        ("empty default namespace", XML_EMPTY_NAMESPACE, {"Content-Type": "application/xml"}),
         ("urlencoded", XML, {"Content-Type": "application/x-www-form-urlencoded"}),
         ("no content type", XML, {}),
         ("json content type", XML, {"Content-Type": "application/json"}),
