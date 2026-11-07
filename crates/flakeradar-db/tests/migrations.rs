@@ -9,7 +9,7 @@
     reason = "a test fails loudly when the fixture it just built is missing"
 )]
 
-use flakeradar_db::{DbError, run_migrations};
+use flakeradar_db::{DbError, run_migrations, split_statements};
 use flakeradar_test_support::TestDb;
 use sea_orm::{ConnectionTrait, DatabaseBackend, Statement};
 
@@ -186,4 +186,44 @@ async fn the_refusal_names_the_cutover_notes() {
     assert!(message.contains("not created by FlakeRadar 2"), "{message}");
     assert!(message.contains("needs a fresh database"), "{message}");
     assert!(message.contains("cutover notes in the README"), "{message}");
+}
+
+// Statement splitting is not reachable through a database test alone, so its
+// quoting and comment rules are checked beside the runs that apply the script.
+
+#[test]
+fn splits_on_top_level_semicolons() {
+    assert_eq!(
+        split_statements("SELECT 1; SELECT 2;\n"),
+        ["SELECT 1", " SELECT 2"]
+    );
+}
+
+#[test]
+fn keeps_semicolons_inside_literals_and_identifiers() {
+    let script =
+        "CREATE TABLE public.t (\n    v text DEFAULT 'a;b' NOT NULL,\n    \"c;d\" integer\n);\n";
+    assert_eq!(split_statements(script).len(), 1);
+}
+
+#[test]
+fn keeps_a_doubled_quote_inside_a_literal_or_an_identifier() {
+    assert_eq!(
+        split_statements("INSERT INTO t VALUES ('it''s; fine'); -- x; y\nSELECT 1;").len(),
+        2
+    );
+    assert_eq!(split_statements("SELECT 1 AS \"a\"\"b;c\";").len(), 1);
+}
+
+#[test]
+fn ignores_semicolons_in_line_comments() {
+    assert_eq!(
+        split_statements("-- a; comment\nSELECT 1;\n-- trailing\n"),
+        ["-- a; comment\nSELECT 1"]
+    );
+}
+
+#[test]
+fn skips_blank_statements() {
+    assert_eq!(split_statements(";\n ;\n"), Vec::<&str>::new());
 }

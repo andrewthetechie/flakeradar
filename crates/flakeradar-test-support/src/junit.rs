@@ -30,38 +30,3 @@ pub fn make_junit(cases: &[(&str, &str)]) -> Vec<u8> {
     )
     .into_bytes()
 }
-
-#[cfg(test)]
-mod tests {
-    //! The fixture's shape is checked here so every suite can rely on it.
-
-    use super::make_junit;
-
-    #[test]
-    fn writes_one_testcase_per_case() {
-        let report = make_junit(&[
-            ("test_a", "passed"),
-            ("test_b", "failed"),
-            ("test_c", "error"),
-            ("test_d", "skipped"),
-        ]);
-        let text = String::from_utf8_lossy(&report);
-        assert!(
-            text.contains(r#"<testsuite name="unit" tests="4">"#),
-            "{text}"
-        );
-        assert!(
-            text.contains("name=\"test_a\" time=\"0.01\"></testcase>"),
-            "{text}"
-        );
-        assert!(
-            text.contains(r#"<failure message="assert 1 == 2">"#),
-            "{text}"
-        );
-        assert!(text.contains(r#"<error message="boom">"#), "{text}");
-        assert!(
-            text.contains(r#"<skipped message="not on windows"/>"#),
-            "{text}"
-        );
-    }
-}

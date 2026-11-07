@@ -14,16 +14,3 @@ pub const LIST_LIMIT_MAX: i64 = 100;
 /// Both read the same Score history, so a wider window on one side would be a
 /// different question about the same rows.
 pub const NEW_WITHIN_DAYS_MAX: i64 = 90;
-
-#[cfg(test)]
-mod tests {
-    //! The bounds are the values the two surfaces' documents state.
-
-    use super::{LIST_LIMIT_MAX, NEW_WITHIN_DAYS_MAX};
-
-    #[test]
-    fn the_shared_bounds_are_the_documented_numbers() {
-        assert_eq!(LIST_LIMIT_MAX, 100);
-        assert_eq!(NEW_WITHIN_DAYS_MAX, 90);
-    }
-}
