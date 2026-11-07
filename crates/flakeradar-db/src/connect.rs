@@ -134,9 +134,16 @@ fn redact(url: &str) -> String {
 }
 
 /// Applies the settings both pools share to a new option set.
+///
+/// `SQLx` logs one line per statement, and sea-orm's default is `INFO`: measured on
+/// the seed run of a demo install, that was 1,546 of the 1,605 lines the default
+/// `RUST_LOG` printed, which buries every line this server writes. The statements
+/// are still logged, at `DEBUG`, so `RUST_LOG=debug` (or `RUST_LOG=sqlx=debug`)
+/// brings them back without a rebuild.
 fn apply_shared(mut options: ConnectOptions, settings: DbSettings) -> ConnectOptions {
     options.statement_timeout(settings.command_timeout());
     options.acquire_timeout(ACQUIRE_TIMEOUT);
+    options.sqlx_logging_level(log::LevelFilter::Debug);
     options
 }
 
@@ -203,6 +210,14 @@ mod tests {
         assert_eq!(
             options.get_statement_timeout(),
             Some(settings.command_timeout())
+        );
+        // A statement is a `DEBUG` line, not an `INFO` one: turning the logging
+        // off would hide it from `RUST_LOG=debug` as well.
+        assert!(options.get_sqlx_logging());
+        assert_eq!(
+            options.get_sqlx_logging_level(),
+            log::LevelFilter::Debug,
+            "statement logging sits at debug so the default log stays readable"
         );
     }
 

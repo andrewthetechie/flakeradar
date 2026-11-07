@@ -1001,6 +1001,7 @@ dependencies = [
  "chrono",
  "flakeradar-core",
  "flakeradar-test-support",
+ "log",
  "sea-orm",
  "sea-orm-migration",
  "serde_json",

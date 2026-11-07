@@ -37,6 +37,9 @@ flakeradar-db = { path = "crates/flakeradar-db", version = "2.0.0" }
 flakeradar-test-support = { path = "crates/flakeradar-test-support", version = "2.0.0" }
 form_urlencoded = { version = "1", default-features = false }
 futures-util = { version = "0.3", default-features = false }
+# `flakeradar-db` names this because sea-orm's statement-logging level is a
+# `log::LevelFilter`, and that is the one place that sets it.
+log = { version = "0.4", default-features = false }
 mime_guess = { version = "2", default-features = false }
 mimalloc = { version = "0.1", default-features = false }
 regex = { version = "1", default-features = false }

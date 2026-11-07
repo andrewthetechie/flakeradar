@@ -9,7 +9,7 @@
 )]
 
 use flakeradar_db::{DbError, DbSettings, connect};
-use flakeradar_test_support::TestDb;
+use flakeradar_test_support::{CapturedLog, TestDb};
 use sea_orm::{ConnectionTrait, DatabaseBackend, Statement};
 
 /// The database's URL with `postgresql://` replaced by `scheme://`.
@@ -104,4 +104,30 @@ async fn connect_replaces_a_connection_that_died_while_idle() {
         .expect("the pool pings and reconnects")
         .expect("a row comes back");
     assert_eq!(row.try_get::<i32>("", "one").ok(), Some(1));
+}
+
+#[tokio::test]
+async fn a_read_writes_no_statement_line_at_info() {
+    let db = TestDb::new().await.expect("a migrated test database");
+    let pool = connect(db.url(), DbSettings::default())
+        .await
+        .expect("the URL opens a pool");
+    // The subscriber is installed after the fixture's own pool, so the lines it
+    // records are the ones this read writes. Its default level is `INFO`, which is
+    // what `RUST_LOG` unnamed gives the server.
+    let log = CapturedLog::install();
+    let row = pool
+        .query_one_raw(Statement::from_string(
+            DatabaseBackend::Postgres,
+            "SELECT 1 AS one".to_owned(),
+        ))
+        .await
+        .expect("a query runs")
+        .expect("a row comes back");
+    assert_eq!(row.try_get::<i32>("", "one").ok(), Some(1));
+    let lines = log.lines();
+    assert!(
+        !lines.contains("sqlx::query"),
+        "the default log carries a statement line: {lines}"
+    );
 }

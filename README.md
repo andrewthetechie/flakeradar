@@ -1114,6 +1114,13 @@ rather than scoring with a value nobody meant.
 | `PRUNE_INTERVAL_SECONDS` | `3600` | How often retention runs. |
 | `CORS_ORIGINS` | `http://localhost:5173` | The origin of the dev server. |
 
+Logs go to stdout. The default level is `info`, and `RUST_LOG` overrides it with
+`tracing`'s filter syntax: `RUST_LOG=warn` quiets the server, `RUST_LOG=debug`
+adds detail. SQL statements are logged at `debug` rather than at the driver's own
+`info`, because one line per statement buried everything else — 1,546 of 1,605
+lines on a seeded demo install. To see the statements and nothing else, use
+`RUST_LOG=info,sqlx=debug`.
+
 ## API
 
 The read APIs and the quarantine toggle have no authentication. Put the
