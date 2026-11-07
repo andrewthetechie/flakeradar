@@ -3,7 +3,9 @@
 //! A JSON body is validated in one pass with the lax rules and every field it
 //! refuses is reported; `serde` alone stops at the first failure and accepts no
 //! other spelling of a value, so the readers are this crate's own. Each test
-//! pins one recorded answer, so the server answers what CI already sends.
+//! pins one recorded answer, so the server answers what CI already sends, and
+//! states it through [`assert_refused`] or [`assert_accepted`]: a table of cases
+//! reads as the table, with the assertions out of the way.
 
 #![expect(
     clippy::expect_used,
@@ -46,6 +48,54 @@ fn issues(reply: &Reply) -> Vec<(String, Value)> {
             )
         })
         .collect()
+}
+
+/// Asserts that `reply` is the 422 whose only issue is `kind` at `loc`.
+#[track_caller]
+fn assert_refused(reply: &Reply, kind: &str, loc: Value, label: impl std::fmt::Display) {
+    assert_eq!(
+        reply.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{label}: {}",
+        reply.text()
+    );
+    assert_eq!(issues(reply), [(kind.to_owned(), loc)], "{label}");
+}
+
+/// Asserts that `reply` took the body it was sent.
+#[track_caller]
+fn assert_accepted(reply: &Reply, label: impl std::fmt::Display) {
+    assert_eq!(
+        reply.status,
+        StatusCode::ACCEPTED,
+        "{label}: {}",
+        reply.text()
+    );
+}
+
+/// One job of a Pipeline report body, with `field` set to `value`.
+fn one_job(field: &str, value: &Value) -> Value {
+    json!({"ci_job_id": "1", "name": "n", "status": "passed", field: value})
+}
+
+/// Sends `body` as JSON with the token, as `method`, to `uri`.
+async fn send_json(
+    app: &axum::Router,
+    method: axum::http::Method,
+    uri: &str,
+    body: &Value,
+) -> Reply {
+    send(
+        app,
+        axum::http::Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("x-api-key", TOKEN)
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(body.to_string()))
+            .expect("the fixture request builds"),
+    )
+    .await
 }
 
 /// A Pipeline report body, with `over` replacing its top-level fields.
@@ -137,17 +187,12 @@ async fn authorised_get(app: &axum::Router, uri: &str) -> Reply {
 
 /// One Test, so a write route reaches its own rules instead of a 404.
 async fn one_test(db: &TestDb) -> i32 {
-    let project = make_project()
-        .repo("acme/app")
-        .build(db.connection())
-        .await
-        .expect("a Project");
+    let project = make_project().repo("acme/app").create(db).await;
     make_test_case(&project)
         .name("test_total")
         .classname("tests.test_cart")
-        .build(db.connection())
+        .create(db)
         .await
-        .expect("a Test")
         .id
 }
 
@@ -256,9 +301,8 @@ async fn the_pipeline_body_names_a_field_of_the_wrong_type() {
     ];
     for (over, expected) in cases {
         let reply = pipeline(&app, &over).await;
-        assert_eq!(reply.status, StatusCode::UNPROCESSABLE_ENTITY, "{over}");
         let (kind, loc) = expected;
-        assert_eq!(issues(&reply), [(kind.to_owned(), loc)], "{over}");
+        assert_refused(&reply, kind, loc, &over);
     }
 }
 
@@ -275,12 +319,7 @@ async fn the_pipeline_body_reads_the_attempt_as_documented() {
         (json!("1_0"), 10),
     ] {
         let reply = pipeline(&app, &json!({"ci_run_attempt": value})).await;
-        assert_eq!(
-            reply.status,
-            StatusCode::ACCEPTED,
-            "{value}: {}",
-            reply.text()
-        );
+        assert_accepted(&reply, &value);
         assert_eq!(stored_pipeline(&db).await.attempt, Some(attempt), "{value}");
     }
     // Refused spellings, each with the kind that names what was read.
@@ -296,17 +335,7 @@ async fn the_pipeline_body_reads_the_attempt_as_documented() {
         (json!(1e19), "int_parsing_size"),
     ] {
         let reply = pipeline(&app, &json!({"ci_run_attempt": value})).await;
-        assert_eq!(
-            reply.status,
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "{value}: {}",
-            reply.text()
-        );
-        assert_eq!(
-            issues(&reply),
-            [(kind.to_owned(), json!(["body", "ci_run_attempt"]))],
-            "{value}"
-        );
+        assert_refused(&reply, kind, json!(["body", "ci_run_attempt"]), &value);
     }
 }
 
@@ -330,32 +359,14 @@ async fn a_pipeline_attempt_past_the_column_is_a_bad_request() {
 
 /// Posts `value` as one Job's `field` and answers the value the body stored.
 async fn stored_timestamp(app: &axum::Router, db: &TestDb, field: &str, value: &Value) -> Value {
-    let reply = pipeline(
-        app,
-        &json!({"jobs": [{"ci_job_id": "1", "name": "n", "status": "passed", field: value}]}),
-    )
-    .await;
-    assert_eq!(
-        reply.status,
-        StatusCode::ACCEPTED,
-        "{value}: {}",
-        reply.text()
-    );
+    let reply = pipeline(app, &json!({"jobs": [one_job(field, value)]})).await;
+    assert_accepted(&reply, value);
     stored_pipeline(db).await.body["jobs"][0][field].clone()
 }
 
-/// Posts `value` as one Job's `field` and answers the status and the issues.
-async fn refused_timestamp(
-    app: &axum::Router,
-    field: &str,
-    value: &Value,
-) -> (StatusCode, Vec<(String, Value)>) {
-    let reply = pipeline(
-        app,
-        &json!({"jobs": [{"ci_job_id": "1", "name": "n", "status": "passed", field: value}]}),
-    )
-    .await;
-    (reply.status, issues(&reply))
+/// Posts `value` as one Job's `field` and answers the reply.
+async fn refused_timestamp(app: &axum::Router, field: &str, value: &Value) -> Reply {
+    pipeline(app, &json!({"jobs": [one_job(field, value)]})).await
 }
 
 #[tokio::test]
@@ -445,12 +456,12 @@ async fn the_pipeline_body_reads_a_timestamp_the_way_the_wire_does() {
         (json!(true), "datetime_type"),
         (json!([]), "datetime_type"),
     ] {
-        let (status, found) = refused_timestamp(&app, "started_at", &value).await;
-        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{value}");
-        assert_eq!(
-            found,
-            [(kind.to_owned(), json!(["body", "jobs", 0, "started_at"]))],
-            "{value}"
+        let reply = refused_timestamp(&app, "started_at", &value).await;
+        assert_refused(
+            &reply,
+            kind,
+            json!(["body", "jobs", 0, "started_at"]),
+            &value,
         );
     }
     // `completed_at` goes through the same reader, so it earns the same answer.
@@ -464,14 +475,13 @@ async fn the_pipeline_body_reads_a_timestamp_the_way_the_wire_does() {
             "{value}"
         );
     }
-    let (status, found) = refused_timestamp(&app, "completed_at", &json!(1e15)).await;
-    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
-    assert_eq!(
-        found,
-        [(
-            "datetime_parsing".to_owned(),
-            json!(["body", "jobs", 0, "completed_at"])
-        )]
+    let past_the_range = json!(1e15);
+    let reply = refused_timestamp(&app, "completed_at", &past_the_range).await;
+    assert_refused(
+        &reply,
+        "datetime_parsing",
+        json!(["body", "jobs", 0, "completed_at"]),
+        &past_the_range,
     );
 }
 
@@ -488,18 +498,8 @@ async fn the_pipeline_body_reads_a_bool_as_the_wire_does() {
         (json!(0), false),
         (json!(1.0), true),
     ] {
-        let reply = pipeline(
-            &app,
-            &json!({"jobs": [{"ci_job_id": "1", "name": "n", "status": "passed",
-                              "summary": value}]}),
-        )
-        .await;
-        assert_eq!(
-            reply.status,
-            StatusCode::ACCEPTED,
-            "{value}: {}",
-            reply.text()
-        );
+        let reply = pipeline(&app, &json!({"jobs": [one_job("summary", &value)]})).await;
+        assert_accepted(&reply, &value);
         assert_eq!(
             stored_pipeline(&db).await.body["jobs"][0]["summary"],
             json!(summary),
@@ -512,23 +512,8 @@ async fn the_pipeline_body_reads_a_bool_as_the_wire_does() {
         (json!([]), "bool_type"),
         (json!(null), "bool_type"),
     ] {
-        let reply = pipeline(
-            &app,
-            &json!({"jobs": [{"ci_job_id": "1", "name": "n", "status": "passed",
-                              "summary": value}]}),
-        )
-        .await;
-        assert_eq!(
-            reply.status,
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "{value}: {}",
-            reply.text()
-        );
-        assert_eq!(
-            issues(&reply),
-            [(kind.to_owned(), json!(["body", "jobs", 0, "summary"]))],
-            "{value}"
-        );
+        let reply = pipeline(&app, &json!({"jobs": [one_job("summary", &value)]})).await;
+        assert_refused(&reply, kind, json!(["body", "jobs", 0, "summary"]), &value);
     }
 }
 
@@ -540,17 +525,7 @@ async fn nul_in_a_request_body_is_refused() {
     let app = test_app(&db);
     for field in ["branch", "pipeline", "ci_run_id", "commit_sha"] {
         let reply = pipeline(&app, &json!({field: "a\u{0}b"})).await;
-        assert_eq!(
-            reply.status,
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "{field}: {}",
-            reply.text()
-        );
-        assert_eq!(
-            issues(&reply),
-            [("value_error".to_owned(), json!(["body", field]))],
-            "{field}"
-        );
+        assert_refused(&reply, "value_error", json!(["body", field]), field);
     }
 }
 
@@ -579,15 +554,11 @@ async fn nul_in_a_query_is_refused() {
         "<testsuites><testsuite name=\"s\" tests=\"1\"><testcase classname=\"c\" name=\"t\"/></testsuite></testsuites>",
     )
     .await;
-    assert_eq!(
-        reply.status,
-        StatusCode::UNPROCESSABLE_ENTITY,
-        "{}",
-        reply.text()
-    );
-    assert_eq!(
-        issues(&reply),
-        [("value_error".to_owned(), json!(["query", "commit_sha"]))]
+    assert_refused(
+        &reply,
+        "value_error",
+        json!(["query", "commit_sha"]),
+        "a NUL in the query",
     );
 }
 
@@ -758,17 +729,7 @@ async fn a_page_whose_offset_does_not_fit_is_refused() {
         "/api/jobs?page=4611686018427387905&page_size=4",
     ] {
         let reply = get(&app, uri).await;
-        assert_eq!(
-            reply.status,
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "{uri}: {}",
-            reply.text()
-        );
-        assert_eq!(
-            issues(&reply),
-            [("less_than_equal".to_owned(), json!(["query", "page"]))],
-            "{uri}"
-        );
+        assert_refused(&reply, "less_than_equal", json!(["query", "page"]), uri);
     }
     // The same page size at the largest accepted page is served.
     let reply = get(&app, "/api/tests?page=1000000&page_size=100").await;
@@ -790,12 +751,7 @@ async fn the_ingest_attempt_takes_the_documented_forms() {
             report,
         )
         .await;
-        assert_eq!(
-            reply.status,
-            StatusCode::ACCEPTED,
-            "{value}: {}",
-            reply.text()
-        );
+        assert_accepted(&reply, value);
         assert_eq!(newest_report_attempt(&db).await, Some(attempt), "{value}");
     }
     // A number past the column answers the shared 400, on this route too.
@@ -823,11 +779,11 @@ async fn the_quarantine_body_reads_its_numbers_as_documented() {
         json!({"quarantined": true, "expires_in_days": "5.0"}),
         json!({"quarantined": true, "expires_in_days": " 5"}),
     ] {
-        let reply = post(
+        let reply = send_json(
             &app,
+            axum::http::Method::POST,
             &format!("/api/tests/{id}/quarantine"),
-            &[("x-api-key", TOKEN), ("content-type", "application/json")],
-            body.to_string(),
+            &body,
         )
         .await;
         assert_eq!(reply.status, StatusCode::OK, "{body}: {}", reply.text());
@@ -850,20 +806,14 @@ async fn the_quarantine_body_reads_its_numbers_as_documented() {
             json!(["body", "expires_in_days"]),
         ),
     ] {
-        let reply = post(
+        let reply = send_json(
             &app,
+            axum::http::Method::POST,
             &format!("/api/tests/{id}/quarantine"),
-            &[("x-api-key", TOKEN), ("content-type", "application/json")],
-            body.to_string(),
+            &body,
         )
         .await;
-        assert_eq!(
-            reply.status,
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "{body}: {}",
-            reply.text()
-        );
-        assert_eq!(issues(&reply), [(kind.to_owned(), loc)], "{body}");
+        assert_refused(&reply, kind, loc, &body);
     }
 }
 
@@ -873,55 +823,40 @@ async fn the_issue_body_reads_its_number_as_documented() {
     let id = one_test(&db).await;
     let app = test_app(&db);
     for body in [json!({"number": "5"}), json!({"number": 5.0})] {
-        let reply = send(
+        let reply = send_json(
             &app,
-            axum::http::Request::builder()
-                .method(axum::http::Method::PUT)
-                .uri(format!("/api/tests/{id}/issue"))
-                .header("x-api-key", TOKEN)
-                .header("content-type", "application/json")
-                .body(axum::body::Body::from(body.to_string()))
-                .expect("the fixture request builds"),
+            axum::http::Method::PUT,
+            &format!("/api/tests/{id}/issue"),
+            &body,
         )
         .await;
         assert_eq!(reply.status, StatusCode::OK, "{body}: {}", reply.text());
         assert_eq!(reply.json()["github_issue_number"], json!(5), "{body}");
     }
-    let reply = send(
+    let bad_url = json!({"number": 5, "url": 5});
+    let reply = send_json(
         &app,
-        axum::http::Request::builder()
-            .method(axum::http::Method::PUT)
-            .uri(format!("/api/tests/{id}/issue"))
-            .header("x-api-key", TOKEN)
-            .header("content-type", "application/json")
-            .body(axum::body::Body::from(
-                json!({"number": 5, "url": 5}).to_string(),
-            ))
-            .expect("the fixture request builds"),
+        axum::http::Method::PUT,
+        &format!("/api/tests/{id}/issue"),
+        &bad_url,
     )
     .await;
-    assert_eq!(reply.status, StatusCode::UNPROCESSABLE_ENTITY);
-    assert_eq!(
-        issues(&reply),
-        [("string_type".to_owned(), json!(["body", "url"]))]
-    );
+    assert_refused(&reply, "string_type", json!(["body", "url"]), &bad_url);
     // A float past `i64::MAX` names no integer, so it is the size refusal and
     // not the ceiling the stored column has.
-    let reply = send(
+    let past_i64 = json!({"number": 1e19});
+    let reply = send_json(
         &app,
-        axum::http::Request::builder()
-            .method(axum::http::Method::PUT)
-            .uri(format!("/api/tests/{id}/issue"))
-            .header("x-api-key", TOKEN)
-            .header("content-type", "application/json")
-            .body(axum::body::Body::from(json!({"number": 1e19}).to_string()))
-            .expect("the fixture request builds"),
+        axum::http::Method::PUT,
+        &format!("/api/tests/{id}/issue"),
+        &past_i64,
     )
     .await;
-    assert_eq!(reply.status, StatusCode::UNPROCESSABLE_ENTITY);
-    assert_eq!(
-        issues(&reply),
-        [("int_parsing_size".to_owned(), json!(["body", "number"]))]
+    assert_refused(
+        &reply,
+        "int_parsing_size",
+        json!(["body", "number"]),
+        &past_i64,
     );
 }
 
@@ -932,16 +867,13 @@ async fn the_quarantine_route_describes_its_body() {
     let db = TestDb::new().await.expect("a test database is available");
     let id = one_test(&db).await;
     let app = test_app(&db);
-    let reply = post(
+    let empty = json!({});
+    let reply = send_json(
         &app,
+        axum::http::Method::POST,
         &format!("/api/tests/{id}/quarantine"),
-        &[("x-api-key", TOKEN), ("content-type", "application/json")],
-        json!({}).to_string(),
+        &empty,
     )
     .await;
-    assert_eq!(reply.status, StatusCode::UNPROCESSABLE_ENTITY);
-    assert_eq!(
-        issues(&reply),
-        [("missing".to_owned(), json!(["body", "quarantined"]))]
-    );
+    assert_refused(&reply, "missing", json!(["body", "quarantined"]), &empty);
 }
