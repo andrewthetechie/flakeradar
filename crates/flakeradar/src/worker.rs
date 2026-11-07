@@ -134,10 +134,12 @@ impl LeaderRun {
 
 /// Runs `call`, answering `None` when `stop` cancels it first.
 ///
-/// A sync's `GET`, a fixed note's comment, a Notification and a wait between
-/// retries all end the moment leadership does, so a stop costs at most the one
-/// request it is not allowed to interrupt. A call this does not wrap runs to its
-/// own timeout.
+/// A sync's `GET`, a Notification and a wait between retries end the moment
+/// leadership does, because each costs at most a retry. A call that could have
+/// landed at the other end — the issue `POST`, the fixed note's comment and the
+/// close that follows it — is not wrapped in this, because dropping it would
+/// repeat a comment or leave a fixed issue open; those run to their own timeout
+/// instead, which is the longest a stop waits.
 pub async fn until_stopped<F>(stop: &CancellationToken, call: F) -> Option<F::Output>
 where
     F: Future,

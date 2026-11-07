@@ -11,11 +11,13 @@
 //! cannot grow it without limit: past the bound the oldest outcome is dropped,
 //! logged, and the stalest news loses, as the Notification queue does.
 //!
-//! The task stops when leadership does. A sync's `GET` and the fixed note's
-//! comment end at once, because neither can be interrupted without costing more
-//! than a retry; an issue-creating `POST` runs on through storing its link and
-//! the batch stops after it, because cancelling it mid-flight would strand an
-//! issue and file a duplicate on the next Report.
+//! The task stops when leadership does. A sync's `GET` ends at once, because it
+//! is read-only and a retry costs nothing. A call that changes something at GitHub
+//! runs to its answer and the batch stops after it: the issue-creating `POST`
+//! through storing its link, and a fixed note's comment through its stamp and the
+//! close it asks for. Cancelling one of those mid-flight could strand an issue, post
+//! the same comment again on the next Report, or leave a fixed issue open, so a stop
+//! waits for at most the one request that was in flight.
 
 // Rust guideline compliant 2026-07-21
 

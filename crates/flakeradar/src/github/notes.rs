@@ -1,7 +1,8 @@
 //! Commenting once on the linked issue of a Test or Job whose fix appears to hold.
 //!
-//! Disabled while `github_fixed_streak` is 0. A comment that never posted stamps
-//! nothing, so the row is noteable on the next Report instead. Never raises.
+//! Disabled while `github_fixed_streak` is 0. One comment per fix: a comment that
+//! posted is stamped before anything else happens, and only a comment that never
+//! reached GitHub leaves the row noteable for the next Report. Never raises.
 
 // Rust guideline compliant 2026-07-21
 
@@ -20,7 +21,6 @@ use super::bodies::fixed_comment;
 use super::client::{Api, Success};
 use super::policy::{Action, BatchReport, BatchStop, Operation, Verdict, action, batch_stop};
 use crate::settings::Settings;
-use crate::worker::until_stopped;
 
 /// Comments once on the linked issue of each Test whose fix appears to hold.
 ///
@@ -88,8 +88,11 @@ pub async fn note_fixed_job_issues_for(
 
 /// Notes (and maybe closes) one batch of fixed issues, whichever entity they describe.
 ///
-/// The comment ends when `stop` fires: a comment that never posted stamps
-/// nothing, so the row is still noteable on the next Report.
+/// A comment and the close it may ask for both run to their answer, because a call
+/// dropped mid-flight can have landed at GitHub: a comment that landed unseen would
+/// be posted again on the next Report, and a close nobody saw would leave a fixed
+/// issue open. The batch stops after the call that was in flight, so a stop costs
+/// at most the one request it was waiting on.
 async fn note_batch(
     db: &(impl ConnectionTrait + TransactionTrait),
     rows: Vec<NoteCandidate>,
@@ -104,6 +107,10 @@ async fn note_batch(
         if report.skipped.contains(&row.repo) {
             continue;
         }
+        if stop.is_cancelled() {
+            report.stopped = Some(BatchStop::Stopped);
+            break;
+        }
         let body = fixed_comment(
             entity,
             i64::from(row.entity_id),
@@ -112,16 +119,7 @@ async fn note_batch(
             row.default_branch.as_deref(),
             &settings.public_url,
         );
-        let Some(answered) = until_stopped(stop, api.comment(&row.repo, row.number, &body)).await
-        else {
-            tracing::info!(
-                name: "github.notes.stopped",
-                entity = entity.as_str(),
-                "stopping the fixed-note batch: leadership ended"
-            );
-            report.stopped = Some(BatchStop::Stopped);
-            break;
-        };
+        let answered = api.comment(&row.repo, row.number, &body).await;
         let comment = match answered {
             Ok(comment) => comment,
             Err(error) => {
@@ -143,10 +141,20 @@ async fn note_batch(
                 {
                     continue;
                 }
+                // A stop that heard about the comment but not the stamp ends here:
+                // the comment is recorded, and the issue stays open.
+                if stop.is_cancelled() {
+                    report.stopped = Some(BatchStop::Stopped);
+                    break;
+                }
                 if let ControlFlow::Break(stop_reason) =
-                    close_note(&row, entity, api, &mut report.skipped, stop).await
+                    close_note(&row, entity, api, &mut report.skipped).await
                 {
                     report.stopped = Some(stop_reason);
+                    break;
+                }
+                if stop.is_cancelled() {
+                    report.stopped = Some(BatchStop::Stopped);
                     break;
                 }
             }
@@ -181,6 +189,13 @@ async fn note_batch(
                 );
             }
         }
+    }
+    if report.stopped == Some(BatchStop::Stopped) {
+        tracing::info!(
+            name: "github.notes.stopped",
+            entity = entity.as_str(),
+            "stopping the fixed-note batch: leadership ended"
+        );
     }
     report
 }
@@ -253,27 +268,18 @@ fn log_note_stamp_failure(state: Option<NoteRowState>, entity: EntityKind, row: 
 
 /// Closes the issue a fix was noted on, when the configuration asks for it.
 ///
-/// A stop signal or a rate limit ends the whole batch rather than only this issue.
+/// A close that was already sent runs to its answer, so a stop cannot leave an
+/// issue open after its fix was noted. A rate limit ends the whole batch rather
+/// than only this issue.
 async fn close_note(
     row: &NoteCandidate,
     entity: EntityKind,
     api: &Api,
     skipped: &mut BTreeSet<String>,
-    stop: &CancellationToken,
 ) -> ControlFlow<BatchStop> {
-    let Some(answered) = until_stopped(
-        stop,
-        api.close_issue(&row.repo, row.number, Some("completed")),
-    )
-    .await
-    else {
-        tracing::info!(
-            name: "github.notes.close_stopped",
-            entity = entity.as_str(),
-            "stopping the fixed-close batch: leadership ended"
-        );
-        return ControlFlow::Break(BatchStop::Stopped);
-    };
+    let answered = api
+        .close_issue(&row.repo, row.number, Some("completed"))
+        .await;
     let close = match answered {
         Ok(close) => close,
         Err(error) => {

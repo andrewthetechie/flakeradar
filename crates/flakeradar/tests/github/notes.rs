@@ -3,6 +3,8 @@
 // Rust guideline compliant 2026-07-21
 
 use std::sync::Arc;
+use std::sync::{Mutex, PoisonError};
+use std::time::Duration;
 
 use chrono::{DateTime, FixedOffset, TimeZone as _, Utc};
 use flakeradar::github::{self, Api};
@@ -16,6 +18,7 @@ use flakeradar_test_support::{FixedClock, TestDb, make_job, make_pipeline, syste
 use sea_orm::ConnectionTrait as _;
 use sea_orm::{DbBackend, Statement, Value};
 use serde_json::{Value as Json, json};
+use tokio_util::sync::CancellationToken;
 use wiremock::matchers::{any, method, path};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
@@ -518,6 +521,86 @@ async fn a_note_close_that_fails_keeps_the_stamp() {
         requested_paths(&server).await.len(),
         2,
         "a failed close must not buy a second comment"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 3)]
+async fn stopping_waits_for_the_close_and_reads_its_answer() {
+    let db = TestDb::new().await.expect("a test database");
+    let test = flaky_test_in(&db, "acme/app", "linked", "linked").await;
+    stamp_link(&db, EntityKind::Test, test, stamp().number(77).checked()).await;
+    set_clean_streak(&db, "test_cases", test, 3).await;
+    let (arrived, arrived_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let arrived = Mutex::new(Some(arrived));
+    let release_rx = Mutex::new(release_rx);
+    let server = MockServer::start().await;
+    mount_comment(&server, "acme/app", 77, ResponseTemplate::new(201)).await;
+    // The close is held open, so the stop lands while its answer is still on the
+    // way. It answers a rate limit, which is a verdict the batch can only report
+    // by reading the answer: a close whose future was dropped reports the stop
+    // instead.
+    Mock::given(method("PATCH"))
+        .and(path("/repos/acme/app/issues/77"))
+        .respond_with(move |_request: &Request| {
+            let waiting = arrived
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take();
+            if let Some(arrived) = waiting {
+                let _ = arrived.send(());
+            }
+            let _ = release_rx
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .recv_timeout(Duration::from_secs(30));
+            ResponseTemplate::new(429).insert_header("x-ratelimit-remaining", "0")
+        })
+        .mount(&server)
+        .await;
+
+    let stop = CancellationToken::new();
+    let stopping = stop.clone();
+    let closing = {
+        let connection = db.connection().clone();
+        let settings = fixed_settings(&[("FLAKERADAR_GITHUB_CLOSE_FIXED", "true")]);
+        let api = api(&server);
+        let ids = vec![test];
+        tokio::spawn(async move {
+            github::note_fixed_issues_for(
+                &connection,
+                &ids,
+                &settings,
+                &api,
+                &system_clock(),
+                &stopping,
+            )
+            .await
+        })
+    };
+    arrived_rx.await.expect("the close PATCH is in flight");
+    stop.cancel();
+    release_tx.send(()).expect("the stub is released");
+    let report = closing.await.expect("the batch finishes");
+
+    // The stamp is written before the close, and dropping the close would leave a
+    // fixed issue open with nobody to retry it, so the PATCH runs through its
+    // answer and the batch stops after it.
+    assert!(
+        noted(&db, "test_cases", test).await,
+        "the comment landed and is recorded"
+    );
+    assert_eq!(
+        report.stopped,
+        Some(github::BatchStop::RateLimited),
+        "the close's own answer ended the batch, so it was read rather than dropped"
+    );
+    assert_eq!(
+        requested_paths(&server).await,
+        vec![
+            "/repos/acme/app/issues/77/comments",
+            "/repos/acme/app/issues/77"
+        ]
     );
 }
 

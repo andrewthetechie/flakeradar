@@ -646,33 +646,6 @@ fn note_settings() -> Settings {
     Settings::from_map(&map).expect("the test's settings are valid")
 }
 
-/// The settings a fixed-note run uses when it also closes the issue.
-fn closing_settings() -> Settings {
-    let mut map = std::collections::BTreeMap::new();
-    map.insert("FLAKERADAR_GITHUB_TOKEN".to_owned(), TOKEN.to_owned());
-    map.insert("FLAKERADAR_GITHUB_FIXED_STREAK".to_owned(), "3".to_owned());
-    map.insert(
-        "FLAKERADAR_GITHUB_CLOSE_FIXED".to_owned(),
-        "true".to_owned(),
-    );
-    Settings::from_map(&map).expect("the test's settings are valid")
-}
-
-/// Whether GitHub is recorded as having closed one Test's issue.
-async fn closed(db: &TestDb, id: i32) -> bool {
-    let row = db
-        .connection()
-        .query_one_raw(Statement::from_sql_and_values(
-            DbBackend::Postgres,
-            "SELECT github_issue_closed AS closed FROM test_cases WHERE id = $1",
-            [Value::from(id)],
-        ))
-        .await
-        .expect("the row reads")
-        .expect("the Test exists");
-    row.try_get("", "closed").expect("a flag")
-}
-
 /// The stored issue number of one Test.
 async fn stored_number(db: &TestDb, id: i32) -> Option<i32> {
     let row = db
@@ -717,6 +690,15 @@ async fn requested_calls(server: &MockServer) -> Vec<(String, String)> {
             )
         })
         .collect()
+}
+
+/// The comment requests a stub server answered, whatever the issue number.
+async fn comment_requests(server: &MockServer) -> usize {
+    requested_calls(server)
+        .await
+        .into_iter()
+        .filter(|(method, path)| method == "POST" && path.ends_with("/comments"))
+        .count()
 }
 
 /// Mounts `GET /repos/acme/app/issues/{number}` answering that the issue is open.
@@ -1741,35 +1723,59 @@ async fn stopping_ends_an_unanswered_sync_get_at_once() {
     assert_eq!(stored_number(&db, other).await, Some(13), "the link stands");
 }
 
-#[tokio::test]
-async fn stopping_ends_an_unanswered_note_post_at_once() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 3)]
+async fn stopping_waits_for_a_comment_post_and_keeps_its_stamp() {
     let db = TestDb::new().await.expect("a test database");
-    let endpoint = Unanswered::start().await;
-    let worker = GitHubWorker::new(
+    let test = noteable_test(&db, 77, 3).await;
+    let (arrived, arrived_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let server = MockServer::start().await;
+    mount_open_issue(&server, 77).await;
+    Mock::given(method("POST"))
+        .and(path("/repos/acme/app/issues/77/comments"))
+        .respond_with(GatedAnswer::new(arrived, release_rx, 201, 99))
+        .mount(&server)
+        .await;
+    let worker = Arc::new(GitHubWorker::new(
         db.connection().clone(),
         Arc::new(note_settings()),
-        Api::new(Secret::new(TOKEN), &endpoint.base).expect("the HTTP client builds"),
-        // A long interval keeps the start-up sync out of the way, and the sync
-        // finds no linked row to check anyway.
+        Api::new(Secret::new(TOKEN), &server.uri()).expect("the HTTP client builds"),
         Duration::from_secs(3600),
-    );
-    LeaderTask::start(&worker).await;
-    // The row is linked after the start-up sync has found nothing to check, so the
-    // first request that goes out is the fixed note's own comment.
-    let test = noteable_test(&db, 77, 3).await;
-    LeaderTask::enqueue(&worker, &processed(&[test])).expect("the queue takes the outcome");
-    endpoint.arrived().await; // the comment POST is in flight
-    within(
-        "the token ends the comment POST instead of the request timeout",
-        STOP_BOUND,
-        LeaderTask::stop(&worker),
-    )
-    .await
-    .expect("the task stops");
+    ));
+
+    LeaderTask::start(worker.as_ref()).await;
+    LeaderTask::enqueue(worker.as_ref(), &processed(&[test])).expect("the queue takes the outcome");
+    arrived_rx.await.expect("the comment POST is in flight");
+
+    let stopping = {
+        let worker = Arc::clone(&worker);
+        tokio::spawn(async move { LeaderTask::stop(worker.as_ref()).await })
+    };
+    release_tx.send(()).expect("the stub is released");
+    stopping
+        .await
+        .expect("the stop finishes")
+        .expect("the task stops");
+
+    // Dropping a comment POST does not un-send it: GitHub would have the comment
+    // and no stamp would record it, so the same comment lands again on the next
+    // Report. The POST runs through its stamp, and only then does the batch stop.
     assert!(
-        !noted(&db, test).await,
-        "an unposted comment stamps nothing"
+        noted(&db, test).await,
+        "the comment GitHub received was stamped before the task stopped"
     );
+
+    LeaderTask::start(worker.as_ref()).await;
+    LeaderTask::enqueue(worker.as_ref(), &processed(&[test])).expect("the queue takes the outcome");
+    until_finished(worker.queue(), 2).await;
+    assert_eq!(
+        comment_requests(&server).await,
+        1,
+        "the next Report posts no second comment: the first one is recorded"
+    );
+    LeaderTask::stop(worker.as_ref())
+        .await
+        .expect("the task stops");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 3)]
@@ -1819,52 +1825,6 @@ async fn stopping_waits_for_a_filing_post_and_keeps_its_link() {
         stored_number(&db, next).await,
         None,
         "the batch stopped after the POST it could not interrupt"
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 3)]
-async fn stopping_ends_an_unanswered_close_at_once() {
-    let db = TestDb::new().await.expect("a test database");
-    let test = noteable_test(&db, 77, 3).await;
-    let (arrived, arrived_rx) = tokio::sync::oneshot::channel();
-    let (release_tx, release_rx) = std::sync::mpsc::channel();
-    let server = MockServer::start().await;
-    mount_open_issue(&server, 77).await;
-    Mock::given(method("POST"))
-        .and(path("/repos/acme/app/issues/77/comments"))
-        .respond_with(ResponseTemplate::new(201).set_body_json(json!({"number": 99})))
-        .mount(&server)
-        .await;
-    Mock::given(method("PATCH"))
-        .and(path("/repos/acme/app/issues/77"))
-        .respond_with(GatedAnswer::new(arrived, release_rx, 200, 77))
-        .mount(&server)
-        .await;
-    let worker = Arc::new(GitHubWorker::new(
-        db.connection().clone(),
-        Arc::new(closing_settings()),
-        Api::new(Secret::new(TOKEN), &server.uri()).expect("the HTTP client builds"),
-        Duration::from_secs(3600),
-    ));
-
-    LeaderTask::start(worker.as_ref()).await;
-    LeaderTask::enqueue(worker.as_ref(), &processed(&[test])).expect("the queue takes the outcome");
-    arrived_rx.await.expect("the close PATCH is in flight");
-    within(
-        "the token ends the close instead of the request timeout",
-        STOP_BOUND,
-        LeaderTask::stop(worker.as_ref()),
-    )
-    .await
-    .expect("the task stops");
-    release_tx.send(()).expect("the stub is released");
-    assert!(
-        noted(&db, test).await,
-        "the comment that did post is still stamped"
-    );
-    assert!(
-        !closed(&db, test).await,
-        "a close GitHub never answered closed nothing"
     );
 }
 
