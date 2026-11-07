@@ -1203,6 +1203,10 @@ mod tests {
             ("FLAKERADAR_PORT", "eighty"),
             ("FLAKERADAR_WEBHOOK_FORMAT", "xml"),
             ("FLAKERADAR_PRUNE_BATCH", "1.5"),
+            // A wait that is no number at all, which is what an operator who
+            // writes a unit gets.
+            ("FLAKERADAR_WORKER_POLL_SECONDS", "5s"),
+            ("FLAKERADAR_DB_COMMAND_TIMEOUT_SECONDS", "soon"),
         ];
         for (variable, value) in cases {
             let error =
