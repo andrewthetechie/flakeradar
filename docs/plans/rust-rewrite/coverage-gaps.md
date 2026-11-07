@@ -369,11 +369,11 @@ New in this task, all arms that keep a reader total rather than behaviour a body
 ## Task 34: one unreachable arm in the epoch reader
 
 Measured with `cargo +nightly-2026-10-25 llvm-cov nextest --branch --all-features --profile ci`
-on a local `postgres:17-alpine` via the test-support Docker path: **lines 97.01%** (16921, 506
-missed) and **branches 94.30%** (1510, 86 missed), regions 93.90% and functions 97.49%.
+on a local `postgres:17-alpine` via the test-support Docker path: **lines 96.96%** (16931, 514
+missed) and **branches 94.13%** (1500, 88 missed), regions 93.85% and functions 97.45%.
 `coverage-floor.json` stays `{"lines": 96, "branches": 93}` and the gate passes at them.
 
-`crates/flakeradar-core/src/lax.rs` is at 98.95% of lines (286, 3 missed) and 89.13% of branches,
+`crates/flakeradar-core/src/lax.rs` is at 98.65% of lines (296, 4 missed) and 89.02% of branches,
 `crates/flakeradar-db/src/connect.rs` at 99.32% / 91.67%, `crates/flakeradar/src/settings.rs` at
 97.92% of lines (963, 20 missed) and 97.06% of branches, and `crates/flakeradar-core/src/dto.rs` at
 99.87% of lines (788, 1 missed). The reader's new refusals are all
