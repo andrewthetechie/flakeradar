@@ -10,6 +10,7 @@
 
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Context as _;
 use axum::Router;
@@ -36,8 +37,7 @@ pub struct Server {
     worker: Arc<ReportWorker>,
 }
 
-/// The Notification task, built only when at least one Webhook URL is configured.
-///
+/// The Notification task, built only when at least one Webhook URL is configured.///
 /// No URLs means no task at all, not an idle one: the reference's lifespan built
 /// `WebhookWorker` only when `parse_urls` answered a non-empty list.
 fn webhook_task(settings: &Settings) -> anyhow::Result<Option<Arc<WebhookWorker>>> {
@@ -52,6 +52,19 @@ fn webhook_task(settings: &Settings) -> anyhow::Result<Option<Arc<WebhookWorker>
         )?)))
     }
 }
+
+/// How long the graceful drain waits for in-flight requests before it is abandoned.
+///
+/// `axum::serve`'s graceful shutdown waits for open requests indefinitely, so a
+/// client stalled mid-upload would otherwise keep the process from reaching the
+/// ordered worker stop below, and the orchestrator's kill would take the place
+/// of a clean release. The repo's deployment files set no termination grace
+/// period of their own, so the period this bound must beat is Kubernetes's
+/// default `terminationGracePeriodSeconds` of 30 s; at 25 s the drain is
+/// abandoned, the lock is released and the process exits a full grace period
+/// before the orchestrator sends SIGTERM. Raising it above 30 s would let the
+/// orchestrator kill the process mid-drain.
+const DRAIN_TIMEOUT: Duration = Duration::from_secs(25);
 
 impl Server {
     /// Connects, migrates the database, builds the app and binds the socket.
@@ -147,6 +160,34 @@ impl Server {
         self.address
     }
 
+    /// Assembles a [`Server`] around a bound socket, app, pool and worker.
+    ///
+    /// [`Server::start`] always builds its own worker with the real processor;
+    /// this constructor is how a test reaches [`Server::serve`] with a worker
+    /// whose processor it controls, such as one that panics on its first claim.
+    /// It never starts the worker; the caller does, before `serve` is asked to
+    /// select on its end.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the socket's bound address cannot be read.
+    #[doc(hidden)]
+    pub fn from_parts(
+        listener: TcpListener,
+        app: Router,
+        pool: DatabaseConnection,
+        worker: Arc<ReportWorker>,
+    ) -> anyhow::Result<Self> {
+        let address = listener.local_addr().context("reading the bound address")?;
+        Ok(Self {
+            listener,
+            address,
+            app,
+            pool,
+            worker,
+        })
+    }
+
     /// Serves requests until `shutdown` resolves, then stops the worker and closes the pool.
     ///
     /// Shutting the worker down after the socket stops accepting requests is
@@ -162,10 +203,44 @@ impl Server {
         self,
         shutdown: impl Future<Output = ()> + Send + 'static,
     ) -> anyhow::Result<()> {
-        let result = axum::serve(self.listener, self.app)
-            .with_graceful_shutdown(shutdown)
-            .await
-            .context("serving requests");
+        let serve = async {
+            axum::serve(self.listener, self.app)
+                .with_graceful_shutdown(shutdown)
+                .await
+        };
+        tokio::pin!(serve);
+        let worker_ended = self.worker.ended();
+        tokio::pin!(worker_ended);
+        let drain = tokio::time::timeout(DRAIN_TIMEOUT, &mut serve);
+        tokio::pin!(drain);
+
+        // The socket stops accepting on the shutdown signal, and the worker
+        // loop is selected on too, so a loop that died without a stop — a panic
+        // — is an error the process exits on. The graceful drain is bounded, so
+        // a client stalled mid-upload cannot hold the ordered stop open forever.
+        let outcome = tokio::select! {
+            drain_answer = &mut drain => match drain_answer {
+                Ok(Ok(())) => None,
+                Ok(Err(error)) => Some(anyhow::Error::new(error).context("serving requests")),
+                Err(_elapsed) => {
+                    tracing::warn!(
+                        name: "server.drain_timed_out",
+                        seconds = DRAIN_TIMEOUT.as_secs(),
+                        "the graceful drain could not finish the in-flight request; abandoned",
+                    );
+                    None
+                }
+            },
+            () = &mut worker_ended => {
+                tracing::error!(
+                    name: "worker.processor.dead",
+                    "the Report worker loop ended before the shutdown signal",
+                );
+                Some(anyhow::anyhow!(
+                    "the Report worker loop ended before the shutdown signal"
+                ))
+            }
+        };
         self.worker.stop().await;
         if let Err(error) = self.pool.close().await {
             tracing::warn!(
@@ -178,7 +253,10 @@ impl Server {
             name: "server.stopped",
             "flakeradar stopped",
         );
-        result
+        match outcome {
+            None => Ok(()),
+            Some(error) => Err(error),
+        }
     }
 }
 

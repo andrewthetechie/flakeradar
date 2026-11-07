@@ -526,6 +526,8 @@ pub struct ReportWorker {
     last_prune: Mutex<Option<f64>>,
     cancel: CancellationToken,
     task: tokio::sync::Mutex<Option<JoinHandle<()>>>,
+    /// Signals when the loop `start` spawned has ended, by stop or by panic.
+    ended: tokio::sync::Mutex<Option<Arc<tokio::sync::Notify>>>,
 }
 
 impl fmt::Debug for ReportWorker {
@@ -561,6 +563,7 @@ impl ReportWorker {
             last_prune: Mutex::new(None),
             cancel: CancellationToken::new(),
             task: tokio::sync::Mutex::new(None),
+            ended: tokio::sync::Mutex::new(None),
         }
     }
 
@@ -615,7 +618,48 @@ impl ReportWorker {
         if task.as_ref().is_some_and(|handle| !handle.is_finished()) {
             return;
         }
-        *task = Some(tokio::spawn(async move { worker.run().await }));
+        // A fresh end signal per run. The loop is awaited on a second task, so a
+        // panic inside it is captured by the JoinHandle and still signals an end;
+        // that is what lets `serve` turn a dead leader into a process exit.
+        let ended = Arc::new(tokio::sync::Notify::new());
+        *self.ended.lock().await = Some(Arc::clone(&ended));
+        let run = tokio::spawn(async move { worker.run().await });
+        let ended_in_loop = Arc::clone(&ended);
+        let supervisor = tokio::spawn(async move {
+            match run.await {
+                Ok(()) => {}
+                Err(error) => {
+                    // A panic inside `run` is held by the JoinHandle and only
+                    // surfaces here, so this line is what an operator sees when
+                    // a leader stopped processing without a stop.
+                    tracing::error!(
+                        name: "worker.processor.panicked",
+                        error = %error,
+                        "the Report worker loop ended with a panic",
+                    );
+                }
+            }
+            ended_in_loop.notify_one();
+        });
+        *task = Some(supervisor);
+    }
+
+    /// Resolves once the loop `start` spawned has ended.
+    ///
+    /// `serve` selects on this as well as on the shutdown signal, so a loop that
+    /// ended before a stop — the panic case — becomes an error and the process
+    /// exits. A worker that never started, or whose loop is still going,
+    /// resolves nothing.
+    pub async fn ended(&self) {
+        let notify = {
+            let guard = self.ended.lock().await;
+            guard.clone()
+        };
+        if let Some(notify) = notify {
+            notify.notified().await;
+        } else {
+            std::future::pending::<()>().await;
+        }
     }
 
     /// Cancels the loop, waits for it and then ends leadership.
@@ -633,8 +677,12 @@ impl ReportWorker {
         self.release().await;
     }
 
-    /// The loop: elect, prune, claim, hand over, wait.
+    /// The loop: elect, prove the lock, prune, claim, hand over, wait.
     async fn run(&self) {
+        // Consecutive `process_next` failures, so a persistent one backs off up
+        // to `max_backoff` instead of claiming the same Report every poll. The
+        // count resets as soon as a claim or an empty queue answers.
+        let mut consecutive_errors = 0i32;
         while !self.cancel.is_cancelled() {
             if !self.is_leader() {
                 match self.lock.try_lock().await {
@@ -644,10 +692,19 @@ impl ReportWorker {
                         continue;
                     }
                     Err(error) => {
-                        self.drop_leadership(&error).await;
+                        self.drop_leadership(&error, self.settings.poll).await;
                         continue;
                     }
                 }
+            }
+            // The leader proves its lock is still the session that took it on
+            // every loop, on a backlog as well as on an empty queue: a lock
+            // connection that died frees the lock for a standby even while
+            // Reports keep arriving. The reference checks only on an empty
+            // queue; see `differences.md`.
+            if let Err(error) = self.lock.check().await {
+                self.drop_leadership(&error, self.settings.poll).await;
+                continue;
             }
             self.maybe_prune().await;
             match self
@@ -655,19 +712,19 @@ impl ReportWorker {
                 .process_next(self.pool.clone(), self.processing.clone())
                 .await
             {
-                Ok(Some(outcome)) => self.deliver(&outcome).await,
+                Ok(Some(outcome)) => {
+                    consecutive_errors = 0;
+                    self.deliver(&outcome).await;
+                }
                 Ok(None) => {
-                    // The queue is empty, so prove the session that took the lock
-                    // is still the one answering: if it died, the lock is already
-                    // free for another process -- and the pool answers a
-                    // statement from its replacement just the same.
-                    if let Err(error) = self.lock.check().await {
-                        self.drop_leadership(&error).await;
-                        continue;
-                    }
+                    consecutive_errors = 0;
                     self.sleep(self.settings.poll).await;
                 }
-                Err(error) => self.drop_leadership(&error).await,
+                Err(error) => {
+                    consecutive_errors = consecutive_errors.saturating_add(1);
+                    self.drop_leadership(&error, self.backoff(consecutive_errors))
+                        .await;
+                }
             }
         }
     }
@@ -684,15 +741,15 @@ impl ReportWorker {
         );
     }
 
-    /// Logs the error, ends leadership and waits one poll before trying again.
-    async fn drop_leadership(&self, error: &DbError) {
+    /// Logs the error, ends leadership and waits `wait` before trying again.
+    async fn drop_leadership(&self, error: &DbError, wait: Duration) {
         tracing::error!(
             name: "worker.processor.failed",
             error = %error,
             "Report worker error; dropping leadership and retrying",
         );
         self.release().await;
-        self.sleep(self.settings.poll).await;
+        self.sleep(wait).await;
     }
 
     /// Hands one outcome to every leader task, then waits out a retry's backoff.

@@ -13,18 +13,23 @@
               and one stages a leader task whose loop panics"
 )]
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use chrono::{DateTime, FixedOffset};
 use flakeradar::webhooks::WebhookWorker;
 use flakeradar::worker::{
-    AdvisoryLock, LeaderRun, LockSession, Pruner, ReportProcessor, ReportWorker, Waiter,
-    WorkerSettings,
+    AdvisoryLock, LeaderRun, LockFuture, LockSession, Pruner, ReportProcessor, ReportWorker,
+    SessionFuture, Waiter, WorkerSettings,
 };
+use flakeradar_core::model::ReportStatus;
 use flakeradar_core::notify::WebhookFormat;
 use flakeradar_db::entities::{projects, reports};
-use flakeradar_db::{DbSettings, clock::MonotonicClock, processing::ProcessingSettings};
+use flakeradar_db::{
+    DbError, DbSettings, clock::MonotonicClock, processing::ProcessOutcome,
+    processing::ProcessingSettings,
+};
 use flakeradar_test_support::{
     CapturedLog, CountingLock, CountingPruner, FailingLock, FailingOnceProcessor,
     FailingUnlockLock, FixedClock, GateWaiter, ManualMonotonic, RecordingTask, RecordingWaiter,
@@ -32,7 +37,7 @@ use flakeradar_test_support::{
     make_junit, make_project, make_report, set_connections_allowed, terminate_lock_session,
     wait_until,
 };
-use sea_orm::{EntityTrait, QueryOrder as _};
+use sea_orm::{DatabaseConnection, EntityTrait, QueryOrder as _};
 use serde_json::Value as Json;
 use wiremock::matchers::method;
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -787,7 +792,7 @@ async fn starting_a_running_worker_is_a_no_op() {
 }
 
 #[tokio::test]
-async fn the_leader_checks_its_lock_connection_when_the_queue_is_empty() {
+async fn the_leader_checks_its_lock_connection() {
     let db = TestDb::new().await.expect("a test database");
     let counted = Arc::new(CountingLock::new(&db));
     let processor = Arc::new(ScriptedProcessor::empty());
@@ -865,6 +870,172 @@ async fn a_tier_change_reaches_the_webhook_task() {
     assert!(
         lock_is_free(db.url()).await,
         "the Notification task stopped before the lock was released"
+    );
+}
+
+/// A processor that answers one claimed Report after another, an endless backlog.
+#[derive(Debug)]
+struct AlwaysSomeProcessor {
+    claims: Arc<AtomicUsize>,
+}
+
+impl AlwaysSomeProcessor {
+    /// A processor with a backlog that never drains.
+    #[must_use]
+    fn new() -> Self {
+        Self {
+            claims: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    /// How many claims the worker made.
+    #[must_use]
+    fn claims(&self) -> usize {
+        self.claims.load(Ordering::SeqCst)
+    }
+}
+
+impl ReportProcessor for AlwaysSomeProcessor {
+    fn process_next(
+        &self,
+        _pool: DatabaseConnection,
+        _settings: ProcessingSettings,
+    ) -> flakeradar::worker::ProcessFuture<'static> {
+        let claims = Arc::clone(&self.claims);
+        Box::pin(async move {
+            claims.fetch_add(1, Ordering::SeqCst);
+            Ok(Some(ProcessOutcome {
+                report_id: 1,
+                status: ReportStatus::Pending,
+                run_id: None,
+                counts: None,
+                touched_test_ids: Vec::new(),
+                error: None,
+                touched_job_ids: Vec::new(),
+                tier_changes: Vec::new(),
+                retry_count: 0,
+            }))
+        })
+    }
+}
+
+/// A processor whose every claim fails at the database, a persistent outage.
+#[derive(Debug, Default)]
+struct AlwaysErrProcessor;
+
+impl ReportProcessor for AlwaysErrProcessor {
+    fn process_next(
+        &self,
+        _pool: DatabaseConnection,
+        _settings: ProcessingSettings,
+    ) -> flakeradar::worker::ProcessFuture<'static> {
+        Box::pin(async {
+            Err(DbError::Database(sea_orm::DbErr::Custom(
+                "a persistent processing failure".to_owned(),
+            )))
+        })
+    }
+}
+
+/// A lock session that elects at once and fails every liveness check.
+#[derive(Debug, Default)]
+struct DeadLock {
+    try_locks: AtomicUsize,
+    checks: AtomicUsize,
+}
+
+impl DeadLock {
+    /// A session whose check always fails, like a lock connection that died.
+    #[must_use]
+    fn new() -> Self {
+        Self::default()
+    }
+
+    /// How many liveness checks were asked for.
+    #[must_use]
+    fn checks(&self) -> usize {
+        self.checks.load(Ordering::SeqCst)
+    }
+}
+
+impl LockSession for DeadLock {
+    fn try_lock(&self) -> LockFuture<'_> {
+        self.try_locks.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async { Ok(true) })
+    }
+
+    fn check(&self) -> SessionFuture<'_> {
+        self.checks.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async {
+            Err(DbError::Database(sea_orm::DbErr::Custom(
+                "the lock connection died".to_owned(),
+            )))
+        })
+    }
+
+    fn unlock(&self) -> SessionFuture<'_> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+#[tokio::test]
+async fn a_leader_with_a_backlog_checks_its_lock_between_reports() {
+    let db = TestDb::new().await.expect("a test database");
+    let processor = Arc::new(AlwaysSomeProcessor::new());
+    let lock = Arc::new(DeadLock::new());
+    let worker = Arc::new(
+        worker(&db, shared_lock(&lock), fast()).with_processor(shared_processor(&processor)),
+    );
+    Arc::clone(&worker).start().await;
+
+    // The lock's check runs on a backlog as well as on an empty queue, so a
+    // leader whose lock connection died stops claiming at once instead of
+    // draining Reports alongside the standby that took the lock.
+    wait_until("the failing lock check stopped the claims", || async {
+        lock.checks() >= 1 && processor.claims() == 0
+    })
+    .await;
+    worker.stop().await;
+}
+
+#[tokio::test]
+async fn a_persistent_process_error_backs_off_up_to_the_cap() {
+    let db = TestDb::new().await.expect("a test database");
+    let processor = Arc::new(AlwaysErrProcessor);
+    let waiter = Arc::new(RecordingWaiter::default());
+    let lock = Arc::new(CountingLock::new(&db));
+    let settings = WorkerSettings {
+        poll: Duration::from_millis(1),
+        standby: Duration::from_millis(1),
+        prune_interval: Duration::from_secs(3600),
+        max_backoff: Duration::from_millis(8),
+    };
+    let worker = Arc::new(
+        worker(&db, lock, settings)
+            .with_processor(shared_processor(&processor))
+            .with_waiter(shared_waiter(&waiter)),
+    );
+    Arc::clone(&worker).start().await;
+
+    wait_until("the backoff reached its cap", || async {
+        waiter
+            .waits()
+            .iter()
+            .any(|wait| *wait >= settings.max_backoff)
+    })
+    .await;
+    worker.stop().await;
+
+    // The consecutive failures wait `poll * 2^n`, so the waits grow up to the
+    // cap instead of staying at one poll.
+    let waits: Vec<Duration> = waiter.waits();
+    assert!(
+        waits.windows(2).all(|pair| pair[1] >= pair[0]),
+        "the waits grow, not stay flat: {waits:?}"
+    );
+    assert!(
+        waits.contains(&settings.max_backoff),
+        "a wait reaches the cap: {waits:?}"
     );
 }
 

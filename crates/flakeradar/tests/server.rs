@@ -10,7 +10,9 @@
 
 #![expect(
     clippy::expect_used,
-    reason = "a test fails loudly when the server does not answer as it must"
+    clippy::panic,
+    reason = "a test fails loudly when the server does not answer as it must, and one \
+              processor panics on purpose to prove a dead worker loop makes serve fail"
 )]
 
 use flakeradar::{server::Server, settings::Settings};
@@ -18,6 +20,7 @@ use flakeradar_test_support::{TestDb, settings, wait_until};
 
 use sea_orm::{ConnectionTrait as _, EntityTrait as _, PaginatorTrait as _};
 use serde_json::json;
+use std::time::Duration;
 use tokio::sync::oneshot;
 
 /// Settings for a server on `db`, on the kernel's choice of port.
@@ -323,4 +326,135 @@ async fn a_shutdown_finishes_an_in_flight_request_and_stops_the_worker() {
         processor_lock_is_free(&db).await,
         "the worker released its lock"
     );
+}
+
+/// A processor that dies on its first claim, so the worker loop ends without a stop.
+#[derive(Debug)]
+struct PanickingProcessor;
+
+impl flakeradar::worker::ReportProcessor for PanickingProcessor {
+    fn process_next(
+        &self,
+        _pool: sea_orm::DatabaseConnection,
+        _settings: flakeradar_db::processing::ProcessingSettings,
+    ) -> flakeradar::worker::ProcessFuture<'static> {
+        Box::pin(async { panic!("the test's processor panics on its first claim") })
+    }
+}
+
+#[tokio::test]
+async fn a_stalled_upload_does_not_stop_serve_from_returning() {
+    use tokio::io::AsyncWriteExt as _;
+
+    let db = TestDb::new().await.expect("a test database");
+    let server = Server::start(settings_for(&db))
+        .await
+        .expect("the server starts");
+    let address = server.local_addr();
+    let (stop, stopped) = oneshot::channel();
+    let serving = tokio::spawn(server.serve(async move {
+        let _ = stopped.await;
+    }));
+
+    let body = flakeradar_test_support::make_junit(&[("t", "passed")]);
+    // Only the head and half the body are sent; the client never finishes the
+    // upload, so the graceful drain ends only because of its own bound.
+    let head = format!(
+        "POST /api/ingest?repo=o/r&commit_sha=a1 HTTP/1.1\r\nHost: {address}\r\n\
+         X-API-Key: a-real-token\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    let mut stream = tokio::net::TcpStream::connect(address)
+        .await
+        .expect("the socket connects");
+    stream
+        .write_all(head.as_bytes())
+        .await
+        .expect("the request head is written");
+    let (sent, _rest) = body.split_at(body.len() / 2);
+    stream.write_all(sent).await.expect("half the body is sent");
+
+    let _ = stop.send(());
+    // Advance past the drain bound so the stalled request cannot hold the
+    // process open forever. The clock is paused only here, after the real
+    // database and server are up, and yielded so the serving task can observe
+    // the timed-out drain and return.
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(26)).await;
+    for _ in 0..32 {
+        if serving.is_finished() {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+
+    assert!(
+        serving.is_finished(),
+        "serve returned within the drain bound even though the upload stalled"
+    );
+    // Resume so the lock probe's fresh connection can acquire in real time.
+    tokio::time::resume();
+    serving
+        .await
+        .expect("the serving task ended")
+        .expect("serve returns cleanly after abandoning the stalled drain");
+    assert!(
+        processor_lock_is_free(&db).await,
+        "the worker released its lock despite the abandoned drain"
+    );
+}
+
+#[tokio::test]
+async fn a_worker_loop_that_died_makes_serve_return_an_error_and_release_the_lock() {
+    use chrono::DateTime;
+    use flakeradar::app::{AppState, build_app};
+    use flakeradar::worker::{AdvisoryLock, ReportWorker, WorkerSettings};
+    use flakeradar_db::{DbSettings, processing::ProcessingSettings};
+    use flakeradar_test_support::FixedClock;
+    use std::sync::Arc;
+    use tokio::net::TcpListener;
+
+    let db = TestDb::new().await.expect("a test database");
+    let settings = settings_for(&db);
+    let pool = db.connection().clone();
+    let lock = Arc::new(AdvisoryLock::new(db.url(), DbSettings::default()));
+    let worker = Arc::new(
+        ReportWorker::new(
+            pool.clone(),
+            lock,
+            ProcessingSettings {
+                clock: Arc::new(FixedClock::new(
+                    DateTime::parse_from_rfc3339("2026-10-20T09:00:00+00:00")
+                        .expect("a fixed instant"),
+                )),
+                ..ProcessingSettings::default()
+            },
+            WorkerSettings {
+                poll: Duration::from_millis(1),
+                standby: Duration::from_millis(1),
+                prune_interval: Duration::from_secs(3600),
+                max_backoff: Duration::from_secs(30),
+            },
+        )
+        .with_processor(Arc::new(PanickingProcessor)),
+    );
+    Arc::clone(&worker).start().await;
+    let state = AppState::new(pool.clone(), Arc::new(settings)).expect("the state builds");
+    let app = build_app(state.with_assets(flakeradar::assets::embedded()));
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("the socket binds");
+    let server = Server::from_parts(listener, app, pool, worker).expect("the server assembles");
+
+    // The processor panics on its first claim, so the worker loop ends without a
+    // stop; serve must select on that and turn it into a process exit.
+    let answer = server.serve(std::future::pending()).await;
+    assert!(
+        answer.is_err(),
+        "a worker loop that died makes serve fail: {answer:?}"
+    );
+    wait_until("the lock is free after the dead worker", || async {
+        processor_lock_is_free(&db).await
+    })
+    .await;
 }

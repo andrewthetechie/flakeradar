@@ -100,8 +100,17 @@ fn runtime() -> anyhow::Result<tokio::runtime::Runtime> {
 #[cfg_attr(coverage_nightly, coverage(off))]
 async fn shutdown_signal() {
     let ctrl_c = async {
-        // A failure to listen leaves the other arm to stop the process.
-        let _ = tokio::signal::ctrl_c().await;
+        // A failure to listen must not shut the server down at once, so it is
+        // logged and the other arm is left to stop the process, the way the
+        // SIGTERM arm below handles one.
+        if let Err(error) = tokio::signal::ctrl_c().await {
+            tracing::error!(
+                name: "server.signal_failed",
+                error = %error,
+                "listening for Ctrl-C failed",
+            );
+            std::future::pending::<()>().await;
+        }
     };
     #[cfg(unix)]
     let terminate = async {
