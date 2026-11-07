@@ -399,6 +399,12 @@ async fn the_pipeline_body_reads_a_timestamp_the_way_the_wire_does() {
         (json!("1700000000"), "2023-11-14T22:13:20.000000Z"),
         (json!("0"), "1970-01-01T00:00:00.000000Z"),
         (json!("-5"), "1969-12-31T23:59:55.000000Z"),
+        // A fraction that rounds up to the whole microsecond carries into the
+        // next second, as the reference's does.
+        (
+            json!(1_767_225_600.0 + 0.999_999_9),
+            "2026-01-01T00:00:01.000000Z",
+        ),
     ] {
         assert_eq!(
             stored_timestamp(&app, &db, "started_at", &value).await,
@@ -417,6 +423,13 @@ async fn the_pipeline_body_reads_a_timestamp_the_way_the_wire_does() {
         (json!("253402300800000"), "datetime_from_date_parsing"),
         (json!(1e15), "datetime_parsing"),
         (json!(253_402_300_800_000_i64), "datetime_parsing"),
+        // Past the year 9999, and past the year 0 the millisecond reading can
+        // name: each answers the sentence its own side of the range has.
+        (json!(1e16), "datetime_parsing"),
+        (json!(-1e16), "datetime_parsing"),
+        (json!(-1e30), "datetime_parsing"),
+        (json!(-62_135_596_800_001_i64), "datetime_parsing"),
+        (json!(-62_200_000_000_000_i64), "datetime_parsing"),
         (json!(true), "datetime_type"),
         (json!([]), "datetime_type"),
     ] {

@@ -523,15 +523,19 @@ impl ValidationIssue {
     ///
     /// A Unix timestamp is a number of seconds or milliseconds, and the instant
     /// it names has to be one a datetime holds: the reference refuses the rest
-    /// with this kind and the sentence in its `msg`.
+    /// with this kind, the sentence in its `msg` and the same sentence again in
+    /// its `ctx.error`.
     #[must_use]
     pub fn datetime_parsing(loc: Vec<LocSegment>, input: Value, error: &str) -> Self {
-        Self::parsing(
-            "datetime_parsing",
-            &format!("Input should be a valid datetime, {error}"),
+        let mut ctx = serde_json::Map::new();
+        let _ = ctx.insert("error".to_owned(), Value::from(error));
+        Self {
+            r#type: "datetime_parsing".to_owned(),
             loc,
-            input,
-        )
+            msg: format!("Input should be a valid datetime, {error}"),
+            input: Some(input),
+            ctx: Some(Value::Object(ctx)),
+        }
     }
 
     /// A text holding a NUL character, which a `text` column cannot store.
