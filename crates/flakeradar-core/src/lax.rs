@@ -266,9 +266,10 @@ pub fn boolean(value: &Value, loc: Vec<LocSegment>) -> Result<bool, Box<Validati
 /// A string is any ISO 8601 form the reader takes: a datetime with or without
 /// seconds, a space or `T` between the date and the time, a `.` or `,` before a
 /// fraction, and `Z`, `z` or an offset with or without its colon; or a date
-/// alone, which is that day's midnight. A number is a Unix timestamp: seconds
-/// when its magnitude is at most `2e10`, and milliseconds past that, which is
-/// the shape `Date.now()` gives. A naive timestamp is read as UTC.
+/// alone, which is that day's midnight. A string holding nothing but a decimal
+/// number, and a number of any shape, are both a Unix timestamp: seconds when
+/// its magnitude is at most `2e10`, and milliseconds past that, which is the
+/// shape `Date.now()` gives. A naive timestamp is read as UTC.
 ///
 /// # Errors
 ///
@@ -281,12 +282,17 @@ pub fn timestamp(
     loc: Vec<LocSegment>,
 ) -> Result<DateTime<Utc>, Box<ValidationIssue>> {
     match value {
-        Value::String(text) => parse_timestamp(text).ok_or_else(|| {
-            Box::new(ValidationIssue::datetime_from_date_parsing(
-                loc,
-                value.clone(),
-                timestamp_detail(text),
-            ))
+        Value::String(text) => parse_timestamp(text).map_err(|refusal| {
+            Box::new(match refusal {
+                TimestampRefusal::NotADate => ValidationIssue::datetime_from_date_parsing(
+                    loc,
+                    value.clone(),
+                    timestamp_detail(text),
+                ),
+                TimestampRefusal::OutOfYears(sentence) => {
+                    ValidationIssue::datetime_from_date_parsing(loc, value.clone(), sentence)
+                }
+            })
         }),
         Value::Number(number) => epoch_instant(number).map_err(|sentence| {
             Box::new(ValidationIssue::datetime_parsing(
@@ -299,19 +305,31 @@ pub fn timestamp(
     }
 }
 
+/// Why a string names no instant.
+enum TimestampRefusal {
+    /// The text is no date and no number.
+    NotADate,
+    /// The text is a number, and the instant it names is outside the years a
+    /// datetime holds, in the sentence the reference refuses it with.
+    OutOfYears(&'static str),
+}
+
 /// The instant `text` names, when it names one.
-fn parse_timestamp(text: &str) -> Option<DateTime<Utc>> {
+fn parse_timestamp(text: &str) -> Result<DateTime<Utc>, TimestampRefusal> {
+    if let Some(seconds) = numeric_seconds(text) {
+        return epoch_of(seconds).map_err(TimestampRefusal::OutOfYears);
+    }
     // `chrono` reads a date whose month and day are not zero-padded, and this
     // reader does not: `2026-1-1` is refused as too short.
     if !starts_like_a_date(text) {
-        return None;
+        return Err(TimestampRefusal::NotADate);
     }
     if let Ok(parsed) = DateTime::parse_from_rfc3339(text) {
-        return Some(parsed.with_timezone(&Utc));
+        return Ok(parsed.with_timezone(&Utc));
     }
     let normalised = normalised_timestamp(text);
     if let Ok(parsed) = DateTime::parse_from_rfc3339(&normalised) {
-        return Some(parsed.with_timezone(&Utc));
+        return Ok(parsed.with_timezone(&Utc));
     }
     for format in [
         "%Y-%m-%dT%H:%M:%S%.f",
@@ -320,13 +338,37 @@ fn parse_timestamp(text: &str) -> Option<DateTime<Utc>> {
         "%Y-%m-%d %H:%M",
     ] {
         if let Ok(naive) = NaiveDateTime::parse_from_str(&normalised, format) {
-            return Some(DateTime::from_naive_utc_and_offset(naive, Utc));
+            return Ok(DateTime::from_naive_utc_and_offset(naive, Utc));
         }
     }
     NaiveDate::parse_from_str(&normalised, "%Y-%m-%d")
         .ok()
         .and_then(|date| date.and_hms_opt(0, 0, 0))
         .map(|naive| DateTime::from_naive_utc_and_offset(naive, Utc))
+        .ok_or(TimestampRefusal::NotADate)
+}
+
+/// The number `text` spells, when it is nothing but a plain decimal number.
+///
+/// A sign, digits, and a fraction when it has one: `"1767225600"`, `"0"`,
+/// `"-5"` and `"1767225600.5"` are numbers, while `"1e3"`, `"1_000"`,
+/// `" 1767225600"` and `"5.5.5"` are not, so they stay strings that name no
+/// date just as they do on the reference.
+fn numeric_seconds(text: &str) -> Option<f64> {
+    let unsigned = text.strip_prefix(['+', '-']).unwrap_or(text);
+    let (whole, fraction) = match unsigned.split_once('.') {
+        Some((whole, fraction)) => (whole, Some(fraction)),
+        None => (unsigned, None),
+    };
+    let digits = |run: &str| run.bytes().all(|byte| byte.is_ascii_digit());
+    if !digits(whole) || !fraction.is_none_or(digits) {
+        return None;
+    }
+    // A lone sign or a lone dot names nothing.
+    if whole.is_empty() && fraction.is_none_or(str::is_empty) {
+        return None;
+    }
+    text.parse().ok()
 }
 
 /// Whether `text` starts with a zero-padded ISO date: `YYYY-MM-DD`.

@@ -362,6 +362,13 @@ async fn the_pipeline_body_reads_a_timestamp_the_way_the_wire_does() {
         (json!(253_402_300_799_i64), "1978-01-11T21:31:40.799000Z"),
         (json!(253_402_300_800_i64), "1978-01-11T21:31:40.800000Z"),
         (json!(1e14), "5138-11-16T09:46:40.000000Z"),
+        // A string holding a plain decimal number is the same value.
+        (json!("1767225600"), "2026-01-01T00:00:00.000000Z"),
+        (json!("1767225600.5"), "2026-01-01T00:00:00.500000Z"),
+        (json!("1767225600000"), "2026-01-01T00:00:00.000000Z"),
+        (json!("1700000000"), "2023-11-14T22:13:20.000000Z"),
+        (json!("0"), "1970-01-01T00:00:00.000000Z"),
+        (json!("-5"), "1969-12-31T23:59:55.000000Z"),
     ] {
         let reply = pipeline(
             &app,
@@ -381,10 +388,15 @@ async fn the_pipeline_body_reads_a_timestamp_the_way_the_wire_does() {
             "{value}"
         );
     }
-    // Refused spellings: `1e15` is past the year 9999.
+    // Refused spellings. `1e15` is past the year 9999, and a string holding a
+    // plain decimal number is refused the way a string is.
     for (value, kind) in [
         (json!("20260101T000000Z"), "datetime_from_date_parsing"),
         (json!(""), "datetime_from_date_parsing"),
+        (json!("1e3"), "datetime_from_date_parsing"),
+        (json!("1_000"), "datetime_from_date_parsing"),
+        (json!(" 1767225600"), "datetime_from_date_parsing"),
+        (json!("253402300800000"), "datetime_from_date_parsing"),
         (json!(1e15), "datetime_parsing"),
         (json!(253_402_300_800_000_i64), "datetime_parsing"),
         (json!(true), "datetime_type"),
@@ -409,7 +421,10 @@ async fn the_pipeline_body_reads_a_timestamp_the_way_the_wire_does() {
         );
     }
     // `completed_at` goes through the same reader, so it earns the same answer.
-    for (value, instant) in [(json!(1_767_225_600_000_i64), "2026-01-01T00:00:00.000000Z")] {
+    for (value, instant) in [
+        (json!(1_767_225_600_000_i64), "2026-01-01T00:00:00.000000Z"),
+        (json!("1767225600"), "2026-01-01T00:00:00.000000Z"),
+    ] {
         let reply = pipeline(
             &app,
             &json!({"jobs": [{"ci_job_id": "1", "name": "n", "status": "passed",
