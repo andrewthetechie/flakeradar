@@ -135,11 +135,9 @@ fn part_field<'a>(part: &'a [u8], field: &str) -> Result<Option<FieldPart<'a>>, 
         if line.is_empty() {
             continue;
         }
-        let name = match line.iter().position(|byte| *byte == b':') {
-            Some(colon) => line.get(..colon).unwrap_or_default(),
-            None => return Err(MalformedHeaders),
+        let Some((name, value)) = split_once_byte(line, b':') else {
+            return Err(MalformedHeaders);
         };
-        let value = line.get(name.len() + 1..).unwrap_or_default();
         if !is_token(name) {
             return Err(MalformedHeaders);
         }
@@ -173,25 +171,12 @@ fn disposition(value: &[u8]) -> (Option<String>, bool) {
     let mut name = None;
     let mut filename = false;
     for parameter in value.split(|byte| *byte == b';').skip(1) {
-        let parameter = trim_ascii(parameter);
         // A parameter without a value is not one this reads, such as a bare flag
         // a client added.
-        let mut key = Vec::new();
-        let mut raw = Vec::new();
-        let mut valued = false;
-        for byte in parameter {
-            if valued {
-                raw.push(*byte);
-            } else if *byte == b'=' {
-                valued = true;
-            } else {
-                key.push(*byte);
-            }
-        }
-        if !valued {
+        let Some((key, raw)) = split_once_byte(parameter.trim_ascii(), b'=') else {
             continue;
-        }
-        let (key, raw) = (key.as_slice(), trim_ascii(&raw));
+        };
+        let raw = raw.trim_ascii();
         let raw = raw
             .strip_prefix(b"\"")
             .and_then(|rest| rest.strip_suffix(b"\""))
@@ -205,17 +190,11 @@ fn disposition(value: &[u8]) -> (Option<String>, bool) {
     (name, filename)
 }
 
-/// `slice` without leading or trailing ASCII whitespace.
-fn trim_ascii(slice: &[u8]) -> &[u8] {
-    let start = slice
-        .iter()
-        .position(|byte| !byte.is_ascii_whitespace())
-        .unwrap_or(slice.len());
-    let end = slice
-        .iter()
-        .rposition(|byte| !byte.is_ascii_whitespace())
-        .map_or(start, |last| last + 1);
-    slice.get(start..end).unwrap_or_default()
+/// `slice` split at its first `byte`, when it holds one.
+fn split_once_byte(slice: &[u8], byte: u8) -> Option<(&[u8], &[u8])> {
+    let at = slice.iter().position(|candidate| *candidate == byte)?;
+    let (head, tail) = slice.split_at(at);
+    tail.split_first().map(|(_, rest)| (head, rest))
 }
 
 /// Where `needle` first appears in `haystack`.
