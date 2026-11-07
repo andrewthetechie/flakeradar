@@ -1594,12 +1594,32 @@ async fn explaining_tests(
     Ok(by_exec)
 }
 
-/// One row of the runner statistics before sorting.
+/// One runner group: the Executions it ran and the failures nothing explained.
+#[derive(Debug, Clone)]
 struct RunnerStat {
+    /// The sorted label set the group is named by.
     labels: Vec<String>,
+    /// The runner name, for a group named by name rather than by labels.
     name: Option<String>,
+    /// Executions the group ran.
     executions: i64,
+    /// Failed Executions no failing Test or sibling Job explained.
     unexplained: i64,
+}
+
+impl RunnerStat {
+    /// The share of this group's Executions that were unexplained failures.
+    ///
+    /// This is the one place the rate is computed and the one place that says why
+    /// the cast is exact: a group holds Executions of one Job, of which the reads
+    /// weigh at most the score window, and every count is far below `2^52`.
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "a runner group holds Execution counts, far below 2^52, so both casts are exact"
+    )]
+    fn unexplained_rate(&self) -> f64 {
+        self.unexplained as f64 / self.executions as f64
+    }
 }
 
 /// Job executions grouped by runner over the Job's newest `window` executions.
@@ -1626,14 +1646,36 @@ pub async fn runner_stats(
         int_array(&[job_id]),
         Value::from(i32::try_from(window).unwrap_or(i32::MAX)),
     ];
+    let rows = rows(db, sql, values).await?;
+    let mut stats = tally_runners(&rows)?;
+    rank_runners(&mut stats);
+    Ok(stats
+        .into_iter()
+        .take(RUNNER_STATS_LIMIT)
+        .map(runner_stat_out)
+        .collect())
+}
+
+/// Groups the query's rows by runner: one group per label set, plus one per
+/// runner name that appeared at least twice.
+///
+/// A name seen once says nothing about a runner being worse than another, so it
+/// only reaches the table through its label set; the labels it carried are folded
+/// into the named group so the row still shows what the runner ran on.
+///
+/// # Errors
+///
+/// Returns [`DbError::Database`] when a row holds no runner name, labels, status or
+/// explanation flag.
+fn tally_runners(rows: &[QueryResult]) -> Result<Vec<RunnerStat>, DbError> {
     let mut label_counts: BTreeMap<Vec<String>, RunnerCounts> = BTreeMap::new();
     let mut name_counts: BTreeMap<String, RunnerCounts> = BTreeMap::new();
     let mut name_labels: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    for row in rows(db, sql, values).await? {
-        let runner_name: String = get(&row, "runner_name")?;
-        let labels = runner_labels(&row)?;
-        let status: String = get(&row, "status")?;
-        let explained: bool = get(&row, "explained")?;
+    for row in rows {
+        let runner_name: String = get(row, "runner_name")?;
+        let labels = runner_labels(row)?;
+        let status: String = get(row, "status")?;
+        let explained: bool = get(row, "explained")?;
         let unexplained = i64::from(status == "failed" && !explained);
         let counts = label_counts.entry(labels.clone()).or_default();
         counts.executions += 1;
@@ -1668,20 +1710,15 @@ pub async fn runner_stats(
             unexplained: counts.unexplained,
         });
     }
+    Ok(stats)
+}
+
+/// Puts the groups worst-first: highest unexplained rate, then most Executions,
+/// then labels, then runner name.
+fn rank_runners(stats: &mut [RunnerStat]) {
     stats.sort_by(|left, right| {
-        // Counts of Executions are far below 2^52, so the cast below is exact.
-        #[expect(
-            clippy::cast_precision_loss,
-            reason = "unexplained and executions are Execution counts, far below 2^52"
-        )]
-        let left_rate = left.unexplained as f64 / left.executions as f64;
-        #[expect(
-            clippy::cast_precision_loss,
-            reason = "unexplained and executions are Execution counts, far below 2^52"
-        )]
-        let right_rate = right.unexplained as f64 / right.executions as f64;
-        left_rate
-            .partial_cmp(&right_rate)
+        left.unexplained_rate()
+            .partial_cmp(&right.unexplained_rate())
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| left.executions.cmp(&right.executions))
             .then_with(|| left.labels.cmp(&right.labels))
@@ -1693,16 +1730,16 @@ pub async fn runner_stats(
             })
             .reverse()
     });
-    Ok(stats
-        .into_iter()
-        .take(RUNNER_STATS_LIMIT)
-        .map(|stat| RunnerStatOut {
-            labels: stat.labels,
-            runner_name: stat.name,
-            executions: stat.executions,
-            unexplained_failures: stat.unexplained,
-        })
-        .collect())
+}
+
+/// One tallied group as the row the Job detail page shows.
+fn runner_stat_out(stat: RunnerStat) -> RunnerStatOut {
+    RunnerStatOut {
+        labels: stat.labels,
+        runner_name: stat.name,
+        executions: stat.executions,
+        unexplained_failures: stat.unexplained,
+    }
 }
 
 /// The Jobs dashboard's headline counts.
