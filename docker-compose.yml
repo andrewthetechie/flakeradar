@@ -4,11 +4,12 @@ services:
     environment:
       POSTGRES_USER: flakeradar
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-flakeradar}
-      POSTGRES_DB: flakeradar
+      # Read only when the volume is first created; see docs/cutover-v2.md.
+      POSTGRES_DB: ${POSTGRES_DB:-flakeradar}
     volumes:
       - flakeradar-pg:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U flakeradar -d flakeradar"]
+      test: ["CMD-SHELL", "pg_isready -U flakeradar -d $${POSTGRES_DB}"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -23,7 +24,9 @@ services:
     env_file: .env
     environment:
       # A `postgresql://` URL: the driver prefix is not part of the contract.
-      FLAKERADAR_DATABASE_URL: postgresql://flakeradar:${POSTGRES_PASSWORD:-flakeradar}@db:5432/flakeradar
+      # Built here, so it overrides any FLAKERADAR_DATABASE_URL in `.env`; set
+      # POSTGRES_DB there to choose the database.
+      FLAKERADAR_DATABASE_URL: postgresql://flakeradar:${POSTGRES_PASSWORD:-flakeradar}@db:5432/${POSTGRES_DB:-flakeradar}
     depends_on:
       db:
         condition: service_healthy

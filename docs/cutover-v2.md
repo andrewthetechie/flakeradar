@@ -63,6 +63,19 @@ CREATE DATABASE flakeradar;
 FLAKERADAR_DATABASE_URL=postgresql://flakeradar:<password>@<host>:5432/flakeradar
 ```
 
+With the shipped `docker-compose.yml`, the 1.x database is already called
+`flakeradar` in the `flakeradar-pg` volume, and compose builds the URL itself,
+so a `FLAKERADAR_DATABASE_URL` in `.env` is ignored. Create the new database
+under another name instead and name it with `POSTGRES_DB` in `.env`:
+
+```bash
+docker compose up -d db
+docker compose exec db createdb -U flakeradar flakeradar2
+echo 'POSTGRES_DB=flakeradar2' >> .env
+```
+
+The old database stays beside it, untouched, as the way back to 1.x.
+
 If the old URL carried `?ssl=` query parameters, change them to `?sslmode=`.
 The Rust driver reads libpq's names, and `ssl=` is a SQLAlchemy spelling it
 ignores. The binary creates its whole schema on startup (`seaql_migrations`
