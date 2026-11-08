@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="whitespace" tests="3">
+  <testcase classname="tests.test_ws" name="test_message_whitespace" time="0.01">
+    <failure message="  	 padded	tabs	  &#133;nel&#133;  &#8232;ls&#8232;&#8233;ps  &#160;nbsp  ">body</failure>
+  </testcase>
+  <testcase classname="tests.test_ws" name="test_output_whitespace" time="0.01">
+    <failure message="spaced body">   &#133;&#8232;first&#8233;  
+  second line  </failure>
+    <system-out>  	captured&#133;out  </system-out>
+    <system-err>  &#8232;captured err	  </system-err>
+  </testcase>
+  <testcase classname="tests.test_ws" name="test_first_line_after_whitespace" time="0.01">
+    <failure>   &#133;&#8233;  the real first line
+second line</failure>
+  </testcase>
+</testsuite>

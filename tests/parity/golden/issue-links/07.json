@@ -1,0 +1,19 @@
+{
+  "body": {
+    "items": [],
+    "page": 1,
+    "page_size": 50,
+    "total": 0
+  },
+  "content-type": "application/json",
+  "request": {
+    "method": "GET",
+    "path": "/api/tests",
+    "query": {
+      "has_issue": "true",
+      "repo": "o/r"
+    }
+  },
+  "status": 200,
+  "step": 7
+}

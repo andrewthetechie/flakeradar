@@ -1,0 +1,20 @@
+{
+  "name": "repo-admin",
+  "steps": [
+    {"http": {"method": "POST", "path": "/api/ingest", "query": {"repo": "a/b", "commit_sha": "r1"}, "headers": {"X-API-Key": "$TOKEN", "Content-Type": "application/xml"}, "body_text": "<testsuite name=\"unit\"><testcase classname=\"tests.test_cart\" name=\"test_total\" time=\"0.01\" file=\"tests/test_cart.py\" line=\"12\"><failure message=\"assert 1 == 2\">AssertionError: assert 1 == 2</failure></testcase></testsuite>"}},
+    {"http": {"method": "POST", "path": "/api/ingest", "query": {"repo": "a/b", "commit_sha": "r1", "project": "frontend"}, "headers": {"X-API-Key": "$TOKEN", "Content-Type": "application/xml"}, "body_text": "<testsuite name=\"unit\"><testcase classname=\"tests.test_cart\" name=\"test_tax\" time=\"0.01\" file=\"tests/test_cart.py\" line=\"20\"></testcase></testsuite>"}},
+    {"http": {"method": "POST", "path": "/api/ingest", "query": {"repo": "c/d", "commit_sha": "r1"}, "headers": {"X-API-Key": "$TOKEN", "Content-Type": "application/xml"}, "body_text": "<testsuite name=\"unit\"><testcase classname=\"tests.test_cart\" name=\"test_total\" time=\"0.01\" file=\"tests/test_cart.py\" line=\"12\"><failure message=\"assert 1 == 2\">AssertionError: assert 1 == 2</failure></testcase></testsuite>"}},
+    {"http": {"method": "POST", "path": "/api/ingest/pipeline", "headers": {"X-API-Key": "$TOKEN", "Content-Type": "application/json"}, "body_json": {"repo": "o/r", "provider": "github", "pipeline": ".github/workflows/ci.yml", "commit_sha": "r1", "branch": "main", "ci_run_id": "800", "ci_run_attempt": 1, "jobs": [{"ci_job_id": "80", "name": "unit", "status": "failed"}, {"ci_job_id": "81", "name": "lint", "status": "failed"}, {"ci_job_id": "82", "name": "gate", "status": "failed", "summary": true}]}}},
+    {"wait_processed": true},
+    {"http": {"method": "DELETE", "path": "/api/repos/a/b/projects/nope", "headers": {"X-API-Key": "$TOKEN"}}},
+    {"http": {"method": "DELETE", "path": "/api/repos/x/y", "headers": {"X-API-Key": "$TOKEN"}}},
+    {"http": {"method": "DELETE", "path": "/api/repos/a/b/projects/Bad Project", "headers": {"X-API-Key": "$TOKEN"}}},
+    {"http": {"method": "DELETE", "path": "/api/repos/Bad Name/x", "headers": {"X-API-Key": "$TOKEN"}}},
+    {"http": {"method": "DELETE", "path": "/api/repos/a/b/projects/frontend", "headers": {"X-API-Key": "$TOKEN"}}},
+    {"http": {"method": "GET", "path": "/api/repos", "query": {}}},
+    {"http": {"method": "DELETE", "path": "/api/repos/a/b", "headers": {"X-API-Key": "$TOKEN"}}},
+    {"http": {"method": "DELETE", "path": "/api/repos/a/b", "headers": {"X-API-Key": "$TOKEN"}}},
+    {"http": {"method": "GET", "path": "/api/repos", "query": {}}},
+    {"dump_db": ["repos", "projects", "test_cases", "test_runs", "test_executions", "pipelines", "jobs", "job_executions", "reports"]}
+  ]
+}

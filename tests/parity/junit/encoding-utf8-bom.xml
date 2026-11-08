@@ -1,0 +1,6 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="bom" tests="1">
+  <testcase classname="tests.test_encoding" name="test_bom_café" time="0.01">
+    <failure message="mémo 你好">élément</failure>
+  </testcase>
+</testsuite>

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="nameless" tests="3">
+  <testcase classname="tests.test_nameless" time="0.01">
+    <failure message="dropped because it has no name">no name attribute</failure>
+  </testcase>
+  <testcase classname="tests.test_nameless" name="test_named" time="0.02" />
+  <testcase name="" classname="tests.test_nameless" time="0.03">
+    <failure message="an empty name is still a name">kept: the attribute exists</failure>
+  </testcase>
+</testsuite>

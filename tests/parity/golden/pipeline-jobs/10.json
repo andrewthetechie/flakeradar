@@ -1,0 +1,29 @@
+{
+  "body": {
+    "detail": [
+      {
+        "ctx": {
+          "ge": 1
+        },
+        "input": "0",
+        "loc": [
+          "query",
+          "ci_run_attempt"
+        ],
+        "msg": "Input should be greater than or equal to 1",
+        "type": "greater_than_equal"
+      }
+    ]
+  },
+  "content-type": "application/json",
+  "request": {
+    "method": "GET",
+    "path": "/api/ci-runs/777/failures",
+    "query": {
+      "ci_run_attempt": "0",
+      "repo": "o/r"
+    }
+  },
+  "status": 422,
+  "step": 10
+}

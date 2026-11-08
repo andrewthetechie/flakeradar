@@ -1,0 +1,13 @@
+{
+  "body": {
+    "detail": "Job not found"
+  },
+  "content-type": "application/json",
+  "request": {
+    "method": "DELETE",
+    "path": "/api/jobs/999/issue",
+    "query": {}
+  },
+  "status": 404,
+  "step": 25
+}

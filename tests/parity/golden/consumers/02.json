@@ -1,0 +1,25 @@
+{
+  "body": {
+    "duplicate": false,
+    "report_id": 2,
+    "status": "pending"
+  },
+  "content-type": "application/json",
+  "request": {
+    "method": "POST",
+    "path": "/api/ingest",
+    "query": {
+      "ci_job_id": "999",
+      "ci_run_attempt": "1",
+      "ci_run_id": "12345",
+      "commit_sha": "9f8e7d6",
+      "default_branch": "main",
+      "pipeline": ".github/workflows/ci.yml",
+      "project": "backend",
+      "repo": "andrewthetechie/writers-app",
+      "root": "backend"
+    }
+  },
+  "status": 202,
+  "step": 2
+}

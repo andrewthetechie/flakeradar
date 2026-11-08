@@ -1,0 +1,52 @@
+{
+  "repo": "demo/shop",
+  "ci_run_id": "run-12",
+  "ci_run_attempt": 1,
+  "flake_threshold": 0.5,
+  "reports": { "pending": 0, "processed": 4, "failed": 0 },
+  "total_failures": 3,
+  "truncated": false,
+  "failures": [
+    {
+      "test_id": 1,
+      "project": "backend",
+      "suite": "shop",
+      "classname": "tests.e2e.test_shop",
+      "name": "test_checkout_total_rounding",
+      "run_id": 5,
+      "ci_job_id": "b-12",
+      "status": "failed",
+      "failed_attempts": 1,
+      "failure_category": "timing",
+      "message": "AssertionError: expected 104.85, got 104.84",
+      "tier": "flaky",
+      "flakiness_score": 0.64,
+      "confirmed_flake_count": 2,
+      "clean_streak": 3,
+      "fail_streak": 0,
+      "broken": false,
+      "quarantined": false,
+      "github_issue_number": null,
+      "github_issue_url": null,
+      "github_issue_closed": false
+    }
+  ],
+  "failed_jobs": [
+    {
+      "job_id": 1,
+      "pipeline": ".github/workflows/ci.yml",
+      "name": "e2e (ubuntu-latest)",
+      "ci_job_id": "e-12",
+      "url": "http://127.0.0.1:8543/job/e-12",
+      "outcome": "unexplained",
+      "summary": false,
+      "tier": "suspect",
+      "flakiness_score": 0.42,
+      "confirmed_flake_count": 0,
+      "clean_streak": 1,
+      "github_issue_number": 12,
+      "github_issue_url": "https://github.com/demo/shop/issues/12",
+      "github_issue_closed": false
+    }
+  ]
+}

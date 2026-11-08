@@ -1,0 +1,20 @@
+{
+  "body": {
+    "deleted": {
+      "executions": 1,
+      "jobs": 0,
+      "reports": 1,
+      "tests": 1
+    },
+    "github_issue_numbers": [],
+    "repo": "a/b"
+  },
+  "content-type": "application/json",
+  "request": {
+    "method": "DELETE",
+    "path": "/api/repos/a/b",
+    "query": {}
+  },
+  "status": 200,
+  "step": 12
+}

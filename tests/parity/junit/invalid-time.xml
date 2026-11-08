@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="times" tests="5">
+  <testcase classname="tests.test_times" name="test_missing_time" />
+  <testcase classname="tests.test_times" name="test_empty_time" time="" />
+  <testcase classname="tests.test_times" name="test_text_time" time="abc" />
+  <testcase classname="tests.test_times" name="test_negative_time" time="-1.5" />
+  <testcase classname="tests.test_times" name="test_fractional_time" time="0.000123456789" />
+</testsuite>

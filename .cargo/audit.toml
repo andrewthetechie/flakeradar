@@ -1,0 +1,7 @@
+# cargo-audit configuration.
+#
+# Nothing is ignored today. An entry added to `[advisories] ignore` carries a
+# comment saying why the advisory cannot be fixed here, what reaches the
+# vulnerable path, and what upstream fix removes the entry.
+[advisories]
+ignore = []

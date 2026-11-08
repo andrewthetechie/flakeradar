@@ -4,11 +4,13 @@ services:
     environment:
       POSTGRES_USER: flakeradar
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-flakeradar}
-      POSTGRES_DB: flakeradar
+      # The image creates this database only with a new volume; the URL below
+      # and the healthcheck read it on every start. See docs/cutover-rust.md.
+      POSTGRES_DB: ${POSTGRES_DB:-flakeradar}
     volumes:
       - flakeradar-pg:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U flakeradar -d flakeradar"]
+      test: ["CMD-SHELL", "pg_isready -U flakeradar -d $${POSTGRES_DB}"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -17,12 +19,15 @@ services:
   flakeradar:
     build:
       context: .
-      dockerfile: backend/Dockerfile
+      dockerfile: Dockerfile
     ports:
       - "127.0.0.1:8000:8000"
     env_file: .env
     environment:
-      FLAKERADAR_DATABASE_URL: postgresql+asyncpg://flakeradar:${POSTGRES_PASSWORD:-flakeradar}@db:5432/flakeradar
+      # A `postgresql://` URL: the driver prefix is not part of the contract.
+      # Built here, so it overrides any FLAKERADAR_DATABASE_URL in `.env`; set
+      # POSTGRES_DB there to choose the database.
+      FLAKERADAR_DATABASE_URL: postgresql://flakeradar:${POSTGRES_PASSWORD:-flakeradar}@db:5432/${POSTGRES_DB:-flakeradar}
     depends_on:
       db:
         condition: service_healthy

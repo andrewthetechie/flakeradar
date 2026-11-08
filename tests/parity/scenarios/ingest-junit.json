@@ -1,0 +1,32 @@
+{
+  "name": "ingest-junit",
+  "steps": [
+    {"http": {"method": "POST", "path": "/api/ingest", "query": {"repo": "o/r", "commit_sha": "a1"}, "headers": {"X-API-Key": "$TOKEN"}, "body_text": "<testsuite name=\"unit\"><testcase classname=\"tests.test_cart\" name=\"test_total\" time=\"0.01\" file=\"tests/test_cart.py\" line=\"12\"/></testsuite>"}},
+    {"http": {"method": "POST", "path": "/api/ingest", "query": {"repo": "o/r", "commit_sha": "a1"}, "headers": {"X-API-Key": "$TOKEN"}, "body_text": "<testsuite name=\"unit\"><testcase classname=\"tests.test_cart\" name=\"test_total\" time=\"0.01\" file=\"tests/test_cart.py\" line=\"12\"/></testsuite>"}},
+    {"http": {"method": "POST", "path": "/api/ingest", "query": {"repo": "o/r", "commit_sha": "a2"}, "headers": {"X-API-Key": "$TOKEN"}, "body_text": "<testsuite name=\"unit\"><testcase classname=\"tests.test_cart\" name=\"test_total\" time=\"0.01\" file=\"tests/test_cart.py\" line=\"12\"/></testsuite>"}},
+    {"http": {"method": "POST", "path": "/api/ingest", "query": {"repo": "o/r", "commit_sha": "a3"}, "headers": {"X-API-Key": "$TOKEN"}, "body_text": ""}},
+    {"http": {"method": "POST", "path": "/api/ingest", "query": {"repo": "o/r", "commit_sha": "a3"}, "headers": {"X-API-Key": "$TOKEN", "Content-Type": "application/xml"}, "body_text": "this is not xml"}},
+    {"http": {"method": "POST", "path": "/api/ingest", "query": {"repo": "o/r", "commit_sha": "a3"}, "headers": {"X-API-Key": "$TOKEN", "Content-Type": "application/xml"}, "body_text": "<testsuites name=\"empty\"/>"}},
+    {"http": {"method": "POST", "path": "/api/ingest", "query": {"repo": "o/r", "commit_sha": "a3"}, "headers": {"X-API-Key": "$TOKEN", "Content-Type": "application/xml"}, "body_file": "junit/invalid-time.xml"}},
+    {"http": {"method": "POST", "path": "/api/ingest", "query": {"repo": "o/r", "commit_sha": "a3"}, "headers": {"X-API-Key": "$TOKEN", "Content-Type": "application/xml"}, "body_size": 21000000}},
+    {"http": {"method": "POST", "path": "/api/ingest", "query": {"repo": "Not A Repo", "commit_sha": "a3"}, "headers": {"X-API-Key": "$TOKEN"}, "body_text": "<testsuite name=\"unit\"><testcase classname=\"c\" name=\"test_bad_repo\"/></testsuite>"}},
+    {"http": {"method": "POST", "path": "/api/ingest", "query": {"commit_sha": "a3"}, "headers": {"X-API-Key": "$TOKEN"}, "body_text": "<testsuite name=\"unit\"><testcase classname=\"c\" name=\"test_no_repo\"/></testsuite>"}},
+    {"http": {"method": "POST", "path": "/api/ingest", "query": {"repo": "o/r", "commit_sha": "a3", "ci_run_attempt": "0"}, "headers": {"X-API-Key": "$TOKEN"}, "body_text": "<testsuite name=\"unit\"><testcase classname=\"c\" name=\"test_zero_attempt\"/></testsuite>"}},
+    {"http": {"method": "POST", "path": "/api/ingest", "query": {"repo": "o/r", "commit_sha": "a3", "line_base": "2"}, "headers": {"X-API-Key": "$TOKEN"}, "body_text": "<testsuite name=\"unit\"><testcase classname=\"c\" name=\"test_bad_line_base\"/></testsuite>"}},
+    {"http": {"method": "POST", "path": "/api/ingest", "query": {"repo": "o/r", "commit_sha": "a3", "line_base": "0"}, "headers": {"X-API-Key": "$TOKEN", "Content-Type": "application/xml"}, "body_text": "<testsuite name=\"unit\"><testcase classname=\"tests.test_cart\" name=\"test_line_base_zero\" time=\"0.01\" file=\"tests/test_cart.py\" line=\"0\"/></testsuite>"}},
+    {"http": {"method": "POST", "path": "/api/ingest", "query": {"repo": "o/r", "project": "frontend", "commit_sha": "b1", "root": "./frontend/"}, "multipart_file": {"field": "report", "filename": "report.xml", "body_file": "junit/vitest.xml"}}},
+    {"wait_processed": true},
+    {"http": {"method": "GET", "path": "/api/reports"}},
+    {"http": {"method": "GET", "path": "/api/reports", "query": {"limit": "2"}}},
+    {"http": {"method": "GET", "path": "/api/reports", "query": {"status": "bogus"}}},
+    {"http": {"method": "GET", "path": "/api/reports", "query": {"status": "processed"}}},
+    {"http": {"method": "GET", "path": "/api/reports/1"}},
+    {"http": {"method": "GET", "path": "/api/reports/999"}},
+    {"http": {"method": "GET", "path": "/api/reports/summary"}},
+    {"http": {"method": "POST", "path": "/api/reports/1/retry", "headers": {"X-API-Key": "$TOKEN"}}},
+    {"http": {"method": "DELETE", "path": "/api/reports/1", "headers": {"X-API-Key": "$TOKEN"}}},
+    {"http": {"method": "POST", "path": "/api/reports/999/retry", "headers": {"X-API-Key": "$TOKEN"}}},
+    {"http": {"method": "DELETE", "path": "/api/reports/999", "headers": {"X-API-Key": "$TOKEN"}}},
+    {"dump_db": ["reports", "test_runs", "test_cases", "test_executions"]}
+  ]
+}

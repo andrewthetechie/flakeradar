@@ -1,0 +1,32 @@
+{
+  "name": "issue-links",
+  "steps": [
+    {"http": {"method": "POST", "path": "/api/ingest", "query": {"repo": "o/r", "commit_sha": "i1"}, "headers": {"X-API-Key": "$TOKEN", "Content-Type": "application/xml"}, "body_text": "<testsuite name=\"unit\"><testcase classname=\"tests.test_cart\" name=\"test_total\" time=\"0.01\" file=\"tests/test_cart.py\" line=\"12\"><failure message=\"assert 1 == 2\">AssertionError: assert 1 == 2</failure></testcase><testcase classname=\"tests.test_cart\" name=\"test_tax\" time=\"0.01\" file=\"tests/test_cart.py\" line=\"20\"></testcase></testsuite>"}},
+    {"http": {"method": "POST", "path": "/api/ingest/pipeline", "headers": {"X-API-Key": "$TOKEN", "Content-Type": "application/json"}, "body_json": {"repo": "o/r", "provider": "github", "pipeline": ".github/workflows/ci.yml", "commit_sha": "i1", "branch": "main", "ci_run_id": "900", "ci_run_attempt": 1, "jobs": [{"ci_job_id": "10", "name": "unit", "status": "failed"}, {"ci_job_id": "11", "name": "lint", "status": "failed"}, {"ci_job_id": "12", "name": "gate", "status": "failed", "summary": true}]}}},
+    {"http": {"method": "POST", "path": "/api/ingest/pipeline", "headers": {"X-API-Key": "$TOKEN", "Content-Type": "application/json"}, "body_json": {"repo": "o/r", "provider": "gitlab", "pipeline": ".gitlab-ci.yml", "commit_sha": "i1", "branch": "main", "ci_run_id": "901", "ci_run_attempt": 1, "jobs": [{"ci_job_id": "900", "name": "deploy", "status": "failed"}]}}},
+    {"wait_processed": true},
+    {"http": {"method": "PUT", "path": "/api/tests/1/issue", "query": {}, "headers": {"X-API-Key": "$TOKEN", "Content-Type": "application/json"}, "body_json": {"number": 12}}},
+    {"http": {"method": "PUT", "path": "/api/tests/1/issue", "query": {}, "headers": {"X-API-Key": "$TOKEN", "Content-Type": "application/json"}, "body_json": {"number": 12}}},
+    {"http": {"method": "GET", "path": "/api/tests", "query": {"repo": "o/r", "has_issue": "true"}}},
+    {"http": {"method": "PUT", "path": "/api/tests/1/issue", "query": {}, "headers": {"X-API-Key": "$TOKEN", "Content-Type": "application/json"}, "body_json": {"number": 13}}},
+    {"http": {"method": "PUT", "path": "/api/tests/1/issue", "query": {"replace": "true"}, "headers": {"X-API-Key": "$TOKEN", "Content-Type": "application/json"}, "body_json": {"number": 13}}},
+    {"http": {"method": "PUT", "path": "/api/tests/1/issue", "query": {}, "headers": {"X-API-Key": "$TOKEN", "Content-Type": "application/json"}, "body_json": {"number": 14, "url": "https://github.com/o/r/issues/14"}}},
+    {"http": {"method": "PUT", "path": "/api/tests/1/issue", "query": {}, "headers": {"X-API-Key": "$TOKEN", "Content-Type": "application/json"}, "body_json": {"number": 15, "url": "https://github.com/other/repo/issues/15"}}},
+    {"http": {"method": "PUT", "path": "/api/tests/1/issue", "query": {}, "headers": {"X-API-Key": "$TOKEN", "Content-Type": "application/json"}, "body_json": {"number": 0}}},
+    {"http": {"method": "PUT", "path": "/api/tests/1/issue", "query": {}, "headers": {"X-API-Key": "$TOKEN", "Content-Type": "application/json"}, "body_json": {"number": 16, "url": "not a url"}}},
+    {"http": {"method": "PUT", "path": "/api/tests/999/issue", "query": {}, "headers": {"X-API-Key": "$TOKEN", "Content-Type": "application/json"}, "body_json": {"number": 12}}},
+    {"http": {"method": "PUT", "path": "/api/tests/abc/issue", "query": {}, "headers": {"X-API-Key": "$TOKEN", "Content-Type": "application/json"}, "body_json": {"number": 12}}},
+    {"http": {"method": "DELETE", "path": "/api/tests/1/issue", "query": {}, "headers": {"X-API-Key": "$TOKEN"}}},
+    {"http": {"method": "DELETE", "path": "/api/tests/1/issue", "query": {}, "headers": {"X-API-Key": "$TOKEN"}}},
+    {"http": {"method": "DELETE", "path": "/api/tests/999/issue", "query": {}, "headers": {"X-API-Key": "$TOKEN"}}},
+    {"http": {"method": "PUT", "path": "/api/jobs/3/issue", "query": {}, "headers": {"X-API-Key": "$TOKEN", "Content-Type": "application/json"}, "body_json": {"number": 20}}},
+    {"http": {"method": "GET", "path": "/api/jobs", "query": {"repo": "o/r", "include_stable": "true"}}},
+    {"http": {"method": "PUT", "path": "/api/jobs/3/issue", "query": {}, "headers": {"X-API-Key": "$TOKEN", "Content-Type": "application/json"}, "body_json": {"number": 21}}},
+    {"http": {"method": "PUT", "path": "/api/jobs/3/issue", "query": {"replace": "true"}, "headers": {"X-API-Key": "$TOKEN", "Content-Type": "application/json"}, "body_json": {"number": 21}}},
+    {"http": {"method": "PUT", "path": "/api/jobs/3/issue", "query": {}, "headers": {"X-API-Key": "$TOKEN", "Content-Type": "application/json"}, "body_json": {"number": 22, "url": "https://github.com/other/repo/issues/22"}}},
+    {"http": {"method": "DELETE", "path": "/api/jobs/3/issue", "query": {}, "headers": {"X-API-Key": "$TOKEN"}}},
+    {"http": {"method": "DELETE", "path": "/api/jobs/999/issue", "query": {}, "headers": {"X-API-Key": "$TOKEN"}}},
+    {"http": {"method": "PUT", "path": "/api/jobs/1/issue", "query": {}, "headers": {"X-API-Key": "$TOKEN", "Content-Type": "application/json"}, "body_json": {"number": 30}}},
+    {"dump_db": ["test_cases", "jobs"]}
+  ]
+}

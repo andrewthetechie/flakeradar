@@ -1,0 +1,10 @@
+{
+  "name": "health",
+  "steps": [
+    {"http": {"method": "GET", "path": "/api/health"}},
+    {"http": {"method": "GET", "path": "/api/health/ready"}},
+    {"http": {"method": "GET", "path": "/metrics"}},
+    {"http": {"method": "GET", "path": "/api/repos"}},
+    {"http": {"method": "GET", "path": "/api/reports/summary"}}
+  ]
+}

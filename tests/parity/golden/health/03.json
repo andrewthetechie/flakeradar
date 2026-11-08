@@ -1,0 +1,11 @@
+{
+  "body": "# HELP flakeradar_reports Reports by current status.\n# TYPE flakeradar_reports gauge\nflakeradar_reports{status=\"pending\"} 0\nflakeradar_reports{status=\"processed\"} 0\nflakeradar_reports{status=\"failed\"} 0\n# HELP flakeradar_oldest_pending_report_age_seconds Age in seconds of the oldest pending Report; 0 when the queue is empty.\n# TYPE flakeradar_oldest_pending_report_age_seconds gauge\nflakeradar_oldest_pending_report_age_seconds 0.0\n# HELP flakeradar_processor_leader 1 when a process holds the Report processor advisory lock.\n# TYPE flakeradar_processor_leader gauge\nflakeradar_processor_leader 1\n# HELP flakeradar_tests Tests by tier (flaky, suspect, stable).\n# TYPE flakeradar_tests gauge\nflakeradar_tests{tier=\"flaky\"} 0\nflakeradar_tests{tier=\"suspect\"} 0\nflakeradar_tests{tier=\"stable\"} 0\n# HELP flakeradar_jobs Jobs by tier (flaky, suspect, stable).\n# TYPE flakeradar_jobs gauge\nflakeradar_jobs{tier=\"flaky\"} 0\nflakeradar_jobs{tier=\"suspect\"} 0\nflakeradar_jobs{tier=\"stable\"} 0\n# HELP flakeradar_last_report_processed_timestamp_seconds Unix time of the most recently processed Report still retained; absent until the first Report is processed, and it can move backwards or disappear again once retention deletes processed Reports (REPORT_RETENTION_DAYS).\n# TYPE flakeradar_last_report_processed_timestamp_seconds gauge\n",
+  "content-type": "text/plain; version=0.0.4; charset=utf-8",
+  "request": {
+    "method": "GET",
+    "path": "/metrics",
+    "query": {}
+  },
+  "status": 200,
+  "step": 3
+}

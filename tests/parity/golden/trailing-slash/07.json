@@ -1,0 +1,11 @@
+{
+  "body": "",
+  "location": "/mcp/",
+  "request": {
+    "method": "POST",
+    "path": "/mcp",
+    "query": {}
+  },
+  "status": 307,
+  "step": 7
+}

@@ -1,0 +1,25 @@
+{
+  "body": {
+    "detail": [
+      {
+        "input": {
+          "reason": "missing the flag"
+        },
+        "loc": [
+          "body",
+          "quarantined"
+        ],
+        "msg": "Field required",
+        "type": "missing"
+      }
+    ]
+  },
+  "content-type": "application/json",
+  "request": {
+    "method": "POST",
+    "path": "/api/tests/1/quarantine",
+    "query": {}
+  },
+  "status": 422,
+  "step": 13
+}

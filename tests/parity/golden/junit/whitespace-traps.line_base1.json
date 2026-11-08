@@ -1,0 +1,45 @@
+{
+  "cases": [
+    {
+      "category": "other",
+      "classname": "tests.test_ws",
+      "details": "body",
+      "duration": 0.01,
+      "file": null,
+      "fingerprint": "e0363fd1b2fc1ac7e284659e6e6bb9c8225875b6",
+      "line": null,
+      "message": "padded tabs   nel   ls  ps   nbsp",
+      "name": "test_message_whitespace",
+      "status": "failed",
+      "suite": "whitespace"
+    },
+    {
+      "category": "other",
+      "classname": "tests.test_ws",
+      "details": "first   \n  second line\n\n--- stdout ---\ncapturedout\n\n--- stderr ---\ncaptured err",
+      "duration": 0.01,
+      "file": null,
+      "fingerprint": "3c6e4872f2c0608ea660d445a3d5a8f23b4cc0c4",
+      "line": null,
+      "message": "spaced body",
+      "name": "test_output_whitespace",
+      "status": "failed",
+      "suite": "whitespace"
+    },
+    {
+      "category": "other",
+      "classname": "tests.test_ws",
+      "details": "the real first line\nsecond line",
+      "duration": 0.01,
+      "file": null,
+      "fingerprint": "eb4d12145064a683d9e2eaf4d2ecdfd7d804af3e",
+      "line": null,
+      "message": "the real first line",
+      "name": "test_first_line_after_whitespace",
+      "status": "failed",
+      "suite": "whitespace"
+    }
+  ],
+  "line_base": 1,
+  "source": "junit/whitespace-traps.xml"
+}

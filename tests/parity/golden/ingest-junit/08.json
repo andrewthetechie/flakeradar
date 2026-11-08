@@ -1,0 +1,16 @@
+{
+  "body": {
+    "detail": "Report exceeds 20 MB limit"
+  },
+  "content-type": "application/json",
+  "request": {
+    "method": "POST",
+    "path": "/api/ingest",
+    "query": {
+      "commit_sha": "a3",
+      "repo": "o/r"
+    }
+  },
+  "status": 413,
+  "step": 8
+}

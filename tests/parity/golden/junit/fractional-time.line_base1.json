@@ -1,0 +1,19 @@
+{
+  "cases": [
+    {
+      "category": null,
+      "classname": "tests.test_times",
+      "details": "",
+      "duration": 0.000123456789,
+      "file": null,
+      "fingerprint": "9eda9b2df7dde3c4c1846299e3751342d8331821",
+      "line": null,
+      "message": "",
+      "name": "test_fractional_time",
+      "status": "passed",
+      "suite": "times"
+    }
+  ],
+  "line_base": 1,
+  "source": "junit/fractional-time.xml"
+}

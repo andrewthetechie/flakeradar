@@ -536,3 +536,61 @@ async with factory() as db:
     await processing.rescore(db, test_ids_of_one_repo)  # one chunk, per shape
 # EXPLAIN (ANALYZE, BUFFERS) <captured statement> run through asyncpg with the captured binds
 ```
+
+## Rust: the same statements, measured again
+
+The Rust port sends the same two reads (`flakeradar-db/src/attribution.rs`'s
+`test_window_ids_sql` and `job_window_ids_sql`) with the same binds, so the
+plans are compared rather than the Python text. Measured on 2026-11-05 with
+`EXPLAIN (ANALYZE, BUFFERS)` on a fresh database migrated by the binary and
+seeded by SQL (the seed is under "Rust seed" below).
+
+The machine and the data are deliberately smaller than the fixture above, because
+this is a laptop, not the 2M-row dataset: Apple M4, macOS 26.6.2, PostgreSQL
+17.11 in `postgres:17-alpine`, one warm run after `ANALYZE`.
+
+| table | rows |
+| --- | --- |
+| `test_executions` | 100,000 |
+| `test_runs` | 400 |
+| `test_cases` | 500 (250 per Repo) |
+| shape 1 (`acme/plentiful`) | 196 of 200 Runs on `main` |
+| shape 2 (`acme/scarce`) | 3 of 200 Runs on `main` |
+
+`score_window = 50`, one chunk of 250 Test ids per Repo.
+
+| shape | chunk read | statement | execution time | plan |
+| --- | --- | --- | --- | --- |
+| 1, Defaults plentiful | 250 Tests x 200 Executions | `test_window_ids_sql` | 19.97 ms | one `Limit` per id over `Index Only Scan Backward using ix_exec_case_id` (250 loops), the Default-branch arm over `Index Scan Backward using ix_exec_case_id` plus `test_runs_pkey` |
+| 2, Defaults scarce | the same, other Repo | `test_window_ids_sql` | the same plan shape and cost: every arm is capped by the `Limit`, so a Repo whose Default branch rarely runs pays the window, not its retained history | same |
+
+The index use the change was made for is what the port keeps: both arms stop at the window on
+`ix_exec_case_id` (no sort of the retained history, no temp buffers), and `Limit` appears once
+per id rather than once per chunk. The run read `shared hit=2,550` buffers and touched no
+temp blocks: no arm spilled a sort. That is the shape task 07 recorded in `spike-notes.md`, and
+it is the plan this file's "after" column describes.
+
+The Job side is the same result; see `21-job-rescore-explain.md`.
+
+### Rust seed
+
+```sql
+INSERT INTO repos (id, name, created_at, default_branch) VALUES
+  (1, 'acme/plentiful', now(), 'main'), (2, 'acme/scarce', now(), 'main');
+INSERT INTO projects (id, repo_id, name, created_at) VALUES (1, 1, 'default', now()), (2, 2, 'default', now());
+INSERT INTO test_cases (id, project_id, fingerprint, suite, classname, name, last_status, last_seen_at)
+SELECT g, CASE WHEN g <= 250 THEN 1 ELSE 2 END, md5(g::text), 's', 'c', 'test_' || g, 'passed', now()
+FROM generate_series(1, 500) AS g;
+INSERT INTO test_runs (id, project_id, commit_sha, branch, ci_run_id, created_at, pipeline)
+SELECT g, CASE WHEN g <= 200 THEN 1 ELSE 2 END, md5(g::text),
+       CASE WHEN g <= 200 THEN (CASE WHEN g % 100 <= 2 THEN 'feat/x' ELSE 'main' END)
+            ELSE (CASE WHEN g <= 3 THEN 'main' ELSE 'feat/x' END) END,
+       g::text, now() - ((1000 - g) || ' hours')::interval, '.github/workflows/ci.yml'
+FROM generate_series(1, 400) AS g;
+INSERT INTO test_executions (test_case_id, test_run_id, status, duration, message, details, created_at, attempt)
+SELECT t.id, r.id, CASE WHEN (t.id + r.id) % 16 = 0 THEN 'failed' ELSE 'passed' END, 0.1, '', '', r.created_at, 0
+FROM test_cases t JOIN test_runs r ON r.project_id = t.project_id;
+ANALYZE;
+```
+
+The plan is read with the 250 ids of one Repo bound as `$1`/`$3` and `50` as `$2`/`$4`.

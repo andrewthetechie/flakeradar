@@ -1,0 +1,45 @@
+{
+  "cases": [
+    {
+      "category": "assertion",
+      "classname": "writers-app",
+      "details": "--- stdout ---\nrunning 1 test\ntest embedding::reindexer::worker::tests::invalidate_priority_readiness_drops_from_each_driver ... FAILED\n\n--- stderr ---\nthread 'embedding::reindexer::worker::tests::invalidate_priority_readiness_drops_from_each_driver' (7136) panicked at src-tauri/src/embedding/reindexer/worker.rs:2706:17:\nassertion failed: readiness.is_empty()\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace",
+      "duration": 0.398,
+      "file": null,
+      "fingerprint": "19a5e1e6c4368b86365def05bc49d6d6a7cec914",
+      "line": null,
+      "message": "thread 'embedding::reindexer::worker::tests::invalidate_priority_readiness_drops_from_each_driver' (7136) panicked at src-tauri/src/embedding/reindexer/worker.rs:2706:17",
+      "name": "embedding::reindexer::worker::tests::invalidate_priority_readiness_drops_from_each_driver",
+      "status": "failed",
+      "suite": "writers-app"
+    },
+    {
+      "category": null,
+      "classname": "writers-app",
+      "details": "",
+      "duration": 0.412,
+      "file": null,
+      "fingerprint": "19a5e1e6c4368b86365def05bc49d6d6a7cec914",
+      "line": null,
+      "message": "",
+      "name": "embedding::reindexer::worker::tests::invalidate_priority_readiness_drops_from_each_driver",
+      "status": "passed",
+      "suite": "writers-app"
+    },
+    {
+      "category": null,
+      "classname": "writers-app",
+      "details": "",
+      "duration": 0.003,
+      "file": null,
+      "fingerprint": "5451b8ec14c4d422000ffdec6af490f000111464",
+      "line": null,
+      "message": "",
+      "name": "embedding::chunker::tests::splits_on_headings",
+      "status": "passed",
+      "suite": "writers-app"
+    }
+  ],
+  "line_base": 0,
+  "source": "junit/nextest-flaky.xml"
+}

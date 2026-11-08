@@ -1,0 +1,18 @@
+{
+  "name": "consumers",
+  "steps": [
+    {"http": {"method": "POST", "path": "/api/ingest", "query": {"repo": "andrewthetechie/writers-app", "project": "backend", "commit_sha": "9f8e7d6", "branch": "main", "root": "backend", "pipeline": ".github/workflows/ci.yml", "ci_run_id": "12345", "ci_run_attempt": "1", "ci_job_id": "999", "default_branch": "main"}, "headers": {"X-API-Key": "$TOKEN", "Content-Type": "application/xml"}, "body_text": "<testsuite name=\"pytest\"><testcase classname=\"tests.test_checkout\" name=\"test_cart_total\" time=\"0.01\" file=\"tests/test_checkout.py\" line=\"11\"></testcase><testcase classname=\"tests.test_checkout\" name=\"test_refund\" time=\"0.01\" file=\"tests/test_checkout.py\" line=\"30\"><failure message=\"assert 1 == 2\">AssertionError: assert 1 == 2</failure></testcase></testsuite>"}},
+    {"http": {"method": "POST", "path": "/api/ingest", "query": {"repo": "andrewthetechie/writers-app", "project": "backend", "commit_sha": "9f8e7d6", "root": "backend", "pipeline": ".github/workflows/ci.yml", "ci_run_id": "12345", "ci_run_attempt": "1", "ci_job_id": "999", "default_branch": "main"}, "multipart_file": {"field": "report", "filename": "report.xml", "body_file": "junit/actions-report-alpha.xml"}, "headers": {"X-API-Key": "$TOKEN"}}},
+    {"http": {"method": "POST", "path": "/api/ingest", "query": {"repo": "andrewthetechie/writers-app", "project": "backend", "commit_sha": "9f8e7d6", "root": "backend", "pipeline": ".github/workflows/ci.yml", "ci_run_id": "12345", "ci_run_attempt": "1", "ci_job_id": "999", "default_branch": "main"}, "multipart_file": {"field": "report", "filename": "report.xml", "body_file": "junit/actions-report-beta.xml"}, "headers": {"X-API-Key": "$TOKEN"}}},
+    {"http": {"method": "POST", "path": "/api/ingest/pipeline", "headers": {"X-API-Key": "$TOKEN", "Content-Type": "application/json"}, "body_json": {"repo": "andrewthetechie/writers-app", "provider": "github", "pipeline": ".github/workflows/ci.yml", "commit_sha": "9f8e7d6", "branch": "main", "ci_run_id": "12345", "ci_run_attempt": 1, "default_branch": "main", "jobs": [{"ci_job_id": "999", "name": "test (ubuntu, 3.12)", "status": "failed", "url": "https://github.com/andrewthetechie/writers-app/actions/runs/12345/job/999", "runner_name": "GitHub Actions 4", "runner_labels": ["ubuntu-latest", "x64"]}, {"ci_job_id": "998", "name": "lint", "status": "passed"}]}}},
+    {"wait_processed": true},
+    {"http": {"method": "GET", "path": "/api/ci-runs/12345/failures", "query": {"repo": "andrewthetechie/writers-app", "ci_run_attempt": "1"}}},
+    {"http": {"method": "GET", "path": "/api/tests", "query": {"repo": "andrewthetechie/writers-app", "include_stable": "true"}}},
+    {"http": {"method": "GET", "path": "/api/tests/1/history", "query": {}}},
+    {"http": {"method": "GET", "path": "/api/jobs", "query": {"repo": "andrewthetechie/writers-app", "include_stable": "true"}}},
+    {"http": {"method": "PUT", "path": "/api/jobs/1/issue", "headers": {"X-API-Key": "$TOKEN", "Content-Type": "application/json"}, "body_json": {"number": 77, "url": "https://github.com/andrewthetechie/writers-app/issues/77"}}},
+    {"http": {"method": "PUT", "path": "/api/tests/1/issue", "headers": {"X-API-Key": "$TOKEN", "Content-Type": "application/json"}, "body_json": {"number": 78}}},
+    {"http": {"method": "GET", "path": "/api/ci-runs/12345/failures", "query": {"repo": "andrewthetechie/writers-app"}}},
+    {"dump_db": ["repos", "projects", "test_cases", "jobs", "pipelines"]}
+  ]
+}

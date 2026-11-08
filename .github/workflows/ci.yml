@@ -2,110 +2,287 @@ name: CI
 
 on:
   push:
+    # `main` is the release path. A feature branch is exercised through its pull
+    # request, which runs every job here on each push.
     branches: [main]
   pull_request:
+
+# Every push to a PR head re-triggers this workflow through `pull_request:
+# synchronize`, and only the newest commit's result is read, so superseded PR
+# runs are cancelled. Pushes are never cancelled: a push to `main` is the
+# release path.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
 
+env:
+  CARGO_TERM_COLOR: always
+  # Warnings are errors, so a lint that fires on a newer toolchain cannot pass
+  # unnoticed. The coverage job clears it; see that job.
+  RUSTFLAGS: "-D warnings"
+
 jobs:
-  backend:
-    name: Backend (lint + tests)
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      # Read main's coverage artifact for the PR comparison.
-      actions: read
-    defaults:
-      run:
-        working-directory: backend
+  rust:
+    name: Rust (fmt + clippy + test + audit)
+    runs-on: ubuntu-24.04
+    env:
+      # Pinned so the cached binary is replaced when this is bumped.
+      CARGO_AUDIT_VERSION: 0.22.2
+      # Pinned to the sea-orm version the workspace depends on.
+      SEA_ORM_CLI_VERSION: 2.0.4
+      # Nextest starts its own Postgres only when this is unset; CI points the
+      # suite at the service below instead, so no Docker is needed.
+      FLAKERADAR_TEST_DATABASE_URL: postgresql://flakeradar:flakeradar@localhost:5432/flakeradar
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: flakeradar
+          POSTGRES_PASSWORD: flakeradar
+          POSTGRES_DB: flakeradar
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U flakeradar"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
         with:
-          python-version: "3.12"
-          cache: pip
-          cache-dependency-path: backend/requirements-dev.txt
+          prefix-key: "cargo"
 
-      - name: Install dependencies
-        run: pip install -r requirements-dev.txt
+      - name: Check formatting (rustfmt)
+        run: cargo fmt --all -- --check
 
-      # Pinned to match local verification; ruff.toml at repo root.
-      - name: Lint + format (ruff)
+      - name: Run Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Install cargo-nextest
+        # The taiki-e action pulls the prebuilt binary off the release URLs.
+        uses: taiki-e/install-action@nextest
+
+      - name: Run tests (cargo nextest)
+        # --profile ci activates [profile.ci] (retries, flaky handling) and writes
+        # the JUnit report to target/nextest/ci/junit.xml. The workspace has tests
+        # from task 03 on, so an empty run is a failure, not a pass.
+        run: cargo nextest run --all-features --profile ci
+
+      - name: Run doctests (cargo test --doc)
+        # nextest does not run doctests, so without this step a stale example in
+        # a doc comment can pass CI forever.
+        run: cargo test --doc --all-features
+
+      - name: Build the docs (cargo doc)
+        # A broken intra-doc link and a doc that points at a private item are
+        # rustdoc warnings, which no other step turns into a failure. Private
+        # items are documented too, so a link in a module's own docs is checked.
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+        run: cargo doc --no-deps --all-features --document-private-items --workspace
+
+      - name: Cache sea-orm-cli binary
+        id: cache-sea-orm-cli
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/sea-orm-cli
+          key: sea-orm-cli-${{ runner.os }}-${{ env.SEA_ORM_CLI_VERSION }}
+
+      - name: Install sea-orm-cli
+        if: steps.cache-sea-orm-cli.outputs.cache-hit != 'true'
+        run: cargo install sea-orm-cli --version "$SEA_ORM_CLI_VERSION" --locked
+
+      - name: Check the entities match the migrated schema
+        # The entities are generated from a migrated database, so a baseline change
+        # that the committed entities do not reflect fails here instead of surfacing
+        # as a query that names a column the schema no longer has.
         run: |
-          pip install ruff==0.16.9
-          ruff check .
-          ruff format --check .
+          cargo run -q -p flakeradar-db --example migrate -- "$FLAKERADAR_TEST_DATABASE_URL"
+          sea-orm-cli generate entity \
+            --database-url "$FLAKERADAR_TEST_DATABASE_URL" \
+            --output-dir crates/flakeradar-db/src/entities \
+            --with-prelude none
+          git diff --exit-code -- crates/flakeradar-db/src/entities
 
-      # Tests spin up a real Postgres 17 via testcontainers; ubuntu-latest
-      # has Docker available, which testcontainers requires.
-      - name: Test (pytest + testcontainers Postgres)
-        run: coverage run -m pytest
+      - name: Upload JUnit test report
+        # if-no-files-found: error turns a missing report into a visible CI
+        # failure rather than silently succeeding without an artifact.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-rust
+          path: target/nextest/ci/junit.xml
+          if-no-files-found: error
 
-      # Line + branch coverage (backend/.coveragerc). `report` fails the job
-      # when the total is below `fail_under`.
-      - name: Coverage report
+      - name: Cache cargo-audit binary
+        id: cache-audit
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-audit
+          key: cargo-audit-${{ runner.os }}-${{ env.CARGO_AUDIT_VERSION }}
+
+      - name: Install cargo-audit
+        if: steps.cache-audit.outputs.cache-hit != 'true'
+        run: cargo install cargo-audit --version "$CARGO_AUDIT_VERSION" --locked
+
+      - name: Compute advisory database cache day
+        id: advisory-day
+        run: echo "day=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache RustSec advisory database
+        # Restores the newest clone; `cargo audit` then fetches only the new
+        # commits instead of cloning the whole database. Saved once a day.
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/advisory-db
+          key: advisory-db-${{ steps.advisory-day.outputs.day }}
+          restore-keys: advisory-db-
+
+      - name: Run cargo audit
+        run: cargo audit
+
+  coverage:
+    name: Rust coverage (lines + branches)
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      # Read main's coverage artifact for the PR comparison.
+      actions: read
+    env:
+      # Pinned nightly; bump deliberately, then re-check the floors.
+      COVERAGE_TOOLCHAIN: nightly-2026-10-25
+      # Warnings are already a hard gate in the `rust` job. Unset the
+      # workflow-wide `-D warnings` here so a new nightly-only lint cannot fail
+      # coverage; cargo-llvm-cov adds its own instrumentation flags.
+      RUSTFLAGS: ""
+      FLAKERADAR_TEST_DATABASE_URL: postgresql://flakeradar:flakeradar@localhost:5432/flakeradar
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: flakeradar
+          POSTGRES_PASSWORD: flakeradar
+          POSTGRES_DB: flakeradar
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U flakeradar"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install the coverage toolchain
+        # Installed by name and invoked as `cargo +$COVERAGE_TOOLCHAIN`, never
+        # made the rustup default, so the stable build stays the default.
+        run: rustup toolchain install "$COVERAGE_TOOLCHAIN" --profile minimal -c llvm-tools-preview
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Separate key: the instrumented nightly build shares nothing with the
+          # stable build and would only evict it.
+          prefix-key: "cargo-cov-nightly"
+
+      - name: Install cargo-llvm-cov and cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov@0.9.1,cargo-nextest
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Run tests with coverage
+        # --no-report: collect once, then export each format from the same data.
+        run: cargo "+$COVERAGE_TOOLCHAIN" llvm-cov nextest --branch --all-features --profile ci --no-report
+
+      - name: Export coverage reports
         run: |
-          coverage json -q -o coverage.json
-          coverage report
+          cargo "+$COVERAGE_TOOLCHAIN" llvm-cov report --branch --lcov --output-path lcov.info
+          cargo "+$COVERAGE_TOOLCHAIN" llvm-cov report --branch --json --summary-only --output-path coverage-summary.json
+          cargo "+$COVERAGE_TOOLCHAIN" llvm-cov report --branch --summary-only
+
+      - name: Test the coverage gate script
+        run: node --test scripts/coverage-gate.test.mjs
+
+      - name: Check coverage floors and no decrease
+        # Writes the totals and the worst files to the job summary, and fails if
+        # line or branch coverage is below `coverage-floor.json`. On a PR it also
+        # fails when a total fell below the newest coverage that the base branch
+        # uploaded, compared at two decimals with no tolerance.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          baseline=""
+          if [ -n "$BASE_REF" ]; then
+            run_id=$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=rust-coverage&per_page=100" \
+              --jq "[.artifacts[] | select(.expired | not) | select(.workflow_run.head_branch == \"$BASE_REF\")]
+                    | sort_by(.created_at) | last | .workflow_run.id // empty")
+            if [ -z "$run_id" ]; then
+              echo "::notice::No rust-coverage baseline for $BASE_REF; only the floors apply."
+              echo "Rust coverage: no baseline for \`$BASE_REF\` yet; only the floors apply." >> "$GITHUB_STEP_SUMMARY"
+            else
+              gh run download "$run_id" --repo "$GITHUB_REPOSITORY" -n rust-coverage -D "$RUNNER_TEMP/base-coverage"
+              baseline="$RUNNER_TEMP/base-coverage/coverage-summary.json"
+            fi
+          fi
+          if [ -n "$baseline" ]; then
+            node scripts/coverage-gate.mjs coverage-summary.json --baseline "$baseline"
+          else
+            node scripts/coverage-gate.mjs coverage-summary.json
+          fi
+
+      - name: Upload coverage reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-rust
+          path: |
+            lcov.info
+            coverage-summary.json
+          if-no-files-found: warn
 
       # Each push to main stores its coverage; PRs compare against it.
       - name: Upload coverage baseline (main only)
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@v4
         with:
-          name: backend-coverage
-          path: backend/coverage.json
+          name: rust-coverage
+          path: coverage-summary.json
+          if-no-files-found: warn
           retention-days: 90
 
-      # Fail the PR when its total is below the newest main baseline. The suite
-      # is deterministic (same total on every run), so the comparison is exact
-      # at the report's two-decimal precision. Without a baseline (none uploaded
-      # yet, or it expired) only the `fail_under` floor applies.
-      - name: Coverage must not decrease (PRs only)
-        if: github.event_name == 'pull_request'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          BASE_REF: ${{ github.base_ref }}
-        run: |
-          run_id=$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=backend-coverage&per_page=100" \
-            --jq "[.artifacts[] | select(.expired | not) | select(.workflow_run.head_branch == \"$BASE_REF\")]
-                  | sort_by(.created_at) | last | .workflow_run.id // empty")
-          if [ -z "$run_id" ]; then
-            echo "::notice::No backend-coverage baseline for $BASE_REF; only the fail_under floor applies."
-            echo "Coverage: no baseline for \`$BASE_REF\` yet; only the \`fail_under\` floor applies." >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-          gh run download "$run_id" --repo "$GITHUB_REPOSITORY" -n backend-coverage -D "$RUNNER_TEMP/base-coverage"
-          python -I - "$RUNNER_TEMP/base-coverage/coverage.json" coverage.json "$BASE_REF" "$run_id" <<'EOF'
-          import json
-          import os
-          import sys
+  # Always runs, on every push and PR, so a version drift is caught before it can
+  # reach a release. Needs only checkout and Node.
+  version-consistency:
+    name: Release version consistency
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-          base_path, head_path, base_ref, run_id = sys.argv[1:]
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
 
-          def total(path):
-              with open(path) as f:
-                  return round(json.load(f)["totals"]["percent_covered"], 2)
+      - name: Test the version script
+        run: node --test scripts/version.test.mjs
 
-          base, head = total(base_path), total(head_path)
-          table = (
-              "| | Line + branch coverage |\n"
-              "|---|---|\n"
-              f"| `{base_ref}` (run {run_id}) | {base:.2f}% |\n"
-              f"| this PR | {head:.2f}% |\n"
-              f"| change | {head - base:+.2f} |\n"
-          )
-          print(table)
-          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
-              f.write(table)
-          if head < base:
-              print(f"::error::Backend coverage fell from {base:.2f}% to {head:.2f}%. Add tests for the new or changed code.")
-              sys.exit(1)
-          EOF
+      - name: Check release version consistency
+        run: node scripts/version.mjs check
 
   frontend:
     name: Frontend (typecheck + tests)
@@ -198,14 +375,38 @@ jobs:
           }
           EOF
 
-  # Exercises the standalone summary action (issue #36) end to end: a real
-  # backend plus a fixture CI run (one known-flaky Test, one new failure), then
-  # asserts on the Markdown the action writes. The reporter (#35) is not in the
-  # tree yet, so this job seeds the /api/ci-runs/{id}/failures data directly
-  # through the models and runs the action against it.
-  summary-action:
-    name: Summary action (fixture)
-    runs-on: ubuntu-latest
+  # Builds the binary once and hands it to the jobs that exercise the shipped
+  # interfaces, exactly as a user downloads it. `frontend/dist` is not built
+  # here, so this binary serves the API only: every job below uses `/api`, and
+  # the packaging jobs in `release.yml` are what prove the full binary.
+  binary:
+    name: Binary (release)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "cargo"
+
+      - name: Build the release binary
+        run: cargo build --release --locked
+
+      - name: Upload the binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: flakeradar-linux-x86_64
+          path: target/release/flakeradar
+          if-no-files-found: error
+
+  # The `actions/report` composite action on its two fixtures, against the real
+  # binary: one Report per matched file, every one of them processed.
+  report-action:
+    name: Report action (fixtures)
+    needs: binary
+    runs-on: ubuntu-24.04
     services:
       postgres:
         image: postgres:17-alpine
@@ -221,38 +422,223 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     env:
-      FLAKERADAR_DATABASE_URL: postgresql+asyncpg://flakeradar:flakeradar@localhost:5432/flakeradar
+      FLAKERADAR_DATABASE_URL: postgresql://flakeradar:flakeradar@localhost:5432/flakeradar
       FLAKERADAR_ALLOW_INSECURE: "1"
       FLAKERADAR_API_TOKEN: flakeradar-test-token
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Download the binary
+        uses: actions/download-artifact@v4
         with:
-          python-version: "3.12"
+          name: flakeradar-linux-x86_64
+          path: ${{ runner.temp }}/bin
 
-      - name: Install backend dependencies
-        run: pip install -r backend/requirements-dev.txt
-
-      - name: Start the backend (migrations run on startup)
+      - name: Start FlakeRadar
         run: |
-          cd backend
-          python -m alembic upgrade head
-          nohup python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 >/tmp/uvicorn.log 2>&1 &
-          for i in $(seq 1 30); do
-            curl -sf http://127.0.0.1:8000/api/health >/dev/null 2>&1 && break
+          chmod +x "$RUNNER_TEMP/bin/flakeradar"
+          "$RUNNER_TEMP/bin/flakeradar" >/tmp/flakeradar.log 2>&1 &
+          for i in $(seq 1 60); do
+            curl -sf http://127.0.0.1:8000/api/health/ready >/dev/null 2>&1 && break
             sleep 1
           done
-          curl -fsS http://127.0.0.1:8000/api/health
+          curl -fsS http://127.0.0.1:8000/api/health/ready
 
-      - name: Seed the fixture (one known-flaky Test, one new failure)
-        run: python actions/summary/test/seed_fixture.py
+      - name: Run the report action on both fixtures
+        id: report
+        uses: ./actions/report
+        with:
+          url: http://127.0.0.1:8000
+          token: flakeradar-test-token
+          project: fixtures
+          files: |
+            actions/report/test/fixture-alpha.xml
+            actions/report/test/fixture-beta.xml
+
+      - name: One Report per fixture, and every one of them processed
+        run: |
+          ids="${{ steps.report.outputs.report_ids }}"
+          count=$(printf '%s' "$ids" | awk -F, '{print NF}')
+          if [ "$count" -ne 2 ]; then
+            echo "::error::expected one Report per fixture, got report_ids='$ids'"
+            exit 1
+          fi
+          IFS=, read -r first second <<< "$ids"
+          for id in "$first" "$second"; do
+            for i in $(seq 1 60); do
+              body=$(curl -fsS -H "X-API-Key: $FLAKERADAR_API_TOKEN" \
+                "http://127.0.0.1:8000/api/reports/$id")
+              status=$(printf '%s' "$body" | jq -r .status)
+              [ "$status" = "pending" ] || break
+              sleep 1
+            done
+            if [ "$status" != "processed" ]; then
+              echo "::error::Report $id ended $status, not processed: $body"
+              exit 1
+            fi
+            echo "$body" | jq -r '"Report \(.id) \(.status): \(.counts)"'
+          done
+          echo "::notice::Both fixtures became processed Reports."
+
+      # `report.sh`'s no-match path: a pattern that matches nothing warns,
+      # writes an empty `report_ids` and exits 0, because reporting must never
+      # fail the build. Run through the script itself rather than through the
+      # composite wrapper, so the `::warning::` line it prints can be read back
+      # and asserted; the step above already proves the action's `files` input
+      # reaches this same script. The step's `id` gives it the `report_ids`
+      # output the script writes to `$GITHUB_OUTPUT`.
+      - name: A pattern that matches nothing warns, uploads nothing and exits 0
+        id: nomatch
+        run: |
+          set +e
+          FR_URL=http://127.0.0.1:8000 \
+          FR_TOKEN="$FLAKERADAR_API_TOKEN" \
+          FR_PROJECT=fixtures \
+          FR_FILES='actions/report/test/no-such-fixture-*.xml' \
+            bash actions/report/report.sh >/tmp/no-match.log 2>&1
+          code=$?
+          set -e
+          cat /tmp/no-match.log
+          if [ "$code" -ne 0 ]; then
+            echo "::error::the report action exited $code on a pattern that matches nothing"
+            exit 1
+          fi
+          if ! grep -Fq '::warning::FlakeRadar report: no files matched the pattern(s): actions/report/test/no-such-fixture-*.xml. Nothing was uploaded.' /tmp/no-match.log; then
+            echo "::error::the report action printed no no-files-matched warning"
+            exit 1
+          fi
+          echo "::notice::A pattern that matches nothing warned and exited 0."
+
+      - name: The no-match run reported no id and queued no Report
+        run: |
+          ids="${{ steps.nomatch.outputs.report_ids }}"
+          if [ -n "$ids" ]; then
+            echo "::error::a pattern that matches nothing reported report_ids='$ids'"
+            exit 1
+          fi
+          after=$(curl -fsS -H "X-API-Key: $FLAKERADAR_API_TOKEN" \
+            "http://127.0.0.1:8000/api/reports?limit=200" | jq 'length')
+          if [ "$after" -ne 2 ]; then
+            echo "::error::expected the two fixture Reports and nothing else, got $after"
+            exit 1
+          fi
+          echo "::notice::The no-match run wrote an empty report_ids and queued nothing."
+
+  # Exercises the standalone summary action (issue #36) end to end against the
+  # real binary: the Reports are seeded through the `actions/report` action
+  # rather than through the models, so the action reads data a reporter wrote.
+  # `test_known_flaky` passes and fails on three commits, which is three Proven
+  # flakes and the flaky tier; `test_new_failure` fails once, in the fixture CI
+  # run. The values grepped below are the ones this pipeline produces, measured
+  # on the binary (flaky 0.8, three proven flakes).
+  summary-action:
+    name: Summary action (fixture)
+    needs: binary
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:17-alpine
         env:
-          CI_RUN_ID: "12345"
-          CI_RUN_ATTEMPT: "1"
-          CI_JOB_ID: "999"
+          POSTGRES_USER: flakeradar
+          POSTGRES_PASSWORD: flakeradar
+          POSTGRES_DB: flakeradar
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U flakeradar"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      FLAKERADAR_DATABASE_URL: postgresql://flakeradar:flakeradar@localhost:5432/flakeradar
+      FLAKERADAR_ALLOW_INSECURE: "1"
+      FLAKERADAR_API_TOKEN: flakeradar-test-token
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download the binary
+        uses: actions/download-artifact@v4
+        with:
+          name: flakeradar-linux-x86_64
+          path: ${{ runner.temp }}/bin
+
+      - name: Start FlakeRadar
+        run: |
+          chmod +x "$RUNNER_TEMP/bin/flakeradar"
+          "$RUNNER_TEMP/bin/flakeradar" >/tmp/flakeradar.log 2>&1 &
+          for i in $(seq 1 60); do
+            curl -sf http://127.0.0.1:8000/api/health/ready >/dev/null 2>&1 && break
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:8000/api/health/ready
+
+      # Three commits, each with a pass and a fail for the same Test: this is
+      # the Proven flake the summary action should recognise. The upload's
+      # metadata is set with the action's own `FR_*` overrides rather than with
+      # `GITHUB_*`: the runner refuses to overwrite a default `GITHUB_*` variable,
+      # so seeding through those left every upload on the real run's id and SHA
+      # and the summary's `12345` had nothing to read.
+      - name: Seed commit aaa111
+        uses: ./actions/report
+        env:
+          FR_SHA: aaa111
+          FR_BRANCH: main
+          FR_RUN_ID: "1001"
+          FR_ATTEMPT: "1"
+        with:
+          url: http://127.0.0.1:8000
+          token: flakeradar-test-token
+          project: summary
+          files: |
+            actions/summary/test/fixture-known-flaky-pass.xml
+            actions/summary/test/fixture-known-flaky-fail.xml
+
+      - name: Seed commit bbb222
+        uses: ./actions/report
+        env:
+          FR_SHA: bbb222
+          FR_BRANCH: main
+          FR_RUN_ID: "1002"
+          FR_ATTEMPT: "1"
+        with:
+          url: http://127.0.0.1:8000
+          token: flakeradar-test-token
+          project: summary
+          files: |
+            actions/summary/test/fixture-known-flaky-pass.xml
+            actions/summary/test/fixture-known-flaky-fail.xml
+
+      - name: Seed commit ccc333
+        uses: ./actions/report
+        env:
+          FR_SHA: ccc333
+          FR_BRANCH: main
+          FR_RUN_ID: "1003"
+          FR_ATTEMPT: "1"
+        with:
+          url: http://127.0.0.1:8000
+          token: flakeradar-test-token
+          project: summary
+          files: |
+            actions/summary/test/fixture-known-flaky-pass.xml
+            actions/summary/test/fixture-known-flaky-fail.xml
+
+      # The fixture CI run: the known-flaky Test fails again, and a Test nobody
+      # has seen fail before fails for the first time.
+      - name: Seed the fixture CI run (12345)
+        uses: ./actions/report
+        env:
+          FR_SHA: ccc333
+          FR_BRANCH: main
+          FR_RUN_ID: "12345"
+          FR_ATTEMPT: "1"
+        with:
+          url: http://127.0.0.1:8000
+          token: flakeradar-test-token
+          project: summary
+          files: actions/summary/test/fixture-run-failures.xml
 
       - name: Run the summary action against the fixture
         uses: ./actions/summary
@@ -262,8 +648,8 @@ jobs:
           repo: andrewthetechie/flakeradar
           ci_run_id: "12345"
           ci_run_attempt: "1"
-          ci_job_id: "999"
-          summary-timeout: "30"
+          ci_job_id: ${{ job.check_run_id }}
+          summary-timeout: "60"
           dashboard-url: https://flakeradar.example.com
           # The action appends the same Markdown it writes to $GITHUB_STEP_SUMMARY
           # here too, so the next step can assert on a stable path.
@@ -274,7 +660,471 @@ jobs:
           # dashboard-url links each Test, so the names appear inside Markdown links.
           grep -Fq "1 of 2 failures are known flaky tests" summary.md
           grep -Fq "[test_known_flaky](https://flakeradar.example.com?repo=andrewthetechie%2Fflakeradar&test=" summary.md
-          grep -Fq "| flaky (0.9) | 3 | no |" summary.md
+          grep -Fq "| flaky (0.8) | 3 | no |" summary.md
           grep -Fq "[test_new_failure](https://flakeradar.example.com?repo=andrewthetechie%2Fflakeradar&test=" summary.md
           grep -Fq "| stable (0) | 0 | no |" summary.md
           echo "::notice::Summary action output verified: one known-flaky and one new failure rendered."
+
+  # The two samples against the real binary: the GitLab reporter's payload is
+  # accepted by `/api/ingest/pipeline`, and `simulate_ci.py`'s demo history is
+  # visible through the read APIs. Needs pytest, httpx and the standard library.
+  samples:
+    name: Samples (GitLab reporter + demo data)
+    needs: binary
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: flakeradar
+          POSTGRES_PASSWORD: flakeradar
+          POSTGRES_DB: flakeradar
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U flakeradar"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      FLAKERADAR_DATABASE_URL: postgresql://flakeradar:flakeradar@localhost:5432/flakeradar
+      FLAKERADAR_ALLOW_INSECURE: "1"
+      FLAKERADAR_API_TOKEN: flakeradar-test-token
+      FLAKERADAR_URL: http://127.0.0.1:8000
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          # The GitLab reporter sample is standard library only, and its test
+          # needs nothing but pytest; the demo simulator reads its results over
+          # httpx.
+          python-version: "3.12"
+
+      - name: Install the sample test's two dependencies
+        run: pip install pytest httpx
+
+      - name: Download the binary
+        uses: actions/download-artifact@v4
+        with:
+          name: flakeradar-linux-x86_64
+          path: ${{ runner.temp }}/bin
+
+      - name: Start FlakeRadar
+        run: |
+          chmod +x "$RUNNER_TEMP/bin/flakeradar"
+          "$RUNNER_TEMP/bin/flakeradar" >/tmp/flakeradar.log 2>&1 &
+          for i in $(seq 1 60); do
+            curl -sf "$FLAKERADAR_URL/api/health/ready" >/dev/null 2>&1 && break
+            sleep 1
+          done
+          curl -fsS "$FLAKERADAR_URL/api/health/ready"
+
+      - name: The GitLab reporter's payload is accepted by the real endpoint
+        # The test file skips itself at module level when FLAKERADAR_URL or
+        # FLAKERADAR_TOKEN is missing, so a job that lost either would be green
+        # with all 13 cases skipped and nothing exercised. Assert the count and
+        # that nothing was skipped, as well as the exit status.
+        run: |
+          set +e
+          output=$(FLAKERADAR_TOKEN="$FLAKERADAR_API_TOKEN" \
+            python -m pytest samples/gitlab/test_report_pipeline.py -q -rs 2>&1)
+          status=$?
+          set -e
+          printf '%s\n' "$output"
+          if [ "$status" -ne 0 ]; then
+            echo "::error::the sample's tests failed with status $status"
+            exit "$status"
+          fi
+          case "$output" in
+            *skipped*)
+              echo "::error::a case was skipped, so the sample was not exercised"
+              exit 1
+              ;;
+          esac
+          if ! printf '%s\n' "$output" | grep -Eq '(^|[^0-9])13 passed'; then
+            echo "::error::expected 13 passed from the sample's tests"
+            exit 1
+          fi
+          echo "::notice::All 13 sample cases ran and passed."
+
+      - name: The demo history is visible through the read APIs
+        run: |
+          python samples/simulate_ci.py "$FLAKERADAR_URL" "$FLAKERADAR_API_TOKEN"
+          key=(-H "X-API-Key: $FLAKERADAR_API_TOKEN")
+          tests=$(curl -fsS "${key[@]}" "$FLAKERADAR_URL/api/tests?repo=demo%2Fshop&include_stable=true")
+          jobs=$(curl -fsS "${key[@]}" "$FLAKERADAR_URL/api/jobs?repo=demo%2Fshop&include_stable=true")
+          [ "$(printf '%s' "$tests" | jq -r .total)" -eq 10 ] || { echo "::error::expected 10 demo Tests: $tests"; exit 1; }
+          [ "$(printf '%s' "$jobs" | jq -r .total)" -eq 4 ] || { echo "::error::expected 4 demo Jobs: $jobs"; exit 1; }
+          # The demo history is built to prove the two scoring rules: a Test that
+          # flips on one SHA, and an infrastructure Job with no failing Test.
+          printf '%s' "$tests" | jq -e '[.items[] | select(.tier == "flaky")] | length >= 2' >/dev/null \
+            || { echo "::error::the demo Tests carry no flaky rows: $tests"; exit 1; }
+          printf '%s' "$jobs" | jq -e '[.items[] | select(.tier == "flaky")] | length >= 1' >/dev/null \
+            || { echo "::error::the demo Jobs carry no flaky row: $jobs"; exit 1; }
+          echo "::notice::The demo history is visible: 10 Tests and 4 Jobs in demo/shop."
+
+  # Paths the five-target matrix depends on. The matrix is the slowest thing CI
+  # runs, so a PR that touches none of these does not pay for it; every push to
+  # the rewrite branch and to main builds it regardless (see the `if` on the
+  # matrix). `dorny/paths-filter` is what writers-app uses for the same reason.
+  changes:
+    name: Changed paths
+    runs-on: ubuntu-24.04
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      relevant: ${{ steps.filter.outputs.relevant }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Filter
+        id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            relevant:
+              - 'crates/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'rust-toolchain.toml'
+              - 'clippy.toml'
+              - '.cargo/**'
+              - '.config/**'
+              - 'frontend/**'
+              - 'scripts/**'
+              - 'tests/parity/**'
+              - 'actions/**'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/release.yml'
+              - 'Dockerfile'
+
+  # Built once and handed to every matrix leg: the binary embeds `frontend/dist`,
+  # and building a Vite project five times would dominate the matrix.
+  frontend-dist:
+    name: Frontend build
+    needs: changes
+    if: >-
+      always() && (github.event_name != 'pull_request' ||
+      needs.changes.outputs.relevant == 'true')
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Upload dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist
+          if-no-files-found: error
+          retention-days: 7
+
+  # The dashboard in a browser. Nothing else in CI ever opened one, so tasks 09,
+  # 12, 22 and 25 each recorded the browser check as unverified; these two jobs
+  # are what keeps it working, and both are required for the PR. They reuse the
+  # `frontend-dist` artifact rather than building Vite twice, and they run under
+  # the same `changes` filter that already names `crates/**` and `frontend/**`,
+  # so a Rust or frontend change always triggers both.
+  frontend-ui:
+    name: Frontend UI (Playwright, mocked)
+    needs: [changes, frontend-dist]
+    if: >-
+      always() && (github.event_name != 'pull_request' ||
+      needs.changes.outputs.relevant == 'true') &&
+      needs.frontend-dist.result == 'success'
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Download the built dashboard
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist
+
+      - name: Read the pinned Playwright version
+        id: playwright
+        # `@playwright/test` is pinned exactly, and the Chromium build number
+        # follows from it, so the pin is what the browser cache is keyed by.
+        run: echo "version=$(node -p 'require("./package.json").devDependencies["@playwright/test"]')" >> "$GITHUB_OUTPUT"
+
+      - name: Cache the Chromium download
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}-chromium
+
+      - name: Install Chromium
+        # Always run: with a cache hit it only verifies the build is there, and
+        # `--with-deps` is what puts the system libraries on the runner.
+        run: npx playwright install --with-deps chromium
+
+      - name: Test the dashboard with every API read mocked
+        run: npx playwright test --project=ui
+
+      - name: Upload the trace and the report (failures only)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-ui
+          path: |
+            frontend/playwright-report
+            frontend/test-results/playwright
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # The shipped binary, with this commit's dashboard embedded, against a real
+  # database seeded by `samples/simulate_ci.py`.
+  dashboard-e2e:
+    name: Dashboard e2e (Playwright, mock install)
+    needs: [changes, frontend-dist]
+    if: >-
+      always() && (github.event_name != 'pull_request' ||
+      needs.changes.outputs.relevant == 'true') &&
+      needs.frontend-dist.result == 'success'
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: flakeradar
+          POSTGRES_PASSWORD: flakeradar
+          POSTGRES_DB: flakeradar
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U flakeradar"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # The mock install owns this database and seeds it; it refuses to start if
+      # the seed is not the only thing in it.
+      E2E_DATABASE_URL: postgresql://flakeradar:flakeradar@localhost:5432/flakeradar
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          # The seeder is the demo simulator, which reads its results over httpx.
+          python-version: "3.12"
+
+      - name: Install the seeder's dependency
+        run: pip install httpx
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Download the built dashboard
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "cargo"
+
+      - name: Build the binary with that dashboard embedded
+        # `frontend/dist/index.html` exists now, so the build script sets
+        # `cfg(has_frontend)` and rust-embed carries the dashboard in: this is
+        # the artifact the browser then loads from the binary, not from a proxy.
+        working-directory: .
+        run: cargo build -p flakeradar --locked
+
+      - name: Read the pinned Playwright version
+        id: playwright
+        run: echo "version=$(node -p 'require("./package.json").devDependencies["@playwright/test"]')" >> "$GITHUB_OUTPUT"
+
+      - name: Cache the Chromium download
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}-chromium
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Test the shipped dashboard end to end
+        run: npx playwright test --project=e2e
+
+      - name: Upload the trace and the report (failures only)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-e2e
+          path: |
+            frontend/playwright-report
+            frontend/test-results/playwright
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # A real binary for each target, run against a real database: the smoke test
+  # starts it, uploads a Report, waits for the processor and checks every surface
+  # the binary carries. Building natively on each runner means no cross toolchain
+  # and no emulation.
+  targets:
+    name: Target (${{ matrix.target }})
+    needs: [changes, frontend-dist]
+    if: >-
+      always() && (github.event_name != 'pull_request' ||
+      needs.changes.outputs.relevant == 'true') &&
+      needs.frontend-dist.result == 'success'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-24.04
+            binary: flakeradar
+            rustflags: "-D warnings"
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-24.04-arm
+            binary: flakeradar
+            rustflags: "-D warnings"
+          - target: x86_64-apple-darwin
+            os: macos-15-intel
+            binary: flakeradar
+            rustflags: "-D warnings"
+          - target: aarch64-apple-darwin
+            os: macos-15
+            binary: flakeradar
+            rustflags: "-D warnings"
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            binary: flakeradar.exe
+            # Static CRT, so the binary needs no Visual C++ redistributable.
+            rustflags: "-D warnings -C target-feature=+crt-static"
+    runs-on: ${{ matrix.os }}
+    env:
+      RUSTFLAGS: ${{ matrix.rustflags }}
+      FLAKERADAR_TEST_DATABASE_URL: postgresql://flakeradar:flakeradar@localhost:5432/flakeradar
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download the built frontend
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist
+
+      - name: Add the target
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Install musl tools
+        if: contains(matrix.target, 'linux-musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Point the C compiler at musl
+        # `ring` and `mimalloc` build C, and the host gcc produces glibc objects
+        # that do not link into a musl binary. `musl-gcc` and `ar` come with
+        # musl-tools; `cc` reads the per-target variables.
+        if: contains(matrix.target, 'linux-musl')
+        run: |
+          target_lower=$(printf '%s' "${{ matrix.target }}" | tr 'a-z-' 'a-z_')
+          echo "CC_${target_lower}=musl-gcc" >> "$GITHUB_ENV"
+          echo "AR_${target_lower}=ar" >> "$GITHUB_ENV"
+          target_upper=$(printf '%s' "${{ matrix.target }}" | tr 'a-z-' 'A-Z_')
+          echo "CARGO_TARGET_${target_upper}_LINKER=musl-gcc" >> "$GITHUB_ENV"
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "cargo-target-${{ matrix.target }}"
+          key: ${{ matrix.target }}
+
+      - name: Test the core crate
+        run: cargo test -p flakeradar-core
+
+      - name: Build the binary
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Check the Linux binary is static
+        if: contains(matrix.target, 'linux-musl')
+        # `rustc` links the x86_64 musl target as a static PIE, which `file`
+        # calls `static-pie linked`; the aarch64 musl target is plain static and
+        # reads `statically linked`. Both have no dynamic loader and no shared
+        # library, which is the property under test, so both spellings pass and
+        # a dynamically linked binary still fails either check.
+        run: |
+          binary="target/${{ matrix.target }}/release/${{ matrix.binary }}"
+          file "$binary"
+          file "$binary" | grep -Eq "statically linked|static-pie linked" || {
+            echo "::error::$binary is not statically linked"; exit 1;
+          }
+          ldd "$binary" 2>&1 | grep -Eq "not a dynamic executable|statically linked" || {
+            echo "::error::$binary has dynamic dependencies"; exit 1;
+          }
+
+      - name: Set up PostgreSQL
+        uses: ikalnytskyi/action-setup-postgres@v8
+        with:
+          username: flakeradar
+          password: flakeradar
+          database: flakeradar
+          port: 5432
+          postgres-version: "17"
+
+      - name: Smoke test the binary
+        shell: bash
+        run: |
+          scripts/smoke.sh "target/${{ matrix.target }}/release/${{ matrix.binary }}" \
+            "$FLAKERADAR_TEST_DATABASE_URL"
+
+      - name: Upload the binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: flakeradar-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/${{ matrix.binary }}
+          if-no-files-found: error
+          retention-days: 7

@@ -1,0 +1,22 @@
+{
+  "body": {
+    "detail": [
+      {
+        "input": "not json",
+        "loc": [
+          "body"
+        ],
+        "msg": "Input should be a valid dictionary or object to extract fields from",
+        "type": "model_attributes_type"
+      }
+    ]
+  },
+  "content-type": "application/json",
+  "request": {
+    "method": "PUT",
+    "path": "/api/tests/1/issue",
+    "query": {}
+  },
+  "status": 422,
+  "step": 21
+}

@@ -1,0 +1,237 @@
+[workspace]
+members = [
+  "crates/flakeradar",
+  "crates/flakeradar-core",
+  "crates/flakeradar-db",
+  "crates/flakeradar-test-support",
+]
+# The virtual manifest states the resolver explicitly. "3" is what edition 2024
+# implies; naming it keeps the workspace honest if a member ever lowers its
+# edition.
+resolver = "3"
+
+[workspace.package]
+version = "0.2.0"
+edition = "2024"
+license = "Apache-2.0"
+# The toolchain `rust-toolchain.toml` pins, and the one CI builds and tests
+# with. Claiming an older minimum would promise a compiler nothing here has run
+# on; a 1.85 or 1.90 floor might hold, but it would be a guess. Every member
+# inherits this through `rust-version.workspace = true`, which is what makes it
+# visible in `cargo metadata`.
+rust-version = "1.99"
+
+[workspace.dependencies]
+# Versions live here and nowhere else; each member turns a dependency on with
+# `dep.workspace = true`. Features are enabled per member, so one crate's
+# convenience feature is not silently forced on the rest (M-CARGO-WORKSPACE).
+anyhow = { version = "1", default-features = false }
+axum = { version = "0.8", default-features = false }
+chrono = { version = "0.4", default-features = false }
+clap = { version = "4", default-features = false }
+dotenvy = { version = "0.15", default-features = false }
+encoding_rs = { version = "0.8", default-features = false }
+# The sibling crates are declared here too, so a member links one through the
+# workspace and every member resolves the same version (M-CRATES-IN-WORKSPACE).
+flakeradar = { path = "crates/flakeradar", version = "0.2.0" }
+flakeradar-core = { path = "crates/flakeradar-core", version = "0.2.0" }
+flakeradar-db = { path = "crates/flakeradar-db", version = "0.2.0" }
+flakeradar-test-support = { path = "crates/flakeradar-test-support", version = "0.2.0" }
+form_urlencoded = { version = "1", default-features = false }
+futures-util = { version = "0.3", default-features = false }
+# `flakeradar-db` names this because sea-orm's statement-logging level is a
+# `log::LevelFilter`, and that is the one place that sets it.
+log = { version = "0.4", default-features = false }
+# `flakeradar`'s multipart reader finds a boundary in a 20 MiB body with this,
+# whose `memmem` search is linear in the haystack whatever the needle looks like.
+memchr = { version = "2", default-features = false }
+mime_guess = { version = "2", default-features = false }
+mimalloc = { version = "0.1", default-features = false }
+regex = { version = "1", default-features = false }
+reqwest = { version = "0.13", default-features = false }
+rmcp = { version = "3", default-features = false }
+roxmltree = { version = "0.21", default-features = false }
+rust-embed = { version = "8", default-features = false }
+sea-orm = { version = "2", default-features = false }
+sea-orm-migration = { version = "2", default-features = false }
+serde = { version = "1", default-features = false }
+serde_json = { version = "1", default-features = false }
+serde_path_to_error = { version = "0.1", default-features = false }
+serde_urlencoded = { version = "0.7", default-features = false }
+sha1 = { version = "0.11", default-features = false }
+sha2 = { version = "0.11", default-features = false }
+thiserror = { version = "2", default-features = false }
+tokio = { version = "1", default-features = false }
+tokio-util = { version = "0.7", default-features = false }
+tower = { version = "0.5", default-features = false }
+tower-http = { version = "0.7", default-features = false }
+tracing = { version = "0.1", default-features = false }
+tracing-subscriber = { version = "0.3", default-features = false }
+utoipa = { version = "6", default-features = false }
+utoipa-redoc = { version = "7", default-features = false }
+url = { version = "2", default-features = false }
+# Test-only. Members name these under `[dev-dependencies]`.
+wiremock = { version = "0.6", default-features = false }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = "symbols"
+
+[profile.dev]
+opt-level = 0
+# `"line-tables-only"` keeps file:line in backtraces and panic messages while
+# dropping type and variable debug info.
+debug = "line-tables-only"
+
+# Dependencies carry no debug info at all. They are most of every binary's
+# bytes, and nobody steps into a dependency from a test run.
+[profile.dev.package."*"]
+debug = false
+
+[workspace.lints.rust]
+ambiguous_negative_literals = "warn"
+missing_debug_implementations = "warn"
+redundant_imports = "warn"
+redundant_lifetimes = "warn"
+trivial_numeric_casts = "warn"
+unsafe_op_in_unsafe_fn = "warn"
+unused_lifetimes = "warn"
+# cargo-llvm-cov sets `--cfg coverage_nightly` on nightly; the crates key
+# `#[coverage(off)]` on it. Declaring it keeps the stable build's check-cfg from
+# rejecting it.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage_nightly)'] }
+
+# Allow-by-default rustc lints that catch real defects or keep paths honest.
+# Left off on purpose: `unused_crate_dependencies` (false positives in every
+# integration-test crate), `unused_results` and `let_underscore_drop` (fight the
+# deliberate `let _ = tx.send(..)` discard idiom), `trivial_casts` (flags the
+# unsizing casts type inference needs), `unnameable_types` (fights the
+# sealed-trait pattern), and `missing_copy_implementations` (Copy is an API
+# promise, not a lint fix).
+rust_2018_idioms = { level = "warn", priority = -1 }
+deprecated_safe = "warn"
+impl_trait_redundant_captures = "warn"
+keyword_idents = { level = "warn", priority = -1 }
+macro_use_extern_crate = "warn"
+meta_variable_misuse = "warn"
+missing_docs = "warn"
+missing_unsafe_on_extern = "warn"
+non_ascii_idents = "warn"
+unit_bindings = "warn"
+unreachable_pub = "warn"
+unused_import_braces = "warn"
+unused_macro_rules = "warn"
+unused_qualifications = "warn"
+
+[workspace.lints.clippy]
+cargo = { level = "warn", priority = -1 }
+complexity = { level = "warn", priority = -1 }
+correctness = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+perf = { level = "warn", priority = -1 }
+style = { level = "warn", priority = -1 }
+suspicious = { level = "warn", priority = -1 }
+
+# Restriction group lints per M-STATIC-VERIFICATION
+allow_attributes_without_reason = "warn"
+as_pointer_underscore = "warn"
+assertions_on_result_states = "warn"
+clone_on_ref_ptr = "warn"
+deref_by_slicing = "warn"
+disallowed_script_idents = "warn"
+empty_drop = "warn"
+empty_enum_variants_with_brackets = "warn"
+empty_structs_with_brackets = "warn"
+fn_to_numeric_cast_any = "warn"
+if_then_some_else_none = "warn"
+map_err_ignore = "warn"
+redundant_type_annotations = "warn"
+renamed_function_params = "warn"
+semicolon_outside_block = "warn"
+undocumented_unsafe_blocks = "warn"
+unnecessary_safety_comment = "warn"
+unnecessary_safety_doc = "warn"
+unneeded_field_pattern = "warn"
+unused_result_ok = "warn"
+
+# Allow transitive dependency version duplication when no single version graph
+# exists to pick from. Enabling it would report duplicates this workspace cannot
+# fix, because the duplication lives in the transitive tree.
+multiple_crate_versions = "allow"
+
+# Allow literal format strings for structured logging patterns
+literal_string_with_formatting_args = "allow"
+
+# Panic-site and debug-print restriction lints (M-STATIC-VERIFICATION)
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+todo = "warn"
+unimplemented = "warn"
+unreachable = "warn"
+dbg_macro = "warn"
+print_stdout = "warn"
+print_stderr = "warn"
+
+# Further restriction lints: each catches a panic, a lossy or nondeterministic
+# operation, or a misleading construct. The restriction group is not enabled
+# wholesale: most of it encodes a style that contradicts idiomatic Rust
+# (`implicit_return`, `question_mark_used`, `absolute_paths`, `min_ident_chars`)
+# or contradicts another member of the group.
+cfg_not_test = "warn"
+create_dir = "warn"
+doc_include_without_cfg = "warn"
+exit = "warn"
+filetype_is_file = "warn"
+float_cmp_const = "warn"
+get_unwrap = "warn"
+infinite_loop = "warn"
+iter_over_hash_type = "warn"
+lossy_float_literal = "warn"
+map_with_unused_argument_over_ranges = "warn"
+mem_forget = "warn"
+missing_assert_message = "warn"
+missing_asserts_for_indexing = "warn"
+mixed_read_write_in_expression = "warn"
+multiple_unsafe_ops_per_block = "warn"
+mutex_atomic = "warn"
+needless_raw_strings = "warn"
+non_zero_suggestions = "warn"
+panic_in_result_fn = "warn"
+partial_pub_fields = "warn"
+pathbuf_init_then_push = "warn"
+precedence_bits = "warn"
+rc_buffer = "warn"
+rc_mutex = "warn"
+redundant_test_prefix = "warn"
+rest_pat_in_fully_bound_structs = "warn"
+return_and_then = "warn"
+same_name_method = "warn"
+string_lit_chars_any = "warn"
+suspicious_xor_used_as_pow = "warn"
+try_err = "warn"
+unnecessary_self_imports = "warn"
+unwrap_in_result = "warn"
+verbose_file_reads = "warn"
+# Panic sites the unwrap/expect ban above does not reach. `string_slice` matters
+# here because Failure messages, Failure details and CI-supplied names are
+# arbitrary UTF-8, and a byte-range slice that lands inside a multi-byte
+# character panics. Test code is exempt via `allow-indexing-slicing-in-tests` in
+# `clippy.toml`.
+indexing_slicing = "warn"
+string_slice = "warn"
+
+# Nursery lints left off. `redundant_pub_crate` contradicts rustc's
+# `unreachable_pub` above, which wins because it states visibility at the item.
+# `option_if_let_else` rewrites readable `if let`/`else` into `map_or_else`
+# closures. `missing_const_for_fn` buys nothing in an application workspace and
+# turns every helper into a const-API promise. `significant_drop_tightening` has
+# open false positives on guards that are already dropped at the right point
+# (rust-clippy#9399).
+missing_const_for_fn = "allow"
+option_if_let_else = "allow"
+redundant_pub_crate = "allow"
+significant_drop_tightening = "allow"

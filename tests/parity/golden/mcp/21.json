@@ -1,0 +1,93 @@
+{
+  "result": {
+    "_meta": null,
+    "content": [
+      {
+        "_meta": null,
+        "annotations": null,
+        "text": "{\"test\":{\"id\":3,\"repo\":\"o/r\",\"project\":\"default\",\"fingerprint\":\"95dde62b0442a8ec8faf58a28096b0fbad0d421a\",\"suite\":\"unit\",\"classname\":\"tests.test_auth\",\"name\":\"test_login\",\"file\":\"tests/test_auth.py\",\"line\":7,\"flakiness_score\":0.1667,\"tier\":\"suspect\",\"confirmed_flake_count\":0,\"failure_category\":\"network\",\"clean_streak\":0,\"fail_streak\":1,\"broken\":false,\"trend\":null,\"last_status\":\"failed\",\"last_seen_at\":\"<timestamp>\",\"quarantined\":false,\"quarantined_at\":null,\"quarantine_reason\":null,\"quarantine_expires_at\":null,\"github_issue_number\":null,\"github_issue_url\":null,\"github_issue_closed\":false},\"location\":{\"path\":\"tests/test_auth.py\",\"line\":7,\"url\":\"https://github.com/o/r/blob/m2/tests/test_auth.py#L7\"},\"last_failing_sha\":\"m2\",\"last_failing_branch\":\"main\",\"latest_failure\":{\"status\":\"failed\",\"message\":\"ECONNREFUSED\",\"details\":\"ConnectionError: ECONNREFUSED\",\"commit_sha\":\"m2\",\"branch\":\"main\",\"failure_category\":\"network\",\"created_at\":\"<timestamp>\"},\"executions\":[{\"status\":\"failed\",\"commit_sha\":\"m2\",\"branch\":\"main\",\"ci_run_id\":\"\",\"created_at\":\"<timestamp>\",\"duration\":0.01,\"message\":\"ECONNREFUSED\",\"attempt\":0,\"failure_category\":\"network\"},{\"status\":\"passed\",\"commit_sha\":\"m1\",\"branch\":\"main\",\"ci_run_id\":\"\",\"created_at\":\"<timestamp>\",\"duration\":0.01,\"message\":\"\",\"attempt\":0,\"failure_category\":null}],\"jobs\":[],\"score_history\":[{\"day\":\"<date>\",\"flakiness_score\":0.1667}]}",
+        "type": "text"
+      }
+    ],
+    "isError": false,
+    "resultType": "complete",
+    "structuredContent": {
+      "executions": [
+        {
+          "attempt": 0,
+          "branch": "main",
+          "ci_run_id": "",
+          "commit_sha": "m2",
+          "created_at": "<timestamp>",
+          "duration": 0.01,
+          "failure_category": "network",
+          "message": "ECONNREFUSED",
+          "status": "failed"
+        },
+        {
+          "attempt": 0,
+          "branch": "main",
+          "ci_run_id": "",
+          "commit_sha": "m1",
+          "created_at": "<timestamp>",
+          "duration": 0.01,
+          "failure_category": null,
+          "message": "",
+          "status": "passed"
+        }
+      ],
+      "jobs": [],
+      "last_failing_branch": "main",
+      "last_failing_sha": "m2",
+      "latest_failure": {
+        "branch": "main",
+        "commit_sha": "m2",
+        "created_at": "<timestamp>",
+        "details": "ConnectionError: ECONNREFUSED",
+        "failure_category": "network",
+        "message": "ECONNREFUSED",
+        "status": "failed"
+      },
+      "location": {
+        "line": 7,
+        "path": "tests/test_auth.py",
+        "url": "https://github.com/o/r/blob/m2/tests/test_auth.py#L7"
+      },
+      "score_history": [
+        {
+          "day": "<date>",
+          "flakiness_score": 0.1667
+        }
+      ],
+      "test": {
+        "broken": false,
+        "classname": "tests.test_auth",
+        "clean_streak": 0,
+        "confirmed_flake_count": 0,
+        "fail_streak": 1,
+        "failure_category": "network",
+        "file": "tests/test_auth.py",
+        "fingerprint": "95dde62b0442a8ec8faf58a28096b0fbad0d421a",
+        "flakiness_score": 0.1667,
+        "github_issue_closed": false,
+        "github_issue_number": null,
+        "github_issue_url": null,
+        "id": 3,
+        "last_seen_at": "<timestamp>",
+        "last_status": "failed",
+        "line": 7,
+        "name": "test_login",
+        "project": "default",
+        "quarantine_expires_at": null,
+        "quarantine_reason": null,
+        "quarantined": false,
+        "quarantined_at": null,
+        "repo": "o/r",
+        "suite": "unit",
+        "tier": "suspect",
+        "trend": null
+      }
+    }
+  },
+  "step": 21
+}

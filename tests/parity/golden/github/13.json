@@ -1,0 +1,22 @@
+{
+  "step": 13,
+  "tables": {
+    "projects": [
+      {
+        "created_at": "<timestamp>",
+        "id": 1,
+        "name": "default",
+        "repo_id": 1,
+        "root": ""
+      }
+    ],
+    "repos": [
+      {
+        "created_at": "<timestamp>",
+        "default_branch": null,
+        "id": 1,
+        "name": "o/r"
+      }
+    ]
+  }
+}

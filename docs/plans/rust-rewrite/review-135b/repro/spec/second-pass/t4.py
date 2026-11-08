@@ -1,0 +1,55 @@
+from lib import *
+XML=b'<testsuite name="s"><testcase classname="c" name="n"/></testsuite>'
+U='/api/ingest?repo=m/p&commit_sha=c1&ci_run_id='
+n=[0]
+def mp(label,body,ct='multipart/form-data; boundary=BB'):
+    n[0]+=1
+    both(label,'POST',U+f'm{n[0]}',headers={**A,'content-type':ct} if ct is not None else A,content=body)
+def part(name='report',fn='r.xml',data=XML,extra=b'',disp=None):
+    d=disp if disp is not None else ('Content-Disposition: form-data; name="%s"'%name+('; filename="%s"'%fn if fn is not None else ''))
+    return b'--BB\r\n'+d.encode()+b'\r\n'+extra+b'\r\n'+data+b'\r\n'
+END=b'--BB--\r\n'
+mp('ok',part()+END)
+mp('missing part',part(name='other')+END)
+mp('no parts',END)
+mp('empty body',b'')
+mp('filename-less',part(fn=None)+END)
+mp('empty filename',part(fn='')+END)
+mp('filename*',part(disp="Content-Disposition: form-data; name=\"report\"; filename*=UTF-8''r.xml")+END)
+mp('Name= case',part(disp='Content-Disposition: form-data; NAME="report"; FILENAME="r.xml"')+END)
+mp('unquoted',part(disp='Content-Disposition: form-data; name=report; filename=r.xml')+END)
+mp('semi in fn',part(disp='Content-Disposition: form-data; name="report"; filename="a;b.xml"')+END)
+mp('fn before name w/ semi',part(disp='Content-Disposition: form-data; filename="a;name=x.xml"; name="report"')+END)
+mp('name=x inside fn',part(disp='Content-Disposition: form-data; name="other"; filename="a;name=report.xml"')+END)
+mp('escaped quote',part(disp='Content-Disposition: form-data; name="report"; filename="a\\"b.xml"')+END)
+mp('attachment',part(disp='Content-Disposition: attachment; name="report"; filename="r.xml"')+END)
+mp('no CD header',b'--BB\r\nContent-Type: text/xml\r\n\r\n'+XML+b'\r\n'+END)
+mp('no CD after report',part()+b'--BB\r\nContent-Type: text/xml\r\n\r\nzz\r\n'+END)
+mp('nameless after report',part()+b'--BB\r\nContent-Disposition: form-data; filename="x"\r\n\r\nzz\r\n'+END)
+mp('nameless before report',b'--BB\r\nContent-Disposition: form-data; filename="x"\r\n\r\nzz\r\n'+part()+END)
+mp('dup file file (last differs)',part(data=b'<bad')+part()+END)
+mp('dup file file 2',part()+part(data=b'<bad')+END)
+mp('file then value',part()+part(fn=None,data=b'v')+END)
+mp('value then file',part(fn=None,data=b'v')+part()+END)
+mp('other field',part(name='a',fn=None,data=b'v')+part()+END)
+mp('Content-Type on part wrong',part(extra=b'Content-Type: application/json\r\n')+END)
+mp('Content-Transfer b64',part(extra=b'Content-Transfer-Encoding: base64\r\n',data=b'PGEvPg==')+END)
+mp('no closing',part())
+mp('closing no crlf',part()+b'--BB--')
+mp('epilogue',part()+END+b'garbage')
+mp('preamble',b'hello\r\n'+part()+END)
+mp('leading crlf',b'\r\n'+part()+END)
+mp('LF only',part().replace(b'\r\n',b'\n')+b'--BB--\n')
+mp('delimiter trailing ws',part().replace(b'--BB\r\n',b'--BB  \r\n')+END)
+mp('header folding',b'--BB\r\nContent-Disposition: form-data;\r\n name="report"; filename="r"\r\n\r\n'+XML+b'\r\n'+END)
+mp('hdr no colon',b'--BB\r\nnope\r\nContent-Disposition: form-data; name="report"; filename="r"\r\n\r\n'+XML+b'\r\n'+END)
+mp('no header block',b'--BB\r\n\r\n'+XML+b'\r\n'+END)
+mp('payload empty',part(data=b'')+END)
+mp('boundary in data',part(data=XML+b'\r\n--BBx')+END)
+mp('big other value 1.1MiB',part(name='a',fn=None,data=b'v'*1153434)+part()+END)
+mp('many fields 1001',b''.join(part(name='a%d'%i,fn=None,data=b'v') for i in range(1001))+part()+END)
+mp('many files 1001',b''.join(part(name='a%d'%i,fn='f',data=b'v') for i in range(1001))+part()+END)
+mp('long header 9k',b'--BB\r\nContent-Disposition: form-data; name="report"; filename="r"\r\nX-Long: '+b'y'*9000+b'\r\n\r\n'+XML+b'\r\n'+END)
+print('### content types')
+for ct,b in [('multipart/form-data',part()+END),('multipart/form-data; boundary=',part()+END),('multipart/form-data; boundary="BB"',part()+END),('multipart/form-data; BOUNDARY=BB',part()+END),('multipart/form-data;boundary=BB;charset=utf-8',part()+END),('multipart/form-data; charset=utf-8; boundary=BB',part()+END),('Multipart/Form-Data; boundary=BB',part()+END),('MULTIPART/FORM-DATA; boundary=BB',XML),(' multipart/form-data; boundary=BB',part()+END),('multipart/mixed; boundary=BB',part()+END),('multipart/form-dataX; boundary=BB',part()+END),('multipart/form-data; boundary=BB x',part()+END),("multipart/form-data; boundary='BB'",part()+END),('application/xml',XML),('text/plain',XML),('application/x-www-form-urlencoded',XML),('application/json',XML),('garbage',XML),(None,XML),('multipart/form-data; boundary=BB',XML)]:
+    mp('CT '+repr(ct)+(' xml' if b is XML else ''),b,ct)

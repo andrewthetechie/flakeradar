@@ -1,0 +1,21 @@
+{
+  "body": [
+    {
+      "name": "o/r",
+      "projects": [
+        {
+          "name": "default",
+          "root": ""
+        }
+      ]
+    }
+  ],
+  "content-type": "application/json",
+  "request": {
+    "method": "GET",
+    "path": "/api/repos",
+    "query": {}
+  },
+  "status": 200,
+  "step": 11
+}

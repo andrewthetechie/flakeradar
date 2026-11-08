@@ -1,0 +1,18 @@
+[
+  {
+    "id": 42,
+    "kind": "junit",
+    "repo": "demo/shop",
+    "project": "backend",
+    "commit_sha": "abcdef1234",
+    "branch": "main",
+    "ci_run_id": "run-12",
+    "status": "failed",
+    "error": "parse failed: unexpected token",
+    "counts": null,
+    "run_id": null,
+    "created_at": "2026-01-02T14:02:00Z",
+    "processed_at": null,
+    "retry_count": 0
+  }
+]

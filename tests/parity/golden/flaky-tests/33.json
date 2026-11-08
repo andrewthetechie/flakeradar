@@ -1,0 +1,29 @@
+{
+  "body": {
+    "detail": [
+      {
+        "ctx": {
+          "expected": "'network', 'environment', 'timing', 'assertion' or 'other'"
+        },
+        "input": "bogus",
+        "loc": [
+          "query",
+          "category"
+        ],
+        "msg": "Input should be 'network', 'environment', 'timing', 'assertion' or 'other'",
+        "type": "literal_error"
+      }
+    ]
+  },
+  "content-type": "application/json",
+  "request": {
+    "method": "GET",
+    "path": "/api/tests",
+    "query": {
+      "category": "bogus",
+      "repo": "o/r"
+    }
+  },
+  "status": 422,
+  "step": 33
+}

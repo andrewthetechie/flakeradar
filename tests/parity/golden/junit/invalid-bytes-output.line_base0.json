@@ -1,0 +1,19 @@
+{
+  "cases": [
+    {
+      "category": "other",
+      "classname": "tests.test_encoding",
+      "details": "Traceback\n\n--- stdout ---\nbefore ����( after",
+      "duration": 0.01,
+      "file": null,
+      "fingerprint": "fd0dd8f97f6e0069f2e3f28e1887142051a3ad50",
+      "line": null,
+      "message": "binary junk in the log",
+      "name": "test_binary_output",
+      "status": "failed",
+      "suite": "invalid-bytes"
+    }
+  ],
+  "line_base": 0,
+  "source": "junit/invalid-bytes-output.xml"
+}

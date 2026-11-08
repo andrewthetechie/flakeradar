@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="dot-slash" tests="3">
+  <testcase classname="tests.test_paths" name="test_leading_dot_slash" time="0.01" file="./src/app.py" line="3" />
+  <testcase classname="tests.test_paths" name="test_repeated_dot_slash" time="0.01" file="././src/app.py" line="4" />
+  <testcase classname="tests.test_paths" name="test_inner_dot_slash_is_kept" time="0.01" file="src/./app.py" line="5" />
+  <testcase classname="tests.test_paths" name="test_empty_file_is_no_location" time="0.01" file="" line="6" />
+</testsuite>

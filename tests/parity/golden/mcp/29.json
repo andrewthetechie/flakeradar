@@ -1,0 +1,81 @@
+{
+  "result": {
+    "_meta": null,
+    "content": [
+      {
+        "_meta": null,
+        "annotations": null,
+        "text": "{\"job\":{\"id\":1,\"repo\":\"o/r\",\"provider\":\"github\",\"pipeline\":\".github/workflows/ci.yml\",\"name\":\"gate\",\"flakiness_score\":0.0,\"tier\":\"stable\",\"confirmed_flake_count\":0,\"clean_streak\":0,\"trend\":null,\"last_status\":\"failed\",\"last_seen_at\":\"<timestamp>\",\"summary\":true,\"github_issue_number\":null,\"github_issue_url\":null,\"github_issue_closed\":false},\"unexplained_failures\":0,\"explained_failures\":1,\"runners\":[{\"labels\":[],\"runner_name\":null,\"executions\":1,\"unexplained_failures\":0}],\"executions\":[{\"status\":\"failed\",\"outcome\":\"explained\",\"commit_sha\":\"m1\",\"branch\":\"main\",\"ci_run_attempt\":1,\"ci_job_id\":\"52\",\"url\":\"\",\"runner_name\":\"\",\"runner_labels\":[],\"created_at\":\"<timestamp>\",\"explained_by\":[],\"explained_by_jobs\":[{\"job_id\":3,\"pipeline\":\".github/workflows/ci.yml\",\"name\":\"unit\",\"url\":\"\"},{\"job_id\":2,\"pipeline\":\".github/workflows/ci.yml\",\"name\":\"lint\",\"url\":\"\"}]}],\"score_history\":[{\"day\":\"<date>\",\"flakiness_score\":0.0}]}",
+        "type": "text"
+      }
+    ],
+    "isError": false,
+    "resultType": "complete",
+    "structuredContent": {
+      "executions": [
+        {
+          "branch": "main",
+          "ci_job_id": "52",
+          "ci_run_attempt": 1,
+          "commit_sha": "m1",
+          "created_at": "<timestamp>",
+          "explained_by": [],
+          "explained_by_jobs": [
+            {
+              "job_id": 3,
+              "name": "unit",
+              "pipeline": ".github/workflows/ci.yml",
+              "url": ""
+            },
+            {
+              "job_id": 2,
+              "name": "lint",
+              "pipeline": ".github/workflows/ci.yml",
+              "url": ""
+            }
+          ],
+          "outcome": "explained",
+          "runner_labels": [],
+          "runner_name": "",
+          "status": "failed",
+          "url": ""
+        }
+      ],
+      "explained_failures": 1,
+      "job": {
+        "clean_streak": 0,
+        "confirmed_flake_count": 0,
+        "flakiness_score": 0.0,
+        "github_issue_closed": false,
+        "github_issue_number": null,
+        "github_issue_url": null,
+        "id": 1,
+        "last_seen_at": "<timestamp>",
+        "last_status": "failed",
+        "name": "gate",
+        "pipeline": ".github/workflows/ci.yml",
+        "provider": "github",
+        "repo": "o/r",
+        "summary": true,
+        "tier": "stable",
+        "trend": null
+      },
+      "runners": [
+        {
+          "executions": 1,
+          "labels": [],
+          "runner_name": null,
+          "unexplained_failures": 0
+        }
+      ],
+      "score_history": [
+        {
+          "day": "<date>",
+          "flakiness_score": 0.0
+        }
+      ],
+      "unexplained_failures": 0
+    }
+  },
+  "step": 29
+}

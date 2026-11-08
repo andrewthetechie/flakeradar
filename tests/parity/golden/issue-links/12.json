@@ -1,0 +1,26 @@
+{
+  "body": {
+    "detail": [
+      {
+        "ctx": {
+          "ge": 1
+        },
+        "input": 0,
+        "loc": [
+          "body",
+          "number"
+        ],
+        "msg": "Input should be greater than or equal to 1",
+        "type": "greater_than_equal"
+      }
+    ]
+  },
+  "content-type": "application/json",
+  "request": {
+    "method": "PUT",
+    "path": "/api/tests/1/issue",
+    "query": {}
+  },
+  "status": 422,
+  "step": 12
+}

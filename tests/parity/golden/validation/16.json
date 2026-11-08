@@ -1,0 +1,15 @@
+{
+  "body": {
+    "detail": "project filter requires repo"
+  },
+  "content-type": "application/json",
+  "request": {
+    "method": "GET",
+    "path": "/api/summary",
+    "query": {
+      "project": "default"
+    }
+  },
+  "status": 422,
+  "step": 16
+}

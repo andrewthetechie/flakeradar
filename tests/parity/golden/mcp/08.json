@@ -1,0 +1,28 @@
+{
+  "result": {
+    "_meta": {
+      "fastmcp": {
+        "wrap_result": true
+      }
+    },
+    "content": [
+      {
+        "_meta": null,
+        "annotations": null,
+        "text": "[{\"name\":\"default\",\"root\":\"\"}]",
+        "type": "text"
+      }
+    ],
+    "isError": false,
+    "resultType": "complete",
+    "structuredContent": {
+      "result": [
+        {
+          "name": "default",
+          "root": ""
+        }
+      ]
+    }
+  },
+  "step": 8
+}

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="bad-lines" tests="4">
+  <testcase classname="tests.test_lines" name="test_letters_are_no_line" time="0.01" file="src/app.py" line="12a" />
+  <testcase classname="tests.test_lines" name="test_negative_is_no_line" time="0.01" file="src/app.py" line="-4" />
+  <testcase classname="tests.test_lines" name="test_arabic_indic_digits" time="0.01" file="src/app.py" line="١٢" />
+  <testcase classname="tests.test_lines" name="test_float_is_no_line" time="0.01" file="src/app.py" line="1.5" />
+</testsuite>

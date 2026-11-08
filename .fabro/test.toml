@@ -1,10 +1,12 @@
 version = 1
 
-# backend/tests/conftest.py starts a testcontainers PostgreSQL unless
-# FLAKERADAR_TEST_DATABASE_URL is set. The sandbox has no Docker, so the image's own
-# PostgreSQL (fabro-pg-ensure) is reached over localhost instead.
+# The Rust suite starts a PostgreSQL container with the `docker` command line
+# only when FLAKERADAR_TEST_DATABASE_URL is unset. The sandbox has no Docker, so
+# the image's own PostgreSQL (fabro-pg-ensure) is reached over localhost instead.
+# SQLx reads a plain `postgresql://` URL; the driver suffix Python needed is not
+# part of it.
 [env]
-FLAKERADAR_TEST_DATABASE_URL = "postgresql+asyncpg://test:test@localhost:5432/test"
+FLAKERADAR_TEST_DATABASE_URL = "postgresql://test:test@localhost:5432/test"
 
 [prepare]
 inputs = []
@@ -12,12 +14,13 @@ timeout = 300
 # Recreates the test databases on every call.
 run = ["fabro-pg-ensure"]
 
-[targets.backend]
-about = "backend pytest; pass test files or node ids"
-cwd = "backend"
-run = ".venv/bin/pytest -q"
-tests = ["backend/tests/**"]
-timeout = 300
+[targets.rust]
+about = "cargo nextest across the workspace; pass test binaries or test names"
+run = "cargo nextest run --all-features --profile ci"
+watch = ["crates/**", "Cargo.toml", "Cargo.lock"]
+# 600 is the most fabro-io accepts for any timeout here (TIMEOUT_MAX_S), and one
+# value above it fails the whole file. ci.sh runs the full suite without this cap.
+timeout = 600
 
 [targets.frontend]
 about = "frontend vitest unit suite; pass test files, relative to frontend/"
@@ -26,12 +29,18 @@ run = "npx vitest run"
 tests = ["frontend/src/**"]
 timeout = 300
 
-[checks.ruff]
-about = "ruff lint over the backend (ci.sh's ruff check)"
-cwd = "backend"
-run = ".venv/bin/ruff check ."
-watch = ["backend/**/*.py"]
+[checks.fmt]
+about = "rustfmt (ci.sh's cargo fmt --all -- --check)"
+run = "cargo fmt --all -- --check"
+watch = ["crates/**", "Cargo.toml"]
 files = false
+
+[checks.clippy]
+about = "clippy with warnings as errors (ci.sh's clippy step)"
+run = "cargo clippy --all-targets --all-features -- -D warnings"
+watch = ["crates/**", "Cargo.toml", "Cargo.lock"]
+files = false
+timeout = 600
 
 [checks.typecheck]
 about = "frontend TypeScript type check (npm run typecheck)"

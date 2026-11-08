@@ -1,0 +1,9 @@
+[
+  {
+    "name": "demo/shop",
+    "projects": [
+      { "name": "backend", "root": "" },
+      { "name": "frontend", "root": "web" }
+    ]
+  }
+]

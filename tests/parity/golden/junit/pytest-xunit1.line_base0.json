@@ -1,0 +1,123 @@
+{
+  "cases": [
+    {
+      "category": null,
+      "classname": "tests.auth.test_login",
+      "details": "",
+      "duration": 0.012,
+      "file": "tests/auth/test_login.py",
+      "fingerprint": "23291c4590edb818d202f7f33e2cc157bcb2437f",
+      "line": 15,
+      "message": "",
+      "name": "test_signs_in",
+      "status": "passed",
+      "suite": "pytest"
+    },
+    {
+      "category": null,
+      "classname": "tests.auth.test_login",
+      "details": "",
+      "duration": 0.008,
+      "file": "tests/auth/test_login.py",
+      "fingerprint": "d6042afaff797927a83f9689ecd6f7d47c52ab39",
+      "line": 89,
+      "message": "",
+      "name": "test_token_expires",
+      "status": "passed",
+      "suite": "pytest"
+    },
+    {
+      "category": "assertion",
+      "classname": "tests.auth.test_login",
+      "details": "tests/auth/test_login.py:120: in test_lockout\n    assert attempts == 2\nE   assert 3 == 2",
+      "duration": 3.401,
+      "file": "tests/auth/test_login.py",
+      "fingerprint": "17f37fbe2d1157ba14555fbce24b6f4f20368be0",
+      "line": 121,
+      "message": "assert 3 == 2",
+      "name": "test_lockout",
+      "status": "failed",
+      "suite": "pytest"
+    },
+    {
+      "category": "timing",
+      "classname": "tests.auth.test_login",
+      "details": "tests/auth/test_login.py:150: in test_login_timeout\nE   socket.timeout: timed out while waiting for the response",
+      "duration": 0.031,
+      "file": "tests/auth/test_login.py",
+      "fingerprint": "9d5b7c7bee7001a9c9e68361387411735673303d",
+      "line": 151,
+      "message": "socket.timeout: timed out while waiting for the response",
+      "name": "test_login_timeout",
+      "status": "failed",
+      "suite": "pytest"
+    },
+    {
+      "category": null,
+      "classname": "tests.api.test_health",
+      "details": "",
+      "duration": 0.003,
+      "file": "tests/api/test_health.py",
+      "fingerprint": "a053d129f598513c6091019645eaa50573be076d",
+      "line": 10,
+      "message": "",
+      "name": "test_health",
+      "status": "passed",
+      "suite": "pytest"
+    },
+    {
+      "category": null,
+      "classname": "tests.api.test_health",
+      "details": "",
+      "duration": 0.004,
+      "file": "tests/api/test_health.py",
+      "fingerprint": "03e51d204af41ba7096f7ecea5c885572ad6047e",
+      "line": 18,
+      "message": "",
+      "name": "test_ready",
+      "status": "passed",
+      "suite": "pytest"
+    },
+    {
+      "category": null,
+      "classname": "tests.models.test_cart",
+      "details": "",
+      "duration": 0.007,
+      "file": "tests/models/test_cart.py",
+      "fingerprint": "d39d5b49137ddfd83175eb07499a5a41e65586a0",
+      "line": 32,
+      "message": "",
+      "name": "test_totals",
+      "status": "passed",
+      "suite": "pytest"
+    },
+    {
+      "category": null,
+      "classname": "tests.models.test_cart",
+      "details": "",
+      "duration": 0.006,
+      "file": "tests/models/test_cart.py",
+      "fingerprint": "7b9512bb0eb4c6f29f0002469d4b8957ce6b4b29",
+      "line": 45,
+      "message": "",
+      "name": "test_discount",
+      "status": "passed",
+      "suite": "pytest"
+    },
+    {
+      "category": null,
+      "classname": "tests.models.test_cart",
+      "details": "",
+      "duration": 0.005,
+      "file": "tests/models/test_cart.py",
+      "fingerprint": "b11d63d81832f7ad6ba31852e0cf3e2911cc790e",
+      "line": 59,
+      "message": "",
+      "name": "test_currency",
+      "status": "passed",
+      "suite": "pytest"
+    }
+  ],
+  "line_base": 0,
+  "source": "junit/pytest-xunit1.xml"
+}

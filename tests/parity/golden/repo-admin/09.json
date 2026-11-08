@@ -1,0 +1,13 @@
+{
+  "body": {
+    "detail": "repo must look like 'owner/name', got 'Bad Name/x'"
+  },
+  "content-type": "application/json",
+  "request": {
+    "method": "DELETE",
+    "path": "/api/repos/Bad Name/x",
+    "query": {}
+  },
+  "status": 422,
+  "step": 9
+}

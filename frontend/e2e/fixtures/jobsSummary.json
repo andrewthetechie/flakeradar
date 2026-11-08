@@ -1,0 +1,11 @@
+{
+  "total_jobs": 4,
+  "flaky_jobs": 0,
+  "suspect_jobs": 2,
+  "confirmed_flaky_jobs": 0,
+  "new_flaky_7d": 0,
+  "job_executions_30d": 56,
+  "job_failures_30d": 12,
+  "flake_threshold": 0.5,
+  "pipelines": [".github/workflows/ci.yml"]
+}

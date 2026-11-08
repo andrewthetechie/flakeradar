@@ -1,0 +1,13 @@
+{
+  "body": {
+    "detail": "Only failed reports can be deleted"
+  },
+  "content-type": "application/json",
+  "request": {
+    "method": "DELETE",
+    "path": "/api/reports/1",
+    "query": {}
+  },
+  "status": 409,
+  "step": 24
+}

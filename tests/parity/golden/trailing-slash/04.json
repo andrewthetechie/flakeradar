@@ -1,0 +1,11 @@
+{
+  "body": "",
+  "location": "/api/jobs/summary",
+  "request": {
+    "method": "GET",
+    "path": "/api/jobs/summary/",
+    "query": {}
+  },
+  "status": 307,
+  "step": 4
+}

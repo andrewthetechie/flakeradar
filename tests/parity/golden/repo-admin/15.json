@@ -1,0 +1,256 @@
+{
+  "step": 15,
+  "tables": {
+    "job_executions": [
+      {
+        "branch": "main",
+        "ci_job_id": "80",
+        "ci_run_attempt": 1,
+        "ci_run_id": "800",
+        "commit_sha": "r1",
+        "completed_at": null,
+        "created_at": "<timestamp>",
+        "id": 1,
+        "job_id": 3,
+        "runner_labels": [],
+        "runner_name": "",
+        "started_at": null,
+        "status": "failed",
+        "url": ""
+      },
+      {
+        "branch": "main",
+        "ci_job_id": "81",
+        "ci_run_attempt": 1,
+        "ci_run_id": "800",
+        "commit_sha": "r1",
+        "completed_at": null,
+        "created_at": "<timestamp>",
+        "id": 2,
+        "job_id": 2,
+        "runner_labels": [],
+        "runner_name": "",
+        "started_at": null,
+        "status": "failed",
+        "url": ""
+      },
+      {
+        "branch": "main",
+        "ci_job_id": "82",
+        "ci_run_attempt": 1,
+        "ci_run_id": "800",
+        "commit_sha": "r1",
+        "completed_at": null,
+        "created_at": "<timestamp>",
+        "id": 3,
+        "job_id": 1,
+        "runner_labels": [],
+        "runner_name": "",
+        "started_at": null,
+        "status": "failed",
+        "url": ""
+      }
+    ],
+    "jobs": [
+      {
+        "clean_streak": 0,
+        "confirmed_flake_count": 0,
+        "created_at": "<timestamp>",
+        "flakiness_score": 0,
+        "github_issue_checked_at": null,
+        "github_issue_closed": false,
+        "github_issue_filed": null,
+        "github_issue_fixed_noted_at": null,
+        "github_issue_number": null,
+        "id": 1,
+        "last_seen_at": "<timestamp>",
+        "last_status": "failed",
+        "name": "gate",
+        "pipeline_id": 1,
+        "summary": true
+      },
+      {
+        "clean_streak": 0,
+        "confirmed_flake_count": 0,
+        "created_at": "<timestamp>",
+        "flakiness_score": 0,
+        "github_issue_checked_at": null,
+        "github_issue_closed": false,
+        "github_issue_filed": null,
+        "github_issue_fixed_noted_at": null,
+        "github_issue_number": null,
+        "id": 2,
+        "last_seen_at": "<timestamp>",
+        "last_status": "failed",
+        "name": "lint",
+        "pipeline_id": 1,
+        "summary": false
+      },
+      {
+        "clean_streak": 0,
+        "confirmed_flake_count": 0,
+        "created_at": "<timestamp>",
+        "flakiness_score": 0,
+        "github_issue_checked_at": null,
+        "github_issue_closed": false,
+        "github_issue_filed": null,
+        "github_issue_fixed_noted_at": null,
+        "github_issue_number": null,
+        "id": 3,
+        "last_seen_at": "<timestamp>",
+        "last_status": "failed",
+        "name": "unit",
+        "pipeline_id": 1,
+        "summary": false
+      }
+    ],
+    "pipelines": [
+      {
+        "created_at": "<timestamp>",
+        "id": 1,
+        "name": ".github/workflows/ci.yml",
+        "provider": "github",
+        "repo_id": 3
+      }
+    ],
+    "projects": [
+      {
+        "created_at": "<timestamp>",
+        "id": 3,
+        "name": "default",
+        "repo_id": 2,
+        "root": ""
+      }
+    ],
+    "reports": [
+      {
+        "body": "\\x3c746573747375697465206e616d653d22756e6974223e3c746573746361736520636c6173736e616d653d2274657374732e746573745f6361727422206e616d653d22746573745f746f74616c222074696d653d22302e3031222066696c653d2274657374732f746573745f636172742e707922206c696e653d223132223e3c6661696c757265206d6573736167653d226173736572742031203d3d2032223e417373657274696f6e4572726f723a206173736572742031203d3d20323c2f6661696c7572653e3c2f74657374636173653e3c2f7465737473756974653e",
+        "body_sha256": "28343e2a479732fd0da91c1e9737b62b0f07a4aa6647d1d011bdc73cfa7e756b",
+        "branch": "main",
+        "ci_job_id": null,
+        "ci_run_attempt": null,
+        "ci_run_id": "",
+        "commit_sha": "r1",
+        "counts": {
+          "error": 0,
+          "failed": 1,
+          "passed": 0,
+          "retried": 0,
+          "skipped": 0
+        },
+        "created_at": "<timestamp>",
+        "default_branch": null,
+        "error": null,
+        "id": 3,
+        "kind": "junit",
+        "line_base": 1,
+        "pipeline": null,
+        "processed_at": "<timestamp>",
+        "project_id": 3,
+        "repo_id": 2,
+        "retry_count": 0,
+        "root": null,
+        "run_id": 3,
+        "status": "processed"
+      },
+      {
+        "body": "\\x7b227265706f223a226f2f72222c2270726f7669646572223a22676974687562222c22706970656c696e65223a222e6769746875622f776f726b666c6f77732f63692e796d6c222c22636f6d6d69745f736861223a227231222c226272616e6368223a226d61696e222c2264656661756c745f6272616e6368223a6e756c6c2c2263695f72756e5f6964223a22383030222c2263695f72756e5f617474656d7074223a312c226a6f6273223a5b7b2263695f6a6f625f6964223a223830222c226e616d65223a22756e6974222c22737461747573223a226661696c6564222c2275726c223a22222c2272756e6e65725f6e616d65223a22222c2272756e6e65725f6c6162656c73223a5b5d2c22737461727465645f6174223a6e756c6c2c22636f6d706c657465645f6174223a6e756c6c2c2273756d6d617279223a66616c73657d2c7b2263695f6a6f625f6964223a223831222c226e616d65223a226c696e74222c22737461747573223a226661696c6564222c2275726c223a22222c2272756e6e65725f6e616d65223a22222c2272756e6e65725f6c6162656c73223a5b5d2c22737461727465645f6174223a6e756c6c2c22636f6d706c657465645f6174223a6e756c6c2c2273756d6d617279223a66616c73657d2c7b2263695f6a6f625f6964223a223832222c226e616d65223a2267617465222c22737461747573223a226661696c6564222c2275726c223a22222c2272756e6e65725f6e616d65223a22222c2272756e6e65725f6c6162656c73223a5b5d2c22737461727465645f6174223a6e756c6c2c22636f6d706c657465645f6174223a6e756c6c2c2273756d6d617279223a747275657d5d7d",
+        "body_sha256": null,
+        "branch": "main",
+        "ci_job_id": null,
+        "ci_run_attempt": 1,
+        "ci_run_id": "800",
+        "commit_sha": "r1",
+        "counts": {
+          "duplicate": 0,
+          "failed": 3,
+          "passed": 0,
+          "skipped": 0
+        },
+        "created_at": "<timestamp>",
+        "default_branch": null,
+        "error": null,
+        "id": 4,
+        "kind": "pipeline",
+        "line_base": null,
+        "pipeline": ".github/workflows/ci.yml",
+        "processed_at": "<timestamp>",
+        "project_id": null,
+        "repo_id": 3,
+        "retry_count": 0,
+        "root": null,
+        "run_id": null,
+        "status": "processed"
+      }
+    ],
+    "repos": [
+      {
+        "created_at": "<timestamp>",
+        "default_branch": null,
+        "id": 2,
+        "name": "c/d"
+      },
+      {
+        "created_at": "<timestamp>",
+        "default_branch": null,
+        "id": 3,
+        "name": "o/r"
+      }
+    ],
+    "test_cases": [
+      {
+        "classname": "tests.test_cart",
+        "clean_streak": 0,
+        "confirmed_flake_count": 0,
+        "fail_streak": 1,
+        "failure_category": "assertion",
+        "file": "tests/test_cart.py",
+        "fingerprint": "25cdd150e8f4335ddfb17485d80e2defa6b56643",
+        "flakiness_score": 0,
+        "github_issue_checked_at": null,
+        "github_issue_closed": false,
+        "github_issue_filed": null,
+        "github_issue_fixed_noted_at": null,
+        "github_issue_number": null,
+        "id": 3,
+        "last_seen_at": "<timestamp>",
+        "last_status": "failed",
+        "line": 12,
+        "name": "test_total",
+        "project_id": 3,
+        "quarantine_expires_at": null,
+        "quarantine_reason": null,
+        "quarantined": false,
+        "quarantined_at": null,
+        "suite": "unit"
+      }
+    ],
+    "test_executions": [
+      {
+        "attempt": 0,
+        "created_at": "<timestamp>",
+        "details": "AssertionError: assert 1 == 2",
+        "duration": 0.01,
+        "failure_category": "assertion",
+        "id": 3,
+        "message": "assert 1 == 2",
+        "status": "failed",
+        "test_case_id": 3,
+        "test_run_id": 3
+      }
+    ],
+    "test_runs": [
+      {
+        "branch": "main",
+        "ci_job_id": null,
+        "ci_run_attempt": null,
+        "ci_run_id": "",
+        "commit_sha": "r1",
+        "created_at": "<timestamp>",
+        "id": 3,
+        "pipeline": null,
+        "project_id": 3
+      }
+    ]
+  }
+}

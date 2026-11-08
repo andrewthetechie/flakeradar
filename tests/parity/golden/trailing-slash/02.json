@@ -1,0 +1,11 @@
+{
+  "body": "",
+  "location": "/api/health",
+  "request": {
+    "method": "GET",
+    "path": "/api/health/",
+    "query": {}
+  },
+  "status": 307,
+  "step": 2
+}

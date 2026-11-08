@@ -1,0 +1,22 @@
+{
+  "body": {
+    "duplicate": false,
+    "report_id": 2,
+    "status": "pending"
+  },
+  "content-type": "application/json",
+  "request": {
+    "method": "POST",
+    "path": "/api/ingest",
+    "query": {
+      "ci_job_id": "10",
+      "ci_run_attempt": "1",
+      "ci_run_id": "777",
+      "commit_sha": "c1",
+      "pipeline": ".github/workflows/ci.yml",
+      "repo": "o/r"
+    }
+  },
+  "status": 202,
+  "step": 2
+}

@@ -1,0 +1,32 @@
+{
+  "cases": [
+    {
+      "category": "other",
+      "classname": "tests.test_encoding",
+      "details": "<system-out> is not markup here: 1 < 2 && 3 > 2\n\n--- stdout ---\nstdout &amp; more",
+      "duration": 0.01,
+      "file": null,
+      "fingerprint": "ea3094655a33e66ce5095c375d1ee2cb33ae1403",
+      "line": null,
+      "message": "a & b <c> \"quoted\" \n second line",
+      "name": "test_cdata_and_entities",
+      "status": "failed",
+      "suite": "encoding"
+    },
+    {
+      "category": null,
+      "classname": "tests.test_encoding",
+      "details": "",
+      "duration": 0.02,
+      "file": null,
+      "fingerprint": "e2df11e157446aadd8e8717bc4919e8112c39e01",
+      "line": null,
+      "message": "",
+      "name": "test_property_child_is_inert",
+      "status": "passed",
+      "suite": "encoding"
+    }
+  ],
+  "line_base": 1,
+  "source": "junit/cdata-and-entities.xml"
+}

@@ -1,0 +1,13 @@
+{
+  "body": {
+    "detail": "Test not found"
+  },
+  "content-type": "application/json",
+  "request": {
+    "method": "DELETE",
+    "path": "/api/tests/999/issue",
+    "query": {}
+  },
+  "status": 404,
+  "step": 18
+}

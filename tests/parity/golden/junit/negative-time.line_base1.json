@@ -1,0 +1,19 @@
+{
+  "cases": [
+    {
+      "category": null,
+      "classname": "tests.test_times",
+      "details": "",
+      "duration": -1.5,
+      "file": null,
+      "fingerprint": "240852af0eca9bb3b6cbc5b40c0a5be28cee76b1",
+      "line": null,
+      "message": "",
+      "name": "test_negative_time",
+      "status": "passed",
+      "suite": "times"
+    }
+  ],
+  "line_base": 1,
+  "source": "junit/negative-time.xml"
+}

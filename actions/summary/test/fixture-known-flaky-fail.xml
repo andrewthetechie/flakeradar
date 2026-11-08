@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<testsuites>
+  <testsuite name="summary-suite" errors="0" failures="1" skipped="0" tests="1" time="0.031">
+    <testcase classname="tests.test_summary" name="test_known_flaky" file="tests/test_summary.py" line="10" time="0.031">
+      <failure message="TimeoutError: the poller gave up after 2.0s">TimeoutError</failure>
+    </testcase>
+  </testsuite>
+</testsuites>

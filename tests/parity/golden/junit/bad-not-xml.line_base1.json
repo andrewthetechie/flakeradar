@@ -1,0 +1,5 @@
+{
+  "error": "Not a valid JUnit XML report: syntax error: line 1, column 0",
+  "line_base": 1,
+  "source": "junit/bad-not-xml.xml"
+}

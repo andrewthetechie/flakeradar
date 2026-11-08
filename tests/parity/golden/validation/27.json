@@ -1,0 +1,17 @@
+{
+  "body": {
+    "detail": "root must not contain '..', got '../etc'"
+  },
+  "content-type": "application/json",
+  "request": {
+    "method": "POST",
+    "path": "/api/ingest",
+    "query": {
+      "commit_sha": "x",
+      "repo": "o/r",
+      "root": "../etc"
+    }
+  },
+  "status": 422,
+  "step": 27
+}

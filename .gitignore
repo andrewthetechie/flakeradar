@@ -1,15 +1,7 @@
-# Python
+# Python: the two samples under samples/ are the only Python left.
 __pycache__/
 *.pyc
-backend/.venv/
 .pytest_cache/
-backend/.coverage
-backend/.coverage.*
-backend/coverage.json
-backend/htmlcov/
-
-# Data
-backend/data/
 *.db
 
 # Node
@@ -28,3 +20,9 @@ Thumbs.db
 .pi/
 context/
 .scratch/
+
+# Rust
+target/
+
+# Playwright artifacts (traces, screenshots, the HTML report)
+frontend/playwright-report/

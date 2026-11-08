@@ -1,0 +1,92 @@
+{
+  "body": {
+    "items": [
+      {
+        "clean_streak": 0,
+        "confirmed_flake_count": 0,
+        "flakiness_score": 0.0,
+        "github_issue_closed": false,
+        "github_issue_number": null,
+        "github_issue_url": null,
+        "id": 4,
+        "last_seen_at": "<timestamp>",
+        "last_status": "failed",
+        "name": "deploy",
+        "pipeline": ".gitlab-ci.yml",
+        "provider": "gitlab",
+        "repo": "o/r",
+        "summary": false,
+        "tier": "stable",
+        "trend": null
+      },
+      {
+        "clean_streak": 0,
+        "confirmed_flake_count": 0,
+        "flakiness_score": 0.0,
+        "github_issue_closed": false,
+        "github_issue_number": null,
+        "github_issue_url": null,
+        "id": 1,
+        "last_seen_at": "<timestamp>",
+        "last_status": "failed",
+        "name": "gate",
+        "pipeline": ".github/workflows/ci.yml",
+        "provider": "github",
+        "repo": "o/r",
+        "summary": true,
+        "tier": "stable",
+        "trend": null
+      },
+      {
+        "clean_streak": 0,
+        "confirmed_flake_count": 0,
+        "flakiness_score": 0.0,
+        "github_issue_closed": false,
+        "github_issue_number": null,
+        "github_issue_url": null,
+        "id": 2,
+        "last_seen_at": "<timestamp>",
+        "last_status": "failed",
+        "name": "lint",
+        "pipeline": ".github/workflows/ci.yml",
+        "provider": "github",
+        "repo": "o/r",
+        "summary": false,
+        "tier": "stable",
+        "trend": null
+      },
+      {
+        "clean_streak": 0,
+        "confirmed_flake_count": 0,
+        "flakiness_score": 0.0,
+        "github_issue_closed": false,
+        "github_issue_number": 20,
+        "github_issue_url": "https://github.com/o/r/issues/20",
+        "id": 3,
+        "last_seen_at": "<timestamp>",
+        "last_status": "failed",
+        "name": "unit",
+        "pipeline": ".github/workflows/ci.yml",
+        "provider": "github",
+        "repo": "o/r",
+        "summary": false,
+        "tier": "stable",
+        "trend": null
+      }
+    ],
+    "page": 1,
+    "page_size": 50,
+    "total": 4
+  },
+  "content-type": "application/json",
+  "request": {
+    "method": "GET",
+    "path": "/api/jobs",
+    "query": {
+      "include_stable": "true",
+      "repo": "o/r"
+    }
+  },
+  "status": 200,
+  "step": 20
+}

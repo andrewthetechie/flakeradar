@@ -1,0 +1,61 @@
+{
+  "items": [
+    {
+      "id": 1,
+      "repo": "demo/shop",
+      "provider": "github",
+      "pipeline": ".github/workflows/ci.yml",
+      "name": "e2e (ubuntu-latest)",
+      "flakiness_score": 0.42,
+      "tier": "suspect",
+      "confirmed_flake_count": 0,
+      "clean_streak": 1,
+      "trend": "worsening",
+      "last_status": "failed",
+      "last_seen_at": "2026-01-02T14:12:00Z",
+      "summary": false,
+      "github_issue_number": 12,
+      "github_issue_url": "https://github.com/demo/shop/issues/12",
+      "github_issue_closed": false
+    },
+    {
+      "id": 2,
+      "repo": "demo/shop",
+      "provider": "github",
+      "pipeline": ".github/workflows/ci.yml",
+      "name": "backend",
+      "flakiness_score": 0.36,
+      "tier": "suspect",
+      "confirmed_flake_count": 0,
+      "clean_streak": 1,
+      "trend": "steady",
+      "last_status": "failed",
+      "last_seen_at": "2026-01-02T14:12:00Z",
+      "summary": false,
+      "github_issue_number": null,
+      "github_issue_url": null,
+      "github_issue_closed": false
+    },
+    {
+      "id": 3,
+      "repo": "demo/shop",
+      "provider": "github",
+      "pipeline": ".github/workflows/ci.yml",
+      "name": "frontend",
+      "flakiness_score": 0.0,
+      "tier": "stable",
+      "confirmed_flake_count": 0,
+      "clean_streak": 0,
+      "trend": null,
+      "last_status": "passed",
+      "last_seen_at": "2026-01-02T14:12:00Z",
+      "summary": false,
+      "github_issue_number": null,
+      "github_issue_url": null,
+      "github_issue_closed": false
+    }
+  ],
+  "total": 4,
+  "page": 1,
+  "page_size": 50
+}

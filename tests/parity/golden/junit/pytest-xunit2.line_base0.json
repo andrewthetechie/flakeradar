@@ -1,0 +1,71 @@
+{
+  "cases": [
+    {
+      "category": null,
+      "classname": "tests.integration.test_orders",
+      "details": "",
+      "duration": 0.101,
+      "file": "tests/integration/test_orders.py",
+      "fingerprint": "2f518ea13ee9707c045a6cb45cd3428eb84b070b",
+      "line": 19,
+      "message": "",
+      "name": "test_places_order",
+      "status": "passed",
+      "suite": "tests.integration.test_orders"
+    },
+    {
+      "category": "assertion",
+      "classname": "tests.integration.test_orders",
+      "details": "tests/integration/test_orders.py:33: in test_refunds_order\n    assert total == 3\nE   assert 4 == 3",
+      "duration": 0.211,
+      "file": "tests/integration/test_orders.py",
+      "fingerprint": "1919e67f24d44b100833e038217bcf40e9652486",
+      "line": 34,
+      "message": "AssertionError: expected 3, got 4",
+      "name": "test_refunds_order",
+      "status": "failed",
+      "suite": "tests.integration.test_orders"
+    },
+    {
+      "category": null,
+      "classname": "tests.integration.test_orders",
+      "details": "",
+      "duration": 0.145,
+      "file": "tests/integration/test_orders.py",
+      "fingerprint": "5930d8dbcf1ed141dc36401f71ac9d12f126257c",
+      "line": 48,
+      "message": "needs a staging database",
+      "name": "test_cancels_order",
+      "status": "skipped",
+      "suite": "tests.integration.test_orders"
+    },
+    {
+      "category": "other",
+      "classname": "tests.integration.test_orders",
+      "details": "E   RuntimeError: teardown left the session dirty",
+      "duration": 0.302,
+      "file": "tests/integration/test_orders.py",
+      "fingerprint": "b98fe651a0c751b58234963e19adea10c1c1093d",
+      "line": 62,
+      "message": "teardown error",
+      "name": "test_ships_order",
+      "status": "error",
+      "suite": "tests.integration.test_orders"
+    },
+    {
+      "category": null,
+      "classname": "tests.integration.test_orders",
+      "details": "",
+      "duration": 0.517,
+      "file": "tests/integration/test_orders.py",
+      "fingerprint": "83218f53817a6229920fd915f961323a473297b3",
+      "line": 76,
+      "message": "",
+      "name": "test_reports_order",
+      "status": "passed",
+      "suite": "tests.integration.test_orders"
+    }
+  ],
+  "line_base": 0,
+  "source": "junit/pytest-xunit2.xml"
+}

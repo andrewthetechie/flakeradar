@@ -1,0 +1,38 @@
+[package]
+name = "flakeradar-db"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "FlakeRadar database layer: baseline migration, entities, queries, processing"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+chrono = { workspace = true, features = ["clock", "std"] }
+flakeradar-core.workspace = true
+log.workspace = true
+sea-orm = { workspace = true, features = [
+  "macros",
+  "runtime-tokio-rustls",
+  "sqlx-postgres",
+  "with-chrono",
+  "with-json",
+] }
+sea-orm-migration = { workspace = true, features = [
+  "runtime-tokio-rustls",
+  "sqlx-postgres",
+] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["rt"] }
+tracing = { workspace = true }
+url = { workspace = true }
+
+[dev-dependencies]
+flakeradar-test-support.workspace = true
+tracing-subscriber = { workspace = true, features = ["fmt"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

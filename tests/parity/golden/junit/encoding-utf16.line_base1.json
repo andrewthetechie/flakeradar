@@ -1,0 +1,19 @@
+{
+  "cases": [
+    {
+      "category": "other",
+      "classname": "tests.test_encoding",
+      "details": "details 你好",
+      "duration": 0.01,
+      "file": null,
+      "fingerprint": "ffc3da1fd6d020107a2c1792ba36f5207d51224f",
+      "line": null,
+      "message": "utf16 échec",
+      "name": "test_utf16",
+      "status": "failed",
+      "suite": "utf16"
+    }
+  ],
+  "line_base": 1,
+  "source": "junit/encoding-utf16.xml"
+}

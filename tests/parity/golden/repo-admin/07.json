@@ -1,0 +1,13 @@
+{
+  "body": {
+    "detail": "Repo not found"
+  },
+  "content-type": "application/json",
+  "request": {
+    "method": "DELETE",
+    "path": "/api/repos/x/y",
+    "query": {}
+  },
+  "status": 404,
+  "step": 7
+}

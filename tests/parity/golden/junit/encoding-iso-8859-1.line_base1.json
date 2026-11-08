@@ -1,0 +1,32 @@
+{
+  "cases": [
+    {
+      "category": "other",
+      "classname": "tests.test_encoding",
+      "details": "détails: à la carte",
+      "duration": 0.01,
+      "file": null,
+      "fingerprint": "9eae62b1a090aeec302d9a9a5f993887f23ab7bf",
+      "line": null,
+      "message": "café naïve über",
+      "name": "test_café",
+      "status": "failed",
+      "suite": "latin1"
+    },
+    {
+      "category": null,
+      "classname": "tests.test_encoding",
+      "details": "",
+      "duration": 0.02,
+      "file": null,
+      "fingerprint": "db13b358ac7f6d61d5e982764ef91da2d333ec88",
+      "line": null,
+      "message": "",
+      "name": "test_plain",
+      "status": "passed",
+      "suite": "latin1"
+    }
+  ],
+  "line_base": 1,
+  "source": "junit/encoding-iso-8859-1.xml"
+}

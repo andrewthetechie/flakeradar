@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="locations" tests="5">
+  <testcase classname="tests.test_locations" name="test_first_line" time="0.01" file="src/app.py" line="1" />
+  <testcase classname="tests.test_locations" name="test_line_zero" time="0.01" file="src/app.py" line="0" />
+  <testcase classname="tests.test_locations" name="test_line_forty_two" time="0.01" file="src/app.py" line="42" />
+  <testcase classname="tests.test_locations" name="test_padded_line" time="0.01" file="src/app.py" line="  7  " />
+  <testcase classname="tests.test_locations" name="test_no_attributes" time="0.01" />
+  <testcase classname="tests.test_locations" name="test_file_without_line" time="0.01" file="src/app.py" />
+</testsuite>

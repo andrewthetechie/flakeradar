@@ -1,0 +1,58 @@
+{
+  "cases": [
+    {
+      "category": null,
+      "classname": "tests.test_lines",
+      "details": "",
+      "duration": 0.01,
+      "file": "src/app.py",
+      "fingerprint": "653a88410afca5a492fa42f0cb9fdf33e1e779ae",
+      "line": null,
+      "message": "",
+      "name": "test_letters_are_no_line",
+      "status": "passed",
+      "suite": "bad-lines"
+    },
+    {
+      "category": null,
+      "classname": "tests.test_lines",
+      "details": "",
+      "duration": 0.01,
+      "file": "src/app.py",
+      "fingerprint": "068d86f3b94ecbab81b798a78c79d9cde48fa85d",
+      "line": null,
+      "message": "",
+      "name": "test_negative_is_no_line",
+      "status": "passed",
+      "suite": "bad-lines"
+    },
+    {
+      "category": null,
+      "classname": "tests.test_lines",
+      "details": "",
+      "duration": 0.01,
+      "file": "src/app.py",
+      "fingerprint": "155fc0c59b3f17f3f84f2503d43477ca0b910ec5",
+      "line": 13,
+      "message": "",
+      "name": "test_arabic_indic_digits",
+      "status": "passed",
+      "suite": "bad-lines"
+    },
+    {
+      "category": null,
+      "classname": "tests.test_lines",
+      "details": "",
+      "duration": 0.01,
+      "file": "src/app.py",
+      "fingerprint": "cff94f578527487f4a466623df4b7dc43008c4a3",
+      "line": null,
+      "message": "",
+      "name": "test_float_is_no_line",
+      "status": "passed",
+      "suite": "bad-lines"
+    }
+  ],
+  "line_base": 0,
+  "source": "junit/non-numeric-line.xml"
+}

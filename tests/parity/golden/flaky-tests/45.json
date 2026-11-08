@@ -1,0 +1,100 @@
+{
+  "body": {
+    "executions": [
+      {
+        "attempt": 0,
+        "branch": "main",
+        "ci_run_id": "run8",
+        "commit_sha": "aaa8",
+        "created_at": "<timestamp>",
+        "details": "AssertionError: assert 1 == 2",
+        "duration": 0.01,
+        "failure_category": "assertion",
+        "id": 29,
+        "message": "assert 1 == 2",
+        "status": "failed"
+      },
+      {
+        "attempt": 0,
+        "branch": "main",
+        "ci_run_id": "run7",
+        "commit_sha": "aaa7",
+        "created_at": "<timestamp>",
+        "details": "",
+        "duration": 0.01,
+        "failure_category": null,
+        "id": 25,
+        "message": "",
+        "status": "passed"
+      },
+      {
+        "attempt": 0,
+        "branch": "main",
+        "ci_run_id": "run6",
+        "commit_sha": "aaa6",
+        "created_at": "<timestamp>",
+        "details": "AssertionError: assert 1 == 2",
+        "duration": 0.01,
+        "failure_category": "assertion",
+        "id": 21,
+        "message": "assert 1 == 2",
+        "status": "failed"
+      }
+    ],
+    "jobs": [],
+    "last_failing_branch": "main",
+    "last_failing_sha": "aaa8",
+    "location": {
+      "line": 12,
+      "path": "tests/test_cart.py",
+      "url": "https://github.com/o/r/blob/aaa8/tests/test_cart.py#L12"
+    },
+    "score_history": [
+      {
+        "confirmed_flake_count": 0,
+        "day": "<date>",
+        "executions": 8,
+        "failures": 4,
+        "flakiness_score": 1.0
+      }
+    ],
+    "test": {
+      "broken": false,
+      "classname": "tests.test_cart",
+      "clean_streak": 0,
+      "confirmed_flake_count": 0,
+      "fail_streak": 1,
+      "failure_category": "assertion",
+      "file": "tests/test_cart.py",
+      "fingerprint": "9b4848aa8e02eded96b64f457032aec94150aca7",
+      "flakiness_score": 1.0,
+      "github_issue_closed": false,
+      "github_issue_number": null,
+      "github_issue_url": null,
+      "id": 1,
+      "last_seen_at": "<timestamp>",
+      "last_status": "failed",
+      "line": 12,
+      "name": "test_flaky",
+      "project": "default",
+      "quarantine_expires_at": null,
+      "quarantine_reason": null,
+      "quarantined": false,
+      "quarantined_at": null,
+      "repo": "o/r",
+      "suite": "unit",
+      "tier": "flaky",
+      "trend": null
+    }
+  },
+  "content-type": "application/json",
+  "request": {
+    "method": "GET",
+    "path": "/api/tests/1/history",
+    "query": {
+      "limit": "3"
+    }
+  },
+  "status": 200,
+  "step": 45
+}

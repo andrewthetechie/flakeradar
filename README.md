@@ -1,7 +1,7 @@
 # FlakeRadar
 
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue)
-![Python](https://img.shields.io/badge/python-3.12-blue)
+![Rust](https://img.shields.io/badge/rust-1.99-orange)
 ![Self-hosted](https://img.shields.io/badge/self--hosted-yes-green)
 
 This project is a fork of [manijose1919/flakeradar](https://github.com/manijose1919/flakeradar).
@@ -24,7 +24,9 @@ test is nondeterministic.
 
 - [Who it is for](#who-it-is-for)
 - [What it does](#what-it-does)
+- [Quick start](#quick-start)
 - [Quick start with Docker](#quick-start-with-docker)
+- [Upgrading from 0.1.x](#upgrading-from-01x)
 - [Quick start for local development](#quick-start-for-local-development)
 - [CI integration](#ci-integration)
 - [CI jobs](#ci-jobs)
@@ -95,22 +97,94 @@ A solo developer with a 30-second test suite does not need FlakeRadar.
   threshold, FlakeRadar opens an issue in the repository of that test or job.
   Issues filed by other tools or by hand can be linked instead.
 
+## Quick start
+
+FlakeRadar is one binary plus a PostgreSQL database. Download the binary for
+your platform, point it at a database, and run it.
+
+| Target | Runner | Archive |
+|---|---|---|
+| `x86_64-unknown-linux-musl` | Linux x86-64 (statically linked) | `.tar.gz` |
+| `aarch64-unknown-linux-musl` | Linux ARM64 (statically linked) | `.tar.gz` |
+| `x86_64-apple-darwin` | macOS on Intel | `.tar.gz` |
+| `aarch64-apple-darwin` | macOS on Apple silicon | `.tar.gz` |
+| `x86_64-pc-windows-msvc` | Windows x86-64 (static CRT) | `.zip` |
+
+Windows on ARM64 is **not** a target: its GitHub runner image has no PostgreSQL
+to smoke test against, so no Windows ARM binary is built or released.
+
+```bash
+# 1. A database. Any PostgreSQL 12 or later will do.
+docker run -d --name flakeradar-pg -p 5432:5432 \
+  -e POSTGRES_USER=flakeradar -e POSTGRES_PASSWORD=flakeradar -e POSTGRES_DB=flakeradar \
+  postgres:17-alpine
+
+# 2. The binary for your platform, from the newest release (0.2.0 here).
+#    x86_64-unknown-linux-musl   aarch64-unknown-linux-musl
+#    x86_64-apple-darwin         aarch64-apple-darwin       x86_64-pc-windows-msvc
+TARGET=aarch64-apple-darwin      # your target, from the table above
+gh release download v0.2.0 --repo andrewthetechie/flakeradar \
+  --pattern "flakeradar-0.2.0-$TARGET.tar.gz"
+tar -xzf "flakeradar-0.2.0-$TARGET.tar.gz"
+
+# 3. Run it. On first start it creates its whole schema.
+FLAKERADAR_API_TOKEN="$(openssl rand -base64 32)" \
+FLAKERADAR_DATABASE_URL=postgresql://flakeradar:flakeradar@localhost:5432/flakeradar \
+  ./flakeradar
+# The app, the API and the MCP server are on http://127.0.0.1:8000.
+```
+
+The bare binary binds `127.0.0.1:8000`, because the read APIs and the
+quarantine toggle are unauthenticated by design. Set `FLAKERADAR_HOST` and
+`FLAKERADAR_PORT` to change that. The container image binds `0.0.0.0:8000`.
+
+### Verify what you downloaded
+
+Each archive ships beside a `.sha256` file, and every archive has a build
+provenance attestation, so you can check both integrity and where the bytes
+came from:
+
+```bash
+gh attestation verify flakeradar-0.2.0-x86_64-unknown-linux-musl.tar.gz \
+  --repo andrewthetechie/flakeradar
+sha256sum -c flakeradar-0.2.0-x86_64-unknown-linux-musl.tar.gz.sha256
+# macOS: shasum -a 256 -c ...
+```
+
+The binaries are not code-signed, so the operating system will warn the first
+time you run one:
+
+- **macOS Gatekeeper.** A downloaded binary is quarantined by the browser, and
+  the first run stops with "Apple could not verify ... is free of malware".
+  Allow it once in System Settings → Privacy & Security → "Open Anyway", or
+  clear the attribute: `xattr -d com.apple.quarantine ./flakeradar`. Both are
+  per-file, and both are needed because the binary is not notarised.
+- **Windows SmartScreen.** The first run shows "Windows protected your PC".
+  Choose "More info" → "Run anyway". SmartScreen remembers the file once you
+  do.
+
+Neither prompt is a substitute for the attestation and checksum check above:
+those prove the file is the one GitHub Actions built from this repository,
+while the prompt only lets you run it.
+
 ## Quick start with Docker
 
 ```bash
 cp .env.example .env   # set FLAKERADAR_API_TOKEN (and POSTGRES_PASSWORD)
 docker compose up --build
-# The app, API and MCP server are on http://localhost:8000.
+# The app, the API and the MCP server are on http://localhost:8000.
 # Postgres data is in a named volume.
 ```
 
 Compose runs two services:
 
 - `db`: PostgreSQL 17.
-- `flakeradar`: the API, the report processor and the built dashboard, in two
-  uvicorn workers.
+- `flakeradar`: the API, the report processor and the built dashboard, in one
+  process. Extra replicas are allowed: only the one holding the Report
+  processor's advisory lock processes Reports, and the MCP server is stateless,
+  so no sticky routing is needed.
 
-Migrations run automatically when the app starts.
+The schema is created on first start.
 
 To load demo data, run:
 
@@ -118,25 +192,42 @@ To load demo data, run:
 python samples/simulate_ci.py http://localhost:8000 "$FLAKERADAR_API_TOKEN"
 ```
 
+## Upgrading from 0.1.x
+
+0.2 is a **fresh install**. There is no import tool and no data migration: the
+new binary refuses to start on a database the Python server created, because it
+holds an `alembic_version` table, or on one with FlakeRadar tables and no
+`seaql_migrations` row. It never drops or changes anything, so pointing it at
+an old database is safe, and then you create an empty one beside it.
+
+Scores, tiers, Proven flake counts and Score history start empty and rebuild from
+new Reports, which takes about a week of CI runs on the default branch. Test and
+Job ids change, so a stored id no longer names the same Test.
+
+[docs/cutover-rust.md](docs/cutover-rust.md) is the step-by-step runbook: tag the
+last Python commit, stop the old deployment, close the open `flakeradar`
+issues, create the database, deploy with the GitHub token unset, and set it
+again once scores have rebuilt.
+
 ## Quick start for local development
 
-FlakeRadar needs PostgreSQL. To start a local PostgreSQL in a container:
+FlakeRadar needs PostgreSQL, Cargo and Node. To start a local PostgreSQL in a
+container:
 
 ```bash
 docker run -d --name flakeradar-pg -p 5432:5432 \
   -e POSTGRES_USER=flakeradar -e POSTGRES_PASSWORD=flakeradar -e POSTGRES_DB=flakeradar \
   postgres:17-alpine
 
-# Backend (Python 3.12)
-cd backend
-python3.12 -m venv .venv
-.venv/bin/pip install -r requirements-dev.txt
-FLAKERADAR_ALLOW_INSECURE=1 .venv/bin/python -m uvicorn app.main:app --port 8000
-# The default FLAKERADAR_DATABASE_URL points at the container above.
+# The server. `frontend/dist` is embedded when it exists, so build it first if
+# you want the dashboard served from the binary.
+(cd frontend && npm install && npm run build)
+FLAKERADAR_ALLOW_INSECURE=1 \
+FLAKERADAR_DATABASE_URL=postgresql://flakeradar:flakeradar@localhost:5432/flakeradar \
+  cargo run -p flakeradar     # http://127.0.0.1:8000
 
-# Frontend (dev server with hot reload; it sends /api requests to :8000)
+# Or the frontend's dev server, with hot reload; it sends /api requests to :8000.
 cd frontend
-npm install
 npm run dev            # http://localhost:5173
 ```
 
@@ -356,8 +447,11 @@ ready-made reporter for it — a standard-library script that lists the jobs of
 `CI_PIPELINE_ID` and posts them as one Pipeline report — and
 [`samples/gitlab/gitlab-ci.yml`](samples/gitlab/gitlab-ci.yml) shows the `.post`
 job that runs it plus the JUnit upload snippet. The status mapping is covered by
-[`backend/tests/test_gitlab_reporter.py`](backend/tests/test_gitlab_reporter.py),
-which validates the built payload against the real ingest schema.
+[`samples/gitlab/test_report_pipeline.py`](samples/gitlab/test_report_pipeline.py),
+which builds the reporter's payload and POSTs it to a running FlakeRadar's
+`/api/ingest/pipeline`, expecting 202: the endpoint's own validation is the
+contract, so the sample proves a payload the server accepts. It needs a server
+(`FLAKERADAR_URL`, `FLAKERADAR_TOKEN`) and pytest, and runs in CI's `samples` job.
 
 A retried GitLab job is a **new job id in the same Pipeline**, not a new CI run
 attempt, so `ci_run_attempt` stays `1` and the reporter sends both tries. FlakeRadar
@@ -991,12 +1085,16 @@ Alert when the queue stops draining:
 ## Configuration
 
 FlakeRadar reads environment variables with the prefix `FLAKERADAR_`. It also
-reads a `.env` file.
+reads a `.env` file. A value outside what its setting means — a NaN or
+out-of-range score decay, a score window below 1, a negative retention window, a
+poll of 0 — stops the process at start-up with an error naming the variable,
+rather than scoring with a value nobody meant.
 
 | Variable | Default | Meaning |
 |---|---|---|
 | `API_TOKEN` | `changeme` (the app does not start with it unless `FLAKERADAR_ALLOW_INSECURE=1`) | The token for CI uploads (`X-API-Key`) and MCP (`Authorization: Bearer`). |
-| `DATABASE_URL` | `postgresql+asyncpg://flakeradar:flakeradar@localhost:5432/flakeradar` | PostgreSQL only. `postgresql://` URLs also work. |
+| `DATABASE_URL` | `postgresql://flakeradar:flakeradar@localhost:5432/flakeradar` | PostgreSQL only. SQLx reads libpq's spellings, so an old `postgresql+asyncpg://` URL must drop the `+asyncpg` and `?ssl=` must become `?sslmode=`. |
+| `HOST` / `PORT` | `127.0.0.1` / `8000` | What the bare binary binds. The image sets `FLAKERADAR_HOST=0.0.0.0`. |
 | `FLAKE_THRESHOLD` | `0.30` | The score at which a test or job is flaky; also the tier split in the `/metrics` gauges. |
 | `SCORE_WINDOW` / `SCORE_DECAY` | `50` / `0.85` | The number of executions to score, and the weight for recent executions. |
 | `GITHUB_TOKEN` | empty (disabled) | The token for GitHub issue automation. It also checks linked issues, so it needs read access to the issues of those repos. |
@@ -1015,6 +1113,13 @@ reads a `.env` file.
 | `SCORE_HISTORY_RETENTION_DAYS` | `365` | FlakeRadar deletes older daily score history rows. |
 | `PRUNE_INTERVAL_SECONDS` | `3600` | How often retention runs. |
 | `CORS_ORIGINS` | `http://localhost:5173` | The origin of the dev server. |
+
+Logs go to stdout. The default level is `info`, and `RUST_LOG` overrides it with
+`tracing`'s filter syntax: `RUST_LOG=warn` quiets the server, `RUST_LOG=debug`
+adds detail. SQL statements are logged at `debug` rather than at the driver's own
+`info`, because one line per statement buried everything else — 1,546 of 1,605
+lines on a seeded demo install. To see the statements and nothing else, use
+`RUST_LOG=info,sqlx=debug`.
 
 ## API
 
@@ -1051,18 +1156,21 @@ and the MCP server need the token.
 | `GET /api/health/ready` | none | Readiness. `200` with `{database, processor_leader, pending_reports, oldest_pending_age_seconds}` when `SELECT 1` succeeds; `503` with `{"database": false}` when the database cannot be reached. A missing Report-processor leader is reported in the body, not as `503`. |
 | `GET /metrics` | none | Prometheus gauges for the Report queue, processor leadership, Test/Job tiers and the last processed Report. See [Monitoring](#monitoring). |
 
-A `project` filter needs `repo`. The interactive OpenAPI docs are at `/docs`.
-Each test execution has `attempt` (0 is the first try in its run) and
-`failure_category`.
+A `project` filter needs `repo`. `/docs` serves the OpenAPI reference with
+Redoc, read-only: it renders the specification at `/openapi.json` and sends no
+request from that page to anywhere but this server. There is no interactive
+"try it" console. Each test execution has `attempt` (0 is the first try in its
+run) and `failure_category`.
 
 ## Development
 
 ```bash
-cd backend
-.venv/bin/python -m pytest -q    # needs Docker (it starts a temporary Postgres)
-# or use an existing database:
-# FLAKERADAR_TEST_DATABASE_URL=postgresql+asyncpg://... .venv/bin/python -m pytest -q
-cd ../frontend
-npm test                         # Vitest
-npm run build                    # strict TypeScript check
+cargo nextest run --all-features --profile ci   # needs Docker, or FLAKERADAR_TEST_DATABASE_URL
+# or point it at an existing, throwaway database:
+# FLAKERADAR_TEST_DATABASE_URL=postgresql://... cargo nextest run --all-features --profile ci
+cd frontend && npm test                         # Vitest
+cd frontend && npm run build                    # strict TypeScript check
 ```
+
+[CONTRIBUTING.md](CONTRIBUTING.md) has the full gate, the migration recipe and
+how the crates map onto the old Python modules.

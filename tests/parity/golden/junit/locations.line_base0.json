@@ -1,0 +1,84 @@
+{
+  "cases": [
+    {
+      "category": null,
+      "classname": "tests.test_locations",
+      "details": "",
+      "duration": 0.01,
+      "file": "src/app.py",
+      "fingerprint": "0c4c20842b94449fe92f6f516110745c13159c73",
+      "line": 2,
+      "message": "",
+      "name": "test_first_line",
+      "status": "passed",
+      "suite": "locations"
+    },
+    {
+      "category": null,
+      "classname": "tests.test_locations",
+      "details": "",
+      "duration": 0.01,
+      "file": "src/app.py",
+      "fingerprint": "1e0a3eed7e315cfe7b126a3987e1e2696a756635",
+      "line": 1,
+      "message": "",
+      "name": "test_line_zero",
+      "status": "passed",
+      "suite": "locations"
+    },
+    {
+      "category": null,
+      "classname": "tests.test_locations",
+      "details": "",
+      "duration": 0.01,
+      "file": "src/app.py",
+      "fingerprint": "84fc180b42e5a7f0d611f3ab33038e1cda942bf2",
+      "line": 43,
+      "message": "",
+      "name": "test_line_forty_two",
+      "status": "passed",
+      "suite": "locations"
+    },
+    {
+      "category": null,
+      "classname": "tests.test_locations",
+      "details": "",
+      "duration": 0.01,
+      "file": "src/app.py",
+      "fingerprint": "c49e41da0a491a77d4920c1cbbc8e0300c348bf0",
+      "line": 8,
+      "message": "",
+      "name": "test_padded_line",
+      "status": "passed",
+      "suite": "locations"
+    },
+    {
+      "category": null,
+      "classname": "tests.test_locations",
+      "details": "",
+      "duration": 0.01,
+      "file": null,
+      "fingerprint": "d1905f95210d91f5a2fdaad81ffd2ad03ea21bbb",
+      "line": null,
+      "message": "",
+      "name": "test_no_attributes",
+      "status": "passed",
+      "suite": "locations"
+    },
+    {
+      "category": null,
+      "classname": "tests.test_locations",
+      "details": "",
+      "duration": 0.01,
+      "file": "src/app.py",
+      "fingerprint": "0eab8e30d8c2581522e8d8fc249cf7ae6a860f21",
+      "line": null,
+      "message": "",
+      "name": "test_file_without_line",
+      "status": "passed",
+      "suite": "locations"
+    }
+  ],
+  "line_base": 0,
+  "source": "junit/locations.xml"
+}

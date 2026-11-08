@@ -1,0 +1,35 @@
+{
+  "items": [
+    {
+      "id": 51,
+      "repo": "demo/shop",
+      "project": "backend",
+      "fingerprint": "pg2-1",
+      "suite": "shop",
+      "classname": "tests.e2e.test_shop",
+      "name": "test_a_brand_new_flaky_case_on_the_second_page",
+      "file": "tests/e2e/test_shop.py",
+      "line": 200,
+      "flakiness_score": 0.55,
+      "tier": "flaky",
+      "confirmed_flake_count": 1,
+      "failure_category": "timing",
+      "clean_streak": 0,
+      "fail_streak": 1,
+      "broken": false,
+      "trend": "improving",
+      "last_status": "failed",
+      "last_seen_at": "2026-01-02T14:12:00Z",
+      "quarantined": false,
+      "quarantined_at": null,
+      "quarantine_reason": null,
+      "quarantine_expires_at": null,
+      "github_issue_number": null,
+      "github_issue_url": null,
+      "github_issue_closed": false
+    }
+  ],
+  "total": 60,
+  "page": 2,
+  "page_size": 50
+}

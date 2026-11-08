@@ -1,0 +1,29 @@
+{
+  "body": {
+    "detail": [
+      {
+        "ctx": {
+          "le": 100
+        },
+        "input": "101",
+        "loc": [
+          "query",
+          "page_size"
+        ],
+        "msg": "Input should be less than or equal to 100",
+        "type": "less_than_equal"
+      }
+    ]
+  },
+  "content-type": "application/json",
+  "request": {
+    "method": "GET",
+    "path": "/api/tests",
+    "query": {
+      "page_size": "101",
+      "repo": "o/r"
+    }
+  },
+  "status": 422,
+  "step": 24
+}

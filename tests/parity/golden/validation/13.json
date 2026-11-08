@@ -1,0 +1,29 @@
+{
+  "body": {
+    "detail": [
+      {
+        "ctx": {
+          "le": 90
+        },
+        "input": "91",
+        "loc": [
+          "query",
+          "new_within_days"
+        ],
+        "msg": "Input should be less than or equal to 90",
+        "type": "less_than_equal"
+      }
+    ]
+  },
+  "content-type": "application/json",
+  "request": {
+    "method": "GET",
+    "path": "/api/jobs",
+    "query": {
+      "new_within_days": "91",
+      "repo": "o/r"
+    }
+  },
+  "status": 422,
+  "step": 13
+}

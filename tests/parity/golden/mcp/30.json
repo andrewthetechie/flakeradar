@@ -1,0 +1,68 @@
+{
+  "result": {
+    "_meta": null,
+    "content": [
+      {
+        "_meta": null,
+        "annotations": null,
+        "text": "{\"job\":{\"id\":2,\"repo\":\"o/r\",\"provider\":\"github\",\"pipeline\":\".github/workflows/ci.yml\",\"name\":\"lint\",\"flakiness_score\":0.0,\"tier\":\"stable\",\"confirmed_flake_count\":0,\"clean_streak\":0,\"trend\":null,\"last_status\":\"failed\",\"last_seen_at\":\"<timestamp>\",\"summary\":false,\"github_issue_number\":null,\"github_issue_url\":null,\"github_issue_closed\":false},\"unexplained_failures\":1,\"explained_failures\":0,\"runners\":[{\"labels\":[],\"runner_name\":null,\"executions\":1,\"unexplained_failures\":1}],\"executions\":[{\"status\":\"failed\",\"outcome\":\"failed\",\"commit_sha\":\"m1\",\"branch\":\"main\",\"ci_run_attempt\":1,\"ci_job_id\":\"51\",\"url\":\"\",\"runner_name\":\"\",\"runner_labels\":[],\"created_at\":\"<timestamp>\",\"explained_by\":[],\"explained_by_jobs\":[]}],\"score_history\":[{\"day\":\"<date>\",\"flakiness_score\":0.0}]}",
+        "type": "text"
+      }
+    ],
+    "isError": false,
+    "resultType": "complete",
+    "structuredContent": {
+      "executions": [
+        {
+          "branch": "main",
+          "ci_job_id": "51",
+          "ci_run_attempt": 1,
+          "commit_sha": "m1",
+          "created_at": "<timestamp>",
+          "explained_by": [],
+          "explained_by_jobs": [],
+          "outcome": "failed",
+          "runner_labels": [],
+          "runner_name": "",
+          "status": "failed",
+          "url": ""
+        }
+      ],
+      "explained_failures": 0,
+      "job": {
+        "clean_streak": 0,
+        "confirmed_flake_count": 0,
+        "flakiness_score": 0.0,
+        "github_issue_closed": false,
+        "github_issue_number": null,
+        "github_issue_url": null,
+        "id": 2,
+        "last_seen_at": "<timestamp>",
+        "last_status": "failed",
+        "name": "lint",
+        "pipeline": ".github/workflows/ci.yml",
+        "provider": "github",
+        "repo": "o/r",
+        "summary": false,
+        "tier": "stable",
+        "trend": null
+      },
+      "runners": [
+        {
+          "executions": 1,
+          "labels": [],
+          "runner_name": null,
+          "unexplained_failures": 1
+        }
+      ],
+      "score_history": [
+        {
+          "day": "<date>",
+          "flakiness_score": 0.0
+        }
+      ],
+      "unexplained_failures": 1
+    }
+  },
+  "step": 30
+}

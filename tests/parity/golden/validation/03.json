@@ -1,0 +1,23 @@
+{
+  "body": {
+    "detail": [
+      {
+        "input": "abc",
+        "loc": [
+          "path",
+          "job_id"
+        ],
+        "msg": "Input should be a valid integer, unable to parse string as an integer",
+        "type": "int_parsing"
+      }
+    ]
+  },
+  "content-type": "application/json",
+  "request": {
+    "method": "GET",
+    "path": "/api/jobs/abc/history",
+    "query": {}
+  },
+  "status": 422,
+  "step": 3
+}

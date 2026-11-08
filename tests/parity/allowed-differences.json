@@ -1,0 +1,1216 @@
+[
+  {
+    "id": "unparsable-testcase-time",
+    "differenceRow": "A `<testcase time>` attribute that is not a number",
+    "reason": "Python crashes with an unhandled junitparser ValueError (HTTP 500); Rust validates the attribute and answers 400, as the user approved on 2026-11-04. The allowance covers exactly these fields in these three goldens and nothing else: the error text of the two JUnit goldens, and the status, body and content-type of ingest-junit/07.",
+    "allows": [
+      {
+        "file": "golden/junit/invalid-time.line_base1.json",
+        "field": "error",
+        "pythonValue": "unhandled ValueError: could not convert string to float: 'abc'",
+        "rustValue": "Not a valid JUnit XML report: testcase time 'abc' is not a number"
+      },
+      {
+        "file": "golden/junit/invalid-time.line_base0.json",
+        "field": "error",
+        "pythonValue": "unhandled ValueError: could not convert string to float: 'abc'",
+        "rustValue": "Not a valid JUnit XML report: testcase time 'abc' is not a number"
+      },
+      {
+        "file": "golden/ingest-junit/07.json",
+        "field": "status",
+        "pythonValue": 500,
+        "rustValue": 400
+      },
+      {
+        "file": "golden/ingest-junit/07.json",
+        "field": "body",
+        "pythonValue": "Internal Server Error",
+        "rustValue": {
+          "detail": "Not a valid JUnit XML report: testcase time 'abc' is not a number"
+        }
+      },
+      {
+        "file": "golden/ingest-junit/07.json",
+        "field": "content-type",
+        "pythonValue": "text/plain; charset=utf-8",
+        "rustValue": "application/json"
+      }
+    ]
+  },
+  {
+    "id": "junit-parse-error-suffix",
+    "differenceRow": "The suffix of a JUnit parse-error detail",
+    "reason": "The prefix \"Not a valid JUnit XML report: \" and the 422 status stay identical; the parser's own wording after the prefix cannot be reproduced by roxmltree. Each allowance names one field of one golden and requires the prefix.",
+    "allows": [
+      {
+        "file": "golden/junit/bad-empty.line_base0.json",
+        "field": "error",
+        "pythonValue": "Not a valid JUnit XML report: no element found: line 1, column 0",
+        "rustValue": "Not a valid JUnit XML report: the document does not have a root node"
+      },
+      {
+        "file": "golden/junit/bad-empty.line_base1.json",
+        "field": "error",
+        "pythonValue": "Not a valid JUnit XML report: no element found: line 1, column 0",
+        "rustValue": "Not a valid JUnit XML report: the document does not have a root node"
+      },
+      {
+        "file": "golden/junit/bad-not-xml.line_base0.json",
+        "field": "error",
+        "pythonValue": "Not a valid JUnit XML report: syntax error: line 1, column 0",
+        "rustValue": "Not a valid JUnit XML report: unknown token at 1:1"
+      },
+      {
+        "file": "golden/junit/bad-not-xml.line_base1.json",
+        "field": "error",
+        "pythonValue": "Not a valid JUnit XML report: syntax error: line 1, column 0",
+        "rustValue": "Not a valid JUnit XML report: unknown token at 1:1"
+      },
+      {
+        "file": "golden/junit/bad-external-entity.line_base0.json",
+        "field": "error",
+        "pythonValue": "Not a valid JUnit XML report: undefined entity &secret;: line 3, column 101",
+        "rustValue": "Not a valid JUnit XML report: unknown entity reference 'secret' at 3:102"
+      },
+      {
+        "file": "golden/junit/bad-external-entity.line_base1.json",
+        "field": "error",
+        "pythonValue": "Not a valid JUnit XML report: undefined entity &secret;: line 3, column 101",
+        "rustValue": "Not a valid JUnit XML report: unknown entity reference 'secret' at 3:102"
+      },
+      {
+        "file": "golden/junit/bad-nested-entities.line_base0.json",
+        "field": "error",
+        "pythonValue": "Not a valid JUnit XML report: limit on input amplification factor (from DTD and entities) breached: line 14, column 108",
+        "rustValue": "Not a valid JUnit XML report: the entity references in this report expand past the 67108864 byte budget"
+      },
+      {
+        "file": "golden/junit/bad-nested-entities.line_base1.json",
+        "field": "error",
+        "pythonValue": "Not a valid JUnit XML report: limit on input amplification factor (from DTD and entities) breached: line 14, column 108",
+        "rustValue": "Not a valid JUnit XML report: the entity references in this report expand past the 67108864 byte budget"
+      },
+      {
+        "file": "golden/ingest-junit/05.json",
+        "field": "body.detail",
+        "pythonValue": "Not a valid JUnit XML report: syntax error: line 1, column 0",
+        "rustValue": "Not a valid JUnit XML report: unknown token at 1:1"
+      }
+    ]
+  },
+  {
+    "id": "junit-unicode-digit-line",
+    "differenceRow": "The `line` attribute",
+    "reason": "Python's isdigit() accepts Unicode digits, so the Arabic-Indic line in non-numeric-line.xml becomes the line number. The pre-approved rule in differences.md makes Rust accept ASCII digits only and treat anything else as no line, so those two goldens differ in exactly one case's line and nothing else.",
+    "allows": [
+      {
+        "file": "golden/junit/non-numeric-line.line_base0.json",
+        "field": "cases.2.line",
+        "pythonValue": 13,
+        "rustValue": null
+      },
+      {
+        "file": "golden/junit/non-numeric-line.line_base1.json",
+        "field": "cases.2.line",
+        "pythonValue": 12,
+        "rustValue": null
+      }
+    ]
+  },
+  {
+    "id": "mcp-result-envelope",
+    "differenceRow": "The MCP result envelope",
+    "reason": "rmcp omits an absent optional field where fastmcp writes an explicit null, does not advertise the deprecated logging capability, and reports FlakeRadar's own version; a tools/list answer additionally carries the SEP-2549 caching fields and the SEP-2322 resultType, which the recorded client's revision did not. Every field a client reads is compared unchanged: each allowance names one field of one golden that is recorded as null (or as fastmcp's own value) and answered absent (or with FlakeRadar's value).",
+    "allows": [
+      {
+        "file": "golden/mcp/05.json",
+        "field": "result._meta",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/05.json",
+        "field": "result.capabilities.completions",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/05.json",
+        "field": "result.capabilities.experimental",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/05.json",
+        "field": "result.capabilities.extensions",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/05.json",
+        "field": "result.capabilities.tasks",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/05.json",
+        "field": "result.capabilities.logging",
+        "pythonValue": {},
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/05.json",
+        "field": "result.capabilities.resources.subscribe",
+        "pythonValue": false,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/05.json",
+        "field": "result.serverInfo.description",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/05.json",
+        "field": "result.serverInfo.icons",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/05.json",
+        "field": "result.serverInfo.title",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/05.json",
+        "field": "result.serverInfo.websiteUrl",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/05.json",
+        "field": "result.serverInfo.version",
+        "pythonValue": "4.1.6",
+        "rustValue": "0.2.0"
+      },
+      {
+        "file": "golden/mcp/06.json",
+        "field": "tools.0.annotations.destructiveHint",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/06.json",
+        "field": "tools.0.annotations.idempotentHint",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/06.json",
+        "field": "tools.0.annotations.openWorldHint",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/06.json",
+        "field": "tools.0.annotations.title",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/06.json",
+        "field": "tools.0.execution",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/06.json",
+        "field": "tools.0.icons",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/06.json",
+        "field": "tools.1.annotations.destructiveHint",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/06.json",
+        "field": "tools.1.annotations.idempotentHint",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/06.json",
+        "field": "tools.1.annotations.openWorldHint",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/06.json",
+        "field": "tools.1.annotations.title",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/06.json",
+        "field": "tools.1.execution",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/06.json",
+        "field": "tools.1.icons",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/06.json",
+        "field": "tools.2.annotations.destructiveHint",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/06.json",
+        "field": "tools.2.annotations.idempotentHint",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/06.json",
+        "field": "tools.2.annotations.openWorldHint",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/06.json",
+        "field": "tools.2.annotations.title",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/06.json",
+        "field": "tools.2.execution",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/06.json",
+        "field": "tools.2.icons",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/06.json",
+        "field": "tools.3.annotations.destructiveHint",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/06.json",
+        "field": "tools.3.annotations.idempotentHint",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/06.json",
+        "field": "tools.3.annotations.openWorldHint",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/06.json",
+        "field": "tools.3.annotations.title",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/06.json",
+        "field": "tools.3.execution",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/06.json",
+        "field": "tools.3.icons",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/06.json",
+        "field": "tools.4.annotations.destructiveHint",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/06.json",
+        "field": "tools.4.annotations.idempotentHint",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/06.json",
+        "field": "tools.4.annotations.openWorldHint",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/06.json",
+        "field": "tools.4.annotations.title",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/06.json",
+        "field": "tools.4.execution",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/06.json",
+        "field": "tools.4.icons",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/06.json",
+        "field": "tools.5.annotations.destructiveHint",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/06.json",
+        "field": "tools.5.annotations.idempotentHint",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/06.json",
+        "field": "tools.5.annotations.openWorldHint",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/06.json",
+        "field": "tools.5.annotations.title",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/06.json",
+        "field": "tools.5.execution",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/06.json",
+        "field": "tools.5.icons",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/06.json",
+        "field": "tools.6.annotations.destructiveHint",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/06.json",
+        "field": "tools.6.annotations.idempotentHint",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/06.json",
+        "field": "tools.6.annotations.openWorldHint",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/06.json",
+        "field": "tools.6.annotations.title",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/06.json",
+        "field": "tools.6.execution",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/06.json",
+        "field": "tools.6.icons",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/06.json",
+        "field": "tools.7.annotations.destructiveHint",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/06.json",
+        "field": "tools.7.annotations.idempotentHint",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/06.json",
+        "field": "tools.7.annotations.openWorldHint",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/06.json",
+        "field": "tools.7.annotations.title",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/06.json",
+        "field": "tools.7.execution",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/06.json",
+        "field": "tools.7.icons",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/06.json",
+        "field": "tools.8.annotations.destructiveHint",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/06.json",
+        "field": "tools.8.annotations.idempotentHint",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/06.json",
+        "field": "tools.8.annotations.openWorldHint",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/06.json",
+        "field": "tools.8.annotations.title",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/06.json",
+        "field": "tools.8.execution",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/06.json",
+        "field": "tools.8.icons",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/06.json",
+        "field": "tools.9.annotations.title",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/06.json",
+        "field": "tools.9.execution",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/06.json",
+        "field": "tools.9.icons",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/06.json",
+        "field": "tools.10.annotations.title",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/06.json",
+        "field": "tools.10.execution",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/06.json",
+        "field": "tools.10.icons",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/06.json",
+        "field": "resultType",
+        "pythonValue": null,
+        "rustValue": "complete"
+      },
+      {
+        "file": "golden/mcp/06.json",
+        "field": "ttlMs",
+        "pythonValue": null,
+        "rustValue": 0
+      },
+      {
+        "file": "golden/mcp/06.json",
+        "field": "cacheScope",
+        "pythonValue": null,
+        "rustValue": "private"
+      },
+      {
+        "file": "golden/mcp/07.json",
+        "field": "result.content.0._meta",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/07.json",
+        "field": "result.content.0.annotations",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/08.json",
+        "field": "result.content.0._meta",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/08.json",
+        "field": "result.content.0.annotations",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/09.json",
+        "field": "result._meta",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/09.json",
+        "field": "result.content.0._meta",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/09.json",
+        "field": "result.content.0.annotations",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/10.json",
+        "field": "result.content.0._meta",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/10.json",
+        "field": "result.content.0.annotations",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/12.json",
+        "field": "result.content.0._meta",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/12.json",
+        "field": "result.content.0.annotations",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/13.json",
+        "field": "result._meta",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/13.json",
+        "field": "result.content.0._meta",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/13.json",
+        "field": "result.content.0.annotations",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/14.json",
+        "field": "result._meta",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/14.json",
+        "field": "result.content.0._meta",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/14.json",
+        "field": "result.content.0.annotations",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/15.json",
+        "field": "result._meta",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/15.json",
+        "field": "result.content.0._meta",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/15.json",
+        "field": "result.content.0.annotations",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/16.json",
+        "field": "result.content.0._meta",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/16.json",
+        "field": "result.content.0.annotations",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/17.json",
+        "field": "result.content.0._meta",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/17.json",
+        "field": "result.content.0.annotations",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/18.json",
+        "field": "result._meta",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/18.json",
+        "field": "result.content.0._meta",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/18.json",
+        "field": "result.content.0.annotations",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/19.json",
+        "field": "result._meta",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/19.json",
+        "field": "result.content.0._meta",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/19.json",
+        "field": "result.content.0.annotations",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/20.json",
+        "field": "result._meta",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/20.json",
+        "field": "result.content.0._meta",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/20.json",
+        "field": "result.content.0.annotations",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/21.json",
+        "field": "result._meta",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/21.json",
+        "field": "result.content.0._meta",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/21.json",
+        "field": "result.content.0.annotations",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/22.json",
+        "field": "result._meta",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/22.json",
+        "field": "result.content.0._meta",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/22.json",
+        "field": "result.content.0.annotations",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/23.json",
+        "field": "result._meta",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/23.json",
+        "field": "result.content.0._meta",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/23.json",
+        "field": "result.content.0.annotations",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/24.json",
+        "field": "result._meta",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/24.json",
+        "field": "result.content.0._meta",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/24.json",
+        "field": "result.content.0.annotations",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/27.json",
+        "field": "result.content.0._meta",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/27.json",
+        "field": "result.content.0.annotations",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/28.json",
+        "field": "result._meta",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/28.json",
+        "field": "result.content.0._meta",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/28.json",
+        "field": "result.content.0.annotations",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/29.json",
+        "field": "result._meta",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/29.json",
+        "field": "result.content.0._meta",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/29.json",
+        "field": "result.content.0.annotations",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/30.json",
+        "field": "result._meta",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/30.json",
+        "field": "result.content.0._meta",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/30.json",
+        "field": "result.content.0.annotations",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/31.json",
+        "field": "result._meta",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/31.json",
+        "field": "result.content.0._meta",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/31.json",
+        "field": "result.content.0.annotations",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/32.json",
+        "field": "result._meta",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/32.json",
+        "field": "result.content.0._meta",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/32.json",
+        "field": "result.content.0.annotations",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/33.json",
+        "field": "result._meta",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/33.json",
+        "field": "result.content.0._meta",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/33.json",
+        "field": "result.content.0.annotations",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/34.json",
+        "field": "result._meta",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/34.json",
+        "field": "result.content.0._meta",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/34.json",
+        "field": "result.content.0.annotations",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/35.json",
+        "field": "result._meta",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/35.json",
+        "field": "result.content.0._meta",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/35.json",
+        "field": "result.content.0.annotations",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/36.json",
+        "field": "result._meta",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/36.json",
+        "field": "result.content.0._meta",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/36.json",
+        "field": "result.content.0.annotations",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/37.json",
+        "field": "result._meta",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/37.json",
+        "field": "result.content.0._meta",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/37.json",
+        "field": "result.content.0.annotations",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/38.json",
+        "field": "result._meta",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/38.json",
+        "field": "result.content.0._meta",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/38.json",
+        "field": "result.content.0.annotations",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/39.json",
+        "field": "result._meta",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/39.json",
+        "field": "result.content.0._meta",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/39.json",
+        "field": "result.content.0.annotations",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/40.json",
+        "field": "result._meta",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/40.json",
+        "field": "result.content.0._meta",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/40.json",
+        "field": "result.content.0.annotations",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/41.json",
+        "field": "result._meta",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/41.json",
+        "field": "result.content.0._meta",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/41.json",
+        "field": "result.content.0.annotations",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/42.json",
+        "field": "result._meta",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/42.json",
+        "field": "result.content.0._meta",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/42.json",
+        "field": "result.content.0.annotations",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/43.json",
+        "field": "result._meta",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/43.json",
+        "field": "result.content.0._meta",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/43.json",
+        "field": "result.content.0.annotations",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/44.json",
+        "field": "result._meta",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/44.json",
+        "field": "result.content.0._meta",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/44.json",
+        "field": "result.content.0.annotations",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/45.json",
+        "field": "result._meta",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/45.json",
+        "field": "result.content.0._meta",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/45.json",
+        "field": "result.content.0.annotations",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/46.json",
+        "field": "result._meta",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/46.json",
+        "field": "result.content.0._meta",
+        "pythonValue": null,
+        "rustValue": null
+      },
+      {
+        "file": "golden/mcp/46.json",
+        "field": "result.content.0.annotations",
+        "pythonValue": null,
+        "rustValue": null
+      }
+    ]
+  },
+  {
+    "id": "openapi-document",
+    "differenceRow": "The `/openapi.json` document",
+    "reason": "The reference's document is FastAPI's, generated from its own routes and Pydantic models; this port's is utoipa's, generated from the `#[utoipa::path]` annotations. Descriptions, summaries, operation ids, schema spelling and the framework's own 422 components differ by construction, so the two documents cannot agree field for field. What both promise a client, and what this allowance compares, is the contract: the same paths, the same methods on each path, the same parameters on each operation, the same field names in every response schema, and the same schema name on every 2xx body. Every difference is reported by its path or schema. It covers `body` of this one golden and nothing else.",
+    "allows": [
+      {
+        "file": "golden/trailing-slash/09.json",
+        "field": "body",
+        "contract": {
+          "kind": "openapi"
+        }
+      }
+    ]
+  }
+]

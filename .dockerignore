@@ -1,6 +1,10 @@
+# The build context of the root Dockerfile. Anything the image does not read is
+# left out, so a local `target/` or `node_modules/` never crosses the socket.
 **/node_modules
 **/.venv
 **/__pycache__
+# The frontend stage builds `dist` itself; a local one must not override it.
 frontend/dist
 .git
 .env
+target
