@@ -118,21 +118,28 @@ fn shared_options(url: &str, settings: DbSettings) -> Result<ConnectOptions, DbE
 /// is found like any other. Nothing of the query or the fragment is printed,
 /// because a URL that carries its password there carries it nowhere else. An
 /// unparseable URL still has an authority section often enough to keep it.
+///
+/// A `?` or `#` before the last `@` is either inside an unescaped password or
+/// the start of a query that holds the `@`, and the text cannot say which. What
+/// follows that `@` may then be the tail of a password, so it is hidden as well,
+/// and only the part before the first `:`, `/`, `?` or `#` is printed.
 fn redact(url: &str) -> String {
     let Some((scheme, rest)) = url.split_once("://") else {
         return "an unparseable URL".to_owned();
     };
-    // The last `@` is found first, in the whole string: a `?` or `#` before it
-    // belongs to the password, and only what follows it can start a query.
     let Some(at) = rest.rfind('@') else {
         let authority = rest.split(['?', '#']).next().unwrap_or_default();
         return format!("{scheme}://{authority}");
     };
     let (userinfo, host_and_query) = rest.split_at(at);
-    let host = host_and_query.split(['?', '#']).next().unwrap_or_default();
     let user = userinfo
-        .split_once(':')
-        .map_or(userinfo, |(user, _password)| user);
+        .split([':', '/', '?', '#'])
+        .next()
+        .unwrap_or_default();
+    if userinfo.contains(['?', '#']) {
+        return format!("{scheme}://{user}:***@***");
+    }
+    let host = host_and_query.split(['?', '#']).next().unwrap_or_default();
     format!("{scheme}://{user}:***{host}")
 }
 
@@ -306,24 +313,48 @@ mod tests {
     #[test]
     fn a_password_holding_a_query_or_fragment_character_is_still_removed() {
         // The userinfo runs to the last `@` in the whole string, so a `?` or `#`
-        // inside the password is part of the password and not the start of a
-        // query; cutting the query first would print the password's tail.
+        // inside the password is not taken for the start of a query; cutting
+        // the query first would print the password's tail. Such a URL reads
+        // the same as one whose query holds an `@`, so the host is hidden too.
         for (url, printed) in [
-            (
-                "postgresql://u:pa#ss@db:5432/d",
-                "postgresql://u:***@db:5432/d",
-            ),
-            (
-                "postgresql://u:pa?ss@db:5432/d",
-                "postgresql://u:***@db:5432/d",
-            ),
-            ("postgresql://u:s3cret/x?y@db/d", "postgresql://u:***@db/d"),
+            ("postgresql://u:pa#ss@db:5432/d", "postgresql://u:***@***"),
+            ("postgresql://u:pa?ss@db:5432/d", "postgresql://u:***@***"),
+            ("postgresql://u:s3cret/x?y@db/d", "postgresql://u:***@***"),
             (
                 "postgresql://u:pa#ss@db:5432/d?sslmode=require#frag",
-                "postgresql://u:***@db:5432/d",
+                "postgresql://u:***@***",
             ),
         ] {
             assert_eq!(redact(url), printed, "{url}");
+        }
+    }
+
+    #[test]
+    fn an_at_sign_in_the_query_does_not_print_the_query() {
+        // With no userinfo, the last `@` sits in the query: what precedes it is
+        // not a user, and what follows it is the password's tail, not a host.
+        for (url, printed) in [
+            (
+                "postgresql://d b/flakeradar?password=s3cret@x",
+                "postgresql://d b:***@***",
+            ),
+            (
+                "postgresql://db:5432/d?password=s3c@ret",
+                "postgresql://db:***@***",
+            ),
+            (
+                "postgresql://db#password=s3c@ret",
+                "postgresql://db:***@***",
+            ),
+            (
+                "postgresql://u:pw@db/d?password=s3c@ret",
+                "postgresql://u:***@***",
+            ),
+        ] {
+            let text = redact(url);
+            assert!(!text.contains("s3c"), "{url}: {text}");
+            assert!(!text.contains("ret"), "{url}: {text}");
+            assert_eq!(text, printed, "{url}");
         }
     }
 
