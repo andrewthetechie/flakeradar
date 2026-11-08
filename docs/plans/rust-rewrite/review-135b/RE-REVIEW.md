@@ -1,14 +1,13 @@
-# Third review handoff: PR #135 at `840c180`
+# Third review handoff: PR #135 at `bba16f2`
 
 This is the page to start from. It says what the second review's fixes (tasks 32–44) changed, the
 numbers they were measured at, every intentional difference they added, what is still unverified,
 and the surface neither review reached — which is where the third review starts. The second
 review's findings are in `review-135b/`, the first review's in `review-135/`.
 
-**Head: `840c180`, pushed to `feat/rust-rewrite`.** The last commit that changes code or a test is
-`3cee932`; every commit after it is documentation. The head this page names is the commit that
-carries it; the one commit after that only fills in this line, and `STATUS.md`'s task 44 row carries
-the CI run ids, so a later push cannot leave a stale run id on this page.
+**Head: `bba16f2`, the last commit that changes code or a test, pushed to `feat/rust-rewrite`.**
+The documentation commits that carry this page, `HANDOFF.md` and the CI ids follow it, and
+`STATUS.md`'s task 44 row carries the run ids, so a later push cannot leave a stale run id here.
 
 ## 1. The tasks, one line each
 
@@ -26,7 +25,7 @@ the CI run ids, so a later push cannot leave a stale run id on this page.
 | 41 | Structure of the request and worker modules | `3aa7768..a44b0cf` | 12 | The lock's one match, one `BoxFuture`, `post` as attempt/match/wait, `lax::recorded`, `path_issue`, `Framing::next_part`, one split helper, `memmem::Finder`, `worker/{leader_task,lock}.rs` |
 | 42 | Test helpers that remove the most lines | `96fc09b..e9fe17d` | 7 | Builder `create` (733 calls), `sync`/`sync_with`, validation and log-test helpers, four MCP tests instead of one |
 | 43 | The record and the missing controls | `3cee932..4b42e61` | 3 | Four OpenAPI negative controls; the four self-approved `differences.md` rows cite their decisions; the parity README names each recording commit |
-| 44 | Hand off for the third review | this commit and the record one | 2 | The ledger closed; the checks re-run; the record corrected; the PR body rewritten; this page |
+| 44 | Hand off for the third review | `840c180..bba16f2` | 3 | The ledger closed; the checks re-run; the record corrected; the PR body rewritten; this page; and task 36's flaky drain test fixed and re-measured after CI caught it |
 
 ## 2. The numbers at this head
 
@@ -43,8 +42,11 @@ the CI run ids, so a later push cannot leave a stale run id on this page.
 
 Two caveats on those numbers. The coverage totals are not byte-identical between runs: runs 1 and 2
 miss one line in `github/sync.rs` and one region in `db/src/issue_links.rs` that runs 3 and 4 count
-covered, and `docs/plans/rust-rewrite/coverage-gaps.md` records it (the line was not identified). And every
-figure is this host's: a local `postgres:17-alpine`, not CI's service.
+covered, and `docs/plans/rust-rewrite/coverage-gaps.md` records it (the line was not identified).
+And every figure is this host's: a local `postgres:17-alpine`, not CI's service.
+
+A fifth instrumented run, after the test fix below, reports the same 1180 tests and 96.97% of lines
+and 93.87% of branches.
 
 ## 3. Differences the fixes added
 
@@ -84,6 +86,18 @@ rather than by re-reading its evidence: the 107 tests the rows cite, in one next
 `declarations.rs`'s 25 cases for `SP4` (whose row names a file). Each row's own text says what a
 reader or user now sees; where a row names a rename, the row now names the current spelling (task
 42 renamed `support::sync_batch` to `support::sync`).
+
+One row's test was flaky on CI, and task 44 fixed it. CI's coverage job failed
+`a_stalled_upload_does_not_stop_serve_from_returning` once at `fa09e56` (run `42426433124`) —
+`tests/server.rs:395:5`, `serve returned within the drain bound even though the upload stalled` —
+because the stop could race the upload's arrival and 32 yields were not enough under
+instrumentation. `bba16f2` is a test-only change the owner authorized: it waits on the arrival
+`Notify` before stopping and advances the paused clock until the serving task ends, under a
+10-second real hang guard. Red, measured by removing the drain bound: `tests/server.rs:399:9`,
+`serve never returned past the drain bound: the stalled upload held it open`, after 12.2 s. After
+the fix: 10/10 in `--profile ci`, 5/5 under ten spinners, 6/6 under `llvm-cov`, and the full suite
+1180/1180. What this host cannot prove is that CI's 2-core instrumented job never sees another
+timing failure; it is the entry to watch on the next runs.
 
 Twelve rows close on evidence that is not a test, each saying why in its text: `ST30` (signal
 wiring), `ST1` (a marker count), `ST13` (`cargo metadata`), `CC16` and `ST29` (doc text), `SP5`,

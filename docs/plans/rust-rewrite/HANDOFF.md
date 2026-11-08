@@ -18,8 +18,8 @@ Not re-derivable, and quoted from the document named beside it: the coverage per
 (`coverage-gaps.md`), the audit histories and older CI run ids (`STATUS.md`'s rows), and the
 performance and reliability numbers (`docs/perf/22`).
 
-The head this file describes is `840c180`, the commit that carries it. The last commit that
-changes code or fixtures is `3cee932`; everything after it is documentation. There have been two
+The head this file describes is `bba16f2`, the last commit that changes code or a test; the
+documentation commits that carry this file, the review page and the CI ids follow it. There have been two
 reviews: `review-135/RE-REVIEW.md` is the page for the first review's fixes (tasks 16–31), and
 `review-135b/RE-REVIEW.md` is the page to start from now, for the second review's fixes (tasks
 32–44) and for the surface neither review reached. Section 2 covers tasks 01–15, section 2b tasks
@@ -27,14 +27,14 @@ reviews: `review-135/RE-REVIEW.md` is the page for the first review's fixes (tas
 
 | | |
 | --- | --- |
-| Branch | `feat/rust-rewrite`, head `840c180` |
+| Branch | `feat/rust-rewrite`, head `bba16f2` (plus the documentation commits after it) |
 | Python reference | `97b933d`, the last Python commit; `86c98804` for the review fixes, which is `97b933d` plus `main`'s #130 and #131 |
 | Branch point | `33703f7` (the plan documents); task 01's work starts at `1179fe3` |
-| Commits in `97b933d..HEAD` | 409, of which 2 (`bfd3fc4`, `86c9880`) are `main`'s #130 and #131 brought in by the merge `182ab4a` |
-| Diff against `97b933d` | 919 files, +181114 / -24794; `backend/` alone is 96 files and 24535 deletions, and 54,309 of the insertions are `crates/flakeradar-core/tests/fixtures/encodings.tsv`, the reference's codec table |
+| Commits in `97b933d..HEAD` | 412, of which 2 (`bfd3fc4`, `86c9880`) are `main`'s #130 and #131 brought in by the merge `182ab4a` |
+| Diff against `97b933d` | 920 files, +181492 / -24794; `backend/` alone is 96 files and 24535 deletions, and 54,309 of the insertions are `crates/flakeradar-core/tests/fixtures/encodings.tsv`, the reference's codec table |
 | Reviewed heads | `f9330fd`, which `review-135/` was written against, and `ac5e6f3`, which `review-135b/` was written against |
 | Diff of the first review's fixes | `f9330fd..ac5e6f3` is 129 commits over 261 files, +35480 / -16132 |
-| Diff of the second review's fixes | `ac5e6f3..HEAD` is 90 commits over 225 files, +71718 / -7789, with the codec fixture as most of the insertions |
+| Diff of the second review's fixes | `ac5e6f3..bba16f2` is 93 commits over 226 files, +72170 / -7863, with the codec fixture as most of the insertions |
 | Pull request | #135, *feat: replace the Python backend with one Rust binary*, open, unmerged, untagged |
 
 ## 1. What landed
@@ -114,8 +114,8 @@ is the page that summarizes what each one closed.
 
 The review of `ac5e6f3` found four must-fix defects and a list of should-fix work, and
 `docs/plans/rust-rewrite/00-fixes-2-context.md` turns each finding into one task. The ranges below
-are contiguous the same way: the twelve counts sum to 90, which with nothing else after `ac5e6f3`
-is the 90 commits in `ac5e6f3..HEAD`. The plan commit that added the task files, `1fbf1e5`, is
+are contiguous the same way: the twelve counts sum to 93, which is the 93 commits in
+`ac5e6f3..bba16f2`, and the documentation commits that carry this file and the CI ids follow them. The plan commit that added the task files, `1fbf1e5`, is
 numbered inside task 32's range, as `0e0fc57` was inside task 16's. The "landed" column repeats
 `STATUS.md`'s Commit cell. `review-135b/RE-REVIEW.md` is the page that summarizes what each one
 closed.
@@ -134,7 +134,7 @@ closed.
 | 41 | Structure of the request and worker modules | `3aa7768..a44b0cf` | 12 | Nine structure rows: one match for the lock's three outcomes, one `BoxFuture` alias, `post` as attempt/match/wait, `lax::recorded`, `path_issue` deciding on the type, `Framing::next_part`, one split helper, `memmem::Finder` instead of the hand-written search, and `worker/{leader_task,lock}.rs` | `b0274bf` |
 | 42 | Test helpers that remove the most lines | `96fc09b..e9fe17d` | 7 | A seeded row is one `create` call (733 of them against 45 `build` calls kept), a sync is `sync`/`sync_with`, and four local helpers carry the validation ceremony; one MCP client test became four | `c3c64c8` |
 | 43 | The record and the missing controls | `3cee932..4b42e61` | 3 | The four self-approved rows cite the approved decisions, the OpenAPI comparison gained its four negative controls, `tests/parity/README.md` names the commit that recorded each scenario, and `review-135/ledger.md` names the rows the second review reopened | `0a3224f` |
-| 44 | Hand off for the third review | this commit and the record one | 2 | The ledger closed by re-running every named test, the battery, the four coverage runs and `dups.py` re-measured, the record corrected (`differences.md`, `coverage-gaps.md`, `tests/parity/README.md`, this file, `README.md`, `CONTRIBUTING.md`), the PR body rewritten and `review-135b/RE-REVIEW.md` written | this row |
+| 44 | Hand off for the third review | `840c180..bba16f2` | 3 | The ledger closed by re-running every named test, the battery, the coverage runs and `dups.py` re-measured, the record corrected (`differences.md`, `coverage-gaps.md`, `tests/parity/README.md`, this file, `README.md`, `CONTRIBUTING.md`), the PR body rewritten and `review-135b/RE-REVIEW.md` written; and the one flaky test CI found — task 36's drain-bound test — fixed and re-measured (`bba16f2`) | `bba16f2` |
 
 `e949ca7`, the first commit of task 36's range, is a `.fabro/test.toml` change made by the relay
 runner between tasks, not a task deliverable: fabro-io rejects a timeout above 600 seconds, so the
@@ -466,6 +466,12 @@ failed once in three instrumented runs; the read is now a bounded `wait_until` (
   its six commits are one feature, two crates' sweeps, two helper refactors and its record.
 - **43** was measured against the reviewer's own controls: the four OpenAPI negative controls
   (`3cee932`) came first, then the record (`0a3224f`).
+- **44** found a flake on CI at a documentation-only head and fixed it:
+  `a_stalled_upload_does_not_stop_serve_from_returning` failed the coverage job at `fa09e56` (run
+  `42426433124`) because the stop could race the upload's arrival and 32 yields were not enough
+  under instrumentation. The fix
+  is `bba16f2`, a test-only change the owner authorized; the red and the repeat runs are in
+  `STATUS.md`'s row 44 and in `ST31`'s ledger evidence.
 
 ## 6. Risks workers listed
 

@@ -26,7 +26,7 @@ schema.sql                pg_dump of Alembic head, minus alembic_version
 allowed-differences.json  the only mismatches a replay may accept
 ```
 
-At `840c180` this holds **15 scenarios with 316 steps**, a **33-file** JUnit corpus, **66** JUnit
+At `bba16f2` this holds **15 scenarios with 316 steps**, a **33-file** JUnit corpus, **66** JUnit
 goldens (one per corpus file at each `line_base`), **382 JSON goldens** in all and `schema.sql` —
 383 golden files, one per step — beside `allowed-differences.json`, which is not a golden. A count
 of `steps` in `scenarios/*.json` and of `golden/**/*.json` derives them; `every_scenario_step_has_a_golden_and_no_golden_is_orphaned`
