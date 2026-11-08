@@ -3,8 +3,8 @@
 # the GitHub job summary. Companion to the reporter step: it reads
 # GET /api/ci-runs/{ci_run_id}/failures?repo=...&ci_run_attempt=... until the
 # attempt's reports are processed, keeps only this job's failures, writes a
-# Markdown table, and never fails the job. See ../../README.md "Failures of one
-# CI run".
+# Markdown table, and never fails the job. See
+# ../../docs/ci-integration.md "Failures of one CI run".
 #
 # Only bash, curl and jq are used (all present on GitHub-hosted runners).
 set -uo pipefail

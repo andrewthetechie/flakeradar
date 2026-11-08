@@ -7,7 +7,7 @@
 //! that number, what a change costs and what reads it.
 //!
 //! Every value is the shipped default, so an install that sets nothing gets these
-//! scores, tiers and retention windows. `README.md` and `.env.example` state the
+//! scores, tiers and retention windows. `docs/configuration.md` and `.env.example` state the
 //! same numbers, and `every_setting_defaults_to_the_documented_value` pins them.
 
 // Rust guideline compliant 2026-07-21

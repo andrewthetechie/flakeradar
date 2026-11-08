@@ -208,7 +208,7 @@ gh run list --workflow docker-publish.yml --limit 1
 attestation — and `docker-publish.yml` publishes the image. Windows on ARM is
 not a target.
 
-Verify a download the way the README describes (Linux and macOS get a
+Verify a download the way [deployment.md](deployment.md#verify-the-download) describes (Linux and macOS get a
 `.tar.gz`, Windows a `.zip`, each with a `.sha256` beside it):
 
 ```bash

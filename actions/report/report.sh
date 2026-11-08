@@ -3,8 +3,8 @@
 # as its own Report to /api/ingest, with this run's metadata computed from the
 # runner environment. The accepted Report ids are written as the `report_ids`
 # action output, so a later step (or the summary action) can follow them. When no
-# file matches, a warning is written and nothing is uploaded. See ../../README.md
-# "CI integration".
+# file matches, a warning is written and nothing is uploaded. See
+# ../../docs/ci-integration.md.
 #
 # Only bash, curl and jq are used (all present on GitHub-hosted runners).
 set -uo pipefail

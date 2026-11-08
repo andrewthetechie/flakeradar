@@ -1004,7 +1004,7 @@ mod tests {
 
     #[test]
     fn every_setting_defaults_to_the_documented_value() {
-        // The expected values are what `.env.example` and the README state, not a
+        // The expected values are what `.env.example` and `docs/configuration.md` state, not a
         // second copy of `Settings::default`: this test is the contract with the
         // deployment, so a literal here is the requirement and not a restatement
         // of the code under it.

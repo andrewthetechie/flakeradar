@@ -14,7 +14,7 @@
 # One step per project: set `project` (and `root`, its directory) for each suite.
 #
 # On another CI system, or to make the call yourself, use the raw `curl` step in
-# the README instead: see "CI integration" -> "Other CI systems".
+# docs/ci-integration.md instead: see "Other CI systems".
 
 - name: Report test results to FlakeRadar
   if: always()   # crucial — you want the FAILED runs recorded too

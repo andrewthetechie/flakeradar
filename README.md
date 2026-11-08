@@ -11,1166 +11,138 @@ It is an open-source alternative to BuildPulse and Datadog CI Visibility for
 small engineering teams.
 
 When a developer re-runs a failed CI job and it passes, the evidence of a flaky
-test is usually lost. FlakeRadar keeps that evidence. It ingests JUnit XML
-reports from any CI system and any test runner that writes JUnit XML (pytest,
-Jest, Vitest, Go, JUnit). It records the outcome of each test in each run,
-together with the commit SHA. Then it calculates a flakiness score for each
+test is usually lost. FlakeRadar keeps that evidence. It reads JUnit XML
+reports from any CI system and any test runner that writes JUnit XML, for
+example pytest, Jest, Vitest, Go and JUnit. It records the outcome of each test
+in each run, with the commit SHA, and calculates a flakiness score for each
 test. When a test passes and fails on the same commit, that is proof that the
 test is nondeterministic.
 
-<img width="1180" height="463" alt="FlakeRadar dashboard" src="https://github.com/user-attachments/assets/f2f14878-1ad7-4b08-9e2b-cbe6fd5441c7" />
-
-## Contents
-
-- [Who it is for](#who-it-is-for)
-- [What it does](#what-it-does)
-- [Quick start](#quick-start)
-- [Quick start with Docker](#quick-start-with-docker)
-- [Upgrading from 0.1.x](#upgrading-from-01x)
-- [Quick start for local development](#quick-start-for-local-development)
-- [CI integration](#ci-integration)
-- [CI jobs](#ci-jobs)
-- [Failures of one CI run](#failures-of-one-ci-run)
-- [Repos and projects](#repos-and-projects)
-- [Test locations and failure details](#test-locations-and-failure-details)
-- [Retries](#retries)
-- [Failure categories](#failure-categories)
-- [Quarantine](#quarantine)
-- [MCP server for agents](#mcp-server-for-agents)
-- [GitHub issue automation](#github-issue-automation)
-- [Notifications](#notifications)
-- [How scoring works](#how-scoring-works)
-- [Score history and trends](#score-history-and-trends)
-- [Monitoring](#monitoring)
-- [Configuration](#configuration)
-- [API](#api)
-- [Development](#development)
+![The FlakeRadar tests leaderboard](docs/images/tests-leaderboard.png)
 
 ## Who it is for
 
 FlakeRadar is for teams of approximately 2 to 50 developers who:
 
-- run tests in CI (GitHub Actions, GitLab CI, Jenkins, or any CI that can
-  write JUnit XML) and no longer trust a red build.
+- run tests in CI (GitHub Actions, GitLab CI, Jenkins, or any CI that can write
+  JUnit XML) and no longer trust a red build.
 - re-run failed jobs by habit, without knowing which tests are unreliable.
-- cannot justify the cost of a paid CI analytics platform. They also do not
-  want a real regression to hide behind a test that "is always flaky".
+- cannot justify the cost of a paid CI analytics platform, and do not want a
+  real regression to hide behind a test that "is always flaky".
 
 A solo developer with a 30-second test suite does not need FlakeRadar.
 
 ## What it does
 
-- **CI integration in one step.** After each test run, including failed runs,
-  send `junit.xml` to `/api/ingest` with `curl`. The server stores the report
-  and answers `202` before it processes the report.
-- **A score that separates flaky tests from broken tests.** A test that fails
-  every time scores 0, because it is broken. A test that changes between pass
-  and fail scores high. Recent changes have more weight. A small number of
-  executions gives a lower score. A pass and a fail on the same commit set the
-  score to 0.6 or higher.
-- **Repos and projects.** One instance keeps data for many repositories. Each
-  repository can have several test suites, for example `frontend`, `backend`
-  and `e2e`.
-- **Evidence for each flaky test.** FlakeRadar shows the file and line of the
-  test when your runner reports them. It also shows a GitHub permalink at the
-  last failing commit. FlakeRadar keeps the full traceback and captured output
-  of each failure.
-- **A likely cause for each failure.** Fixed rules put each failure into one
-  category: network, environment, timing, assertion or other. You can then fix
-  one type of flaky test at a time.
-- **Trends.** FlakeRadar keeps a daily score history for each test and job.
-  The leaderboard shows if a test becomes worse or better. A clean streak
-  shows if a fix continues to work. The leaderboard and the API can also list
-  what became flaky in the last N days (a *new flaky test*), which the trend
-  arrow cannot show because it also fires when an old flaky test gets worse.
-- **Flaky CI jobs.** FlakeRadar also scores CI jobs. A job failure that a
-  failing test explains does not count against the job.
-- **Dashboard.** The dashboard has a repo and project picker and a slide-over
-  detail panel. Its paginated leaderboard shows flaky and suspect tests and
-  jobs. Each view has a URL that you can share.
-- **MCP server.** AI agents can get the worst flaky tests in a repo, with the
-  data they need to find and fix each test, and link the issues they file.
-- **Quarantine.** Mark a test as quarantined in the dashboard, where the
-  dialog also records a reason and an optional expiry. Your test runner then
-  gets the list of tests to skip from the API.
-- **GitHub issues (optional).** When a test or job crosses the flakiness
-  threshold, FlakeRadar opens an issue in the repository of that test or job.
-  Issues filed by other tools or by hand can be linked instead.
+- One CI step uploads the results. The server stores each report and answers
+  `202` before it processes the report.
+- The score separates flaky tests from broken tests. A test that fails each
+  time scores 0. A test that changes between pass and fail scores high. A pass
+  and a fail on the same commit set the score to 0.6 or higher.
+- One instance keeps data for many repos. Each repo can have more than one
+  test suite (project), for example `frontend`, `backend` and `e2e`.
+- Each flaky test shows its file and line, a GitHub permalink at the last
+  failing commit, and the full traceback of each failure.
+- Fixed rules give each failure a likely cause: network, environment, timing,
+  assertion or other.
+- A daily score history shows if a test becomes worse or better, and a clean
+  streak shows if a fix continues to work.
+- FlakeRadar also scores CI jobs. A job failure that a failing test explains
+  does not count against the job.
+- A quarantine list tells your test runner which tests to skip.
+- An MCP server gives AI agents the worst flaky tests, with the data to fix
+  them.
+- Optional GitHub issues and Slack or webhook notifications tell you when a
+  test or job becomes flaky. You can also link issues that other tools or
+  people filed.
+- The dashboard has a repo and project picker, a paginated leaderboard of
+  flaky and suspect tests and jobs, and a detail panel. Each view has a URL
+  that you can share.
+
+[How FlakeRadar works](docs/concepts.md) explains the scoring rules.
+
+| Test detail | CI run failures |
+|---|---|
+| ![The detail panel of a flaky test](docs/images/test-detail.png) | ![The failures of one CI run](docs/images/ci-run.png) |
 
 ## Quick start
 
-FlakeRadar is one binary plus a PostgreSQL database. Download the binary for
-your platform, point it at a database, and run it.
-
-| Target | Runner | Archive |
-|---|---|---|
-| `x86_64-unknown-linux-musl` | Linux x86-64 (statically linked) | `.tar.gz` |
-| `aarch64-unknown-linux-musl` | Linux ARM64 (statically linked) | `.tar.gz` |
-| `x86_64-apple-darwin` | macOS on Intel | `.tar.gz` |
-| `aarch64-apple-darwin` | macOS on Apple silicon | `.tar.gz` |
-| `x86_64-pc-windows-msvc` | Windows x86-64 (static CRT) | `.zip` |
-
-Windows on ARM64 is **not** a target: its GitHub runner image has no PostgreSQL
-to smoke test against, so no Windows ARM binary is built or released.
+FlakeRadar is one binary plus a PostgreSQL database. Docker Compose runs both.
+In a clone of this repository:
 
 ```bash
-# 1. A database. Any PostgreSQL 12 or later will do.
-docker run -d --name flakeradar-pg -p 5432:5432 \
-  -e POSTGRES_USER=flakeradar -e POSTGRES_PASSWORD=flakeradar -e POSTGRES_DB=flakeradar \
-  postgres:17-alpine
-
-# 2. The binary for your platform, from the newest release (0.2.0 here).
-#    x86_64-unknown-linux-musl   aarch64-unknown-linux-musl
-#    x86_64-apple-darwin         aarch64-apple-darwin       x86_64-pc-windows-msvc
-TARGET=aarch64-apple-darwin      # your target, from the table above
-gh release download v0.2.0 --repo andrewthetechie/flakeradar \
-  --pattern "flakeradar-0.2.0-$TARGET.tar.gz"
-tar -xzf "flakeradar-0.2.0-$TARGET.tar.gz"
-
-# 3. Run it. On first start it creates its whole schema.
-FLAKERADAR_API_TOKEN="$(openssl rand -base64 32)" \
-FLAKERADAR_DATABASE_URL=postgresql://flakeradar:flakeradar@localhost:5432/flakeradar \
-  ./flakeradar
-# The app, the API and the MCP server are on http://127.0.0.1:8000.
-```
-
-The bare binary binds `127.0.0.1:8000`, because the read APIs and the
-quarantine toggle are unauthenticated by design. Set `FLAKERADAR_HOST` and
-`FLAKERADAR_PORT` to change that. The container image binds `0.0.0.0:8000`.
-
-### Verify what you downloaded
-
-Each archive ships beside a `.sha256` file, and every archive has a build
-provenance attestation, so you can check both integrity and where the bytes
-came from:
-
-```bash
-gh attestation verify flakeradar-0.2.0-x86_64-unknown-linux-musl.tar.gz \
-  --repo andrewthetechie/flakeradar
-sha256sum -c flakeradar-0.2.0-x86_64-unknown-linux-musl.tar.gz.sha256
-# macOS: shasum -a 256 -c ...
-```
-
-The binaries are not code-signed, so the operating system will warn the first
-time you run one:
-
-- **macOS Gatekeeper.** A downloaded binary is quarantined by the browser, and
-  the first run stops with "Apple could not verify ... is free of malware".
-  Allow it once in System Settings → Privacy & Security → "Open Anyway", or
-  clear the attribute: `xattr -d com.apple.quarantine ./flakeradar`. Both are
-  per-file, and both are needed because the binary is not notarised.
-- **Windows SmartScreen.** The first run shows "Windows protected your PC".
-  Choose "More info" → "Run anyway". SmartScreen remembers the file once you
-  do.
-
-Neither prompt is a substitute for the attestation and checksum check above:
-those prove the file is the one GitHub Actions built from this repository,
-while the prompt only lets you run it.
-
-## Quick start with Docker
-
-```bash
-cp .env.example .env   # set FLAKERADAR_API_TOKEN (and POSTGRES_PASSWORD)
+cp .env.example .env
+# Set FLAKERADAR_API_TOKEN in .env. To make a token: openssl rand -base64 32
 docker compose up --build
-# The app, the API and the MCP server are on http://localhost:8000.
-# Postgres data is in a named volume.
 ```
 
-Compose runs two services:
+Open `http://localhost:8000`. The dashboard, the API and the MCP server are on
+this address.
 
-- `db`: PostgreSQL 17.
-- `flakeradar`: the API, the report processor and the built dashboard, in one
-  process. Extra replicas are allowed: only the one holding the Report
-  processor's advisory lock processes Reports, and the MCP server is stateless,
-  so no sticky routing is needed.
-
-The schema is created on first start.
-
-To load demo data, run:
+To load demo data, run the sample script. It needs Python and the `httpx`
+package:
 
 ```bash
-python samples/simulate_ci.py http://localhost:8000 "$FLAKERADAR_API_TOKEN"
+python samples/simulate_ci.py http://localhost:8000 "<your FLAKERADAR_API_TOKEN>"
 ```
 
-## Upgrading from 0.1.x
+Then open `http://localhost:8000/?repo=demo/shop`.
 
-0.2 is a **fresh install**. There is no import tool and no data migration: the
-new binary refuses to start on a database the Python server created, because it
-holds an `alembic_version` table, or on one with FlakeRadar tables and no
-`seaql_migrations` row. It never drops or changes anything, so pointing it at
-an old database is safe, and then you create an empty one beside it.
-
-Scores, tiers, Proven flake counts and Score history start empty and rebuild from
-new Reports, which takes about a week of CI runs on the default branch. Test and
-Job ids change, so a stored id no longer names the same Test.
-
-[docs/cutover-rust.md](docs/cutover-rust.md) is the step-by-step runbook: tag the
-last Python commit, stop the old deployment, close the open `flakeradar`
-issues, create the database, deploy with the GitHub token unset, and set it
-again once scores have rebuilt.
-
-## Quick start for local development
-
-FlakeRadar needs PostgreSQL, Cargo and Node. To start a local PostgreSQL in a
-container:
-
-```bash
-docker run -d --name flakeradar-pg -p 5432:5432 \
-  -e POSTGRES_USER=flakeradar -e POSTGRES_PASSWORD=flakeradar -e POSTGRES_DB=flakeradar \
-  postgres:17-alpine
-
-# The server. `frontend/dist` is embedded when it exists, so build it first if
-# you want the dashboard served from the binary.
-(cd frontend && npm install && npm run build)
-FLAKERADAR_ALLOW_INSECURE=1 \
-FLAKERADAR_DATABASE_URL=postgresql://flakeradar:flakeradar@localhost:5432/flakeradar \
-  cargo run -p flakeradar     # http://127.0.0.1:8000
-
-# Or the frontend's dev server, with hot reload; it sends /api requests to :8000.
-cd frontend
-npm run dev            # http://localhost:5173
-```
+To run the release binary without Docker, or to build from source, see
+[Deploy FlakeRadar](docs/deployment.md).
 
 ## CI integration
 
-Add one step after your tests. On GitHub Actions, use the report action: it
-uploads every JUnit XML file it matches as its own Report, and it derives the
-run metadata itself, so a copy in your repo cannot drift when ingest gains a
-parameter. Any other CI system posts the same request with `curl`; see
-[Other CI systems](#other-ci-systems) below.
-
-### The report action (GitHub Actions)
+On GitHub Actions, add the report action after your tests:
 
 ```yaml
 - name: Report test results to FlakeRadar
   if: always()   # always report: the failed runs are the evidence
   uses: andrewthetechie/flakeradar/actions/report@<ref>
   with:
-    url: ${{ secrets.FLAKERADAR_URL }}      # required
-    token: ${{ secrets.FLAKERADAR_TOKEN }}  # required
+    url: ${{ secrets.FLAKERADAR_URL }}
+    token: ${{ secrets.FLAKERADAR_TOKEN }}
     project: backend
-    root: backend
-    files: |            # globs, one per line; each match is its own Report
-      junit.xml
-      target/surefire-reports/TEST-*.xml
-    # line_base: 0      # uncomment for pytest's junit_family=xunit1 (0-based line numbers)
+    files: junit.xml
 ```
 
-| Input | Required | Meaning |
-|---|---|---|
-| `url` | yes | Your FlakeRadar base URL, for example `https://flakeradar.example.com`. |
-| `token` | yes | Your FlakeRadar API token (`FLAKERADAR_API_TOKEN`), sent as `X-API-Key` on every upload. |
-| `project` | no (`default`) | The test suite in the repo, for example `frontend`, `backend` or `e2e`. Use one step per project. |
-| `root` | no | The directory of the project in the repo, for example `backend`. FlakeRadar uses it to make file paths and permalinks. |
-| `files` | no (`junit.xml`) | Glob of the JUnit XML files to upload, relative to the workspace; several patterns, separated by newlines. Each match is uploaded as its own Report, so one step covers Surefire's or Gradle's one file per class. When nothing matches, the step writes a warning and does not fail. |
-| `line_base` | no (`1`) | `0` when the runner writes 0-based line numbers (pytest's `junit_family=xunit1`). FlakeRadar stores 1-based lines so permalinks point at the test. |
-| `fail-on-error` | no (`false`) | `true` fails the step when a file is not accepted after the upload retries. Reporting must not fail the build. |
+Any other CI system sends the same report with `curl`. [CI integration](docs/ci-integration.md)
+has the full guide:
 
-The action computes `repo`, `commit_sha`, `branch`, `ci_run_id`,
-`ci_run_attempt`, `ci_job_id` (`job.check_run_id`), `pipeline` and
-`default_branch` from the runner environment, uploads each matched file with
-the same retry flags as the raw call below, and writes the accepted Report ids
-as its `report_ids` output, in upload order. It needs only bash, `curl` and
-`jq`, all of which are on GitHub-hosted runners. The same step, with comments,
-is in `samples/github-actions-snippet.yml`. Add
-`andrewthetechie/flakeradar/actions/summary@<ref>` after it to write which of
-this job's failures are known flaky; see
-[The summary action](#the-summary-action-github-actions).
+- the inputs of the report action.
+- the `curl` call for other CI systems.
+- runner settings for test file locations and retries.
+- job reports, to find flaky CI jobs.
+- the failures of one CI run, and the summary action.
 
-### Other CI systems
+## Documentation
 
-For CI other than GitHub Actions, or when you want the raw call, `POST` the
-report yourself with the same values as query parameters. The step below is
-GitHub Actions syntax; on another system, read the equivalents of `repo`,
-`commit_sha`, `branch` and the rest from that system's own variables.
-
-```yaml
-- name: Report to FlakeRadar
-  if: always()   # always report: the failed runs are the evidence
-  run: |
-    PIPELINE="${GITHUB_WORKFLOW_REF#${GITHUB_REPOSITORY}/}"; PIPELINE="${PIPELINE%@*}"
-    QUERY=$(jq -rn --arg repo "${{ github.repository }}" --arg project "backend" \
-      --arg root "backend" --arg sha "${{ github.sha }}" --arg branch "${{ github.ref_name }}" \
-      --arg run "${{ github.run_id }}" --arg attempt "${{ github.run_attempt }}" \
-      --arg job "${{ job.check_run_id }}" --arg pipeline "$PIPELINE" \
-      --arg default_branch "${{ github.event.repository.default_branch }}" \
-      '"repo="+($repo|@uri)+"&project="+($project|@uri)+"&root="+($root|@uri)+"&commit_sha="+($sha|@uri)+"&branch="+($branch|@uri)+"&ci_run_id="+($run|@uri)+"&ci_run_attempt="+($attempt|@uri)+"&ci_job_id="+($job|@uri)+"&pipeline="+($pipeline|@uri)+"&default_branch="+($default_branch|@uri)')
-    curl --fail-with-body -sS --retry 5 --retry-all-errors --retry-delay 2 \
-      -X POST "${{ secrets.FLAKERADAR_URL }}/api/ingest?${QUERY}" \
-      -H "X-API-Key: ${{ secrets.FLAKERADAR_TOKEN }}" \
-      -H "Content-Type: application/xml" \
-      --data-binary @junit.xml
-```
-
-| Parameter | Required | Meaning |
-|---|---|---|
-| `repo` | yes | `owner/name`, converted to lowercase. On GitHub Actions, use `${{ github.repository }}`. |
-| `project` | no (`default`) | The test suite in the repo, for example `frontend`, `backend` or `e2e`. |
-| `root` | no | The directory of the project in the repo, for example `frontend`. FlakeRadar uses it to make file paths and permalinks. |
-| `commit_sha` | yes | The commit that the tests ran on. |
-| `branch` | no (`main`) | The branch that the tests ran on. |
-| `ci_run_id` | no | The workflow run ID (`${{ github.run_id }}`). |
-| `ci_run_attempt` | no | The run attempt number (`${{ github.run_attempt }}`). A re-run is a new attempt on the same SHA. |
-| `ci_job_id` | no | The ID of this job (`${{ job.check_run_id }}`). It links the run to a job execution, so that failing tests can explain a failed job. |
-| `pipeline` | no | The workflow file path, for example `.github/workflows/ci.yml`. The snippet gets it from `GITHUB_WORKFLOW_REF`. |
-| `default_branch` | no | The default branch of the repo. Flips on other branches do not count. |
-| `line_base` | no (`1`) | `0` when the runner writes 0-based line numbers (pytest's `junit_family=xunit1`). FlakeRadar stores 1-based lines so permalinks point at the test. |
-
-The server answers `202 {"report_id": 7, "status": "pending"}` when it has
-stored the report. `GET /api/reports/7` shows when processing is complete. The
-`--retry` flags help when the server is not available for a short time, for
-example during a redeploy.
-
-A retry can also happen after the server stored the report but the response was
-lost. Ingest then recognises the upload as a duplicate: the same body bytes
-under the same project, commit, `ci_run_id`, `ci_run_attempt`, `ci_job_id` and
-`line_base` return the first report's id and current status with
-`"duplicate": true`, and nothing new is queued, so the retry does not create a
-second Run. An upload with a *different* `line_base` is not that retry but a
-corrected report, so it is queued and processed like any other. The check is
-best effort: there is no unique constraint, so two identical uploads running in
-parallel can both be stored. And once `REPORT_RETENTION_DAYS` deletes the
-processed report, a later retry is ingested again; that is acceptable because a
-client retries within seconds.
-
-## CI jobs
-
-FlakeRadar also scores CI jobs for flakiness, with the same rules as tests. A
-job does not need to write JUnit XML.
-
-To set this up on GitHub:
-
-1. Copy `samples/flakeradar-jobs.yml` to `.github/workflows/flakeradar-jobs.yml`
-   on your default branch. The `workflow_run` trigger works only from the
-   default branch.
-2. In that file, list the workflows to track by their exact `name:`. Globs do
-   not work.
-3. Add the `FLAKERADAR_URL` and `FLAKERADAR_TOKEN` secrets. The workflow needs
-   the `actions: read` permission.
-
-After each attempt of a listed workflow, this workflow gets the job results
-for that attempt and sends them to `POST /api/ingest/pipeline`. FlakeRadar
-never calls GitHub for job results. Your workflow sends the results to
-FlakeRadar. Each job execution needs a branch. Thus the workflow skips an
-attempt that has no branch (for example, a run that a tag push started) and
-writes a notice.
-
-The JUnit snippet above sends `ci_job_id`, `ci_run_attempt` and `pipeline`.
-These values link each test run to the job execution that produced it.
-
-### Terms
-
-- A **pipeline** is a named CI workflow in a repo. On GitHub, its workflow file
-  path identifies it, for example `.github/workflows/ci.yml`. A pipeline
-  contains jobs. FlakeRadar does not score pipelines.
-- A **job** is one job in a pipeline. Its display name identifies it. Each
-  matrix leg is a separate job, for example `test (ubuntu-latest, 3.12)`. A job
-  belongs to a repo through its pipeline. It does not belong to a project.
-- A **job execution** is the outcome of one job (`passed`, `failed` or
-  `skipped`) in one attempt on one commit. When a job fails and a re-run on the
-  same SHA passes, the job is a **proven flake**. This rule is the same as for
-  tests.
-
-### Explained and unexplained job failures
-
-A failed test often causes a failed job. If FlakeRadar counted that failure
-against the job too, it would count one flaky test two times. Thus a failed
-job execution is **explained** when a JUnit report has the same `ci_job_id`
-and the same repo and contains a failed or errored test. FlakeRadar scores an
-explained failure as `skipped`. Only **unexplained** failures change the score
-of a job. Examples are setup failures, network failures, runner failures, and
-crashes before the tests start.
-
-One bad runner often causes many of these failures. So, over a job's recent
-scoring window, FlakeRadar groups the job's failures by runner: by the sorted
-label set, and by runner name when a name repeats (GitHub-hosted runner names
-are unique per run, so a name group points at a self-hosted machine). Groups
-are sorted by unexplained-failure rate. The job drawer's "Failures by runner"
-table, the history API and MCP `get_job` (`runners`), and the body of the
-issue FlakeRadar files show the top groups, so a cluster on one runner is
-visible.
-
-For this to work, each JUnit report must send `ci_job_id`. The snippet sends
-`ci_job_id=${{ job.check_run_id }}` for this reason. Without it, all failures
-of that job are unexplained. The job can then look flaky when a test caused
-the failure.
-
-### Summary jobs (alls-green)
-
-A summary job like [`alls-green`](https://github.com/marketplace/actions/alls-green#why)
-runs no tests. It only reports whether the jobs it `needs` succeeded, so it
-fails whenever any of them fails. That failure says nothing about the summary
-job itself. Mark it in the pipeline report with `summary: true` (the sample
-reporter's `SUMMARY_JOBS` list does this):
-
-```json
-{"ci_job_id": "789", "name": "alls-green", "status": "failed", "summary": true}
-```
-
-A failed summary job is **explained** when a non-summary job failed in the
-same CI run attempt, and FlakeRadar never scores an explained failure. So it
-does not appear as `unexplained` in `failed_jobs`, and it does not raise its
-own score. If a summary job fails with no failed non-summary job beside it (its
-own step broke), the failure stays **unexplained** and counts against it.
-FlakeRadar only accepts a failure of a non-summary job as the explanation, so a
-chain of summary jobs cannot blame each other. No CI API publishes a job's
-`needs`, so `SUMMARY_JOBS` must name them.
-
-The job history API and MCP `get_job` return those failed sibling jobs in
-`explained_by_jobs` on each explained execution, and the UI's job drawer links
-straight to them. Summary jobs are marked with a `summary` badge.
-
-### Other CI providers
-
-Any CI can send the same JSON to `POST /api/ingest/pipeline`:
-
-```json
-{
-  "repo": "acme/app", "provider": "gitlab", "pipeline": ".gitlab-ci.yml",
-  "commit_sha": "deadbeef", "branch": "main", "default_branch": "main",
-  "ci_run_id": "123", "ci_run_attempt": 1,
-  "jobs": [
-    {"ci_job_id": "456", "name": "test", "status": "failed",
-     "url": "https://gitlab.com/acme/app/-/jobs/456",
-     "runner_name": "runner-1", "runner_labels": ["linux"]}
-  ]
-}
-```
-
-Your reporter must convert each job status to `passed`, `failed` or `skipped`.
-FlakeRadar does not interpret provider-specific job results.
-
-#### GitLab
-
-[`samples/gitlab/report_pipeline.py`](samples/gitlab/report_pipeline.py) is a
-ready-made reporter for it — a standard-library script that lists the jobs of
-`CI_PIPELINE_ID` and posts them as one Pipeline report — and
-[`samples/gitlab/gitlab-ci.yml`](samples/gitlab/gitlab-ci.yml) shows the `.post`
-job that runs it plus the JUnit upload snippet. The status mapping is covered by
-[`samples/gitlab/test_report_pipeline.py`](samples/gitlab/test_report_pipeline.py),
-which builds the reporter's payload and POSTs it to a running FlakeRadar's
-`/api/ingest/pipeline`, expecting 202: the endpoint's own validation is the
-contract, so the sample proves a payload the server accepts. It needs a server
-(`FLAKERADAR_URL`, `FLAKERADAR_TOKEN`) and pytest, and runs in CI's `samples` job.
-
-A retried GitLab job is a **new job id in the same Pipeline**, not a new CI run
-attempt, so `ci_run_attempt` stays `1` and the reporter sends both tries. FlakeRadar
-records a fail and a pass of that Job on one commit SHA — a **proven flake**.
-
-No GitLab API publishes a job's `needs`, so a summary job must be named in the
-reporter's `SUMMARY_JOBS` list, exactly as in the GitHub sample, for its failure to
-be explained rather than scored (see _Summary jobs (alls-green)_ above).
-
-`CI_JOB_TOKEN` is not enough: in the Jobs API GitLab's job token may call only
-`GET /job`, so it cannot list a pipeline's jobs. The reporter job needs a project
-access token (Reporter role, `read_api` scope) as `GITLAB_TOKEN`.
-
-Issue links stay GitHub-only (ADR 0008,
-`docs/adr/0008-issue-links-from-other-filers.md`): a GitLab Job gets a flakiness
-score and job executions, but no issue link and no filing.
-
-## Failures of one CI run
-
-A CI gate or bot that sees a red CI run can ask which tests failed in that
-run, and whether FlakeRadar already knows them as flaky:
-
-```bash
-curl -s "https://flakeradar.example.com/api/ci-runs/$GITHUB_RUN_ID/failures?repo=owner/name&ci_run_attempt=$GITHUB_RUN_ATTEMPT"
-```
-
-The response is for one attempt of the CI run. Without `ci_run_attempt`, it
-is the latest attempt that FlakeRadar has seen. Pass the attempt when you
-know it.
-
-The same data is in the dashboard at
-`?view=ci-run&repo=owner/name&ci_run=$GITHUB_RUN_ID`, or from the "Open CI
-run" input in the header once a repo is selected. The `ci_run_id` in the
-execution rows of the Test and Job drawers links to it too.
-
-- `reports` counts the CI run attempt's reports (JUnit and pipeline) as
-  `pending`, `processed` and `failed`. Ingest answers before it processes a
-  report. Poll until `pending` is 0 before you trust an empty list.
-  `failed` above 0 means some results are missing.
-- `failures` has one entry for each test that failed or errored in a run of
-  that attempt. Each entry has the test's current `tier`, `flakiness_score`,
-  `confirmed_flake_count`, `clean_streak` and `quarantined`, so you can
-  apply your own threshold. `status` is the test's last try in that run. A
-  test that passed on retry has `status: "passed"` and `failed_attempts`
-  above 0. `message` is the first 1 KB of the failure message. The list
-  holds at most 500 entries. Then `truncated` is `true`, and
-  `total_failures` gives the full count.
-- `failed_jobs` lists the failed jobs of that attempt. `outcome` is
-  `explained` when a failing test in the same job explains the failure, or
-  when the job is a summary job (`summary: true`) and another non-summary job
-  in the attempt failed, and `unexplained` for a failure in setup or
-  infrastructure. A CI run can be red with an empty `failures` list and an
-  `unexplained` job.
-- An unknown repo, CI run or attempt returns `404`. Processed reports are
-  deleted after `REPORT_RETENTION_DAYS`. After that, `reports` shows 0 but
-  the failures stay until `EXECUTION_RETENTION_DAYS`.
-
-### The summary action (GitHub Actions)
-
-Add `andrewthetechie/flakeradar/actions/summary@<ref>` as a step after the
-reporter. It reads the same failures endpoint and writes, to the GitHub job
-summary, which of this job's failures FlakeRadar already knows as flaky. It is
-read-only and never fails the job.
-
-```yaml
-- name: Write the FlakeRadar CI run summary
-  if: always()
-  uses: andrewthetechie/flakeradar/actions/summary@<ref>
-  with:
-    url: ${{ secrets.FLAKERADAR_URL }}     # required
-    token: ${{ secrets.FLAKERADAR_TOKEN }} # required; any token the instance accepts
-    # Make sure only this job's failures are shown, not the whole run's.
-    ci_job_id: ${{ job.check_run_id }}
-    # repo, ci_run_id and ci_run_attempt default to the run's own values;
-    # pass them explicitly to override.
-    dashboard-url: ${{ secrets.FLAKERADAR_URL }} # optional: link each Test
-```
-
-| Input | Required | Meaning |
-|---|---|---|
-| `url` | yes | Your FlakeRadar base URL, for example `https://flakeradar.example.com`. |
-| `token` | yes | Your FlakeRadar API token (`FLAKERADAR_API_TOKEN`), sent as `X-API-Key`. The failures endpoint is read-only, so any token the instance accepts works. |
-| `repo` | no (the run's `GITHUB_REPOSITORY`) | The `owner/name` of the repository. |
-| `ci_run_id` | no (the run's `GITHUB_RUN_ID`) | The CI run id. |
-| `ci_run_attempt` | no (the run's `GITHUB_RUN_ATTEMPT`, else 1) | The CI run attempt. |
-| `ci_job_id` | no (all jobs' failures) | Only the failures this job produced. Pass `${{ job.check_run_id }}`. Each job of the run writes its own summary. |
-| `summary-timeout` | no (`60`) | Seconds to wait for this attempt's reports to finish processing (`reports.pending == 0`). |
-| `dashboard-url` | no | When set, each failing Test links to `?repo=...&test=<id>`. |
-| `summary-file` | no | Also append the same Markdown to this file path (used by the self-test to inspect the output). |
-
-The action polls `GET /api/ci-runs/{id}/failures?repo=...&ci_run_attempt=...`
-until `reports.pending` reaches 0, then keeps only the failures whose
-`ci_job_id` is this job's and writes a Markdown table: Test, status (showing
-`passed on retry` when it applies), tier and score, proven flakes,
-quarantined, and the GitHub issue link. Above the table it writes one line:
-`3 of 5 failures are known flaky tests`, where a failure is **known flaky**
-when the test passed on retry in this run, or is a flaky or broken test, or has
-proven flakes (it passed and failed on the same commit SHA). The headline
-count and the "Proven flakes" column therefore never disagree.
-
-If FlakeRadar cannot be reached, or the reports do not finish processing
-within `summary-timeout`, the action writes a single line that says so and
-still ends successfully.
-
-## Repos and projects
-
-A **repo** is a repository (`owner/name`). A **project** is a test suite in a
-repo. For example, `andrewthetechie/writers-app` can have the projects
-`frontend`, `backend` and `e2e`. Another repo can have projects with the same
-names. FlakeRadar keeps them separate. A repo with one suite can omit
-`project`, and FlakeRadar then uses `default`. FlakeRadar creates a repo or
-project when it gets the first upload for it.
-
-In the dashboard, select a repo. Then you can select one of its projects. In
-the "all repos" view, each row shows `repo · project`.
-
-FlakeRadar only ever creates a repo or project, on its first upload. It removes
-one only through the admin API, so a typo in `repo=` or `project=`, demo data
-or an archived repo does not stay in the pickers forever:
-
-```bash
-curl -X DELETE -H "X-API-Key: $FLAKERADAR_API_TOKEN" \
-  https://flakeradar.example.com/api/repos/acme/app/projects/backend-tests
-curl -X DELETE -H "X-API-Key: $FLAKERADAR_API_TOKEN" \
-  https://flakeradar.example.com/api/repos/demo/shop
-```
-
-Both delete every row in their scope in one transaction — the tests, runs,
-executions and score history, and for a repo also its pipelines, jobs, job
-executions and reports — including reports that are still `pending` or
-`failed`. The response reports what was removed. Every issue the deleted rows
-point at is returned as `github_issue_numbers` (empty when the GitHub
-integration was never used), and FlakeRadar treats the two kinds of link
-differently. The issues it filed itself would otherwise stay open, pointing at
-permalinks that now 404, so when the GitHub integration is configured the
-delete follows the commit with a best-effort close of each of them: an
-explanatory comment, then close. An issue a human linked instead (see "Issues
-filed elsewhere") is never touched by FlakeRadar — no comment, no close — and
-is only listed so you can close it by hand. A GitHub failure is logged, never
-reported, and does not change the response; without a token there are no GitHub
-calls and even the auto-filed issues must be closed by hand. There is
-deliberately no UI button for this and no MCP tool: deleting data is an admin
-task, and the MCP server must not delete data.
-
-## Test locations and failure details
-
-When a JUnit report includes the file and line of a test, FlakeRadar stores
-them. It links to the code on GitHub at the last failing commit. Most runners
-need a setting to write the file and line:
-
-| Runner | Setting |
+| Guide | Contents |
 |---|---|
-| pytest | `pytest --junitxml=junit.xml -o junit_family=xunit1` (line numbers start at 0, so pytest uploads add `line_base=0`; FlakeRadar then stores 1-based lines) |
-| Vitest | `reporters: [["junit", { addFileAttribute: true }]]` |
-| Jest (jest-junit) | `JEST_JUNIT_ADD_FILE_ATTRIBUTE=true` |
-
-Runners that do not write a file attribute (Go, cargo-nextest) also work.
-FlakeRadar identifies the test by its classname and name. It keeps the full
-traceback of each failure, and the traceback usually contains `file:line`.
-
-## Retries
-
-When a runner retries a test in one run, FlakeRadar stores each attempt. A
-test that fails and then passes on retry has a fail and a pass on the same
-commit. Thus it is a **proven flake** from its first run.
-
-| Runner | Setting |
-|---|---|
-| Playwright 1.59 or later | `reporter: [["junit", { outputFile: "junit.xml", includeRetries: true }]]`, or `PLAYWRIGHT_JUNIT_INCLUDE_RETRIES=1` |
-| Maven Surefire / Failsafe | `-Dsurefire.rerunFailingTestsCount=2` (retries are written as `<flakyFailure>` or `<rerunFailure>`) |
-| cargo-nextest | `retries = 2` in a profile in `.config/nextest.toml`, with `[profile.<name>.junit] path = "junit.xml"` (retries are written as `<flakyFailure>`) |
-
-Runners that write each attempt as a separate `<testcase>` with the same name
-also work. Without these settings, a retried test that passes at the end looks
-like a clean pass.
-
-With `flaky-result = "fail"`, nextest fails a test that passed only on retry.
-It writes the passing try as a `<failure>` with the message `test passed on
-attempt N/M but is configured to fail when flaky`. FlakeRadar stores that
-try as a pass, so the test is still a proven flake and
-`/api/ci-runs/{ci_run_id}/failures` shows it with `status: "passed"`. The
-job still fails, and the failed tries explain it.
-
-Each failed retry counts as one failure. This includes the count for
-`FLAKERADAR_GITHUB_ISSUE_MIN_FAILURES`. With 2 retries, one run can add 3
-failures.
-
-## Failure categories
-
-Each failing test execution gets a **likely cause**: `network`, `environment`,
-`timing`, `assertion` or `other`. Fixed rules set the category. FlakeRadar
-tries the rules in this order, from most to least specific:
-
-1. network
-2. environment
-3. timing
-4. assertion
-
-A failure that matches no rule is `other`. FlakeRadar checks the failure
-message first. It checks the failure details only when the message matches no
-rule.
-
-For example, `Timed out 5000ms waiting for expect(...)` is `timing`, and
-`connect ECONNREFUSED` is `network`. The category of a test is the most common
-category in its last `SCORE_WINDOW` executions. The category is a likely
-cause, not a diagnosis. Read the failure details before you decide on the
-cause.
-
-Failures that FlakeRadar stored before categories existed have no category
-(`null`).
-
-## Quarantine
-
-In the dashboard, mark an unreliable test as quarantined. A small dialog lets
-you record why (an optional reason) and when to look again: Never, 7, 14 or
-30 days. Before a run, your test runner gets the quarantine list for its repo
-and project:
-
-```
-curl -sS "$FLAKERADAR_URL/api/quarantine?repo=$GITHUB_REPOSITORY&project=backend" \
-  -H "X-API-Key: $FLAKERADAR_TOKEN"
-# -> [{"suite","classname","name","fingerprint","file","line","quarantined_at","reason","expires_at"}, ...]
-```
-
-The runner matches each item on `classname` and `name` to find the tests to
-skip. Only a person can quarantine a test, and a person can undo it;
-unquarantining clears the reason and the expiry too. Once a quarantine's
-`expires_at` passes, maintenance clears it, so an expired quarantine never
-keeps skipping a test. FlakeRadar never skips a test by itself, and the MCP
-server cannot quarantine a test.
-
-## MCP server for agents
-
-FlakeRadar has an [MCP](https://modelcontextprotocol.io) server. It uses the
-streamable HTTP transport. The endpoint accepts JSON-RPC `POST` requests. It
-is not a web page. Its tools only read, except `link_issue` and
-`unlink_issue`, which link a GitHub issue to a test or job (see
-[Issues filed elsewhere](#issues-filed-elsewhere)).
-
-### Endpoint
-
-```
-https://<your-host>/mcp/
-```
-
-Include the trailing slash. The MCP app is mounted at `/mcp`, and `/mcp/` is
-the endpoint. A request to `/mcp` without the slash does not get to the MCP
-server.
-
-### Authentication
-
-Each request must send the API token as a bearer token:
-
-```
-Authorization: Bearer <FLAKERADAR_API_TOKEN>
-```
-
-Without a valid token, the server answers `401 Unauthorized` with
-`WWW-Authenticate: Bearer`. `FLAKERADAR_API_TOKEN` is the token in `.env`. CI
-systems send the same token in the `X-API-Key` header.
-
-### Connect an MCP client
-
-Give your client the `/mcp/` URL, the streamable HTTP transport and the bearer
-token. For example, with the Claude Code CLI:
-
-```bash
-claude mcp add --transport http flakeradar https://flakeradar.example.com/mcp/ \
-  --header "Authorization: Bearer $FLAKERADAR_API_TOKEN"
-```
-
-Other clients (Cursor, VS Code, custom agents) need the same three values:
-
-- URL: `https://<your-host>/mcp/`
-- Transport: streamable HTTP
-- Credential: the bearer token
-
-In production, always use HTTPS, so that the token is not sent as clear text.
-
-### Tools
-
-| Tool | Returns |
-|---|---|
-| `list_repos` | All repos, with their projects. |
-| `list_projects(repo)` | The projects of one repo. |
-| `top_flaky_tests(repo, project?, limit=20, include_suspect=true, file?, category?, new_within_days?)` | The worst tests first. `category` (network, environment, timing, assertion or other) filters by likely cause. `new_within_days=N` (1 to 90) lists only what became flaky in the last N days. |
-| `search_tests(repo, query, project?, limit=20)` | Tests whose name, classname or file contains `query`. |
-| `get_test(test_id \| repo+project+name[+classname], executions_limit=20)` | The location and GitHub permalink, the last failing commit, the latest failure message and traceback (4 KB maximum), recent executions, and up to 30 days of score history. |
-| `top_flaky_jobs(repo, limit=20, include_suspect=true, new_within_days?)` | The worst CI jobs first. Scores count only unexplained failures. `new_within_days=N` (1 to 90) lists only what became flaky in the last N days. |
-| `search_jobs(repo, query, limit=20)` | Jobs whose name or pipeline contains `query`. |
-| `get_job(job_id \| repo+name[+pipeline], executions_limit=20)` | Unexplained and explained failures, recent executions with the tests that explain them, and up to 30 days of score history. |
-| `ci_run_failures(repo, ci_run_id, ci_run_attempt?)` | The failing tests of one CI run attempt (the latest by default) with their current tier and score, its failed jobs (explained or unexplained), and its report counts. |
-| `link_issue(number, test_id \| job_id, replace=false)` | **Writes.** Links GitHub issue `number`, in the repo of the test or job, so FlakeRadar shows it and files no issue of its own. A different linked issue is an error unless `replace` is true. Returns the test or job. |
-| `unlink_issue(test_id \| job_id)` | **Writes.** Removes the issue link of a test or job. Returns the test or job. |
-
-The read tools have the MCP annotation `readOnlyHint: true`. The two write
-tools have `readOnlyHint: false`, so your client can ask you before it calls
-them.
-
-## GitHub issue automation
-
-Set these values in `.env`:
-
-```
-FLAKERADAR_GITHUB_TOKEN=<fine-grained PAT with Issues:write on your repos>
-FLAKERADAR_GITHUB_ISSUE_LABEL=flakeradar
-```
-
-When a test or job passes the filing gate, FlakeRadar opens an issue in the
-repo of that test or job. For a test, the issue contains:
-
-- the repo, project, file and line.
-- a permalink to the test at its last failing commit.
-- the score and the threshold that applied.
-- the proven-flake count.
-- the suite and classname.
-- the last failing commit and branch.
-- the last 10 executions.
-- a sample failure traceback.
-
-FlakeRadar opens one issue for each test or job, with the
-`FLAKERADAR_GITHUB_ISSUE_LABEL` label. It opens issues after it processes a
-report, never while it accepts an upload. When GitHub returns a rate-limit
-error, FlakeRadar stops that batch. To disable this feature, leave the token
-empty.
-
-### Filing gate
-
-`FLAKE_THRESHOLD` sets the "flaky" tier in the UI and API. It does not control
-issues. Three independent minimums control issues. FlakeRadar opens an issue
-only when a test meets each minimum that is not zero:
-
-```
-FLAKERADAR_GITHUB_ISSUE_MIN_SCORE=0.30          # minimum flakiness score (0..1)
-FLAKERADAR_GITHUB_ISSUE_MIN_PROVEN_FLAKES=0     # minimum same-commit fail+pass count
-FLAKERADAR_GITHUB_ISSUE_MIN_FAILURES=0          # minimum failures in the recent window (each failed retry counts)
-```
-
-Set a minimum to `0` to ignore that signal. You can use score, proven flakes,
-failures, or any combination. With the defaults, only the score counts (score
-0.30 or higher). If you get false positives, increase these minimums. Do not
-change the tier threshold for this. If all three minimums are `0` and a token
-is set, FlakeRadar opens an issue for each test that it processes. Keep
-`MIN_SCORE` above 0.
-
-`FLAKERADAR_GITHUB_FIXED_STREAK`, when it is set, adds a fourth signal: a test or
-job already at that Clean streak gets no new issue, because its fix holds rather
-than being a live flake (see "When the fix holds" below). A failure drops the
-streak and re-arms filing.
-
-For a job, the failure count includes only unexplained failures.
-
-### Duplicate issues
-
-FlakeRadar stores the number of the issue on the test or job. While the test
-or job has that link, FlakeRadar opens no new issue for it. At each
-maintenance interval, FlakeRadar asks GitHub for the state of each stored
-issue. When an issue is closed as completed or deleted, FlakeRadar clears
-the stored number. A later report that makes the test flaky again then opens
-a new issue. An issue closed as *not planned* is the exception: the team has
-said the flake is known and accepted, so FlakeRadar keeps the link, sets
-`github_issue_closed` on the test or job, and files nothing new. Reopening
-the issue clears the flag.
-
-To file a fresh issue for a link that a not-planned close is holding, unlink
-the issue: `DELETE /api/tests/{id}/issue`, `DELETE /api/jobs/{id}/issue`, or
-the MCP tool `unlink_issue`. This clears the link and the flag, which re-arms
-filing.
-
-The UI shows a link to the issue on the leaderboard row and in the detail
-panel, and marks a link held by a not-planned close. The API and MCP server
-also return it, as `github_issue_number`, `github_issue_url` and
-`github_issue_closed`, from `/api/tests`, `/api/tests/{id}/history`, and the
-`get_test` and `top_flaky_tests` tools.
-
-### When the fix holds
-
-```
-FLAKERADAR_GITHUB_FIXED_STREAK=0                # the clean streak that posts the note
-FLAKERADAR_GITHUB_CLOSE_FIXED=false             # also close the issue when the note posts
-FLAKERADAR_PUBLIC_URL=                          # dashboard URL used for the link in the note
-```
-
-`GITHUB_FIXED_STREAK` is `0` by default, which disables this feature. When it
-is set and a test or job with a linked issue has passed on the default branch
-for that many consecutive runs (its Clean streak), FlakeRadar comments once on
-the issue: "FlakeRadar: N passing runs on `<default branch>` since the last
-failure (score now X). The fix appears to hold." FlakeRadar posts the comment
-after it processes a report, like filing.
-
-The comment never repeats while the fix holds. If the test or job fails again,
-the Clean streak goes back to `0` and the comment is re-armed: a later streak
-produces a new one. Re-linking the test or job to another issue also re-arms
-it.
-
-With `GITHUB_CLOSE_FIXED` set to `true`, FlakeRadar also closes the issue as
-completed when it posts the comment. The next maintenance sync then clears the
-link as usual, and a later flake can open a new issue (see "Duplicate issues"
-above).
-
-With `PUBLIC_URL` set, the comment also carries a link to that test or job in
-the dashboard. Leave it empty to post the plain sentence.
-
-### Issues filed elsewhere
-
-Another tool or a person can file the issue instead: a triage bot, an
-agent, or you by hand. Link the issue to the test or job. FlakeRadar then
-treats it as an issue that it filed itself. The UI and API show the link,
-FlakeRadar files no duplicate, and the maintenance sync clears the link when
-the issue is closed. The one place it still tells the two apart: an admin
-delete auto-closes only issues FlakeRadar filed, and never comments on or
-closes one you linked (see "Repos and projects").
-
-```bash
-curl -X PUT "https://flakeradar.example.com/api/tests/$TEST_ID/issue" \
-  -H "X-API-Key: $FLAKERADAR_API_TOKEN" -H "Content-Type: application/json" \
-  -d '{"number": 123, "url": "https://github.com/owner/name/issues/123"}'
-```
-
-- For a job, use `/api/jobs/{id}/issue`. Get the id from `/api/tests`,
-  `/api/jobs` or the MCP tools.
-- The issue must be in the repo of the test or job. `url` is optional. If
-  you send it, it must be the URL of that issue, or the request fails with
-  `422`.
-- You can link an issue to a job only when its pipeline runs on GitHub
-  Actions.
-- If the test or job already has a link to a different issue, the request
-  fails with `409`. Add `?replace=true` to replace the link. The same number
-  again succeeds and changes nothing.
-- `DELETE` on the same path removes the link.
-- Agents can use the MCP tools `link_issue` and `unlink_issue`.
-
-The sync needs `FLAKERADAR_GITHUB_TOKEN`. Without it, a link stays until you
-delete it. With it, the token must be able to read the issues of each repo
-where you link issues: when GitHub answers `404`, FlakeRadar treats the
-issue as deleted and clears the link.
-
-## Notifications
-
-FlakeRadar can post a message when a test or a job becomes flaky, and when it
-recovers. That is for teams who work in Slack and do not want an issue for
-every flaky test.
-
-Set `FLAKERADAR_WEBHOOK_URLS` to a comma-separated list of URLs, and choose a
-format:
-
-```bash
-FLAKERADAR_WEBHOOK_URLS=https://hooks.slack.com/services/T000/B000/xxxx
-FLAKERADAR_WEBHOOK_FORMAT=slack
-FLAKERADAR_PUBLIC_URL=https://flakeradar.example.com
-```
-
-A message is sent only when a test or job **crosses the Flake threshold**:
-
-| Event | When |
-|---|---|
-| `test.flaky` | A test's score reached the threshold. |
-| `test.recovered` | A test's score fell below the threshold again. |
-| `job.flaky` | A job's score reached the threshold. |
-| `job.recovered` | A job's score fell below the threshold again. |
-
-Nothing is sent in these cases:
-
-- The score moves but the test or job stays on the same side of the threshold.
-- A report changes the default branch. That rescores the whole repo, so the
-  report sends no events at all, even for the tests and jobs it touched. The
-  log records how many were dropped.
-- Retention deletes old executions and a score falls as a result. The log
-  records how many were dropped.
-- A test that is now [broken](#broken-tests) leaves the flaky tier, because a
-  broken test has not recovered. There is no closing event for this, so
-  `test.flaky` can be the last event you see for that test. When the test is
-  later fixed, you get an event only if the score crosses the threshold again:
-  the first pass can send a new `test.flaky`, and a later pass `test.recovered`.
-
-`json` (the default) posts a list of event objects, one per test or job the
-report changed. One report is one request:
-
-```json
-[
-  {
-    "event": "test.flaky",
-    "repo": "acme/app",
-    "project": "backend",
-    "test": {
-      "id": 42,
-      "classname": "tests.test_auth",
-      "name": "test_login",
-      "flakiness_score": 0.42,
-      "tier": "flaky",
-      "confirmed_flake_count": 2,
-      "failure_category": "timing"
-    },
-    "url": "https://flakeradar.example.com/?repo=acme%2Fapp&project=backend&test=42"
-  }
-]
-```
-
-A job event carries `"project": null` and a `job` object with `id`,
-`pipeline`, `name`, `flakiness_score`, `tier` and `confirmed_flake_count`, and
-its `url` opens the jobs view. `url` is left out when `FLAKERADAR_PUBLIC_URL`
-is empty.
-
-`slack` posts `{"text": ...}` with one line per event:
-
-```
-FlakeRadar: acme/app / backend — test "test_login" became flaky (score 0.42) https://flakeradar.example.com/?repo=acme%2Fapp&project=backend&test=42
-```
-
-Delivery is best effort. Each URL gets three attempts of five seconds each,
-with a short wait between them, and a rate limit's `retry-after` is honoured up
-to ten seconds. A timeout, a `5xx`, a `408` and a `429` are retried; any other
-`4xx` is a configuration error and is not. FlakeRadar keeps no queue on disk,
-so a message that cannot be delivered — or one that is still queued when the
-process stops — is lost. The queue holds 1000 reports' worth of messages and
-drops the oldest when it is full, so a long endpoint outage also loses messages.
-The dashboard still shows the current tier, and the next report that changes it
-sends a new message.
-
-## How scoring works
-
-For each test, FlakeRadar uses the last 50 executions. You can change this
-number.
-
-1. **Flip score.** FlakeRadar calculates the rate of changes between pass and
-   fail in consecutive executions. Recent changes have more weight. A test
-   that alternates every time scores 1.0. A test that always fails or always
-   passes scores 0.
-2. **Sample damping.** One flip in two runs is a 100% flip rate, but it is weak
-   evidence. FlakeRadar reduces the score until it has 7 executions.
-3. **Same-SHA floor.** A commit with both a pass and a fail is a **proven
-   flake**. The score is then 0.6 or higher. Each additional proven flake adds
-   0.1, to a maximum of 1.0.
-
-FlakeRadar ignores `skipped` executions. It counts `error` as a failure. Tests
-are in three tiers:
-
-- **flaky**: the score is at or above the threshold.
-- **suspect**: the score is above 0 and below the threshold.
-- **stable**: the score is 0.
-
-The leaderboard does not show stable tests unless you ask for them. The same
-rules and tiers apply to CI jobs.
-
-### The default-branch rule
-
-This rule applies to tests and jobs. Flips count only on the default branch
-of the repo. A test or job that fails on a PR branch and then gets a fix must
-not look flaky. Thus the flip score uses only the newest executions on the
-default branch. Proven flakes count on all branches, because a pass and a
-fail on the same commit show nondeterminism on the same code. Until a report
-gives the default branch, all branches count.
-
-## Broken tests
-
-A test that fails on the default branch `FLAKERADAR_BROKEN_STREAK` runs in a
-row (default 5) is **broken**, not flaky. It scores 0 like a stable test, but
-it is a test that has been red on `main` and has not fixed itself — not a new
-failure a branch pulled in. FlakeRadar marks it with a `broken` flag rather
-than changing its score or tier, and the UI shows a badge on its leaderboard
-row and in its drawer and lists it under the `?broken=1` filter. Skip `broken`
-rows are ignored when counting the streak, and a pass resets it to 0. Set
-`FLAKERADAR_BROKEN_STREAK=0` to turn broken detection off.
-
-## Score history and trends
-
-FlakeRadar keeps a daily score history. Each test and each job gets one row
-for each UTC day. The row contains the flakiness score and proven-flake count
-at the end of the day, and the number of executions and failures on that day.
-
-Each test and job also has:
-
-- a **trend** (`worsening`, `improving` or `steady`). FlakeRadar compares the
-  current score with the newest history row that is at least 14 days old.
-- a **clean streak**. This is the number of non-skipped executions on the
-  default branch since the last failure. An explained job failure does not
-  stop the clean streak of a job.
-
-The detail panel shows the score for the last 90 days as a sparkline.
-FlakeRadar deletes history after 365 days (`SCORE_HISTORY_RETENTION_DAYS`).
-When retention deletes a test's or job's executions
-(`EXECUTION_RETENTION_DAYS`), its score is recomputed from the executions
-that remain; with none left it becomes 0 and the test or job leaves the
-default leaderboard.
-
-## Monitoring
-
-`GET /api/health` is a liveness check. `GET /api/health/ready` checks the
-database, and `GET /metrics` serves Prometheus text format with the state of
-the queue. Both are unauthenticated, like the other read APIs, so put the
-dashboard on a private network.
-
-`/metrics` carries six gauge families, all read from the database so that
-every worker returns the same values:
-
-- `flakeradar_reports{status}`: the number of Reports by status (`pending`,
-  `processed` or `failed`).
-- `flakeradar_oldest_pending_report_age_seconds`: the age in seconds of the
-  oldest pending Report, 0 when the queue is empty.
-- `flakeradar_processor_leader`: 1 when a process holds the report processor
-  advisory lock.
-- `flakeradar_tests{tier}`: the number of Tests by tier (`flaky`, `suspect`
-  or `stable`).
-- `flakeradar_jobs{tier}`: the number of Jobs by tier.
-- `flakeradar_last_report_processed_timestamp_seconds`: the Unix time of the
-  last processed Report still retained. It is absent until the first Report is
-  processed, and it can move backwards and disappear again once retention
-  deletes processed Reports (`REPORT_RETENTION_DAYS`, default 7 days).
-
-`flakeradar_processor_leader 0` during a redeploy is normal: the lock moves
-between processes, so it is not alert-worthy by itself. Two settings affect
-`/metrics` output: `FLAKERADAR_FLAKE_THRESHOLD`, which decides the tier
-classification of the `flakeradar_tests{tier}` and `flakeradar_jobs{tier}`
-gauges, and `FLAKERADAR_REPORT_RETENTION_DAYS`, which prunes the processed
-Reports the last-processed timestamp is read from.
-
-```yaml
-scrape_configs:
-  - job_name: flakeradar
-    static_configs:
-      - targets: ["localhost:8000"]
-```
-
-Alert when the queue stops draining:
-
-```yaml
-- alert: FlakeRadarQueueStuck
-  expr: flakeradar_oldest_pending_report_age_seconds > 600
-```
-
-## Configuration
-
-FlakeRadar reads environment variables with the prefix `FLAKERADAR_`. It also
-reads a `.env` file. A value outside what its setting means — a NaN or
-out-of-range score decay, a score window below 1, a negative retention window, a
-poll of 0 — stops the process at start-up with an error naming the variable,
-rather than scoring with a value nobody meant.
-
-| Variable | Default | Meaning |
-|---|---|---|
-| `API_TOKEN` | `changeme` (the app does not start with it unless `FLAKERADAR_ALLOW_INSECURE=1`) | The token for CI uploads (`X-API-Key`) and MCP (`Authorization: Bearer`). |
-| `DATABASE_URL` | `postgresql://flakeradar:flakeradar@localhost:5432/flakeradar` | PostgreSQL only. SQLx reads libpq's spellings, so an old `postgresql+asyncpg://` URL must drop the `+asyncpg` and `?ssl=` must become `?sslmode=`. |
-| `HOST` / `PORT` | `127.0.0.1` / `8000` | What the bare binary binds. The image sets `FLAKERADAR_HOST=0.0.0.0`. |
-| `FLAKE_THRESHOLD` | `0.30` | The score at which a test or job is flaky; also the tier split in the `/metrics` gauges. |
-| `SCORE_WINDOW` / `SCORE_DECAY` | `50` / `0.85` | The number of executions to score, and the weight for recent executions. |
-| `GITHUB_TOKEN` | empty (disabled) | The token for GitHub issue automation. It also checks linked issues, so it needs read access to the issues of those repos. |
-| `GITHUB_ISSUE_LABEL` | `flakeradar` | The label on each issue that FlakeRadar opens. |
-| `GITHUB_ISSUE_MIN_SCORE` / `GITHUB_ISSUE_MIN_PROVEN_FLAKES` / `GITHUB_ISSUE_MIN_FAILURES` | `0.30` / `0` / `0` | The filing gate. |
-| `GITHUB_SYNC_BATCH` | `2000` | How many linked Tests (and, separately, linked Jobs) the maintenance sync checks per run. The oldest checks run first. |
-| `GITHUB_FIXED_STREAK` | `0` (disabled) | The Clean streak at which FlakeRadar comments once on the linked issue that the fix appears to hold. |
-| `GITHUB_CLOSE_FIXED` | `false` | Also close the issue as completed when FlakeRadar posts that comment. |
-| `WEBHOOK_URLS` | empty (disabled) | Comma-separated URLs to post [notifications](#notifications) to. |
-| `WEBHOOK_FORMAT` | `json` | `json` posts a list of event objects; `slack` posts `{"text": ...}` with one line per event. |
-| `PUBLIC_URL` | empty | Base URL of this instance. When set, fixed-note comments and notifications carry links to the Test, Job or dashboard. |
-| `WORKER_POLL_SECONDS` | `1.0` | How often the report processor checks an empty queue. |
-| `REPORT_RETENTION_DAYS` | `7` | FlakeRadar deletes processed raw reports after this time. |
-| `FAILED_REPORT_RETENTION_DAYS` | `0` | Failed reports are kept until a human retries or dismisses one. Set this to delete failed reports older than this many days. |
-| `EXECUTION_RETENTION_DAYS` | `90` | FlakeRadar deletes older executions. |
-| `SCORE_HISTORY_RETENTION_DAYS` | `365` | FlakeRadar deletes older daily score history rows. |
-| `PRUNE_INTERVAL_SECONDS` | `3600` | How often retention runs. |
-| `CORS_ORIGINS` | `http://localhost:5173` | The origin of the dev server. |
-
-Logs go to stdout. The default level is `info`, and `RUST_LOG` overrides it with
-`tracing`'s filter syntax: `RUST_LOG=warn` quiets the server, `RUST_LOG=debug`
-adds detail. SQL statements are logged at `debug` rather than at the driver's own
-`info`, because one line per statement buried everything else — 1,546 of 1,605
-lines on a seeded demo install. To see the statements and nothing else, use
-`RUST_LOG=info,sqlx=debug`.
-
-## API
-
-The read APIs and the quarantine toggle have no authentication. Put the
-dashboard on a private network. The CI endpoints, the issue link endpoints
-and the MCP server need the token.
-
-| Endpoint | Auth | Purpose |
-|---|---|---|
-| `POST /api/ingest?repo=&project=&root=&line_base=&commit_sha=&branch=&ci_run_id=&ci_run_attempt=&ci_job_id=&pipeline=&default_branch=` | `X-API-Key` | Queue a JUnit XML report (raw body or multipart `report` field, 20 MB maximum). Returns `202` with `{report_id, status, duplicate}`; `duplicate` is `true` when an identical upload under the same identity was already stored, and its report is returned instead of a new one. |
-| `POST /api/ingest/pipeline` | `X-API-Key` | Queue a pipeline report (JSON) with `jobs`. Returns `202`. |
-| `GET /api/reports/{id}` | none | The status of one report (`pending`, `processed` or `failed`), its counts, and its error. |
-| `GET /api/reports?status=&limit=` | none | Recent reports, newest first. |
-| `GET /api/reports/summary` | none | `{pending, failed}` |
-| `POST /api/reports/{id}/retry` | `X-API-Key` | Put a failed report back in the queue with a fresh automatic-retry budget (`retry_count` resets to `0`), whatever it has retried before. `409` for a report that has not failed, `404` when it does not exist. |
-| `DELETE /api/reports/{id}` | `X-API-Key` | Dismiss a failed report by deleting it; returns `204`. `409` for a report that has not failed, `404` when it does not exist. |
-| `GET /api/repos` | none | Repos with their projects. |
-| `DELETE /api/repos/{owner}/{name}` | `X-API-Key` | Admin: delete a Repo and, by cascade, all its projects, tests, runs, executions, score history, pipelines, jobs, job executions and reports (any status, pending included). Names are normalized (`ACME/App` deletes `acme/app`); an unknown repo gives `404`. Returns `{repo, deleted: {tests, executions, jobs, reports}, github_issue_numbers}`. `github_issue_numbers` lists every issue stored by the deleted tests and jobs; FlakeRadar comments on and closes only the ones it filed itself best-effort after it commits (failures are logged, not reported), while issues a human linked are never touched and are returned for you to close by hand. Without a token nothing is closed, so even filed issues stay open for you to close by hand. |
-| `DELETE /api/repos/{owner}/{name}/projects/{project}` | `X-API-Key` | Admin: delete one project of a Repo and, by cascade, its tests, runs, executions, score history and reports (any status). The repo, its other projects and its pipelines and jobs survive, so `jobs` is always `0` and `github_issue_numbers` lists only the deleted tests' issues, never a job's. An unknown project gives `404`. Returns `{repo, project, deleted: {tests, executions, jobs, reports}, github_issue_numbers}`; with the GitHub integration configured the tests' filed issues are commented on and closed best-effort after the commit, a human-linked issue is never touched and only returned for you to close by hand, and without a token everything stays open for you to close. |
-| `GET /api/tests?repo=&project=&include_stable=&sort=&page=&page_size=&file=&category=&q=&quarantined=&has_issue=&new_within_days=` | none | The paginated leaderboard. `sort` is `score`, `last_seen` or `proven`. `category` filters by likely cause. `q` (max 200 chars) filters by literal substring over name, classname or file, and includes stable tests. `quarantined=true` lists every quarantined test including stable ones; `has_issue` filters by linked GitHub issue. `new_within_days` (1 to 90) lists only new flaky tests, i.e. tests that became flaky in the last N days, and implies flaky-only. |
-| `GET /api/tests/{id}/history?limit=` | none | One test: location and permalink, last failing commit, executions with failure details, the jobs that its runs came from, `score_history` (90 days), `clean_streak` and `trend`. |
-| `GET /api/jobs?repo=&include_stable=&sort=&page=&page_size=&q=&pipeline=&has_issue=&new_within_days=` | none | The jobs leaderboard for a repo, worst first. `q` (max 200 chars) filters by literal substring over job or pipeline name, and includes stable jobs. `pipeline` filters by exact Pipeline name; `has_issue` filters by linked GitHub issue. `new_within_days` (1 to 90) lists only new flaky jobs, i.e. jobs that became flaky in the last N days, and implies flaky-only. |
-| `GET /api/jobs/summary?repo=` | none | Job summary tiles, plus `pipelines`: the distinct Pipeline names of the scope (that repo, or every repo without `repo`), sorted. `job_executions_30d` and `job_failures_30d` are the sums of job score history over the last 30 days. |
-| `GET /api/jobs/{id}/history?limit=` | none | One job: recent job executions, each marked `passed`, `failed`, `explained` or `skipped`, with the tests that explain them, `score_history` (90 days), `clean_streak` and `trend`. |
-| `GET /api/ci-runs/{ci_run_id}/failures?repo=&ci_run_attempt=` | none | The failing tests and failed jobs of one CI run attempt, with each one's current tier and the attempt's report counts. See [Failures of one CI run](#failures-of-one-ci-run). |
-| `GET /api/summary?repo=&project=` | none | Dashboard tiles for tests. `executions_30d` and `failures_30d` are the sums of score history over the last 30 days, replacing the old all-time execution count; `total_runs` still counts every CI run ingested. `category_counts` gives the number of flaky and suspect tests for each likely cause. |
-| `POST /api/tests/{id}/quarantine` | none | Set or clear quarantine (body `{"quarantined": bool, "reason"?: str (max 500), "expires_in_days"?: int (1 to 365)}`). The response is the test, with `quarantine_reason` and `quarantine_expires_at`. Unquarantining clears the reason and the expiry. |
-| `PUT /api/tests/{id}/issue?replace=` | `X-API-Key` | Link a GitHub issue filed elsewhere (body `{"number": int, "url"?: str}`). `409` when a different issue is linked and `replace` is not `true`. See [Issues filed elsewhere](#issues-filed-elsewhere). |
-| `DELETE /api/tests/{id}/issue` | `X-API-Key` | Remove the issue link of a test. |
-| `PUT /api/jobs/{id}/issue?replace=`, `DELETE /api/jobs/{id}/issue` | `X-API-Key` | The same for a job. GitHub pipelines only. |
-| `GET /api/quarantine?repo=&project=` | `X-API-Key` | Quarantined tests for one repo and project, for the test runner. Each item carries `reason` and `expires_at`. |
-| `/mcp/` | Bearer token | The MCP server. |
-| `GET /api/health` | none | Liveness check. |
-| `GET /api/health/ready` | none | Readiness. `200` with `{database, processor_leader, pending_reports, oldest_pending_age_seconds}` when `SELECT 1` succeeds; `503` with `{"database": false}` when the database cannot be reached. A missing Report-processor leader is reported in the body, not as `503`. |
-| `GET /metrics` | none | Prometheus gauges for the Report queue, processor leadership, Test/Job tiers and the last processed Report. See [Monitoring](#monitoring). |
-
-A `project` filter needs `repo`. `/docs` serves the OpenAPI reference with
-Redoc, read-only: it renders the specification at `/openapi.json` and sends no
-request from that page to anywhere but this server. There is no interactive
-"try it" console. Each test execution has `attempt` (0 is the first try in its
-run) and `failure_category`.
+| [Deploy FlakeRadar](docs/deployment.md) | Docker Compose, the release binary, building from source, replicas, upgrading from 0.1.x. |
+| [Configuration](docs/configuration.md) | Each `FLAKERADAR_` setting and its default, and logging. |
+| [Monitoring](docs/monitoring.md) | Health checks and Prometheus metrics. |
+| [CI integration](docs/ci-integration.md) | Sending test and job results, and reading the failures of a CI run. |
+| [How FlakeRadar works](docs/concepts.md) | Repos and projects, scoring, broken tests, trends, failure categories, quarantine. |
+| [GitHub issues](docs/github-issues.md) | Automatic issue filing, the filing gate, and linking issues filed elsewhere. |
+| [Notifications](docs/notifications.md) | Slack and webhook messages when a test or job becomes flaky or recovers. |
+| [MCP server for agents](docs/mcp.md) | Connecting an AI agent, and the tools it can use. |
+| [API reference](docs/api.md) | Each HTTP endpoint. |
+
+## Upgrading from 0.1.x
+
+FlakeRadar 0.1.x was a Python server. 0.2 is a fresh install with no data
+migration, and it does not start on a database that 0.1.x created. Read
+[Upgrading from 0.1.x](docs/deployment.md#upgrading-from-01x) and the runbook
+[cutover-rust.md](docs/cutover-rust.md) before you upgrade.
 
 ## Development
 
 ```bash
 cargo nextest run --all-features --profile ci   # needs Docker, or FLAKERADAR_TEST_DATABASE_URL
-# or point it at an existing, throwaway database:
-# FLAKERADAR_TEST_DATABASE_URL=postgresql://... cargo nextest run --all-features --profile ci
 cd frontend && npm test                         # Vitest
 cd frontend && npm run build                    # strict TypeScript check
 ```
 
 [CONTRIBUTING.md](CONTRIBUTING.md) has the full gate, the migration recipe and
-how the crates map onto the old Python modules.
+the crate layout.
