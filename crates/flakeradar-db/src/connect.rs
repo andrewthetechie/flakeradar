@@ -111,36 +111,46 @@ fn shared_options(url: &str, settings: DbSettings) -> Result<ConnectOptions, DbE
 
 /// The URL with its password replaced, so it can name itself in an error.
 ///
-/// The scheme, user, host, port and database stay readable, because one of them
-/// is the typo an operator has to fix; only the password is removed. The
-/// userinfo runs to the last `@` in the whole string, so a password holding an
-/// unescaped `/` — which is what makes a URL unparseable in the first place —
-/// is found like any other. Nothing of the query or the fragment is printed,
-/// because a URL that carries its password there carries it nowhere else. An
-/// unparseable URL still has an authority section often enough to keep it.
+/// The scheme, the user and as much of the host, port and database as cannot be
+/// a password stay readable, because one of them is the typo an operator has to
+/// fix. Nothing of the query or the fragment is printed, because a URL that
+/// carries its password there carries it nowhere else.
 ///
-/// A `?` or `#` before the last `@` is either inside an unescaped password or
-/// the start of a query that holds the `@`, and the text cannot say which. What
-/// follows that `@` may then be the tail of a password, so it is hidden as well,
-/// and only the part before the first `:`, `/`, `?` or `#` is printed.
+/// The userinfo runs to the last `@` in the whole string, so a password holding
+/// an unescaped `/` — which is what makes a URL unparseable in the first place —
+/// is found like any other, and the host and database after it are printed.
+/// Where the text cannot say which part is the password, the part that might be
+/// is hidden:
+///
+/// - With no `@`, `user:password` reads like `host:port`, so everything after
+///   the first `:` is hidden.
+/// - A `?` or `#` before the last `@` is either inside an unescaped password or
+///   the start of a query that holds the `@`. What follows that `@` may then be
+///   the tail of a password, so only the part before the first `:`, `/`, `?` or
+///   `#` is printed.
 fn redact(url: &str) -> String {
     let Some((scheme, rest)) = url.split_once("://") else {
         return "an unparseable URL".to_owned();
     };
     let Some(at) = rest.rfind('@') else {
-        let authority = rest.split(['?', '#']).next().unwrap_or_default();
-        return format!("{scheme}://{authority}");
+        let authority = before_any(rest, &['?', '#']);
+        return match authority.split_once(':') {
+            Some((host, _port_or_password)) => format!("{scheme}://{host}:***"),
+            None => format!("{scheme}://{authority}"),
+        };
     };
     let (userinfo, host_and_query) = rest.split_at(at);
-    let user = userinfo
-        .split([':', '/', '?', '#'])
-        .next()
-        .unwrap_or_default();
+    let user = before_any(userinfo, &[':', '/', '?', '#']);
     if userinfo.contains(['?', '#']) {
         return format!("{scheme}://{user}:***@***");
     }
-    let host = host_and_query.split(['?', '#']).next().unwrap_or_default();
+    let host = before_any(host_and_query, &['?', '#']);
     format!("{scheme}://{user}:***{host}")
+}
+
+/// The part of `text` before the first of `delimiters`, or all of it.
+fn before_any<'a>(text: &'a str, delimiters: &[char]) -> &'a str {
+    text.split(delimiters).next().unwrap_or_default()
 }
 
 /// Applies the settings both pools share to a new option set.
@@ -278,7 +288,7 @@ mod tests {
             ),
             (
                 "postgresql://db:notaport/d?password=s3cretpw",
-                "postgresql://db:notaport/d",
+                "postgresql://db:***",
             ),
             (
                 "postgresql://u@db:notaport/d?password=s3cretpw",
@@ -301,11 +311,16 @@ mod tests {
             redact("postgresql://flakeradar:s3cret@db:5432/flakeradar?sslmode=require"),
             "postgresql://flakeradar:***@db:5432/flakeradar"
         );
-        // No userinfo at all, and a URL with no scheme: neither has a password
-        // to remove, and neither can panic on the way through.
+        // No userinfo at all, and a URL with no scheme: neither can panic on the
+        // way through. With no `@`, a port reads like a password, so it is
+        // hidden; a URL with no `:` has nothing to hide.
         assert_eq!(
             redact("postgresql://db:5432/flakeradar"),
-            "postgresql://db:5432/flakeradar"
+            "postgresql://db:***"
+        );
+        assert_eq!(
+            redact("postgresql://d b/flakeradar"),
+            "postgresql://d b/flakeradar"
         );
         assert_eq!(redact("not a url"), "an unparseable URL");
     }
@@ -326,6 +341,27 @@ mod tests {
             ),
         ] {
             assert_eq!(redact(url), printed, "{url}");
+        }
+    }
+
+    #[test]
+    fn a_url_missing_its_at_sign_does_not_print_its_password() {
+        // Without the `@host`, `user:password` reads like `host:port`, so what
+        // follows the first `:` is hidden in both.
+        for (url, printed) in [
+            (
+                "postgresql://flakeradar:s3cret",
+                "postgresql://flakeradar:***",
+            ),
+            (
+                "postgresql://flakeradar:s3cret/flakeradar",
+                "postgresql://flakeradar:***",
+            ),
+            ("postgresql://db:notaport/d", "postgresql://db:***"),
+        ] {
+            let text = redact(url);
+            assert!(!text.contains("s3cret"), "{url}: {text}");
+            assert_eq!(text, printed, "{url}");
         }
     }
 
