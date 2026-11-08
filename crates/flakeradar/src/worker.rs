@@ -17,6 +17,8 @@
 //! waits, the monotonic clock and the lock session — is a trait this module
 //! takes, so a test drives the loop without a clock or a real interval.
 
+// Rust guideline compliant 2026-07-21
+
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};

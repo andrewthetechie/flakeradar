@@ -1,12 +1,13 @@
-//! Two properties of this workspace's own source, checked from outside it.
+//! Three properties of this workspace's own source, checked from outside it.
 //!
-//! Both are rules a compiler cannot see: that every log event carries a name and a
-//! static message, and that no comment or identifier in `crates/` points at the
-//! implementation this one replaced. Each rule is a function over the text of one
+//! All are rules a compiler cannot see: that every log event carries a name and a
+//! static message, that no comment or identifier in `crates/` points at the
+//! implementation this one replaced, and that every hand-written file carries the
+//! compliance marker. Each rule is a function over the text of one
 //! file, so a test can feed it a violation as well as the tree, and every
 //! violation shape this file is named for has a case that runs through it.
 //!
-//! This file is the one the two tree checks skip: it spells the words and the
+//! This file is the one the first two tree checks skip: it spells the words and the
 //! macros it looks for.
 
 // Rust guideline compliant 2026-07-21
@@ -317,6 +318,43 @@ fn no_source_line_points_at_the_replaced_implementation() {
         "these lines name the replaced implementation or a plan step:\n{}",
         offences.join("\n")
     );
+}
+
+/// The marker `docs/agents/code-standards-rust.md` asks a compliant file to carry.
+const COMPLIANCE_MARKER: &str = "// Rust guideline compliant 2026-07-21";
+
+/// Whether `name` is a file that must carry the compliance marker but does not.
+///
+/// The SeaORM entities are generated, so there is no hand-written file to check.
+fn lacks_the_marker(name: &str, text: &str) -> bool {
+    !name.contains("/entities/") && !text.lines().any(|line| line == COMPLIANCE_MARKER)
+}
+
+/// Every hand-written source file carries the compliance marker.
+#[test]
+fn every_source_file_carries_the_compliance_marker() {
+    let missing: Vec<String> = sources()
+        .into_iter()
+        .filter(|(name, text)| lacks_the_marker(name, text))
+        .map(|(name, _)| name)
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "these files lack `{COMPLIANCE_MARKER}`:\n{}",
+        missing.join("\n")
+    );
+}
+
+/// The marker check flags a bare file and passes a marked or generated one.
+#[test]
+fn the_marker_check_flags_only_a_hand_written_file_without_it() {
+    let marked = format!("//! Docs.\n\n{COMPLIANCE_MARKER}\n\nuse std::fmt;\n");
+    assert!(lacks_the_marker("crates/a/src/b.rs", "use std::fmt;\n"));
+    assert!(!lacks_the_marker("crates/a/src/b.rs", &marked));
+    assert!(!lacks_the_marker(
+        "crates/flakeradar-db/src/entities/jobs.rs",
+        "use sea_orm::entity::prelude::*;\n"
+    ));
 }
 
 /// Every [`ALLOWED`] entry names a file that exists and a word it still carries.

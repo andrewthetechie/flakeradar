@@ -7,6 +7,8 @@
 //! Test or Job crossed the Flake threshold, so the numbers can never contradict
 //! the direction of the event.
 
+// Rust guideline compliant 2026-07-21
+
 use std::fmt::Write as _;
 
 use serde_json::{Map, Value};

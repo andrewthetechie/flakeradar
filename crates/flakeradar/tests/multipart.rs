@@ -4,6 +4,8 @@
 //! upload. Two cases stay in the module because they read the scanner's private
 //! needle.
 
+// Rust guideline compliant 2026-07-21
+
 #![expect(
     clippy::expect_used,
     reason = "a test fails loudly when a fixture's framing is not what it says"

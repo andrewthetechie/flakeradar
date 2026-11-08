@@ -3,6 +3,8 @@
 //! Each has a fallible constructor, no infallible `From`, and a `Deserialize` that
 //! refuses what the column could not hold.
 
+// Rust guideline compliant 2026-07-21
+
 #![expect(
     clippy::expect_used,
     reason = "a test fails loudly when a constructor accepts what it must refuse"

@@ -7,6 +7,8 @@
 //! whatever else changes. A query that fails outside those cases is a plain-text
 //! 500, written in one place here.
 
+// Rust guideline compliant 2026-07-21
+
 use std::error::Error;
 use std::fmt;
 

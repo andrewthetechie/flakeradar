@@ -5,6 +5,8 @@
 //! [`LockSession`] is the seam a test substitutes; [`AdvisoryLock`] is the real
 //! one, held on a dedicated connection of its own.
 
+// Rust guideline compliant 2026-07-21
+
 use std::fmt;
 
 use flakeradar_db::{DbError, DbSettings, WORKER_LOCK_KEY, connect_session};

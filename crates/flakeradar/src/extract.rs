@@ -12,6 +12,8 @@
 //! A value's own range and length rules go in [`Validate`], so a route's limits
 //! report in the same shape and with the same wording as a field's own rules.
 
+// Rust guideline compliant 2026-07-21
+
 use std::collections::HashMap;
 use std::future::ready;
 

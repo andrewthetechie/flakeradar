@@ -3,6 +3,8 @@
 //! A suite that uploads this cannot tell a parser bug from a broken fixture, so the
 //! shape each outcome takes is pinned here.
 
+// Rust guideline compliant 2026-07-21
+
 use flakeradar_test_support::make_junit;
 
 #[test]

@@ -3,6 +3,8 @@
 //! Every test runs against a database of its own. "Old" is a timestamp the test
 //! states, so nothing here waits for a retention window to pass.
 
+// Rust guideline compliant 2026-07-21
+
 #![expect(
     clippy::expect_used,
     reason = "a test fails loudly when a fixture or a prune round does not behave"

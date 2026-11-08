@@ -22,6 +22,8 @@
 //! ten of them with a counting allocator, and of each pair of bounds the one
 //! that moves is the pre-scan's, which runs before the parser reads a byte.
 
+// Rust guideline compliant 2026-07-21
+
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::ops::Range;

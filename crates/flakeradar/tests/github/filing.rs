@@ -1,5 +1,7 @@
 //! Filing a batch of issues: the gates, the statuses and the stop rules.
 
+// Rust guideline compliant 2026-07-21
+
 use flakeradar::github::{self, Api};
 use flakeradar::settings::Secret;
 use flakeradar::settings::Settings;

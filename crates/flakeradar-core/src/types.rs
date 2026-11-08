@@ -4,6 +4,8 @@
 //! transparent on the wire, and every constructor is fallible, because an
 //! invariant the type exists to hold is not one a caller may skip.
 
+// Rust guideline compliant 2026-07-21
+
 use std::fmt;
 
 use serde::{Deserialize, Deserializer, Serialize};

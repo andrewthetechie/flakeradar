@@ -6,6 +6,8 @@
 //! that stops it. [`until_stopped`] is what lets a call end the moment
 //! leadership does.
 
+// Rust guideline compliant 2026-07-21
+
 use std::fmt;
 
 use flakeradar_db::processing::ProcessOutcome;

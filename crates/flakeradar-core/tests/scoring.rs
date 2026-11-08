@@ -4,6 +4,8 @@
 //! the rules name: the Proven flake floor, the full-confidence sample count, the
 //! decay window, and what a branch that is not the Default branch may prove.
 
+// Rust guideline compliant 2026-07-21
+
 use flakeradar_core::model::ExecutionStatus::{self, Error, Failed, Passed, Skipped};
 use flakeradar_core::scoring::{
     FULL_CONFIDENCE_SAMPLES, PROVEN_FLAKE_FLOOR, ScoredExecution, branch_scoped_fail_streak,

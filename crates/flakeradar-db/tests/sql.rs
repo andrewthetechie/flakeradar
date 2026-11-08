@@ -2,6 +2,8 @@
 //!
 //! No database: a bind list, a `VALUES` row and a placeholder run are strings.
 
+// Rust guideline compliant 2026-07-21
+
 use sea_orm::Value;
 
 use flakeradar_db::sql::{Binds, placeholder_list, value_row};

@@ -4,6 +4,8 @@
 //! clock, so nothing waits on a real interval. A call the test needs to hold open is staged by a stub
 //! answer that signals when it arrived and waits to be released.
 
+// Rust guideline compliant 2026-07-21
+
 #![expect(
     clippy::expect_used,
     reason = "a test fails loudly when a stub or a task does not behave"

@@ -13,6 +13,8 @@
 //! location is this file and the message is what names the failure, with the
 //! failing test's name in the same panic report.
 
+// Rust guideline compliant 2026-07-21
+
 #![expect(
     clippy::expect_used,
     reason = "a builder's create fails loudly, which its doc comment states"

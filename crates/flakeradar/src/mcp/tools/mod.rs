@@ -5,6 +5,8 @@
 //! one row in [`TOOLS`]. [`definition`] turns a row into the `Tool` the wire
 //! carries, and the handler is what `tools/call` runs.
 
+// Rust guideline compliant 2026-07-21
+
 mod ci_run_failures;
 mod get_job;
 mod get_test;

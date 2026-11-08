@@ -6,6 +6,8 @@
 //! request may leave it out. Timestamps go through [`timestamp`] so every one
 //! follows the timestamp rule.
 
+// Rust guideline compliant 2026-07-21
+
 use std::collections::BTreeMap;
 
 use chrono::{DateTime, NaiveDate, Utc};

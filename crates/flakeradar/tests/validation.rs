@@ -7,6 +7,8 @@
 //! states it through [`assert_refused`] or [`assert_accepted`]: a table of cases
 //! reads as the table, with the assertions out of the way.
 
+// Rust guideline compliant 2026-07-21
+
 #![expect(
     clippy::expect_used,
     clippy::panic,

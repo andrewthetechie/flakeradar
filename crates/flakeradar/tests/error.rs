@@ -3,6 +3,8 @@
 //! Every route answers a failure through one of these, so a test renders the
 //! response and reads the status and the body back.
 
+// Rust guideline compliant 2026-07-21
+
 #![expect(
     clippy::expect_used,
     reason = "a test fails loudly when a rendered response is not the body it names"

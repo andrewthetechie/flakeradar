@@ -13,6 +13,8 @@
 //! therefore found with [`memchr::memmem::Finder`], whose search is linear in the
 //! haystack whatever the needle is.
 
+// Rust guideline compliant 2026-07-21
+
 use memchr::memmem::{self, Finder};
 
 /// The form field `POST /api/ingest` reads a JUnit XML file from.

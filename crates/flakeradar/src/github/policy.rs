@@ -5,6 +5,8 @@
 //! did as a [`BatchReport`], or as a [`RemovalReport`] for the post-delete close,
 //! so a caller asserts the outcome instead of a log line.
 
+// Rust guideline compliant 2026-07-21
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::client::{Answer, Success, TransportError};

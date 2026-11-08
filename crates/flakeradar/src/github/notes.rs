@@ -4,6 +4,8 @@
 //! posted is stamped before anything else happens, and only a comment that never
 //! reached GitHub leaves the row noteable for the next Report. Never raises.
 
+// Rust guideline compliant 2026-07-21
+
 use chrono::{DateTime, Utc};
 use flakeradar_core::model::EntityKind;
 use flakeradar_db::clock::SharedClock;

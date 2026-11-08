@@ -18,6 +18,8 @@
 //! the recorded replay. They are therefore written out as literals in the tool
 //! files rather than derived, so no schema crate can arrange them differently.
 
+// Rust guideline compliant 2026-07-21
+
 use std::sync::Arc;
 
 use chrono::NaiveDate;

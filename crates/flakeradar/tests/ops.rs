@@ -4,6 +4,8 @@
 //! read APIs. The app starts no worker, so `processor_leader` is false unless the
 //! test holds the processor's advisory lock itself.
 
+// Rust guideline compliant 2026-07-21
+
 #![expect(
     clippy::expect_used,
     reason = "a test fails loudly when the probe or the scrape answers something else"

@@ -4,6 +4,8 @@
 //! in `flakeradar_db::issue_links`, so the MCP tools answer with the same text,
 //! and the route only maps a refusal to its status.
 
+// Rust guideline compliant 2026-07-21
+
 use axum::Json;
 use axum::extract::State;
 use axum::routing::put;

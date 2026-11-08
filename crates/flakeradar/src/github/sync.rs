@@ -5,6 +5,8 @@
 //! rotation list is read first, and each answered row is then written by its own
 //! short statement. Never raises.
 
+// Rust guideline compliant 2026-07-21
+
 use std::ops::ControlFlow;
 
 use chrono::{DateTime, Utc};

@@ -7,6 +7,8 @@
 //! of a row. A caller that needs a bind of its own takes the number from
 //! [`Binds::bind`] rather than counting `$n` by hand.
 
+// Rust guideline compliant 2026-07-21
+
 use flakeradar_core::model::ExecutionStatus;
 use flakeradar_core::types::{CiRunId, Fingerprint, Score};
 use sea_orm::{ConnectionTrait, DbBackend, DbErr, QueryResult, Statement, TryGetable, Value};

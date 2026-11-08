@@ -4,6 +4,8 @@
 //! within its Repo (`default` when omitted), and a Provider is a short lowercase
 //! label such as `github`. See `CONTEXT.md` and ADR 0001.
 
+// Rust guideline compliant 2026-07-21
+
 use std::sync::LazyLock;
 
 use regex::Regex;

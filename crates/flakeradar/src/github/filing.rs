@@ -5,6 +5,8 @@
 //! stranded; the batch stops before the next one once the leader's stop signal
 //! fires. Never raises: an outage costs filings, not Report processing.
 
+// Rust guideline compliant 2026-07-21
+
 use flakeradar_core::model::EntityKind;
 use flakeradar_db::filing::{self, FilingGate};
 use flakeradar_db::issue_links;

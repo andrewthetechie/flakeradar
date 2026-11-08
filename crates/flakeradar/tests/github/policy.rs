@@ -1,5 +1,7 @@
 //! The one status table: verdict by verdict, operation by operation.
 
+// Rust guideline compliant 2026-07-21
+
 use flakeradar::github;
 
 /// One answered call, as [`github::Answer::classify`] reads it.

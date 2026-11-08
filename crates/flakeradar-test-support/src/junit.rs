@@ -1,5 +1,7 @@
 //! Builds the small JUnit reports tests upload.
 
+// Rust guideline compliant 2026-07-21
+
 use std::fmt::Write as _;
 
 /// Builds a minimal JUnit XML report for a test to upload.

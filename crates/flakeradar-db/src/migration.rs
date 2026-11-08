@@ -5,6 +5,8 @@
 //! [`BASELINE_SQL`]. Nothing is imported or renamed, so the schema is the whole
 //! history.
 
+// Rust guideline compliant 2026-07-21
+
 use sea_orm::{ConnectionTrait, DatabaseConnection, DbBackend, DbErr, Statement, TransactionTrait};
 use sea_orm_migration::prelude::{MigrationName, MigrationTrait, MigratorTrait, SchemaManager};
 

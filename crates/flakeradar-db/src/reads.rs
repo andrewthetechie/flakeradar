@@ -10,6 +10,8 @@
 //! window are stated once, and only an intended per-entity difference is
 //! descriptor data.
 
+// Rust guideline compliant 2026-07-21
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{DateTime, Duration, FixedOffset, NaiveDate, Utc};

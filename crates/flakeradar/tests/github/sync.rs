@@ -1,5 +1,7 @@
 //! The issue-state sync's rotation, its stop rules and the post-delete close.
 
+// Rust guideline compliant 2026-07-21
+
 use flakeradar::github::{self, Api, Verdict};
 use flakeradar::settings::Secret;
 use flakeradar::settings::Settings;

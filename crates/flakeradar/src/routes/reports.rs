@@ -7,6 +7,8 @@
 //! The bodies, status codes and `detail` texts are the wire contract `tests/parity`
 //! replays.
 
+// Rust guideline compliant 2026-07-21
+
 use axum::Json;
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, FromRequest, Request, State};
