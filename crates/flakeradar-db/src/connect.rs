@@ -74,8 +74,8 @@ impl Default for DbSettings {
 /// Opens a PostgreSQL pool with `url`, using `settings`.
 ///
 /// A `postgresql+asyncpg://` URL is accepted and rewritten for `SQLx`, so a
-/// configuration written for FlakeRadar 1 keeps working. Other schemes are
-/// refused with the message FlakeRadar 1 gave.
+/// configuration written for FlakeRadar 0.1 keeps working. Other schemes are
+/// refused with the message FlakeRadar 0.1 gave.
 ///
 /// # Errors
 ///

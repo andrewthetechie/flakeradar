@@ -1,6 +1,6 @@
 //! The migrated schema, compared against the recorded baseline.
 //!
-//! `tests/parity/schema.sql` is the schema a 1.x database has, recorded before
+//! `tests/parity/schema.sql` is the schema a 0.1.x database has, recorded before
 //! the rewrite. This test applies that dump to one database and compares its
 //! columns, constraints and indexes with the migrated database's, so a drift in
 //! either direction fails.
@@ -20,7 +20,7 @@ use flakeradar_db::split_statements;
 use flakeradar_test_support::TestDb;
 use sea_orm::{ConnectionTrait, DatabaseBackend, DatabaseConnection, Statement, TransactionTrait};
 
-/// The recorded 1.x schema, as dumped by `pg_dump`.
+/// The recorded 0.1.x schema, as dumped by `pg_dump`.
 const GOLDEN_SCHEMA: &str = include_str!("../../../tests/parity/schema.sql");
 
 /// The start of the snapshot line for the column the drift cases change.

@@ -159,8 +159,8 @@ impl NewPipelineReport {
 /// A CI attempt number as the column holds it.
 ///
 /// Both ingest routes refuse an attempt past `i32::MAX` with a 400 before one is
-/// stored, so this saturates only for a payload a `2.0` build wrote before that
-/// rule existed: the column is what limits it, and failing that stored Report
+/// stored, so this saturates only for a payload an earlier build of this server
+/// wrote before that rule existed: the column is what limits it, and failing that stored Report
 /// would lose a Run over an attempt number nobody reads.
 #[must_use]
 pub fn stored_ci_run_attempt(ci_run_attempt: i64) -> i32 {

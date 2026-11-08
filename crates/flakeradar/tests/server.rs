@@ -107,7 +107,7 @@ async fn a_fresh_database_is_migrated_and_the_shell_answers() {
 
 #[tokio::test]
 async fn a_database_an_older_flakeradar_created_stops_the_start_up() {
-    // A 1.x database is refused and not changed; FlakeRadar 2 has no Alembic
+    // A 0.1.x database is refused and not changed; FlakeRadar 0.2 has no Alembic
     // adoption path, and that refusal happens before the socket is bound.
     let db = TestDb::empty().await.expect("a test database is available");
     db.connection()

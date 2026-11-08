@@ -1,4 +1,4 @@
--- FlakeRadar 2 baseline schema.
+-- FlakeRadar 0.2 baseline schema.
 --
 -- This is the recorded baseline schema (tests/parity/schema.sql) as
 -- one applyable script: same tables, columns, types, defaults, constraint names

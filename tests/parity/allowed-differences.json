@@ -193,7 +193,7 @@
         "file": "golden/mcp/05.json",
         "field": "result.serverInfo.version",
         "pythonValue": "4.1.6",
-        "rustValue": "2.0.0"
+        "rustValue": "0.2.0"
       },
       {
         "file": "golden/mcp/06.json",

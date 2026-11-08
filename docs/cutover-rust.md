@@ -1,11 +1,11 @@
-# Cutover to FlakeRadar 2.0.0 (the Rust binary)
+# Cutover to FlakeRadar 0.2.0 (the Rust binary)
 
-This is the operator's runbook for replacing the Python server (1.x) with the
-single Rust binary. FlakeRadar 2.0 needs a **fresh database**: there is no
+This is the operator's runbook for replacing the Python server (0.1.x) with the
+single Rust binary. FlakeRadar 0.2 needs a **fresh database**: there is no
 import tool and the binary refuses to start on a database that Alembic created,
 or on one holding FlakeRadar tables with no `seaql_migrations` row. It never
 drops or changes anything; it stops with
-`this database was not created by FlakeRadar 2: it holds an alembic_version table`.
+`this database was not created by FlakeRadar 0.2 or later: it holds an alembic_version table`.
 
 Read step 8 before you start: FlakeRadar's own Test and Job ids change, and
 Fabro will treat known-flaky failures as new until history rebuilds.
@@ -14,14 +14,16 @@ Fabro will treat known-flaky failures as new until history rebuilds.
 
 ### 1. Tag the last Python commit
 
-`97b933d` is the last commit whose server was Python. It is the reference the
-parity goldens were recorded from.
+`c911fdb` is the last commit on `main` whose server was Python, and the
+merge base of the Rust PR. The parity goldens were recorded from `97b933d` and
+`86c98804`, its ancestors; the three commits after `97b933d` (#129, #130, #131)
+are on `main`, and the Rust server carries their behaviour.
 
 ```bash
-git tag v1.0.0 97b933d && git push origin v1.0.0
+git tag v0.1.0 c911fdb && git push origin v0.1.0
 ```
 
-1.x stays downloadable from that tag, so a regression has a way back.
+0.1.0 stays downloadable from that tag, so a regression has a way back.
 
 ## At cutover
 
@@ -65,18 +67,18 @@ CREATE DATABASE flakeradar;
 FLAKERADAR_DATABASE_URL=postgresql://flakeradar:<password>@<host>:5432/flakeradar
 ```
 
-With the shipped `docker-compose.yml`, the 1.x database is already called
+With the shipped `docker-compose.yml`, the 0.1.x database is already called
 `flakeradar` in the `flakeradar-pg` volume, and compose builds the URL itself,
 so a `FLAKERADAR_DATABASE_URL` in `.env` is ignored. Create the new database
 under another name instead and name it with `POSTGRES_DB` in `.env`:
 
 ```bash
 docker compose up -d db
-docker compose exec db createdb -U flakeradar flakeradar2
-printf '\nPOSTGRES_DB=flakeradar2\n' >> .env
+docker compose exec db createdb -U flakeradar flakeradar_rust
+printf '\nPOSTGRES_DB=flakeradar_rust\n' >> .env
 ```
 
-The old database stays beside it, untouched, as the way back to 1.x.
+The old database stays beside it, untouched, as the way back to 0.1.0.
 
 If the old URL carried `?ssl=` query parameters, change them to `?sslmode=`.
 The Rust driver reads libpq's names, and `ssl=` is a SQLAlchemy spelling it
@@ -187,10 +189,10 @@ and the frontend gates.
 
 ## Release
 
-### 12. Tag `v2.0.0` on the merge commit
+### 12. Tag `v0.2.0` on the merge commit
 
 ```bash
-git tag v2.0.0 <merge-commit> && git push origin v2.0.0
+git tag v0.2.0 <merge-commit> && git push origin v0.2.0
 ```
 
 Then confirm both workflows finished:
@@ -210,7 +212,7 @@ Verify a download the way the README describes (Linux and macOS get a
 `.tar.gz`, Windows a `.zip`, each with a `.sha256` beside it):
 
 ```bash
-gh attestation verify flakeradar-2.0.0-x86_64-unknown-linux-musl.tar.gz \
+gh attestation verify flakeradar-0.2.0-x86_64-unknown-linux-musl.tar.gz \
   --repo andrewthetechie/flakeradar
-sha256sum -c flakeradar-2.0.0-x86_64-unknown-linux-musl.tar.gz.sha256
+sha256sum -c flakeradar-0.2.0-x86_64-unknown-linux-musl.tar.gz.sha256
 ```

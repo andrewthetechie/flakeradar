@@ -183,7 +183,10 @@ async fn the_refusal_names_the_cutover_notes() {
         .await
         .expect_err("an Alembic database is refused")
         .to_string();
-    assert!(message.contains("not created by FlakeRadar 2"), "{message}");
+    assert!(
+        message.contains("not created by FlakeRadar 0.2 or later"),
+        "{message}"
+    );
     assert!(message.contains("needs a fresh database"), "{message}");
     assert!(message.contains("cutover notes in the README"), "{message}");
 }

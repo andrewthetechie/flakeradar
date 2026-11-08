@@ -5,7 +5,7 @@ services:
       POSTGRES_USER: flakeradar
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-flakeradar}
       # The image creates this database only with a new volume; the URL below
-      # and the healthcheck read it on every start. See docs/cutover-v2.md.
+      # and the healthcheck read it on every start. See docs/cutover-rust.md.
       POSTGRES_DB: ${POSTGRES_DB:-flakeradar}
     volumes:
       - flakeradar-pg:/var/lib/postgresql/data

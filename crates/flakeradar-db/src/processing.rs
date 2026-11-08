@@ -131,7 +131,7 @@ pub struct ProcessOutcome {
 /// The message is `TypeName: message`, and `TypeName` is the failure class an
 /// operator reads: a failed Report's `error` is served by `GET /api/reports` and
 /// shown in the dashboard's failed-Report panel, so its shape is part of the
-/// wire and a 1.x instance's stored text reads the same way. The five names are `OperationalError` (a retryable driver failure),
+/// wire and a 0.1.x instance's stored text reads the same way. The five names are `OperationalError` (a retryable driver failure),
 /// `DBAPIError` (a driver failure no retry fixes), `DataError` (a value the
 /// stored row could not hold), `ValidationError` (a stored Pipeline body that is
 /// not one this server wrote) and `ParseError` (a stored JUnit body that is not

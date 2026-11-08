@@ -155,7 +155,7 @@ sea-orm-cli generate entity \
    schema change that the entities do not reflect cannot land.
 
 Constraint and index names are part of the schema contract: the baseline keeps
-the names the 1.x database used, and a new migration keeps that convention.
+the names the 0.1.x database used, and a new migration keeps that convention.
 
 ## Architecture
 
@@ -163,7 +163,7 @@ the names the 1.x database used, and a new migration keeps that convention.
 crates/
   flakeradar-core/        pure logic and DTOs: no database, no network
     parsing.rs            JUnit parsing: identity, Location, Failure details, retries
-    identity.rs           the Test fingerprint (byte-identical to 1.x)
+    identity.rs           the Test fingerprint (byte-identical to 0.1.x)
     scoring.rs            flip score and same-SHA proof
     classify.rs           Failure category rules
     notify.rs             render a Notification from a Tier change
@@ -200,7 +200,7 @@ tests/parity/  the recorded Python corpus: scenarios, goldens, the JUnit corpus
 samples/    CI snippets and a demo-data simulator
 ```
 
-How the 1.x modules map onto it: `app/routers/*` became
+How the 0.1.x modules map onto it: `app/routers/*` became
 `crates/flakeradar/src/routes/*` with the queries in `flakeradar-db`'s `reads.rs`;
 `app/queries.py` (the read services REST and MCP shared) became `reads.rs`, and
 `mcp/` calls it rather than the routes; `app/processing.py`, `attribution.py`,

@@ -11,7 +11,7 @@ members = [
 resolver = "3"
 
 [workspace.package]
-version = "2.0.0"
+version = "0.2.0"
 edition = "2024"
 license = "Apache-2.0"
 # The toolchain `rust-toolchain.toml` pins, and the one CI builds and tests
@@ -33,10 +33,10 @@ dotenvy = { version = "0.15", default-features = false }
 encoding_rs = { version = "0.8", default-features = false }
 # The sibling crates are declared here too, so a member links one through the
 # workspace and every member resolves the same version (M-CRATES-IN-WORKSPACE).
-flakeradar = { path = "crates/flakeradar", version = "2.0.0" }
-flakeradar-core = { path = "crates/flakeradar-core", version = "2.0.0" }
-flakeradar-db = { path = "crates/flakeradar-db", version = "2.0.0" }
-flakeradar-test-support = { path = "crates/flakeradar-test-support", version = "2.0.0" }
+flakeradar = { path = "crates/flakeradar", version = "0.2.0" }
+flakeradar-core = { path = "crates/flakeradar-core", version = "0.2.0" }
+flakeradar-db = { path = "crates/flakeradar-db", version = "0.2.0" }
+flakeradar-test-support = { path = "crates/flakeradar-test-support", version = "0.2.0" }
 form_urlencoded = { version = "1", default-features = false }
 futures-util = { version = "0.3", default-features = false }
 # `flakeradar-db` names this because sea-orm's statement-logging level is a

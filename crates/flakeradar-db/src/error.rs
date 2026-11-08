@@ -35,8 +35,8 @@ pub enum DbError {
     },
     /// The database holds tables from an older FlakeRadar.
     #[error(
-        "this database was not created by FlakeRadar 2: {detail}. FlakeRadar 2 \
-         needs a fresh database; see the cutover notes in the README"
+        "this database was not created by FlakeRadar 0.2 or later: {detail}. \
+         FlakeRadar 0.2 needs a fresh database; see the cutover notes in the README"
     )]
     LegacyDatabase {
         /// What was found: an Alembic version table, or app tables with no

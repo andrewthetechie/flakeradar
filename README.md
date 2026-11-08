@@ -26,7 +26,7 @@ test is nondeterministic.
 - [What it does](#what-it-does)
 - [Quick start](#quick-start)
 - [Quick start with Docker](#quick-start-with-docker)
-- [Upgrading from 1.x](#upgrading-from-1x)
+- [Upgrading from 0.1.x](#upgrading-from-01x)
 - [Quick start for local development](#quick-start-for-local-development)
 - [CI integration](#ci-integration)
 - [CI jobs](#ci-jobs)
@@ -119,13 +119,13 @@ docker run -d --name flakeradar-pg -p 5432:5432 \
   -e POSTGRES_USER=flakeradar -e POSTGRES_PASSWORD=flakeradar -e POSTGRES_DB=flakeradar \
   postgres:17-alpine
 
-# 2. The binary for your platform, from the newest release (2.0.0 here).
+# 2. The binary for your platform, from the newest release (0.2.0 here).
 #    x86_64-unknown-linux-musl   aarch64-unknown-linux-musl
 #    x86_64-apple-darwin         aarch64-apple-darwin       x86_64-pc-windows-msvc
 TARGET=aarch64-apple-darwin      # your target, from the table above
-gh release download v2.0.0 --repo andrewthetechie/flakeradar \
-  --pattern "flakeradar-2.0.0-$TARGET.tar.gz"
-tar -xzf "flakeradar-2.0.0-$TARGET.tar.gz"
+gh release download v0.2.0 --repo andrewthetechie/flakeradar \
+  --pattern "flakeradar-0.2.0-$TARGET.tar.gz"
+tar -xzf "flakeradar-0.2.0-$TARGET.tar.gz"
 
 # 3. Run it. On first start it creates its whole schema.
 FLAKERADAR_API_TOKEN="$(openssl rand -base64 32)" \
@@ -145,9 +145,9 @@ provenance attestation, so you can check both integrity and where the bytes
 came from:
 
 ```bash
-gh attestation verify flakeradar-2.0.0-x86_64-unknown-linux-musl.tar.gz \
+gh attestation verify flakeradar-0.2.0-x86_64-unknown-linux-musl.tar.gz \
   --repo andrewthetechie/flakeradar
-sha256sum -c flakeradar-2.0.0-x86_64-unknown-linux-musl.tar.gz.sha256
+sha256sum -c flakeradar-0.2.0-x86_64-unknown-linux-musl.tar.gz.sha256
 # macOS: shasum -a 256 -c ...
 ```
 
@@ -192,9 +192,9 @@ To load demo data, run:
 python samples/simulate_ci.py http://localhost:8000 "$FLAKERADAR_API_TOKEN"
 ```
 
-## Upgrading from 1.x
+## Upgrading from 0.1.x
 
-2.0 is a **fresh install**. There is no import tool and no data migration: the
+0.2 is a **fresh install**. There is no import tool and no data migration: the
 new binary refuses to start on a database the Python server created, because it
 holds an `alembic_version` table, or on one with FlakeRadar tables and no
 `seaql_migrations` row. It never drops or changes anything, so pointing it at
@@ -204,7 +204,7 @@ Scores, tiers, Proven flake counts and Score history start empty and rebuild fro
 new Reports, which takes about a week of CI runs on the default branch. Test and
 Job ids change, so a stored id no longer names the same Test.
 
-[docs/cutover-v2.md](docs/cutover-v2.md) is the step-by-step runbook: tag the
+[docs/cutover-rust.md](docs/cutover-rust.md) is the step-by-step runbook: tag the
 last Python commit, stop the old deployment, close the open `flakeradar`
 issues, create the database, deploy with the GitHub token unset, and set it
 again once scores have rebuilt.

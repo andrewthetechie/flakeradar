@@ -1,6 +1,6 @@
 //! The baseline migration and the old-database check that runs before it.
 //!
-//! A FlakeRadar 2 database is created in one step: [`run_migrations`] takes the
+//! A FlakeRadar 0.2 database is created in one step: [`run_migrations`] takes the
 //! advisory lock, refuses a database an older FlakeRadar created, then applies
 //! [`BASELINE_SQL`]. Nothing is imported or renamed, so the schema is the whole
 //! history.
@@ -33,7 +33,7 @@ const APP_TABLES: [&str; 11] = [
     "test_score_history",
 ];
 
-/// The migration set of a FlakeRadar 2 database.
+/// The migration set of a FlakeRadar 0.2 database.
 #[derive(Debug)]
 pub struct Migrator;
 
@@ -81,7 +81,7 @@ impl MigrationTrait for Migration0001Baseline {
 /// # Errors
 ///
 /// Returns [`DbError::LegacyDatabase`] when the database was not created by
-/// FlakeRadar 2, and [`DbError::Database`] when the server rejects the
+/// FlakeRadar 0.2 or later, and [`DbError::Database`] when the server rejects the
 /// migration.
 pub async fn run_migrations(db: &DatabaseConnection) -> Result<(), DbError> {
     let transaction = db.begin().await?;
@@ -101,7 +101,7 @@ pub async fn run_migrations(db: &DatabaseConnection) -> Result<(), DbError> {
 ///
 /// Alembic left a `alembic_version` table, so its presence identifies an older
 /// FlakeRadar; app tables without a `seaql_migrations` table beside them are the
-/// same case with the version table gone. Either way FlakeRadar 2 changes
+/// same case with the version table gone. Either way FlakeRadar 0.2 changes
 /// nothing and stops.
 async fn ensure_created_by_us(db: &impl ConnectionTrait) -> Result<(), DbError> {
     if table_exists(db, "alembic_version").await? {
