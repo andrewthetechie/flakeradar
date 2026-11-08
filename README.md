@@ -4,14 +4,6 @@
 ![Rust](https://img.shields.io/badge/rust-1.99-orange)
 ![Self-hosted](https://img.shields.io/badge/self--hosted-yes-green)
 
-FlakeRadar began as a fork of Joseph Maniate's
-[manijose1919/flakeradar](https://github.com/manijose1919/flakeradar), and the
-idea and the first version are his. This project has since been rewritten in
-Rust with a different data model, ingest pipeline and API, and it no longer
-shares a roadmap or compatibility with that project. The two are independent.
-It stays under the Apache License 2.0, and the original copyright notice is
-kept in [NOTICE](NOTICE).
-
 FlakeRadar is a self-hosted service that finds flaky tests and flaky CI jobs.
 It is an open-source alternative to BuildPulse and Datadog CI Visibility for
 small engineering teams.
@@ -25,6 +17,14 @@ test. When a test passes and fails on the same commit, that is proof that the
 test is nondeterministic.
 
 ![The FlakeRadar tests leaderboard](docs/images/tests-leaderboard.png)
+
+FlakeRadar began as a fork of Joseph Maniate's
+[manijose1919/flakeradar](https://github.com/manijose1919/flakeradar), and the
+idea and the first version are his. This project has since been rewritten in
+Rust with a different data model, ingest pipeline and API, and it no longer
+shares a roadmap or compatibility with that project. The two are independent.
+It stays under the Apache License 2.0, and the original copyright notice is
+kept in [NOTICE](NOTICE).
 
 ## Who it is for
 
