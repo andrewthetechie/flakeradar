@@ -6,6 +6,8 @@
 //! test asks the server which it got; the database is [`TestDb::empty`], so the
 //! migration has to run for any route that reads a table to answer.
 
+// Rust guideline compliant 2026-07-21
+
 #![expect(
     clippy::expect_used,
     clippy::panic,
@@ -414,6 +416,38 @@ async fn a_stalled_upload_does_not_stop_serve_from_returning() {
         processor_lock_is_free(&db).await,
         "the worker released its lock despite the abandoned drain"
     );
+}
+
+#[tokio::test]
+async fn an_idle_server_keeps_serving_past_the_drain_bound() {
+    let db = TestDb::new().await.expect("a test database");
+    let server = Server::start(settings_for(&db))
+        .await
+        .expect("the server starts");
+    // The stop channel is never fired: the drain bound belongs to the shutdown,
+    // so no amount of idle time may end `serve`.
+    let (stop, stopped) = oneshot::channel::<()>();
+    let serving = tokio::spawn(server.serve(async move {
+        let _ = stopped.await;
+    }));
+
+    tokio::time::pause();
+    for _ in 0..40 {
+        tokio::time::advance(Duration::from_secs(1)).await;
+        tokio::task::yield_now().await;
+    }
+    let ended_idle = serving.is_finished();
+    tokio::time::resume();
+
+    assert!(
+        !ended_idle,
+        "serve returned with no shutdown signal: the drain bound ran from start"
+    );
+    let _ = stop.send(());
+    serving
+        .await
+        .expect("the serving task ends")
+        .expect("the server stops cleanly");
 }
 
 #[tokio::test]

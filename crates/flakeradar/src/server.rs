@@ -225,15 +225,29 @@ impl Server {
         self,
         shutdown: impl Future<Output = ()> + Send + 'static,
     ) -> anyhow::Result<()> {
+        // The drain bound must run from the shutdown signal and not from the
+        // start: this channel tells the bound when the signal came.
+        let (signalled, shutdown_seen) = tokio::sync::oneshot::channel::<()>();
         let serve = async {
             axum::serve(self.listener, self.app)
-                .with_graceful_shutdown(shutdown)
+                .with_graceful_shutdown(async move {
+                    shutdown.await;
+                    // A closed receiver means the drain already ended.
+                    let _ = signalled.send(());
+                })
                 .await
         };
         tokio::pin!(serve);
         let worker_ended = self.worker.ended();
         tokio::pin!(worker_ended);
-        let drain = tokio::time::timeout(DRAIN_TIMEOUT, &mut serve);
+        let drain = async {
+            tokio::select! {
+                served = &mut serve => Ok(served),
+                Ok(()) = shutdown_seen => {
+                    tokio::time::timeout(DRAIN_TIMEOUT, &mut serve).await
+                }
+            }
+        };
         tokio::pin!(drain);
 
         // The socket stops accepting on the shutdown signal, and the worker
