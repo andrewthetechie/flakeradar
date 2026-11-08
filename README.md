@@ -133,8 +133,7 @@ has the full guide:
 
 FlakeRadar 0.1.x was a Python server. 0.2 is a fresh install with no data
 migration, and it does not start on a database that 0.1.x created. Read
-[Upgrading from 0.1.x](docs/deployment.md#upgrading-from-01x) and the runbook
-[cutover-rust.md](docs/cutover-rust.md) before you upgrade.
+[Upgrading from 0.1.x](docs/deployment.md#upgrading-from-01x) for more info.
 
 ## Development
 

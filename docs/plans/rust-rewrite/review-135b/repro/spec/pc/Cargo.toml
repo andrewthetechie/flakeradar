@@ -1,8 +1,0 @@
-[package]
-name = "pc"
-version = "0.0.0"
-edition = "2024"
-[workspace]
-[dependencies]
-flakeradar-core = { path = "/Users/andrew/Documents/code/flakeradar/crates/flakeradar-core" }
-serde_json = "1"
