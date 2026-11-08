@@ -54,6 +54,8 @@ new database would not have known about those issues anyway.
 
 ### 4. Create an empty database and point the binary at it
 
+Outside the shipped `docker-compose.yml` (for compose, see below):
+
 ```sql
 CREATE DATABASE flakeradar;
 ```
@@ -71,7 +73,7 @@ under another name instead and name it with `POSTGRES_DB` in `.env`:
 ```bash
 docker compose up -d db
 docker compose exec db createdb -U flakeradar flakeradar2
-echo 'POSTGRES_DB=flakeradar2' >> .env
+printf '\nPOSTGRES_DB=flakeradar2\n' >> .env
 ```
 
 The old database stays beside it, untouched, as the way back to 1.x.
