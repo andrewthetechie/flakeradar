@@ -122,11 +122,14 @@ fn redact(url: &str) -> String {
     let Some((scheme, rest)) = url.split_once("://") else {
         return "an unparseable URL".to_owned();
     };
-    let rest = rest.split(['?', '#']).next().unwrap_or_default();
+    // The last `@` is found first, in the whole string: a `?` or `#` before it
+    // belongs to the password, and only what follows it can start a query.
     let Some(at) = rest.rfind('@') else {
-        return format!("{scheme}://{rest}");
+        let authority = rest.split(['?', '#']).next().unwrap_or_default();
+        return format!("{scheme}://{authority}");
     };
-    let (userinfo, host) = rest.split_at(at);
+    let (userinfo, host_and_query) = rest.split_at(at);
+    let host = host_and_query.split(['?', '#']).next().unwrap_or_default();
     let user = userinfo
         .split_once(':')
         .map_or(userinfo, |(user, _password)| user);
@@ -298,6 +301,30 @@ mod tests {
             "postgresql://db:5432/flakeradar"
         );
         assert_eq!(redact("not a url"), "an unparseable URL");
+    }
+
+    #[test]
+    fn a_password_holding_a_query_or_fragment_character_is_still_removed() {
+        // The userinfo runs to the last `@` in the whole string, so a `?` or `#`
+        // inside the password is part of the password and not the start of a
+        // query; cutting the query first would print the password's tail.
+        for (url, printed) in [
+            (
+                "postgresql://u:pa#ss@db:5432/d",
+                "postgresql://u:***@db:5432/d",
+            ),
+            (
+                "postgresql://u:pa?ss@db:5432/d",
+                "postgresql://u:***@db:5432/d",
+            ),
+            ("postgresql://u:s3cret/x?y@db/d", "postgresql://u:***@db/d"),
+            (
+                "postgresql://u:pa#ss@db:5432/d?sslmode=require#frag",
+                "postgresql://u:***@db:5432/d",
+            ),
+        ] {
+            assert_eq!(redact(url), printed, "{url}");
+        }
     }
 
     #[test]
