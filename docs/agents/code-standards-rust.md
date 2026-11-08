@@ -7,7 +7,7 @@ _this_ repo. Where this document is stricter, this document wins.
 
 ## Compliance marker
 
-A `.rs` file that fully complies carries the marker comment, per the skill:
+Every hand-written `.rs` file under `crates/` carries the marker comment, per the skill:
 
 ```rust
 // Rust guideline compliant 2026-07-21
@@ -15,8 +15,11 @@ A `.rs` file that fully complies carries the marker comment, per the skill:
 
 Place it immediately before the first `use` or item, below any license header and any
 module-level `//!` doc comment, separated from preamble and code by a blank line. When the file
-has no preamble, it is line 1. Add it only to files you have actually checked — a stale marker
-is worse than none.
+has no preamble, it is line 1. `tests/source_hygiene.rs` fails a hand-written file without it
+(the generated SeaORM entities are exempt), so a new file cannot pass CI unmarked. The marker is
+the author's promise that the file was checked against these guidelines, kept at review: adding a
+file, or changing one substantially, means checking it before the marker stays. CI cannot verify
+that promise; clippy covers only part of the checklist.
 
 ## Static verification
 
@@ -171,7 +174,8 @@ is worse than none.
 - [ ] `cargo fmt --all -- --check`, `cargo clippy --all-targets --all-features -- -D warnings`,
       `cargo nextest run --all-features --profile ci` clean.
 - [ ] No new `unwrap`/`expect` on input or I/O paths; untrusted CI input returns a `Result`.
-- [ ] Public items documented per M-CANONICAL-DOCS; fully compliant files carry the marker.
+- [ ] Public items documented per M-CANONICAL-DOCS; each new or changed file was checked before
+      it carries the marker.
 - [ ] No secrets or Failure details in logs; no `println!`/`dbg!`.
 - [ ] New I/O reached through an injected seam, not a real clock or a hard-coded URL.
 - [ ] New invariant-bearing newtypes have a fallible constructor and no infallible `From`.
