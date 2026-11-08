@@ -20,7 +20,7 @@ use flakeradar_test_support::{TestDb, settings, wait_until};
 use sea_orm::{ConnectionTrait as _, EntityTrait as _, PaginatorTrait as _};
 use serde_json::json;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::{Notify, oneshot};
 
 /// Settings for a server on `db`, on the kernel's choice of port.
@@ -351,7 +351,12 @@ async fn a_stalled_upload_does_not_stop_serve_from_returning() {
     use tokio::io::AsyncWriteExt as _;
 
     let db = TestDb::new().await.expect("a test database");
-    let server = Server::start(settings_for(&db))
+    // The seam fires when the app takes a request, so the test knows the upload
+    // is in flight before it stops the server rather than guessing it from
+    // yields: a stop that raced the request's arrival would find nothing to
+    // drain and pass for the wrong reason.
+    let arrived = Arc::new(Notify::new());
+    let server = Server::start_with_request_signal(settings_for(&db), Some(Arc::clone(&arrived)))
         .await
         .expect("the server starts");
     let address = server.local_addr();
@@ -377,25 +382,28 @@ async fn a_stalled_upload_does_not_stop_serve_from_returning() {
         .expect("the request head is written");
     let (sent, _rest) = body.split_at(body.len() / 2);
     stream.write_all(sent).await.expect("half the body is sent");
+    arrived.notified().await;
 
     let _ = stop.send(());
-    // Advance past the drain bound so the stalled request cannot hold the
-    // process open forever. The clock is paused only here, after the real
-    // database and server are up, and yielded so the serving task can observe
-    // the timed-out drain and return.
+    // The drain is bounded at the server's own `DRAIN_TIMEOUT`, so a client that
+    // never finishes its upload cannot hold the process open. The clock is
+    // paused so that bound costs no real time, and advanced once per poll until
+    // the serving task ends: a timer the task registers after the first advance
+    // — the drain's own, or the worker stop's — still crosses its deadline,
+    // which a fixed number of yields did not guarantee under an instrumented
+    // build. The real deadline is a hang guard rather than the outcome: without
+    // it, a drain with no bound would park this test instead of failing it.
     tokio::time::pause();
-    tokio::time::advance(Duration::from_secs(26)).await;
-    for _ in 0..32 {
-        if serving.is_finished() {
-            break;
-        }
+    let hang_guard = Instant::now() + Duration::from_secs(10);
+    while !serving.is_finished() {
+        assert!(
+            Instant::now() < hang_guard,
+            "serve never returned past the drain bound: the stalled upload held it open"
+        );
+        tokio::time::advance(Duration::from_secs(1)).await;
         tokio::task::yield_now().await;
     }
 
-    assert!(
-        serving.is_finished(),
-        "serve returned within the drain bound even though the upload stalled"
-    );
     // Resume so the lock probe's fresh connection can acquire in real time.
     tokio::time::resume();
     serving
