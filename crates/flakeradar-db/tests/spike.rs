@@ -1,9 +1,8 @@
 //! The SeaORM spike: every hard query the later tasks need, proven against a
 //! real database.
 //!
-//! `docs/plans/rust-rewrite/spike-notes.md` records the outcome for each one:
-//! whether the builder expressed it readably, or whether it needs a raw
-//! `Statement`.
+//! Each query shows whether the builder expresses it readably, or whether it
+//! needs a raw `Statement`.
 
 // Rust guideline compliant 2026-07-21
 

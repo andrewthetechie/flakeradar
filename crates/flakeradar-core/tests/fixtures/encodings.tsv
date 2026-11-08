@@ -1,7 +1,7 @@
 # One row per encoding label and byte: the answer `CPython`'s codecs give for
 # a JUnit document that declares that label and puts that byte in a case's
 # name.
-# Generated from CPython's codecs by genencodings.py; do not edit by hand.
+# Generated from CPython's codecs; do not edit by hand.
 #
 # label <TAB> byte (hex, or `ascii` for the printable-ASCII probe) <TAB> answer
 # answer: the code point the case's name holds in hex, or `refuse` for a label

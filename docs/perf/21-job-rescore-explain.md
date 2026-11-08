@@ -569,7 +569,7 @@ The data is smaller than the fixture above (a laptop, not a 2M-row seed):
 
 Both arms stop at the window on `ix_job_exec_job_id`, which is the index the change was made
 for, and there is no sort of the retained executions and no temp block. The `Limit` appears once
-per Job id, as task 07 recorded in `spike-notes.md`. This is the plan this file's "after"
+per Job id. This is the plan this file's "after"
 column describes; only the row count differs.
 
 ### Rust seed

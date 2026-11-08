@@ -1,7 +1,6 @@
 [
   {
     "id": "unparsable-testcase-time",
-    "differenceRow": "A `<testcase time>` attribute that is not a number",
     "reason": "Python crashes with an unhandled junitparser ValueError (HTTP 500); Rust validates the attribute and answers 400, as the user approved on 2026-11-04. The allowance covers exactly these fields in these three goldens and nothing else: the error text of the two JUnit goldens, and the status, body and content-type of ingest-junit/07.",
     "allows": [
       {
@@ -40,7 +39,6 @@
   },
   {
     "id": "junit-parse-error-suffix",
-    "differenceRow": "The suffix of a JUnit parse-error detail",
     "reason": "The prefix \"Not a valid JUnit XML report: \" and the 422 status stay identical; the parser's own wording after the prefix cannot be reproduced by roxmltree. Each allowance names one field of one golden and requires the prefix.",
     "allows": [
       {
@@ -101,8 +99,7 @@
   },
   {
     "id": "junit-unicode-digit-line",
-    "differenceRow": "The `line` attribute",
-    "reason": "Python's isdigit() accepts Unicode digits, so the Arabic-Indic line in non-numeric-line.xml becomes the line number. The pre-approved rule in differences.md makes Rust accept ASCII digits only and treat anything else as no line, so those two goldens differ in exactly one case's line and nothing else.",
+    "reason": "Python's isdigit() accepts Unicode digits, so the Arabic-Indic line in non-numeric-line.xml becomes the line number. Rust accepts ASCII digits only and treats anything else as no line, so those two goldens differ in exactly one case's line and nothing else.",
     "allows": [
       {
         "file": "golden/junit/non-numeric-line.line_base0.json",
@@ -120,7 +117,6 @@
   },
   {
     "id": "mcp-result-envelope",
-    "differenceRow": "The MCP result envelope",
     "reason": "rmcp omits an absent optional field where fastmcp writes an explicit null, does not advertise the deprecated logging capability, and reports FlakeRadar's own version; a tools/list answer additionally carries the SEP-2549 caching fields and the SEP-2322 resultType, which the recorded client's revision did not. Every field a client reads is compared unchanged: each allowance names one field of one golden that is recorded as null (or as fastmcp's own value) and answered absent (or with FlakeRadar's value).",
     "allows": [
       {
@@ -1201,7 +1197,6 @@
   },
   {
     "id": "openapi-document",
-    "differenceRow": "The `/openapi.json` document",
     "reason": "The reference's document is FastAPI's, generated from its own routes and Pydantic models; this port's is utoipa's, generated from the `#[utoipa::path]` annotations. Descriptions, summaries, operation ids, schema spelling and the framework's own 422 components differ by construction, so the two documents cannot agree field for field. What both promise a client, and what this allowance compares, is the contract: the same paths, the same methods on each path, the same parameters on each operation, the same field names in every response schema, and the same schema name on every 2xx body. Every difference is reported by its path or schema. It covers `body` of this one golden and nothing else.",
     "allows": [
       {

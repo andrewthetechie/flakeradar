@@ -129,7 +129,7 @@ impl LockSession for AdvisoryLock {
                 .await
                 .map_err(DbError::Database)?;
             // A query with no FROM clause always answers one row; the arm for a
-            // missing one is logged in coverage-gaps.md and means "not locked".
+            // missing one means "not locked".
             let Some(row) = row else {
                 *guard = Some(session);
                 return Ok(false);

@@ -1008,8 +1008,7 @@ fn compare_framework_422(
 /// names. The two validation schemas are the recorded document's own: it describes
 /// its 422 as `HTTPValidationError` wrapping `ValidationError`, while this server
 /// documents the status with a description and keeps the same five issue fields in
-/// `ValidationIssue`. The 422 replay steps compare the wire bodies of both, and
-/// `differences.md` records the difference.
+/// `ValidationIssue`. The 422 replay steps compare the wire bodies of both.
 const OPENAPI_SCHEMA_ALIASES: &[(&str, &str)] = &[("ValidationError", "ValidationIssue")];
 
 /// The schemas only the recorded document has.
@@ -1179,7 +1178,7 @@ fn compare_openapi_schemas(
 /// always serialized as an explicit `null` there, and this server documents a
 /// nullable field as optional. So a field the recorded document requires and this one
 /// does not must be nullable here — the mismatch is that one rule and nothing
-/// else. `differences.md` records it under the `/openapi.json` row.
+/// else.
 fn compare_openapi_fields(
     name: &str,
     recorded: &Value,
@@ -1745,7 +1744,7 @@ fn placeholder_text_matches(template: &str, value: &str) -> bool {
 
 /// Whether two texts name the same instant on a timestamp-named field.
 ///
-/// `differences.md` lets a stored timestamp omit a zero fraction and carry either
+/// A stored timestamp may omit a zero fraction and carry either
 /// `Z` or `+00:00`, so a `*_at` field inside a table `body` compares by the
 /// instant it names. Every other field, and every other difference in that
 /// instant, is a mismatch.
@@ -1842,7 +1841,7 @@ fn is_timestamp(value: &str) -> bool {
     }
 }
 
-/// The instant a clock value names, in either spelling `differences.md` allows.
+/// The instant a clock value names, in either spelling a stored timestamp may carry.
 fn instant(value: &Value) -> Option<DateTime<chrono::FixedOffset>> {
     DateTime::parse_from_rfc3339(value.as_str()?).ok()
 }
@@ -2227,8 +2226,8 @@ mod tests {
     #[test]
     fn a_table_body_compares_field_by_field_on_the_real_dump() {
         // The `reports` dump of a step this harness records. This server writes
-        // six fraction digits where the golden omits them, which `differences.md`
-        // allows on a timestamp and on nothing else, so the queued document is
+        // six fraction digits where the golden omits them, which is
+        // allowed on a timestamp and on nothing else, so the queued document is
         // compared rather than its hex.
         let recorded = super::golden("pipeline-jobs", 37);
         let tables = recorded

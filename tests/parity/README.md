@@ -11,11 +11,8 @@ two were recorded with the recorder from `57b22b6`, the commit before `fd259c1`
 deleted `tools/parity-record/` — it was already absent from the tree when they
 were recorded — run against a checkout of `86c98804`'s `backend/` outside this
 one. The recorder is gone with the Python code it drove. **A golden file changes
-only for an intended behaviour change, and only together with an entry in
-`docs/plans/rust-rewrite/differences.md`**; a difference the replay must accept
-also needs an entry in `allowed-differences.json`, which
-`record.py --verify` used to reconcile against `differences.md` and no longer
-can.
+only for an intended behaviour change**; a difference the replay must accept
+also needs an entry in `allowed-differences.json`.
 
 ```
 junit/                    the JUnit XML corpus (inputs)
@@ -37,9 +34,8 @@ which scenario), so a diff against that review's head reads those two files and 
 
 Nothing here is edited by hand: a replay compares against these files byte for
 byte, so a hand edit is an unreviewed behaviour change. When a difference is
-intended, record why in `docs/plans/rust-rewrite/differences.md`, add the
-narrowest matching entry to `allowed-differences.json`, and change the golden
-in the same PR.
+intended, add the narrowest matching entry to `allowed-differences.json` and
+change the golden in the same PR.
 
 ## Recording (historical)
 
@@ -73,7 +69,7 @@ parse:
 `record.py` (deleted with the Python code) also failed when a route in
 FastAPI's own route table (`app.openapi()["paths"]`) appeared in no scenario,
 except the docs routes and `/mcp`, which the Rust binary serves differently on
-purpose (see `docs/plans/rust-rewrite/differences.md`).
+purpose.
 
 A PostgreSQL minor-version bump changes the version comment in `schema.sql`;
 the file is now a fixture, so a bump means editing it by hand and saying why in
@@ -228,10 +224,8 @@ is the `consumers` scenario's first step. The rules:
   optionally narrowed:
   - `pythonValue`/`rustValue`: the two exact values, for a status-code change.
   - `match: {"kind": "prefix", "value": "..."}`: the Rust value must start with
-    that prefix and may differ after it, for parser wording. Every entry names a row in
-  `docs/plans/rust-rewrite/differences.md`; an entry with no matching row is a
-  bug, and so is a `differences.md` row that changes a recorded value without an
-  entry here.
+    that prefix and may differ after it, for parser wording. Every entry carries a `reason`, and
+  the replay's reconciliation checks each entry against the golden it names.
 
 ## What a scenario cannot reach, and where it is covered instead
 

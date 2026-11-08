@@ -76,11 +76,8 @@ when either total is below the baseline `main` last uploaded as the
 change. Never lower a floor, and never add a scenario, allowance, `#[ignore]` or
 `coverage(off)` to make a gate pass.
 
-Every line a test cannot reach is a row in
-[docs/plans/rust-rewrite/coverage-gaps.md](docs/plans/rust-rewrite/coverage-gaps.md),
-with the file, the function and why. `#[cfg_attr(coverage_nightly,
-coverage(off))]` is limited to code a test process cannot run (the process edge
-in `main.rs`, signal wiring) and each use is logged there too.
+`#[cfg_attr(coverage_nightly, coverage(off))]` is limited to code a test
+process cannot run (the process edge in `main.rs`, signal wiring).
 
 ### Frontend coverage
 

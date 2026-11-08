@@ -24,14 +24,13 @@ use flakeradar::{
 ///
 /// musl's own allocator serializes badly under the multi-threaded runtime, and a
 /// musl build is what the container image runs. Other targets keep the system
-/// allocator; see `docs/plans/rust-rewrite/13-packaging.md`.
+/// allocator.
 #[cfg(all(target_os = "linux", target_env = "musl"))]
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 // Process start-up, environment access and signal wiring are outside what a test
-// process can run, so the coverage policy excludes them; see
-// `docs/plans/rust-rewrite/coverage-gaps.md`.
+// process can run, so the coverage policy excludes them.
 #[cfg_attr(coverage_nightly, coverage(off))]
 fn main() -> ExitCode {
     init_tracing();
@@ -95,8 +94,7 @@ fn runtime() -> anyhow::Result<tokio::runtime::Runtime> {
 ///
 /// The serve loop stops accepting requests and then stops the worker, so a
 /// request in flight finishes. Signal wiring is the one part of the process a
-/// test cannot run, so the coverage policy excludes it; see
-/// `docs/plans/rust-rewrite/coverage-gaps.md`.
+/// test cannot run, so the coverage policy excludes it.
 #[cfg_attr(coverage_nightly, coverage(off))]
 async fn shutdown_signal() {
     let ctrl_c = async {

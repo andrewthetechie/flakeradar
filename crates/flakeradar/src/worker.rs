@@ -363,7 +363,7 @@ impl ReportWorker {
             // every loop, on a backlog as well as on an empty queue: a lock
             // connection that died frees the lock for a standby even while
             // Reports keep arriving. Checking only an empty queue would let the
-            // two claim the same Report; see `differences.md`.
+            // two claim the same Report.
             if let Err(error) = self.lock.check().await {
                 self.drop_leadership(&error, self.settings.poll).await;
                 continue;

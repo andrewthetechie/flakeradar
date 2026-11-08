@@ -1,9 +1,6 @@
 //! The encoding labels this server reads, and the table each decodes with.
 //!
-//! Generated from `CPython`'s codecs by
-//! `docs/plans/rust-rewrite/review-135b/repro/spec/genencodings.py`. Do not
-//! edit by hand: change the generator and run it again, which gives the same
-//! bytes as long as the interpreter's codecs do not change.
+//! Derived from `CPython`'s codecs. Do not edit by hand.
 
 // Rust guideline compliant 2026-07-21
 

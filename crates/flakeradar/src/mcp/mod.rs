@@ -437,7 +437,7 @@ fn unknown_tool(name: &str) -> CallToolResult {
 /// `arguments` stands in when it failed at the object itself (a missing required
 /// field, whose name the diagnosis carries). `serde` reports one error, so the
 /// count is always one. The type, value and documentation-URL tail of that report
-/// is not reproduced; `differences.md` records that.
+/// is not reproduced.
 fn invalid_arguments(name: &str, path: &str, detail: &str) -> CallToolResult {
     // `Path` prints `.` for the root, where a missing field is reported.
     let field = if path == "." { "arguments" } else { path };

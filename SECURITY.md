@@ -38,8 +38,7 @@ FlakeRadar's security posture is deliberate and documented:
   replaced by `***`.
 - **A setting outside what its field means refuses to start** (exit status 1)
   rather than scoring wrong: a NaN or out-of-range `FLAKERADAR_SCORE_DECAY`
-  would otherwise mark every Test flaky. The ranges are listed in
-  `docs/plans/rust-rewrite/differences.md`.
+  would otherwise mark every Test flaky.
 - **The database is trusted.** The binary creates its schema and refuses a
   database another tool made; it needs a role that can create tables on first
   start.

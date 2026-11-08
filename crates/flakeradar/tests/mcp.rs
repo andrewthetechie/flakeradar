@@ -951,7 +951,7 @@ async fn get_job_by_id_and_by_name_with_explained_failures() {
         ]
     );
     // The recorded timestamps write `+00:00`; this server writes the six-digit `Z`
-    // spelling differences.md records, so the assertion is on that contract.
+    // spelling, so the assertion is on that contract.
     let created_at = explained["created_at"]
         .as_str()
         .expect("created_at is text");
@@ -1502,8 +1502,7 @@ async fn an_unknown_tool_and_an_unreadable_argument_are_error_results() {
         "the text opens with the header and the field: {text:?}"
     );
     // The diagnosis is the recorded sentence, without the type, value and
-    // documentation-URL tail that went with it, which `differences.md` records as
-    // not reproduced.
+    // documentation-URL tail that went with it.
     assert!(
         text.ends_with("Input should be a valid integer, unable to parse string as an integer"),
         "the diagnosis is the recorded one: {text:?}"

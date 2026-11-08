@@ -567,8 +567,7 @@ this is a laptop, not the 2M-row dataset: Apple M4, macOS 26.6.2, PostgreSQL
 The index use the change was made for is what the port keeps: both arms stop at the window on
 `ix_exec_case_id` (no sort of the retained history, no temp buffers), and `Limit` appears once
 per id rather than once per chunk. The run read `shared hit=2,550` buffers and touched no
-temp blocks: no arm spilled a sort. That is the shape task 07 recorded in `spike-notes.md`, and
-it is the plan this file's "after" column describes.
+temp blocks: no arm spilled a sort. That is the plan this file's "after" column describes.
 
 The Job side is the same result; see `21-job-rescore-explain.md`.
 

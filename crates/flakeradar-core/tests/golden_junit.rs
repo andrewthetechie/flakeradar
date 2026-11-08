@@ -190,8 +190,7 @@ fn check_error(golden: &Golden, recorded: &str, parsed: Result<Vec<ParsedCase>, 
     });
     if recorded.starts_with("unhandled ") {
         // The recorded answer for this corpus file is an unhandled error; the
-        // parser names the bad value instead, so the ingest route answers 400
-        // (differences.md).
+        // parser names the bad value instead, so the ingest route answers 400.
         assert!(
             matches!(error, ParseError::InvalidTime { .. }),
             "{}: expected a typed time error, got {error}",

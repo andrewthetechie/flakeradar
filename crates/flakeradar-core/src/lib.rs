@@ -4,8 +4,7 @@
 //! HTTP server and the MCP server share, plus the scoring, parsing and
 //! classification logic that needs neither a database nor a network. It depends
 //! on no ORM, no web framework and no HTTP client, so every rule in it is
-//! testable with plain values. Where each wire rule came from, and which corpus
-//! pins it, is `docs/plans/rust-rewrite/wire-notes.md`.
+//! testable with plain values.
 
 // Rust guideline compliant 2026-07-21
 

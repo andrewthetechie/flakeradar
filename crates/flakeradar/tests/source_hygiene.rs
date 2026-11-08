@@ -128,13 +128,13 @@ const ALLOWED: &[(&str, &[&str], &str)] = &[
     ),
     (
         "crates/flakeradar-core/src/encodings.rs",
-        &["python", ".py"],
-        "the tables are generated from CPython's own codecs, and the header names the script that writes the file",
+        &["python"],
+        "the tables are derived from CPython's own codecs",
     ),
     (
         "crates/flakeradar-core/tests/encodings.rs",
-        &["python", ".py"],
-        "the module doc names the script that generates the fixture the test replays",
+        &["python"],
+        "the module doc names the CPython codecs the fixture was derived from",
     ),
     (
         "crates/flakeradar-core/tests/golden_junit.rs",

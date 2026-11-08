@@ -1,8 +1,7 @@
 //! Every encoding label and byte decodes as the generated table says it must.
 //!
 //! `tests/fixtures/encodings.tsv` holds one row per label and byte, generated
-//! from `CPython`'s codecs by
-//! `docs/plans/rust-rewrite/review-135b/repro/spec/genencodings.py`.
+//! from `CPython`'s codecs.
 //! Each row is replayed through the parser with the recorded answer as the
 //! expectation, which is what keeps a fingerprint from drifting: the label decides
 //! the bytes of a Test's name, and the name decides its fingerprint.

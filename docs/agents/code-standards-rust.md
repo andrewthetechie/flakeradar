@@ -46,8 +46,7 @@ that promise; clippy covers only part of the checklist.
 - `cargo fmt --all -- --check`, `cargo clippy --all-targets --all-features -- -D warnings`,
   `cargo nextest run --all-features --profile ci`, `cargo test --doc --all-features`,
   `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features --document-private-items
-  --workspace` and `cargo audit` are the gates CI runs. Run them before every commit; the same
-  commands are in `docs/plans/rust-rewrite/00-shared-context.md`.
+  --workspace` and `cargo audit` are the gates CI runs. Run them before every commit.
 - rustfmt runs with default settings. If we ever deviate, commit a `rustfmt.toml` so editors and
   CI agree.
 - `#[expect]` with a reason for every override (M-LINT-OVERRIDE-EXPECT): a lint suppressed with
@@ -93,7 +92,7 @@ that promise; clippy covers only part of the checklist.
 - Explain parameters in prose ("Copies a file from `src` to `dst`"), never `# Parameters`
   tables.
 - No design-journey essays in doc comments (M-NO-META-DESIGN-DOCUMENTATION). Rationale lives in
-  `docs/adr/`, `docs/plans/rust-rewrite/` and issue comments; rustdoc describes end-state
+  `docs/adr/` and issue comments; rustdoc describes end-state
   behavior.
 - `pub use` re-exports of crate items get `#[doc(inline)]` (M-DOC-INLINE). Re-exports of `std`
   or third-party types do not — leaving them un-inlined is what marks them as foreign.
@@ -160,12 +159,11 @@ that promise; clippy covers only part of the checklist.
   only a `[dev-dependencies]` entry can name, so no test helper reaches a release binary
   (M-TEST-UTIL).
 - Golden fixtures for the JUnit corpus live in `tests/parity/golden/`. A test never edits one;
-  an intended behaviour change goes in `docs/plans/rust-rewrite/differences.md` and
+  an intended behaviour change goes in
   `tests/parity/allowed-differences.json`.
 - CI gates line and branch coverage against `coverage-floor.json` at the repo root. A change
-  that adds tests raises floors in the same PR; task 15 sets the final ones.
-  `#[cfg_attr(coverage_nightly, coverage(off))]` is limited to code a test process cannot run,
-  and every use is logged in `docs/plans/rust-rewrite/coverage-gaps.md`.
+  that adds tests raises floors in the same PR.
+  `#[cfg_attr(coverage_nightly, coverage(off))]` is limited to code a test process cannot run.
 - `node --test scripts/*.test.mjs` covers the two Node scripts CI depends on
   (`coverage-gate.mjs`, `version.mjs`).
 

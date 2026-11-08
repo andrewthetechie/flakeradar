@@ -13,8 +13,7 @@ use tracing_subscriber::EnvFilter;
 /// `RUST_LOG` wins when it is set, so an operator can raise or lower the level
 /// without a rebuild. A subscriber that is already installed is left in place,
 /// which keeps a second call harmless.
-// Process-wide state a test cannot install twice or observe from another thread;
-// see `docs/plans/rust-rewrite/coverage-gaps.md`.
+// Process-wide state a test cannot install twice or observe from another thread.
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub fn init_tracing() {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));

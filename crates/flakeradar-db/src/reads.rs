@@ -2,7 +2,7 @@
 //!
 //! Every function takes the connection and returns a DTO from `flakeradar-core`,
 //! so both front doors expose exactly the same data. The statements keep the
-//! shapes `spike-notes.md` records, including the `LATERAL ... LIMIT` lookups the
+//! shapes the spike proved, including the `LATERAL ... LIMIT` lookups the
 //! leaderboard filters with, so a plan that reads them one row at a time stays.
 //!
 //! The leaderboard is one engine with a descriptor per entity: the threshold

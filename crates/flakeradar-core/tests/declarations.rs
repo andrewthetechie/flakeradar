@@ -3,7 +3,7 @@
 //! Each test names one shape and asserts the answer this server gives for it.
 //! Where another XML reader answers differently, the test asserts this server's
 //! answer and holds the other one in a constant, so the difference is visible
-//! where the behaviour lives; `differences.md` records why it stands.
+//! where the behaviour lives.
 
 // Rust guideline compliant 2026-07-21
 
@@ -202,7 +202,6 @@ fn a_standalone_document_keeps_its_undefined_entity_refused() {
 fn an_attlist_default_classname_is_not_read() {
     // An `ATTLIST` default is one of the two things `roxmltree` does not model,
     // so the classname stays empty here even though the document declares one.
-    // `differences.md` records the answer that reads the default.
     const RECORDED: &str = "dflt";
     let case = one(format!(
         "<!DOCTYPE t [<!ATTLIST testcase classname CDATA \"{RECORDED}\">]>\
@@ -226,7 +225,7 @@ fn an_attlist_default_file_is_not_read() {
 fn an_attlist_declared_nmtoken_is_not_normalized() {
     // `NMTOKEN` attributes are normalized: a run of spaces becomes one and the
     // ends are trimmed. `roxmltree` does not normalize, so the name is stored
-    // exactly as written; `differences.md` records the normalized form.
+    // exactly as written.
     const RECORDED: &str = "a b";
     let case = one(
         br#"<!DOCTYPE t [<!ATTLIST testcase name NMTOKEN #IMPLIED>]><testsuite><testcase name="  a  b "/></testsuite>"#,
@@ -269,7 +268,7 @@ fn a_parameter_entity_system_reference_in_the_internal_subset_is_refused() {
 fn a_processing_instruction_whose_target_is_xml_in_another_case_is_read() {
     // XML reserves the target `xml` in every spelling, so `<?XML version="1.0"?>`
     // is refused by a strict reader; `roxmltree` reads it as an ordinary
-    // instruction, and `differences.md` records that.
+    // instruction.
     const RECORDED: &str = "not well-formed (invalid token)";
     let case = one(format!("<?XML version=\"1.0\"?>{REPORT}").as_bytes());
     assert_eq!(case.name, "a", "a strict reader refuses it: {RECORDED}");
@@ -285,7 +284,7 @@ fn a_processing_instruction_named_xml_inside_the_document_is_read() {
 #[test]
 fn a_standalone_value_that_is_not_yes_or_no_is_read() {
     // XML allows `yes` and `no` only, which is a well-formedness rule
-    // `roxmltree` does not check; `differences.md` records the refusal.
+    // `roxmltree` does not check.
     const RECORDED: &str = "XML declaration not well-formed";
     let case = one(format!("<?xml version=\"1.0\" standalone=\"maybe\"?>{REPORT}").as_bytes());
     assert_eq!(case.name, "a", "a strict reader refuses it: {RECORDED}");
