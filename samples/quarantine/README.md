@@ -62,7 +62,8 @@ case passed.
 ### Fixture
 
 Each `quarantine.json` uses this exact shape. Only `suite`, `classname` and
-`name` change, and `fingerprint` ends in the item's 1-based index. The
+`name` change, and `fingerprint` ends in the item's 1-based index. The whole
+fingerprint is the 40 lowercase hex characters the endpoint writes. The
 timestamp form is the one the server writes, `%Y-%m-%dT%H:%M:%S%.6fZ`.
 
 ```json

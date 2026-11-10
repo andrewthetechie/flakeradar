@@ -26,6 +26,7 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{Method, Request};
 use chrono::NaiveDateTime;
+use flakeradar_core::dto::QuarantineItem;
 use flakeradar_db::processing::ProcessingSettings;
 use flakeradar_test_support::{
     TestDb, app, get, make_project, make_test_case, request_with_headers,
@@ -542,7 +543,8 @@ fn fabro_rejects_a_timestamp_without_a_zone() {
     assert!(!fabro_accepts("2026-01-02T03:04:05."));
 }
 
-/// The workspace root, two directories above this crate's manifest.
+/// The workspace root: the nearest ancestor of this crate's manifest that holds
+/// `Cargo.toml` and `crates/`.
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
@@ -638,22 +640,51 @@ async fn every_quarantine_sample_fixture_has_the_keys_the_endpoint_answers() {
             .unwrap_or_else(|| panic!("{file} is a JSON array"));
         assert!(!items.is_empty(), "{file} is a non-empty array");
         for (index, item) in items.iter().enumerate() {
-            let object = item
-                .as_object()
-                .unwrap_or_else(|| panic!("{file} item {index} is an object"));
-            let found: BTreeSet<String> = object.keys().cloned().collect();
-            assert_eq!(
-                found, keys,
-                "{file} item {index} has the keys the endpoint answers"
-            );
-            assert!(
-                object.get("classname").is_some_and(Value::is_string),
-                "{file} item {index} has a string classname"
-            );
-            assert!(
-                object.get("name").is_some_and(Value::is_string),
-                "{file} item {index} has a string name"
-            );
+            assert_fixture_item(file, index, item, &keys);
         }
+    }
+}
+
+/// Checks one fixture item against every rule `samples/quarantine/README.md` sets.
+///
+/// The item is read as the endpoint's own [`QuarantineItem`], so a `fingerprint`,
+/// `line` or timestamp the server would refuse fails here rather than in a
+/// consumer's build. The two rules the type cannot state are checked on top: the
+/// name is not empty, and the fingerprint ends in the item's 1-based index.
+fn assert_fixture_item(file: &str, index: usize, item: &Value, keys: &BTreeSet<String>) {
+    let object = item
+        .as_object()
+        .unwrap_or_else(|| panic!("{file} item {index} is an object"));
+    let found: BTreeSet<String> = object.keys().cloned().collect();
+    assert_eq!(
+        found, *keys,
+        "{file} item {index} has the keys the endpoint answers"
+    );
+
+    let parsed: QuarantineItem = serde_json::from_value(item.clone())
+        .unwrap_or_else(|error| panic!("{file} item {index} is the server's item: {error}"));
+    assert!(
+        !parsed.name.is_empty(),
+        "{file} item {index} has a non-empty name"
+    );
+    let ordinal = index + 1;
+    assert!(
+        parsed.fingerprint.as_str().ends_with(&ordinal.to_string()),
+        "{file} item {index} has a fingerprint ending in {ordinal}: {}",
+        parsed.fingerprint
+    );
+
+    // Round-tripping the item the way the endpoint writes it proves the timestamps
+    // are in the one form the server produces, not merely parseable.
+    let written = serde_json::to_value(&parsed).expect("a quarantine item serializes");
+    for field in ["quarantined_at", "expires_at"] {
+        let fixture_value = object
+            .get(field)
+            .unwrap_or_else(|| panic!("{file} item {index} has {field}"));
+        assert_eq!(
+            written.get(field),
+            Some(fixture_value),
+            "{file} item {index} writes {field} the way the server does"
+        );
     }
 }
