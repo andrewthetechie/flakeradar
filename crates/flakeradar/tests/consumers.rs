@@ -7,7 +7,9 @@
 //! the leaderboard, a Test's history and one CI run's failures to decide
 //! whether a flaky Test blocks a merge. Both payloads are copied from the
 //! committed files rather than invented, so a renamed query parameter or
-//! response field fails here.
+//! response field fails here. `samples/quarantine/`'s fixtures are held to the
+//! shape `GET /api/quarantine` answers, so an example response a consumer
+//! documents cannot drift from the endpoint.
 
 // Rust guideline compliant 2026-07-21
 
@@ -17,12 +19,17 @@
     reason = "a consumer test that cannot send its payload or read the answer has failed"
 )]
 
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
+
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Method, Request};
 use chrono::NaiveDateTime;
 use flakeradar_db::processing::ProcessingSettings;
-use flakeradar_test_support::{TestDb, app, get};
+use flakeradar_test_support::{
+    TestDb, app, get, make_project, make_test_case, request_with_headers,
+};
 
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -533,4 +540,120 @@ fn fabro_rejects_a_timestamp_without_a_zone() {
     assert!(fabro_accepts("2026-01-02T03:04:05+00:00"));
     assert!(!fabro_accepts("2026-01-02T03:04:05"));
     assert!(!fabro_accepts("2026-01-02T03:04:05."));
+}
+
+/// The workspace root, two directories above this crate's manifest.
+fn workspace_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .find(|directory| {
+            directory.join("Cargo.toml").is_file() && directory.join("crates").is_dir()
+        })
+        .expect("the workspace root holds Cargo.toml and crates/")
+        .to_path_buf()
+}
+
+/// Every `quarantine.json` under `samples/quarantine/`, with its path from the root.
+///
+/// The walk skips `node_modules` and `target`, which a sample's own build may
+/// leave behind, and takes only files named exactly `quarantine.json`.
+fn quarantine_fixtures() -> Vec<(String, String)> {
+    let root = workspace_root();
+    let mut found = Vec::new();
+    let mut pending = vec![root.join("samples").join("quarantine")];
+    while let Some(directory) = pending.pop() {
+        if !directory.is_dir() {
+            continue;
+        }
+        for entry in std::fs::read_dir(&directory)
+            .unwrap_or_else(|error| panic!("reading {}: {error}", directory.display()))
+        {
+            let path = entry.expect("a directory entry").path();
+            let name = path.file_name().and_then(|name| name.to_str());
+            if path.is_dir() {
+                if name != Some("node_modules") && name != Some("target") {
+                    pending.push(path);
+                }
+            } else if name == Some("quarantine.json") {
+                let text = std::fs::read_to_string(&path)
+                    .unwrap_or_else(|error| panic!("reading {}: {error}", path.display()));
+                let name = path
+                    .strip_prefix(&root)
+                    .expect("the file sits under the workspace root")
+                    .to_string_lossy()
+                    .into_owned();
+                found.push((name, text));
+            }
+        }
+    }
+    found.sort();
+    found
+}
+
+#[tokio::test]
+async fn every_quarantine_sample_fixture_has_the_keys_the_endpoint_answers() {
+    let db = TestDb::new().await.expect("a test database");
+    let app = app(&db, &settings_pairs());
+    let project = make_project()
+        .repo("acme/app")
+        .project("default")
+        .create(&db)
+        .await;
+    make_test_case(&project)
+        .name("renders")
+        .quarantined()
+        .create(&db)
+        .await;
+
+    let reply = request_with_headers(
+        &app,
+        Method::GET,
+        "/api/quarantine?repo=acme/app",
+        &[("X-API-Key", TOKEN)],
+    )
+    .await;
+    assert_eq!(reply.status, 200, "{}", reply.text());
+    let items = reply.json();
+    let items = items
+        .as_array()
+        .unwrap_or_else(|| panic!("the answer is an array: {items}"));
+    assert_eq!(items.len(), 1, "{items:?}");
+    let keys: BTreeSet<String> = items[0]
+        .as_object()
+        .unwrap_or_else(|| panic!("the item is an object: {}", items[0]))
+        .keys()
+        .cloned()
+        .collect();
+
+    let fixtures = quarantine_fixtures();
+    assert!(
+        !fixtures.is_empty(),
+        "samples/quarantine/ holds at least one quarantine.json"
+    );
+    for (file, text) in &fixtures {
+        let fixture: Value =
+            serde_json::from_str(text).unwrap_or_else(|error| panic!("parsing {file}: {error}"));
+        let items = fixture
+            .as_array()
+            .unwrap_or_else(|| panic!("{file} is a JSON array"));
+        assert!(!items.is_empty(), "{file} is a non-empty array");
+        for (index, item) in items.iter().enumerate() {
+            let object = item
+                .as_object()
+                .unwrap_or_else(|| panic!("{file} item {index} is an object"));
+            let found: BTreeSet<String> = object.keys().cloned().collect();
+            assert_eq!(
+                found, keys,
+                "{file} item {index} has the keys the endpoint answers"
+            );
+            assert!(
+                object.get("classname").is_some_and(Value::is_string),
+                "{file} item {index} has a string classname"
+            );
+            assert!(
+                object.get("name").is_some_and(Value::is_string),
+                "{file} item {index} has a string name"
+            );
+        }
+    }
 }
