@@ -146,3 +146,12 @@ Removing the quarantine also clears the reason and the expiry. After the
 `expires_at` time of a quarantine, maintenance clears it, so an expired
 quarantine never continues to skip a test. FlakeRadar never skips a test by
 itself, and the MCP server cannot quarantine a test.
+
+### Skip quarantined tests in your runner
+
+Ready-made consumers in `samples/quarantine/` fetch the quarantine list and
+skip each quarantined test. They read `FLAKERADAR_URL`, `FLAKERADAR_TOKEN`,
+`FLAKERADAR_REPO` and `FLAKERADAR_PROJECT`. When FlakeRadar cannot be reached,
+they skip nothing.
+
+- [The contract every consumer follows](../samples/quarantine/README.md)
