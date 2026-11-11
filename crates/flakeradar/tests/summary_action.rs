@@ -27,7 +27,7 @@ use std::path::{Path, PathBuf};
 
 use axum::Router;
 use flakeradar_db::processing::ProcessingSettings;
-use flakeradar_test_support::{TestDb, app, get, post};
+use flakeradar_test_support::{TestDb, app, get, make_project, make_report, post};
 use serde_json::{Value, json};
 
 /// The token the app requires and the script presents as `FR_TOKEN`.
@@ -379,6 +379,127 @@ async fn summary_action_gate_on_without_a_summary_target_still_decides() {
         output.contains("no summary target"),
         "the notice still says why: {output}"
     );
+    serving.abort();
+}
+
+#[tokio::test]
+async fn summary_action_gate_true_and_unreachable_follows_the_test_outcome() {
+    // FlakeRadar cannot answer for itself, so the test step decides: its failure
+    // keeps the gate red, and its success keeps it green. The unreachable line is
+    // still the summary the reader gets.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("a loopback port");
+    let address = listener.local_addr().expect("the bound address");
+    drop(listener);
+    let base_url = format!("http://{address}");
+
+    for (outcome, expected) in [("failure", 1), ("success", 0)] {
+        let file = summary_file(&format!("unreachable_{outcome}"));
+        let (code, output) = run_summary(&base_url, "true", outcome, "0", &file).await;
+        assert_eq!(
+            code, expected,
+            "unreachable with outcome {outcome} decides on the test step: {output}"
+        );
+        assert!(
+            output.contains("::notice::FlakeRadar gate: unreachable"),
+            "one notice names the rule that fell back: {output}"
+        );
+        let written = std::fs::read_to_string(&file)
+            .unwrap_or_else(|error| panic!("reading {file}: {error}\n{output}"));
+        assert!(
+            written.contains("**FlakeRadar:** could not reach FlakeRadar"),
+            "the unreachable line is still written: {written}"
+        );
+    }
+
+    // With the gate off this is the old read-only step again: exit 0.
+    let file = summary_file("unreachable_gate_off");
+    let (code, output) = run_summary(&base_url, "false", "failure", "0", &file).await;
+    assert_eq!(code, 0, "the gate-off unreachable path stays: {output}");
+    assert!(
+        !output.contains("::notice::FlakeRadar gate"),
+        "nothing falls back when nothing was gated: {output}"
+    );
+
+    // And with no summary target at all, the early exit must not skip the decision:
+    // the fallback still happens, because it is the only thing gate mode has.
+    let (code, output) = run_summary(&base_url, "true", "failure", "0", "").await;
+    assert_eq!(
+        code, 1,
+        "the fallback decides with nothing to write to: {output}"
+    );
+    assert!(
+        output.contains("::notice::FlakeRadar gate: unreachable"),
+        "one notice names the rule that fell back: {output}"
+    );
+}
+
+#[tokio::test]
+async fn summary_action_gate_true_and_timeout_follows_the_test_outcome() {
+    // The Report is uploaded and never processed, so the answer still says
+    // `pending` is above 0 at the deadline and the timeout rule decides.
+    let db = TestDb::new().await.expect("a test database");
+    let app = router(&db);
+    let (base_url, serving) = serve(&db).await;
+    upload(&app, two_failures_junit()).await;
+
+    for (outcome, expected) in [("failure", 1), ("success", 0)] {
+        let file = summary_file(&format!("timeout_{outcome}"));
+        let (code, output) = run_summary(&base_url, "true", outcome, "0", &file).await;
+        assert_eq!(
+            code, expected,
+            "timeout with outcome {outcome} decides on the test step: {output}"
+        );
+        assert!(
+            output.contains("::notice::FlakeRadar gate: timeout"),
+            "one notice names the rule that fell back: {output}"
+        );
+        let written = std::fs::read_to_string(&file)
+            .unwrap_or_else(|error| panic!("reading {file}: {error}\n{output}"));
+        assert!(
+            written.contains("**FlakeRadar:** timed out after 0s"),
+            "the timeout line is still written: {written}"
+        );
+    }
+    serving.abort();
+}
+
+#[tokio::test]
+async fn summary_action_gate_true_and_incomplete_answer_follows_the_test_outcome() {
+    // A Report that failed to process is counted in `reports.failed` and lists no
+    // failures, so the answer cannot settle the question even though nothing is
+    // pending: the test step decides, and the empty table does not clear the job.
+    let db = TestDb::new().await.expect("a test database");
+    let project = make_project().repo(REPO).create(&db).await;
+    make_report(&project, project.repo_id)
+        .body(b"<not xml")
+        .ci_run_id(RUN_ID)
+        .ci_run_attempt(1)
+        .status("failed")
+        .error("Not a valid JUnit XML report")
+        .create(&db)
+        .await;
+    let (base_url, serving) = serve(&db).await;
+
+    for (outcome, expected) in [("failure", 1), ("success", 0)] {
+        let file = summary_file(&format!("incomplete_{outcome}"));
+        let (code, output) = run_summary(&base_url, "true", outcome, "5", &file).await;
+        assert_eq!(
+            code, expected,
+            "an incomplete answer with outcome {outcome} decides on the test step: {output}"
+        );
+        assert!(
+            output.contains("::notice::FlakeRadar gate: the failures list is incomplete"),
+            "one notice names the rule that fell back: {output}"
+        );
+        let written = std::fs::read_to_string(&file)
+            .unwrap_or_else(|error| panic!("reading {file}: {error}\n{output}"));
+        assert!(
+            written.contains("**FlakeRadar:** no failed tests reported for this CI job."),
+            "the table is still written before the fallback: {written}"
+        );
+    }
     serving.abort();
 }
 

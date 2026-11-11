@@ -57,6 +57,23 @@ append_summary() {
   fi
 }
 
+# Fail-closed fallback: when FlakeRadar cannot answer for itself, the gate hands
+# the decision to the test step and says so in one notice line. Called with the
+# `rule` that could not decide; it sets `gate_exit` to 0 only when the test step
+# itself succeeded, and to 1 otherwise. With the gate off it sets 0 and prints
+# nothing, which keeps every gate-off path exactly as it was.
+gate_exit=0
+gate_fallback() {
+  gate_exit=0
+  if [ "$FR_GATE" != "true" ]; then
+    return
+  fi
+  echo "::notice::FlakeRadar gate: $1; the decision falls back to test-outcome ($FR_TEST_OUTCOME)."
+  if [ "$FR_TEST_OUTCOME" != "success" ]; then
+    gate_exit=1
+  fi
+}
+
 # --- Poll until this attempt's reports are processed, or the timeout ends. ---
 resp_file="$(mktemp)"
 trap 'rm -f "$resp_file"' EXIT
@@ -87,11 +104,13 @@ while :; do
     if [ "$saw_response" = true ]; then
       append_summary "$timeout_line"
       echo "::notice::FlakeRadar summary: reports did not finish processing within ${FR_TIMEOUT}s."
+      gate_fallback timeout
     else
       append_summary "$unreachable_line"
       echo "::notice::FlakeRadar summary: the failures endpoint was unreachable."
+      gate_fallback unreachable
     fi
-    exit 0                                # never fail the job
+    exit "$gate_exit"               # 0 with the gate off, as always
   fi
 
   sleep "$poll_interval"
@@ -140,6 +159,15 @@ append_summary "$markdown"
 # just saw. A failure whose newest status is "passed" passed on retry and is
 # therefore not a failure of this job. resp_file still holds the polled answer.
 if [ "$FR_GATE" = "true" ]; then
+  # An answer that cannot settle the question falls back too: a list capped at
+  # `truncated`, or a Report that failed to process and so lists nothing. A failed
+  # read is an incomplete answer as well, so only a clear "no" keeps deciding.
+  incomplete=$(jq -r 'if (.truncated == true or ((.reports.failed // 0) > 0))
+                       then "yes" else "no" end' "$resp_file" 2>/dev/null)
+  if [ "$incomplete" != "no" ]; then
+    gate_fallback 'the failures list is incomplete'
+    exit "$gate_exit"
+  fi
   gate_blockers=$(jq -r --arg job "$FR_JOB_ID" '
     [ .failures[]
       | select($job == "" or .ci_job_id == $job)
