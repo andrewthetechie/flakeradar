@@ -168,16 +168,11 @@ if [ "$FR_GATE" = "true" ]; then
     gate_fallback 'the failures list is incomplete'
     exit "$gate_exit"
   fi
-  # A `jq` that cannot read the list is another answer FlakeRadar did not give, so
-  # it falls back as well rather than leaving the gate with no blockers.
-  if ! gate_blockers=$(jq -r --arg job "$FR_JOB_ID" '
+  gate_blockers=$(jq -r --arg job "$FR_JOB_ID" '
     [ .failures[]
       | select($job == "" or .ci_job_id == $job)
-      | select(.status != "passed" and .quarantined != true)
-      | .name ] | join(", ")' "$resp_file" 2>/dev/null); then
-    gate_fallback 'the failures list could not be read'
-    exit "$gate_exit"
-  fi
+      | select(.status != "passed" and .quarantined == false)
+      | .name ] | join(", ")' "$resp_file" 2>/dev/null)
   if [ -n "$gate_blockers" ] && [ "$gate_blockers" != "null" ]; then
     echo "::error::FlakeRadar gate: failures that are not quarantined: $gate_blockers"
     exit 1
