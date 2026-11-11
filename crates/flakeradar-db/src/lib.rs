@@ -76,7 +76,10 @@ pub use metrics::{
     test_tier_counts,
 };
 #[doc(inline)]
-pub use migration::{BASELINE_SQL, Migrator, run_migrations, split_statements};
+pub use migration::{
+    BASELINE_SQL, MIGRATIONS, Migrator, SqlMigration, run_migrations, split_statements,
+    sql_migrations,
+};
 #[doc(inline)]
 pub use report_intake::{
     NewJunitReport, NewPipelineReport, StoredReport, complete_report, fail_report,

@@ -9,9 +9,12 @@
     reason = "a test fails loudly when the fixture it just built is missing"
 )]
 
-use flakeradar_db::{DbError, run_migrations, split_statements};
+use flakeradar_db::{
+    BASELINE_SQL, DbError, Migrator, run_migrations, split_statements, sql_migrations,
+};
 use flakeradar_test_support::TestDb;
 use sea_orm::{ConnectionTrait, DatabaseBackend, Statement};
+use sea_orm_migration::prelude::{MigrationTrait, MigratorTrait};
 
 /// Every table the baseline creates, sorted.
 const APP_TABLES: [&str; 11] = [
@@ -66,6 +69,35 @@ fn the_refusal_message(error: DbError) -> String {
     detail
 }
 
+/// The versions `seaql_migrations` holds, sorted by name.
+async fn applied_versions(db: &impl ConnectionTrait) -> Vec<String> {
+    let statement = Statement::from_string(
+        DatabaseBackend::Postgres,
+        "SELECT version FROM seaql_migrations ORDER BY version".to_owned(),
+    );
+    db.query_all_raw(statement)
+        .await
+        .expect("the migration table is readable")
+        .into_iter()
+        .map(|row| row.try_get::<String>("", "version").expect("a version"))
+        .collect()
+}
+
+/// Whether `public.<table>` holds a `column`.
+async fn column_exists(db: &impl ConnectionTrait, table: &str, column: &str) -> bool {
+    let statement = Statement::from_sql_and_values(
+        DatabaseBackend::Postgres,
+        "SELECT EXISTS (SELECT 1 FROM information_schema.columns \
+         WHERE table_schema = 'public' AND table_name = $1 AND column_name = $2) AS present",
+        [table.into(), column.into()],
+    );
+    db.query_one_raw(statement)
+        .await
+        .expect("information_schema is readable")
+        .and_then(|row| row.try_get::<bool>("", "present").ok())
+        .unwrap_or(false)
+}
+
 #[tokio::test]
 async fn migrations_create_every_table() {
     let db = TestDb::new().await.expect("a migrated test database");
@@ -91,6 +123,58 @@ async fn a_second_migration_run_migrates_nothing() {
         .map(|row| row.try_get::<String>("", "version").expect("a version"))
         .collect();
     assert_eq!(versions, ["0001_baseline"]);
+}
+
+/// A migration set with two entries after the baseline, one depending on the other.
+const ORDERED: &[(&str, &str)] = &[
+    ("0001_baseline", BASELINE_SQL),
+    ("0002_first", "CREATE TABLE follow_on (id integer NOT NULL)"),
+    ("0003_second", "ALTER TABLE follow_on ADD COLUMN note text"),
+];
+
+/// A migrator with two migrations after the baseline.
+#[derive(Debug)]
+struct Ordered;
+
+#[sea_orm_migration::async_trait::async_trait]
+impl MigratorTrait for Ordered {
+    fn migrations() -> Vec<Box<dyn MigrationTrait>> {
+        sql_migrations(ORDERED)
+    }
+}
+
+#[tokio::test]
+async fn migrations_after_the_baseline_apply_in_listed_order() {
+    let db = TestDb::empty().await.expect("an empty test database");
+    for _ in 0..2 {
+        Ordered::up(db.connection(), None)
+            .await
+            .expect("a run applies every listed migration");
+    }
+    assert_eq!(
+        applied_versions(db.connection()).await,
+        ["0001_baseline", "0002_first", "0003_second"],
+        "each migration is recorded once, in listed order"
+    );
+    assert!(
+        column_exists(db.connection(), "follow_on", "note").await,
+        "0003_second ran after 0002_first created its table"
+    );
+}
+
+#[test]
+fn the_migrator_lists_the_baseline_alone_by_name() {
+    let migrations = Migrator::migrations();
+    assert_eq!(
+        migrations.len(),
+        1,
+        "the shipped set holds exactly the baseline today"
+    );
+    assert_eq!(
+        migrations.first().expect("a set with one entry").name(),
+        "0001_baseline",
+        "the recorded name is unchanged, so an existing install still matches"
+    );
 }
 
 #[tokio::test]
