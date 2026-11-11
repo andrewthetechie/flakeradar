@@ -124,7 +124,7 @@ Default branch, newest first — the reverse of its **Clean streak**. A pass (or
 an unknown Default branch counting every branch) resets it to 0.
 
 **Quarantine**:
-A reversible human decision that marks a Test as one the test runner may skip. The person who quarantines can record a reason and set an expiry; when the expiry passes, maintenance (the prune step) clears the quarantine — still a human decision, because a person set the expiry. FlakeRadar never quarantines a Test on its own, and agents cannot quarantine through the MCP server.
+A reversible human decision that marks a Test as one whose failures a team tolerates, in one of two modes the workflow picks: the test runner may skip it (the skip list at `GET /api/quarantine`), or it runs the Test and the summary action gates the job on it (`gate: true`). What is stored stays one boolean, so the person decides that a Test is quarantined and the workflow decides how it is honoured. The person who quarantines can record a reason and set an expiry; when the expiry passes, maintenance (the prune step) clears the quarantine — still a human decision, because a person set the expiry. FlakeRadar never quarantines a Test on its own, and agents cannot quarantine through the MCP server.
 
 ### How changes are announced
 

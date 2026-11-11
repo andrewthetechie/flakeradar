@@ -370,9 +370,19 @@ failures stay until `EXECUTION_RETENTION_DAYS`.
 Add `andrewthetechie/flakeradar/actions/summary@<ref>` as a step after the
 report action. It reads the failures endpoint and writes to the GitHub job
 summary which failures of this job FlakeRadar already knows as flaky. It only
-reads, and it never fails the job.
+reads, and it fails the job only in gate mode (`gate: true`). With `gate` false or
+unset — the default — the step exits 0 whatever the failures are.
+
+In gate mode the summary step decides the job instead of the test command, so the
+test step runs with `continue-on-error: true` and the summary step reads its
+outcome:
 
 ```yaml
+- name: Run tests
+  id: tests
+  continue-on-error: true   # the summary step decides, not the test command
+  run: pytest --junitxml=junit.xml
+
 - name: Write the FlakeRadar CI run summary
   if: always()
   uses: andrewthetechie/flakeradar/actions/summary@<ref>
@@ -384,7 +394,14 @@ reads, and it never fails the job.
     # repo, ci_run_id and ci_run_attempt default to the run's own values;
     # pass them explicitly to override.
     dashboard-url: ${{ secrets.FLAKERADAR_URL }} # optional: link each Test
+    # Gate mode: fail the job for a failure of this job that is not quarantined.
+    # Without these two inputs the step only writes the table.
+    gate: true
+    test-outcome: ${{ steps.tests.outcome }}
 ```
+
+See [ADR 0011](adr/0011-quarantine-gate-mode.md) for why the mode is the workflow's
+choice and not a second flag on the Test.
 
 | Input | Required | Meaning |
 |---|---|---|
@@ -393,10 +410,12 @@ reads, and it never fails the job.
 | `repo` | no (the `GITHUB_REPOSITORY` of the run) | The `owner/name` of the repository. |
 | `ci_run_id` | no (the `GITHUB_RUN_ID` of the run) | The CI run id. |
 | `ci_run_attempt` | no (the `GITHUB_RUN_ATTEMPT` of the run, else 1) | The CI run attempt. |
-| `ci_job_id` | no (the failures of all jobs) | Show only the failures that this job made. Send `${{ job.check_run_id }}`. Each job of the run writes its own summary. |
+| `ci_job_id` | no (the failures of all jobs) | Show only the failures that this job made. Send `${{ job.check_run_id }}`. Each job of the run writes its own summary. In gate mode this is also the set the gate decides on. |
 | `summary-timeout` | no (`60`) | The number of seconds to wait for the reports of this attempt to finish processing (`reports.pending == 0`). |
 | `dashboard-url` | no | When it is set, each failing test links to `?repo=...&test=<id>`. |
 | `summary-file` | no | Also append the same Markdown to this file path. The self-test uses it to examine the output. |
+| `gate` | no (`false`) | `true` fails the step for a failure of this job that is not quarantined, and prints one `::error::` line naming those failures. Any other value — the default — keeps the read-only behaviour, where the step exits 0 whatever the failures are. |
+| `test-outcome` | no (empty) | The outcome of the step that ran the tests — `${{ steps.tests.outcome }}`: `success`, `failure`, `cancelled` or `skipped`. Gate mode reads it only when FlakeRadar cannot decide; `success` is the only value that then exits 0. |
 
 The action polls `GET /api/ci-runs/{id}/failures?repo=...&ci_run_attempt=...`
 until `reports.pending` is 0. It then keeps only the failures with the
@@ -419,6 +438,19 @@ these conditions is true:
 
 Thus the count in the line and the "Proven flakes" column always agree.
 
+With `gate: true` the action then decides this job. It takes the same failures of
+this job the table shows and fails the step for any of them that is not
+quarantined, whatever its Tier: a new failure, a broken test, or one the team
+already knows and has an issue for. One `::error::` line names those failures. A
+failure whose `status` is `passed` passed on retry, so it is not a failure of this
+job and never fails the gate. Every failure quarantined, or no failures at all,
+exits 0.
+
 If FlakeRadar is not available, or the reports do not finish processing within
-`summary-timeout`, the action writes one line that says so. It still ends
-successfully.
+`summary-timeout`, the action writes one line that says so, and without the gate it
+ends successfully there. In gate mode it also has to decide, and an answer it does
+not have falls back to `test-outcome`: `success` is the only value that exits 0, so
+`failure`, `cancelled`, `skipped` and the empty default all exit 1. The same fallback
+covers an answer that cannot settle the question — `truncated` true, or
+`reports.failed` above 0. One `::notice::` line names the rule that could not
+decide. See [ADR 0011](adr/0011-quarantine-gate-mode.md).
