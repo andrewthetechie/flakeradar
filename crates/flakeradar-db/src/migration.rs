@@ -19,9 +19,9 @@ use crate::{MIGRATION_LOCK_KEY, error::DbError};
 /// starts here, and every later migration is listed after it.
 pub const BASELINE_SQL: &str = include_str!("../migrations/0001_baseline.sql");
 
+/// Every migration, as `(name, SQL)`, in the order [`run_migrations`] applies them.
 // Add a later migration by writing `migrations/000N_<name>.sql` and appending
 // ("000N_<name>", include_str!("../migrations/000N_<name>.sql")) to this list.
-/// Every migration, as `(name, SQL)`, in the order [`run_migrations`] applies them.
 pub const MIGRATIONS: &[(&str, &str)] = &[("0001_baseline", BASELINE_SQL)];
 
 /// One [`SqlMigration`] per `(name, SQL)` entry, in the order the list gives.

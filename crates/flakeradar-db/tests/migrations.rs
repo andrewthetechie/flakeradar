@@ -110,19 +110,7 @@ async fn a_second_migration_run_migrates_nothing() {
     run_migrations(db.connection())
         .await
         .expect("a second run finds nothing to do");
-    let applied = Statement::from_string(
-        DatabaseBackend::Postgres,
-        "SELECT version FROM seaql_migrations ORDER BY version".to_owned(),
-    );
-    let versions: Vec<String> = db
-        .connection()
-        .query_all_raw(applied)
-        .await
-        .expect("the migration table is readable")
-        .into_iter()
-        .map(|row| row.try_get::<String>("", "version").expect("a version"))
-        .collect();
-    assert_eq!(versions, ["0001_baseline"]);
+    assert_eq!(applied_versions(db.connection()).await, ["0001_baseline"]);
 }
 
 /// A migration set with two entries after the baseline, one depending on the other.
