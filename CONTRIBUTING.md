@@ -233,6 +233,7 @@ npm: build the dashboard first, or let CI's `frontend-dist` artifact do it, as
 - Webhook Notifications ([ADR 0009](docs/adr/0009-webhook-notifications.md)).
 - One Rust binary replaces the Python server
   ([ADR 0010](docs/adr/0010-rust-rewrite.md)).
+- Quarantine gate mode in the summary action ([ADR 0011](docs/adr/0011-quarantine-gate-mode.md)).
 - The read APIs and the quarantine toggle are unauthenticated by design,
   because the dashboard is expected to be on a private network. The CI
   endpoints, the Issue link endpoints (`PUT`/`DELETE …/issue`), the admin
