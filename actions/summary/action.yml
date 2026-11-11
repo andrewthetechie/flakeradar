@@ -4,8 +4,8 @@ description: >-
   the GitHub job summary. A standalone read-only companion to any FlakeRadar
   reporter (the JUnit snippet or the report action): it polls the
   /api/ci-runs/{id}/failures endpoint until this attempt's reports are processed,
-  keeps only the failures of this job, and writes a Markdown table. It never
-  fails the job.
+  keeps only the failures of this job, and writes a Markdown table. It fails the
+  job only in gate mode (`gate: true`).
 inputs:
   url:
     description: "Base URL of your FlakeRadar, e.g. https://flakeradar.example.com. Sent to /api/ci-runs."
@@ -41,6 +41,14 @@ inputs:
     description: "Optional absolute path of a file to also append the summary Markdown to (in addition to the step summary). The main use is a self-test that inspects the output. Defaults to empty (write only to $GITHUB_STEP_SUMMARY)."
     required: false
     default: ""
+  gate:
+    description: "\"true\" makes the step fail the job when one of this job's failures is not quarantined (and, in that mode, when FlakeRadar cannot decide: see test-outcome). Any other value, the default, keeps the read-only behaviour: the step always succeeds."
+    required: false
+    default: "false"
+  test-outcome:
+    description: "The test step's outcome, i.e. steps.<id>.outcome of the step that ran the tests: success, failure, cancelled or skipped. Used only in gate mode, when FlakeRadar cannot decide the exit. Defaults to empty."
+    required: false
+    default: ""
 runs:
   using: composite
   steps:
@@ -56,4 +64,6 @@ runs:
         FR_TIMEOUT: ${{ inputs.summary-timeout }}
         FR_DASHBOARD_URL: ${{ inputs.dashboard-url }}
         FR_SUMMARY_FILE: ${{ inputs.summary-file }}
+        FR_GATE: ${{ inputs.gate }}
+        FR_TEST_OUTCOME: ${{ inputs.test-outcome }}
       run: bash "${{ github.action_path }}/summary.sh"
