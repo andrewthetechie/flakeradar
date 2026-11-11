@@ -1,7 +1,26 @@
 # cargo-audit configuration.
 #
-# Nothing is ignored today. An entry added to `[advisories] ignore` carries a
-# comment saying why the advisory cannot be fixed here, what reaches the
-# vulnerable path, and what upstream fix removes the entry.
+# An entry added to `[advisories] ignore` carries a comment saying why the
+# advisory cannot be fixed here, what reaches the vulnerable path, and what
+# upstream fix removes the entry.
 [advisories]
-ignore = []
+ignore = [
+  # RUSTSEC-2026-0459: CVE-2026-119375 in the SQLite C source libsqlite3-sys bundles.
+  #
+  # It cannot be fixed here. `sqlx-sqlite` 0.9.0, which `sqlx` 0.9.0 pulls for
+  # `sea-orm` 2.0.4 (the newest release), requires `libsqlite3-sys >=0.30.1, <0.38.0`.
+  # The patched version is 0.39.x, so `cargo update -p libsqlite3-sys --precise 0.39.1`
+  # is refused by that range.
+  #
+  # Nothing reaches the vulnerable path. FlakeRadar is Postgres-only (docs/adr/0003),
+  # and `sea-orm` is built with `default-features = false` and only `sqlx-postgres`,
+  # so `sqlx-sqlite` never compiles: `cargo tree -i libsqlite3-sys` prints nothing.
+  # The crate is in `Cargo.lock` only because cargo resolves the optional
+  # dependencies of every dependency, enabled or not; no binary or test links it.
+  #
+  # Removed by a `sqlx` release whose `sqlx-sqlite` accepts `libsqlite3-sys >=0.39`
+  # (the pin moves with it, so `cargo update -p sqlx-sqlite` alone cannot), or by a
+  # `sea-orm` release that stops offering the SQLite driver. Bump that dependency,
+  # then `cargo update`, and delete this entry.
+  "RUSTSEC-2026-0459",
+]
