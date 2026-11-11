@@ -9,7 +9,9 @@ A repo is a repository (`owner/name`). A project is a test suite in a repo. For
 example, `andrewthetechie/writers-app` can have the projects `frontend`,
 `backend` and `e2e`. Another repo can have projects with the same names, and
 FlakeRadar keeps them separate. A repo with one suite can omit `project`, and
-FlakeRadar then uses `default`.
+FlakeRadar then uses `default`. If a test is flaky on only one OS, runtime or
+matrix leg, one project per variant keeps its score separate from its clean
+runs; see [One project per variant](ci-integration.md#one-project-per-variant).
 
 FlakeRadar creates a repo or a project when it gets the first upload for it.
 It removes a repo or a project only through the admin API. Thus a typo in
