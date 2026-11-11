@@ -205,6 +205,30 @@ async fn refused(app: &Router, tool: &str, arguments: Value, message: &str) {
     );
 }
 
+/// Asserts a request answered JSON-RPC `-32602` (invalid params) and no result.
+///
+/// The request routed and its protocol version was accepted, so a refused argument
+/// is the protocol's own error answer rather than a tool `isError` result: only a
+/// prompt can answer one, because a tool's bad arguments are a result.
+fn assert_invalid_params(reply: &Reply) {
+    assert_eq!(
+        reply.status,
+        StatusCode::OK,
+        "an invalid params refusal is an answered request: {}",
+        reply.text()
+    );
+    let body = reply.json();
+    assert!(
+        body.get("result").is_none(),
+        "a refusal carries no result: {body}"
+    );
+    assert_eq!(
+        body.get("error").and_then(|error| error.get("code")),
+        Some(&json!(-32602)),
+        "{body}"
+    );
+}
+
 /// The names of a list answer.
 fn names(items: &Value) -> Vec<String> {
     items
@@ -306,6 +330,146 @@ async fn the_tools_are_the_eleven_the_wire_declares() {
             "unlink_issue",
         ]
     );
+}
+
+#[tokio::test]
+async fn the_prompts_are_the_one_the_wire_declares() {
+    // The prompt is a fixed template, so an unseeded database answers it: the list
+    // and the text depend on no row.
+    let db = TestDb::new().await.expect("a test database is available");
+    let app = mcp_app(&db);
+    let reply = rpc(&app, "prompts/list", None, json!({})).await;
+    let prompts = reply.json()["result"]["prompts"].clone();
+    assert_eq!(names(&prompts), ["investigate_flaky_test"]);
+    let prompt = prompts
+        .as_array()
+        .and_then(|prompts| prompts.first())
+        .cloned()
+        .expect("one prompt is listed");
+    assert!(
+        prompt["title"]
+            .as_str()
+            .is_some_and(|title| !title.is_empty()),
+        "the prompt carries a title: {prompt}"
+    );
+    assert!(
+        prompt["description"]
+            .as_str()
+            .is_some_and(|description| !description.is_empty()),
+        "the prompt carries a description: {prompt}"
+    );
+    assert_eq!(
+        prompt["arguments"],
+        json!([
+            {
+                "name": "test_id",
+                "description": "The Test's id, from top_flaky_tests or search_tests",
+                "required": true,
+            },
+            {
+                "name": "repo",
+                "description": "The Repo's owner/name",
+            },
+        ]),
+        "only `test_id` is required: {prompt}"
+    );
+}
+
+#[tokio::test]
+async fn the_prompt_answers_the_walkthrough_of_one_test() {
+    // Test id 42 names no row, and the answer is still the whole walkthrough: the
+    // prompt is a template, so building it reads nothing and calls no model.
+    let db = TestDb::new().await.expect("a test database is available");
+    let app = mcp_app(&db);
+    let reply = rpc(
+        &app,
+        "prompts/get",
+        Some("investigate_flaky_test"),
+        json!({
+            "name": "investigate_flaky_test",
+            "arguments": {"test_id": "42", "repo": "acme/app"},
+        }),
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.text());
+    let body = reply.json();
+    assert!(body.get("error").is_none(), "{body}");
+    let messages = body["result"]["messages"].clone();
+    let message = messages
+        .as_array()
+        .and_then(|messages| {
+            assert_eq!(messages.len(), 1, "one message: {body}");
+            messages.first().cloned()
+        })
+        .expect("the answer carries its messages");
+    assert_eq!(message["role"], "user", "{body}");
+    let text = message["content"]["text"]
+        .as_str()
+        .expect("the message is text");
+    for wanted in [
+        "42",
+        "acme/app",
+        "get_test",
+        "score_history",
+        "clean_streak",
+        "failure_category",
+        "link_issue",
+    ] {
+        assert!(text.contains(wanted), "the prompt names {wanted}: {text}");
+    }
+    // The steps are in the order the issue gives them.
+    let mut before: Option<usize> = None;
+    for step in [
+        "get_test",
+        "score_history",
+        "failure_category",
+        "link_issue",
+    ] {
+        let found = text.find(step);
+        assert!(
+            found.is_some_and(|at| before.is_none_or(|then| at > then)),
+            "the prompt names {step} after the step before it: {text}"
+        );
+        before = found;
+    }
+}
+
+#[tokio::test]
+async fn a_prompt_name_no_prompt_has_is_invalid_params() {
+    let db = TestDb::new().await.expect("a test database is available");
+    let app = mcp_app(&db);
+    let reply = rpc(
+        &app,
+        "prompts/get",
+        Some("no_such_prompt"),
+        json!({"name": "no_such_prompt", "arguments": {}}),
+    )
+    .await;
+    assert_invalid_params(&reply);
+}
+
+#[tokio::test]
+async fn a_test_id_that_is_no_positive_integer_is_invalid_params() {
+    // A prompt argument arrives as a string, so the check is the string's: nothing
+    // here reaches the database, and nothing here coerces a bad id into a query.
+    let db = TestDb::new().await.expect("a test database is available");
+    let app = mcp_app(&db);
+    for arguments in [
+        json!({}),
+        json!({"test_id": "abc"}),
+        json!({"test_id": "0"}),
+        json!({"test_id": "-7"}),
+        json!({"test_id": 42}),
+    ] {
+        let reply = rpc(
+            &app,
+            "prompts/get",
+            Some("investigate_flaky_test"),
+            json!({"name": "investigate_flaky_test", "arguments": arguments}),
+        )
+        .await;
+        assert_invalid_params(&reply);
+    }
 }
 
 #[tokio::test]

@@ -70,3 +70,33 @@ In production, always use HTTPS, so that the token is not sent as clear text.
 The read tools have the MCP annotation `readOnlyHint: true`. The two write
 tools have `readOnlyHint: false`, so your client can ask you before it calls
 them.
+
+## Prompts
+
+The server has one prompt, `investigate_flaky_test`. It walks an agent through
+investigating one flaky test with the tools above, so every investigation
+reads the same evidence.
+
+| Argument | Required | Meaning |
+|---|---|---|
+| `test_id` | yes | The test's id, from `top_flaky_tests` or `search_tests`, as a positive integer in a string. |
+| `repo` | no | The repo's `owner/name`. |
+
+The prompt text tells the agent to:
+
+1. call `get_test` with that `test_id`;
+2. read the latest failure message and the Failure details, and open the
+   Location: the file, the line, and the GitHub permalink at the last failing
+   commit;
+3. check `score_history` and `clean_streak` to see whether a past fix held;
+4. treat `failure_category` as a hint, not a diagnosis;
+5. when it files a GitHub issue, call `link_issue` with that issue number and
+   the `test_id`.
+
+It also says that quarantine stays a human decision: the prompt tells the
+agent to recommend it, and no tool quarantines anything.
+
+The prompt is a fixed template: the server builds it from the arguments only,
+so it reads no database row and calls no model. An unknown prompt name, a
+missing `test_id`, or a `test_id` that is not a positive integer answers a
+JSON-RPC error with code `-32602` (invalid params).
