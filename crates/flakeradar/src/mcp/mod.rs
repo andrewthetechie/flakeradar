@@ -11,7 +11,8 @@
 //! they borrow the pool and the settings from, the one answer a tool produces,
 //! the one refusal a call can be, and the helpers several tools read. The
 //! transport — the router, the bearer check and the JSON-body guard — is its own
-//! private module.
+//! private module, and so is `prompts`, which holds the one prompt: a fixed
+//! template, not a query.
 //!
 //! The tool names, titles, descriptions, argument schemas and annotations are a
 //! wire contract: a client reads them, and `tests/parity` pins every one against
@@ -34,8 +35,9 @@ use flakeradar_db::{DbError, clock::SharedClock, clock::SystemClock};
 use rmcp::ErrorData as McpError;
 use rmcp::ServerHandler;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, Implementation,
-    JsonObject, ListToolsResult, MetaObject, ServerCapabilities, ServerConfig, Tool,
+    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, GetPromptRequestParams,
+    GetPromptResponse, GetPromptResult, Implementation, JsonObject, ListPromptsResult,
+    ListToolsResult, MetaObject, PromptMessage, Role, ServerCapabilities, ServerConfig, Tool,
     ToolAnnotations,
 };
 use sea_orm::DatabaseConnection;
@@ -45,6 +47,7 @@ use serde_json::{Value, json};
 use crate::BoxFuture;
 use crate::settings::Settings;
 
+mod prompts;
 mod tools;
 mod transport;
 
@@ -352,10 +355,34 @@ impl ServerHandler for McpServer {
             Err(ToolFailure::Protocol(error)) => return Err(error),
         })
     }
+
+    fn list_prompts(
+        &self,
+        _request: Option<rmcp::model::PaginatedRequestParams>,
+        _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> impl Future<Output = Result<ListPromptsResult, McpError>> + Send + '_ {
+        std::future::ready(Ok(ListPromptsResult::with_all_items(vec![
+            prompts::definition(),
+        ])))
+    }
+
+    fn get_prompt(
+        &self,
+        request: GetPromptRequestParams,
+        _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> impl Future<Output = Result<GetPromptResponse, McpError>> + Send + '_ {
+        // The prompt is a template, so nothing here waits: the answer is built
+        // before the ready future is returned, which is how the text proves it
+        // reads no row and calls no model.
+        let answer = prompts::text(&request).map(|text| {
+            GetPromptResult::new(vec![PromptMessage::new_text(Role::User, text)]).into()
+        });
+        std::future::ready(answer)
+    }
 }
 
-/// What this server can do: Tools, and the empty Prompt and Resource lists it also
-/// advertises.
+/// What this server can do: Tools, the one Prompt, and the empty Resource list it
+/// also advertises.
 ///
 /// `logging` is not advertised: rmcp deprecates the capability (SEP-2577) and
 /// this server answers `logging/setLevel` with method-not-found, so advertising
