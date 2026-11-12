@@ -16,9 +16,10 @@
     reason = "a test fails loudly when a statement or a query it just wrote fails"
 )]
 
-use flakeradar_db::split_statements;
+use flakeradar_db::{Migrator, split_statements};
 use flakeradar_test_support::TestDb;
 use sea_orm::{ConnectionTrait, DatabaseBackend, DatabaseConnection, Statement, TransactionTrait};
+use sea_orm_migration::prelude::MigratorTrait;
 
 /// The recorded 0.1.x schema, as dumped by `pg_dump`.
 const GOLDEN_SCHEMA: &str = include_str!("../../../tests/parity/schema.sql");
@@ -138,8 +139,16 @@ async fn schema_snapshot(db: &DatabaseConnection) -> Vec<String> {
 
 /// The migrated snapshot and the golden one, which the parity test expects to
 /// match.
+///
+/// The migrated side applies only the first migration: `GOLDEN_SCHEMA` records
+/// the schema `0001_baseline` creates, so a later migration's columns would
+/// read as drift here. The issues that add those columns test them against
+/// their own migrations, not against this dump.
 async fn compared_snapshots() -> (Vec<String>, Vec<String>) {
-    let migrated = TestDb::new().await.expect("a migrated test database");
+    let migrated = TestDb::empty().await.expect("an empty test database");
+    Migrator::up(migrated.connection(), Some(1))
+        .await
+        .expect("the baseline migration applies");
     let golden = TestDb::empty().await.expect("an empty test database");
     for statement in split_statements(GOLDEN_SCHEMA) {
         golden

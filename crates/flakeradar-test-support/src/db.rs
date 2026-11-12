@@ -19,7 +19,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use flakeradar_db::{BASELINE_SQL, DbSettings};
+use flakeradar_db::{DbSettings, MIGRATIONS};
 use sea_orm::{
     ConnectOptions, ConnectionTrait, Database, DatabaseConnection, DbBackend, Statement,
 };
@@ -322,13 +322,21 @@ fn staging_database_name(template: &str) -> String {
     format!("{template}_building")
 }
 
-/// The template database's name, keyed on the baseline schema's content.
+/// The template database's name, keyed on the content of every migration.
 ///
-/// A changed baseline therefore gets a new template instead of cloning the
+/// A changed migration therefore gets a new template instead of cloning the
 /// previous schema.
 fn template_database_name() -> String {
-    let digest = Sha256::digest(BASELINE_SQL.as_bytes());
-    let suffix = hex(digest.iter().take(6).copied());
+    template_name_for(MIGRATIONS)
+}
+
+/// The template name for these migrations, keyed on their SQL in order.
+fn template_name_for(migrations: &[(&str, &str)]) -> String {
+    let mut hasher = Sha256::new();
+    for (_, sql) in migrations {
+        hasher.update(sql.as_bytes());
+    }
+    let suffix = hex(hasher.finalize().iter().take(6).copied());
     format!("flakeradar_template_{suffix}")
 }
 
@@ -365,7 +373,8 @@ mod tests {
     use super::{
         MAINTENANCE_DATABASE, TEMPLATE_LOCK_KEY, TestDb, build_template, clone_database, connect,
         create_database, database_exists, drop_database, fresh_database_name, publish_template,
-        release_lock, staging_database_name, take_lock, template_database_name, with_database,
+        release_lock, staging_database_name, take_lock, template_database_name, template_name_for,
+        with_database,
     };
     use crate::error::TestError;
     use crate::postgres::ensure_postgres;
@@ -413,6 +422,17 @@ mod tests {
         let name = template_database_name();
         assert!(name.starts_with("flakeradar_template_"), "{name}");
         assert_eq!(name.len(), "flakeradar_template_".len() + 12);
+    }
+
+    #[test]
+    fn the_template_name_follows_every_migration() {
+        let one = template_name_for(&[("0001_baseline", "A")]);
+        let two = template_name_for(&[("0001_baseline", "A"), ("0002_x", "B")]);
+        assert_ne!(one, two, "a later migration must not reuse the template");
+        for name in [one, two] {
+            assert!(name.starts_with("flakeradar_template_"), "{name}");
+            assert_eq!(name.len(), "flakeradar_template_".len() + 12, "{name}");
+        }
     }
 
     #[test]

@@ -1,9 +1,9 @@
-//! The baseline migration and the old-database check that runs before it.
+//! The migration set and the old-database check that runs before it.
 //!
-//! A FlakeRadar 0.2 database is created in one step: [`run_migrations`] takes the
+//! A FlakeRadar 0.2 database is created by [`run_migrations`]: it takes the
 //! advisory lock, refuses a database an older FlakeRadar created, then applies
-//! [`BASELINE_SQL`]. Nothing is imported or renamed, so the schema is the whole
-//! history.
+//! [`MIGRATIONS`] in order. [`BASELINE_SQL`] is the first of them, so a fresh
+//! install starts from today's schema.
 
 // Rust guideline compliant 2026-07-21
 
@@ -15,8 +15,24 @@ use crate::{MIGRATION_LOCK_KEY, error::DbError};
 /// The baseline schema, as one applyable SQL script.
 ///
 /// It holds today's tables, columns, types, defaults, constraint names and
-/// index names, and it is the only migration: a fresh install starts here.
+/// index names, and it is the first migration in [`MIGRATIONS`]: a fresh install
+/// starts here, and every later migration is listed after it.
 pub const BASELINE_SQL: &str = include_str!("../migrations/0001_baseline.sql");
+
+/// Every migration, as `(name, SQL)`, in the order [`run_migrations`] applies them.
+// Add a later migration by writing `migrations/000N_<name>.sql` and appending
+// ("000N_<name>", include_str!("../migrations/000N_<name>.sql")) to this list.
+pub const MIGRATIONS: &[(&str, &str)] = &[("0001_baseline", BASELINE_SQL)];
+
+/// One [`SqlMigration`] per `(name, SQL)` entry, in the order the list gives.
+#[must_use]
+pub fn sql_migrations(
+    list: &'static [(&'static str, &'static str)],
+) -> Vec<Box<dyn MigrationTrait>> {
+    list.iter()
+        .map(|&(name, sql)| Box::new(SqlMigration { name, sql }) as Box<dyn MigrationTrait>)
+        .collect()
+}
 
 /// Every table the baseline creates.
 const APP_TABLES: [&str; 11] = [
@@ -40,28 +56,34 @@ pub struct Migrator;
 #[sea_orm_migration::async_trait::async_trait]
 impl MigratorTrait for Migrator {
     fn migrations() -> Vec<Box<dyn MigrationTrait>> {
-        vec![Box::new(Migration0001Baseline)]
+        sql_migrations(MIGRATIONS)
     }
 }
 
-/// Creates the baseline schema.
-struct Migration0001Baseline;
+/// One SQL script in the migration set, applied statement by statement.
+#[derive(Debug)]
+pub struct SqlMigration {
+    /// The name recorded in `seaql_migrations`, such as `0001_baseline`.
+    pub name: &'static str,
+    /// The script, split by [`split_statements`] and run in order.
+    pub sql: &'static str,
+}
 
-impl MigrationName for Migration0001Baseline {
+impl MigrationName for SqlMigration {
     fn name(&self) -> &'static str {
-        "0001_baseline"
+        self.name
     }
 }
 
 #[sea_orm_migration::async_trait::async_trait]
-impl MigrationTrait for Migration0001Baseline {
+impl MigrationTrait for SqlMigration {
     #[expect(
         elided_lifetimes_in_paths,
         reason = "the trait method takes `&SchemaManager`; naming its lifetime makes \
                   it early-bound and the signature no longer matches the trait"
     )]
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        for statement in split_statements(BASELINE_SQL) {
+        for statement in split_statements(self.sql) {
             manager
                 .get_connection()
                 .execute_unprepared(statement)
