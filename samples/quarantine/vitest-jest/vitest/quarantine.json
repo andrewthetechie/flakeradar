@@ -1,0 +1,24 @@
+[
+  {
+    "suite": "cart.test.js",
+    "classname": "cart.test.js",
+    "name": "cart > adds an item",
+    "fingerprint": "0000000000000000000000000000000000000001",
+    "file": null,
+    "line": null,
+    "quarantined_at": "2026-11-01T12:00:00.000000Z",
+    "reason": "flaky in CI",
+    "expires_at": "2026-12-01T12:00:00.000000Z"
+  },
+  {
+    "suite": "cart.test.js",
+    "classname": "cart.test.js",
+    "name": "checkout total",
+    "fingerprint": "0000000000000000000000000000000000000002",
+    "file": null,
+    "line": null,
+    "quarantined_at": "2026-11-01T12:00:00.000000Z",
+    "reason": null,
+    "expires_at": null
+  }
+]
