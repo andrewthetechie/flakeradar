@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
 # Test for the Go quarantine snippet.
 #
-# The six cases here drive quarantine-skip.sh with a `curl` shim: an executable
+# The six shim cases drive quarantine-skip.sh with a `curl` shim: an executable
 # file named curl in a temp dir that is put first on PATH, appends its arguments
 # one per line to $SHIM_LOG, prints the file $SHIM_BODY, and exits with
 # $SHIM_EXIT (default 0). Each case prints `ok <case>` or `not ok <case>`;
 # the script exits 1 when any case failed.
 #
-# Only bash, curl, jq and coreutils are used. Run it directly:
+# The two Go-backed cases run the example module under example/ with the real
+# toolchain, and fail when it is missing.
+#
+# Only bash, curl, jq and coreutils are used, plus (for those two cases) go and
+# gotestsum. Run it directly:
 #
 #   samples/quarantine/go/test.sh
 set -uo pipefail
@@ -15,8 +19,11 @@ set -uo pipefail
 sample_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 snippet="${sample_dir}/quarantine-skip.sh"
 fixture="${sample_dir}/quarantine.json"
+example_dir="${sample_dir}/example"
 
 work=$(mktemp -d)
+# Nothing here writes into the repository: the junit report lands in $work and
+# go keeps its build and test caches outside the checkout.
 trap 'rm -rf "$work"' EXIT
 
 # The curl shim: it logs its arguments, answers with $SHIM_BODY and exits with
@@ -103,6 +110,101 @@ expect_stdout '^(TestAddsAnItem|TestCheckoutTotal)$' || ok=no
 expect_shim_url 'http://fr/api/quarantine?repo=acme%2Fapp&project=go' || ok=no
 expect_empty_stderr || ok=no
 expect_exit0 || ok=no
+report "$name" "$ok"
+
+# --- the two Go-backed cases
+# They drive the example module under example/ with the real toolchain. A missing
+# go or gotestsum fails them rather than skipping: the sample's Docker image
+# installs both, so a skip would hide a broken image.
+if ! command -v go >/dev/null 2>&1; then
+  toolchain_reason='go is missing'
+elif ! command -v gotestsum >/dev/null 2>&1; then
+  toolchain_reason='gotestsum is missing'
+else
+  toolchain_reason=''
+fi
+
+# run_go <args...> runs go inside the example module, so its go.mod applies.
+run_go() {
+  ( cd "$example_dir" && go "$@" )
+}
+
+# run_gotestsum <args...> runs gotestsum inside the example module.
+run_gotestsum() {
+  ( cd "$example_dir" && gotestsum "$@" )
+}
+
+# --- fixture names are what gotestsum junit writes
+name='fixture names are what gotestsum junit writes'
+ok=yes
+junit="${work}/junit.xml"
+if [ -n "$toolchain_reason" ]; then
+  echo "$toolchain_reason" >&2
+  ok=no
+else
+  # A run of the module must pass and write the report.
+  if ! run_gotestsum --junitfile "$junit" -- ./... \
+      >"${work}/gotestsum.out" 2>"${work}/gotestsum.err"; then
+    echo 'gotestsum failed:' >&2
+    cat "${work}/gotestsum.out" "${work}/gotestsum.err" >&2
+    ok=no
+  elif [ ! -f "$junit" ]; then
+    echo "gotestsum wrote no ${junit}" >&2
+    ok=no
+  else
+    # For every fixture item, the report must hold that item's testcase element:
+    # the classname and name the endpoint answers are exactly what gotestsum
+    # wrote, in the order gotestsum writes the two attributes.
+    items=$(jq -r '.[] | [.classname, .name] | @tsv' "$fixture")
+    if [ -z "$items" ]; then
+      echo "$fixture holds no items, so the check would prove nothing" >&2
+      ok=no
+    else
+      while IFS=$'\t' read -r classname test_name; do
+        if ! grep -Fq "<testcase classname=\"${classname}\" name=\"${test_name}\"" "$junit"; then
+          printf 'no testcase for %s %s in the junit report\n' "$classname" "$test_name" >&2
+          ok=no
+        fi
+      done <<<"$items"
+    fi
+  fi
+fi
+report "$name" "$ok"
+
+# --- quarantined tests are not run
+name='quarantined tests are not run'
+ok=yes
+if [ -n "$toolchain_reason" ]; then
+  echo "$toolchain_reason" >&2
+  ok=no
+else
+  # The pattern is the snippet's own answer for the fixture rather than a
+  # literal copy of it, so this case checks what the snippet really prints.
+  cp "$fixture" "${work}/body"
+  run_snippet FLAKERADAR_URL=http://fr FLAKERADAR_REPO=acme/app FLAKERADAR_PROJECT=go
+  pattern=$(cat "${work}/out")
+  if [ -z "$pattern" ]; then
+    echo 'the snippet printed no pattern for the fixture' >&2
+    ok=no
+  elif ! run_go test -v -skip "$pattern" ./... >"${work}/gotest.out" 2>"${work}/gotest.err"; then
+    echo 'go test failed:' >&2
+    cat "${work}/gotest.out" "${work}/gotest.err" >&2
+    ok=no
+  else
+    if ! grep -Fq '=== RUN   TestAddsAnItemTwice' "${work}/gotest.out"; then
+      echo 'go test -v printed no === RUN   TestAddsAnItemTwice' >&2
+      ok=no
+    fi
+    # A quarantined parent is skipped together with its whole subtree, so the
+    # only identifier go test starts is the one test the fixture leaves alone.
+    ran=$(sed -n 's/^=== RUN   //p' "${work}/gotest.out")
+    if [ "$ran" != 'TestAddsAnItemTwice' ]; then
+      echo 'the tests go test started:' >&2
+      printf '%s\n' "$ran" >&2
+      ok=no
+    fi
+  fi
+fi
 report "$name" "$ok"
 
 # --- subtest items are left out
