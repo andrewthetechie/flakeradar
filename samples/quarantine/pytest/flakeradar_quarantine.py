@@ -20,6 +20,7 @@ nothing. Under pytest-xdist there is one session per worker, so each worker
 fetches the list on its own.
 """
 
+import http.client
 import json
 import os
 import sys
@@ -91,9 +92,14 @@ def _fetch(url, repo, project, token):
         return None, "FlakeRadar answered {}".format(error.code)
     except urllib.error.URLError as error:
         return None, "FlakeRadar is unreachable: {}".format(error.reason)
+    except http.client.HTTPException as error:
+        # A connection that drops mid-body raises IncompleteRead, and a non-HTTP
+        # answer (a proxy, a captive portal) raises BadStatusLine. Neither is an
+        # OSError or a ValueError, and either would fail the run if it escaped.
+        return None, "FlakeRadar cannot be read: {}".format(error)
     except (OSError, ValueError) as error:
-        # A timed-out socket is an OSError, and a URL urllib cannot build or an
-        # answer http.client cannot frame is a ValueError.
+        # A timed-out socket is an OSError, and a URL urllib cannot build is a
+        # ValueError.
         return None, "FlakeRadar cannot be read: {}".format(error)
     try:
         payload = json.loads(body)
@@ -107,7 +113,10 @@ def _fetch(url, repo, project, token):
 
 def _report(config, reason):
     """One fail-open line, through the terminal reporter when there is one."""
-    line = "flakeradar-quarantine: {}; skipping nothing".format(reason)
+    # A reason can come from an exception that quotes the raw answer, such as
+    # BadStatusLine, so the whitespace inside it is collapsed to keep the line
+    # the single line the contract asks for.
+    line = "flakeradar-quarantine: {}; skipping nothing".format(" ".join(reason.split()))
     reporter = config.pluginmanager.get_plugin("terminalreporter")
     if reporter is not None:
         reporter.write_line(line)

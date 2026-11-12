@@ -55,11 +55,13 @@ class TestDiscount:
 class QuarantineServer:
     """A localhost HTTP server that answers /api/quarantine and records the requests."""
 
-    def __init__(self, body, status=200, redirect_to=None):
+    def __init__(self, body, status=200, redirect_to=None, truncated=False):
         self.body = body
         self.status = status
         # When set, /api/quarantine answers 302 to this path instead of the body.
         self.redirect_to = redirect_to
+        # When set, the answer promises more bytes than it ever sends.
+        self.truncated = truncated
         self.requests = []
         self._httpd = None
         self._thread = None
@@ -85,10 +87,17 @@ class QuarantineServer:
                     self.end_headers()
                     return
                 payload = outer.body.encode("utf-8")
+                promised = len(payload) + 500 if outer.truncated else len(payload)
                 self.send_response(outer.status)
                 self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(payload)))
+                self.send_header("Content-Length", str(promised))
                 self.end_headers()
+                if outer.truncated:
+                    # A body that never arrives: the client sees the connection
+                    # close before the promised Content-Length is satisfied, and
+                    # http.client raises IncompleteRead out of response.read().
+                    self.close_connection = True
+                    return
                 self.wfile.write(payload)
 
             def log_message(self, *args):
@@ -103,6 +112,46 @@ class QuarantineServer:
         self._httpd.shutdown()
         self._thread.join(timeout=10)
         self._httpd.server_close()
+
+
+class RawAnswerServer:
+    """A localhost server that answers every request with raw bytes, then hangs up.
+
+    It stands in for the non-HTTP speaker on the other end of a proxy or a
+    captive portal, whose answer ``http.client`` cannot frame.
+    """
+
+    def __init__(self, answer):
+        self.answer = answer
+        self._sock = None
+        self._thread = None
+
+    @property
+    def url(self):
+        return "http://127.0.0.1:{}".format(self._sock.getsockname()[1])
+
+    def start(self):
+        self._sock = socket.socket()
+        self._sock.bind(("127.0.0.1", 0))
+        self._sock.listen(1)
+
+        def serve():
+            try:
+                while True:
+                    conn, _ = self._sock.accept()
+                    with conn:
+                        conn.recv(65536)
+                        conn.sendall(self.answer)
+            except OSError:
+                pass  # The socket closed at the end of the test.
+
+        self._thread = threading.Thread(target=serve, daemon=True)
+        self._thread.start()
+        return self
+
+    def stop(self):
+        self._sock.close()
+        self._thread.join(timeout=10)
 
 
 def closed_port_url():
@@ -221,6 +270,35 @@ def test_redirect_skips_nothing(pytester, monkeypatch, flakeradar):
     result.stdout.fnmatch_lines(["flakeradar-quarantine: *; skipping nothing"])
     # The plugin never fetches the redirect target.
     assert [request[0] for request in flakeradar.requests] == ["/api/quarantine"]
+
+
+def test_truncated_body_skips_nothing(pytester, monkeypatch, flakeradar):
+    """A body that never arrives in full raises IncompleteRead, not a failed run."""
+    flakeradar.truncated = True
+    prepare(pytester, monkeypatch, flakeradar.url)
+
+    result = pytester.runpytest("-p", "flakeradar_quarantine")
+
+    result.assert_outcomes(passed=4)
+    assert result.ret == 0
+    assert len(plugin_lines(result)) == 1
+    result.stdout.fnmatch_lines(["flakeradar-quarantine: *; skipping nothing"])
+
+
+def test_answer_that_is_not_http_skips_nothing(pytester, monkeypatch):
+    """A proxy or captive portal answer raises BadStatusLine, not a failed run."""
+    server = RawAnswerServer(b"gone now\r\n\r\n").start()
+    try:
+        prepare(pytester, monkeypatch, server.url)
+
+        result = pytester.runpytest("-p", "flakeradar_quarantine")
+    finally:
+        server.stop()
+
+    result.assert_outcomes(passed=4)
+    assert result.ret == 0
+    assert len(plugin_lines(result)) == 1
+    result.stdout.fnmatch_lines(["flakeradar-quarantine: *; skipping nothing"])
 
 
 def test_body_that_is_not_a_list_skips_nothing(pytester, monkeypatch, flakeradar):
