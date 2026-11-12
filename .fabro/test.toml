@@ -2,17 +2,20 @@ version = 1
 
 # The Rust suite starts a PostgreSQL container with the `docker` command line
 # only when FLAKERADAR_TEST_DATABASE_URL is unset. The sandbox has no Docker, so
-# the image's own PostgreSQL (fabro-pg-ensure) is reached over localhost instead.
-# SQLx reads a plain `postgresql://` URL; the driver suffix Python needed is not
-# part of it.
+# the suite is pointed at a server on localhost instead: the image's own
+# PostgreSQL where it carries one, and the server .fabro/setup.sh installs
+# otherwise. SQLx reads a plain `postgresql://` URL; the driver suffix Python
+# needed is not part of it.
 [env]
 FLAKERADAR_TEST_DATABASE_URL = "postgresql://test:test@localhost:5432/test"
 
 [prepare]
 inputs = []
 timeout = 300
-# Recreates the test databases on every call.
-run = ["fabro-pg-ensure"]
+# Idempotent: it uses the image's `fabro-pg-ensure` wherever that exists, and
+# otherwise starts the installed server and creates the role and database of the
+# URL above.
+run = ["bash .fabro/ensure-postgres.sh"]
 
 [targets.rust]
 about = "cargo nextest across the workspace; pass test binaries or test names"

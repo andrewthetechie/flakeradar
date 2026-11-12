@@ -38,7 +38,7 @@ date when the ingest API gets a new parameter.
 |---|---|---|
 | `url` | yes | Your FlakeRadar base URL, for example `https://flakeradar.example.com`. |
 | `token` | yes | Your FlakeRadar API token (`FLAKERADAR_API_TOKEN`). The action sends it as `X-API-Key` with each upload. |
-| `project` | no (`default`) | The test suite in the repo, for example `frontend`, `backend` or `e2e`. Use one step for each project. |
+| `project` | no (`default`) | The test suite in the repo, for example `frontend`, `backend` or `e2e`. Use one step for each project. See [One project per variant](#one-project-per-variant) when a matrix leg should get its own project. |
 | `root` | no | The directory of the project in the repo, for example `backend`. FlakeRadar uses it to make file paths and permalinks. |
 | `files` | no (`junit.xml`) | Globs of the JUnit XML files to upload, relative to the workspace, one on each line. The action uploads each match as its own report, so one step covers the one-file-for-each-class output of Surefire or Gradle. When nothing matches, the step writes a warning and does not fail. |
 | `line_base` | no (`1`) | `0` when the runner writes 0-based line numbers (pytest's `junit_family=xunit1`). FlakeRadar stores 1-based lines, so permalinks point at the test. |
@@ -55,6 +55,47 @@ has the same step, with comments.
 
 After the report action, add the [summary action](#the-summary-action-github-actions)
 to show which failures of the job are known flaky.
+
+### One project per variant
+
+A Test belongs to one Project, so the same Test on two matrix legs is one Test
+with one Flakiness score: its clean runs on Linux average away its flakes on
+Windows. When a Test is flaky on only one OS, runtime or matrix leg, give each
+variant its own Project, such as `backend-linux` and `backend-windows`, and
+keep the same `root` (`backend`), because both Projects are the same directory.
+Report each leg under its own Project:
+
+```yaml
+strategy:
+  matrix:
+    variant: [linux, windows]
+# ...
+- name: Report test results to FlakeRadar
+  if: always()   # always report: the failed runs are the evidence
+  uses: andrewthetechie/flakeradar/actions/report@<ref>
+  with:
+    url: ${{ secrets.FLAKERADAR_URL }}      # required
+    token: ${{ secrets.FLAKERADAR_TOKEN }}  # required
+    project: backend-${{ matrix.variant }}
+    root: backend
+```
+
+Each variant then has its own score, history, quarantine and GitHub issue. That
+is the cost as well as the gain: the same Test appears once per Project, and a
+quarantine applies to one Project's Test (it is stored under `repo` and
+`project`), as does the issue link, so a Test that is flaky on both variants
+gets two issues. Each variant's score also needs its own history of runs before
+it means anything. A Test that is flaky everywhere is better left in one
+Project, where the evidence of all the variants adds up.
+
+A Project name is 1-100 characters of `a-z`, `0-9`, `.`, `_` or `-`, so a matrix
+value with a space or an upper-case letter must be mapped to a valid name.
+FlakeRadar does the case part of that mapping: it trims and lower-cases every
+name before it checks it, so `project: backend-${{ matrix.variant }}` works when
+the variant is `Linux` or `Windows`. It does not work when the variant is
+`Windows Server 2022`, because a Project name holds no space: keep a second
+matrix key with the name you want, and report
+`project: backend-${{ matrix.project }}`.
 
 ### Other CI systems
 
