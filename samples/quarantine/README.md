@@ -119,3 +119,4 @@ With no arguments, the script builds and runs every sample dir that has a
 
 | Runner | Consumer | How it skips |
 |---|---|---|
+| pytest | [flakeradar_quarantine.py](pytest/flakeradar_quarantine.py) | pytest.mark.skip at collection |
