@@ -160,3 +160,4 @@ they skip nothing.
 - pytest: [flakeradar_quarantine.py](../samples/quarantine/pytest/flakeradar_quarantine.py)
 - cargo-nextest: [quarantine-filter.sh](../samples/quarantine/nextest/quarantine-filter.sh)
 - Vitest and Jest: [flakeradar-quarantine.mjs](../samples/quarantine/vitest-jest/flakeradar-quarantine.mjs)
+- Go: [quarantine-skip.sh](../samples/quarantine/go/quarantine-skip.sh)
