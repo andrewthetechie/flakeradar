@@ -121,3 +121,4 @@ With no arguments, the script builds and runs every sample dir that has a
 |---|---|---|
 | pytest | [flakeradar_quarantine.py](pytest/flakeradar_quarantine.py) | pytest.mark.skip at collection |
 | cargo-nextest | [quarantine-filter.sh](nextest/quarantine-filter.sh) | -E filterset with not(...) |
+| Vitest / Jest | [vitest-jest/flakeradar-quarantine.mjs](vitest-jest/flakeradar-quarantine.mjs) | testNamePattern negative lookahead |

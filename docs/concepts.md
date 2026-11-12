@@ -159,3 +159,4 @@ they skip nothing.
 - [The contract every consumer follows](../samples/quarantine/README.md)
 - pytest: [flakeradar_quarantine.py](../samples/quarantine/pytest/flakeradar_quarantine.py)
 - cargo-nextest: [quarantine-filter.sh](../samples/quarantine/nextest/quarantine-filter.sh)
+- Vitest and Jest: [flakeradar-quarantine.mjs](../samples/quarantine/vitest-jest/flakeradar-quarantine.mjs)
