@@ -7,10 +7,11 @@
 # exits with $SHIM_EXIT (default 0). Each case prints `ok <case>` or
 # `not ok <case>`; the script exits 1 when any case failed.
 #
-# The two cargo-backed cases of README.md's *Test expectations* arrive with the
-# example crate and need a Rust toolchain.
+# The two cargo-backed cases run the example crate under example/ and need a
+# Rust toolchain with cargo-nextest; they fail when it is missing.
 #
-# Only bash, curl, jq and coreutils are used. Run it directly:
+# Only bash, curl, jq, coreutils and (for those two cases) cargo and
+# cargo-nextest are used. Run it directly:
 #
 #   samples/quarantine/nextest/test.sh
 set -uo pipefail
@@ -18,6 +19,7 @@ set -uo pipefail
 sample_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 snippet="${sample_dir}/quarantine-filter.sh"
 fixture="${sample_dir}/quarantine.json"
+example_dir="${sample_dir}/example"
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -139,6 +141,102 @@ expect_stdout 'all()' || ok=no
 expect_exit0 || ok=no
 expect_warning || ok=no
 report "$name" "$ok"
+
+# --- the two cargo-backed cases
+# They drive the example crate under example/ with the real toolchain. A missing
+# cargo or cargo-nextest fails them rather than skipping: the sample's Docker
+# image installs both, so a skip would hide a broken image.
+if ! command -v cargo >/dev/null 2>&1; then
+  toolchain_reason='cargo is missing'
+elif ! cargo nextest --version >/dev/null 2>&1; then
+  toolchain_reason='cargo-nextest is missing'
+else
+  toolchain_reason=''
+fi
+
+# run_cargo <args...> runs cargo nextest inside the example crate, so its own
+# .config/nextest.toml applies.
+run_cargo() {
+  ( cd "$example_dir" && cargo nextest "$@" )
+}
+
+# The cargo cases create example/Cargo.lock and example/target/. Neither is
+# committed, so this script removes whatever it created and leaves anything that
+# was already there.
+lock_existed=no
+target_existed=no
+[ -e "${example_dir}/Cargo.lock" ] && lock_existed=yes
+[ -e "${example_dir}/target" ] && target_existed=yes
+clean_example() {
+  if [ "$target_existed" = no ]; then
+    rm -rf "${example_dir}/target"
+  fi
+  if [ "$lock_existed" = no ]; then
+    rm -f "${example_dir}/Cargo.lock"
+  fi
+}
+trap 'rm -rf "$work"; clean_example' EXIT
+
+# --- fixture names are what nextest junit writes
+name='fixture names are what nextest junit writes'
+ok=yes
+junit="${example_dir}/target/nextest/default/junit.xml"
+if [ -n "$toolchain_reason" ]; then
+  echo "$toolchain_reason" >&2
+  ok=no
+else
+  # A run of the crate must pass, and its default profile must write the report.
+  if ! run_cargo run >"${work}/run.out" 2>"${work}/run.err"; then
+    echo 'cargo nextest run failed:' >&2
+    cat "${work}/run.err" >&2
+    ok=no
+  elif [ ! -f "$junit" ]; then
+    echo "cargo nextest run wrote no ${junit}" >&2
+    ok=no
+  else
+    # For every fixture item, the report must hold that item's testcase element:
+    # the classname and name the endpoint answers are exactly what nextest wrote.
+    items=$(jq -r '.[] | [.classname, .name] | @tsv' "$fixture")
+    if [ -z "$items" ]; then
+      echo "$fixture holds no items, so the check would prove nothing" >&2
+      ok=no
+    else
+      while IFS=$'\t' read -r classname test_name; do
+        if ! grep -Fq "<testcase name=\"${test_name}\" classname=\"${classname}\"" "$junit"; then
+          printf 'no testcase for %s %s in %s\n' "$classname" "$test_name" "$junit" >&2
+          ok=no
+        fi
+      done <<<"$items"
+    fi
+  fi
+fi
+report "$name" "$ok"
+
+# --- quarantined tests are not run
+name='quarantined tests are not run'
+ok=yes
+if [ -n "$toolchain_reason" ]; then
+  echo "$toolchain_reason" >&2
+  ok=no
+else
+  # The expression is the snippet's own answer for the fixture rather than a
+  # literal copy of it, so this case checks what the snippet really prints.
+  cp "$fixture" "${work}/body"
+  run_snippet FLAKERADAR_URL=http://fr FLAKERADAR_REPO=acme/app FLAKERADAR_PROJECT=rust
+  expression=$(cat "${work}/out")
+  if ! run_cargo list -E "$expression" >"${work}/list.out" 2>"${work}/list.err"; then
+    echo 'cargo nextest list failed:' >&2
+    cat "${work}/list.err" >&2
+    ok=no
+  elif [ "$(cat "${work}/list.out")" != 'quarantine-example::cart adds_an_item_twice' ]; then
+    echo 'the filtered list holds:' >&2
+    cat "${work}/list.out" >&2
+    ok=no
+  fi
+fi
+report "$name" "$ok"
+
+clean_example
 
 if [ "$failures" -gt 0 ]; then
   exit 1

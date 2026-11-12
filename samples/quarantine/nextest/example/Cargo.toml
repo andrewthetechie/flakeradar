@@ -1,0 +1,13 @@
+[package]
+name = "quarantine-example"
+version = "0.1.0"
+edition = "2021"
+# A sample to copy, not a crate to publish.
+publish = false
+
+# The example is a standalone crate, not a member of this repository's
+# workspace: without its own (empty) [workspace] table cargo refuses to build it
+# from inside this checkout. Staying outside the workspace is what keeps it away
+# from the workspace-wide `cargo fmt`, `clippy` and `nextest` of .fabro/ci.sh,
+# and nothing a run writes (target/, Cargo.lock) is committed.
+[workspace]
