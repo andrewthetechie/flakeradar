@@ -1,0 +1,8 @@
+# Written by a plain `cargo nextest run`, which uses the default profile, so the
+# sample's test can read the report without naming a profile.
+[profile.default.junit]
+# path is relative to the profile's output dir, target/nextest/default/. The
+# resulting report lands at target/nextest/default/junit.xml.
+path = "junit.xml"
+store-success-output = false
+store-failure-output = true
