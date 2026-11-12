@@ -74,14 +74,20 @@ if ! body=$(curl "${curl_args[@]}" "${url%/}/api/quarantine?${query}" 2>/dev/nul
   exit 0
 fi
 
-# A valid body is a JSON array whose every element is an object with a string
-# classname and a non-empty string name; anything else fails open.
-if ! jq -e '
-    type == "array"
-    and all(.[];
-      type == "object"
-      and (.classname | type == "string")
-      and (.name | type == "string" and length > 0))' >/dev/null 2>&1 <<<"$body"; then
+# A valid body is one JSON value: an array whose every element is an object with
+# a string classname and a non-empty string name. The body is slurped first, so a
+# body holding several values, such as `{} [{...}]`, is rejected here instead of
+# running the filters below once per value and printing one expression per array.
+# Anything else fails open.
+if ! items=$(jq -ser '
+    select(length == 1)
+    | .[0]
+    | select(
+        type == "array"
+        and all(.[];
+          type == "object"
+          and (.classname | type == "string")
+          and (.name | type == "string" and length > 0)))' <<<"$body"); then
   echo "flakeradar-quarantine: invalid quarantine list; skipping nothing" >&2
   printf 'all()\n'
   exit 0
@@ -98,7 +104,7 @@ if ! expression=$(jq -r '
         end
       )
       | "not (" + (join(" | ")) + ")"
-    end' <<<"$body"); then
+    end' <<<"$items"); then
   echo "flakeradar-quarantine: invalid quarantine list; skipping nothing" >&2
   printf 'all()\n'
   exit 0

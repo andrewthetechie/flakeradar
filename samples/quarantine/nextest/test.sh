@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Test for the cargo-nextest quarantine snippet.
 #
-# The five cases here drive quarantine-filter.sh with a `curl` shim: an
-# executable file named curl in a temp dir that is put first on PATH, appends
-# its arguments one per line to $SHIM_LOG, prints the file $SHIM_BODY, and
+# The seven cases here drive quarantine-filter.sh with a `curl` shim or a real
+# toolchain: an executable file named curl in a temp dir that is put first on PATH,
+# appends its arguments one per line to $SHIM_LOG, prints the file $SHIM_BODY, and
 # exits with $SHIM_EXIT (default 0). Each case prints `ok <case>` or
 # `not ok <case>`; the script exits 1 when any case failed.
 #
@@ -122,6 +122,20 @@ if [ -s "${work}/args" ]; then
 fi
 report "$name" "$ok"
 
+# --- no repo
+name='no repo'
+cp "$fixture" "${work}/body"
+ok=yes
+run_snippet FLAKERADAR_URL=http://fr
+expect_stdout 'all()' || ok=no
+expect_empty_stderr || ok=no
+expect_exit0 || ok=no
+if [ -s "${work}/args" ]; then
+  echo "the shim was called" >&2
+  ok=no
+fi
+report "$name" "$ok"
+
 # --- unreachable
 name='unreachable'
 cp "$fixture" "${work}/body"
@@ -135,6 +149,19 @@ report "$name" "$ok"
 # --- bad body
 name='bad body'
 printf '{"detail":"x"}\n' > "${work}/body"
+ok=yes
+run_snippet FLAKERADAR_URL=http://fr FLAKERADAR_REPO=acme/app
+expect_stdout 'all()' || ok=no
+expect_exit0 || ok=no
+expect_warning || ok=no
+report "$name" "$ok"
+
+# --- bad body with several JSON values
+# The endpoint answers one array, so a body that concatenates values is invalid
+# even when one of them is a valid list: jq reads such a body value by value, and
+# an unguarded script would print one expression per array instead of failing open.
+name='bad body with several JSON values'
+printf '{} [{"classname":"x","name":"y"}]\n' > "${work}/body"
 ok=yes
 run_snippet FLAKERADAR_URL=http://fr FLAKERADAR_REPO=acme/app
 expect_stdout 'all()' || ok=no
