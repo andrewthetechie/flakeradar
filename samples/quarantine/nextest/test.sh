@@ -158,15 +158,25 @@ report "$name" "$ok"
 
 # --- bad body with several JSON values
 # The endpoint answers one array, so a body that concatenates values is invalid
-# even when one of them is a valid list: jq reads such a body value by value, and
-# an unguarded script would print one expression per array instead of failing open.
+# even when one of them is a valid list. jq without -s reads such a body value by
+# value and takes its -e exit code from the last one, so an unguarded script
+# skips the invalid-body branch and prints one expression per array: `{} [...]`
+# prints that expression alone, and `[] [...]` prints `all()` plus the expression.
 name='bad body with several JSON values'
-printf '{} [{"classname":"x","name":"y"}]\n' > "${work}/body"
 ok=yes
-run_snippet FLAKERADAR_URL=http://fr FLAKERADAR_REPO=acme/app
-expect_stdout 'all()' || ok=no
-expect_exit0 || ok=no
-expect_warning || ok=no
+for multi_body in '{} [{"classname":"x","name":"y"}]' '[] [{"classname":"x","name":"y"}]'; do
+  printf '%s\n' "$multi_body" > "${work}/body"
+  run_snippet FLAKERADAR_URL=http://fr FLAKERADAR_REPO=acme/app
+  if ! expect_stdout 'all()'; then
+    printf 'stdout for [%s]:\n%s\n' "$multi_body" "$(cat "${work}/out")" >&2
+    ok=no
+  fi
+  expect_exit0 || ok=no
+  if ! expect_warning; then
+    printf 'stderr for [%s]:\n%s\n' "$multi_body" "$(cat "${work}/err")" >&2
+    ok=no
+  fi
+done
 report "$name" "$ok"
 
 # --- the two cargo-backed cases
