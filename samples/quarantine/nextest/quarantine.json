@@ -1,0 +1,24 @@
+[
+  {
+    "suite": "quarantine-example::cart",
+    "classname": "quarantine-example::cart",
+    "name": "adds_an_item",
+    "fingerprint": "0000000000000000000000000000000000000001",
+    "file": null,
+    "line": null,
+    "quarantined_at": "2026-11-01T12:00:00.000000Z",
+    "reason": "flaky in CI",
+    "expires_at": "2026-12-01T12:00:00.000000Z"
+  },
+  {
+    "suite": "quarantine-example::cart",
+    "classname": "quarantine-example::cart",
+    "name": "checkout_total",
+    "fingerprint": "0000000000000000000000000000000000000002",
+    "file": null,
+    "line": null,
+    "quarantined_at": "2026-11-01T12:00:00.000000Z",
+    "reason": null,
+    "expires_at": null
+  }
+]
