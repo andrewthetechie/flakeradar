@@ -38,6 +38,7 @@ use axum::Router;
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::get;
 use chrono::DateTime;
+use common::additions::Additions;
 use common::allowances::{Allowances, AllowedField, allowed, contract_for};
 use flakeradar::{
     BoxFuture, app::AppState, app::build_app, github::Api, github_worker::GitHubWorker,
@@ -869,16 +870,18 @@ fn compare_recorded(scenario: &str, step: usize, recorded: &Value, actual: &Valu
     if let Some(object) = expected.as_object_mut() {
         object.remove("step");
     }
-    // The fixture is read per step rather than held in a static: a replay is a
-    // test process that ends, and reading a small file is cheaper than the
+    // Both fixtures are read per step rather than held in a static: a replay is
+    // a test process that ends, and reading a small file is cheaper than the
     // shared state that would outlive it.
     let stored = Allowances::load();
     let allowances = stored.for_step(scenario, step);
+    let additions = Additions::load();
     let context = Comparison {
         scenario,
         step,
         content_type: "application/json",
         allowances: &allowances,
+        additions: &additions,
         in_table_body: false,
     };
     let mut failures = Vec::new();
@@ -896,16 +899,18 @@ fn compare_mcp(scenario: &str, step: usize, recorded: &Value, actual: &Value) ->
     if let Some(object) = expected.as_object_mut() {
         object.remove("step");
     }
-    // The fixture is read per step rather than held in a static: a replay is a
-    // test process that ends, and reading a small file is cheaper than the
+    // Both fixtures are read per step rather than held in a static: a replay is
+    // a test process that ends, and reading a small file is cheaper than the
     // shared state that would outlive it.
     let stored = Allowances::load();
     let allowances = stored.for_step(scenario, step);
+    let additions = Additions::load();
     let context = Comparison {
         scenario,
         step,
         content_type: "application/json",
         allowances: &allowances,
+        additions: &additions,
         in_table_body: false,
     };
     let mut failures = Vec::new();
@@ -926,16 +931,18 @@ fn compare_body(
         .get("status")
         .and_then(Value::as_u64)
         .unwrap_or_default();
-    // The fixture is read per step rather than held in a static: a replay is a
-    // test process that ends, and reading a small file is cheaper than the
+    // Both fixtures are read per step rather than held in a static: a replay is
+    // a test process that ends, and reading a small file is cheaper than the
     // shared state that would outlive it.
     let stored = Allowances::load();
     let allowances = stored.for_step(scenario, step);
+    let additions = Additions::load();
     let context = Comparison {
         scenario,
         step,
         content_type,
         allowances: &allowances,
+        additions: &additions,
         in_table_body: false,
     };
     let mut failures = Vec::new();
@@ -1507,6 +1514,9 @@ struct Comparison<'a> {
     content_type: &'a str,
     /// The allowances that cover this step's golden.
     allowances: &'a [&'a AllowedField],
+    /// What this server answers that the recorded corpus never did, which the
+    /// comparison accepts instead of reporting.
+    additions: &'a Additions,
     /// Whether these values were decoded from a hex-encoded table `body` column.
     in_table_body: bool,
 }
@@ -1519,6 +1529,7 @@ impl Comparison<'_> {
             step: self.step,
             content_type: self.content_type,
             allowances: self.allowances,
+            additions: self.additions,
             in_table_body: true,
         }
     }
@@ -1530,7 +1541,8 @@ impl Comparison<'_> {
 /// `"<date>"` match anything in the timestamp and date rules, and an allowance
 /// covers exactly the field it names. A dumped table's `body` column holds its
 /// document in hex, so that column's document is compared field by field rather
-/// than as one string.
+/// than as one string, and a JSON document held in a text block is parsed and
+/// compared the same way.
 fn compare_value(
     context: &Comparison<'_>,
     path: &str,
@@ -1581,12 +1593,23 @@ fn compare_value(
                     continue;
                 }
                 let child = join(path, key);
-                if !allowed(&child, &Value::Null, &actual[key], context.allowances) {
-                    failures.push(format!(
-                        "{} step {}: {child} was not recorded",
-                        context.scenario, context.step
-                    ));
+                if allowed(&child, &Value::Null, &actual[key], context.allowances) {
+                    continue;
                 }
+                // A dumped column is governed by `columns` alone, and every other
+                // key by the bare field name `fields` lists, since the replay sees
+                // untyped JSON and cannot know which schema the key came from.
+                let listed = match dumped_column(&child) {
+                    Some((table, column)) => context.additions.column(table, column),
+                    None => context.additions.field_name(key),
+                };
+                if listed {
+                    continue;
+                }
+                failures.push(format!(
+                    "{} step {}: {child} was not recorded",
+                    context.scenario, context.step
+                ));
             }
         }
         (Value::Array(expected), Value::Array(actual)) if expected.len() == actual.len() => {
@@ -1601,12 +1624,29 @@ fn compare_value(
             {
                 return;
             }
+            if let (Some(recorded), Some(answered)) =
+                (json_document(expected), json_document(actual))
+            {
+                // A JSON document carried as one text block, which is how an MCP
+                // tool's answer reaches the client, compares field by field at
+                // this same path: the added-field rule then applies inside it, and
+                // the recorder's placeholders keep matching there too.
+                compare_value(context, path, &recorded, &answered, failures);
+                return;
+            }
             failures.push(format!(
                 "{} step {}: {path} {actual} does not match {expected}",
                 context.scenario, context.step
             ));
         }
     }
+}
+
+/// The document a string holds as parsed JSON, when it holds a JSON object or
+/// array rather than a bare value or a number.
+fn json_document(value: &Value) -> Option<Value> {
+    let parsed = serde_json::from_str::<Value>(value.as_str()?).ok()?;
+    (parsed.is_object() || parsed.is_array()).then_some(parsed)
 }
 
 /// The dotted path of a value inside another.
@@ -1765,22 +1805,26 @@ fn same_instant(path: &str, expected: &Value, actual: &Value) -> bool {
     expected == actual
 }
 
-/// Whether `path` names a column of a dumped table: `body.tables.<table>.<row>.<column>`.
+/// The table and column of a path that names a column of a dumped table, whose
+/// shape is `body.tables.<table>.<row>.<column>`.
 ///
 /// Only a `dump_db` step has that shape, so the hex decoding below reaches the
 /// dump's table rows and nothing else: a `\x`-prefixed string anywhere in an HTTP
 /// response, or nested deeper inside a dumped document, keeps comparing as text.
-fn names_a_dumped_column(path: &str) -> bool {
-    let Some(rest) = path.strip_prefix("body.tables.") else {
-        return false;
-    };
+fn dumped_column(path: &str) -> Option<(&str, &str)> {
+    let rest = path.strip_prefix("body.tables.")?;
     let mut parts = rest.split('.');
-    let (Some(_table), Some(row), Some(_column), None) =
+    let (Some(table), Some(row), Some(column), None) =
         (parts.next(), parts.next(), parts.next(), parts.next())
     else {
-        return false;
+        return None;
     };
-    !row.is_empty() && row.chars().all(|digit| digit.is_ascii_digit())
+    (!row.is_empty() && row.chars().all(|digit| digit.is_ascii_digit())).then_some((table, column))
+}
+
+/// Whether `path` names a column of a dumped table.
+fn names_a_dumped_column(path: &str) -> bool {
+    dumped_column(path).is_some()
 }
 
 /// The JSON document a hex-encoded table `body` column holds, when it holds one.
@@ -2032,13 +2076,121 @@ mod tests {
 
     use serde_json::json;
 
+    use crate::common::additions::Additions;
     use crate::common::allowances::AllowedField;
 
-    use super::{compare_body, is_framework_422, is_timestamp, values_match};
+    use super::{
+        Comparison, Mismatches, compare_body, compare_value, is_framework_422, is_timestamp,
+        values_match,
+    };
 
     /// Whether two values are the same under the contract's rules.
     fn matches(expected: &serde_json::Value, actual: &serde_json::Value) -> bool {
         values_match(expected, actual, "application/json")
+    }
+
+    /// Every difference between two literal documents, with `additions` as the
+    /// only list the comparison is given and no allowances to cover a field.
+    fn reported(
+        recorded: &serde_json::Value,
+        answered: &serde_json::Value,
+        additions: &Additions,
+    ) -> Mismatches {
+        let context = Comparison {
+            scenario: "s",
+            step: 1,
+            content_type: "application/json",
+            allowances: &[],
+            additions,
+            in_table_body: false,
+        };
+        let mut failures = Mismatches::new();
+        compare_value(&context, "body", recorded, answered, &mut failures);
+        failures
+    }
+
+    /// One failure message naming `path`, for the assertions below.
+    fn not_recorded(path: &str) -> String {
+        format!("s step 1: {path} was not recorded")
+    }
+
+    #[test]
+    fn an_added_dumped_column_is_accepted_only_by_the_columns_list() {
+        let recorded = json!({"tables": {"test_runs": [{"id": 1}]}});
+        let answered = json!({"tables": {"test_runs": [{"id": 1, "infra_suspect": false}]}});
+        let listed = Additions {
+            columns: vec!["test_runs.infra_suspect".to_owned()],
+            ..Default::default()
+        };
+        assert_eq!(
+            reported(&recorded, &answered, &listed),
+            Vec::<String>::new()
+        );
+        // With nothing listed the column is reported, and a `fields` entry does not
+        // cover it: a dumped column is governed by `columns` alone.
+        for additions in [
+            Additions::default(),
+            Additions {
+                fields: vec!["TestRunOut.infra_suspect".to_owned()],
+                ..Default::default()
+            },
+        ] {
+            assert_eq!(
+                reported(&recorded, &answered, &additions),
+                [not_recorded("body.tables.test_runs.0.infra_suspect")]
+            );
+        }
+    }
+
+    #[test]
+    fn an_added_response_field_is_accepted_by_its_bare_name() {
+        let recorded = json!({"failures": [{}]});
+        let answered = json!({"failures": [{"infra_suspect": false, "other": 1}]});
+        let listed = Additions {
+            fields: vec!["CiRunTestFailureOut.infra_suspect".to_owned()],
+            ..Default::default()
+        };
+        assert_eq!(
+            reported(&recorded, &answered, &listed),
+            [not_recorded("body.failures.0.other")]
+        );
+        let failures = reported(&recorded, &answered, &Additions::default());
+        assert_eq!(
+            failures,
+            [
+                not_recorded("body.failures.0.infra_suspect"),
+                not_recorded("body.failures.0.other")
+            ]
+        );
+    }
+
+    #[test]
+    fn a_json_text_block_is_compared_as_the_document_it_holds() {
+        // This is the shape an MCP `tools/call` golden carries: the tool's JSON
+        // answer as one string, with the recorder's placeholder inside it.
+        let recorded = json!("{\"a\":1,\"b\":\"<timestamp>\"}");
+        let listed = Additions {
+            fields: vec!["S.x".to_owned()],
+            ..Default::default()
+        };
+        let answered = json!("{\"a\":1,\"b\":\"2026-11-10T00:00:00Z\",\"x\":true}");
+        assert_eq!(
+            reported(&recorded, &answered, &listed),
+            Vec::<String>::new(),
+            "the listed field and the placeholder must both match inside the text"
+        );
+        assert_eq!(
+            reported(&recorded, &answered, &Additions::default()),
+            [not_recorded("body.x")]
+        );
+
+        let changed = json!("{\"a\":2,\"b\":\"2026-11-10T00:00:00Z\"}");
+        let failures = reported(&recorded, &changed, &listed);
+        assert_eq!(
+            failures,
+            ["s step 1: body.a 2 does not match 1".to_owned()],
+            "a changed value inside the text is reported at its own path"
+        );
     }
 
     #[test]
@@ -2762,35 +2914,50 @@ async fn a_changed_mcp_tool_answer_fails_the_replay() {
         "the recorded get_test answer must replay clean before a control alters it"
     );
 
-    for (what, from, to) in [
+    for (what, from, to, paths) in [
         (
             "a Test name",
             "\"name\":\"test_total\"",
             "\"name\":\"test_totals\"",
+            &["result.content.0.text.test.name"][..],
         ),
         (
             "a score",
             "\"flakiness_score\":0.1667",
             "\"flakiness_score\":0.1668",
+            &[
+                "result.content.0.text.test.flakiness_score",
+                "result.content.0.text.score_history.0.flakiness_score",
+            ],
         ),
         (
             "a permalink",
             "blob/m1/tests/test_cart.py#L12",
             "blob/m1/tests/test_cart.py#L13",
+            &["result.content.0.text.location.url"],
         ),
         (
             "a failure message",
             "\"message\":\"assert 1 == 2\"",
             "\"message\":\"assert 2 == 2\"",
+            &[
+                "result.content.0.text.latest_failure.message",
+                "result.content.0.text.executions.1.message",
+            ],
         ),
     ] {
         let tampered = with_tampered_text(&recorded, from, to);
         let failures = replay_mcp(&server, "mcp", 19, &get_test, &tampered).await;
-        assert_eq!(failures.len(), 1, "{what}: {failures:?}");
-        assert!(
-            failures[0].contains("result.content.0.text"),
-            "{what}: {failures:?}"
-        );
+        // The content text holds the tool's JSON answer, which the comparison
+        // parses, so a substring the answer repeats fails at every field holding
+        // it and each failure names the field rather than the text block.
+        assert_eq!(failures.len(), paths.len(), "{what}: {failures:?}");
+        for path in paths {
+            assert!(
+                failures.iter().any(|failure| failure.contains(path)),
+                "{what}: {path} is not reported in {failures:?}"
+            );
+        }
     }
 
     // The structured copy of the same data is compared too, so a changed score
