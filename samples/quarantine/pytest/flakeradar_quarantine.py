@@ -57,6 +57,20 @@ def _quarantined_pairs(payload):
     return pairs
 
 
+class _RejectRedirects(urllib.request.HTTPRedirectHandler):
+    """Answer a redirect with an error instead of following it.
+
+    urllib follows a 3xx to its target and reports only the final status, so a
+    redirect to a valid quarantine body would look like a 200 answer and the
+    plugin would skip tests on an answer it cannot trust. Returning no new
+    request makes urllib raise HTTPError for the original 3xx status, which is
+    fail-open like any other non-2xx status.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
 def _fetch(url, repo, project, token):
     """The set of quarantined pairs, or (None, the reason the list is unusable)."""
     query = {"repo": repo}
@@ -67,8 +81,9 @@ def _fetch(url, repo, project, token):
         "{}/api/quarantine?{}".format(url, urllib.parse.urlencode(query)),
         headers=headers,
     )
+    opener = urllib.request.build_opener(_RejectRedirects)
     try:
-        with urllib.request.urlopen(request, timeout=10) as response:
+        with opener.open(request, timeout=10) as response:
             if not 200 <= response.status < 300:
                 return None, "FlakeRadar answered {}".format(response.status)
             body = response.read()

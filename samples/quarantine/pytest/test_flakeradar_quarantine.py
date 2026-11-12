@@ -55,9 +55,11 @@ class TestDiscount:
 class QuarantineServer:
     """A localhost HTTP server that answers /api/quarantine and records the requests."""
 
-    def __init__(self, body, status=200):
+    def __init__(self, body, status=200, redirect_to=None):
         self.body = body
         self.status = status
+        # When set, /api/quarantine answers 302 to this path instead of the body.
+        self.redirect_to = redirect_to
         self.requests = []
         self._httpd = None
         self._thread = None
@@ -74,6 +76,14 @@ class QuarantineServer:
                 parsed = urllib.parse.urlsplit(self.path)
                 # The headers object answers case-insensitively, like HTTP does.
                 outer.requests.append((parsed.path, parsed.query, self.headers))
+                if outer.redirect_to and parsed.path == "/api/quarantine":
+                    # The endpoint redirects to a path that serves a valid body,
+                    # so a client that follows the redirect sees a 200.
+                    self.send_response(302)
+                    self.send_header("Location", outer.redirect_to)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
                 payload = outer.body.encode("utf-8")
                 self.send_response(outer.status)
                 self.send_header("Content-Type", "application/json")
@@ -196,6 +206,21 @@ def test_error_status_skips_nothing(pytester, monkeypatch, flakeradar):
     result.assert_outcomes(passed=4)
     assert len(plugin_lines(result)) == 1
     result.stdout.fnmatch_lines(["flakeradar-quarantine: *; skipping nothing"])
+
+
+def test_redirect_skips_nothing(pytester, monkeypatch, flakeradar):
+    """A 302 to a valid body is a non-2xx answer, so the run skips nothing."""
+    flakeradar.redirect_to = "/quarantine.json"
+    prepare(pytester, monkeypatch, flakeradar.url)
+
+    result = pytester.runpytest("-p", "flakeradar_quarantine")
+
+    result.assert_outcomes(passed=4)
+    assert result.ret == 0
+    assert len(plugin_lines(result)) == 1
+    result.stdout.fnmatch_lines(["flakeradar-quarantine: *; skipping nothing"])
+    # The plugin never fetches the redirect target.
+    assert [request[0] for request in flakeradar.requests] == ["/api/quarantine"]
 
 
 def test_body_that_is_not_a_list_skips_nothing(pytester, monkeypatch, flakeradar):
