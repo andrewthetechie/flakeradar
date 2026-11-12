@@ -9,6 +9,8 @@ frontend/node_modules/
 frontend/dist/
 frontend/tsconfig.tsbuildinfo
 frontend/test-results/
+# The Vitest/Jest sample installs its runners and both runners cache under them.
+samples/quarantine/vitest-jest/**/node_modules/
 
 # Env
 .env
