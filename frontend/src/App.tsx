@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   fetchFailedReports,
   latestWins,
@@ -27,8 +27,9 @@ import { StatTiles } from "./components/StatTiles";
 import { TestDrawer } from "./components/TestDrawer";
 import { ThemeToggle } from "./components/ThemeToggle";
 import { ViewToggle } from "./components/ViewToggle";
+import { useGuardedLoad, type GuardedLoader } from "./guardedLoad";
 import { useViewState } from "./urlState";
-import { loadJobHistory, loadTestHistory, loadViewBundle } from "./viewData";
+import { loadJobHistory, loadTestHistory, loadViewBundle, type ViewBundle } from "./viewData";
 
 const REFRESH_MS = 30_000;
 
@@ -61,17 +62,14 @@ export default function App() {
   } = view;
   const pageNumber = view.page;
 
-  // Only the newest refresh may write state: a slow response for the old
-  // scope must not overwrite the view the user has since switched to. The
-  // comparison belongs to the api module's latestWins guard, held here for the
-  // lifetime of the component so it outlives each refresh.
-  const guardRef = useRef(latestWins());
-
-  const refresh = useCallback(async () => {
-    const guard = guardRef.current;
-    const request = guard.start();
-    try {
-      const bundle = await loadViewBundle(
+  // The list's whole load, guard and all: only the newest request may write
+  // state, so a slow response for the old scope cannot overwrite the view the
+  // user has since switched to. The hook owns the component-lifetime guard, the
+  // token, the supersede check and the error mapping; this file names the loader
+  // and applies the answer.
+  const load = useCallback<GuardedLoader<ViewBundle>>(
+    (guard, request) =>
+      loadViewBundle(
         {
           view: kind,
           repo,
@@ -89,9 +87,27 @@ export default function App() {
         },
         guard,
         request,
-      );
-      // The loader answers nothing once a newer request superseded this one.
-      if (bundle == null) return;
+      ),
+    [
+      kind,
+      repo,
+      project,
+      pageNumber,
+      sort,
+      showStable,
+      cause,
+      quarantined,
+      broken,
+      issue,
+      newDays,
+      pipeline,
+      q,
+    ],
+  );
+
+  const list = useGuardedLoad<ViewBundle>(load, {
+    clearErrorOnSuccess: true,
+    onData: (bundle) => {
       // Every view's header data. The CI run view fetches its own run inside
       // CiRunView, so it applies nothing beyond this.
       setRepos(bundle.repos);
@@ -103,33 +119,21 @@ export default function App() {
         setJobSummary(bundle.jobSummary);
         setJobPage(bundle.jobPage);
       }
-      setError(null);
-    } catch (e) {
-      if (!guard.current(request)) return;
-      setError(e instanceof Error ? e.message : String(e));
-    }
-  }, [
-    kind,
-    repo,
-    project,
-    pageNumber,
-    sort,
-    showStable,
-    cause,
-    quarantined,
-    broken,
-    issue,
-    newDays,
-    pipeline,
-    q,
-  ]);
+    },
+    onErrorChange: setError,
+  });
+
+  // Imperative as before: the quarantine handlers await it, and its identity
+  // changes only when the load's does, so the search debounce survives the poll.
+  const refresh = list.refresh;
 
   // Stable identity: the search box's debounce timer must not restart on the
   // 30 s polling re-renders.
   const onSearch = useCallback((text: string) => setView({ q: text }), [setView]);
 
+  // The hook loads on mount and reloads whenever the scope changes, so this
+  // effect is the 30 s poll alone, keyed on refresh's stable identity.
   useEffect(() => {
-    void refresh();
     const timer = setInterval(() => void refresh(), REFRESH_MS);
     return () => clearInterval(timer);
   }, [refresh]);
