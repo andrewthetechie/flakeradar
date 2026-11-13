@@ -143,10 +143,10 @@ export default function App() {
   // change — those flow through refresh's identity — but not on an imperative
   // refresh() call, which leaves that identity alone.
   const testHistoryLoader = useCallback<GuardedLoader<History>>(
-    async (guard, request) => {
-      if (view.test == null) return null;
-      return loadTestHistory(view.test, guard, request);
-    },
+    // The null arm is a safety net for a null drawer id, which `enabled` below
+    // already prevents; it stays so the loader is total on its own.
+    async (guard, request) =>
+      view.test == null ? null : loadTestHistory(view.test, guard, request),
     // pageNumber and refresh are unread here on purpose: they are the old
     // effect's re-fetch triggers, carried on the loader's identity.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -161,10 +161,8 @@ export default function App() {
   });
 
   const jobHistoryLoader = useCallback<GuardedLoader<JobHistory>>(
-    async (guard, request) => {
-      if (view.job == null) return null;
-      return loadJobHistory(view.job, guard, request);
-    },
+    // The same safety net as the Test drawer's loader above.
+    async (guard, request) => (view.job == null ? null : loadJobHistory(view.job, guard, request)),
     // The same deliberate triggers as the Test drawer's loader above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [view.job, pageNumber, refresh],
