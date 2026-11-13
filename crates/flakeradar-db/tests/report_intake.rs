@@ -14,13 +14,17 @@
 use flakeradar_core::{dto::PipelineReportIn, dto::pipeline_body, model::ReportStatus};
 use flakeradar_db::entities::{projects, reports, repos};
 use flakeradar_db::{
-    DbError, NewJunitReport, NewPipelineReport, accept_junit_report, accept_pipeline_report,
-    complete_report, fail_report, find_junit_duplicate, get_or_create_project, requeue_report,
-    reset_for_retry, stored_ci_run_attempt, stored_junit_body, stored_pipeline_report,
+    DbError, DismissAnswer, NewJunitReport, NewPipelineReport, RetryAnswer, accept_junit_report,
+    accept_pipeline_report, complete_report, dismiss_failed_report, fail_report,
+    find_junit_duplicate, get_or_create_project, requeue_report, reset_for_retry,
+    retry_failed_report, stored_ci_run_attempt, stored_junit_body, stored_pipeline_report,
 };
 use flakeradar_test_support::{TestDb, make_junit, make_report};
 use sea_orm::entity::prelude::DateTimeWithTimeZone;
-use sea_orm::{ConnectionTrait, DbBackend, EntityTrait, PaginatorTrait as _, Statement, Value};
+use sea_orm::{
+    ActiveModelTrait, ConnectionTrait, DbBackend, EntityTrait, IntoActiveModel,
+    PaginatorTrait as _, Statement, Value,
+};
 
 /// A fixed instant, so a stored `created_at` never depends on the clock.
 fn at() -> DateTimeWithTimeZone {
@@ -743,4 +747,108 @@ async fn a_report_body_round_trips_through_the_binary_column() {
         .try_get("", "count")
         .expect("a count");
     assert_eq!(counted, 1);
+}
+
+/// Leaves the Report as a failed processing run would, with a spent budget.
+async fn mark_failed(db: &TestDb, report: &mut reports::Model) {
+    ReportStatus::Failed.as_str().clone_into(&mut report.status);
+    report.error = Some("boom".to_owned());
+    report.processed_at = Some(at());
+    report.retry_count = 3;
+    report
+        .clone()
+        .into_active_model()
+        .reset_all()
+        .update(db.connection())
+        .await
+        .expect("the failed Report");
+}
+
+#[tokio::test]
+#[expect(
+    clippy::panic,
+    reason = "a refusal names what the retry answered instead of the retried row"
+)]
+async fn a_manual_retry_persists_the_transition() {
+    // The db write is the whole row as it was just loaded with the transition
+    // applied, so exactly `reset_for_retry`'s fields change and nothing else.
+    let db = TestDb::new().await.expect("a migrated test database");
+    let project = project(&db).await;
+    let mut stored = seed(&db, with_project(&project, identity())).await;
+    let loaded = stored.clone();
+    mark_failed(&db, &mut stored).await;
+
+    let answer = retry_failed_report(db.connection(), i64::from(stored.id))
+        .await
+        .expect("the retry runs");
+    let RetryAnswer::Retried(retried) = answer else {
+        panic!("the failed Report is retried, got {answer:?}");
+    };
+    assert_eq!(retried.repo, "acme/app");
+    assert_eq!(retried.project.as_deref(), Some("default"));
+    assert_eq!(retried.report.status, ReportStatus::Pending.as_str());
+
+    let reread = reports::Entity::find_by_id(loaded.id)
+        .one(db.connection())
+        .await
+        .expect("the Report query")
+        .expect("the Report");
+    assert_eq!(reread.retry_count, 0);
+    assert_eq!(reread.status, ReportStatus::Pending.as_str());
+    assert_eq!(reread.error, None);
+    assert_eq!(reread.processed_at, None);
+    // Every other column holds what the load read, so the whole row is back to
+    // the seeded one: the full-row write changed nothing outside the transition.
+    assert_eq!(reread, loaded);
+}
+
+#[tokio::test]
+async fn a_retry_and_a_dismiss_refuse_a_report_that_has_not_failed() {
+    // One guard, two refusals: a queued Report is refused as not failed, and an
+    // id that names nothing is refused as not found.
+    let db = TestDb::new().await.expect("a migrated test database");
+    let project = project(&db).await;
+    let stored = seed(&db, with_project(&project, identity())).await;
+
+    let retried = retry_failed_report(db.connection(), i64::from(stored.id))
+        .await
+        .expect("the retry query runs");
+    assert!(matches!(retried, RetryAnswer::NotFailed), "{retried:?}");
+    let dismissed = dismiss_failed_report(db.connection(), i64::from(stored.id))
+        .await
+        .expect("the dismiss query runs");
+    assert_eq!(dismissed, DismissAnswer::NotFailed);
+    assert_eq!(report_ids(&db).await, vec![stored.id]);
+
+    for report_id in [999_999_i64, 0] {
+        let retried = retry_failed_report(db.connection(), report_id)
+            .await
+            .expect("the retry query runs");
+        assert!(matches!(retried, RetryAnswer::NotFound), "{retried:?}");
+        let dismissed = dismiss_failed_report(db.connection(), report_id)
+            .await
+            .expect("the dismiss query runs");
+        assert_eq!(dismissed, DismissAnswer::NotFound);
+    }
+    assert_eq!(report_ids(&db).await, vec![stored.id]);
+}
+
+#[tokio::test]
+async fn a_dismiss_removes_a_failed_report() {
+    let db = TestDb::new().await.expect("a migrated test database");
+    let project = project(&db).await;
+    let mut stored = seed(&db, with_project(&project, identity())).await;
+    mark_failed(&db, &mut stored).await;
+
+    let dismissed = dismiss_failed_report(db.connection(), i64::from(stored.id))
+        .await
+        .expect("the dismiss runs");
+    assert_eq!(dismissed, DismissAnswer::Dismissed);
+    assert_eq!(
+        reports::Entity::find_by_id(stored.id)
+            .one(db.connection())
+            .await
+            .expect("the Report query"),
+        None
+    );
 }

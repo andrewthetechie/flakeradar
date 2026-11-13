@@ -8,8 +8,10 @@
 //! queue reads: one Report with its names, the pending and failed counts, and the
 //! newest Reports a page lists. The accept behaviours own their unit of work:
 //! each begins one transaction, inserts within it, and is the only place its rows
-//! are committed or rolled back. The field transitions stay commit-free: the
-//! processor that applies them owns that transaction.
+//! are committed or rolled back. The two manual writes over a stored row — retry
+//! and dismiss — share one Failed guard and write one statement each. The field
+//! transitions stay commit-free: the processor that applies them owns that
+//! transaction.
 
 // Rust guideline compliant 2026-07-21
 
@@ -20,8 +22,8 @@ use flakeradar_core::{
 };
 use sea_orm::entity::prelude::DateTimeWithTimeZone;
 use sea_orm::{
-    ConnectionTrait, DbBackend, EntityTrait, FromQueryResult as _, JsonValue, Set, Statement,
-    TransactionSession, TransactionTrait, Value,
+    ActiveModelTrait, ConnectionTrait, DbBackend, EntityTrait, FromQueryResult as _,
+    IntoActiveModel, JsonValue, Set, Statement, TransactionSession, TransactionTrait, Value,
 };
 
 use crate::entities::reports;
@@ -360,6 +362,24 @@ pub fn reset_for_retry(report: &mut reports::Model) {
     report.processed_at = None;
 }
 
+/// Writes a Report that a transition changed, keeping every other column.
+///
+/// SeaORM 2 turns a `Model` into an `ActiveModel` of `Unchanged` values, so an
+/// `UPDATE` built from a mutated model sends no column at all and silently
+/// leaves the row alone. `reset_all` promotes the read values back to `Set`.
+pub(crate) async fn write_report(
+    report: &reports::Model,
+    db: &impl ConnectionTrait,
+) -> Result<(), DbError> {
+    report
+        .clone()
+        .into_active_model()
+        .reset_all()
+        .update(db)
+        .await?;
+    Ok(())
+}
+
 /// The columns one queue row serves, with the names the response spells them by.
 ///
 /// `repo_name` is always there, because `repo_id` is NOT NULL; `project_name` is
@@ -435,6 +455,98 @@ pub async fn stored_report(
         repo: get(&row, "repo_name")?,
         project: get(&row, "project_name")?,
     }))
+}
+
+/// How the Failed guard found the Report a write was asked to change.
+///
+/// Both manual writes accept one Report and refuse the rest, and the route maps
+/// the two refusals to different statuses, so the guard names them apart.
+enum FailedGuard {
+    /// No Report has this id.
+    NotFound,
+    /// The Report exists and holds some other status.
+    NotFailed,
+    /// The Report, loaded and Failed.
+    Failed(Box<StoredReport>),
+}
+
+/// Loads the Report `report_id` names and refuses what no manual write accepts:
+/// every status but Failed. This is the whole Failed guard; a caller who answers
+/// a refusal maps it to its own enum.
+async fn load_failed(db: &impl ConnectionTrait, report_id: i64) -> Result<FailedGuard, DbError> {
+    Ok(match stored_report(db, report_id).await? {
+        None => FailedGuard::NotFound,
+        Some(stored) if stored.report.status == ReportStatus::Failed.as_str() => {
+            FailedGuard::Failed(Box::new(stored))
+        }
+        Some(_) => FailedGuard::NotFailed,
+    })
+}
+
+/// What a manual retry found.
+#[derive(Debug)]
+pub enum RetryAnswer {
+    /// No Report has this id.
+    NotFound,
+    /// The Report exists but did not fail, so a person may not retry it.
+    NotFailed,
+    /// The Report is back in the queue, with the names the response spells.
+    Retried(Box<StoredReport>),
+}
+
+/// What a dismiss found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DismissAnswer {
+    /// No Report has this id.
+    NotFound,
+    /// The Report exists but did not fail, so a person may not dismiss it.
+    NotFailed,
+    /// The Report is gone.
+    Dismissed,
+}
+
+/// Puts a failed Report back in the queue: loads it, refuses what is not Failed,
+/// applies [`reset_for_retry`] and writes the row.
+///
+/// The write is the whole row as it was just loaded with the transition applied,
+/// through the same helper the processor uses, so the transition's field set is
+/// stated once. The load and the one `UPDATE` need no transaction of their own:
+/// a single statement is atomic, and nothing else the call does is persisted.
+///
+/// # Errors
+///
+/// Returns [`DbError::Database`] when the load or the write fails.
+pub async fn retry_failed_report(
+    db: &impl ConnectionTrait,
+    report_id: i64,
+) -> Result<RetryAnswer, DbError> {
+    let mut stored = match load_failed(db, report_id).await? {
+        FailedGuard::NotFound => return Ok(RetryAnswer::NotFound),
+        FailedGuard::NotFailed => return Ok(RetryAnswer::NotFailed),
+        FailedGuard::Failed(stored) => stored,
+    };
+    reset_for_retry(&mut stored.report);
+    write_report(&stored.report, db).await?;
+    Ok(RetryAnswer::Retried(stored))
+}
+
+/// Deletes a failed Report: loads it, refuses what is not Failed and removes the
+/// row.
+///
+/// # Errors
+///
+/// Returns [`DbError::Database`] when the load or the delete fails.
+pub async fn dismiss_failed_report(
+    db: &impl ConnectionTrait,
+    report_id: i64,
+) -> Result<DismissAnswer, DbError> {
+    let id = match load_failed(db, report_id).await? {
+        FailedGuard::NotFound => return Ok(DismissAnswer::NotFound),
+        FailedGuard::NotFailed => return Ok(DismissAnswer::NotFailed),
+        FailedGuard::Failed(stored) => stored.report.id,
+    };
+    reports::Entity::delete_by_id(id).exec(db).await?;
+    Ok(DismissAnswer::Dismissed)
 }
 
 /// How many Reports are pending and how many failed.
