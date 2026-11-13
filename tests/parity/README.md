@@ -12,7 +12,10 @@ deleted `tools/parity-record/` — it was already absent from the tree when they
 were recorded — run against a checkout of `86c98804`'s `backend/` outside this
 one. The recorder is gone with the Python code it drove. **A golden file changes
 only for an intended behaviour change**; a difference the replay must accept
-also needs an entry in `allowed-differences.json`.
+also needs an entry in `allowed-differences.json`, and a feature that adds a
+column, a response field, a route or a query parameter adds its entry in
+`additions.json` in the same change, so the replay keeps failing on anything
+else.
 
 ```
 junit/                    the JUnit XML corpus (inputs)
@@ -21,6 +24,8 @@ golden/junit/             one parse result per corpus file, per line_base
 golden/<scenario>/<nn>.json   one result per scenario step
 schema.sql                pg_dump of Alembic head, minus alembic_version
 allowed-differences.json  the only mismatches a replay may accept
+additions.json            the columns, fields, paths and parameters this
+                          server added after the recording
 ```
 
 At `bba16f2` this holds **15 scenarios with 316 steps**, a **33-file** JUnit corpus, **66** JUnit
@@ -226,6 +231,54 @@ is the `consumers` scenario's first step. The rules:
   - `match: {"kind": "prefix", "value": "..."}`: the Rust value must start with
     that prefix and may differ after it, for parser wording. Every entry carries a `reason`, and
   the replay's reconciliation checks each entry against the golden it names.
+
+### Additions
+
+`additions.json` is the reviewed list of what this server answers that the
+recorded corpus never did. It holds four lists, and each entry ignores exactly
+one kind of addition, spelled in the form its list documents:
+
+- **`columns`** — `table.column`, for a column of a `dump_db` table the record
+  does not have. A dump's rows arrive as `body.tables.<table>.<row>.<column>`,
+  so that path and no other is where an entry applies, and a column is matched
+  with its table, never by its name alone. Any other added key is governed by
+  `fields`, not by `columns`.
+- **`fields`** — `Schema.field`, with the OpenAPI component schema that
+  declares the field, for a field added to a response. In the OpenAPI
+  comparison the entry is matched on that schema: a listed field is neither an
+  extra declared field nor a field required only in the port.
+- **`paths`** — `METHOD /path`, with an upper-case method and the OpenAPI path
+  template, for a route the record does not document, or for one method added
+  to a recorded path.
+- **`query_params`** — `METHOD /path name`, for a query parameter added to a
+  recorded operation. An entry covers that parameter of that operation and no
+  other.
+
+`paths` and `query_params` compare the method without regard to case and
+everything else exactly. A path the record does not have is ignored only when
+every method it answers with is listed, so a half-listed route still fails.
+
+**An added key in a JSON body is matched on its bare name.** The replay sees
+untyped JSON and cannot tell which schema a key came from, so it ignores any
+answered key the golden lacks when some `fields` entry ends in `.key`; that is
+also why an entry is written `Schema.field` and not just `field`, so the list
+still names the schema a reader can check. Each added field therefore appears
+once, under the schema that declares it. The same rule reaches inside a string
+the record holds as JSON — an MCP tool's answer in `result.content.0.text` —
+which is parsed and compared field by field at that path, placeholders and
+all, so a field added to a tool's payload is ignored by the same entry and a
+`<timestamp>` keeps matching there.
+
+**An entry ignores only what was added.** Every field the record has is still
+compared by value, at every path; an answered value that differs from the
+recorded one is not an addition, and still needs an entry in
+`allowed-differences.json`, which names the one golden file and field it
+covers. The change that adds a column, a response field, a route or a query
+parameter adds its entry here in the same PR, and the replay then fails on
+everything the list does not name. An entry that does not match the form of
+its list is a mistake, not a no-op: `Additions::problems`, in
+`crates/flakeradar/tests/common/additions.rs`, reports every such entry by
+name, and its tests hold the lists to their forms.
 
 ## What a scenario cannot reach, and where it is covered instead
 
