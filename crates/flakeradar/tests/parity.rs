@@ -38,6 +38,7 @@ use axum::Router;
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::get;
 use chrono::DateTime;
+use common::additions::Additions;
 use common::allowances::{Allowances, AllowedField, allowed, contract_for};
 use flakeradar::{
     BoxFuture, app::AppState, app::build_app, github::Api, github_worker::GitHubWorker,
@@ -869,16 +870,18 @@ fn compare_recorded(scenario: &str, step: usize, recorded: &Value, actual: &Valu
     if let Some(object) = expected.as_object_mut() {
         object.remove("step");
     }
-    // The fixture is read per step rather than held in a static: a replay is a
-    // test process that ends, and reading a small file is cheaper than the
+    // Both fixtures are read per step rather than held in a static: a replay is
+    // a test process that ends, and reading a small file is cheaper than the
     // shared state that would outlive it.
     let stored = Allowances::load();
     let allowances = stored.for_step(scenario, step);
+    let additions = Additions::load();
     let context = Comparison {
         scenario,
         step,
         content_type: "application/json",
         allowances: &allowances,
+        additions: &additions,
         in_table_body: false,
     };
     let mut failures = Vec::new();
@@ -896,16 +899,18 @@ fn compare_mcp(scenario: &str, step: usize, recorded: &Value, actual: &Value) ->
     if let Some(object) = expected.as_object_mut() {
         object.remove("step");
     }
-    // The fixture is read per step rather than held in a static: a replay is a
-    // test process that ends, and reading a small file is cheaper than the
+    // Both fixtures are read per step rather than held in a static: a replay is
+    // a test process that ends, and reading a small file is cheaper than the
     // shared state that would outlive it.
     let stored = Allowances::load();
     let allowances = stored.for_step(scenario, step);
+    let additions = Additions::load();
     let context = Comparison {
         scenario,
         step,
         content_type: "application/json",
         allowances: &allowances,
+        additions: &additions,
         in_table_body: false,
     };
     let mut failures = Vec::new();
@@ -926,16 +931,18 @@ fn compare_body(
         .get("status")
         .and_then(Value::as_u64)
         .unwrap_or_default();
-    // The fixture is read per step rather than held in a static: a replay is a
-    // test process that ends, and reading a small file is cheaper than the
+    // Both fixtures are read per step rather than held in a static: a replay is
+    // a test process that ends, and reading a small file is cheaper than the
     // shared state that would outlive it.
     let stored = Allowances::load();
     let allowances = stored.for_step(scenario, step);
+    let additions = Additions::load();
     let context = Comparison {
         scenario,
         step,
         content_type,
         allowances: &allowances,
+        additions: &additions,
         in_table_body: false,
     };
     let mut failures = Vec::new();
@@ -1021,7 +1028,15 @@ const OPENAPI_SCHEMA_ONLY_IN_THE_RECORD: &[&str] = &["HTTPValidationError"];
 /// construction. What both must agree on is what a client reads: the same paths,
 /// the same methods, the same parameters, and the same field names in every
 /// response schema. Every difference is reported by the path or schema it is in.
-fn compare_openapi(scenario: &str, step: usize, expected: &Value, actual: &Value) -> Mismatches {
+/// `additions` names the routes, query parameters and schema fields this server
+/// documents and the recorded corpus never did, which the comparison accepts.
+fn compare_openapi(
+    scenario: &str,
+    step: usize,
+    additions: &Additions,
+    expected: &Value,
+    actual: &Value,
+) -> Mismatches {
     let mut failures = Mismatches::new();
     let describe = |message: String| format!("{scenario} step {step}: {message}");
     let (Some(recorded), Some(answered)) = (
@@ -1032,8 +1047,8 @@ fn compare_openapi(scenario: &str, step: usize, expected: &Value, actual: &Value
             "{scenario} step {step}: the document has no paths object on one side"
         )];
     };
-    compare_openapi_paths(recorded, answered, &describe, &mut failures);
-    compare_openapi_schemas(expected, actual, &describe, &mut failures);
+    compare_openapi_paths(recorded, answered, additions, &describe, &mut failures);
+    compare_openapi_schemas(expected, actual, additions, &describe, &mut failures);
     compare_openapi_bodies(recorded, answered, &describe, &mut failures);
     failures
 }
@@ -1042,6 +1057,7 @@ fn compare_openapi(scenario: &str, step: usize, expected: &Value, actual: &Value
 fn compare_openapi_paths(
     recorded: &Map<String, Value>,
     answered: &Map<String, Value>,
+    additions: &Additions,
     describe: &dyn Fn(String) -> String,
     failures: &mut Mismatches,
 ) {
@@ -1050,8 +1066,8 @@ fn compare_openapi_paths(
             failures.push(describe(format!("the openapi path {path} is missing")));
         }
     }
-    for path in answered.keys() {
-        if !recorded.contains_key(path) {
+    for (path, item) in answered {
+        if !recorded.contains_key(path) && !added_path(item, path, additions) {
             failures.push(describe(format!(
                 "the openapi path {path} was not recorded"
             )));
@@ -1064,28 +1080,85 @@ fn compare_openapi_paths(
         ) else {
             continue;
         };
-        for method in recorded.keys() {
-            match answered.get(method) {
-                Some(operation) => compare_operation(
-                    &recorded[method],
-                    operation,
-                    &format!("{method} {path}"),
+        for method in path_item_methods(recorded) {
+            if answered.contains_key(method) {
+                compare_operation(
+                    &parameter_names(recorded, method),
+                    parameter_names(answered, method),
+                    method,
+                    path,
+                    additions,
                     describe,
                     failures,
-                ),
-                None => failures.push(describe(format!(
+                );
+            } else {
+                failures.push(describe(format!(
                     "the openapi method {method} {path} is missing"
-                ))),
+                )));
             }
         }
-        for method in answered.keys() {
-            if !recorded.contains_key(method) {
+        for method in path_item_methods(answered) {
+            if !recorded.contains_key(method) && !additions.path(method, path) {
                 failures.push(describe(format!(
                     "the openapi method {method} {path} was not recorded"
                 )));
             }
         }
     }
+}
+
+/// The Path Item Object's fields that are not operations.
+///
+/// A path declares its shared `parameters` and its documentation beside its
+/// operations, so those keys name no route; every other key does, and an unknown
+/// one is a method this document invented.
+const OPENAPI_PATH_ITEM_FIELDS: &[&str] =
+    &["$ref", "description", "parameters", "servers", "summary"];
+
+/// The operations one path item declares.
+fn path_item_methods(item: &Map<String, Value>) -> Vec<&str> {
+    item.keys()
+        .map(String::as_str)
+        .filter(|key| !OPENAPI_PATH_ITEM_FIELDS.contains(key))
+        .collect()
+}
+
+/// The parameters one operation of `item` takes, as the sorted `"{in} {name}"`
+/// strings the comparison reads.
+///
+/// A path item's own `parameters` apply to every operation of the path, so an
+/// operation takes them beside the ones it declares itself.
+fn parameter_names(item: &Map<String, Value>, method: &str) -> Vec<String> {
+    let declared = |list: Option<&Value>| -> Vec<String> {
+        list.and_then(Value::as_array)
+            .map(|list| {
+                list.iter()
+                    .filter_map(|parameter| {
+                        let place = parameter.get("in").and_then(Value::as_str)?;
+                        let name = parameter.get("name").and_then(Value::as_str)?;
+                        Some(format!("{place} {name}"))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let operation = item.get(method);
+    let mut names = declared(item.get("parameters"));
+    names.extend(declared(
+        operation.and_then(|operation| operation.get("parameters")),
+    ));
+    names.sort();
+    names.dedup();
+    names
+}
+
+/// Whether the answered document's whole path is an addition the list names: every
+/// method of the path item must be listed, so a path that is partly new — one
+/// method listed, another invented — is still reported. An item with no method at
+/// all documents nothing, and so proves nothing.
+fn added_path(item: &Value, path: &str, additions: &Additions) -> bool {
+    let methods = item.as_object().map(path_item_methods).unwrap_or_default();
+    !methods.is_empty() && methods.iter().all(|method| additions.path(method, path))
 }
 
 /// The field names a component schema declares, sorted.
@@ -1102,10 +1175,13 @@ fn schema_fields(schema: &Value) -> Vec<String> {
 /// Compares every component schema the recorded document declares against this one's.
 ///
 /// A schema is compared by the three promises a client reads: its field names,
-/// the type of each field, and which fields the answer always carries.
+/// the type of each field, and which fields the answer always carries. A field
+/// `additions` lists for the schema is left out of the field-name comparison, as
+/// one this server declares and the recorded corpus never did.
 fn compare_openapi_schemas(
     expected: &Value,
     actual: &Value,
+    additions: &Additions,
     describe: &dyn Fn(String) -> String,
     failures: &mut Mismatches,
 ) {
@@ -1138,7 +1214,11 @@ fn compare_openapi_schemas(
             )));
             continue;
         };
-        let (recorded_fields, answered_fields) = (schema_fields(schema), schema_fields(answered));
+        let answered_fields: Vec<String> = schema_fields(answered)
+            .into_iter()
+            .filter(|field| !additions.field(answered_name, field))
+            .collect();
+        let recorded_fields = schema_fields(schema);
         if recorded_fields != answered_fields {
             failures.push(describe(format!(
                 "the openapi schema {answered_name} declares {answered_fields:?} where {name} \
@@ -1161,10 +1241,28 @@ fn compare_openapi_schemas(
             describe,
             failures,
         );
+        compare_openapi_required(
+            answered_name,
+            additions,
+            schema,
+            answered,
+            &answered_schemas,
+            describe,
+            failures,
+        );
     }
 }
 
-/// Compares each field's type and each schema's required list.
+/// The properties one component schema declares.
+fn schema_properties(schema: &Value) -> Map<String, Value> {
+    schema
+        .get("properties")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// Compares each field's documented type.
 ///
 /// The type is compared as the JSON Schema type a client codes against: the
 /// two documents spell nullability differently (`anyOf` with a `null` member
@@ -1172,13 +1270,6 @@ fn compare_openapi_schemas(
 /// document names a string enumeration with a `$ref` where the recorded one
 /// writes `string`, so both spellings are canonicalised rather than compared as
 /// text.
-///
-/// The required list is compared with one recorded difference: the recorded
-/// document marks every nullable field required, because a nullable field is
-/// always serialized as an explicit `null` there, and this server documents a
-/// nullable field as optional. So a field the recorded document requires and this one
-/// does not must be nullable here — the mismatch is that one rule and nothing
-/// else.
 fn compare_openapi_fields(
     name: &str,
     recorded: &Value,
@@ -1188,14 +1279,8 @@ fn compare_openapi_fields(
     describe: &dyn Fn(String) -> String,
     failures: &mut Mismatches,
 ) {
-    let properties = |schema: &Value| {
-        schema
-            .get("properties")
-            .and_then(Value::as_object)
-            .cloned()
-            .unwrap_or_default()
-    };
-    let (recorded_properties, answered_properties) = (properties(recorded), properties(answered));
+    let (recorded_properties, answered_properties) =
+        (schema_properties(recorded), schema_properties(answered));
     for (field, recorded_property) in &recorded_properties {
         let Some(answered_property) = answered_properties.get(field) else {
             continue; // Reported by the field-name comparison.
@@ -1219,6 +1304,27 @@ fn compare_openapi_fields(
             )));
         }
     }
+}
+
+/// Compares which fields each document says the answer always carries.
+///
+/// The recorded document marks every nullable field required, because a nullable
+/// field is always serialized as an explicit `null` there, and this server
+/// documents a nullable field as optional. So a field the recorded document
+/// requires and this one does not must be nullable here — the mismatch is that one
+/// rule and nothing else. A field `additions` lists for this schema is never
+/// reported as required only in the port, because a new non-`Option` field of a
+/// DTO is always required.
+fn compare_openapi_required(
+    name: &str,
+    additions: &Additions,
+    recorded: &Value,
+    answered: &Value,
+    answered_schemas: &Map<String, Value>,
+    describe: &dyn Fn(String) -> String,
+    failures: &mut Mismatches,
+) {
+    let answered_properties = schema_properties(answered);
     let required = |schema: &Value| -> Vec<String> {
         schema
             .get("required")
@@ -1249,6 +1355,7 @@ fn compare_openapi_fields(
     }
     for field in &answered_required {
         if recorded_required.contains(field)
+            || additions.field(name, field)
             || OPENAPI_REQUIRED_ONLY_IN_THE_PORT
                 .iter()
                 .any(|(schema, optional)| *schema == name && *optional == field)
@@ -1453,36 +1560,34 @@ fn compare_openapi_bodies(
 ///
 /// A parameter is its place and its name: the recorded `x-api-key` header is
 /// documented beside the query and path parameters, and either document naming an
-/// extra or a missing one is a difference a client would trip over.
+/// extra or a missing one is a difference a client would trip over. Both lists come
+/// from [`parameter_names`], so they hold the operation's own parameters beside the
+/// path's. A `query` parameter this server adds to the recorded operation is
+/// dropped from the answered list, when `additions` lists it for this `method` and
+/// `path`; a parameter the recorded operation already took is always compared, so
+/// the list cannot hide one the answer no longer accepts.
 fn compare_operation(
-    recorded: &Value,
-    answered: &Value,
-    operation: &str,
+    recorded: &[String],
+    answered: Vec<String>,
+    method: &str,
+    path: &str,
+    additions: &Additions,
     describe: &dyn Fn(String) -> String,
     failures: &mut Mismatches,
 ) {
-    let parameters = |operation: &Value| -> Vec<String> {
-        let mut names: Vec<String> = operation
-            .get("parameters")
-            .and_then(Value::as_array)
-            .map(|list| {
-                list.iter()
-                    .filter_map(|parameter| {
-                        let place = parameter.get("in").and_then(Value::as_str)?;
-                        let name = parameter.get("name").and_then(Value::as_str)?;
-                        Some(format!("{place} {name}"))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        names.sort();
-        names.dedup();
-        names
+    let added = |name: &str| -> bool {
+        let (place, parameter) = name.split_once(' ').unwrap_or((name, name));
+        place == "query" && additions.query_param(method, path, parameter)
     };
-    let (recorded, answered) = (parameters(recorded), parameters(answered));
+    // Only a parameter the recorded operation lacks is an addition: one it already
+    // took stays in the answered list, so its removal is reported.
+    let answered = answered
+        .into_iter()
+        .filter(|name| recorded.contains(name) || !added(name))
+        .collect::<Vec<String>>();
     if recorded != answered {
         failures.push(describe(format!(
-            "{operation} takes {answered:?} where it takes {recorded:?}"
+            "{method} {path} takes {answered:?} where it takes {recorded:?}"
         )));
     }
 }
@@ -1507,6 +1612,9 @@ struct Comparison<'a> {
     content_type: &'a str,
     /// The allowances that cover this step's golden.
     allowances: &'a [&'a AllowedField],
+    /// What this server answers that the recorded corpus never did, which the
+    /// comparison accepts instead of reporting.
+    additions: &'a Additions,
     /// Whether these values were decoded from a hex-encoded table `body` column.
     in_table_body: bool,
 }
@@ -1519,6 +1627,7 @@ impl Comparison<'_> {
             step: self.step,
             content_type: self.content_type,
             allowances: self.allowances,
+            additions: self.additions,
             in_table_body: true,
         }
     }
@@ -1530,7 +1639,8 @@ impl Comparison<'_> {
 /// `"<date>"` match anything in the timestamp and date rules, and an allowance
 /// covers exactly the field it names. A dumped table's `body` column holds its
 /// document in hex, so that column's document is compared field by field rather
-/// than as one string.
+/// than as one string, and a JSON document held in a text block is parsed and
+/// compared the same way.
 fn compare_value(
     context: &Comparison<'_>,
     path: &str,
@@ -1543,6 +1653,7 @@ fn compare_value(
             "openapi" => failures.extend(compare_openapi(
                 context.scenario,
                 context.step,
+                context.additions,
                 expected,
                 actual,
             )),
@@ -1581,12 +1692,23 @@ fn compare_value(
                     continue;
                 }
                 let child = join(path, key);
-                if !allowed(&child, &Value::Null, &actual[key], context.allowances) {
-                    failures.push(format!(
-                        "{} step {}: {child} was not recorded",
-                        context.scenario, context.step
-                    ));
+                if allowed(&child, &Value::Null, &actual[key], context.allowances) {
+                    continue;
                 }
+                // A dumped column is governed by `columns` alone, and every other
+                // key by the bare field name `fields` lists, since the replay sees
+                // untyped JSON and cannot know which schema the key came from.
+                let listed = match dumped_column(&child) {
+                    Some((table, column)) => context.additions.column(table, column),
+                    None => context.additions.field_name(key),
+                };
+                if listed {
+                    continue;
+                }
+                failures.push(format!(
+                    "{} step {}: {child} was not recorded",
+                    context.scenario, context.step
+                ));
             }
         }
         (Value::Array(expected), Value::Array(actual)) if expected.len() == actual.len() => {
@@ -1601,12 +1723,29 @@ fn compare_value(
             {
                 return;
             }
+            if let (Some(recorded), Some(answered)) =
+                (json_document(expected), json_document(actual))
+            {
+                // A JSON document carried as one text block, which is how an MCP
+                // tool's answer reaches the client, compares field by field at
+                // this same path: the added-field rule then applies inside it, and
+                // the recorder's placeholders keep matching there too.
+                compare_value(context, path, &recorded, &answered, failures);
+                return;
+            }
             failures.push(format!(
                 "{} step {}: {path} {actual} does not match {expected}",
                 context.scenario, context.step
             ));
         }
     }
+}
+
+/// The document a string holds as parsed JSON, when it holds a JSON object or
+/// array rather than a bare value or a number.
+fn json_document(value: &Value) -> Option<Value> {
+    let parsed = serde_json::from_str::<Value>(value.as_str()?).ok()?;
+    (parsed.is_object() || parsed.is_array()).then_some(parsed)
 }
 
 /// The dotted path of a value inside another.
@@ -1765,22 +1904,26 @@ fn same_instant(path: &str, expected: &Value, actual: &Value) -> bool {
     expected == actual
 }
 
-/// Whether `path` names a column of a dumped table: `body.tables.<table>.<row>.<column>`.
+/// The table and column of a path that names a column of a dumped table, whose
+/// shape is `body.tables.<table>.<row>.<column>`.
 ///
 /// Only a `dump_db` step has that shape, so the hex decoding below reaches the
 /// dump's table rows and nothing else: a `\x`-prefixed string anywhere in an HTTP
 /// response, or nested deeper inside a dumped document, keeps comparing as text.
-fn names_a_dumped_column(path: &str) -> bool {
-    let Some(rest) = path.strip_prefix("body.tables.") else {
-        return false;
-    };
+fn dumped_column(path: &str) -> Option<(&str, &str)> {
+    let rest = path.strip_prefix("body.tables.")?;
     let mut parts = rest.split('.');
-    let (Some(_table), Some(row), Some(_column), None) =
+    let (Some(table), Some(row), Some(column), None) =
         (parts.next(), parts.next(), parts.next(), parts.next())
     else {
-        return false;
+        return None;
     };
-    !row.is_empty() && row.chars().all(|digit| digit.is_ascii_digit())
+    (!row.is_empty() && row.chars().all(|digit| digit.is_ascii_digit())).then_some((table, column))
+}
+
+/// Whether `path` names a column of a dumped table.
+fn names_a_dumped_column(path: &str) -> bool {
+    dumped_column(path).is_some()
 }
 
 /// The JSON document a hex-encoded table `body` column holds, when it holds one.
@@ -2032,13 +2175,546 @@ mod tests {
 
     use serde_json::json;
 
+    use crate::common::additions::Additions;
     use crate::common::allowances::AllowedField;
 
-    use super::{compare_body, is_framework_422, is_timestamp, values_match};
+    use super::{
+        Comparison, Mismatches, compare_body, compare_openapi, compare_value, is_framework_422,
+        is_timestamp, values_match,
+    };
 
     /// Whether two values are the same under the contract's rules.
     fn matches(expected: &serde_json::Value, actual: &serde_json::Value) -> bool {
         values_match(expected, actual, "application/json")
+    }
+
+    /// Every difference between two literal documents, with `additions` as the
+    /// only list the comparison is given and no allowances to cover a field.
+    fn reported(
+        recorded: &serde_json::Value,
+        answered: &serde_json::Value,
+        additions: &Additions,
+    ) -> Mismatches {
+        let context = Comparison {
+            scenario: "s",
+            step: 1,
+            content_type: "application/json",
+            allowances: &[],
+            additions,
+            in_table_body: false,
+        };
+        let mut failures = Mismatches::new();
+        compare_value(&context, "body", recorded, answered, &mut failures);
+        failures
+    }
+
+    /// One failure message naming `path`, for the assertions below.
+    fn not_recorded(path: &str) -> String {
+        format!("s step 1: {path} was not recorded")
+    }
+
+    #[test]
+    fn an_added_dumped_column_is_accepted_only_by_the_columns_list() {
+        let recorded = json!({"tables": {"test_runs": [{"id": 1}]}});
+        let answered = json!({"tables": {"test_runs": [{"id": 1, "infra_suspect": false}]}});
+        let listed = Additions {
+            columns: vec!["test_runs.infra_suspect".to_owned()],
+            ..Default::default()
+        };
+        assert_eq!(
+            reported(&recorded, &answered, &listed),
+            Vec::<String>::new()
+        );
+        // With nothing listed the column is reported, and a `fields` entry does not
+        // cover it: a dumped column is governed by `columns` alone.
+        for additions in [
+            Additions::default(),
+            Additions {
+                fields: vec!["TestRunOut.infra_suspect".to_owned()],
+                ..Default::default()
+            },
+        ] {
+            assert_eq!(
+                reported(&recorded, &answered, &additions),
+                [not_recorded("body.tables.test_runs.0.infra_suspect")]
+            );
+        }
+    }
+
+    #[test]
+    fn an_added_response_field_is_accepted_by_its_bare_name() {
+        let recorded = json!({"failures": [{}]});
+        let answered = json!({"failures": [{"infra_suspect": false, "other": 1}]});
+        let listed = Additions {
+            fields: vec!["CiRunTestFailureOut.infra_suspect".to_owned()],
+            ..Default::default()
+        };
+        assert_eq!(
+            reported(&recorded, &answered, &listed),
+            [not_recorded("body.failures.0.other")]
+        );
+        let failures = reported(&recorded, &answered, &Additions::default());
+        assert_eq!(
+            failures,
+            [
+                not_recorded("body.failures.0.infra_suspect"),
+                not_recorded("body.failures.0.other")
+            ]
+        );
+    }
+
+    #[test]
+    fn a_json_text_block_is_compared_as_the_document_it_holds() {
+        // This is the shape an MCP `tools/call` golden carries: the tool's JSON
+        // answer as one string, with the recorder's placeholder inside it.
+        let recorded = json!("{\"a\":1,\"b\":\"<timestamp>\"}");
+        let listed = Additions {
+            fields: vec!["S.x".to_owned()],
+            ..Default::default()
+        };
+        let answered = json!("{\"a\":1,\"b\":\"2026-11-10T00:00:00Z\",\"x\":true}");
+        assert_eq!(
+            reported(&recorded, &answered, &listed),
+            Vec::<String>::new(),
+            "the listed field and the placeholder must both match inside the text"
+        );
+        assert_eq!(
+            reported(&recorded, &answered, &Additions::default()),
+            [not_recorded("body.x")]
+        );
+
+        let changed = json!("{\"a\":2,\"b\":\"2026-11-10T00:00:00Z\"}");
+        let failures = reported(&recorded, &changed, &listed);
+        assert_eq!(
+            failures,
+            ["s step 1: body.a 2 does not match 1".to_owned()],
+            "a changed value inside the text is reported at its own path"
+        );
+    }
+
+    /// Every OpenAPI difference between two literal documents, with `additions` as
+    /// the only list the comparison is given.
+    fn openapi_reported(
+        recorded: &serde_json::Value,
+        answered: &serde_json::Value,
+        additions: &Additions,
+    ) -> Mismatches {
+        compare_openapi("s", 1, additions, recorded, answered)
+    }
+
+    /// An `Additions` with these routes and query parameters, which is what the
+    /// OpenAPI comparison reads.
+    fn routes(paths: &[&str], query_params: &[&str]) -> Additions {
+        Additions {
+            paths: paths.iter().map(|entry| (*entry).to_owned()).collect(),
+            query_params: query_params
+                .iter()
+                .map(|entry| (*entry).to_owned())
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_listed_route_or_query_parameter_is_accepted_by_the_openapi_document() {
+        // Each side needs a path and a component schema, or the comparison reports
+        // the empty schema list rather than the difference under test.
+        let recorded = json!({
+            "paths": {
+                "/api/tests": {"get": {"parameters": [{"in": "query", "name": "repo"}]}}
+            },
+            "components": {"schemas": {"S": {
+                "properties": {"id": {"type": "integer"}},
+                "required": ["id"]
+            }}}
+        });
+        let answered = json!({
+            "paths": {
+                "/api/tests": {
+                    "get": {"parameters": [
+                        {"in": "query", "name": "repo"},
+                        {"in": "query", "name": "acknowledged"}
+                    ]},
+                    "post": {"parameters": []}
+                },
+                "/api/x": {"post": {"parameters": []}},
+                "/api/y": {
+                    "delete": {"parameters": []},
+                    "post": {"parameters": []}
+                }
+            },
+            "components": {"schemas": {"S": {
+                "properties": {"id": {"type": "integer"}},
+                "required": ["id"]
+            }}}
+        });
+        let paths = [
+            "POST /api/tests",
+            "POST /api/x",
+            "DELETE /api/y",
+            "POST /api/y",
+        ];
+        let acknowledged = ["GET /api/tests acknowledged"];
+        // The parameter-list difference, in the comparison's own words: each side is
+        // named as it stands once the listed addition is dropped from it.
+        let parameter_difference = format!(
+            "s step 1: get /api/tests takes {} where it takes {}",
+            r#"["query acknowledged", "query repo"]"#, r#"["query repo"]"#
+        );
+        // An added path, an added method on a recorded path, and an added query
+        // parameter: each is listed, so the answered document is the recorded one
+        // plus the additions.
+        assert_eq!(
+            openapi_reported(&recorded, &answered, &routes(&paths, &acknowledged)),
+            Vec::<String>::new()
+        );
+        // With nothing listed, every one of the four differences is reported.
+        let failures = openapi_reported(&recorded, &answered, &Additions::default());
+        assert_eq!(failures.len(), 4, "{failures:?}");
+        for expected in [
+            "the openapi path /api/x was not recorded",
+            "the openapi path /api/y was not recorded",
+            "the openapi method post /api/tests was not recorded",
+            parameter_difference.as_str(),
+        ] {
+            assert!(
+                failures.iter().any(|failure| failure.contains(expected)),
+                "{expected} is not reported in {failures:?}"
+            );
+        }
+        // Each list governs its own difference: with every route listed, the query
+        // parameter alone is left to report.
+        assert_eq!(
+            openapi_reported(&recorded, &answered, &routes(&paths, &[])),
+            [parameter_difference]
+        );
+        // A path is accepted only when each of its methods is listed: the `delete`
+        // this document adds beside `/api/y`'s listed `post` is an invention of its
+        // own, and it keeps the whole path reported.
+        let without_the_delete = ["POST /api/tests", "POST /api/x", "POST /api/y"];
+        assert_eq!(
+            openapi_reported(
+                &recorded,
+                &answered,
+                &routes(&without_the_delete, &acknowledged)
+            ),
+            ["s step 1: the openapi path /api/y was not recorded".to_owned()]
+        );
+    }
+
+    #[test]
+    fn a_listed_route_and_query_parameter_are_accepted_from_a_path_item_that_declares_them() {
+        // A Path Item Object holds its shared `parameters` and its documentation
+        // beside its operations, and a path declares there the query parameter
+        // every operation of it takes. Neither spelling is a method, and the
+        // additions are still the route and the parameter the list names.
+        let recorded = json!({
+            "paths": {
+                "/api/tests": {"get": {"parameters": [{"in": "query", "name": "repo"}]}}
+            },
+            "components": {"schemas": {"S": {
+                "properties": {"id": {"type": "integer"}},
+                "required": ["id"]
+            }}}
+        });
+        let answered = json!({
+            "paths": {
+                "/api/tests": {
+                    "parameters": [{"in": "query", "name": "acknowledged"}],
+                    "get": {"parameters": [{"in": "query", "name": "repo"}]}
+                },
+                "/api/x": {
+                    "parameters": [{"in": "query", "name": "acknowledged"}],
+                    "summary": "The route this server adds.",
+                    "post": {"parameters": []}
+                }
+            },
+            "components": {"schemas": {"S": {
+                "properties": {"id": {"type": "integer"}},
+                "required": ["id"]
+            }}}
+        });
+        let listed = routes(&["POST /api/x"], &["GET /api/tests acknowledged"]);
+        assert_eq!(
+            openapi_reported(&recorded, &answered, &listed),
+            Vec::<String>::new(),
+            "the answered document is the recorded one plus the two entries"
+        );
+        // With nothing listed, both additions are reported: the new path, and the
+        // parameter the answered operation now takes through its path.
+        let failures = openapi_reported(&recorded, &answered, &Additions::default());
+        assert_eq!(
+            failures,
+            [
+                "s step 1: the openapi path /api/x was not recorded".to_owned(),
+                "s step 1: get /api/tests takes [\"query acknowledged\", \"query repo\"] where it \
+                 takes [\"query repo\"]"
+                    .to_owned(),
+            ],
+            "the path item's `parameters` is no method the list must name"
+        );
+    }
+
+    /// The two documents an added route is compared by: the recorded one path, and
+    /// the answer that adds `/api/x` as `item`.
+    ///
+    /// Both hold a component schema too, or the comparison reports the empty schema
+    /// list rather than the difference under test.
+    fn added_path_documents(item: &serde_json::Value) -> (serde_json::Value, serde_json::Value) {
+        let tests = json!({"get": {"parameters": [{"in": "query", "name": "repo"}]}});
+        let schemas = json!({"S": {
+            "properties": {"id": {"type": "integer"}},
+            "required": ["id"]
+        }});
+        (
+            json!({"paths": {"/api/tests": tests}, "components": {"schemas": schemas}}),
+            json!({
+                "paths": {"/api/tests": tests, "/api/x": item},
+                "components": {"schemas": schemas}
+            }),
+        )
+    }
+
+    #[test]
+    fn a_new_path_is_accepted_by_its_listed_operation_alone() {
+        // A Path Item Object declares its shared `parameters`, its documentation, its
+        // `servers` and its `$ref` beside its operations. None of those names a
+        // route, so a new path carrying them is accepted by its listed operation.
+        let post = json!({"parameters": []});
+        let listed = routes(&["POST /api/x"], &[]);
+        for (what, item) in [
+            ("the operation alone", json!({"post": post})),
+            (
+                "an empty path-level parameter list",
+                json!({"post": post, "parameters": []}),
+            ),
+            (
+                "a path-level parameter",
+                json!({
+                    "post": post,
+                    "parameters": [{"in": "query", "name": "acknowledged"}]
+                }),
+            ),
+            (
+                "a referenced path-level parameter",
+                json!({
+                    "post": post,
+                    "parameters": [{"$ref": "#/components/parameters/P"}]
+                }),
+            ),
+            (
+                "every non-operation field",
+                json!({
+                    "post": post,
+                    "$ref": "#/paths/~1api~1y",
+                    "summary": "The route this server adds.",
+                    "description": "It takes what every path takes.",
+                    "servers": [{"url": "https://example.com"}],
+                    "parameters": [{"in": "query", "name": "acknowledged"}]
+                }),
+            ),
+        ] {
+            let (recorded, answered) = added_path_documents(&item);
+            assert_eq!(
+                openapi_reported(&recorded, &answered, &listed),
+                Vec::<String>::new(),
+                "{what}: the listed `POST /api/x` is the whole of the new path"
+            );
+        }
+        // With nothing listed, the same new path is the unrecorded route it is.
+        let (recorded, answered) = added_path_documents(&json!({"post": post, "parameters": []}));
+        assert_eq!(
+            openapi_reported(&recorded, &answered, &Additions::default()),
+            ["s step 1: the openapi path /api/x was not recorded".to_owned()],
+            "the entry is what accepts the path"
+        );
+    }
+
+    #[test]
+    fn a_path_item_without_an_operation_declares_no_route() {
+        // What a path item promises is its operations: an item of documentation and
+        // shared parameters alone lists no route, so no entry can accept it, and one
+        // operation the entries do not name keeps the whole path reported.
+        let post = json!({"parameters": []});
+        let listed = routes(&["POST /api/x"], &[]);
+        let unrecorded = ["s step 1: the openapi path /api/x was not recorded".to_owned()];
+        for (what, item) in [
+            ("an empty path item", json!({})),
+            (
+                "documentation only",
+                json!({"summary": "Nothing here is a route."}),
+            ),
+            (
+                "shared parameters only",
+                json!({"parameters": [{"in": "query", "name": "acknowledged"}]}),
+            ),
+            ("a path reference only", json!({"$ref": "#/paths/~1api~1y"})),
+        ] {
+            let (recorded, answered) = added_path_documents(&item);
+            assert_eq!(
+                openapi_reported(&recorded, &answered, &listed),
+                unrecorded,
+                "{what}: no operation, so no listed route either"
+            );
+        }
+        // The path-level fields neither add a route nor excuse one.
+        let (recorded, answered) = added_path_documents(&json!({
+            "post": post,
+            "get": post,
+            "parameters": [{"in": "query", "name": "acknowledged"}]
+        }));
+        assert_eq!(
+            openapi_reported(&recorded, &answered, &listed),
+            unrecorded,
+            "one unlisted operation is enough to keep the path reported"
+        );
+    }
+
+    #[test]
+    fn a_listed_query_parameter_is_accepted_when_the_path_item_declares_it() {
+        // The recorded path declares nothing at the path level; the answered one
+        // gives `acknowledged` to every operation of the path, which is the same
+        // promise as spelling it in the operation.
+        let recorded = json!({
+            "paths": {
+                "/api/tests": {"get": {"parameters": [{"in": "query", "name": "repo"}]}}
+            },
+            "components": {"schemas": {"S": {
+                "properties": {"id": {"type": "integer"}},
+                "required": ["id"]
+            }}}
+        });
+        let answered = json!({
+            "paths": {
+                "/api/tests": {
+                    "parameters": [{"in": "query", "name": "acknowledged"}],
+                    "get": {"parameters": [{"in": "query", "name": "repo"}]}
+                }
+            },
+            "components": {"schemas": {"S": {
+                "properties": {"id": {"type": "integer"}},
+                "required": ["id"]
+            }}}
+        });
+        assert_eq!(
+            openapi_reported(
+                &recorded,
+                &answered,
+                &routes(&[], &["GET /api/tests acknowledged"])
+            ),
+            Vec::<String>::new()
+        );
+        // Without the entry, the answered operation takes a parameter the recorded
+        // one never did, and the difference is reported.
+        assert_eq!(
+            openapi_reported(&recorded, &answered, &Additions::default()),
+            [
+                "s step 1: get /api/tests takes [\"query acknowledged\", \"query repo\"] where it \
+                 takes [\"query repo\"]"
+                    .to_owned()
+            ]
+        );
+    }
+
+    #[test]
+    fn a_listed_query_parameter_still_protects_a_recorded_one() {
+        // The list adds a parameter this server accepts; it does not remove one the
+        // record already had. Here the recorded operation takes `acknowledged` and
+        // the answered one dropped it, which is a difference a client trips over.
+        let recorded = json!({
+            "paths": {
+                "/api/tests": {"get": {"parameters": [
+                    {"in": "query", "name": "repo"},
+                    {"in": "query", "name": "acknowledged"}
+                ]}}
+            },
+            "components": {"schemas": {"S": {
+                "properties": {"id": {"type": "integer"}},
+                "required": ["id"]
+            }}}
+        });
+        let answered = json!({
+            "paths": {
+                "/api/tests": {"get": {"parameters": [{"in": "query", "name": "repo"}]}}
+            },
+            "components": {"schemas": {"S": {
+                "properties": {"id": {"type": "integer"}},
+                "required": ["id"]
+            }}}
+        });
+        let listed = routes(&[], &["GET /api/tests acknowledged"]);
+        assert_eq!(
+            openapi_reported(&recorded, &answered, &listed),
+            [
+                "s step 1: get /api/tests takes [\"query repo\"] where it takes \
+                 [\"query acknowledged\", \"query repo\"]"
+                    .to_owned()
+            ]
+        );
+        // The recorded parameter is also compared when nothing is listed.
+        assert_eq!(
+            openapi_reported(&recorded, &answered, &Additions::default()),
+            openapi_reported(&recorded, &answered, &listed),
+            "the same removal, listed or not"
+        );
+        // An answered parameter the record does not have is the addition the list
+        // means, and it stays accepted by the same entry.
+        assert_eq!(
+            openapi_reported(&answered, &recorded, &listed),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn a_listed_schema_field_is_accepted_by_the_openapi_document() {
+        let recorded = json!({
+            "paths": {"/api/tests": {"get": {"parameters": []}}},
+            "components": {"schemas": {"CiRunTestFailureOut": {
+                "properties": {"id": {"type": "integer"}},
+                "required": ["id"]
+            }}}
+        });
+        let mut answered = recorded.clone();
+        answered["components"]["schemas"]["CiRunTestFailureOut"]["properties"]["infra_suspect"] =
+            json!({"type": "boolean"});
+        answered["components"]["schemas"]["CiRunTestFailureOut"]["required"]
+            .as_array_mut()
+            .expect("the schema has a required list")
+            .push(json!("infra_suspect"));
+        let listed = Additions {
+            fields: vec!["CiRunTestFailureOut.infra_suspect".to_owned()],
+            ..Default::default()
+        };
+        // The new field is declared and required, and the list covers both.
+        assert_eq!(
+            openapi_reported(&recorded, &answered, &listed),
+            Vec::<String>::new()
+        );
+        let failures = openapi_reported(&recorded, &answered, &Additions::default());
+        assert_eq!(failures.len(), 2, "{failures:?}");
+        for expected in [
+            "the openapi schema CiRunTestFailureOut declares [\"id\", \"infra_suspect\"] where \
+             CiRunTestFailureOut declares [\"id\"]",
+            "CiRunTestFailureOut requires infra_suspect where the recorded document does not",
+        ] {
+            assert!(
+                failures.iter().any(|failure| failure.contains(expected)),
+                "{expected} is not reported in {failures:?}"
+            );
+        }
+        // The list is read by schema and field together: an entry naming the same
+        // field of another schema accepts nothing here.
+        for entry in ["TestOut.infra_suspect", "infra_suspect"] {
+            let other = Additions {
+                fields: vec![entry.to_owned()],
+                ..Default::default()
+            };
+            assert_eq!(
+                openapi_reported(&recorded, &answered, &other).len(),
+                2,
+                "{entry} must not cover a field of another schema"
+            );
+        }
     }
 
     #[test]
@@ -2762,35 +3438,50 @@ async fn a_changed_mcp_tool_answer_fails_the_replay() {
         "the recorded get_test answer must replay clean before a control alters it"
     );
 
-    for (what, from, to) in [
+    for (what, from, to, paths) in [
         (
             "a Test name",
             "\"name\":\"test_total\"",
             "\"name\":\"test_totals\"",
+            &["result.content.0.text.test.name"][..],
         ),
         (
             "a score",
             "\"flakiness_score\":0.1667",
             "\"flakiness_score\":0.1668",
+            &[
+                "result.content.0.text.test.flakiness_score",
+                "result.content.0.text.score_history.0.flakiness_score",
+            ],
         ),
         (
             "a permalink",
             "blob/m1/tests/test_cart.py#L12",
             "blob/m1/tests/test_cart.py#L13",
+            &["result.content.0.text.location.url"],
         ),
         (
             "a failure message",
             "\"message\":\"assert 1 == 2\"",
             "\"message\":\"assert 2 == 2\"",
+            &[
+                "result.content.0.text.latest_failure.message",
+                "result.content.0.text.executions.1.message",
+            ],
         ),
     ] {
         let tampered = with_tampered_text(&recorded, from, to);
         let failures = replay_mcp(&server, "mcp", 19, &get_test, &tampered).await;
-        assert_eq!(failures.len(), 1, "{what}: {failures:?}");
-        assert!(
-            failures[0].contains("result.content.0.text"),
-            "{what}: {failures:?}"
-        );
+        // The content text holds the tool's JSON answer, which the comparison
+        // parses, so a substring the answer repeats fails at every field holding
+        // it and each failure names the field rather than the text block.
+        assert_eq!(failures.len(), paths.len(), "{what}: {failures:?}");
+        for path in paths {
+            assert!(
+                failures.iter().any(|failure| failure.contains(path)),
+                "{what}: {path} is not reported in {failures:?}"
+            );
+        }
     }
 
     // The structured copy of the same data is compared too, so a changed score
@@ -2966,7 +3657,13 @@ fn the_served_openapi_document_keeps_the_recorded_contract() {
     let actual =
         serde_json::to_value(flakeradar::docs::document()).expect("the document serializes");
     assert_eq!(
-        compare_openapi("trailing-slash", 9, &recorded_openapi(), &actual),
+        compare_openapi(
+            "trailing-slash",
+            9,
+            &Additions::default(),
+            &recorded_openapi(),
+            &actual
+        ),
         Vec::<String>::new()
     );
 }
@@ -2977,7 +3674,13 @@ fn a_missing_path_method_parameter_or_field_fails_the_openapi_contract() {
     let actual =
         serde_json::to_value(flakeradar::docs::document()).expect("the document serializes");
     assert_eq!(
-        compare_openapi("trailing-slash", 9, &recorded, &actual),
+        compare_openapi(
+            "trailing-slash",
+            9,
+            &Additions::default(),
+            &recorded,
+            &actual
+        ),
         Vec::<String>::new()
     );
 
@@ -2986,7 +3689,13 @@ fn a_missing_path_method_parameter_or_field_fails_the_openapi_contract() {
         .as_object_mut()
         .expect("the document has paths")
         .remove("/api/jobs");
-    let failures = compare_openapi("trailing-slash", 9, &recorded, &missing_path);
+    let failures = compare_openapi(
+        "trailing-slash",
+        9,
+        &Additions::default(),
+        &recorded,
+        &missing_path,
+    );
     assert_eq!(failures.len(), 1, "{failures:?}");
     assert!(failures[0].contains("/api/jobs"), "{failures:?}");
 
@@ -2995,7 +3704,13 @@ fn a_missing_path_method_parameter_or_field_fails_the_openapi_contract() {
         .as_object_mut()
         .expect("the path has methods")
         .remove("delete");
-    let failures = compare_openapi("trailing-slash", 9, &recorded, &missing_method);
+    let failures = compare_openapi(
+        "trailing-slash",
+        9,
+        &Additions::default(),
+        &recorded,
+        &missing_method,
+    );
     assert_eq!(failures.len(), 1, "{failures:?}");
     assert!(failures[0].contains("delete"), "{failures:?}");
 
@@ -3004,7 +3719,13 @@ fn a_missing_path_method_parameter_or_field_fails_the_openapi_contract() {
         .as_array_mut()
         .expect("the operation has parameters")
         .pop();
-    let failures = compare_openapi("trailing-slash", 9, &recorded, &missing_parameter);
+    let failures = compare_openapi(
+        "trailing-slash",
+        9,
+        &Additions::default(),
+        &recorded,
+        &missing_parameter,
+    );
     assert_eq!(failures.len(), 1, "{failures:?}");
     assert!(failures[0].contains("/api/tests"), "{failures:?}");
 
@@ -3013,14 +3734,26 @@ fn a_missing_path_method_parameter_or_field_fails_the_openapi_contract() {
         .as_object_mut()
         .expect("the schema has properties")
         .remove("quarantined");
-    let failures = compare_openapi("trailing-slash", 9, &recorded, &missing_field);
+    let failures = compare_openapi(
+        "trailing-slash",
+        9,
+        &Additions::default(),
+        &recorded,
+        &missing_field,
+    );
     assert_eq!(failures.len(), 1, "{failures:?}");
     assert!(failures[0].contains("quarantined"), "{failures:?}");
 
     let mut renamed_body = actual;
     renamed_body["paths"]["/api/jobs"]["get"]["responses"]["200"]["content"]["application/json"]
         ["schema"]["$ref"] = json!("#/components/schemas/JobPages");
-    let failures = compare_openapi("trailing-slash", 9, &recorded, &renamed_body);
+    let failures = compare_openapi(
+        "trailing-slash",
+        9,
+        &Additions::default(),
+        &recorded,
+        &renamed_body,
+    );
     assert_eq!(failures.len(), 1, "{failures:?}");
     assert!(failures[0].contains("JobPages"), "{failures:?}");
 }
@@ -3031,7 +3764,13 @@ fn openapi_documents() -> (Value, Value) {
     let actual =
         serde_json::to_value(flakeradar::docs::document()).expect("the document serializes");
     assert_eq!(
-        compare_openapi("trailing-slash", 9, &recorded, &actual),
+        compare_openapi(
+            "trailing-slash",
+            9,
+            &Additions::default(),
+            &recorded,
+            &actual
+        ),
         Vec::<String>::new(),
         "the served document matches the recorded one before a control mutates it"
     );
@@ -3043,7 +3782,13 @@ fn a_retyped_field_fails_the_openapi_contract() {
     let (recorded, actual) = openapi_documents();
     let mut retyped = actual;
     retyped["components"]["schemas"]["TestOut"]["properties"]["id"] = json!({"type": "string"});
-    let failures = compare_openapi("trailing-slash", 9, &recorded, &retyped);
+    let failures = compare_openapi(
+        "trailing-slash",
+        9,
+        &Additions::default(),
+        &recorded,
+        &retyped,
+    );
     assert_eq!(failures.len(), 1, "{failures:?}");
     assert!(
         failures[0].contains("TestOut.id is string where it is integer"),
@@ -3056,7 +3801,13 @@ fn a_dropped_required_entry_fails_the_openapi_contract() {
     let (recorded, actual) = openapi_documents();
     let mut dropped = actual;
     drop_required(&mut dropped, "TestOut", "id");
-    let failures = compare_openapi("trailing-slash", 9, &recorded, &dropped);
+    let failures = compare_openapi(
+        "trailing-slash",
+        9,
+        &Additions::default(),
+        &recorded,
+        &dropped,
+    );
     assert_eq!(failures.len(), 1, "{failures:?}");
     assert!(
         failures[0].contains("TestOut does not require id"),
@@ -3072,7 +3823,13 @@ fn a_required_entry_only_the_port_has_fails_the_openapi_contract() {
         .as_array_mut()
         .expect("the schema has a required list")
         .push(json!("runner_name"));
-    let failures = compare_openapi("trailing-slash", 9, &recorded, &added);
+    let failures = compare_openapi(
+        "trailing-slash",
+        9,
+        &Additions::default(),
+        &recorded,
+        &added,
+    );
     assert_eq!(failures.len(), 1, "{failures:?}");
     assert!(
         failures[0]
@@ -3091,7 +3848,13 @@ fn a_field_widened_to_nullable_fails_the_openapi_contract() {
     // nullable field, so the widened type is the only thing left to catch it: a
     // control that drops the entry without widening it proves the other half.
     drop_required(&mut widened, "TestOut", "classname");
-    let failures = compare_openapi("trailing-slash", 9, &recorded, &widened);
+    let failures = compare_openapi(
+        "trailing-slash",
+        9,
+        &Additions::default(),
+        &recorded,
+        &widened,
+    );
     assert_eq!(failures.len(), 1, "{failures:?}");
     assert!(
         failures[0].contains("TestOut.classname is string|null where it is string"),
