@@ -212,9 +212,10 @@ mod form {
         );
     }
 
-    /// The fixture as it ships: exactly four empty lists, and nothing to report.
+    /// The fixture as it ships: the added column and three empty lists, and
+    /// nothing to report.
     #[test]
-    fn the_shipped_fixture_holds_four_empty_lists_and_reports_nothing() {
+    fn the_shipped_fixture_holds_the_added_column_and_reports_nothing() {
         let path = root().join("additions.json");
         let text = std::fs::read_to_string(&path)
             .unwrap_or_else(|error| panic!("reading {}: {error}", path.display()));
@@ -222,7 +223,12 @@ mod form {
             .unwrap_or_else(|error| panic!("parsing {}: {error}", path.display()));
         assert_eq!(
             document,
-            serde_json::json!({"columns": [], "fields": [], "paths": [], "query_params": []}),
+            serde_json::json!({
+                "columns": ["test_runs.infra_suspect"],
+                "fields": [],
+                "paths": [],
+                "query_params": []
+            }),
             "{}",
             path.display()
         );

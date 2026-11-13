@@ -110,7 +110,40 @@ async fn a_second_migration_run_migrates_nothing() {
     run_migrations(db.connection())
         .await
         .expect("a second run finds nothing to do");
-    assert_eq!(applied_versions(db.connection()).await, ["0001_baseline"]);
+    assert_eq!(
+        applied_versions(db.connection()).await,
+        ["0001_baseline", "0002_infra_suspect"]
+    );
+}
+
+/// The column `0002_infra_suspect` adds, as the applied schema records it.
+#[tokio::test]
+async fn the_added_infra_suspect_column_is_not_null_with_a_false_default() {
+    let db = TestDb::new().await.expect("a migrated test database");
+    let statement = Statement::from_sql_and_values(
+        DatabaseBackend::Postgres,
+        "SELECT data_type, is_nullable, column_default FROM information_schema.columns \
+         WHERE table_schema = 'public' AND table_name = $1 AND column_name = $2",
+        ["test_runs".into(), "infra_suspect".into()],
+    );
+    let row = db
+        .connection()
+        .query_one_raw(statement)
+        .await
+        .expect("information_schema is readable")
+        .expect("the migrated schema holds the column");
+    assert_eq!(
+        (
+            row.try_get::<String>("", "data_type").expect("a data type"),
+            row.try_get::<String>("", "is_nullable")
+                .expect("a nullability"),
+            row.try_get::<Option<String>>("", "column_default")
+                .expect("a default")
+                .as_deref()
+        ),
+        ("boolean".to_owned(), "NO".to_owned(), Some("false")),
+        "test_runs.infra_suspect is boolean, NOT NULL, and defaults to false"
+    );
 }
 
 /// A migration set with two entries after the baseline, one depending on the other.
@@ -151,17 +184,22 @@ async fn migrations_after_the_baseline_apply_in_listed_order() {
 }
 
 #[test]
-fn the_migrator_lists_the_baseline_alone_by_name() {
+fn the_migrator_lists_the_baseline_and_the_added_migration_by_name() {
     let migrations = Migrator::migrations();
     assert_eq!(
         migrations.len(),
-        1,
-        "the shipped set holds exactly the baseline today"
+        2,
+        "the shipped set holds the baseline and every migration after it"
     );
     assert_eq!(
-        migrations.first().expect("a set with one entry").name(),
+        migrations.first().expect("a set with two entries").name(),
         "0001_baseline",
         "the recorded name is unchanged, so an existing install still matches"
+    );
+    assert_eq!(
+        migrations.get(1).expect("a set with two entries").name(),
+        "0002_infra_suspect",
+        "the added migration is recorded under its own name"
     );
 }
 

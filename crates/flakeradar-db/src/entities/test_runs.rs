@@ -15,6 +15,7 @@ pub struct Model {
     pub ci_job_id: Option<String>,
     pub ci_run_attempt: Option<i32>,
     pub pipeline: Option<String>,
+    pub infra_suspect: bool,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
