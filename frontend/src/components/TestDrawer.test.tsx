@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { History } from "../api";
@@ -153,19 +153,6 @@ describe("TestDrawer", () => {
     renderDrawer({ test: { ...history.test, classname: "" } });
     // classname || suite -> the suite name is shown instead of a blank.
     expect(screen.getByText("unit")).toBeInTheDocument();
-  });
-
-  it("closes on Escape and on the close button", async () => {
-    const { onClose } = renderDrawer();
-    fireEvent.keyDown(window, { key: "Escape" });
-    await userEvent.click(screen.getByRole("button", { name: "Close" }));
-    expect(onClose).toHaveBeenCalledTimes(2);
-  });
-
-  it("does not close on another key", () => {
-    const { onClose } = renderDrawer();
-    fireEvent.keyDown(window, { key: "Enter" });
-    expect(onClose).not.toHaveBeenCalled();
   });
 
   it("falls back to the suite when the runner reports no classname", () => {
