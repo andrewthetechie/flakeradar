@@ -199,6 +199,57 @@ fn a_standalone_document_keeps_its_undefined_entity_refused() {
 }
 
 #[test]
+fn an_empty_entity_reference_is_refused() {
+    // `&;` names no entity, not even the empty one: the skip reads it as no
+    // reference at all and leaves the text for the parser, which refuses it.
+    let error = refused(
+        br#"<!DOCTYPE t SYSTEM "x.dtd"><testsuite name="s"><testcase name="a&;b"/></testsuite>"#,
+    );
+    assert!(matches!(error, ParseError::InvalidXml { .. }), "{error}");
+}
+
+#[test]
+fn a_character_reference_in_an_attribute_is_not_skipped() {
+    // Only a named reference can be skipped, so `&#38;` stays and expands while
+    // the `&nope;` beside it in the same attribute goes.
+    let case = one(
+        br#"<!DOCTYPE t SYSTEM "x.dtd"><testsuite name="s"><testcase name="a&#38;b&nope;c"/></testsuite>"#,
+    );
+    assert_eq!(case.name, "a&bc");
+}
+
+#[test]
+fn an_entity_the_internal_subset_declares_expands_in_an_attribute() {
+    // An external subset makes undefined references skippable, but a reference the
+    // internal subset does declare, and a predefined one, are both left for the
+    // parser to expand.
+    let case = one(
+        br#"<!DOCTYPE t SYSTEM "x" [<!ENTITY e "E">]><testsuite><testcase name="a&e;b&amp;c&nope;d"/></testsuite>"#,
+    );
+    assert_eq!(case.name, "aEb&cd");
+}
+
+#[test]
+fn a_numeric_character_reference_without_its_semicolon_is_refused() {
+    // The unrepresentable-number check reads a terminated reference only, so the
+    // unterminated `&#38 x` is left to the parser, which refuses it.
+    let error = refused(br#"<testsuite name="s"><testcase name="&#38 x"/></testsuite>"#);
+    assert!(matches!(error, ParseError::InvalidXml { .. }), "{error}");
+}
+
+#[test]
+fn attributes_quoted_with_apostrophes_are_read() {
+    // An apostrophe quotes an attribute value as well as a quotation mark does, and
+    // the namespace scan reads it as one: this report parses exactly as its
+    // double-quoted spelling does.
+    let case = one(
+        b"<?xml version='1.0'?><testsuite name='s'><testcase classname='c' name='a' xmlns:p='u'/></testsuite>",
+    );
+    assert_eq!(case.name, "a");
+    assert_eq!(case.classname, "c");
+}
+
+#[test]
 fn an_attlist_default_classname_is_not_read() {
     // An `ATTLIST` default is one of the two things `roxmltree` does not model,
     // so the classname stays empty here even though the document declares one.

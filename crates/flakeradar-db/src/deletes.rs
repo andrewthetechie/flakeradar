@@ -389,6 +389,17 @@ mod tests {
         )));
     }
 
+    #[test]
+    fn a_driver_error_that_names_no_deadlock_is_the_database_kind() {
+        // The `?` on a transaction's own `commit` or `rollback` converts here, and
+        // only the other kind — a wrapped SQL state — tells a caller to retry.
+        let error: DeleteError = without_a_sql_state().into();
+        assert!(
+            matches!(error, DeleteError::Database(DbError::Database(_))),
+            "the driver error is kept, not read as a deadlock: {error}"
+        );
+    }
+
     #[tokio::test]
     async fn a_statement_that_fails_is_a_database_error() {
         let db = flakeradar_test_support::TestDb::new()

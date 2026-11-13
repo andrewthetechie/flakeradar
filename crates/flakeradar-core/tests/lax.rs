@@ -193,6 +193,9 @@ fn a_timestamp_takes_every_iso_form_and_epoch_the_record_took() {
         (json!(-1.5), "1969-12-31T23:59:58.500000Z"),
         (json!(-1), "1969-12-31T23:59:59.000000Z"),
         (json!(0), "1970-01-01T00:00:00.000000Z"),
+        // A fraction written with no whole part: the digits after the dot still
+        // count, and the empty part before it is not a lone dot.
+        (json!(".5"), "1970-01-01T00:00:00.500000Z"),
     ] {
         let instant = lax::timestamp(&value, at()).expect("the value is an instant");
         assert_eq!(
@@ -225,6 +228,26 @@ fn a_timestamp_refusal_names_the_kind_the_record_used() {
         (json!(1e300), "datetime_parsing"),
     ] {
         assert_eq!(kind_of(lax::timestamp(&value, at())), expected, "{value}");
+    }
+}
+
+#[test]
+fn a_timestamp_refusal_says_whether_the_text_is_short_or_no_date() {
+    // Two refusals, one wording each: a text under ten characters cannot be a date
+    // at all, and a longer one says invalid date whether it breaks where the month's
+    // dash belongs or in the offset it appends.
+    for (value, expected) in [
+        ("1.5x", "input is too short"),
+        ("2026-01x01", "invalid date"),
+        ("2026-01-01T00:00:00+0x00", "invalid date"),
+    ] {
+        let issue = lax::timestamp(&json!(value), at()).expect_err("the value is refused");
+        assert_eq!(issue.r#type, "datetime_from_date_parsing", "{value}");
+        assert_eq!(
+            issue.msg,
+            format!("Input should be a valid datetime or date, {expected}"),
+            "{value}"
+        );
     }
 }
 

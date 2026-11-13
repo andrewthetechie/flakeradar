@@ -391,6 +391,45 @@ async fn drain(db: &TestDb) {
 }
 
 #[tokio::test]
+async fn a_report_status_this_server_does_not_write_counts_as_none_of_the_three() {
+    // The counts answer one number per status this version writes, so a row that
+    // carries any other — one a newer server stored — leaves all three alone rather
+    // than arriving as a fourth number.
+    let db = TestDb::new().await.expect("a test database");
+    let project = make_project().repo("acme/app").create(&db).await;
+    make_report(&project, project.repo_id)
+        .ci_run_id("700")
+        .commit_sha("pending")
+        .create(&db)
+        .await;
+    make_report(&project, project.repo_id)
+        .ci_run_id("700")
+        .commit_sha("retired")
+        .status("retired")
+        .create(&db)
+        .await;
+    let listing = ci_run_failures(
+        db.connection(),
+        "acme/app",
+        &run_id("700"),
+        None,
+        &settings(),
+        10,
+    )
+    .await
+    .expect("the listing");
+    assert_eq!(
+        (
+            listing.reports.pending,
+            listing.reports.processed,
+            listing.reports.failed
+        ),
+        (1, 0, 0),
+        "the retired Report counts nowhere"
+    );
+}
+
+#[tokio::test]
 async fn a_nextest_flaky_fail_is_a_proven_flake_in_its_ci_run() {
     let db = TestDb::new().await.expect("a test database");
     let project = make_project().repo("acme/app").create(&db).await;
@@ -554,6 +593,27 @@ async fn an_unknown_test_has_no_detail() {
             .await
             .expect("the lookup")
             .is_none()
+    );
+}
+
+#[tokio::test]
+async fn an_execution_with_no_ci_job_id_names_no_job() {
+    // A Runner that sends an empty `ci_job_id` stores the empty string on its Run,
+    // which is no Job's id: the detail lists the Execution and links no Job.
+    let db = TestDb::new().await.expect("a test database");
+    let project = make_project().repo("acme/app").create(&db).await;
+    let run = make_run(&project).ci_job_id("").create(&db).await;
+    let test = make_test_case(&project).name("no_job").create(&db).await;
+    make_execution(&test, &run).create(&db).await;
+    let detail = get_test(db.connection(), i64::from(test.id), &settings(), 60)
+        .await
+        .expect("the detail")
+        .expect("the Test has a detail");
+    assert_eq!(detail.executions.len(), 1, "the Execution is listed");
+    assert!(
+        detail.jobs.is_empty(),
+        "the empty id names no Job: {:?}",
+        detail.jobs
     );
 }
 

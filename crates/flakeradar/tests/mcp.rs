@@ -190,6 +190,19 @@ fn text(result: &Value) -> String {
         .to_owned()
 }
 
+/// The one message's text of a prompt answer.
+fn prompt_text(body: &Value) -> String {
+    body.get("result")
+        .and_then(|result| result.get("messages"))
+        .and_then(Value::as_array)
+        .and_then(|messages| messages.first())
+        .and_then(|message| message.get("content"))
+        .and_then(|content| content.get("text"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned()
+}
+
 /// Calls one tool and asserts it refused with `message`.
 async fn refused(app: &Router, tool: &str, arguments: Value, message: &str) {
     let result = call_result(app, tool, arguments).await;
@@ -431,6 +444,52 @@ async fn the_prompt_answers_the_walkthrough_of_one_test() {
             "the prompt names {step} after the step before it: {text}"
         );
         before = found;
+    }
+}
+
+#[tokio::test]
+async fn a_prompt_that_names_no_repo_walks_through_the_test_alone() {
+    // `repo` is optional in both spellings a client sends: left out, and sent as
+    // JSON null. Its subject is then the Test, with no Repo to look in.
+    let db = TestDb::new().await.expect("a test database is available");
+    let app = mcp_app(&db);
+    for arguments in [
+        json!({"test_id": "42"}),
+        json!({"test_id": "42", "repo": null}),
+    ] {
+        let reply = rpc(
+            &app,
+            "prompts/get",
+            Some("investigate_flaky_test"),
+            json!({"name": "investigate_flaky_test", "arguments": arguments}),
+        )
+        .await;
+        let body = reply.json();
+        assert!(body.get("error").is_none(), "{body}");
+        let text = prompt_text(&body);
+        assert!(text.contains("the flaky Test 42"), "the subject: {text}");
+        assert!(!text.contains("in the Repo"), "no Repo was sent: {text}");
+    }
+}
+
+#[tokio::test]
+async fn a_repo_that_is_not_a_string_is_invalid_params() {
+    // As for `test_id`, an argument of the wrong kind is the protocol's own refusal:
+    // a number is never read as a Repo name.
+    let db = TestDb::new().await.expect("a test database is available");
+    let app = mcp_app(&db);
+    for arguments in [
+        json!({"test_id": "42", "repo": 5}),
+        json!({"test_id": "42", "repo": ["acme/app"]}),
+    ] {
+        let reply = rpc(
+            &app,
+            "prompts/get",
+            Some("investigate_flaky_test"),
+            json!({"name": "investigate_flaky_test", "arguments": arguments}),
+        )
+        .await;
+        assert_invalid_params(&reply);
     }
 }
 
