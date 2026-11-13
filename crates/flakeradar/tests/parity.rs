@@ -2455,6 +2455,121 @@ mod tests {
         );
     }
 
+    /// The two documents an added route is compared by: the recorded one path, and
+    /// the answer that adds `/api/x` as `item`.
+    ///
+    /// Both hold a component schema too, or the comparison reports the empty schema
+    /// list rather than the difference under test.
+    fn added_path_documents(item: &serde_json::Value) -> (serde_json::Value, serde_json::Value) {
+        let tests = json!({"get": {"parameters": [{"in": "query", "name": "repo"}]}});
+        let schemas = json!({"S": {
+            "properties": {"id": {"type": "integer"}},
+            "required": ["id"]
+        }});
+        (
+            json!({"paths": {"/api/tests": tests}, "components": {"schemas": schemas}}),
+            json!({
+                "paths": {"/api/tests": tests, "/api/x": item},
+                "components": {"schemas": schemas}
+            }),
+        )
+    }
+
+    #[test]
+    fn a_new_path_is_accepted_by_its_listed_operation_alone() {
+        // A Path Item Object declares its shared `parameters`, its documentation, its
+        // `servers` and its `$ref` beside its operations. None of those names a
+        // route, so a new path carrying them is accepted by its listed operation.
+        let post = json!({"parameters": []});
+        let listed = routes(&["POST /api/x"], &[]);
+        for (what, item) in [
+            ("the operation alone", json!({"post": post})),
+            (
+                "an empty path-level parameter list",
+                json!({"post": post, "parameters": []}),
+            ),
+            (
+                "a path-level parameter",
+                json!({
+                    "post": post,
+                    "parameters": [{"in": "query", "name": "acknowledged"}]
+                }),
+            ),
+            (
+                "a referenced path-level parameter",
+                json!({
+                    "post": post,
+                    "parameters": [{"$ref": "#/components/parameters/P"}]
+                }),
+            ),
+            (
+                "every non-operation field",
+                json!({
+                    "post": post,
+                    "$ref": "#/paths/~1api~1y",
+                    "summary": "The route this server adds.",
+                    "description": "It takes what every path takes.",
+                    "servers": [{"url": "https://example.com"}],
+                    "parameters": [{"in": "query", "name": "acknowledged"}]
+                }),
+            ),
+        ] {
+            let (recorded, answered) = added_path_documents(&item);
+            assert_eq!(
+                openapi_reported(&recorded, &answered, &listed),
+                Vec::<String>::new(),
+                "{what}: the listed `POST /api/x` is the whole of the new path"
+            );
+        }
+        // With nothing listed, the same new path is the unrecorded route it is.
+        let (recorded, answered) = added_path_documents(&json!({"post": post, "parameters": []}));
+        assert_eq!(
+            openapi_reported(&recorded, &answered, &Additions::default()),
+            ["s step 1: the openapi path /api/x was not recorded".to_owned()],
+            "the entry is what accepts the path"
+        );
+    }
+
+    #[test]
+    fn a_path_item_without_an_operation_declares_no_route() {
+        // What a path item promises is its operations: an item of documentation and
+        // shared parameters alone lists no route, so no entry can accept it, and one
+        // operation the entries do not name keeps the whole path reported.
+        let post = json!({"parameters": []});
+        let listed = routes(&["POST /api/x"], &[]);
+        let unrecorded = ["s step 1: the openapi path /api/x was not recorded".to_owned()];
+        for (what, item) in [
+            ("an empty path item", json!({})),
+            (
+                "documentation only",
+                json!({"summary": "Nothing here is a route."}),
+            ),
+            (
+                "shared parameters only",
+                json!({"parameters": [{"in": "query", "name": "acknowledged"}]}),
+            ),
+            ("a path reference only", json!({"$ref": "#/paths/~1api~1y"})),
+        ] {
+            let (recorded, answered) = added_path_documents(&item);
+            assert_eq!(
+                openapi_reported(&recorded, &answered, &listed),
+                unrecorded,
+                "{what}: no operation, so no listed route either"
+            );
+        }
+        // The path-level fields neither add a route nor excuse one.
+        let (recorded, answered) = added_path_documents(&json!({
+            "post": post,
+            "get": post,
+            "parameters": [{"in": "query", "name": "acknowledged"}]
+        }));
+        assert_eq!(
+            openapi_reported(&recorded, &answered, &listed),
+            unrecorded,
+            "one unlisted operation is enough to keep the path reported"
+        );
+    }
+
     #[test]
     fn a_listed_query_parameter_is_accepted_when_the_path_item_declares_it() {
         // The recorded path declares nothing at the path level; the answered one
