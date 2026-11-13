@@ -82,10 +82,10 @@ pub use migration::{
 };
 #[doc(inline)]
 pub use report_intake::{
-    NewJunitReport, NewPipelineReport, StoredReport, complete_report, fail_report,
-    find_junit_duplicate, list_reports, report_kind, report_status, report_summary, requeue_report,
-    reset_for_retry, stored_ci_run_attempt, stored_junit_body, stored_pipeline_report,
-    stored_report,
+    NewJunitReport, NewPipelineReport, StoredReport, accept_junit_report, accept_pipeline_report,
+    complete_report, fail_report, find_junit_duplicate, list_reports, report_kind, report_status,
+    report_summary, requeue_report, reset_for_retry, stored_ci_run_attempt, stored_junit_body,
+    stored_pipeline_report, stored_report,
 };
 
 /// Advisory-lock key that serializes the startup migration.

@@ -6,21 +6,27 @@
 //! back per kind — including the rule that a NULL `line_base` reads as 1 — and
 //! holds the queue transitions a processor applies to a row. It also serves the
 //! queue reads: one Report with its names, the pending and failed counts, and the
-//! newest Reports a page lists. Nothing here inserts, flushes or commits: the
-//! caller owns the transaction.
+//! newest Reports a page lists. The accept behaviours own their unit of work:
+//! each begins one transaction, inserts within it, and is the only place its rows
+//! are committed or rolled back. The field transitions stay commit-free: the
+//! processor that applies them owns that transaction.
 
 // Rust guideline compliant 2026-07-21
 
 use chrono::Utc;
 use flakeradar_core::{
-    dto::PipelineReportIn, dto::ReportOut, dto::ReportSummaryOut, helpers::body_digest,
-    model::ReportKind, model::ReportStatus,
+    dto::IngestAccepted, dto::PipelineReportIn, dto::ReportOut, dto::ReportSummaryOut,
+    helpers::body_digest, model::ReportKind, model::ReportStatus,
 };
 use sea_orm::entity::prelude::DateTimeWithTimeZone;
-use sea_orm::{ConnectionTrait, DbBackend, FromQueryResult as _, JsonValue, Set, Statement, Value};
+use sea_orm::{
+    ConnectionTrait, DbBackend, EntityTrait, FromQueryResult as _, JsonValue, Set, Statement,
+    TransactionSession, TransactionTrait, Value,
+};
 
 use crate::entities::reports;
 use crate::error::DbError;
+use crate::identity::{get_or_create_project, get_or_create_repo};
 use crate::sql::{Binds, ci_run_id, get, one, required_one, rows};
 
 /// The JUnit duplicate identity: a CI retry whose response was lost uploads the
@@ -198,6 +204,90 @@ pub async fn find_junit_duplicate(
         Some(row) => Ok(Some(reports::Model::from_query_result(&row, "")?)),
         None => Ok(None),
     }
+}
+
+/// Stores a pending JUnit Report, or answers the one already stored, as one
+/// unit of work.
+///
+/// `repo` and `project` are the normalized names the upload arrived with; the
+/// Project they name is created with the Repo when either is missing. The
+/// candidate carries its attribution and body, not its ids: this resolves them,
+/// because the duplicate lookup reads the Project. A stored duplicate answers with
+/// its id and status and commits nothing, rolling back the Repo and Project this
+/// call created; a new Report is committed pending.
+///
+/// # Errors
+///
+/// Returns [`DbError::Database`] when the transaction, a statement or the commit
+/// fails, and [`DbError::UnknownReportStatus`] when a duplicate's stored status is
+/// one this version does not write.
+pub async fn accept_junit_report(
+    db: &(impl ConnectionTrait + TransactionTrait),
+    repo: &str,
+    project: &str,
+    candidate: NewJunitReport,
+    now: DateTimeWithTimeZone,
+) -> Result<IngestAccepted, DbError> {
+    let transaction = db.begin().await?;
+    let created = get_or_create_project(&transaction, repo, project, now).await?;
+    let candidate = NewJunitReport {
+        project_id: created.id,
+        repo_id: created.repo_id,
+        ..candidate
+    };
+    if let Some(existing) = find_junit_duplicate(&transaction, &candidate).await? {
+        // A duplicate queues nothing, and the Repo and Project this call may have
+        // created are not committed either.
+        transaction.rollback().await?;
+        return Ok(IngestAccepted {
+            report_id: i64::from(existing.id),
+            status: report_status(&existing.status)?,
+            duplicate: true,
+        });
+    }
+    let inserted = reports::Entity::insert(candidate.into_active_model(now))
+        .exec_with_returning(&transaction)
+        .await?;
+    transaction.commit().await?;
+    Ok(IngestAccepted {
+        report_id: i64::from(inserted.id),
+        status: ReportStatus::Pending,
+        duplicate: false,
+    })
+}
+
+/// Stores a pending Pipeline Report with its Repo, as one unit of work.
+///
+/// `repo` is the normalized name the payload arrived with, and the Repo is
+/// created when the database has none; the report carries its attribution and
+/// body, not its id. A Pipeline Report is never duplicate-checked, so every
+/// accepted payload stores one new row.
+///
+/// # Errors
+///
+/// Returns [`DbError::Database`] when the transaction, a statement or the commit
+/// fails, which leaves neither the Repo nor the Report stored.
+pub async fn accept_pipeline_report(
+    db: &(impl ConnectionTrait + TransactionTrait),
+    repo: &str,
+    report: NewPipelineReport,
+    now: DateTimeWithTimeZone,
+) -> Result<IngestAccepted, DbError> {
+    let transaction = db.begin().await?;
+    let created = get_or_create_repo(&transaction, repo, now).await?;
+    let report = NewPipelineReport {
+        repo_id: created.id,
+        ..report
+    };
+    let inserted = reports::Entity::insert(report.into_active_model(now))
+        .exec_with_returning(&transaction)
+        .await?;
+    transaction.commit().await?;
+    Ok(IngestAccepted {
+        report_id: i64::from(inserted.id),
+        status: ReportStatus::Pending,
+        duplicate: false,
+    })
 }
 
 /// The stored body of a JUnit Report and the `line_base` it was parsed with.
