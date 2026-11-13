@@ -199,6 +199,39 @@ describe("cancelling on cleanup", () => {
     expect(result.current.data).toBe("new");
   });
 
+  it("an effect-lifetime re-run keeps the new run's data against a late success", async () => {
+    // The drawer-switch race: the old drawer's answer lands after the new
+    // drawer's, and only the newest request may write state.
+    const stale = deferred<string>();
+    const { load, calls, guardOf, requestOf } = guarded<string>([stale.promise]);
+
+    const { result, rerender } = renderHook(
+      ({ fn }: { fn: GuardedLoader<string> }) => useGuardedLoad(fn, { lifetime: "effect" }),
+      { initialProps: { fn: load } },
+    );
+    await act(async () => {
+      await settled();
+    });
+    expect(calls()).toBe(1);
+    const first = guardOf(0);
+
+    const other: GuardedLoader<string> = (guard, request) =>
+      Promise.resolve(guard.current(request) ? "new drawer" : null);
+    await act(async () => {
+      rerender({ fn: other });
+      await settled();
+    });
+    expect(first.current(requestOf(0))).toBe(false); // the switch cancelled the old run
+    expect(result.current.data).toBe("new drawer");
+
+    await act(async () => {
+      stale.resolve("old drawer");
+      await stale.promise;
+    });
+    expect(result.current.data).toBe("new drawer");
+    expect(result.current.error).toBeNull();
+  });
+
   it("an effect-lifetime load builds a fresh guard per run", async () => {
     const seen: LatestWins[] = [];
     const load: GuardedLoader<string> = async (guard, request) => {

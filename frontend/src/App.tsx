@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   fetchFailedReports,
-  latestWins,
   setQuarantine,
   type History,
   type JobHistory,
@@ -41,8 +40,6 @@ export default function App() {
   const [queue, setQueue] = useState<ReportSummary | null>(null);
   const [page, setPage] = useState<TestPage | null>(null);
   const [jobPage, setJobPage] = useState<JobPage | null>(null);
-  const [history, setHistory] = useState<History | null>(null);
-  const [jobHistory, setJobHistory] = useState<JobHistory | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pendingQuarantine, setPendingQuarantine] = useState<TestCase | null>(null);
 
@@ -138,48 +135,45 @@ export default function App() {
     return () => clearInterval(timer);
   }, [refresh]);
 
-  useEffect(() => {
-    if (kind === "ci-run") {
-      // The CI run view has no drawers and no leaderboard histories.
-      setHistory(null);
-      setJobHistory(null);
-      return;
-    }
-    if (kind === "jobs") {
-      if (view.job == null) {
-        setJobHistory(null);
-        return;
-      }
-      // A guard of its own per effect run: cancelling it on cleanup must drop
-      // this drawer's in-flight answer without superseding the list's refresh.
-      const guard = latestWins();
-      const request = guard.start();
-      loadJobHistory(view.job, guard, request)
-        .then((h) => {
-          // The loader answers null once this request is superseded or cancelled.
-          if (h != null) setJobHistory(h);
-        })
-        .catch((e) => {
-          if (guard.current(request)) setError(e instanceof Error ? e.message : String(e));
-        });
-      return () => guard.cancel();
-    }
-    if (view.test == null) {
-      setHistory(null);
-      return;
-    }
-    const guard = latestWins();
-    const request = guard.start();
-    loadTestHistory(view.test, guard, request)
-      .then((h) => {
-        // The loader answers null once this request is superseded or cancelled.
-        if (h != null) setHistory(h);
-      })
-      .catch((e) => {
-        if (guard.current(request)) setError(e instanceof Error ? e.message : String(e));
-      });
-    return () => guard.cancel();
-  }, [kind, view.job, view.test, pageNumber, refresh]); // re-fetch when a drawer's list refreshes
+  // The drawers' histories, one guarded load each at effect guard lifetime:
+  // every run gets a guard of its own, cancelled when the drawer closes or the
+  // scope changes, so a closed drawer's in-flight answer is dropped without
+  // superseding the list's refresh. `refresh` stays in each loader's deps, as
+  // it was in the old effect's: a drawer re-fetches on any scope or filter
+  // change — those flow through refresh's identity — but not on an imperative
+  // refresh() call, which leaves that identity alone.
+  const testHistoryLoader = useCallback<GuardedLoader<History>>(
+    async (guard, request) => {
+      if (view.test == null) return null;
+      return loadTestHistory(view.test, guard, request);
+    },
+    // pageNumber and refresh are unread here on purpose: they are the old
+    // effect's re-fetch triggers, carried on the loader's identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [view.test, pageNumber, refresh],
+  );
+  const testHistoryLoad = useGuardedLoad<History>(testHistoryLoader, {
+    lifetime: "effect",
+    // The early returns of the effect this replaces: only the Tests view with
+    // an open drawer loads, and the ci-run view loads neither history.
+    enabled: kind === "tests" && view.test != null,
+    onErrorChange: setError,
+  });
+
+  const jobHistoryLoader = useCallback<GuardedLoader<JobHistory>>(
+    async (guard, request) => {
+      if (view.job == null) return null;
+      return loadJobHistory(view.job, guard, request);
+    },
+    // The same deliberate triggers as the Test drawer's loader above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [view.job, pageNumber, refresh],
+  );
+  const jobHistoryLoad = useGuardedLoad<JobHistory>(jobHistoryLoader, {
+    lifetime: "effect",
+    enabled: kind === "jobs" && view.job != null,
+    onErrorChange: setError,
+  });
 
   const onToggleQuarantine = useCallback(
     async (t: TestCase) => {
@@ -357,7 +351,7 @@ export default function App() {
       {kind === "tests" && view.test != null && (
         <TestDrawer
           testId={view.test}
-          history={history}
+          history={testHistoryLoad.data}
           onClose={closeDrawer}
           onToggleQuarantine={onToggleQuarantine}
           onOpenJob={openJobFromTest}
@@ -374,7 +368,7 @@ export default function App() {
       {kind === "jobs" && view.job != null && (
         <JobDrawer
           jobId={view.job}
-          history={jobHistory}
+          history={jobHistoryLoad.data}
           onClose={closeDrawer}
           onOpenTest={openTestFromJob}
           onOpenJob={(jobId) => setView({ job: jobId })}
