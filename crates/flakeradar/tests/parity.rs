@@ -1080,23 +1080,24 @@ fn compare_openapi_paths(
         ) else {
             continue;
         };
-        for method in recorded.keys() {
-            match answered.get(method) {
-                Some(operation) => compare_operation(
-                    &recorded[method],
-                    operation,
+        for method in path_item_methods(recorded) {
+            if answered.contains_key(method) {
+                compare_operation(
+                    &parameter_names(recorded, method),
+                    parameter_names(answered, method),
                     method,
                     path,
                     additions,
                     describe,
                     failures,
-                ),
-                None => failures.push(describe(format!(
+                );
+            } else {
+                failures.push(describe(format!(
                     "the openapi method {method} {path} is missing"
-                ))),
+                )));
             }
         }
-        for method in answered.keys() {
+        for method in path_item_methods(answered) {
             if !recorded.contains_key(method) && !additions.path(method, path) {
                 failures.push(describe(format!(
                     "the openapi method {method} {path} was not recorded"
@@ -1106,15 +1107,57 @@ fn compare_openapi_paths(
     }
 }
 
+/// The Path Item Object's fields that are not operations.
+///
+/// A path declares its shared `parameters` and its documentation beside its
+/// operations, so those keys name no route; every other key does, and an unknown
+/// one is a method this document invented.
+const OPENAPI_PATH_ITEM_FIELDS: &[&str] =
+    &["$ref", "description", "parameters", "servers", "summary"];
+
+/// The operations one path item declares.
+fn path_item_methods(item: &Map<String, Value>) -> Vec<&str> {
+    item.keys()
+        .map(String::as_str)
+        .filter(|key| !OPENAPI_PATH_ITEM_FIELDS.contains(key))
+        .collect()
+}
+
+/// The parameters one operation of `item` takes, as the sorted `"{in} {name}"`
+/// strings the comparison reads.
+///
+/// A path item's own `parameters` apply to every operation of the path, so an
+/// operation takes them beside the ones it declares itself.
+fn parameter_names(item: &Map<String, Value>, method: &str) -> Vec<String> {
+    let declared = |list: Option<&Value>| -> Vec<String> {
+        list.and_then(Value::as_array)
+            .map(|list| {
+                list.iter()
+                    .filter_map(|parameter| {
+                        let place = parameter.get("in").and_then(Value::as_str)?;
+                        let name = parameter.get("name").and_then(Value::as_str)?;
+                        Some(format!("{place} {name}"))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let operation = item.get(method);
+    let mut names = declared(item.get("parameters"));
+    names.extend(declared(
+        operation.and_then(|operation| operation.get("parameters")),
+    ));
+    names.sort();
+    names.dedup();
+    names
+}
+
 /// Whether the answered document's whole path is an addition the list names: every
 /// method of the path item must be listed, so a path that is partly new — one
 /// method listed, another invented — is still reported. An item with no method at
 /// all documents nothing, and so proves nothing.
 fn added_path(item: &Value, path: &str, additions: &Additions) -> bool {
-    let methods: Vec<&str> = item
-        .as_object()
-        .map(|methods| methods.keys().map(String::as_str).collect())
-        .unwrap_or_default();
+    let methods = item.as_object().map(path_item_methods).unwrap_or_default();
     !methods.is_empty() && methods.iter().all(|method| additions.path(method, path))
 }
 
@@ -1517,46 +1560,28 @@ fn compare_openapi_bodies(
 ///
 /// A parameter is its place and its name: the recorded `x-api-key` header is
 /// documented beside the query and path parameters, and either document naming an
-/// extra or a missing one is a difference a client would trip over. A `query`
-/// parameter this server adds to the recorded operation is dropped from the
-/// answered list before the comparison, when `additions` lists it for this `method`
-/// and `path`; a parameter the recorded operation already took is always compared,
-/// so the list cannot hide one the answer no longer accepts.
+/// extra or a missing one is a difference a client would trip over. Both lists come
+/// from [`parameter_names`], so they hold the operation's own parameters beside the
+/// path's. A `query` parameter this server adds to the recorded operation is
+/// dropped from the answered list, when `additions` lists it for this `method` and
+/// `path`; a parameter the recorded operation already took is always compared, so
+/// the list cannot hide one the answer no longer accepts.
 fn compare_operation(
-    recorded: &Value,
-    answered: &Value,
+    recorded: &[String],
+    answered: Vec<String>,
     method: &str,
     path: &str,
     additions: &Additions,
     describe: &dyn Fn(String) -> String,
     failures: &mut Mismatches,
 ) {
-    let parameters = |operation: &Value| -> Vec<String> {
-        let mut names: Vec<String> = operation
-            .get("parameters")
-            .and_then(Value::as_array)
-            .map(|list| {
-                list.iter()
-                    .filter_map(|parameter| {
-                        let place = parameter.get("in").and_then(Value::as_str)?;
-                        let name = parameter.get("name").and_then(Value::as_str)?;
-                        Some(format!("{place} {name}"))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        names.sort();
-        names.dedup();
-        names
-    };
-    let recorded = parameters(recorded);
     let added = |name: &str| -> bool {
         let (place, parameter) = name.split_once(' ').unwrap_or((name, name));
         place == "query" && additions.query_param(method, path, parameter)
     };
     // Only a parameter the recorded operation lacks is an addition: one it already
     // took stays in the answered list, so its removal is reported.
-    let answered = parameters(answered)
+    let answered = answered
         .into_iter()
         .filter(|name| recorded.contains(name) || !added(name))
         .collect::<Vec<String>>();
@@ -2374,6 +2399,105 @@ mod tests {
                 &routes(&without_the_delete, &acknowledged)
             ),
             ["s step 1: the openapi path /api/y was not recorded".to_owned()]
+        );
+    }
+
+    #[test]
+    fn a_listed_route_and_query_parameter_are_accepted_from_a_path_item_that_declares_them() {
+        // A Path Item Object holds its shared `parameters` and its documentation
+        // beside its operations, and a path declares there the query parameter
+        // every operation of it takes. Neither spelling is a method, and the
+        // additions are still the route and the parameter the list names.
+        let recorded = json!({
+            "paths": {
+                "/api/tests": {"get": {"parameters": [{"in": "query", "name": "repo"}]}}
+            },
+            "components": {"schemas": {"S": {
+                "properties": {"id": {"type": "integer"}},
+                "required": ["id"]
+            }}}
+        });
+        let answered = json!({
+            "paths": {
+                "/api/tests": {
+                    "parameters": [{"in": "query", "name": "acknowledged"}],
+                    "get": {"parameters": [{"in": "query", "name": "repo"}]}
+                },
+                "/api/x": {
+                    "parameters": [{"in": "query", "name": "acknowledged"}],
+                    "summary": "The route this server adds.",
+                    "post": {"parameters": []}
+                }
+            },
+            "components": {"schemas": {"S": {
+                "properties": {"id": {"type": "integer"}},
+                "required": ["id"]
+            }}}
+        });
+        let listed = routes(&["POST /api/x"], &["GET /api/tests acknowledged"]);
+        assert_eq!(
+            openapi_reported(&recorded, &answered, &listed),
+            Vec::<String>::new(),
+            "the answered document is the recorded one plus the two entries"
+        );
+        // With nothing listed, both additions are reported: the new path, and the
+        // parameter the answered operation now takes through its path.
+        let failures = openapi_reported(&recorded, &answered, &Additions::default());
+        assert_eq!(
+            failures,
+            [
+                "s step 1: the openapi path /api/x was not recorded".to_owned(),
+                "s step 1: get /api/tests takes [\"query acknowledged\", \"query repo\"] where it \
+                 takes [\"query repo\"]"
+                    .to_owned(),
+            ],
+            "the path item's `parameters` is no method the list must name"
+        );
+    }
+
+    #[test]
+    fn a_listed_query_parameter_is_accepted_when_the_path_item_declares_it() {
+        // The recorded path declares nothing at the path level; the answered one
+        // gives `acknowledged` to every operation of the path, which is the same
+        // promise as spelling it in the operation.
+        let recorded = json!({
+            "paths": {
+                "/api/tests": {"get": {"parameters": [{"in": "query", "name": "repo"}]}}
+            },
+            "components": {"schemas": {"S": {
+                "properties": {"id": {"type": "integer"}},
+                "required": ["id"]
+            }}}
+        });
+        let answered = json!({
+            "paths": {
+                "/api/tests": {
+                    "parameters": [{"in": "query", "name": "acknowledged"}],
+                    "get": {"parameters": [{"in": "query", "name": "repo"}]}
+                }
+            },
+            "components": {"schemas": {"S": {
+                "properties": {"id": {"type": "integer"}},
+                "required": ["id"]
+            }}}
+        });
+        assert_eq!(
+            openapi_reported(
+                &recorded,
+                &answered,
+                &routes(&[], &["GET /api/tests acknowledged"])
+            ),
+            Vec::<String>::new()
+        );
+        // Without the entry, the answered operation takes a parameter the recorded
+        // one never did, and the difference is reported.
+        assert_eq!(
+            openapi_reported(&recorded, &answered, &Additions::default()),
+            [
+                "s step 1: get /api/tests takes [\"query acknowledged\", \"query repo\"] where it \
+                 takes [\"query repo\"]"
+                    .to_owned()
+            ]
         );
     }
 
