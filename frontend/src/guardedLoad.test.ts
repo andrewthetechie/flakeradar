@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, renderHook } from "@testing-library/react";
+import { useState } from "react";
 import { type LatestWins } from "./api";
 import { useGuardedLoad, type GuardedLoader } from "./guardedLoad";
 
@@ -287,7 +288,7 @@ describe("error mapping", () => {
     expect(result.current.error).toBe("boom");
   });
 
-  it("onErrorChange marks the changes, not every write", async () => {
+  it("onErrorChange marks every write, a repeated message included", async () => {
     let message: string | null = "repeated failure";
     const seen: (string | null)[] = [];
     const load: GuardedLoader<string> = async () => {
@@ -299,16 +300,16 @@ describe("error mapping", () => {
     );
     await flush();
     await act(async () => {
-      await result.current.refresh(); // the same message again
+      await result.current.refresh(); // the same message again, written again
     });
     expect(result.current.error).toBe("repeated failure");
-    expect(seen).toEqual(["repeated failure"]);
+    expect(seen).toEqual(["repeated failure", "repeated failure"]);
 
     message = null;
     await act(async () => {
       await result.current.refresh(); // a success leaves the error alone by default
     });
-    expect(seen).toEqual(["repeated failure"]);
+    expect(seen).toEqual(["repeated failure", "repeated failure"]);
   });
 });
 
@@ -659,5 +660,63 @@ describe("the loader seam", () => {
     await flush();
     expect(plain).toHaveBeenCalledOnce();
     expect(result.current.data).toEqual({ failures: [], total: 0 });
+  });
+});
+
+describe("a shared error surface", () => {
+  // App mirrors every load's error into one banner state, and its quarantine
+  // handlers write that same state directly. No hook owns the whole surface, so a
+  // hook's own last write says nothing about what the caller is showing.
+  it("a success in one load clears an error another writer put on the banner", async () => {
+    const list: GuardedLoader<string> = async () => "rows";
+    const drawer: GuardedLoader<string> = async () => {
+      throw new Error("/api/tests/5/history?limit=60 -> 500");
+    };
+    const { result } = renderHook(() => {
+      const [banner, setBanner] = useState<string | null>(null);
+      const listLoad = useGuardedLoad(list, {
+        clearErrorOnSuccess: true,
+        onErrorChange: setBanner,
+      });
+      const drawerLoad = useGuardedLoad(drawer, {
+        lifetime: "effect",
+        onErrorChange: setBanner,
+      });
+      return { banner, listLoad, drawerLoad };
+    });
+
+    await flush();
+    // The drawer's failure owns the banner; the list hook never wrote it.
+    expect(result.current.banner).toBe("/api/tests/5/history?limit=60 -> 500");
+
+    // The list's next success clears the surface, even though this hook's own
+    // error was already null — the clear is a write like any other.
+    await act(async () => {
+      await result.current.listLoad.refresh();
+    });
+    expect(result.current.banner).toBeNull();
+  });
+
+  it("a success clears a message a direct write put on the banner", async () => {
+    const list: GuardedLoader<string> = async () => "rows";
+    const { result } = renderHook(() => {
+      const [banner, setBanner] = useState<string | null>(null);
+      const listLoad = useGuardedLoad(list, {
+        clearErrorOnSuccess: true,
+        onErrorChange: setBanner,
+      });
+      return { banner, listLoad, setBanner };
+    });
+    await flush();
+    expect(result.current.banner).toBeNull();
+
+    // A quarantine handler's own write, which no hook knows about.
+    act(() => result.current.setBanner("quarantine 5 -> 500"));
+    expect(result.current.banner).toBe("quarantine 5 -> 500");
+
+    await act(async () => {
+      await result.current.listLoad.refresh();
+    });
+    expect(result.current.banner).toBeNull();
   });
 });

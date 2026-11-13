@@ -419,4 +419,27 @@ describe("App refresh", () => {
     expect(screen.queryByRole("dialog", { name: /Quarantine login/ })).not.toBeInTheDocument();
     expect(await screen.findByRole("alert")).toHaveTextContent(/quarantine 5 -> 500/);
   });
+
+  it("clears the quarantine handler's banner on the next good list refresh", async () => {
+    // The handlers write the shared banner directly, so no hook owns that message
+    // and its error state is already null. The list's next success still has to
+    // reach the caller — a clear is a write like any other.
+    stubFailingQuarantinePost(true);
+    vi.useFakeTimers();
+    render(<App />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Un-quarantine" }));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(screen.getByRole("alert")).toHaveTextContent(/quarantine 5 -> 500/);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
 });

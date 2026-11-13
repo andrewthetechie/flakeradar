@@ -40,6 +40,9 @@ export default function App() {
   const [queue, setQueue] = useState<ReportSummary | null>(null);
   const [page, setPage] = useState<TestPage | null>(null);
   const [jobPage, setJobPage] = useState<JobPage | null>(null);
+  // The dashboard's one error surface: the three guarded loads mirror their own
+  // writes into it and the quarantine handlers below write it directly, so no
+  // single writer knows what is showing. Every write therefore goes through.
   const [error, setError] = useState<string | null>(null);
   const [pendingQuarantine, setPendingQuarantine] = useState<TestCase | null>(null);
 

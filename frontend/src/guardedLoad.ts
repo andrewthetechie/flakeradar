@@ -39,8 +39,10 @@ export interface GuardedLoadOptions<TData> {
   /** Fires once per current settle, success or failure alike. */
   onSettled?: () => void;
   /**
-   * Fires whenever this hook changes the error, including a clear to null — the
-   * two travel together so a caller mirroring the error cannot drift.
+   * Fires on every error write this hook makes — set or clear, including a repeat
+   * of the message it wrote last time — so the hook's own state and the caller's
+   * copy never part ways. A caller that shares one error surface across several
+   * hooks, or writes to it itself, must accept those repeat writes.
    */
   onErrorChange?: (message: string | null) => void;
 }
@@ -91,12 +93,11 @@ export function useGuardedLoad<TData>(
   // both reach it — an effect-lifetime guard has no other holder.
   const cancelRef = useRef<(() => void) | null>(null);
 
-  // The error this hook last wrote, so `onErrorChange` marks an actual change
-  // rather than every write of the same message.
-  const errorRef = useRef<string | null>(null);
+  // Every error write goes through to the caller, even one that repeats this
+  // hook's own last message: another writer may have put something else on the
+  // shared surface in between, and only a write that arrives clears it. React
+  // bails out on an identical state value, so the hook's own state costs nothing.
   const writeError = useCallback((message: string | null, h: Handlers<TData>) => {
-    if (errorRef.current === message) return;
-    errorRef.current = message;
     setError(message);
     h.onErrorChange?.(message);
   }, []);
