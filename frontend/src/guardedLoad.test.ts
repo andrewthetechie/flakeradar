@@ -719,4 +719,40 @@ describe("a shared error surface", () => {
     });
     expect(result.current.banner).toBeNull();
   });
+
+  it("a repeat failure reaches the banner after another writer cleared it", async () => {
+    // The mirror direction: a hook's own last write says nothing about what the
+    // surface shows now, so a genuine repeat failure is a write like any other.
+    const message = "/api/tests/5/history?limit=60 -> 500";
+    const drawer: GuardedLoader<string> = async () => {
+      throw new Error(message);
+    };
+    const list: GuardedLoader<string> = async () => "rows";
+    const { result } = renderHook(() => {
+      const [banner, setBanner] = useState<string | null>(null);
+      const listLoad = useGuardedLoad(list, {
+        clearErrorOnSuccess: true,
+        onErrorChange: setBanner,
+      });
+      const drawerLoad = useGuardedLoad(drawer, {
+        lifetime: "effect",
+        onErrorChange: setBanner,
+      });
+      return { banner, listLoad, drawerLoad };
+    });
+    await flush();
+    expect(result.current.banner).toBe(message);
+
+    // The list's success clears the surface; the drawer hook wrote nothing since.
+    await act(async () => {
+      await result.current.listLoad.refresh();
+    });
+    expect(result.current.banner).toBeNull();
+
+    // The same drawer failure again is a new event, and must land again.
+    await act(async () => {
+      await result.current.drawerLoad.refresh();
+    });
+    expect(result.current.banner).toBe(message);
+  });
 });

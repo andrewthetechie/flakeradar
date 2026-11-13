@@ -371,6 +371,52 @@ describe("App refresh", () => {
     );
   });
 
+  it("clears a drawer's banner on the next good list refresh", async () => {
+    // The drawer's load owns the banner message; the list's own error is still
+    // null, so only an unconditional write on its next success reaches the
+    // shared surface — exactly what the pre-refactor setError(null) did.
+    let finishHistory: (r: Response) => void = () => {};
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        if (url.startsWith("/api/tests/5/history")) {
+          return new Promise<Response>((resolve) => {
+            finishHistory = resolve;
+          });
+        }
+        if (url.startsWith("/api/tests"))
+          return json({ ...page("login"), items: [row(5, "login")] });
+        if (url.startsWith("/api/repos")) return json([]);
+        if (url.startsWith("/api/reports/summary")) return json({ pending: 0, failed: 0 });
+        return json(summary);
+      }),
+    );
+    vi.useFakeTimers();
+    window.history.replaceState(null, "", "/?test=5");
+    render(<App />);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    // The list painted first, and nothing has failed yet.
+    expect(screen.getByText("login")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).toBeNull();
+
+    await act(async () => {
+      finishHistory(new Response("boom", { status: 500 }));
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      /\/api\/tests\/5\/history\?limit=60 -> 500/,
+    );
+
+    // The 30 s poll succeeds: its clear reaches the banner the drawer raised.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
   /** The Tests list with one row whose id is 5, and a quarantine POST that fails. */
   function stubFailingQuarantinePost(quarantined: boolean) {
     const test = {
