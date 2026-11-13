@@ -1,11 +1,12 @@
-//! Three properties of this workspace's own source, checked from outside it.
+//! Four properties of this workspace's own source, checked from outside it.
 //!
 //! All are rules a compiler cannot see: that every log event carries a name and a
 //! static message, that no comment or identifier in `crates/` points at the
-//! implementation this one replaced, and that every hand-written file carries the
-//! compliance marker. Each rule is a function over the text of one
-//! file, so a test can feed it a violation as well as the tree, and every
-//! violation shape this file is named for has a case that runs through it.
+//! implementation this one replaced, that every hand-written file carries the
+//! compliance marker, and that the Report route module owns no database write.
+//! Each rule is a function over the text of one file, so a test can feed it a
+//! violation as well as the tree, and every violation shape this file is named
+//! for has a case that runs through it.
 //!
 //! This file is the one the first two tree checks skip: it spells the words and the
 //! macros it looks for.
@@ -653,4 +654,83 @@ fn line_holding(text: &str, needle: &str) -> usize {
         .position(|line| line.contains(needle))
         .unwrap_or_else(|| panic!("the control holds {needle:?}"))
         + 1
+}
+
+/// The shapes by which a route module would own a database write of its own.
+///
+/// The Report route used to hold all of them; the queue writes are
+/// `flakeradar_db::report_intake`'s now, so one of these shapes in that module
+/// means the split its own doc states has slipped.
+const ROUTE_WRITE_SHAPES: &[&str] = &[
+    "Entity::insert",
+    "Entity::update",
+    "Entity::delete",
+    ".begin()",
+    "TransactionTrait",
+];
+
+/// The Report route module: the one route whose queue writes now live in
+/// `flakeradar-db`.
+const REPORT_ROUTE: &str = "crates/flakeradar/src/routes/reports.rs";
+
+/// Every line of `text` that owns a database write, one entry per shape it holds.
+fn route_write_offences(text: &str) -> Vec<String> {
+    let mut offences = Vec::new();
+    for (number, line) in text.lines().enumerate() {
+        for shape in ROUTE_WRITE_SHAPES.iter().copied() {
+            if line.contains(shape) {
+                offences.push(format!("{}: {shape}: {}", number + 1, line.trim()));
+            }
+        }
+    }
+    offences
+}
+
+/// The Report route module owns no entity write, no transaction open and no
+/// `TransactionTrait`.
+#[test]
+fn the_report_route_owns_no_database_write() {
+    let text = std::fs::read_to_string(workspace_root().join(REPORT_ROUTE))
+        .expect("the Report route module is readable");
+    let offences = route_write_offences(&text);
+    assert!(
+        offences.is_empty(),
+        "{REPORT_ROUTE} owns a database write, which belongs in `flakeradar-db`:\n{}",
+        offences.join("\n")
+    );
+}
+
+/// Each write shape the route check is named for, each fed through it.
+///
+/// This file is the one the first two tree checks skip because it spells what it
+/// looks for, so writing the shapes out here is not an offence against them.
+#[test]
+fn each_route_write_shape_is_reported() {
+    let text = "reports::Entity::insert(new_report).exec_with_returning(&txn).await?;\n\
+                reports::Entity::update(active).exec(db).await?;\n\
+                reports::Entity::delete_by_id(id).exec(db).await?;\n\
+                let txn = db.begin().await?;\n\
+                use sea_orm::TransactionTrait;\n\
+                let summary = reads::report_summary(id);\n";
+    let found = route_write_offences(text);
+    for shape in ROUTE_WRITE_SHAPES.iter().copied() {
+        assert!(
+            found.iter().any(|offence| offence.contains(shape)),
+            "{shape} is not caught: {found:?}"
+        );
+    }
+    // One offence per shape: the line that owns neither a write nor a transaction
+    // is the control, and is reported not at all.
+    assert_eq!(
+        found.len(),
+        ROUTE_WRITE_SHAPES.len(),
+        "every shape is reported once: {found:?}"
+    );
+    let quiet = line_holding(text, "report_summary");
+    assert!(
+        !found
+            .iter()
+            .any(|offence| offence.starts_with(&format!("{quiet}: "))),
+        "a line owning no write is reported: {found:?}"
+    );
 }

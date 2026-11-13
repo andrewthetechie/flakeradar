@@ -103,6 +103,19 @@ fn a_route_error_is_an_error_that_names_its_case() {
         flakeradar_db::DbError::Database(sea_orm::DbErr::RecordNotFound("a row".to_owned())),
     ));
     assert!(read.source().is_some());
+    // A driver error that reaches a route directly, rather than through a crate's
+    // own error, is the same 500: only a delete's Deadlock says retry.
+    let driver = RouteError::from(sea_orm::DbErr::Query(sea_orm::RuntimeErr::Internal(
+        "the driver gave up".to_owned(),
+    )));
+    assert!(
+        matches!(
+            driver,
+            RouteError::Internal(flakeradar_db::DbError::Database(_))
+        ),
+        "a driver error is the internal case: {driver}"
+    );
+    assert_eq!(driver.status(), StatusCode::INTERNAL_SERVER_ERROR);
     assert_eq!(
         RouteError::Refused(flakeradar_db::issue_links::IssueLinkError::Conflict(
             "already linked".to_owned()

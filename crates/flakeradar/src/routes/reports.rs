@@ -4,6 +4,9 @@
 //! pending Report and answers 202; the processor turns it into a Run later.
 //! `POST /api/ingest/pipeline` does the same for one attempt of a Pipeline run.
 //! The rest read the queue, summarise it, retry a failed Report or dismiss one.
+//! Every write is `flakeradar_db`'s — the two accepts, the manual retry and the
+//! dismiss in `report_intake` — and this module validates, normalizes and maps
+//! the answers.
 //! The bodies, status codes and `detail` texts are the wire contract `tests/parity`
 //! replays.
 
@@ -25,14 +28,12 @@ use flakeradar_core::{
     identity::normalize_repo, identity::normalize_root, lax, model::ReportStatus,
     parsing::ParseError, parsing::parse_junit_xml, py::strip_wire_whitespace,
 };
-use flakeradar_db::entities::reports;
 use flakeradar_db::list_reports as report_queue;
 use flakeradar_db::{
-    NewJunitReport, NewPipelineReport, find_junit_duplicate, get_or_create_project,
-    get_or_create_repo, report_status, report_summary, reset_for_retry, stored_ci_run_attempt,
-    stored_report,
+    DismissAnswer, NewJunitReport, NewPipelineReport, RetryAnswer, accept_junit_report,
+    accept_pipeline_report, dismiss_failed_report, report_summary, retry_failed_report,
+    stored_ci_run_attempt, stored_report,
 };
-use sea_orm::{EntityTrait, Set, TransactionTrait as _};
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
 
@@ -401,13 +402,11 @@ pub async fn ingest(
     let ci_run_attempt = accepted_ci_run_attempt(query.ci_run_attempt.as_ref());
 
     let now = state.clock().now();
-    // The Repo, Project and Report are one unit of work, committed once at the
-    // end, so a duplicate answer or a failed insert leaves none of them behind.
-    let txn = state.pool().begin().await?;
-    let project = get_or_create_project(&txn, &repo_name, &project_name, now).await?;
     let candidate = NewJunitReport {
-        project_id: project.id,
-        repo_id: project.repo_id,
+        // The accept names the Repo and Project, so the ids it stores are
+        // resolved there; this row carries the attribution and the body only.
+        project_id: 0,
+        repo_id: 0,
         // The row takes the bytes as they are: the parse above borrowed them.
         body: content.to_vec(),
         commit_sha: query.commit_sha,
@@ -420,26 +419,9 @@ pub async fn ingest(
         pipeline: blank_to_none(query.pipeline),
         default_branch: blank_to_none(query.default_branch),
     };
-    if let Some(existing) = find_junit_duplicate(&txn, &candidate).await? {
-        // A duplicate queues nothing, and the Repo and Project this request may
-        // have created are not committed either: the one commit site is not
-        // reached.
-        txn.rollback().await?;
-        return Ok(accepted(IngestAccepted {
-            report_id: i64::from(existing.id),
-            status: report_status(&existing.status)?,
-            duplicate: true,
-        }));
-    }
-    let inserted = reports::Entity::insert(candidate.into_active_model(now))
-        .exec_with_returning(&txn)
-        .await?;
-    txn.commit().await?;
-    Ok(accepted(IngestAccepted {
-        report_id: i64::from(inserted.id),
-        status: ReportStatus::Pending,
-        duplicate: false,
-    }))
+    let answer =
+        accept_junit_report(state.pool(), &repo_name, &project_name, candidate, now).await?;
+    Ok(accepted(answer))
 }
 
 /// The 202 every accepted upload answers with, and its body.
@@ -577,12 +559,11 @@ pub async fn ingest_pipeline(
         Ok((pipeline_body(&payload), payload))
     })
     .await?;
-    // The Repo and the Report are one unit of work, committed once: a failed
-    // insert leaves no Repo behind.
-    let txn = state.pool().begin().await?;
-    let repo = get_or_create_repo(&txn, &payload.repo, now).await?;
+    // The Repo and the Report are one unit of work, committed once by the accept:
+    // a failed insert leaves no Repo behind.
     let report = NewPipelineReport {
-        repo_id: repo.id,
+        // The accept names the Repo, so it resolves the id this row is stored with.
+        repo_id: 0,
         body,
         commit_sha: payload.commit_sha.clone(),
         branch: payload.branch.clone(),
@@ -591,15 +572,8 @@ pub async fn ingest_pipeline(
         pipeline: Some(payload.pipeline.clone()),
         default_branch: payload.default_branch.clone(),
     };
-    let inserted = reports::Entity::insert(report.into_active_model(now))
-        .exec_with_returning(&txn)
-        .await?;
-    txn.commit().await?;
-    Ok(accepted(IngestAccepted {
-        report_id: i64::from(inserted.id),
-        status: ReportStatus::Pending,
-        duplicate: false,
-    }))
+    let answer = accept_pipeline_report(state.pool(), &payload.repo, report, now).await?;
+    Ok(accepted(answer))
 }
 
 /// How many Reports are pending and how many failed.
@@ -705,26 +679,13 @@ pub async fn retry_report(
     State(state): State<AppState>,
     ApiPath(path): ApiPath<ReportPath>,
 ) -> RouteResult<Json<ReportOut>> {
-    let Some(mut stored) = stored_report(state.pool(), path.report_id).await? else {
-        return Err(not_found());
-    };
-    if stored.report.status != ReportStatus::Failed.as_str() {
-        return Err(
-            ApiError::new(StatusCode::CONFLICT, "Only failed reports can be retried").into(),
-        );
+    match retry_failed_report(state.pool(), path.report_id).await? {
+        RetryAnswer::Retried(stored) => Ok(Json(stored.into_out()?)),
+        RetryAnswer::NotFailed => {
+            Err(ApiError::new(StatusCode::CONFLICT, "Only failed reports can be retried").into())
+        }
+        RetryAnswer::NotFound => Err(not_found()),
     }
-    reset_for_retry(&mut stored.report);
-    reports::Entity::update(reports::ActiveModel {
-        id: Set(stored.report.id),
-        retry_count: Set(stored.report.retry_count),
-        status: Set(stored.report.status.clone()),
-        error: Set(stored.report.error.clone()),
-        processed_at: Set(stored.report.processed_at),
-        ..Default::default()
-    })
-    .exec(state.pool())
-    .await?;
-    Ok(Json(stored.into_out()?))
 }
 
 /// Dismisses a failed Report by deleting it.
@@ -751,18 +712,13 @@ pub async fn delete_report(
     State(state): State<AppState>,
     ApiPath(path): ApiPath<ReportPath>,
 ) -> RouteResult<StatusCode> {
-    let Some(stored) = stored_report(state.pool(), path.report_id).await? else {
-        return Err(not_found());
-    };
-    if stored.report.status != ReportStatus::Failed.as_str() {
-        return Err(
-            ApiError::new(StatusCode::CONFLICT, "Only failed reports can be deleted").into(),
-        );
+    match dismiss_failed_report(state.pool(), path.report_id).await? {
+        DismissAnswer::Dismissed => Ok(StatusCode::NO_CONTENT),
+        DismissAnswer::NotFailed => {
+            Err(ApiError::new(StatusCode::CONFLICT, "Only failed reports can be deleted").into())
+        }
+        DismissAnswer::NotFound => Err(not_found()),
     }
-    reports::Entity::delete_by_id(stored.report.id)
-        .exec(state.pool())
-        .await?;
-    Ok(StatusCode::NO_CONTENT)
 }
 
 /// The 404 a Report route answers for an id that names no Report.

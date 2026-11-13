@@ -12,15 +12,19 @@
 )]
 
 use flakeradar_core::{dto::PipelineReportIn, dto::pipeline_body, model::ReportStatus};
-use flakeradar_db::entities::{projects, reports};
+use flakeradar_db::entities::{projects, reports, repos};
 use flakeradar_db::{
-    DbError, NewJunitReport, NewPipelineReport, complete_report, fail_report, find_junit_duplicate,
-    get_or_create_project, requeue_report, reset_for_retry, stored_ci_run_attempt,
-    stored_junit_body, stored_pipeline_report,
+    DbError, DismissAnswer, NewJunitReport, NewPipelineReport, RetryAnswer, accept_junit_report,
+    accept_pipeline_report, complete_report, dismiss_failed_report, fail_report,
+    find_junit_duplicate, get_or_create_project, requeue_report, reset_for_retry,
+    retry_failed_report, stored_ci_run_attempt, stored_junit_body, stored_pipeline_report,
 };
 use flakeradar_test_support::{TestDb, make_junit, make_report};
 use sea_orm::entity::prelude::DateTimeWithTimeZone;
-use sea_orm::{ConnectionTrait, DbBackend, EntityTrait, PaginatorTrait as _, Statement, Value};
+use sea_orm::{
+    ActiveModelTrait, ConnectionTrait, DbBackend, EntityTrait, IntoActiveModel,
+    PaginatorTrait as _, Statement, Value,
+};
 
 /// A fixed instant, so a stored `created_at` never depends on the clock.
 fn at() -> DateTimeWithTimeZone {
@@ -81,6 +85,24 @@ async fn report_ids(db: &TestDb) -> Vec<i32> {
         .await
         .expect("the Report rows");
     rows.into_iter().map(|report| report.id).collect()
+}
+
+/// The rows one accept writes, as `(reports, repos, projects)`.
+async fn row_counts(db: &TestDb) -> (u64, u64, u64) {
+    (
+        reports::Entity::find()
+            .count(db.connection())
+            .await
+            .expect("the Report count"),
+        repos::Entity::find()
+            .count(db.connection())
+            .await
+            .expect("the Repo count"),
+        projects::Entity::find()
+            .count(db.connection())
+            .await
+            .expect("the Project count"),
+    )
 }
 
 /// The Pipeline Report the cases build a body from.
@@ -598,6 +620,101 @@ async fn the_transitions_never_commit_anything_themselves() {
 }
 
 #[tokio::test]
+async fn a_duplicate_accept_commits_nothing() {
+    // The Repo, Project and Report are one unit of work: the repeat upload answers
+    // the stored duplicate and rolls back the rows its own get-or-create made, so
+    // one Report, one Repo and one Project survive both calls.
+    let db = TestDb::new().await.expect("a migrated test database");
+    let first = accept_junit_report(db.connection(), "acme/app", "default", identity(), at())
+        .await
+        .expect("the upload is accepted");
+    assert!(!first.duplicate);
+    assert_eq!(first.status, ReportStatus::Pending);
+    let second = accept_junit_report(db.connection(), "acme/app", "default", identity(), at())
+        .await
+        .expect("the repeat upload is accepted");
+    assert!(second.duplicate);
+    assert_eq!(second.report_id, first.report_id);
+    assert_eq!(second.status, ReportStatus::Pending);
+    assert_eq!(
+        report_ids(&db).await,
+        vec![i32::try_from(first.report_id).expect("an id")]
+    );
+    assert_eq!(row_counts(&db).await, (1, 1, 1));
+    // A duplicate answers with the stored Report's own status, not a guess.
+    db.connection()
+        .execute_unprepared("UPDATE reports SET status = 'failed'")
+        .await
+        .expect("the stored Report is failed");
+    let third = accept_junit_report(db.connection(), "acme/app", "default", identity(), at())
+        .await
+        .expect("the third upload is accepted");
+    assert!(third.duplicate);
+    assert_eq!(third.status, ReportStatus::Failed);
+    assert_eq!(row_counts(&db).await, (1, 1, 1));
+}
+
+#[tokio::test]
+async fn a_failed_accept_leaves_no_repo_or_project() {
+    // Here the insert is what fails, after the get-or-create: a CHECK the row
+    // cannot satisfy refuses it, so the transaction is dropped uncommitted and
+    // none of the three rows survives.
+    let db = TestDb::new().await.expect("a migrated test database");
+    db.connection()
+        .execute_unprepared("ALTER TABLE reports ADD CONSTRAINT intake_always_fails CHECK (false)")
+        .await
+        .expect("the fixture constraint is installed");
+    let error = accept_junit_report(db.connection(), "acme/app", "default", identity(), at())
+        .await
+        .expect_err("the insert is refused");
+    assert!(matches!(error, DbError::Database(_)), "{error}");
+    assert_eq!(row_counts(&db).await, (0, 0, 0));
+}
+
+#[tokio::test]
+async fn a_pipeline_accept_commits_its_repo_and_report() {
+    // A Pipeline Report names no Project, so the accept creates the Repo and the
+    // pending Report in one commit, with the Report on the Repo it just made.
+    let db = TestDb::new().await.expect("a migrated test database");
+    let accepted = accept_pipeline_report(
+        db.connection(),
+        "acme/app",
+        NewPipelineReport {
+            repo_id: 0,
+            body: pipeline_body(&pipeline_report()),
+            commit_sha: "sha1".to_owned(),
+            branch: "main".to_owned(),
+            ci_run_id: "1".to_owned(),
+            ci_run_attempt: 1,
+            pipeline: Some(".github/workflows/ci.yml".to_owned()),
+            default_branch: Some("main".to_owned()),
+        },
+        at(),
+    )
+    .await
+    .expect("the payload is accepted");
+    assert!(!accepted.duplicate);
+    assert_eq!(accepted.status, ReportStatus::Pending);
+    assert_eq!(row_counts(&db).await, (1, 1, 0));
+    let stored = reports::Entity::find()
+        .one(db.connection())
+        .await
+        .expect("the Report query")
+        .expect("the Report");
+    let repo = repos::Entity::find()
+        .one(db.connection())
+        .await
+        .expect("the Repo query")
+        .expect("the Repo");
+    assert_eq!(i64::from(stored.id), accepted.report_id);
+    assert_eq!(stored.repo_id, repo.id);
+    assert_eq!(stored.project_id, None);
+    assert_eq!(stored.kind, "pipeline");
+    assert_eq!(stored.status, ReportStatus::Pending.as_str());
+    assert_eq!(stored.created_at, at());
+}
+
+#[tokio::test]
 async fn a_report_body_round_trips_through_the_binary_column() {
     // The body is a bytea column, so a report with a NUL byte in it comes back
     // unchanged: a text column would truncate it.
@@ -630,4 +747,108 @@ async fn a_report_body_round_trips_through_the_binary_column() {
         .try_get("", "count")
         .expect("a count");
     assert_eq!(counted, 1);
+}
+
+/// Leaves the Report as a failed processing run would, with a spent budget.
+async fn mark_failed(db: &TestDb, report: &mut reports::Model) {
+    ReportStatus::Failed.as_str().clone_into(&mut report.status);
+    report.error = Some("boom".to_owned());
+    report.processed_at = Some(at());
+    report.retry_count = 3;
+    report
+        .clone()
+        .into_active_model()
+        .reset_all()
+        .update(db.connection())
+        .await
+        .expect("the failed Report");
+}
+
+#[tokio::test]
+#[expect(
+    clippy::panic,
+    reason = "a refusal names what the retry answered instead of the retried row"
+)]
+async fn a_manual_retry_persists_the_transition() {
+    // The db write is the whole row as it was just loaded with the transition
+    // applied, so exactly `reset_for_retry`'s fields change and nothing else.
+    let db = TestDb::new().await.expect("a migrated test database");
+    let project = project(&db).await;
+    let mut stored = seed(&db, with_project(&project, identity())).await;
+    let loaded = stored.clone();
+    mark_failed(&db, &mut stored).await;
+
+    let answer = retry_failed_report(db.connection(), i64::from(stored.id))
+        .await
+        .expect("the retry runs");
+    let RetryAnswer::Retried(retried) = answer else {
+        panic!("the failed Report is retried, got {answer:?}");
+    };
+    assert_eq!(retried.repo, "acme/app");
+    assert_eq!(retried.project.as_deref(), Some("default"));
+    assert_eq!(retried.report.status, ReportStatus::Pending.as_str());
+
+    let reread = reports::Entity::find_by_id(loaded.id)
+        .one(db.connection())
+        .await
+        .expect("the Report query")
+        .expect("the Report");
+    assert_eq!(reread.retry_count, 0);
+    assert_eq!(reread.status, ReportStatus::Pending.as_str());
+    assert_eq!(reread.error, None);
+    assert_eq!(reread.processed_at, None);
+    // Every other column holds what the load read, so the whole row is back to
+    // the seeded one: the full-row write changed nothing outside the transition.
+    assert_eq!(reread, loaded);
+}
+
+#[tokio::test]
+async fn a_retry_and_a_dismiss_refuse_a_report_that_has_not_failed() {
+    // One guard, two refusals: a queued Report is refused as not failed, and an
+    // id that names nothing is refused as not found.
+    let db = TestDb::new().await.expect("a migrated test database");
+    let project = project(&db).await;
+    let stored = seed(&db, with_project(&project, identity())).await;
+
+    let retried = retry_failed_report(db.connection(), i64::from(stored.id))
+        .await
+        .expect("the retry query runs");
+    assert!(matches!(retried, RetryAnswer::NotFailed), "{retried:?}");
+    let dismissed = dismiss_failed_report(db.connection(), i64::from(stored.id))
+        .await
+        .expect("the dismiss query runs");
+    assert_eq!(dismissed, DismissAnswer::NotFailed);
+    assert_eq!(report_ids(&db).await, vec![stored.id]);
+
+    for report_id in [999_999_i64, 0] {
+        let retried = retry_failed_report(db.connection(), report_id)
+            .await
+            .expect("the retry query runs");
+        assert!(matches!(retried, RetryAnswer::NotFound), "{retried:?}");
+        let dismissed = dismiss_failed_report(db.connection(), report_id)
+            .await
+            .expect("the dismiss query runs");
+        assert_eq!(dismissed, DismissAnswer::NotFound);
+    }
+    assert_eq!(report_ids(&db).await, vec![stored.id]);
+}
+
+#[tokio::test]
+async fn a_dismiss_removes_a_failed_report() {
+    let db = TestDb::new().await.expect("a migrated test database");
+    let project = project(&db).await;
+    let mut stored = seed(&db, with_project(&project, identity())).await;
+    mark_failed(&db, &mut stored).await;
+
+    let dismissed = dismiss_failed_report(db.connection(), i64::from(stored.id))
+        .await
+        .expect("the dismiss runs");
+    assert_eq!(dismissed, DismissAnswer::Dismissed);
+    assert_eq!(
+        reports::Entity::find_by_id(stored.id)
+            .one(db.connection())
+            .await
+            .expect("the Report query"),
+        None
+    );
 }

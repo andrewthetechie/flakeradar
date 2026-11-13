@@ -36,6 +36,7 @@ use crate::entities::{pipelines, reports, repos, test_cases, test_executions, te
 use crate::error::DbError;
 use crate::report_intake::{
     complete_report, fail_report, requeue_report, stored_junit_body, stored_pipeline_report,
+    write_report,
 };
 use crate::score_history::{HistoryUpdate, write_today_history};
 use crate::sql::{execution_status, get, placeholder_list, rows, score, value_row};
@@ -241,24 +242,6 @@ pub async fn claim_next_report(
         Some(row) => Ok(Some(reports::Model::from_query_result(&row, "")?)),
         None => Ok(None),
     }
-}
-
-/// Writes a Report that a transition changed, keeping every other column.
-///
-/// SeaORM 2 turns a `Model` into an `ActiveModel` of `Unchanged` values, so an
-/// `UPDATE` built from a mutated model sends no column at all and silently
-/// leaves the row alone. `reset_all` promotes the read values back to `Set`.
-pub(crate) async fn write_report(
-    report: &reports::Model,
-    db: &impl ConnectionTrait,
-) -> Result<(), DbError> {
-    report
-        .clone()
-        .into_active_model()
-        .reset_all()
-        .update(db)
-        .await?;
-    Ok(())
 }
 
 /// Parses a JUnit body and classifies each failing case: the CPU half, run off
