@@ -1518,8 +1518,10 @@ fn compare_openapi_bodies(
 /// A parameter is its place and its name: the recorded `x-api-key` header is
 /// documented beside the query and path parameters, and either document naming an
 /// extra or a missing one is a difference a client would trip over. A `query`
-/// parameter this server adds to the recorded operation is dropped before the
-/// comparison, when `additions` lists it for this `method` and `path`.
+/// parameter this server adds to the recorded operation is dropped from the
+/// answered list before the comparison, when `additions` lists it for this `method`
+/// and `path`; a parameter the recorded operation already took is always compared,
+/// so the list cannot hide one the answer no longer accepts.
 fn compare_operation(
     recorded: &Value,
     answered: &Value,
@@ -1538,8 +1540,7 @@ fn compare_operation(
                     .filter_map(|parameter| {
                         let place = parameter.get("in").and_then(Value::as_str)?;
                         let name = parameter.get("name").and_then(Value::as_str)?;
-                        let listed = place == "query" && additions.query_param(method, path, name);
-                        (!listed).then(|| format!("{place} {name}"))
+                        Some(format!("{place} {name}"))
                     })
                     .collect()
             })
@@ -1548,7 +1549,17 @@ fn compare_operation(
         names.dedup();
         names
     };
-    let (recorded, answered) = (parameters(recorded), parameters(answered));
+    let recorded = parameters(recorded);
+    let added = |name: &str| -> bool {
+        let (place, parameter) = name.split_once(' ').unwrap_or((name, name));
+        place == "query" && additions.query_param(method, path, parameter)
+    };
+    // Only a parameter the recorded operation lacks is an addition: one it already
+    // took stays in the answered list, so its removal is reported.
+    let answered = parameters(answered)
+        .into_iter()
+        .filter(|name| recorded.contains(name) || !added(name))
+        .collect::<Vec<String>>();
     if recorded != answered {
         failures.push(describe(format!(
             "{method} {path} takes {answered:?} where it takes {recorded:?}"
@@ -2363,6 +2374,55 @@ mod tests {
                 &routes(&without_the_delete, &acknowledged)
             ),
             ["s step 1: the openapi path /api/y was not recorded".to_owned()]
+        );
+    }
+
+    #[test]
+    fn a_listed_query_parameter_still_protects_a_recorded_one() {
+        // The list adds a parameter this server accepts; it does not remove one the
+        // record already had. Here the recorded operation takes `acknowledged` and
+        // the answered one dropped it, which is a difference a client trips over.
+        let recorded = json!({
+            "paths": {
+                "/api/tests": {"get": {"parameters": [
+                    {"in": "query", "name": "repo"},
+                    {"in": "query", "name": "acknowledged"}
+                ]}}
+            },
+            "components": {"schemas": {"S": {
+                "properties": {"id": {"type": "integer"}},
+                "required": ["id"]
+            }}}
+        });
+        let answered = json!({
+            "paths": {
+                "/api/tests": {"get": {"parameters": [{"in": "query", "name": "repo"}]}}
+            },
+            "components": {"schemas": {"S": {
+                "properties": {"id": {"type": "integer"}},
+                "required": ["id"]
+            }}}
+        });
+        let listed = routes(&[], &["GET /api/tests acknowledged"]);
+        assert_eq!(
+            openapi_reported(&recorded, &answered, &listed),
+            [
+                "s step 1: get /api/tests takes [\"query repo\"] where it takes \
+                 [\"query acknowledged\", \"query repo\"]"
+                    .to_owned()
+            ]
+        );
+        // The recorded parameter is also compared when nothing is listed.
+        assert_eq!(
+            openapi_reported(&recorded, &answered, &Additions::default()),
+            openapi_reported(&recorded, &answered, &listed),
+            "the same removal, listed or not"
+        );
+        // An answered parameter the record does not have is the addition the list
+        // means, and it stays accepted by the same entry.
+        assert_eq!(
+            openapi_reported(&answered, &recorded, &listed),
+            Vec::<String>::new()
         );
     }
 
