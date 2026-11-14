@@ -10,7 +10,13 @@ import {
 import { breakable } from "../breakable";
 import { StatusMark } from "./StatusMark";
 import { SummaryBadge } from "./SummaryBadge";
-import { FlakinessCell, IssuePill, ProvenCell, QuarantinedPill } from "./resultCells";
+import {
+  FlakinessCell,
+  InfraSuspectPill,
+  IssuePill,
+  ProvenCell,
+  QuarantinedPill,
+} from "./resultCells";
 
 /** While reports are still landing, ask again this often (issue #26). */
 const POLL_MS = 5000;
@@ -62,6 +68,7 @@ function FailuresTable({
                 <td className="px-4 py-2.5 align-top">
                   <div className="font-semibold [overflow-wrap:anywhere]">
                     {f.quarantined && <QuarantinedPill />}
+                    {f.infra_suspect && <InfraSuspectPill />}
                     <button
                       type="button"
                       className="cursor-pointer text-left text-link hover:underline"

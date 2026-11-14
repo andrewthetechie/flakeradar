@@ -21,6 +21,18 @@ export function QuarantinedPill() {
   );
 }
 
+/** Shown next to a test name when most tests in its run failed together (ADR 0013). */
+export function InfraSuspectPill() {
+  return (
+    <span
+      className="mr-1.5 rounded border border-muted px-1 text-[11px] font-normal text-muted"
+      title="Most tests in this run failed together, so it is likely infrastructure. Scoring leaves this run out."
+    >
+      ⚠ infrastructure?
+    </span>
+  );
+}
+
 /** Shown next to a test name when it is failing on the Default branch (issue #29). */
 export function BrokenPill() {
   return (

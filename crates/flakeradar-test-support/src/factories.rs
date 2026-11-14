@@ -414,6 +414,7 @@ pub struct RunBuilder {
     ci_job_id: Option<String>,
     ci_run_attempt: Option<i32>,
     pipeline: Option<String>,
+    infra_suspect: bool,
     created_at: Option<DateTimeWithTimeZone>,
 }
 
@@ -428,6 +429,7 @@ pub fn make_run(project: &projects::Model) -> RunBuilder {
         ci_job_id: None,
         ci_run_attempt: None,
         pipeline: None,
+        infra_suspect: false,
         created_at: None,
     }
 }
@@ -465,6 +467,13 @@ impl RunBuilder {
     #[must_use]
     pub fn ci_run_attempt(mut self, ci_run_attempt: i32) -> Self {
         self.ci_run_attempt = Some(ci_run_attempt);
+        self
+    }
+
+    /// Sets whether the Run is suspected infrastructure (ADR 0013).
+    #[must_use]
+    pub fn infra_suspect(mut self, infra_suspect: bool) -> Self {
+        self.infra_suspect = infra_suspect;
         self
     }
 
@@ -509,6 +518,7 @@ impl RunBuilder {
                 ci_job_id: Set(self.ci_job_id),
                 ci_run_attempt: Set(self.ci_run_attempt),
                 pipeline: Set(self.pipeline),
+                infra_suspect: Set(self.infra_suspect),
                 created_at: Set(self.created_at.unwrap_or_else(now)),
                 ..Default::default()
             },

@@ -1,6 +1,6 @@
 {
   "columns": ["test_runs.infra_suspect"],
-  "fields": [],
+  "fields": ["CiRunTestFailureOut.infra_suspect"],
   "paths": [],
   "query_params": []
 }

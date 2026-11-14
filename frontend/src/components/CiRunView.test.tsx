@@ -13,6 +13,7 @@ function failure(over: Partial<CiRunTestFailure> = {}): CiRunTestFailure {
     name: "test_login",
     run_id: 11,
     ci_job_id: "9.1",
+    infra_suspect: false,
     status: "failed",
     failed_attempts: 1,
     failure_category: "network",
@@ -167,6 +168,19 @@ describe("CiRunView", () => {
     expect(
       await screen.findByRole("link", { name: "#12 (closed as not planned)" }),
     ).toHaveAttribute("href", "https://github.com/a/b/issues/12");
+  });
+
+  it("badges a failure from a suspected-infrastructure run", async () => {
+    stubFetch(() => json(body({ failures: [failure({ infra_suspect: true })] })));
+    render(<Harness />);
+    expect(await screen.findByText("⚠ infrastructure?")).toBeInTheDocument();
+  });
+
+  it("shows no infrastructure badge on an ordinary failure", async () => {
+    stubFetch(() => json(body({ failures: [failure()] })));
+    render(<Harness />);
+    expect(await screen.findByText("test_login")).toBeInTheDocument();
+    expect(screen.queryByText("⚠ infrastructure?")).toBeNull();
   });
 
   it("lists the failing tests and the failed jobs of a complete run", async () => {

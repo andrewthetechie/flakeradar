@@ -3652,6 +3652,13 @@ fn recorded_openapi() -> Value {
         .expect("the openapi golden carries a body")
 }
 
+/// The additions the shipped `additions.json` lists. The served document carries
+/// each listed field, so the served and recorded documents agree modulo that
+/// list, exactly as the replay reads it.
+fn shipped_additions() -> Additions {
+    Additions::load()
+}
+
 #[test]
 fn the_served_openapi_document_keeps_the_recorded_contract() {
     let actual =
@@ -3660,7 +3667,7 @@ fn the_served_openapi_document_keeps_the_recorded_contract() {
         compare_openapi(
             "trailing-slash",
             9,
-            &Additions::default(),
+            &shipped_additions(),
             &recorded_openapi(),
             &actual
         ),
@@ -3677,7 +3684,7 @@ fn a_missing_path_method_parameter_or_field_fails_the_openapi_contract() {
         compare_openapi(
             "trailing-slash",
             9,
-            &Additions::default(),
+            &shipped_additions(),
             &recorded,
             &actual
         ),
@@ -3692,7 +3699,7 @@ fn a_missing_path_method_parameter_or_field_fails_the_openapi_contract() {
     let failures = compare_openapi(
         "trailing-slash",
         9,
-        &Additions::default(),
+        &shipped_additions(),
         &recorded,
         &missing_path,
     );
@@ -3707,7 +3714,7 @@ fn a_missing_path_method_parameter_or_field_fails_the_openapi_contract() {
     let failures = compare_openapi(
         "trailing-slash",
         9,
-        &Additions::default(),
+        &shipped_additions(),
         &recorded,
         &missing_method,
     );
@@ -3722,7 +3729,7 @@ fn a_missing_path_method_parameter_or_field_fails_the_openapi_contract() {
     let failures = compare_openapi(
         "trailing-slash",
         9,
-        &Additions::default(),
+        &shipped_additions(),
         &recorded,
         &missing_parameter,
     );
@@ -3737,7 +3744,7 @@ fn a_missing_path_method_parameter_or_field_fails_the_openapi_contract() {
     let failures = compare_openapi(
         "trailing-slash",
         9,
-        &Additions::default(),
+        &shipped_additions(),
         &recorded,
         &missing_field,
     );
@@ -3750,7 +3757,7 @@ fn a_missing_path_method_parameter_or_field_fails_the_openapi_contract() {
     let failures = compare_openapi(
         "trailing-slash",
         9,
-        &Additions::default(),
+        &shipped_additions(),
         &recorded,
         &renamed_body,
     );
@@ -3767,7 +3774,7 @@ fn openapi_documents() -> (Value, Value) {
         compare_openapi(
             "trailing-slash",
             9,
-            &Additions::default(),
+            &shipped_additions(),
             &recorded,
             &actual
         ),
@@ -3785,7 +3792,7 @@ fn a_retyped_field_fails_the_openapi_contract() {
     let failures = compare_openapi(
         "trailing-slash",
         9,
-        &Additions::default(),
+        &shipped_additions(),
         &recorded,
         &retyped,
     );
@@ -3804,7 +3811,7 @@ fn a_dropped_required_entry_fails_the_openapi_contract() {
     let failures = compare_openapi(
         "trailing-slash",
         9,
-        &Additions::default(),
+        &shipped_additions(),
         &recorded,
         &dropped,
     );
@@ -3823,13 +3830,7 @@ fn a_required_entry_only_the_port_has_fails_the_openapi_contract() {
         .as_array_mut()
         .expect("the schema has a required list")
         .push(json!("runner_name"));
-    let failures = compare_openapi(
-        "trailing-slash",
-        9,
-        &Additions::default(),
-        &recorded,
-        &added,
-    );
+    let failures = compare_openapi("trailing-slash", 9, &shipped_additions(), &recorded, &added);
     assert_eq!(failures.len(), 1, "{failures:?}");
     assert!(
         failures[0]
@@ -3851,7 +3852,7 @@ fn a_field_widened_to_nullable_fails_the_openapi_contract() {
     let failures = compare_openapi(
         "trailing-slash",
         9,
-        &Additions::default(),
+        &shipped_additions(),
         &recorded,
         &widened,
     );
