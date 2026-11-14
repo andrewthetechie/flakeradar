@@ -575,13 +575,14 @@ mod tests {
     //! The error-shape mapping, on messages the parsers really produce.
 
     use flakeradar_core::dto::LocSegment;
+    use flakeradar_core::dto::ValidationIssue;
     use serde_json::Value;
 
     use flakeradar_core::dto::lax_bool;
 
     use super::{
-        INTEGER_TYPES, is_integer_failure, is_json_content_type, json_error_position, kind_for,
-        missing_field, off_thread, path_issue,
+        INTEGER_TYPES, attach_query_input, body_loc, is_integer_failure, is_json_content_type,
+        json_error_position, kind_for, missing_field, off_thread, path_issue,
     };
 
     #[tokio::test]
@@ -710,5 +711,81 @@ mod tests {
                 "{body:?}"
             );
         }
+    }
+
+    #[test]
+    fn an_error_on_a_line_the_body_does_not_have_stops_at_the_body() {
+        // The error may name a line past the body it is read against, so the scan
+        // stops where the body ends instead of running off it.
+        let error = serde_json::from_str::<Value>("{\n\n\n\"number\": }")
+            .expect_err("the fixture is malformed");
+        assert_eq!(error.line(), 4, "{error}");
+        assert_eq!(json_error_position(b"{}", &error), 10, "{error}");
+    }
+
+    #[test]
+    fn a_body_issue_names_the_body_then_the_field() {
+        assert_eq!(
+            body_loc("size"),
+            vec![
+                LocSegment::Field("body".to_owned()),
+                LocSegment::Field("size".to_owned())
+            ]
+        );
+    }
+
+    #[test]
+    fn a_refused_query_value_carries_the_text_the_request_sent() {
+        let mut issue = ValidationIssue {
+            r#type: "value_error".to_owned(),
+            loc: vec![
+                LocSegment::Field("query".to_owned()),
+                LocSegment::Field("size".to_owned()),
+            ],
+            msg: "Input should be a valid integer".to_owned(),
+            input: None,
+            ctx: None,
+        };
+        attach_query_input(&mut issue, &[("size".to_owned(), "seven".to_owned())]);
+        assert_eq!(issue.input, Some(Value::from("seven")));
+    }
+
+    #[test]
+    fn an_issue_without_a_carried_value_names_no_input() {
+        // A field the query held no value for keeps the issue empty, an issue
+        // whose loc ends in a position rather than a field has nothing to name,
+        // and a missing value has no text to report.
+        let mut without_value = ValidationIssue {
+            r#type: "value_error".to_owned(),
+            loc: vec![LocSegment::Field("size".to_owned())],
+            msg: "Input should be a valid integer".to_owned(),
+            input: None,
+            ctx: None,
+        };
+        attach_query_input(&mut without_value, &[("other".to_owned(), "1".to_owned())]);
+        assert_eq!(without_value.input, None);
+
+        let mut without_field = ValidationIssue {
+            r#type: "value_error".to_owned(),
+            loc: vec![LocSegment::Index(0)],
+            msg: "Input should be a valid integer".to_owned(),
+            input: None,
+            ctx: None,
+        };
+        attach_query_input(&mut without_field, &[("size".to_owned(), "1".to_owned())]);
+        assert_eq!(without_field.input, None);
+
+        let mut missing = ValidationIssue {
+            r#type: "missing".to_owned(),
+            loc: vec![
+                LocSegment::Field("query".to_owned()),
+                LocSegment::Field("size".to_owned()),
+            ],
+            msg: "missing field `size`".to_owned(),
+            input: None,
+            ctx: None,
+        };
+        attach_query_input(&mut missing, &[("size".to_owned(), "7".to_owned())]);
+        assert_eq!(missing.input, None);
     }
 }

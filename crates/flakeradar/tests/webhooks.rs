@@ -49,6 +49,7 @@ fn test_change() -> TierChange {
         classname: Some("tests.test_cart".to_owned()),
         pipeline: None,
         failure_category: None,
+        broken: false,
     }
 }
 
@@ -66,6 +67,7 @@ fn job_change() -> TierChange {
         classname: None,
         pipeline: Some("ci".to_owned()),
         failure_category: None,
+        broken: false,
     }
 }
 
