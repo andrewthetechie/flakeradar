@@ -62,6 +62,50 @@ pub fn tier_for(score: Score, threshold: f64) -> Tier {
     }
 }
 
+/// The flaky state a row holds after a Report, as its `flaky_since` instant.
+///
+/// A row with no stored state becomes flaky when its score reaches the Flake
+/// threshold; a row that is already flaky keeps the instant it stores until its
+/// score falls below the Recover threshold. The gap between the two thresholds is
+/// the point: the stored value is what the tiers and the Tier changes are decided
+/// from, so it moves at the crossings and nowhere in between. `now` is the instant
+/// the caller's clock reports, never a clock this function reads.
+///
+/// # Examples
+///
+/// ```
+/// use flakeradar_core::{helpers::next_flaky_since, types::Score};
+///
+/// let score = |value| Score::new(value).expect("a score in 0 to 1");
+/// // A first Report at the Flake threshold starts the state at `now`.
+/// assert_eq!(next_flaky_since(None, score(0.30), 0.30, 0.20, 7), Some(7));
+/// // Between the thresholds the stored instant survives.
+/// assert_eq!(
+///     next_flaky_since(Some(1), score(0.25), 0.30, 0.20, 7),
+///     Some(1)
+/// );
+/// // Below the Recover threshold it clears.
+/// assert_eq!(next_flaky_since(Some(1), score(0.19), 0.30, 0.20, 7), None);
+/// ```
+#[must_use]
+pub fn next_flaky_since<T>(
+    flaky_since: Option<T>,
+    score: Score,
+    flake_threshold: f64,
+    recover_threshold: f64,
+    now: T,
+) -> Option<T> {
+    match flaky_since {
+        None if score.as_f64() >= flake_threshold => Some(now),
+        None => None,
+        // A caller that builds `ProcessingSettings` directly can pass a
+        // recover threshold above the flake threshold; clamping to the
+        // lower of the two keeps a stored state recoverable at all.
+        Some(_) if score.as_f64() < recover_threshold.min(flake_threshold) => None,
+        Some(stored) => Some(stored),
+    }
+}
+
 /// Whether a Test is broken: it failed `broken_streak` times in a row.
 ///
 /// A `broken_streak` of zero disables broken detection.

@@ -70,6 +70,8 @@ pub struct ProcessingSettings {
     pub broken_streak: i64,
     /// The Flakiness score at or above which a Test or Job counts as flaky.
     pub flake_threshold: f64,
+    /// The Flakiness score below which a flaky Test or Job recovers.
+    pub recover_threshold: f64,
     /// How many retries a transient failure may spend.
     pub max_report_retries: i32,
     /// The share of a Run's Tests that must fail for the Run to be suspected
@@ -89,6 +91,7 @@ impl Default for ProcessingSettings {
             score_decay: defaults::SCORE_DECAY,
             broken_streak: defaults::BROKEN_STREAK,
             flake_threshold: defaults::FLAKE_THRESHOLD,
+            recover_threshold: defaults::RECOVER_THRESHOLD,
             max_report_retries: defaults::MAX_REPORT_RETRIES,
             infra_fail_share: defaults::INFRA_FAIL_SHARE,
             infra_min_tests: defaults::INFRA_MIN_TESTS,
@@ -104,6 +107,7 @@ impl fmt::Debug for ProcessingSettings {
             .field("score_decay", &self.score_decay)
             .field("broken_streak", &self.broken_streak)
             .field("flake_threshold", &self.flake_threshold)
+            .field("recover_threshold", &self.recover_threshold)
             .field("max_report_retries", &self.max_report_retries)
             .field("infra_fail_share", &self.infra_fail_share)
             .field("infra_min_tests", &self.infra_min_tests)

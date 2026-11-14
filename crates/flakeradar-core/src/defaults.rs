@@ -45,6 +45,16 @@ pub const BROKEN_STREAK: i64 = 5;
 /// change here moves Tests between tiers and announces the move.
 pub const FLAKE_THRESHOLD: f64 = 0.30;
 
+/// The Flakiness score below which a Test or Job that counts as flaky recovers.
+///
+/// It sits below [`FLAKE_THRESHOLD`] so a score near the boundary stops crossing
+/// back and forth with each Report: between the two thresholds a Test keeps the
+/// state it already has, which is what keeps a Tier change — and the Notification
+/// it announces — from firing on every flip. Raising it towards the Flake threshold
+/// makes the band narrow and the announcements frequent again; at or above it, the
+/// state can never be held. `FLAKERADAR_RECOVER_THRESHOLD` sets it.
+pub const RECOVER_THRESHOLD: f64 = 0.20;
+
 /// The share of a Run's Tests that must fail for the Run to count as suspected
 /// infrastructure.
 ///
