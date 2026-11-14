@@ -244,6 +244,35 @@ fn stored_score(value: f64) -> Score {
     Score::new(value).expect("a stored score is a score")
 }
 
+/// A JUnit Report from owned `(name, status)` pairs.
+fn junit_with(cases: &[(String, &'static str)]) -> Vec<u8> {
+    let borrowed: Vec<(&str, &str)> = cases
+        .iter()
+        .map(|(name, status)| (name.as_str(), *status))
+        .collect();
+    make_junit(&borrowed)
+}
+
+/// The Report the infrastructure rule reads: Tests `t0..t{total - 1}`, the first
+/// `failing` of them with `status` and the rest `passed`.
+fn cases(total: usize, failing: usize, status: &'static str) -> Vec<(String, &'static str)> {
+    (0..total)
+        .map(|index| {
+            let status = if index < failing { status } else { "passed" };
+            (format!("t{index}"), status)
+        })
+        .collect()
+}
+
+/// The Run a processed Report became.
+async fn run(db: &TestDb, id: i32) -> test_runs::Model {
+    test_runs::Entity::find_by_id(id)
+        .one(db.connection())
+        .await
+        .expect("the Run")
+        .expect("the Run exists")
+}
+
 #[tokio::test]
 async fn an_empty_queue_returns_none() {
     let db = TestDb::new().await.expect("a test database");
@@ -2332,4 +2361,214 @@ async fn a_job_whose_execution_is_a_duplicate_keeps_its_row() {
         (counts["failed"].as_i64(), counts["passed"].as_i64()),
         (Some(1), Some(0))
     );
+}
+
+#[tokio::test]
+async fn a_mass_failure_run_is_suspected_infrastructure() {
+    // 21 of 25 distinct Tests failed on their last attempt: 0.84, past the share.
+    let db = TestDb::new().await.expect("a test database");
+    let project = project(&db, "acme/app", "backend").await;
+    queue(&db, &project, &junit_with(&cases(25, 21, "failed"))).await;
+    let outcome = drain(&db, &settings()).await;
+    let run = run(&db, outcome[0].run_id.expect("a Run")).await;
+    assert!(run.infra_suspect, "most of a large Run failed");
+}
+
+#[tokio::test]
+async fn a_run_at_exactly_the_fail_share_is_suspected_infrastructure() {
+    // The share is `at least`, so 20 of 25 (0.8) marks the Run too.
+    let db = TestDb::new().await.expect("a test database");
+    let project = project(&db, "acme/app", "backend").await;
+    queue(&db, &project, &junit_with(&cases(25, 20, "failed"))).await;
+    let outcome = drain(&db, &settings()).await;
+    let run = run(&db, outcome[0].run_id.expect("a Run")).await;
+    assert!(run.infra_suspect, "0.8 reaches the share");
+}
+
+#[tokio::test]
+async fn a_run_below_the_fail_share_on_the_last_attempt_is_not_suspected() {
+    // 19 of 25 failed, and a 20th Test failed then passed: only the last attempt
+    // counts, so the share stays under 0.8.
+    let db = TestDb::new().await.expect("a test database");
+    let project = project(&db, "acme/app", "backend").await;
+    let mut report = cases(25, 19, "failed");
+    // `t19` failed on an earlier attempt and passed on its last one.
+    report.insert(19, ("t19".to_owned(), "failed"));
+    queue(&db, &project, &junit_with(&report)).await;
+    let outcome = drain(&db, &settings()).await;
+    let run = run(&db, outcome[0].run_id.expect("a Run")).await;
+    assert!(
+        !run.infra_suspect,
+        "a Test that recovered on retry is not a failing Test"
+    );
+    // The recovered attempt is a stored, counted Execution like any other: the
+    // rule reads the last attempt, it does not drop rows.
+    assert_eq!(
+        outcome[0].counts,
+        Some(serde_json::json!({
+            "passed": 6, "failed": 20, "error": 0, "skipped": 0, "retried": 1
+        }))
+    );
+    assert_eq!(
+        test_executions::Entity::find()
+            .count(db.connection())
+            .await
+            .expect("a count"),
+        26
+    );
+}
+
+#[tokio::test]
+async fn a_small_all_failing_run_is_not_suspected_infrastructure() {
+    // Every Test failed, but 19 is under the floor: a small suite has no shared
+    // cause to assume.
+    let db = TestDb::new().await.expect("a test database");
+    let project = project(&db, "acme/app", "backend").await;
+    queue(&db, &project, &junit_with(&cases(19, 19, "failed"))).await;
+    let outcome = drain(&db, &settings()).await;
+    let run = run(&db, outcome[0].run_id.expect("a Run")).await;
+    assert!(
+        !run.infra_suspect,
+        "the Run is under the distinct-Test floor"
+    );
+}
+
+#[tokio::test]
+async fn a_run_whose_tests_error_is_suspected_infrastructure() {
+    // `error` fails a Test as much as `failed` does.
+    let db = TestDb::new().await.expect("a test database");
+    let project = project(&db, "acme/app", "backend").await;
+    queue(&db, &project, &junit_with(&cases(25, 21, "error"))).await;
+    let outcome = drain(&db, &settings()).await;
+    let run = run(&db, outcome[0].run_id.expect("a Run")).await;
+    assert!(run.infra_suspect, "errored Tests count toward the share");
+}
+
+#[tokio::test]
+async fn a_suspected_infrastructure_run_never_scores_a_proven_flake() {
+    // `t0` passed and then failed on the same commit, but the failure came in the
+    // mass-failure Run: its Executions stay stored and listed, and leave the
+    // scoring window, so nothing is proven.
+    let db = TestDb::new().await.expect("a test database");
+    let project = project(&db, "acme/app", "backend").await;
+    queue_with(&db, &project, &make_junit(&[("t0", "passed")]), |builder| {
+        builder.commit_sha("a")
+    })
+    .await;
+    queue_with(
+        &db,
+        &project,
+        &junit_with(&cases(25, 21, "failed")),
+        |builder| builder.commit_sha("a"),
+    )
+    .await;
+    let outcomes = drain(&db, &settings()).await;
+    let second = outcomes[1].clone();
+    assert!(
+        run(&db, second.run_id.expect("a Run")).await.infra_suspect,
+        "Report 2 is the suspected Run"
+    );
+    let counts = second.counts.expect("counts");
+    assert_eq!(counts["failed"], 21, "the failures are still counted");
+
+    let row = tests(&db)
+        .await
+        .into_iter()
+        .find(|row| row.name == "t0")
+        .expect("t0");
+    assert_eq!((row.confirmed_flake_count, row.fail_streak), (0, 0));
+    assert_eq!(row.flakiness_score, 0.0);
+    assert_eq!(
+        test_executions::Entity::find()
+            .filter(test_executions::Column::TestCaseId.eq(row.id))
+            .count(db.connection())
+            .await
+            .expect("a count"),
+        2,
+        "both of t0's Executions are stored"
+    );
+}
+
+#[tokio::test]
+async fn the_same_flip_in_another_project_still_proves_the_flake() {
+    // The control, in a second Project of the same Repo: the same first Report,
+    // but its second Report holds only `t0`, so that Run is not suspected and the
+    // flip still proves the flake.
+    let db = TestDb::new().await.expect("a test database");
+    let mass = project(&db, "acme/app", "backend").await;
+    let control = project(&db, "acme/app", "frontend").await;
+    queue_with(&db, &mass, &make_junit(&[("t0", "passed")]), |builder| {
+        builder.commit_sha("a")
+    })
+    .await;
+    queue_with(
+        &db,
+        &mass,
+        &junit_with(&cases(25, 21, "failed")),
+        |builder| builder.commit_sha("a"),
+    )
+    .await;
+    queue_with(&db, &control, &make_junit(&[("t0", "passed")]), |builder| {
+        builder.commit_sha("a")
+    })
+    .await;
+    queue_with(&db, &control, &make_junit(&[("t0", "failed")]), |builder| {
+        builder.commit_sha("a")
+    })
+    .await;
+    let outcomes = drain(&db, &settings()).await;
+    assert_eq!(outcomes.len(), 4);
+    let row = tests(&db)
+        .await
+        .into_iter()
+        .find(|row| row.name == "t0" && row.project_id == control.id)
+        .expect("the control's t0");
+    assert_eq!(row.confirmed_flake_count, 1);
+    assert!(
+        row.flakiness_score >= 0.6,
+        "the Proven flake floor: {}",
+        row.flakiness_score
+    );
+}
+
+#[tokio::test]
+async fn a_suspected_infrastructure_run_never_consumes_a_window_slot() {
+    // The exclusion runs inside the `LATERAL`, before the `LIMIT`: with a window of
+    // two, the mass-failure Run must not push the older pair out of the window, so
+    // the same-SHA flip is still proven.
+    let db = TestDb::new().await.expect("a test database");
+    let project = project(&db, "acme/app", "backend").await;
+    let settings = settings_with(|settings| settings.score_window = 2);
+    queue_with(&db, &project, &make_junit(&[("t0", "failed")]), |builder| {
+        builder.commit_sha("a")
+    })
+    .await;
+    queue_with(&db, &project, &make_junit(&[("t0", "passed")]), |builder| {
+        builder.commit_sha("a")
+    })
+    .await;
+    queue_with(
+        &db,
+        &project,
+        &junit_with(&cases(25, 21, "failed")),
+        |builder| builder.commit_sha("b"),
+    )
+    .await;
+    let outcomes = drain(&db, &settings).await;
+    assert!(
+        run(&db, outcomes[2].run_id.expect("a Run"))
+            .await
+            .infra_suspect,
+        "the newest Report is the suspected Run"
+    );
+    let row = tests(&db)
+        .await
+        .into_iter()
+        .find(|row| row.name == "t0")
+        .expect("t0");
+    assert_eq!(
+        row.confirmed_flake_count, 1,
+        "the flip is still in the window"
+    );
+    assert!(row.flakiness_score >= 0.6);
 }

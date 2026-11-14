@@ -467,6 +467,9 @@ async fn process_junit_report(
     let run_id = store_run(db, report, project_id, now).await?;
     let built = build_executions(db, parsed, project_id, run_id, now).await?;
     store_executions(db, built.executions, &built.latest, now).await?;
+    // Most of a large Run failing together is the runner's problem, not a hundred
+    // flaky Tests, so the Run is flagged before the rescore that reads the flag.
+    mark_infra_suspect(db, run_id, &built.latest, settings).await?;
 
     // The ids are ordered by id, not by where a Test first appeared in the
     // report, because they set `touched_test_ids` and the order the Tier changes
@@ -623,6 +626,53 @@ async fn store_executions(
             .await?;
     }
     update_latest_tests(db, latest, now).await?;
+    Ok(())
+}
+
+/// Flags a Run whose Tests mostly failed as suspected infrastructure.
+///
+/// Both limits come from [`ProcessingSettings`]: the Run must hold at least
+/// `infra_min_tests` distinct Tests, and at least `infra_fail_share` of them must
+/// have failed or errored on their last attempt, so a Test that recovered on retry
+/// does not count against it. The flag alone changes nothing the caller can see:
+/// `test_window_ids_sql` leaves the Run's Executions out of the Test scoring
+/// window, which is what keeps the flip score, the Proven flake count and the
+/// streaks off a bad runner. The Executions stay stored, counted and
+/// listed. A Run under the floor is never judged, because a small suite that fails
+/// entirely most likely has a broken Test.
+async fn mark_infra_suspect(
+    db: &impl ConnectionTrait,
+    run_id: i32,
+    latest: &[LatestTest],
+    settings: &ProcessingSettings,
+) -> Result<(), ProcessError> {
+    // The floor is checked first, so a Run under it never reaches the division.
+    let distinct = i64::try_from(latest.len()).unwrap_or(i64::MAX);
+    if distinct < settings.infra_min_tests {
+        return Ok(());
+    }
+    let mut failing = 0_i64;
+    for row in latest {
+        if execution_status(&row.last_status)?.is_failing() {
+            failing += 1;
+        }
+    }
+    // A Run holds at most one Test per Report row, far below 2^52, so both casts
+    // are exact.
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "Execution counts, far below 2^52"
+    )]
+    let share = failing as f64 / distinct as f64;
+    if share < settings.infra_fail_share {
+        return Ok(());
+    }
+    db.execute_raw(Statement::from_sql_and_values(
+        DbBackend::Postgres,
+        "UPDATE test_runs SET infra_suspect = true WHERE id = $1",
+        [Value::from(run_id)],
+    ))
+    .await?;
     Ok(())
 }
 
