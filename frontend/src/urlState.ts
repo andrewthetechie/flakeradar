@@ -6,7 +6,14 @@
 //   ?repo=owner/name&view=jobs&pipeline=.github/workflows/nightly.yml&issue=none
 //   ?repo=owner/name&new=7
 import { useCallback, useEffect, useRef, useState } from "react";
-import { FAILURE_CATEGORIES, type FailureCategory, type IssueFilter, type SortKey } from "./api";
+import {
+  FAILURE_CATEGORIES,
+  type FailureCategory,
+  type IssueFilter,
+  type JobQuery,
+  type SortKey,
+  type TestQuery,
+} from "./api";
 
 export type ViewKind = "tests" | "jobs" | "ci-run";
 
@@ -23,7 +30,7 @@ export interface ViewState {
   quarantined: boolean;
   /** Tests view: list only Tests broken on the Default branch (stable ones). */
   broken: boolean;
-  /** Tests view: filter by Issue link, or null for any. */
+  /** Both leaderboard views: filter by Issue link, or null for any. */
   issue: IssueFilter | null;
   /** Jobs view: exact Pipeline name to list, or null for every pipeline. */
   pipeline: string | null;
@@ -67,6 +74,17 @@ function positiveInt(raw: string | null): number | null {
   return n >= 1 ? n : null;
 }
 
+/** One endpoint's spelling of a list filter: the wire parameter name and the
+ *  value to send for it, or `null` to leave the param out. Spelled exactly as
+ *  `api.ts` writes the query today. */
+export interface WireParam<Q> {
+  /** Wire parameter name, which differs from the URL param for some filters
+   *  (`stable` goes out as `include_stable`, `cause` as `category`). */
+  param: string;
+  /** Reads the endpoint's query object, so the mapping has no state of its own. */
+  value: (q: Q) => string | null;
+}
+
 /** One URL-backed leaderboard list filter, declared once. `parseViewState` and
  *  `serializeViewState` derive from this table (and `applyPatch`'s page-reset
  *  rule), so adding the next filter is one entry here plus its control. */
@@ -82,6 +100,18 @@ export interface ListFilterDescriptor<F extends keyof ViewState = keyof ViewStat
   /** Changing this filter relists the leaderboard and resets the page.
    *  `applyPatch` resets the page when a filter with this flag changes. */
   relists: boolean;
+  /** Leaderboard views that offer this filter, i.e. render its control and send
+   *  its wire param. The ci-run view shows no leaderboard controls, so it never
+   *  appears here. The split is fixed by the backend contract (`reads.rs`:
+   *  TestsQuery vs JobsQuery). URL serialization stays view-independent:
+   *  `serializeViewState` emits every entry regardless of the current view. */
+  views: readonly ViewKind[];
+  /** Per-endpoint wire mapping. Absent for repo and project, whose params
+   *  `scopeParams` (`api.ts`) owns. */
+  wire?: {
+    tests?: WireParam<TestQuery>;
+    jobs?: WireParam<JobQuery>;
+  };
 }
 
 /** Identity helper so each entry's parse/serialize is checked against its own
@@ -132,66 +162,130 @@ const enumFilter = <V extends string>(param: string, values: readonly V[]) => ({
  *  ci_run, attempt, test, job, page) are emitted between q and sort: serializeViewState
  *  splits the table at the sort descriptor. */
 export const LIST_FILTERS: ListFilterDescriptor[] = [
-  listFilter({ param: "repo", field: "repo", relists: true, ...optionalString("repo") }),
+  // repo and project carry no `wire`: scopeParams (api.ts) writes those params.
+  listFilter({
+    param: "repo",
+    field: "repo",
+    relists: true,
+    views: ["tests", "jobs"],
+    ...optionalString("repo"),
+  }),
   listFilter({
     // Serialize emits this only under a repo; see serializeViewState.
     param: "project",
     field: "project",
     relists: true,
+    views: ["tests"],
     ...optionalString("project"),
   }),
   listFilter({
     param: "q",
     field: "q",
     relists: true,
+    views: ["tests", "jobs"],
     parse: (raw) => raw ?? "",
     serialize: (p, v) => {
       if (v) p.set("q", v);
+    },
+    wire: {
+      tests: { param: "q", value: (q) => q.q || null },
+      jobs: { param: "q", value: (q) => q.q || null },
     },
   }),
   listFilter({
     param: "sort",
     field: "sort",
     relists: true,
+    views: ["tests", "jobs"],
     parse: (raw) => oneOf(SORTS, raw) ?? "score",
     serialize: (p, v) => {
       if (v !== "score") p.set("sort", v);
     },
+    // Both endpoints always take a sort, as `params.set("sort", …)` does today.
+    wire: {
+      tests: { param: "sort", value: (q) => q.sort },
+      jobs: { param: "sort", value: (q) => q.sort },
+    },
   }),
-  listFilter({ param: "stable", field: "showStable", relists: true, ...flag("stable") }),
+  listFilter({
+    param: "stable",
+    field: "showStable",
+    relists: true,
+    views: ["tests", "jobs"],
+    ...flag("stable"),
+    wire: {
+      tests: { param: "include_stable", value: (q) => (q.showStable ? "true" : null) },
+      jobs: { param: "include_stable", value: (q) => (q.showStable ? "true" : null) },
+    },
+  }),
   listFilter({
     param: "cause",
     field: "cause",
     relists: true,
+    views: ["tests"],
     ...enumFilter("cause", FAILURE_CATEGORIES),
+    wire: { tests: { param: "category", value: (q) => q.category } },
   }),
-  // Unscoped by view, like cause: these params survive a view switch.
+  // Tests-only on the wire, like cause; the URL params still survive a view switch.
   listFilter({
     param: "quarantined",
     field: "quarantined",
     relists: true,
+    views: ["tests"],
     ...flag("quarantined"),
+    wire: { tests: { param: "quarantined", value: (q) => (q.quarantined ? "true" : null) } },
   }),
-  listFilter({ param: "broken", field: "broken", relists: true, ...flag("broken") }),
+  listFilter({
+    param: "broken",
+    field: "broken",
+    relists: true,
+    views: ["tests"],
+    ...flag("broken"),
+    wire: { tests: { param: "broken", value: (q) => (q.broken ? "true" : null) } },
+  }),
   listFilter({
     param: "issue",
     field: "issue",
     relists: true,
+    views: ["tests", "jobs"],
     ...enumFilter("issue", ISSUE_FILTERS),
+    wire: {
+      tests: {
+        param: "has_issue",
+        value: (q) => (q.issue == null ? null : String(q.issue === "linked")),
+      },
+      jobs: {
+        param: "has_issue",
+        value: (q) => (q.issue == null ? null : String(q.issue === "linked")),
+      },
+    },
   }),
   listFilter({
     param: "pipeline",
     field: "pipeline",
     relists: true,
+    views: ["jobs"],
     ...optionalString("pipeline"),
+    wire: { jobs: { param: "pipeline", value: (q) => q.pipeline } },
   }),
   listFilter({
     param: "new",
     field: "newDays",
     relists: true,
+    views: ["tests", "jobs"],
     parse: (raw) => positiveInt(raw),
     serialize: (p, v) => {
       if (v != null) p.set("new", String(v));
+    },
+    wire: {
+      tests: {
+        param: "new_within_days",
+        value: (q) => (q.newWithinDays == null ? null : String(q.newWithinDays)),
+      },
+      jobs: {
+        param: "new_within_days",
+        value: (q) => (q.newWithinDays == null ? null : String(q.newWithinDays)),
+      },
     },
   }),
 ];
