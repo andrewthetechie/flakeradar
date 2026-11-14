@@ -50,6 +50,10 @@ _Avoid_: Upload, payload
 The processed result of one Report: the Executions for one Repo and Project at a specific commit SHA.
 _Avoid_: Build, Job (that is a CI job)
 
+**Suspected infrastructure**:
+A Run whose mass failure is left out of scoring: it holds at least `INFRA_MIN_TESTS` distinct Tests, and at least `INFRA_FAIL_SHARE` of them failed or errored on their last attempt. Its Executions stay stored, counted and listed, but feed neither the Flakiness score, nor the Proven flake count, nor either streak. Each Run is judged alone, never a whole CI run across its Runs.
+_Avoid_: Flaky run, bad run, infra failure (that names the guessed cause, not the mark)
+
 **Execution**:
 One try of a Test by the test runner, and its outcome (passed, failed, error or skipped), within one Run. The outcome is what that try did: a retry that passed is passed, even when a runner setting reports the Test as failed because it needed a retry. When the test runner retries a Test inside the same Run, each retry is its own Execution, numbered from 0 in the order they ran. A CI re-run is not a retry: it produces a new Run.
 _Avoid_: Result

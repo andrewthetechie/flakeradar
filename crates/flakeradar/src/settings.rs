@@ -159,6 +159,19 @@ fn fraction(field: &str, value: f64) -> Result<(), SettingsError> {
     Err(out_of_range(field, value, "a number from 0 to 1"))
 }
 
+/// Refuses a share outside 0 (exclusive) to 1, which no "how much of the whole"
+/// setting can be.
+///
+/// [`fraction`] accepts 0, and that is right for a weight a score may lose
+/// entirely; a share of 0 would put every Run above it, so the whole suite would
+/// read as infrastructure on the first failure.
+fn share(field: &str, value: f64) -> Result<(), SettingsError> {
+    if value.is_finite() && value > 0.0 && value <= 1.0 {
+        return Ok(());
+    }
+    Err(out_of_range(field, value, "a number above 0 and at most 1"))
+}
+
 /// What a field holding a wait accepts, in words.
 const WAIT_EXPECTED: &str = "a number of seconds more than 0";
 
@@ -387,6 +400,18 @@ pub struct Settings {
     pub public_url: String,
     /// The Flakiness score at or above which a Test or Job counts as flaky.
     pub flake_threshold: f64,
+    /// The share of a Run's Tests that must fail for the Run to be suspected
+    /// infrastructure.
+    ///
+    /// Its shipped value is [`defaults::INFRA_FAIL_SHARE`], which says why the share
+    /// starts at four fifths and what a change costs.
+    pub infra_fail_share: f64,
+    /// The fewest distinct Tests a Run must hold to be judged for suspected
+    /// infrastructure at all.
+    ///
+    /// Its shipped value is [`defaults::INFRA_MIN_TESTS`], whose doc says why a
+    /// smaller Run's failures are its own.
+    pub infra_min_tests: i64,
     /// The comma-separated Webhook URLs Notifications are posted to.
     pub webhook_urls: Secret,
     /// The body format every Webhook URL receives.
@@ -443,6 +468,8 @@ impl Default for Settings {
             github_close_fixed: false,
             public_url: String::new(),
             flake_threshold: defaults::FLAKE_THRESHOLD,
+            infra_fail_share: defaults::INFRA_FAIL_SHARE,
+            infra_min_tests: defaults::INFRA_MIN_TESTS,
             webhook_urls: Secret::new(""),
             webhook_format: WebhookFormat::Json,
             cors_origins: "http://localhost:5173".to_owned(),
@@ -495,6 +522,8 @@ impl Settings {
             score_decay: self.score_decay,
             broken_streak: self.broken_streak,
             flake_threshold: self.flake_threshold,
+            infra_fail_share: self.infra_fail_share,
+            infra_min_tests: self.infra_min_tests,
             max_report_retries: self.max_report_retries,
             clock,
         }
@@ -561,6 +590,11 @@ impl Settings {
         );
         set_if_some(&mut settings.public_url, raw.text("PUBLIC_URL"));
         set_if_some(&mut settings.flake_threshold, raw.float("FLAKE_THRESHOLD")?);
+        set_if_some(
+            &mut settings.infra_fail_share,
+            raw.float("INFRA_FAIL_SHARE")?,
+        );
+        set_if_some(&mut settings.infra_min_tests, raw.whole("INFRA_MIN_TESTS")?);
         set_if_some(
             &mut settings.webhook_urls,
             raw.text("WEBHOOK_URLS").map(Secret::new),
@@ -656,6 +690,8 @@ impl Settings {
         at_least("GITHUB_SYNC_BATCH", &self.github_sync_batch, &0)?;
         at_least("GITHUB_FIXED_STREAK", &self.github_fixed_streak, &0)?;
         fraction("FLAKE_THRESHOLD", self.flake_threshold)?;
+        share("INFRA_FAIL_SHARE", self.infra_fail_share)?;
+        at_least("INFRA_MIN_TESTS", &self.infra_min_tests, &1)?;
         wait_of(
             "DB_COMMAND_TIMEOUT_SECONDS",
             self.db_command_timeout_seconds,
@@ -1024,6 +1060,8 @@ mod tests {
         assert!(!settings.github_close_fixed);
         assert_eq!(settings.public_url, "");
         assert_eq!(settings.flake_threshold, 0.30);
+        assert_eq!(settings.infra_fail_share, 0.8);
+        assert_eq!(settings.infra_min_tests, 20);
         assert_eq!(settings.webhook_urls.expose(), "");
         assert_eq!(
             settings.webhook_format,
@@ -1063,6 +1101,8 @@ mod tests {
             ("FLAKERADAR_GITHUB_CLOSE_FIXED", "true"),
             ("FLAKERADAR_PUBLIC_URL", "https://flake.example.com"),
             ("FLAKERADAR_FLAKE_THRESHOLD", "0.5"),
+            ("FLAKERADAR_INFRA_FAIL_SHARE", "0.9"),
+            ("FLAKERADAR_INFRA_MIN_TESTS", "30"),
             ("FLAKERADAR_WEBHOOK_URLS", "https://hooks.example.com/a"),
             ("FLAKERADAR_WEBHOOK_FORMAT", "slack"),
             (
@@ -1101,6 +1141,8 @@ mod tests {
         assert!(settings.github_close_fixed);
         assert_eq!(settings.public_url, "https://flake.example.com");
         assert_eq!(settings.flake_threshold, 0.5);
+        assert_eq!(settings.infra_fail_share, 0.9);
+        assert_eq!(settings.infra_min_tests, 30);
         assert_eq!(
             settings.webhook_urls.expose(),
             "https://hooks.example.com/a"
@@ -1505,6 +1547,10 @@ mod tests {
             ("FLAKERADAR_EXECUTION_RETENTION_DAYS", "-30"),
             ("FLAKERADAR_SCORE_HISTORY_RETENTION_DAYS", "-1"),
             ("FLAKERADAR_PRUNE_BATCH", "0"),
+            ("FLAKERADAR_INFRA_FAIL_SHARE", "0"),
+            ("FLAKERADAR_INFRA_FAIL_SHARE", "1.5"),
+            ("FLAKERADAR_INFRA_FAIL_SHARE", "NaN"),
+            ("FLAKERADAR_INFRA_MIN_TESTS", "0"),
         ];
         for (variable, value) in cases {
             let error = Settings::from_map(&map(&[(variable, value)]))
@@ -1610,6 +1656,14 @@ mod tests {
         assert_eq!(
             settings.processing(Arc::clone(&clock)).max_report_retries,
             processing.max_report_retries
+        );
+        assert_eq!(
+            settings.processing(Arc::clone(&clock)).infra_fail_share,
+            processing.infra_fail_share
+        );
+        assert_eq!(
+            settings.processing(Arc::clone(&clock)).infra_min_tests,
+            processing.infra_min_tests
         );
         assert_eq!(settings.retention(), retention);
     }

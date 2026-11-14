@@ -47,7 +47,9 @@ pub(crate) fn int_array(ids: &[i32]) -> Value {
 /// The statement is the one measured in `docs/perf/20-test-rescore-explain.md`:
 /// each arm stops at the window on `ix_exec_case_id`, so its cost follows the
 /// window rather than the Test's retained history (a Repo whose Default branch
-/// rarely runs CI is the accepted worst case). Binds: `$1` ids, `$2` window,
+/// rarely runs CI is the accepted worst case). Both arms leave out the Executions
+/// of a Run flagged `infra_suspect`, and they do it before the `LIMIT`, so a mass
+/// failure neither scores nor takes up a window slot. Binds: `$1` ids, `$2` window,
 /// `$3` ids, `$4` window.
 #[must_use]
 pub(crate) fn test_window_ids_sql() -> &'static str {
@@ -57,6 +59,9 @@ pub(crate) fn test_window_ids_sql() -> &'static str {
          JOIN LATERAL ( \
            SELECT e.id FROM test_executions e \
             WHERE e.test_case_id = u.test_case_id \
+              AND NOT EXISTS ( \
+                SELECT 1 FROM test_runs s \
+                 WHERE s.id = e.test_run_id AND s.infra_suspect) \
             ORDER BY e.id DESC LIMIT $2::INTEGER \
          ) AS l ON true \
        UNION \
@@ -68,6 +73,7 @@ pub(crate) fn test_window_ids_sql() -> &'static str {
              JOIN projects p ON p.id = r.project_id \
              JOIN repos ro ON ro.id = p.repo_id \
             WHERE e.test_case_id = u.test_case_id \
+              AND NOT r.infra_suspect \
               AND (ro.default_branch IS NULL OR r.branch = ro.default_branch) \
             ORDER BY e.id DESC LIMIT $4::INTEGER \
          ) AS l ON true \
@@ -75,7 +81,9 @@ pub(crate) fn test_window_ids_sql() -> &'static str {
 }
 
 /// The newest `window` Test-execution ids per Test, any branch: the first arm of
-/// [`test_window_ids_sql`] alone. Binds `$1` ids and `$2` window.
+/// [`test_window_ids_sql`] without its suspected-infrastructure exclusion, because
+/// the filing gate counts a suspected Run's failures like anyone else's. Binds
+/// `$1` ids and `$2` window.
 #[must_use]
 pub(crate) fn test_window_ids_overall_sql() -> &'static str {
     "SELECT u.test_case_id, l.id \

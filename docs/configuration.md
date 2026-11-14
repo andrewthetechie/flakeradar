@@ -26,6 +26,8 @@ The table gives each name without the `FLAKERADAR_` prefix.
 | `FLAKE_THRESHOLD` | `0.30` | The score at which a test or job is flaky. It also sets the tier split in the `/metrics` gauges. |
 | `SCORE_WINDOW` / `SCORE_DECAY` | `50` / `0.85` | The number of executions to score, and the weight for recent executions. |
 | `BROKEN_STREAK` | `5` | The number of consecutive failures on the default branch at which a test is [broken](concepts.md#broken-tests). `0` disables broken detection. |
+| `INFRA_FAIL_SHARE` | `0.8` | The share of a run's tests that must fail or error on their last attempt for the run to be [suspected infrastructure](concepts.md#suspected-infrastructure) and left out of scoring. A number above `0` and at most `1`. |
+| `INFRA_MIN_TESTS` | `20` | The fewest distinct tests a run must hold for FlakeRadar to judge it at all. A smaller run is always scored, because a suite of 3 that fails entirely has a broken test, not a bad runner. |
 | `GITHUB_TOKEN` | empty (disabled) | The token for [GitHub issue automation](github-issues.md). FlakeRadar also uses it to check linked issues, so it needs read access to the issues of those repos. |
 | `GITHUB_ISSUE_LABEL` | `flakeradar` | The label on each issue that FlakeRadar opens. |
 | `GITHUB_ISSUE_MIN_SCORE` / `GITHUB_ISSUE_MIN_PROVEN_FLAKES` / `GITHUB_ISSUE_MIN_FAILURES` | `0.30` / `0` / `0` | The [filing gate](github-issues.md#filing-gate). |

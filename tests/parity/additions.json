@@ -1,5 +1,5 @@
 {
-  "columns": [],
+  "columns": ["test_runs.infra_suspect"],
   "fields": [],
   "paths": [],
   "query_params": []
