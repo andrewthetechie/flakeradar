@@ -3,7 +3,7 @@
 // one view loads — and the bundle it answers with — is checkable here directly.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError, latestWins } from "./api";
-import { DEFAULT_VIEW } from "./urlState";
+import { DEFAULT_VIEW, LIST_FILTERS } from "./urlState";
 import {
   loadCiRunBundle,
   loadJobHistory,
@@ -125,6 +125,87 @@ describe("loadJobsBundle", () => {
       jobPage: jobPageFixture,
       queue: queueFixture,
     });
+  });
+});
+
+/**
+ * The loaders take their filter list from the declaration, so per-view reach is a
+ * property of the table: a filter mapped onto one endpoint reaches that endpoint's
+ * URL and never the other's. Stated once over `LIST_FILTERS`, as urlState.test.ts
+ * does for parse, serialize and the page reset.
+ */
+describe("per-view filter reach", () => {
+  // A non-default sample per wire-mapped filter, in the ViewState fields a load
+  // reads. `issue: "none"` rather than "linked" so the has_issue transform has to
+  // have run: has_issue=false is a value no other filter produces.
+  const SAMPLES: Partial<ViewFilters> = {
+    q: "login",
+    sort: "last_seen",
+    showStable: true,
+    cause: "timing",
+    quarantined: true,
+    broken: true,
+    issue: "none",
+    pipeline: "ci.yml",
+    newDays: 7,
+  };
+
+  // The whole filter part of each endpoint's query for that sample — `name=value`
+  // pairs, order-free — hand-written from the backend contract (`reads.rs`:
+  // TestsQuery vs JobsQuery) rather than read back off the table, so a descriptor
+  // whose `views` and `wire` disagree with the endpoints the loaders hit fails
+  // here instead of agreeing with itself. `sort` is the one filter both endpoints
+  // always take, so it is present even in the cases about another filter; every
+  // other filter at its default sends nothing.
+  const WIRE: Record<string, { tests: string[]; jobs: string[] }> = {
+    q: { tests: ["q=login", "sort=score"], jobs: ["q=login", "sort=score"] },
+    sort: { tests: ["sort=last_seen"], jobs: ["sort=last_seen"] },
+    stable: {
+      tests: ["include_stable=true", "sort=score"],
+      jobs: ["include_stable=true", "sort=score"],
+    },
+    cause: { tests: ["category=timing", "sort=score"], jobs: ["sort=score"] },
+    quarantined: { tests: ["quarantined=true", "sort=score"], jobs: ["sort=score"] },
+    broken: { tests: ["broken=true", "sort=score"], jobs: ["sort=score"] },
+    issue: { tests: ["has_issue=false", "sort=score"], jobs: ["has_issue=false", "sort=score"] },
+    pipeline: { tests: ["sort=score"], jobs: ["pipeline=ci.yml", "sort=score"] },
+    new: {
+      tests: ["new_within_days=7", "sort=score"],
+      jobs: ["new_within_days=7", "sort=score"],
+    },
+  };
+
+  // The entries the loaders derive a query from. repo and project are the
+  // exception — scope params, with no wire mapping and no case here; the exact
+  // URLs pinned above already prove project reaches /api/tests and not /api/jobs.
+  const mapped = LIST_FILTERS.filter((d) => d.wire);
+
+  it("maps exactly the filters this test enumerates", () => {
+    expect(mapped.map((d) => d.param).sort()).toEqual(Object.keys(WIRE).sort());
+  });
+
+  /** The filter part of one endpoint's query: everything but the hand-written
+   *  scope and paging params, as sorted `name=value` pairs. */
+  const filterParams = (urls: readonly string[], path: string): string[] => {
+    const url = urls.find((candidate) => candidate.startsWith(`${path}?`));
+    if (url == null) throw new Error(`no request to ${path}`);
+    const params = new URLSearchParams(url.slice(path.length + 1));
+    return [...params]
+      .filter(([name]) => !["repo", "project", "page", "page_size"].includes(name))
+      .map(([name, value]) => `${name}=${value}`)
+      .sort();
+  };
+
+  it.each(mapped)("$param reaches the endpoints that offer it", async (d) => {
+    const urls = stubFetch();
+    const guard = latestWins();
+    const over = { [d.field]: SAMPLES[d.field as keyof ViewFilters] } as Partial<ViewFilters>;
+
+    await unwrap(loadTestsBundle(filters(over), guard, guard.start()));
+    await unwrap(loadJobsBundle(filters({ ...over, view: "jobs" }), guard, guard.start()));
+
+    expect(filterParams(urls, "/api/tests")).toEqual(WIRE[d.param].tests);
+    expect(filterParams(urls, "/api/jobs")).toEqual(WIRE[d.param].jobs);
   });
 });
 
