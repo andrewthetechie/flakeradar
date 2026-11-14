@@ -6,14 +6,10 @@
 //   ?repo=owner/name&view=jobs&pipeline=.github/workflows/nightly.yml&issue=none
 //   ?repo=owner/name&new=7
 import { useCallback, useEffect, useRef, useState } from "react";
-import {
-  FAILURE_CATEGORIES,
-  type FailureCategory,
-  type IssueFilter,
-  type JobQuery,
-  type SortKey,
-  type TestQuery,
-} from "./api";
+// Type-only: `api.ts` imports LIST_FILTERS from here at runtime, so this module
+// must not import a runtime value back from it (a cycle whose table init would
+// read an uninitialized binding). See FAILURE_CATEGORIES below.
+import type { IssueFilter, JobQuery, SortKey, TestQuery } from "./api";
 
 export type ViewKind = "tests" | "jobs" | "ci-run";
 
@@ -67,6 +63,19 @@ export const DEFAULT_VIEW: ViewState = {
 
 const SORTS: readonly SortKey[] = ["score", "last_seen", "proven"];
 const ISSUE_FILTERS: readonly IssueFilter[] = ["linked", "none"];
+
+/** The backend's failure taxonomy (mirrors backend/app/schemas.py). Lives here
+ *  rather than in `api.ts` because the `cause` descriptor reads it at table
+ *  init, and `api.ts` imports that table at runtime. `api.ts` re-exports both
+ *  names, so importers keep spelling them as before. */
+export type FailureCategory = "network" | "environment" | "timing" | "assertion" | "other";
+export const FAILURE_CATEGORIES: readonly FailureCategory[] = [
+  "network",
+  "environment",
+  "timing",
+  "assertion",
+  "other",
+];
 
 function positiveInt(raw: string | null): number | null {
   if (raw == null || !/^\d+$/.test(raw)) return null;

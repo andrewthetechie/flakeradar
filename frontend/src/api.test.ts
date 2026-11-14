@@ -201,6 +201,51 @@ describe("GET request builders", () => {
     ]);
   });
 
+  // The derived block emits in LIST_FILTERS order (q, sort, stable, cause,
+  // quarantined, broken, issue, new), so a set q precedes sort here.
+  it("fetchTests maps every filter through the table, in table order", async () => {
+    const calls = stubFetch();
+    await fetchTests({
+      repo: "a/b",
+      project: null,
+      page: 1,
+      pageSize: 50,
+      sort: "proven",
+      showStable: true,
+      category: "timing",
+      quarantined: true,
+      broken: true,
+      issue: "linked",
+      newWithinDays: 7,
+      q: "login",
+    });
+    expect(calls.map((c) => c.path)).toEqual([
+      "/api/tests?repo=a%2Fb&page=1&page_size=50&q=login&sort=proven&include_stable=true" +
+        "&category=timing&quarantined=true&broken=true&has_issue=true&new_within_days=7",
+    ]);
+  });
+
+  it("fetchTests sends issue=none as has_issue=false", async () => {
+    const calls = stubFetch();
+    await fetchTests({
+      repo: "a/b",
+      project: null,
+      page: 1,
+      pageSize: 50,
+      sort: "score",
+      showStable: false,
+      category: null,
+      quarantined: false,
+      broken: false,
+      issue: "none",
+      newWithinDays: null,
+      q: "",
+    });
+    expect(calls.map((c) => c.path)).toEqual([
+      "/api/tests?repo=a%2Fb&page=1&page_size=50&sort=score&has_issue=false",
+    ]);
+  });
+
   it("fetchHistory asks for the fixed history window of one test", async () => {
     const calls = stubFetch();
     await fetchHistory(7);
@@ -222,6 +267,43 @@ describe("GET request builders", () => {
     });
     expect(calls.map((c) => c.path)).toEqual([
       "/api/jobs?repo=a%2Fb&page=1&page_size=50&sort=score&include_stable=true",
+    ]);
+  });
+
+  it("fetchJobs maps every Jobs filter through the table, in table order", async () => {
+    const calls = stubFetch();
+    await fetchJobs({
+      repo: "a/b",
+      page: 1,
+      pageSize: 50,
+      sort: "score",
+      showStable: true,
+      pipeline: "ci.yml",
+      issue: "none",
+      newWithinDays: 7,
+      q: "login",
+    });
+    expect(calls.map((c) => c.path)).toEqual([
+      "/api/jobs?repo=a%2Fb&page=1&page_size=50&q=login&sort=score&include_stable=true" +
+        "&has_issue=false&pipeline=ci.yml&new_within_days=7",
+    ]);
+  });
+
+  it("fetchJobs sends issue=linked as has_issue=true", async () => {
+    const calls = stubFetch();
+    await fetchJobs({
+      repo: "a/b",
+      page: 1,
+      pageSize: 50,
+      sort: "proven",
+      showStable: false,
+      pipeline: null,
+      issue: "linked",
+      newWithinDays: null,
+      q: "",
+    });
+    expect(calls.map((c) => c.path)).toEqual([
+      "/api/jobs?repo=a%2Fb&page=1&page_size=50&sort=proven&has_issue=true",
     ]);
   });
 
