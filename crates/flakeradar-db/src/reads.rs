@@ -2040,7 +2040,7 @@ async fn ci_run_test_failures(
     }
     values.push(Value::from(limit));
     let page_sql = "SELECT t.*, t.id AS test_id, p.name AS project_name, \
-            tr.id AS run_id, tr.ci_job_id AS ci_job_id \
+            tr.id AS run_id, tr.ci_job_id AS ci_job_id, tr.infra_suspect AS infra_suspect \
        FROM ( \
          SELECT e.test_case_id, e.test_run_id \
            FROM test_executions e \
@@ -2140,6 +2140,7 @@ fn ci_run_failure_item(
         name: get(row, "name")?,
         run_id: id(run_id),
         ci_job_id: get(row, "ci_job_id")?,
+        infra_suspect: get(row, "infra_suspect")?,
         status: last.status,
         failed_attempts: i64::try_from(failing.len()).unwrap_or(i64::MAX),
         failure_category: last_failing.failure_category,

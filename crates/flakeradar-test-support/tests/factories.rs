@@ -197,6 +197,7 @@ async fn a_run_has_the_documented_defaults_and_stores_what_it_is_given() {
     assert_eq!(run.ci_job_id, None);
     assert_eq!(run.ci_run_attempt, None);
     assert_eq!(run.pipeline, None);
+    assert!(!run.infra_suspect);
 
     let created_at = Utc
         .with_ymd_and_hms(2026, 1, 2, 3, 4, 5)
@@ -210,6 +211,7 @@ async fn a_run_has_the_documented_defaults_and_stores_what_it_is_given() {
         .ci_job_id("42")
         .ci_run_attempt(2)
         .pipeline(".github/workflows/ci.yml")
+        .infra_suspect(true)
         .created_at(created_at)
         .build(db.connection())
         .await
@@ -220,6 +222,7 @@ async fn a_run_has_the_documented_defaults_and_stores_what_it_is_given() {
     assert_eq!(built.ci_job_id.as_deref(), Some("42"));
     assert_eq!(built.ci_run_attempt, Some(2));
     assert_eq!(built.pipeline.as_deref(), Some(".github/workflows/ci.yml"));
+    assert!(built.infra_suspect);
     assert_eq!(built.created_at, created_at);
 }
 

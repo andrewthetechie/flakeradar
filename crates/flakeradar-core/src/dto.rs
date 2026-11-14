@@ -1939,6 +1939,11 @@ pub struct ReportCountsOut {
 }
 
 /// One failing Test in a CI run attempt.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "a flat wire DTO: broken, quarantined, infra_suspect and \
+              github_issue_closed are four independent answers, and the JSON shape is the contract"
+)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct CiRunTestFailureOut {
     /// The Test's id.
@@ -1955,6 +1960,8 @@ pub struct CiRunTestFailureOut {
     pub run_id: i64,
     /// The CI provider's Job id.
     pub ci_job_id: Option<String>,
+    /// Whether the Run this failure came from is suspected infrastructure, and so left out of scoring (ADR 0013).
+    pub infra_suspect: bool,
     /// The Test's newest status in this Run.
     pub status: ExecutionStatus,
     /// How many failing Executions this Run had.

@@ -343,6 +343,7 @@ async fn a_failure_entry_carries_every_field() {
             "name": "t1",
             "run_id": run.id,
             "ci_job_id": "J1",
+            "infra_suspect": false,
             "status": "error",
             "failed_attempts": 1,
             "failure_category": "network",
@@ -387,6 +388,46 @@ async fn a_failure_entry_marks_a_broken_test() {
         .json();
     assert_eq!(body["failures"][0]["fail_streak"], 5);
     assert_eq!(body["failures"][0]["broken"], true);
+}
+
+#[tokio::test]
+async fn a_failure_entry_carries_the_runs_infra_suspect_flag() {
+    let db = TestDb::new().await.expect("a test database");
+    let project = make_project()
+        .repo("acme/app")
+        .project("backend")
+        .create(&db)
+        .await;
+    let t1 = make_test_case(&project).name("t1").create(&db).await;
+    let t2 = make_test_case(&project).name("t2").create(&db).await;
+    let suspect = make_run(&project)
+        .ci_run_id("100")
+        .ci_run_attempt(1)
+        .infra_suspect(true)
+        .create(&db)
+        .await;
+    let plain = make_run(&project)
+        .ci_run_id("100")
+        .ci_run_attempt(1)
+        .create(&db)
+        .await;
+    make_execution(&t1, &suspect)
+        .status("failed")
+        .create(&db)
+        .await;
+    make_execution(&t2, &plain)
+        .status("failed")
+        .create(&db)
+        .await;
+
+    // Entries order by project, suite, classname and name, so t1 comes first.
+    let body = get(&app(&db, &[]), &url("100", "acme/app", ""))
+        .await
+        .json();
+    assert_eq!(body["failures"][0]["name"], "t1");
+    assert_eq!(body["failures"][0]["infra_suspect"], true);
+    assert_eq!(body["failures"][1]["name"], "t2");
+    assert_eq!(body["failures"][1]["infra_suspect"], false);
 }
 
 #[tokio::test]

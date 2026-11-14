@@ -212,10 +212,10 @@ mod form {
         );
     }
 
-    /// The fixture as it ships: the added column and three empty lists, and
+    /// The fixture as it ships: the added column and field, two empty lists, and
     /// nothing to report.
     #[test]
-    fn the_shipped_fixture_holds_the_added_column_and_reports_nothing() {
+    fn the_shipped_fixture_holds_the_added_column_and_field_and_reports_nothing() {
         let path = root().join("additions.json");
         let text = std::fs::read_to_string(&path)
             .unwrap_or_else(|error| panic!("reading {}: {error}", path.display()));
@@ -225,7 +225,7 @@ mod form {
             document,
             serde_json::json!({
                 "columns": ["test_runs.infra_suspect"],
-                "fields": [],
+                "fields": ["CiRunTestFailureOut.infra_suspect"],
                 "paths": [],
                 "query_params": []
             }),
