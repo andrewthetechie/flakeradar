@@ -212,7 +212,7 @@ mod form {
         );
     }
 
-    /// The fixture as it ships: the added column and field, two empty lists, and
+    /// The fixture as it ships: the added columns and field, two empty lists, and
     /// nothing to report.
     #[test]
     fn the_shipped_fixture_holds_the_added_column_and_field_and_reports_nothing() {
@@ -227,7 +227,11 @@ mod form {
                 "columns": [
                     "test_runs.infra_suspect",
                     "test_cases.flaky_since",
-                    "jobs.flaky_since"
+                    "jobs.flaky_since",
+                    "test_cases.acknowledged_until",
+                    "test_cases.acknowledge_reason",
+                    "jobs.acknowledged_until",
+                    "jobs.acknowledge_reason"
                 ],
                 "fields": ["CiRunTestFailureOut.infra_suspect"],
                 "paths": [],

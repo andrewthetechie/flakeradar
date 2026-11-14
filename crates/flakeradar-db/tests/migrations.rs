@@ -112,7 +112,12 @@ async fn a_second_migration_run_migrates_nothing() {
         .expect("a second run finds nothing to do");
     assert_eq!(
         applied_versions(db.connection()).await,
-        ["0001_baseline", "0002_infra_suspect", "0003_flaky_since"]
+        [
+            "0001_baseline",
+            "0002_infra_suspect",
+            "0003_flaky_since",
+            "0004_acknowledge"
+        ]
     );
 }
 
@@ -144,6 +149,50 @@ async fn the_added_infra_suspect_column_is_not_null_with_a_false_default() {
         ("boolean".to_owned(), "NO".to_owned(), Some("false")),
         "test_runs.infra_suspect is boolean, NOT NULL, and defaults to false"
     );
+}
+
+/// The data type and nullability `public.<table>.<column>` records, or a panic
+/// naming the missing column.
+async fn column_shape(db: &impl ConnectionTrait, table: &str, column: &str) -> (String, String) {
+    let statement = Statement::from_sql_and_values(
+        DatabaseBackend::Postgres,
+        "SELECT data_type, is_nullable FROM information_schema.columns \
+         WHERE table_schema = 'public' AND table_name = $1 AND column_name = $2",
+        [table.into(), column.into()],
+    );
+    let row = db
+        .query_one_raw(statement)
+        .await
+        .expect("information_schema is readable")
+        .expect("the migrated schema holds the column");
+    (
+        row.try_get::<String>("", "data_type").expect("a data type"),
+        row.try_get::<String>("", "is_nullable")
+            .expect("a nullability"),
+    )
+}
+
+/// The columns `0004_acknowledge` adds, as the applied schema records them: both
+/// nullable, with the timestamp and text types the migration asks for.
+#[tokio::test]
+async fn the_added_acknowledge_columns_are_nullable() {
+    let db = TestDb::new().await.expect("a migrated test database");
+    for (table, column, data_type) in [
+        (
+            "test_cases",
+            "acknowledged_until",
+            "timestamp with time zone",
+        ),
+        ("test_cases", "acknowledge_reason", "text"),
+        ("jobs", "acknowledged_until", "timestamp with time zone"),
+        ("jobs", "acknowledge_reason", "text"),
+    ] {
+        assert_eq!(
+            column_shape(db.connection(), table, column).await,
+            (data_type.to_owned(), "YES".to_owned()),
+            "{table}.{column} is {data_type} and nullable"
+        );
+    }
 }
 
 /// A migration set with two entries after the baseline, one depending on the other.
@@ -188,22 +237,27 @@ fn the_migrator_lists_the_baseline_and_the_added_migration_by_name() {
     let migrations = Migrator::migrations();
     assert_eq!(
         migrations.len(),
-        3,
+        4,
         "the shipped set holds the baseline and every migration after it"
     );
     assert_eq!(
-        migrations.first().expect("a set with three entries").name(),
+        migrations.first().expect("a set with four entries").name(),
         "0001_baseline",
         "the recorded name is unchanged, so an existing install still matches"
     );
     assert_eq!(
-        migrations.get(1).expect("a set with three entries").name(),
+        migrations.get(1).expect("a set with four entries").name(),
         "0002_infra_suspect",
         "the added migration is recorded under its own name"
     );
     assert_eq!(
-        migrations.get(2).expect("a set with three entries").name(),
+        migrations.get(2).expect("a set with four entries").name(),
         "0003_flaky_since",
+        "the added migration is recorded under its own name"
+    );
+    assert_eq!(
+        migrations.get(3).expect("a set with four entries").name(),
+        "0004_acknowledge",
         "the added migration is recorded under its own name"
     );
 }

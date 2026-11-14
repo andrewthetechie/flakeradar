@@ -25,6 +25,9 @@ pub struct Model {
     pub github_issue_closed: bool,
     pub github_issue_fixed_noted_at: Option<DateTimeWithTimeZone>,
     pub flaky_since: Option<DateTimeWithTimeZone>,
+    pub acknowledged_until: Option<DateTimeWithTimeZone>,
+    #[sea_orm(column_type = "Text", nullable)]
+    pub acknowledge_reason: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
