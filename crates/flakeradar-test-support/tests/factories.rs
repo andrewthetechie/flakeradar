@@ -15,8 +15,8 @@ use std::fmt::Write as _;
 
 use chrono::{TimeZone as _, Utc};
 use flakeradar_test_support::{
-    TestDb, make_execution, make_job, make_job_execution, make_job_score, make_pipeline,
-    make_project, make_report, make_run, make_test_case, make_test_score,
+    FIXTURE_INSTANT, TestDb, make_execution, make_job, make_job_execution, make_job_score,
+    make_pipeline, make_project, make_report, make_run, make_test_case, make_test_score,
 };
 use sea_orm::{DatabaseConnection, EntityTrait};
 use sha1::{Digest as _, Sha1};
@@ -538,6 +538,91 @@ async fn a_test_and_a_job_store_the_flakiness_score_they_are_given() {
             .flakiness_score,
         0.0
     );
+}
+
+#[tokio::test]
+async fn flaky_since_follows_the_backfill_rule_unless_a_setter_overrides_it() {
+    let db = TestDb::new().await.expect("a migrated test database");
+    let project = make_project()
+        .build(db.connection())
+        .await
+        .expect("a Project");
+    let instant = FIXTURE_INSTANT.fixed_offset();
+    let other = Utc
+        .with_ymd_and_hms(2026, 1, 2, 3, 4, 5)
+        .single()
+        .expect("a fixed time")
+        .fixed_offset();
+
+    // At or above the Flake threshold the migration backfill stamps now(), so a
+    // builder that was never given an instant stores the fixture instant.
+    let flaky = make_test_case(&project)
+        .name("t_flaky_state")
+        .flakiness_score(0.5)
+        .build(db.connection())
+        .await
+        .expect("a Test");
+    assert_eq!(flaky.flaky_since, Some(instant));
+
+    // Below it the backfill leaves NULL, with and without an explicit None.
+    let suspect = make_test_case(&project)
+        .name("t_suspect")
+        .flakiness_score(0.2)
+        .build(db.connection())
+        .await
+        .expect("a Test");
+    assert_eq!(suspect.flaky_since, None);
+    let forced_null = make_test_case(&project)
+        .name("t_forced")
+        .flakiness_score(0.2)
+        .flaky_since(None)
+        .build(db.connection())
+        .await
+        .expect("a Test");
+    assert_eq!(forced_null.flaky_since, None);
+
+    // The setter wins over the derived default in both directions.
+    let cleared = make_test_case(&project)
+        .name("t_cleared")
+        .flakiness_score(0.5)
+        .flaky_since(None)
+        .build(db.connection())
+        .await
+        .expect("a Test");
+    assert_eq!(cleared.flaky_since, None);
+    let stamped = make_test_case(&project)
+        .name("t_stamped")
+        .flakiness_score(0.2)
+        .flaky_since(Some(other))
+        .build(db.connection())
+        .await
+        .expect("a Test");
+    assert_eq!(stamped.flaky_since, Some(other));
+
+    let pipeline = make_pipeline()
+        .build(db.connection())
+        .await
+        .expect("a Pipeline");
+    let flaky_job = make_job(&pipeline)
+        .name("j_flaky_state")
+        .flakiness_score(0.3)
+        .build(db.connection())
+        .await
+        .expect("a Job");
+    assert_eq!(flaky_job.flaky_since, Some(instant));
+    let stable_job = make_job(&pipeline)
+        .name("j_stable")
+        .build(db.connection())
+        .await
+        .expect("a Job");
+    assert_eq!(stable_job.flaky_since, None);
+    let stamped_job = make_job(&pipeline)
+        .name("j_stamped")
+        .flaky_since(Some(other))
+        .build(db.connection())
+        .await
+        .expect("a Job");
+    assert_eq!(stamped_job.flaky_since, Some(other));
 }
 
 #[tokio::test]

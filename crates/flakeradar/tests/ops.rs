@@ -381,7 +381,7 @@ fn tier_counts(scores: &[f64], threshold: f64) -> BTreeMap<String, usize> {
     let mut counts = BTreeMap::new();
     for score in scores {
         let score = Score::new(*score).expect("the test states a score");
-        let tier = flakeradar_core::helpers::tier_for(score, threshold)
+        let tier = flakeradar_core::helpers::tier_for(score, score.as_f64() >= threshold)
             .as_str()
             .to_owned();
         *counts.entry(tier).or_insert(0) += 1;

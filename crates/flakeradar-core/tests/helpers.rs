@@ -11,8 +11,8 @@ use flakeradar_core::model::{Tier, Trend};
 use flakeradar_core::types::Score;
 use flakeradar_core::{
     helpers::LocationRef, helpers::body_digest, helpers::escape_like, helpers::is_broken,
-    helpers::issue_url, helpers::permalink, helpers::repo_path, helpers::tier_for,
-    helpers::trend_for,
+    helpers::issue_url, helpers::next_flaky_since, helpers::permalink, helpers::repo_path,
+    helpers::tier_for, helpers::trend_for,
 };
 
 /// The score a test states as a literal.
@@ -22,9 +22,33 @@ fn score(value: f64) -> Score {
 
 #[test]
 fn tier_thresholds_are_inclusive_at_the_top() {
-    assert_eq!(tier_for(score(0.3), 0.3), Tier::Flaky);
-    assert_eq!(tier_for(score(f64::MIN_POSITIVE), 0.3), Tier::Suspect);
-    assert_eq!(tier_for(Score::ZERO, 0.3), Tier::Stable);
+    assert_eq!(tier_for(score(0.25), true), Tier::Flaky);
+    assert_eq!(tier_for(score(0.30), false), Tier::Suspect);
+    assert_eq!(tier_for(Score::ZERO, false), Tier::Stable);
+}
+
+#[test]
+fn flaky_state_crosses_at_either_threshold_and_never_above_flake() {
+    // `T = i32` stands for the stored instant; only the crossings are under test.
+    assert_eq!(next_flaky_since(None, score(0.30), 0.30, 0.20, 7), Some(7));
+    assert_eq!(next_flaky_since(None, score(0.29), 0.30, 0.20, 7), None);
+    assert_eq!(
+        next_flaky_since(Some(1), score(0.25), 0.30, 0.20, 7),
+        Some(1)
+    );
+    assert_eq!(
+        next_flaky_since(Some(1), score(0.20), 0.30, 0.20, 7),
+        Some(1)
+    );
+    assert_eq!(next_flaky_since(Some(1), score(0.19), 0.30, 0.20, 7), None);
+    // A recover threshold above the flake threshold — which a caller that builds
+    // its settings directly can state — still lets the state clear at the lower
+    // of the two, and holds above it.
+    assert_eq!(
+        next_flaky_since(Some(1), score(0.10), 0.05, 0.20, 7),
+        Some(1)
+    );
+    assert_eq!(next_flaky_since(Some(1), score(0.04), 0.05, 0.20, 7), None);
 }
 
 #[test]

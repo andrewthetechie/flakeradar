@@ -354,6 +354,47 @@ impl Raw<'_> {
     }
 }
 
+/// Reads the `GITHUB_*` variables into `settings`, in field order.
+///
+/// [`Settings::from_map`] reads one variable per field in the order the struct
+/// lists them; the eight GitHub fields are grouped here so the list it holds
+/// stays one setting per line and a new field has one obvious place to land.
+fn read_github(settings: &mut Settings, raw: &Raw<'_>) -> Result<(), SettingsError> {
+    set_if_some(
+        &mut settings.github_token,
+        raw.text("GITHUB_TOKEN").map(Secret::new),
+    );
+    set_if_some(
+        &mut settings.github_issue_label,
+        raw.text("GITHUB_ISSUE_LABEL"),
+    );
+    set_if_some(
+        &mut settings.github_issue_min_score,
+        raw.float("GITHUB_ISSUE_MIN_SCORE")?,
+    );
+    set_if_some(
+        &mut settings.github_issue_min_proven_flakes,
+        raw.whole("GITHUB_ISSUE_MIN_PROVEN_FLAKES")?,
+    );
+    set_if_some(
+        &mut settings.github_issue_min_failures,
+        raw.whole("GITHUB_ISSUE_MIN_FAILURES")?,
+    );
+    set_if_some(
+        &mut settings.github_sync_batch,
+        raw.whole("GITHUB_SYNC_BATCH")?,
+    );
+    set_if_some(
+        &mut settings.github_fixed_streak,
+        raw.whole("GITHUB_FIXED_STREAK")?,
+    );
+    set_if_some(
+        &mut settings.github_close_fixed,
+        raw.boolean("GITHUB_CLOSE_FIXED")?,
+    );
+    Ok(())
+}
+
 /// Everything the server is configured with.
 ///
 /// Each field is one `FLAKERADAR_*` variable, named after it in upper case. The
@@ -400,6 +441,12 @@ pub struct Settings {
     pub public_url: String,
     /// The Flakiness score at or above which a Test or Job counts as flaky.
     pub flake_threshold: f64,
+    /// The Flakiness score below which a Test or Job that is flaky recovers.
+    ///
+    /// Its shipped value is [`defaults::RECOVER_THRESHOLD`], which says why it sits
+    /// below the Flake threshold: a score that only oscillates around the Flake
+    /// threshold leaves the state alone until it falls this far.
+    pub recover_threshold: f64,
     /// The share of a Run's Tests that must fail for the Run to be suspected
     /// infrastructure.
     ///
@@ -468,6 +515,7 @@ impl Default for Settings {
             github_close_fixed: false,
             public_url: String::new(),
             flake_threshold: defaults::FLAKE_THRESHOLD,
+            recover_threshold: defaults::RECOVER_THRESHOLD,
             infra_fail_share: defaults::INFRA_FAIL_SHARE,
             infra_min_tests: defaults::INFRA_MIN_TESTS,
             webhook_urls: Secret::new(""),
@@ -522,6 +570,7 @@ impl Settings {
             score_decay: self.score_decay,
             broken_streak: self.broken_streak,
             flake_threshold: self.flake_threshold,
+            recover_threshold: self.recover_threshold,
             infra_fail_share: self.infra_fail_share,
             infra_min_tests: self.infra_min_tests,
             max_report_retries: self.max_report_retries,
@@ -556,40 +605,13 @@ impl Settings {
         set_if_some(&mut settings.score_window, raw.whole("SCORE_WINDOW")?);
         set_if_some(&mut settings.score_decay, raw.float("SCORE_DECAY")?);
         set_if_some(&mut settings.broken_streak, raw.whole("BROKEN_STREAK")?);
-        set_if_some(
-            &mut settings.github_token,
-            raw.text("GITHUB_TOKEN").map(Secret::new),
-        );
-        set_if_some(
-            &mut settings.github_issue_label,
-            raw.text("GITHUB_ISSUE_LABEL"),
-        );
-        set_if_some(
-            &mut settings.github_issue_min_score,
-            raw.float("GITHUB_ISSUE_MIN_SCORE")?,
-        );
-        set_if_some(
-            &mut settings.github_issue_min_proven_flakes,
-            raw.whole("GITHUB_ISSUE_MIN_PROVEN_FLAKES")?,
-        );
-        set_if_some(
-            &mut settings.github_issue_min_failures,
-            raw.whole("GITHUB_ISSUE_MIN_FAILURES")?,
-        );
-        set_if_some(
-            &mut settings.github_sync_batch,
-            raw.whole("GITHUB_SYNC_BATCH")?,
-        );
-        set_if_some(
-            &mut settings.github_fixed_streak,
-            raw.whole("GITHUB_FIXED_STREAK")?,
-        );
-        set_if_some(
-            &mut settings.github_close_fixed,
-            raw.boolean("GITHUB_CLOSE_FIXED")?,
-        );
+        read_github(&mut settings, &raw)?;
         set_if_some(&mut settings.public_url, raw.text("PUBLIC_URL"));
         set_if_some(&mut settings.flake_threshold, raw.float("FLAKE_THRESHOLD")?);
+        set_if_some(
+            &mut settings.recover_threshold,
+            raw.float("RECOVER_THRESHOLD")?,
+        );
         set_if_some(
             &mut settings.infra_fail_share,
             raw.float("INFRA_FAIL_SHARE")?,
@@ -690,6 +712,17 @@ impl Settings {
         at_least("GITHUB_SYNC_BATCH", &self.github_sync_batch, &0)?;
         at_least("GITHUB_FIXED_STREAK", &self.github_fixed_streak, &0)?;
         fraction("FLAKE_THRESHOLD", self.flake_threshold)?;
+        fraction("RECOVER_THRESHOLD", self.recover_threshold)?;
+        // The Recover threshold is the floor of a band that starts at the Flake
+        // threshold, so a value above it describes no band at all: a row would
+        // never leave the flaky state it just entered.
+        if self.recover_threshold > self.flake_threshold {
+            return Err(out_of_range(
+                "RECOVER_THRESHOLD",
+                self.recover_threshold,
+                &format!("a number from 0 to {}", self.flake_threshold),
+            ));
+        }
         share("INFRA_FAIL_SHARE", self.infra_fail_share)?;
         at_least("INFRA_MIN_TESTS", &self.infra_min_tests, &1)?;
         wait_of(
@@ -1060,6 +1093,7 @@ mod tests {
         assert!(!settings.github_close_fixed);
         assert_eq!(settings.public_url, "");
         assert_eq!(settings.flake_threshold, 0.30);
+        assert_eq!(settings.recover_threshold, 0.20);
         assert_eq!(settings.infra_fail_share, 0.8);
         assert_eq!(settings.infra_min_tests, 20);
         assert_eq!(settings.webhook_urls.expose(), "");
@@ -1101,6 +1135,7 @@ mod tests {
             ("FLAKERADAR_GITHUB_CLOSE_FIXED", "true"),
             ("FLAKERADAR_PUBLIC_URL", "https://flake.example.com"),
             ("FLAKERADAR_FLAKE_THRESHOLD", "0.5"),
+            ("FLAKERADAR_RECOVER_THRESHOLD", "0.1"),
             ("FLAKERADAR_INFRA_FAIL_SHARE", "0.9"),
             ("FLAKERADAR_INFRA_MIN_TESTS", "30"),
             ("FLAKERADAR_WEBHOOK_URLS", "https://hooks.example.com/a"),
@@ -1141,6 +1176,7 @@ mod tests {
         assert!(settings.github_close_fixed);
         assert_eq!(settings.public_url, "https://flake.example.com");
         assert_eq!(settings.flake_threshold, 0.5);
+        assert_eq!(settings.recover_threshold, 0.1);
         assert_eq!(settings.infra_fail_share, 0.9);
         assert_eq!(settings.infra_min_tests, 30);
         assert_eq!(
@@ -1527,6 +1563,8 @@ mod tests {
             ("FLAKERADAR_SCORE_DECAY", "inf"),
             ("FLAKERADAR_FLAKE_THRESHOLD", "-3"),
             ("FLAKERADAR_FLAKE_THRESHOLD", "NaN"),
+            ("FLAKERADAR_RECOVER_THRESHOLD", "0.5"),
+            ("FLAKERADAR_RECOVER_THRESHOLD", "-1"),
             ("FLAKERADAR_GITHUB_ISSUE_MIN_SCORE", "2"),
             ("FLAKERADAR_SCORE_WINDOW", "-1"),
             ("FLAKERADAR_SCORE_WINDOW", "0"),
@@ -1648,6 +1686,10 @@ mod tests {
         assert_eq!(
             settings.processing(Arc::clone(&clock)).flake_threshold,
             processing.flake_threshold
+        );
+        assert_eq!(
+            settings.processing(Arc::clone(&clock)).recover_threshold,
+            processing.recover_threshold
         );
         assert_eq!(
             settings.reads(Arc::clone(&clock)).flake_threshold,

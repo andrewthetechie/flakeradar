@@ -502,11 +502,13 @@ pub async fn list_repos(db: &impl ConnectionTrait) -> Result<Vec<RepoOut>, DbErr
 /// Reads one Test row into its response shape.
 pub(crate) fn test_out(
     row: &QueryResult,
-    threshold: f64,
     broken_streak: i64,
     trend: Option<Trend>,
 ) -> Result<TestOut, DbError> {
     let score = score(get(row, "flakiness_score")?, "flakiness_score")?;
+    // The tier reads the row's stored flaky state, so a score that drifted back
+    // under the Flake threshold still lists as flaky until the state clears.
+    let flaky = optional_timestamp(row, "flaky_since")?.is_some();
     let repo: String = get(row, "repo_name")?;
     let issue_number: Option<i32> = get(row, "github_issue_number")?;
     let issue_number = issue_number.map(id);
@@ -523,7 +525,7 @@ pub(crate) fn test_out(
         file: get(row, "file")?,
         line: get::<Option<i32>>(row, "line")?.map(id),
         flakiness_score: score,
-        tier: tier_for(score, threshold),
+        tier: tier_for(score, flaky),
         confirmed_flake_count: i64::from(get::<i32>(row, "confirmed_flake_count")?),
         failure_category: stored_category(
             get::<Option<String>>(row, "failure_category")?.as_deref(),
@@ -545,12 +547,11 @@ pub(crate) fn test_out(
 }
 
 /// Reads one Job row into its response shape.
-pub(crate) fn job_out(
-    row: &QueryResult,
-    threshold: f64,
-    trend: Option<Trend>,
-) -> Result<JobOut, DbError> {
+pub(crate) fn job_out(row: &QueryResult, trend: Option<Trend>) -> Result<JobOut, DbError> {
     let score = score(get(row, "flakiness_score")?, "flakiness_score")?;
+    // The tier reads the row's stored flaky state, so a score that drifted back
+    // under the Flake threshold still lists as flaky until the state clears.
+    let flaky = optional_timestamp(row, "flaky_since")?.is_some();
     let repo: String = get(row, "repo_name")?;
     let provider: String = get(row, "provider")?;
     let issue_number: Option<i32> = get(row, "github_issue_number")?;
@@ -563,7 +564,7 @@ pub(crate) fn job_out(
         pipeline: get(row, "pipeline_name")?,
         name: get(row, "name")?,
         flakiness_score: score,
-        tier: tier_for(score, threshold),
+        tier: tier_for(score, flaky),
         confirmed_flake_count: i64::from(get::<i32>(row, "confirmed_flake_count")?),
         clean_streak: i64::from(get::<i32>(row, "clean_streak")?),
         trend,
@@ -707,7 +708,7 @@ pub async fn list_tests(
     };
     let page = board.run(db).await?;
     let items = read_items(db, EntityKind::Test, &page.rows, settings, |row, trend| {
-        test_out(row, settings.flake_threshold, settings.broken_streak, trend)
+        test_out(row, settings.broken_streak, trend)
     })
     .await?;
     Ok(TestPage {
@@ -748,7 +749,7 @@ pub async fn list_jobs(
     };
     let page = board.run(db).await?;
     let items = read_items(db, EntityKind::Job, &page.rows, settings, |row, trend| {
-        job_out(row, settings.flake_threshold, trend)
+        job_out(row, trend)
     })
     .await?;
     Ok(JobPage {
@@ -1056,7 +1057,6 @@ pub async fn get_test(
     let score = score(get(&row, "flakiness_score")?, "flakiness_score")?;
     let test = test_out(
         &row,
-        settings.flake_threshold,
         settings.broken_streak,
         trend_for(score.as_f64(), past.get(&stored_id).copied()),
     )?;
@@ -1229,7 +1229,7 @@ pub async fn set_quarantine(
         ],
     );
     db.execute_raw(statement).await?;
-    let mut test = test_out(&row, settings.flake_threshold, settings.broken_streak, None)?;
+    let mut test = test_out(&row, settings.broken_streak, None)?;
     test.quarantined = quarantined;
     test.quarantined_at = quarantined_at.map(|at| at.with_timezone(&Utc));
     test.quarantine_reason = reason;
@@ -1322,7 +1322,7 @@ pub async fn search_tests(
     values.extend(binds.into_values());
     let rows = rows(db, sql, values).await?;
     read_items(db, EntityKind::Test, &rows, settings, |row, trend| {
-        test_out(row, settings.flake_threshold, settings.broken_streak, trend)
+        test_out(row, settings.broken_streak, trend)
     })
     .await
 }
@@ -1383,7 +1383,6 @@ pub async fn get_job(
     let score = score(get(&row, "flakiness_score")?, "flakiness_score")?;
     let job = job_out(
         &row,
-        settings.flake_threshold,
         trend_for(score.as_f64(), past.get(&stored_id).copied()),
     )?;
 
@@ -1833,7 +1832,7 @@ pub async fn search_jobs(
     ];
     let rows = rows(db, sql, values).await?;
     read_items(db, EntityKind::Job, &rows, settings, |row, trend| {
-        job_out(row, settings.flake_threshold, trend)
+        job_out(row, trend)
     })
     .await
 }
@@ -1920,8 +1919,7 @@ pub async fn ci_run_failures(
     };
     let (failures, total) =
         ci_run_test_failures(db, repo_id, &repo_name, ci_run_id, attempt, settings, limit).await?;
-    let failed_jobs =
-        ci_run_failed_jobs(db, repo_id, &repo_name, ci_run_id, attempt, settings).await?;
+    let failed_jobs = ci_run_failed_jobs(db, repo_id, &repo_name, ci_run_id, attempt).await?;
     Ok(CiRunFailuresOut {
         repo: repo_name,
         ci_run_id: ci_run_id.clone(),
@@ -2129,6 +2127,7 @@ fn ci_run_failure_item(
         return Ok(None);
     };
     let score = score(get(row, "flakiness_score")?, "flakiness_score")?;
+    let flaky = optional_timestamp(row, "flaky_since")?.is_some();
     let issue_number: Option<i32> = get(row, "github_issue_number")?;
     let issue_number = issue_number.map(id);
     let fail_streak = i64::from(get::<i32>(row, "fail_streak")?);
@@ -2149,7 +2148,7 @@ fn ci_run_failure_item(
             .chars()
             .take(CI_RUN_MESSAGE_MAX)
             .collect(),
-        tier: tier_for(score, settings.flake_threshold),
+        tier: tier_for(score, flaky),
         flakiness_score: score,
         confirmed_flake_count: i64::from(get::<i32>(row, "confirmed_flake_count")?),
         clean_streak: i64::from(get::<i32>(row, "clean_streak")?),
@@ -2169,10 +2168,10 @@ async fn ci_run_failed_jobs(
     repo_name: &str,
     ci_run_id: &CiRunId,
     attempt: i32,
-    settings: &ReadSettings,
 ) -> Result<Vec<CiRunFailedJobOut>, DbError> {
     let sql = "SELECT e.ci_job_id AS ci_job_id, e.url AS url, j.id AS job_id, \
             j.name AS job_name, j.summary AS summary, j.flakiness_score AS flakiness_score, \
+            j.flaky_since AS flaky_since, \
             j.confirmed_flake_count AS confirmed_flake_count, j.clean_streak AS clean_streak, \
             j.github_issue_number AS github_issue_number, \
             j.github_issue_closed AS github_issue_closed, \
@@ -2202,6 +2201,7 @@ async fn ci_run_failed_jobs(
     for row in &found {
         let ci_job_id: String = get(row, "ci_job_id")?;
         let score = score(get(row, "flakiness_score")?, "flakiness_score")?;
+        let flaky = optional_timestamp(row, "flaky_since")?.is_some();
         let provider: String = get(row, "provider")?;
         let issue_number: Option<i32> = get(row, "github_issue_number")?;
         let issue_number = issue_number.map(id);
@@ -2217,7 +2217,7 @@ async fn ci_run_failed_jobs(
             ci_job_id,
             url: get(row, "url")?,
             summary: get(row, "summary")?,
-            tier: tier_for(score, settings.flake_threshold),
+            tier: tier_for(score, flaky),
             flakiness_score: score,
             confirmed_flake_count: i64::from(get::<i32>(row, "confirmed_flake_count")?),
             clean_streak: i64::from(get::<i32>(row, "clean_streak")?),

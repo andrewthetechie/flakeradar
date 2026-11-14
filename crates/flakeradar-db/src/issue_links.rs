@@ -177,15 +177,10 @@ fn out_for(
     match target {
         EntityKind::Test => Ok(LinkedOut::Test(test_out(
             row,
-            settings.flake_threshold,
             settings.broken_streak,
             None,
         )?)),
-        EntityKind::Job => Ok(LinkedOut::Job(job_out(
-            row,
-            settings.flake_threshold,
-            None,
-        )?)),
+        EntityKind::Job => Ok(LinkedOut::Job(job_out(row, None)?)),
     }
 }
 

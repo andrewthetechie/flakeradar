@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use chrono::{DateTime, FixedOffset};
 use flakeradar_core::{
-    dto::PipelineReportIn, dto::pipeline_body, model::ExecutionStatus, types::CiRunId,
+    dto::PipelineReportIn, dto::pipeline_body, model::ExecutionStatus, model::Tier, types::CiRunId,
 };
 use flakeradar_db::{
     processing::ProcessingSettings, processing::process_next, reads::ListOptions,
@@ -25,8 +25,8 @@ use flakeradar_db::{
     reads::search_jobs, reads::search_tests, reads::summary,
 };
 use flakeradar_test_support::{
-    FixedClock, TestDb, make_execution, make_job, make_job_execution, make_job_score,
-    make_pipeline, make_project, make_report, make_run, make_test_case,
+    FIXTURE_INSTANT, FixedClock, TestDb, make_execution, make_job, make_job_execution,
+    make_job_score, make_pipeline, make_project, make_report, make_run, make_test_case,
 };
 use sea_orm::{ConnectionTrait as _, DatabaseConnection};
 
@@ -752,4 +752,35 @@ async fn a_column_the_row_does_not_hold_is_a_database_error() {
     let row = rows.first().expect("one row");
     let read: Result<i32, _> = flakeradar_db::sql::get(row, "missing");
     assert!(read.is_err(), "a column the statement did not select fails");
+}
+
+/// A Test's tier reads its stored flaky state, not its score alone.
+#[tokio::test]
+async fn a_tests_tier_reads_the_stored_flaky_state() {
+    let db = TestDb::new().await.expect("a test database");
+    let project = make_project().repo("acme/app").create(&db).await;
+    // Between the two thresholds, but flaky because the state is set.
+    let flaky = make_test_case(&project)
+        .name("held_flaky")
+        .flakiness_score(0.25)
+        .flaky_since(Some(FIXTURE_INSTANT.fixed_offset()))
+        .create(&db)
+        .await;
+    let detail = get_test(db.connection(), i64::from(flaky.id), &settings(), 60)
+        .await
+        .expect("the lookup")
+        .expect("the Test");
+    assert_eq!(detail.test.tier, Tier::Flaky);
+    // Above the Flake threshold, but not flaky while nothing is stored.
+    let suspect = make_test_case(&project)
+        .name("not_flaky")
+        .flakiness_score(0.35)
+        .flaky_since(None)
+        .create(&db)
+        .await;
+    let detail = get_test(db.connection(), i64::from(suspect.id), &settings(), 60)
+        .await
+        .expect("the lookup")
+        .expect("the Test");
+    assert_eq!(detail.test.tier, Tier::Suspect);
 }

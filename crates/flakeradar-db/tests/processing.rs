@@ -1217,7 +1217,7 @@ async fn an_upward_tier_crossing_is_reported() {
     assert_eq!(change.flakiness_score, stored_score(row.flakiness_score));
     assert_eq!(
         change.tier,
-        tier_for(stored_score(row.flakiness_score), 0.05)
+        tier_for(stored_score(row.flakiness_score), row.flaky_since.is_some())
     );
     assert_eq!(
         change.proven_flake_count,
@@ -1261,6 +1261,75 @@ async fn a_downward_tier_crossing_is_reported() {
     let change = outcome.tier_changes.first().expect("a tier change");
     assert_eq!(change.event(), "test.recovered");
     assert_eq!(change.flakiness_score, Score::ZERO);
+}
+
+#[tokio::test]
+async fn a_flaky_test_stays_flaky_until_the_recover_threshold() {
+    let db = TestDb::new().await.expect("a test database");
+    let project = project(&db, "acme/app", "backend").await;
+    let settings = settings_with(|settings| {
+        settings.score_decay = 1.0;
+        settings.flake_threshold = 0.5;
+        settings.recover_threshold = 0.2;
+    });
+    // Decay 1 weights every flip the same, so the score walks
+    // 3 flips / (n - 1) x min(1, (n - 1) / 6): 0.667 on the 4th Report, 0.2 on
+    // the 16th — held, because the Recover threshold is inclusive — and 0.1875
+    // on the 17th, below it.
+    let mut statuses = vec!["failed", "passed", "failed"];
+    statuses.extend(std::iter::repeat_n("passed", 14));
+    assert_eq!(statuses.len(), 17);
+    for (index, status) in statuses.iter().enumerate() {
+        let sha = format!("s{index}");
+        queue_with(&db, &project, &make_junit(&[("t", status)]), |b| {
+            b.commit_sha(&sha)
+        })
+        .await;
+        let outcome = process_next(db.connection(), &settings)
+            .await
+            .expect("the processor runs")
+            .expect("a Report");
+        let row = test(&db).await;
+        match index {
+            // Report 4 crosses into flaky and starts the state.
+            3 => {
+                let change = outcome.tier_changes.first().expect("a tier change");
+                assert_eq!(change.event(), "test.flaky");
+                assert_eq!(row.flaky_since, Some(at().fixed_offset()));
+            }
+            // Report 17 falls under the Recover threshold and clears it.
+            16 => {
+                let change = outcome.tier_changes.first().expect("a tier change");
+                assert_eq!(change.event(), "test.recovered");
+                assert_eq!(row.flaky_since, None);
+            }
+            // Reports 1-3 are below the Flake threshold and hold no state; the
+            // Reports after the crossing drift but hold the instant they started.
+            0..=2 => {
+                assert_eq!(
+                    outcome.tier_changes,
+                    Vec::new(),
+                    "Report {} reports nothing",
+                    index + 1
+                );
+                assert_eq!(row.flaky_since, None, "Report {} stores nothing", index + 1);
+            }
+            _ => {
+                assert_eq!(
+                    outcome.tier_changes,
+                    Vec::new(),
+                    "Report {} reports nothing",
+                    index + 1
+                );
+                assert_eq!(
+                    row.flaky_since,
+                    Some(at().fixed_offset()),
+                    "Report {} holds the state",
+                    index + 1
+                );
+            }
+        }
+    }
 }
 
 #[tokio::test]

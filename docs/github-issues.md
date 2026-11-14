@@ -34,8 +34,9 @@ To turn off this feature, leave the token empty.
 
 ## Filing gate
 
-`FLAKE_THRESHOLD` sets the "flaky" tier in the dashboard and the API. It does
-not control issues. Three independent minimums control issues. FlakeRadar
+`FLAKERADAR_FLAKE_THRESHOLD` makes a test or job flaky — it stays flaky until its
+score falls below `FLAKERADAR_RECOVER_THRESHOLD` ([ADR 0012](adr/0012-tier-hysteresis.md)) —
+but it does not control issues. Three independent minimums control issues. FlakeRadar
 opens an issue only when a test meets each minimum that is not zero:
 
 ```

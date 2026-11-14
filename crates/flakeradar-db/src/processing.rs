@@ -13,11 +13,11 @@ use std::fmt;
 
 use flakeradar_core::{
     classify::FailureCategory, classify::classify_failure, classify::dominant_category, defaults,
-    dto::PipelineReportIn, helpers::is_broken, helpers::tier_for, model::EntityKind,
-    model::ExecutionStatus, model::JobStatus, model::ReportKind, model::ReportStatus, model::Tier,
-    notify::TierChange, parsing::ParseError, parsing::ParsedCase, parsing::parse_junit_xml,
-    scoring::ScoredExecution, scoring::branch_scoped_fail_streak, scoring::branch_scoped_score,
-    scoring::branch_scoped_streak, types::Fingerprint, types::Score,
+    dto::PipelineReportIn, helpers::is_broken, helpers::next_flaky_since, helpers::tier_for,
+    model::EntityKind, model::ExecutionStatus, model::JobStatus, model::ReportKind,
+    model::ReportStatus, model::Tier, notify::TierChange, parsing::ParseError, parsing::ParsedCase,
+    parsing::parse_junit_xml, scoring::ScoredExecution, scoring::branch_scoped_fail_streak,
+    scoring::branch_scoped_score, scoring::branch_scoped_streak, types::Fingerprint, types::Score,
 };
 use sea_orm::entity::prelude::DateTimeWithTimeZone;
 use sea_orm::{
@@ -70,6 +70,8 @@ pub struct ProcessingSettings {
     pub broken_streak: i64,
     /// The Flakiness score at or above which a Test or Job counts as flaky.
     pub flake_threshold: f64,
+    /// The Flakiness score below which a flaky Test or Job recovers.
+    pub recover_threshold: f64,
     /// How many retries a transient failure may spend.
     pub max_report_retries: i32,
     /// The share of a Run's Tests that must fail for the Run to be suspected
@@ -89,6 +91,7 @@ impl Default for ProcessingSettings {
             score_decay: defaults::SCORE_DECAY,
             broken_streak: defaults::BROKEN_STREAK,
             flake_threshold: defaults::FLAKE_THRESHOLD,
+            recover_threshold: defaults::RECOVER_THRESHOLD,
             max_report_retries: defaults::MAX_REPORT_RETRIES,
             infra_fail_share: defaults::INFRA_FAIL_SHARE,
             infra_min_tests: defaults::INFRA_MIN_TESTS,
@@ -104,6 +107,7 @@ impl fmt::Debug for ProcessingSettings {
             .field("score_decay", &self.score_decay)
             .field("broken_streak", &self.broken_streak)
             .field("flake_threshold", &self.flake_threshold)
+            .field("recover_threshold", &self.recover_threshold)
             .field("max_report_retries", &self.max_report_retries)
             .field("infra_fail_share", &self.infra_fail_share)
             .field("infra_min_tests", &self.infra_min_tests)
@@ -353,6 +357,8 @@ struct Update {
     fail_streak: i32,
     /// The dominant Failure category. Only a Test is categorised.
     failure_category: Option<FailureCategory>,
+    /// The row's flaky state, moved by [`next_flaky_since`] at the two thresholds.
+    flaky_since: Option<DateTimeWithTimeZone>,
 }
 
 /// Claim and process the oldest pending Report; `None` when the queue is empty.
@@ -1283,11 +1289,17 @@ fn window_binds(chunk: &[i32], settings: &ProcessingSettings) -> Vec<Value> {
 }
 
 impl Update {
-    /// The row `id`'s window scores to.
+    /// The row `id`'s window scores to, starting from its stored flaky state.
     ///
     /// A row with no window scores as an empty one: no flip, no Proven flake and
-    /// a Clean streak of 0.
-    fn of(id: i32, window: Option<&Window>, settings: &ProcessingSettings) -> Self {
+    /// a Clean streak of 0. A row with no stored state is not flaky, so its
+    /// `old_flaky_since` is `None`.
+    fn of(
+        id: i32,
+        window: Option<&Window>,
+        old_flaky_since: Option<DateTimeWithTimeZone>,
+        settings: &ProcessingSettings,
+    ) -> Self {
         let empty = Window::default();
         let window = window.unwrap_or(&empty);
         let branch = window.default_branch.as_deref();
@@ -1313,6 +1325,13 @@ impl Update {
             fail_streak: i32::try_from(branch_scoped_fail_streak(&window.executions, branch))
                 .unwrap_or(i32::MAX),
             failure_category: dominant_category(&categories),
+            flaky_since: next_flaky_since(
+                old_flaky_since,
+                score,
+                settings.flake_threshold,
+                settings.recover_threshold,
+                settings.clock.now(),
+            ),
         }
     }
 }
@@ -1412,9 +1431,10 @@ fn notices_of(kind: EntityKind) -> &'static Notices {
 /// Recomputes flakiness for `kind`'s rows, and writes the Tier changes it makes.
 ///
 /// Every rule a rescore applies is here, once: the window scores the row, the
-/// old score says whether the tier crossed, the bulk write stores the row and
-/// today's Score history gains the day's counts. What differs between a Test and
-/// a Job is a window statement, a write statement and a set of Notices.
+/// row's own stored state says whether its flaky state crossed, the bulk write
+/// stores the row and today's Score history gains the day's counts. What differs
+/// between a Test and a Job is a window statement, a write statement and a set of
+/// Notices.
 ///
 /// # Errors
 ///
@@ -1427,11 +1447,20 @@ pub async fn rescore(
     settings: &ProcessingSettings,
 ) -> Result<Vec<TierChange>, DbError> {
     let windows = windows(db, kind, ids, settings).await?;
+    // The stored state is read before the write, because `flaky_since` moves at
+    // the thresholds relative to what the row holds now.
+    let old = old_states(db, kind, ids).await?;
     let updates: Vec<Update> = ids
         .iter()
-        .map(|id| Update::of(*id, windows.get(id), settings))
+        .map(|id| {
+            Update::of(
+                *id,
+                windows.get(id),
+                old.get(id).and_then(|&(_, flaky_since)| flaky_since),
+                settings,
+            )
+        })
         .collect();
-    let old = old_scores(db, kind, ids).await?;
     let changes = tier_changes(db, notices_of(kind), &updates, &old, settings).await?;
     write_updates(db, updates_of(kind), &updates).await?;
     write_day_counts(db, kind, &updates, day_counts, settings).await?;
@@ -1466,15 +1495,21 @@ async fn write_day_counts(
     write_today_history(db, kind, &history_updates, settings.clock.today()).await
 }
 
-/// The scores a rescore is about to replace, read before the update.
-async fn old_scores(
+/// What one row holds before a rescore replaces it.
+type OldRow = (Score, Option<DateTimeWithTimeZone>);
+
+/// The scores and flaky states a rescore is about to replace, read before the update.
+///
+/// A row the caller lists that this read does not return has no stored state, so
+/// it counts as not flaky.
+async fn old_states(
     db: &impl ConnectionTrait,
     kind: EntityKind,
     ids: &[i32],
-) -> Result<BTreeMap<i32, Score>, DbError> {
+) -> Result<BTreeMap<i32, OldRow>, DbError> {
     let from = match kind {
-        EntityKind::Test => "SELECT id, flakiness_score FROM test_cases WHERE id IN ",
-        EntityKind::Job => "SELECT id, flakiness_score FROM jobs WHERE id IN ",
+        EntityKind::Test => "SELECT id, flakiness_score, flaky_since FROM test_cases WHERE id IN ",
+        EntityKind::Job => "SELECT id, flakiness_score, flaky_since FROM jobs WHERE id IN ",
     };
     let mut scores = BTreeMap::new();
     for chunk in chunks(ids) {
@@ -1483,21 +1518,26 @@ async fn old_scores(
         for row in rows(db, sql, values).await? {
             scores.insert(
                 get(&row, "id")?,
-                score(get(&row, "flakiness_score")?, "flakiness_score")?,
+                (
+                    score(get(&row, "flakiness_score")?, "flakiness_score")?,
+                    get::<Option<DateTimeWithTimeZone>>(&row, "flaky_since")?,
+                ),
             );
         }
     }
     Ok(scores)
 }
 
-/// Whether one update crossed the Flake threshold, in either direction.
+/// Whether one update moved the row's flaky state, in either direction.
 ///
-/// Only the flaky boundary counts: a move between Stable and Suspect changes the
-/// tier but crosses nothing, so it sends no Notification. A row with no stored
-/// score is new, and new is 0.0.
-fn crossed(update: &Update, old: &BTreeMap<i32, Score>, threshold: f64) -> bool {
-    let before = old.get(&update.id).copied().unwrap_or(Score::ZERO);
-    (update.flakiness_score.as_f64() >= threshold) != (before.as_f64() >= threshold)
+/// A Tier change is `flaky_since` going from NULL to set or from set to NULL: a
+/// score that drifts between the two thresholds changes no state and sends no
+/// Notification. A row with no stored state counts as not flaky.
+fn crossed(update: &Update, old: &BTreeMap<i32, OldRow>) -> bool {
+    let before = old
+        .get(&update.id)
+        .is_some_and(|(_, flaky_since)| flaky_since.is_some());
+    before != update.flaky_since.is_some()
 }
 
 /// What differs between a Test's and a Job's Tier change.
@@ -1510,7 +1550,7 @@ struct Notices {
     /// sends no event.
     recovered: fn(&Update, &ProcessingSettings) -> bool,
     /// Builds the event from one row's name columns.
-    change: fn(&Update, &QueryResult, f64) -> Result<TierChange, DbError>,
+    change: fn(&Update, &QueryResult) -> Result<TierChange, DbError>,
 }
 
 /// The Tests' Tier changes.
@@ -1560,7 +1600,7 @@ fn job_recovered(_update: &Update, _settings: &ProcessingSettings) -> bool {
 }
 
 /// The Tier change a Test's row names.
-fn test_change(update: &Update, row: &QueryResult, threshold: f64) -> Result<TierChange, DbError> {
+fn test_change(update: &Update, row: &QueryResult) -> Result<TierChange, DbError> {
     Ok(TierChange {
         kind: EntityKind::Test,
         id: i64::from(update.id),
@@ -1568,7 +1608,7 @@ fn test_change(update: &Update, row: &QueryResult, threshold: f64) -> Result<Tie
         project: Some(get(row, "project")?),
         name: get(row, "name")?,
         flakiness_score: update.flakiness_score,
-        tier: tier_for(update.flakiness_score, threshold),
+        tier: tier_for(update.flakiness_score, update.flaky_since.is_some()),
         proven_flake_count: usize::try_from(update.confirmed_flake_count).unwrap_or(0),
         classname: Some(get(row, "classname")?),
         pipeline: None,
@@ -1577,7 +1617,7 @@ fn test_change(update: &Update, row: &QueryResult, threshold: f64) -> Result<Tie
 }
 
 /// The Tier change a Job's row names.
-fn job_change(update: &Update, row: &QueryResult, threshold: f64) -> Result<TierChange, DbError> {
+fn job_change(update: &Update, row: &QueryResult) -> Result<TierChange, DbError> {
     Ok(TierChange {
         kind: EntityKind::Job,
         id: i64::from(update.id),
@@ -1585,7 +1625,7 @@ fn job_change(update: &Update, row: &QueryResult, threshold: f64) -> Result<Tier
         project: None,
         name: get(row, "name")?,
         flakiness_score: update.flakiness_score,
-        tier: tier_for(update.flakiness_score, threshold),
+        tier: tier_for(update.flakiness_score, update.flaky_since.is_some()),
         proven_flake_count: usize::try_from(update.confirmed_flake_count).unwrap_or(0),
         classname: None,
         pipeline: Some(get(row, "pipeline")?),
@@ -1593,7 +1633,7 @@ fn job_change(update: &Update, row: &QueryResult, threshold: f64) -> Result<Tier
     })
 }
 
-/// Notifications for the rows whose tier this rescore moves (ADR 0009).
+/// Notifications for the rows whose flaky state this rescore moves (ADR 0009).
 ///
 /// The crossing rule, the id order and the read of the names are the same for
 /// both entities; the descriptor carries what differs.
@@ -1601,15 +1641,14 @@ async fn tier_changes(
     db: &impl ConnectionTrait,
     notices: &Notices,
     updates: &[Update],
-    old: &BTreeMap<i32, Score>,
+    old: &BTreeMap<i32, OldRow>,
     settings: &ProcessingSettings,
 ) -> Result<Vec<TierChange>, DbError> {
-    let threshold = settings.flake_threshold;
     let mut crossing: Vec<Update> = updates
         .iter()
         .filter(|update| {
-            crossed(update, old, threshold)
-                && (tier_for(update.flakiness_score, threshold) == Tier::Flaky
+            crossed(update, old)
+                && (tier_for(update.flakiness_score, update.flaky_since.is_some()) == Tier::Flaky
                     || (notices.recovered)(update, settings))
         })
         .copied()
@@ -1632,7 +1671,7 @@ async fn tier_changes(
             let Some(update) = by_id.get(&id) else {
                 continue;
             };
-            named.insert(id, (notices.change)(update, &row, threshold)?);
+            named.insert(id, (notices.change)(update, &row)?);
         }
     }
     // A row deleted before this read names nothing, so it sends nothing.
@@ -1662,11 +1701,11 @@ const TEST_UPDATES: BulkUpdate = BulkUpdate {
     head: "UPDATE test_cases AS t SET flakiness_score = v.flakiness_score, \
              confirmed_flake_count = v.confirmed_flake_count, \
              failure_category = v.failure_category, clean_streak = v.clean_streak, \
-             fail_streak = v.fail_streak, \
+             fail_streak = v.fail_streak, flaky_since = v.flaky_since, \
              github_issue_fixed_noted_at = CASE WHEN v.reset_note THEN NULL ELSE t.github_issue_fixed_noted_at END \
            FROM (VALUES ",
     tail: ") AS v(id, flakiness_score, confirmed_flake_count, failure_category, clean_streak, \
-             fail_streak, reset_note) WHERE t.id = v.id",
+             fail_streak, flaky_since, reset_note) WHERE t.id = v.id",
     row: |update| {
         vec![
             Value::from(update.id),
@@ -1679,6 +1718,9 @@ const TEST_UPDATES: BulkUpdate = BulkUpdate {
                 }),
             Value::from(update.clean_streak),
             Value::from(update.fail_streak),
+            update
+                .flaky_since
+                .map_or(Value::ChronoDateTimeWithTimeZone(None), Value::from),
             Value::from(update.clear_fixed_note),
         ]
     },
@@ -1688,16 +1730,20 @@ const TEST_UPDATES: BulkUpdate = BulkUpdate {
 const JOB_UPDATES: BulkUpdate = BulkUpdate {
     head: "UPDATE jobs AS j SET flakiness_score = v.flakiness_score, \
              confirmed_flake_count = v.confirmed_flake_count, clean_streak = v.clean_streak, \
+             flaky_since = v.flaky_since, \
              github_issue_fixed_noted_at = CASE WHEN v.reset_note THEN NULL ELSE j.github_issue_fixed_noted_at END \
            FROM (VALUES ",
-    tail: ") AS v(id, flakiness_score, confirmed_flake_count, clean_streak, reset_note) \
-           WHERE j.id = v.id",
+    tail: ") AS v(id, flakiness_score, confirmed_flake_count, clean_streak, flaky_since, \
+             reset_note) WHERE j.id = v.id",
     row: |update| {
         vec![
             Value::from(update.id),
             Value::from(update.flakiness_score.as_f64()),
             Value::from(update.confirmed_flake_count),
             Value::from(update.clean_streak),
+            update
+                .flaky_since
+                .map_or(Value::ChronoDateTimeWithTimeZone(None), Value::from),
             Value::from(update.clear_fixed_note),
         ]
     },

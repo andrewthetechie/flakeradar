@@ -17,20 +17,25 @@ FLAKERADAR_PUBLIC_URL=https://flakeradar.example.com
 
 ## Events
 
-FlakeRadar sends a message only when a test or job crosses the flake
-threshold:
+FlakeRadar sends a message only when a test or job changes tier: when it becomes
+flaky, or when its flaky state is cleared. A test or job becomes flaky when its
+score reaches the flake threshold, and stays flaky until its score falls below the
+recover threshold:
 
 | Event | When |
 |---|---|
-| `test.flaky` | The score of a test reached the threshold. |
-| `test.recovered` | The score of a test fell below the threshold again. |
-| `job.flaky` | The score of a job reached the threshold. |
-| `job.recovered` | The score of a job fell below the threshold again. |
+| `test.flaky` | The score of a test reached the flake threshold, setting its flaky state. |
+| `test.recovered` | The score of a test fell below the recover threshold, clearing its flaky state. |
+| `job.flaky` | The score of a job reached the flake threshold, setting its flaky state. |
+| `job.recovered` | The score of a job fell below the recover threshold, clearing its flaky state. |
 
 FlakeRadar sends nothing in these cases:
 
-- The score moves, but the test or job stays on the same side of the
-  threshold.
+- The score moves, but the test or job stays in the state it had. A test that is
+  flaky and whose score sits between the recover threshold and the flake threshold
+  stays flaky, so those reports send nothing — that band is what stops a score
+  that hovers at the flake threshold from announcing flaky and recovered on every
+  report.
 - A report changes the default branch. That change scores the whole repo
   again, so the report sends no events at all, also for the tests and jobs
   that it changed. The log records how many events FlakeRadar dropped.
@@ -39,9 +44,9 @@ FlakeRadar sends nothing in these cases:
 - A test that is now [broken](concepts.md#broken-tests) leaves the flaky tier.
   A broken test has not recovered, so there is no closing event. Thus
   `test.flaky` can be the last event that you see for that test. When someone
-  fixes the test later, you get an event only if the score crosses the
-  threshold again. The first pass can send a new `test.flaky`, and a later pass
-  can send `test.recovered`.
+  fixes the test later, you get an event only when the flaky state moves again: a
+  score that reaches the flake threshold sends a new `test.flaky`, and a later
+  score below the recover threshold sends `test.recovered`.
 
 ## Formats
 

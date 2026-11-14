@@ -23,6 +23,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use chrono::{DateTime, FixedOffset, NaiveDate, Utc};
+use flakeradar_core::defaults::FLAKE_THRESHOLD;
 use flakeradar_db::entities::{
     job_executions, job_score_history, jobs, pipelines, projects, reports, repos, test_cases,
     test_executions, test_runs, test_score_history,
@@ -51,6 +52,16 @@ fn now() -> DateTimeWithTimeZone {
 pub const FIXTURE_INSTANT: DateTime<Utc> = DateTime::from_timestamp(1_600_000_000, 0)
     .expect("the fixture instant is a time the calendar has")
     .to_utc();
+
+/// The `flaky_since` a row takes when its builder was never given one.
+///
+/// The `0003_flaky_since` backfill stamps `now()` on every row at or above the
+/// Flake threshold and leaves the rest NULL, so a seeded row answers the tier
+/// question the same way a migrated one does; this is that rule at the fixture
+/// instant.
+fn default_flaky_since(score: f64) -> Option<DateTimeWithTimeZone> {
+    (score >= FLAKE_THRESHOLD).then(now)
+}
 
 /// Inserts `active` and returns the stored row.
 async fn insert<A, E>(db: &impl ConnectionTrait, active: A) -> Result<E::Model, TestError>
@@ -179,6 +190,13 @@ pub struct TestCaseBuilder {
     quarantined_at: Option<DateTimeWithTimeZone>,
     quarantine_reason: Option<String>,
     quarantine_expires_at: Option<DateTimeWithTimeZone>,
+    // Outer None: the setter was never called, so build derives it (see
+    // `default_flaky_since`); Some(None): the test forced NULL explicitly.
+    #[expect(
+        clippy::option_option,
+        reason = "the builder distinguishes unset from an explicit NULL"
+    )]
+    flaky_since: Option<Option<DateTimeWithTimeZone>>,
 }
 
 /// Builds a Test named `t1` of the suite `unit`.
@@ -204,6 +222,7 @@ pub fn make_test_case(project: &projects::Model) -> TestCaseBuilder {
         quarantined_at: None,
         quarantine_reason: None,
         quarantine_expires_at: None,
+        flaky_since: None,
     }
 }
 
@@ -233,6 +252,14 @@ impl TestCaseBuilder {
     #[must_use]
     pub fn flakiness_score(mut self, score: f64) -> Self {
         self.flakiness_score = score;
+        self
+    }
+
+    /// Sets the Test's `flaky_since` instant, `None` storing NULL; without this
+    /// call `build` derives it from the score, as the migration backfill does.
+    #[must_use]
+    pub fn flaky_since(mut self, at: Option<DateTimeWithTimeZone>) -> Self {
+        self.flaky_since = Some(at);
         self
     }
 
@@ -358,6 +385,9 @@ impl TestCaseBuilder {
         let fingerprint = self
             .fingerprint
             .unwrap_or_else(|| fingerprint(&self.suite, &self.classname, &self.name));
+        let flaky_since = self
+            .flaky_since
+            .unwrap_or_else(|| default_flaky_since(self.flakiness_score));
         insert(
             db,
             test_cases::ActiveModel {
@@ -367,6 +397,7 @@ impl TestCaseBuilder {
                 classname: Set(self.classname),
                 name: Set(self.name),
                 flakiness_score: Set(self.flakiness_score),
+                flaky_since: Set(flaky_since),
                 confirmed_flake_count: Set(self.confirmed_flake_count),
                 failure_category: Set(self.failure_category),
                 clean_streak: Set(self.clean_streak),
@@ -724,6 +755,13 @@ pub struct JobBuilder {
     last_seen_at: Option<DateTimeWithTimeZone>,
     github_issue_fixed_noted_at: Option<DateTimeWithTimeZone>,
     github_issue_number: Option<i32>,
+    // Outer None: the setter was never called, so build derives it (see
+    // `default_flaky_since`); Some(None): the test forced NULL explicitly.
+    #[expect(
+        clippy::option_option,
+        reason = "the builder distinguishes unset from an explicit NULL"
+    )]
+    flaky_since: Option<Option<DateTimeWithTimeZone>>,
 }
 
 /// Builds a non-summary Job named `test`.
@@ -739,6 +777,7 @@ pub fn make_job(pipeline: &pipelines::Model) -> JobBuilder {
         last_seen_at: None,
         github_issue_fixed_noted_at: None,
         github_issue_number: None,
+        flaky_since: None,
     }
 }
 
@@ -754,6 +793,14 @@ impl JobBuilder {
     #[must_use]
     pub fn flakiness_score(mut self, score: f64) -> Self {
         self.flakiness_score = score;
+        self
+    }
+
+    /// Sets the Job's `flaky_since` instant, `None` storing NULL; without this
+    /// call `build` derives it from the score, as the migration backfill does.
+    #[must_use]
+    pub fn flaky_since(mut self, at: Option<DateTimeWithTimeZone>) -> Self {
+        self.flaky_since = Some(at);
         self
     }
 
@@ -816,6 +863,9 @@ impl JobBuilder {
                 name: Set(self.name),
                 summary: Set(self.summary),
                 flakiness_score: Set(self.flakiness_score),
+                flaky_since: Set(self
+                    .flaky_since
+                    .unwrap_or_else(|| default_flaky_since(self.flakiness_score))),
                 confirmed_flake_count: Set(self.confirmed_flake_count),
                 clean_streak: Set(self.clean_streak),
                 last_status: Set("passed".to_owned()),
