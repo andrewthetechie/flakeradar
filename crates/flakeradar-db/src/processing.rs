@@ -1613,6 +1613,7 @@ fn test_change(update: &Update, row: &QueryResult) -> Result<TierChange, DbError
         classname: Some(get(row, "classname")?),
         pipeline: None,
         failure_category: update.failure_category,
+        broken: false,
     })
 }
 
@@ -1630,6 +1631,7 @@ fn job_change(update: &Update, row: &QueryResult) -> Result<TierChange, DbError>
         classname: None,
         pipeline: Some(get(row, "pipeline")?),
         failure_category: None,
+        broken: false,
     })
 }
 
