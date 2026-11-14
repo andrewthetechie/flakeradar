@@ -195,10 +195,8 @@ export default function App() {
   );
 
   const confirmQuarantine = useCallback(
-    async (choice: QuarantineChoice) => {
-      const t = pendingQuarantine;
+    async (t: TestCase, choice: QuarantineChoice) => {
       setPendingQuarantine(null);
-      if (t == null) return;
       try {
         await setQuarantine(t.id, true, {
           reason: choice.reason,
@@ -209,7 +207,7 @@ export default function App() {
         setError(e instanceof Error ? e.message : String(e));
       }
     },
-    [pendingQuarantine, refresh],
+    [refresh],
   );
 
   const closeDrawer = useCallback(() => {
@@ -364,7 +362,9 @@ export default function App() {
         <QuarantineDialog
           test={pendingQuarantine}
           onClose={() => setPendingQuarantine(null)}
-          onConfirm={confirmQuarantine}
+          // The dialog only renders for a pending Test, so the callback always
+          // has one: no null check inside confirmQuarantine.
+          onConfirm={(choice) => void confirmQuarantine(pendingQuarantine, choice)}
         />
       )}
       {kind === "jobs" && view.job != null && (

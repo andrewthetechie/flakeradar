@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { History } from "../api";
@@ -274,5 +274,15 @@ describe("TestDrawer", () => {
     // Executions carry no CI run attempt, so the view opens the latest one.
     await userEvent.click(screen.getByRole("button", { name: "1" }));
     expect(onOpenCiRun).toHaveBeenCalledWith("andrewthetechie/writers-app", "1", null);
+  });
+
+  it("marks a Test that is broken on the default branch, and only those", () => {
+    // The pill is distinct from the drawer's "Broken on default branch" stat tile.
+    const pill = () => screen.queryByTitle(/Broken — failing on the default branch/i);
+    renderDrawer();
+    expect(pill()).not.toBeInTheDocument();
+    cleanup();
+    renderDrawer({ test: { ...history.test, broken: true } });
+    expect(pill()).toHaveTextContent(/broken on default branch/i);
   });
 });
