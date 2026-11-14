@@ -16,6 +16,7 @@ import {
   fetchTests,
   type History,
   type JobHistory,
+  type JobQuery,
   type JobPage,
   type JobSummary,
   type LatestWins,
@@ -23,8 +24,9 @@ import {
   type ReportSummary,
   type Summary,
   type TestPage,
+  type TestQuery,
 } from "./api";
-import type { ViewState } from "./urlState";
+import { LIST_FILTERS, type ViewState } from "./urlState";
 
 /** Everything the Tests view renders from one load. */
 export interface TestsBundle {
@@ -80,6 +82,45 @@ export type ViewFilters = Pick<
 /** Every leaderboard page loads at this size. */
 const PAGE_SIZE = 50;
 
+/** The two fetch-argument names the table cannot carry, because `api.ts` spells
+ *  them differently from the URL and from the wire: `cause` goes into a query as
+ *  `category`, `newDays` as `newWithinDays` (`TestQuery`, `JobQuery`). Every other
+ *  filter enters the query under its ViewState field name. */
+const QUERY_NAMES: Partial<Record<keyof ViewState, keyof TestQuery | keyof JobQuery>> = {
+  cause: "category",
+  newDays: "newWithinDays",
+};
+
+/** What a caller hands `queryFor` besides the filters: the scope and paging the
+ *  table does not describe. `project` is optional because the Jobs query has none. */
+interface QueryBase {
+  repo: string | null;
+  project?: string | null;
+  page: number;
+  pageSize: number;
+}
+
+/**
+ * The fetch argument for one endpoint: the scope and paging spelled by hand, plus
+ * every list filter the declaration maps onto that endpoint, read out of the
+ * view's filters. So the Jobs query drops project and the tests-only filters, and
+ * the Tests query drops pipeline, because the table says so rather than because
+ * this module enumerates them — and a filter added to the table reaches the
+ * endpoints it declares without an edit here. The result is the table's shape, not
+ * the literal's, which is why it is cast rather than checked.
+ */
+function queryFor<Q>(endpoint: "tests" | "jobs", f: ViewFilters, base: QueryBase): Q {
+  const query: Record<string, unknown> = { ...base };
+  for (const d of LIST_FILTERS) {
+    // A wire-mapped field is by construction a filter a load consumes, so the
+    // read is one `keyof ViewFilters` narrowing of the table's wider field key.
+    if (d.wire?.[endpoint]) {
+      query[QUERY_NAMES[d.field] ?? d.field] = f[d.field as keyof ViewFilters];
+    }
+  }
+  return query as Q;
+}
+
 // Each loader begins the queue request first, so the one request per load that
 // every view awaits overlaps the rest instead of adding a round trip.
 
@@ -94,19 +135,7 @@ export async function loadTestsBundle(
   const [repos, summary, page, queue] = await Promise.all([
     fetchRepos(),
     fetchSummary(scope),
-    fetchTests({
-      ...scope,
-      page: f.page,
-      pageSize: PAGE_SIZE,
-      sort: f.sort,
-      showStable: f.showStable,
-      category: f.cause,
-      quarantined: f.quarantined,
-      broken: f.broken,
-      issue: f.issue,
-      newWithinDays: f.newDays,
-      q: f.q,
-    }),
+    fetchTests(queryFor<TestQuery>("tests", f, { ...scope, page: f.page, pageSize: PAGE_SIZE })),
     queueQ,
   ]);
   if (!guard.current(request)) return null;
@@ -123,17 +152,9 @@ export async function loadJobsBundle(
   const [repos, jobSummary, jobPage, queue] = await Promise.all([
     fetchRepos(),
     fetchJobSummary(f.repo),
-    fetchJobs({
-      repo: f.repo,
-      page: f.page,
-      pageSize: PAGE_SIZE,
-      sort: f.sort,
-      showStable: f.showStable,
-      pipeline: f.pipeline,
-      issue: f.issue,
-      newWithinDays: f.newDays,
-      q: f.q,
-    }),
+    // Jobs takes no project, so the scope is just the repo (`JobQuery` has no
+    // project field to write one into).
+    fetchJobs(queryFor<JobQuery>("jobs", f, { repo: f.repo, page: f.page, pageSize: PAGE_SIZE })),
     queueQ,
   ]);
   if (!guard.current(request)) return null;

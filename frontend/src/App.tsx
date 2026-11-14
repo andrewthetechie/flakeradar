@@ -27,7 +27,7 @@ import { TestDrawer } from "./components/TestDrawer";
 import { ThemeToggle } from "./components/ThemeToggle";
 import { ViewToggle } from "./components/ViewToggle";
 import { useGuardedLoad, type GuardedLoader } from "./guardedLoad";
-import { useViewState } from "./urlState";
+import { LIST_FILTERS, useViewState, type ViewState } from "./urlState";
 import { loadJobHistory, loadTestHistory, loadViewBundle, type ViewBundle } from "./viewData";
 
 const REFRESH_MS = 30_000;
@@ -230,6 +230,13 @@ export default function App() {
 
   const visiblePage = kind === "jobs" ? jobPage : page;
 
+  // Which controls this view offers comes from the filter table: an entry names
+  // the views that render it, and LeaderboardControls shows a control exactly when
+  // App passes its handler. The next filter is one table entry plus its control,
+  // with no conditional added here.
+  const offers = (field: keyof ViewState): boolean =>
+    LIST_FILTERS.some((d) => d.field === field && d.views.includes(kind));
+
   return (
     <div className="mx-auto max-w-6xl px-4 pt-5 pb-12 sm:px-6">
       <header className="mb-6 flex flex-wrap items-center gap-x-4 gap-y-3">
@@ -305,10 +312,10 @@ export default function App() {
               searchPlaceholder={kind === "jobs" ? "Job or pipeline" : "Name, classname or file"}
               onSort={(s) => setView({ sort: s })}
               onShowStable={(v) => setView({ showStable: v })}
-              onCause={kind === "tests" ? (c) => setView({ cause: c }) : undefined}
-              onQuarantined={kind === "tests" ? (v) => setView({ quarantined: v }) : undefined}
-              onBroken={kind === "tests" ? (v) => setView({ broken: v }) : undefined}
-              onPipeline={kind === "jobs" ? (p) => setView({ pipeline: p }) : undefined}
+              onCause={offers("cause") ? (c) => setView({ cause: c }) : undefined}
+              onQuarantined={offers("quarantined") ? (v) => setView({ quarantined: v }) : undefined}
+              onBroken={offers("broken") ? (v) => setView({ broken: v }) : undefined}
+              onPipeline={offers("pipeline") ? (p) => setView({ pipeline: p }) : undefined}
               onIssue={(i) => setView({ issue: i })}
               onNewDays={(d) => setView({ newDays: d })}
               onSearch={onSearch}

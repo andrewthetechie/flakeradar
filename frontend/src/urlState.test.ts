@@ -9,7 +9,9 @@ import {
   useViewState,
   type ListFilterDescriptor,
   type ViewState,
+  type ViewKind,
 } from "./urlState";
+import type { JobQuery, TestQuery } from "./api";
 
 describe("view state in the URL", () => {
   it("round-trips a full view", () => {
@@ -305,6 +307,188 @@ describe("LIST_FILTERS", () => {
       expect(patched.page).toBe(1);
     }
   });
+
+  // Which views offer which filter is fixed by the backend contract: TestsQuery
+  // (crates/flakeradar/src/routes/reads.rs:225-254) accepts repo, project, cause,
+  // quarantined, broken and the shared filters, JobsQuery (:301-322) accepts repo,
+  // pipeline and the shared ones. Keyed by param, like SAMPLES.
+  const VIEWS: Record<string, readonly ViewKind[]> = {
+    repo: ["tests", "jobs"],
+    project: ["tests"],
+    q: ["tests", "jobs"],
+    sort: ["tests", "jobs"],
+    stable: ["tests", "jobs"],
+    cause: ["tests"],
+    quarantined: ["tests"],
+    broken: ["tests"],
+    issue: ["tests", "jobs"],
+    pipeline: ["jobs"],
+    new: ["tests", "jobs"],
+  };
+
+  it.each(LIST_FILTERS)("$param is offered to exactly the views the contract fixes", (d) => {
+    expect(d.views).toEqual(VIEWS[d.param]);
+  });
+
+  it.each(LIST_FILTERS)(
+    "$param has a wire mapping exactly for the endpoints it is offered to",
+    (d) => {
+      // Repo and project are the exception: they go out through scopeParams (api.ts),
+      // so they carry no wire mapping at all.
+      if (d.param === "repo" || d.param === "project") {
+        expect(d.wire).toBeUndefined();
+        return;
+      }
+      for (const endpoint of ["tests", "jobs"] as const) {
+        // Every view that offers the filter sends it, so it needs a mapping — and no
+        // view that does not offer it may have one.
+        expect(d.wire?.[endpoint] != null).toBe(d.views.includes(endpoint));
+      }
+    },
+  );
+
+  // A base query per endpoint, in the field names the endpoint reads (api.ts).
+  const BASE_TEST_QUERY: TestQuery = {
+    repo: "a/b",
+    project: null,
+    page: 1,
+    pageSize: 50,
+    sort: "score",
+    showStable: false,
+    category: null,
+    quarantined: false,
+    broken: false,
+    issue: null,
+    newWithinDays: null,
+    q: "",
+  };
+  const BASE_JOB_QUERY: JobQuery = {
+    repo: "a/b",
+    page: 1,
+    pageSize: 50,
+    sort: "score",
+    showStable: false,
+    pipeline: null,
+    issue: null,
+    newWithinDays: null,
+    q: "",
+  };
+  /** The `name=value` an endpoint mapping emits, or null when it stays out of the
+   *  query string — the same decision `params.set` makes in api.ts. */
+  const emitted = (
+    wire: { param: string; value: (q: never) => string | null } | undefined,
+    q: unknown,
+  ): string | null => {
+    if (!wire) return null;
+    const value = wire.value(q as never);
+    return value == null ? null : `${wire.param}=${value}`;
+  };
+  // Per param: a non-default sample patch (in the endpoint's field names), the
+  // `name=value` each endpoint must emit for it, and what the default query emits
+  // (`sort` is always sent; every other filter stays out when unset).
+  const WIRE: Record<
+    string,
+    {
+      patch: Partial<TestQuery & JobQuery>;
+      tests: string | null;
+      jobs: string | null;
+      defaults: string | null;
+    }
+  > = {
+    // scopeParams owns repo and project: no wire mapping at all.
+    repo: { patch: {}, tests: null, jobs: null, defaults: null },
+    project: { patch: {}, tests: null, jobs: null, defaults: null },
+    q: {
+      patch: { q: "login" },
+      tests: "q=login",
+      jobs: "q=login",
+      defaults: null,
+    },
+    sort: {
+      patch: { sort: "last_seen" },
+      tests: "sort=last_seen",
+      jobs: "sort=last_seen",
+      defaults: "sort=score",
+    },
+    stable: {
+      patch: { showStable: true },
+      tests: "include_stable=true",
+      jobs: "include_stable=true",
+      defaults: null,
+    },
+    cause: {
+      patch: { category: "timing" },
+      tests: "category=timing",
+      jobs: null,
+      defaults: null,
+    },
+    quarantined: {
+      patch: { quarantined: true },
+      tests: "quarantined=true",
+      jobs: null,
+      defaults: null,
+    },
+    broken: {
+      patch: { broken: true },
+      tests: "broken=true",
+      jobs: null,
+      defaults: null,
+    },
+    issue: {
+      // The one value transform: "linked" is has_issue=true, "none" is false.
+      patch: { issue: "linked" },
+      tests: "has_issue=true",
+      jobs: "has_issue=true",
+      defaults: null,
+    },
+    pipeline: {
+      patch: { pipeline: ".github/workflows/nightly.yml" },
+      tests: null,
+      jobs: "pipeline=.github/workflows/nightly.yml",
+      defaults: null,
+    },
+    new: {
+      patch: { newWithinDays: 7 },
+      tests: "new_within_days=7",
+      jobs: "new_within_days=7",
+      defaults: null,
+    },
+  };
+
+  it.each(LIST_FILTERS)("$param maps to the wire bytes api.ts writes today", (d) => {
+    const want = WIRE[d.param];
+    const testQuery = { ...BASE_TEST_QUERY, ...want.patch };
+    const jobQuery = { ...BASE_JOB_QUERY, ...want.patch };
+    expect(emitted(d.wire?.tests, testQuery)).toBe(want.tests);
+    expect(emitted(d.wire?.jobs, jobQuery)).toBe(want.jobs);
+    // With every filter at its default, only `sort` goes out on either endpoint.
+    expect(emitted(d.wire?.tests, BASE_TEST_QUERY)).toBe(want.defaults);
+    expect(emitted(d.wire?.jobs, BASE_JOB_QUERY)).toBe(want.defaults);
+  });
+
+  // The wire `order` each endpoint emits in — the byte order of the hand-written
+  // params.set calls api.ts had before the table, spelled in URL params. The two
+  // endpoints take a filter at different positions (tests sends q last, jobs
+  // third), which is why the order lives per wire entry rather than in the table.
+  const WIRE_ORDER: Record<"tests" | "jobs", string[]> = {
+    tests: ["sort", "stable", "cause", "quarantined", "broken", "issue", "new", "q"],
+    jobs: ["sort", "stable", "q", "pipeline", "issue", "new"],
+  };
+
+  it.each(["tests", "jobs"] as const)(
+    "the %s wire order is the pre-table api.ts byte order",
+    (endpoint) => {
+      const mapped = LIST_FILTERS.flatMap((d) => {
+        const w = d.wire?.[endpoint];
+        return w ? [{ param: d.param, order: w.order }] : [];
+      });
+      const byOrder = [...mapped].sort((a, b) => a.order - b.order);
+      expect(byOrder.map((e) => e.param)).toEqual(WIRE_ORDER[endpoint]);
+      // Every wire entry declares its position: a missing order is a type error,
+      // a duplicated one would make the emission order depend on sort stability.
+      expect(new Set(mapped.map((e) => e.order)).size).toBe(mapped.length);
+    },
+  );
 
   it("a descriptor added to the table drives parse, serialize and the page reset", () => {
     // If any of the three derived functions still enumerated params by hand,

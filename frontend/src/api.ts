@@ -1,17 +1,19 @@
 // Typed contract with the FastAPI backend (mirrors backend/app/schemas.py).
 
+// The list-filter table (urlState.ts) declares each filter's wire name and value
+// spelling; fetchTests/fetchJobs below build their filter params from it. The
+// module graph stays acyclic: urlState.ts imports only *types* from this module,
+// so importing its table at runtime here cannot loop back.
+import { LIST_FILTERS, type FailureCategory, type WireParam } from "./urlState";
+// Home of the taxonomy is urlState.ts, whose `cause` descriptor reads it at
+// table init. Re-exported so every importer keeps its `from "./api"` import.
+export { FAILURE_CATEGORIES } from "./urlState";
+export type { FailureCategory } from "./urlState";
+
 export type Tier = "flaky" | "suspect" | "stable";
 export type SortKey = "score" | "last_seen" | "proven";
 /** Issue link filter: Tests with a linked GitHub issue, or without one. */
 export type IssueFilter = "linked" | "none";
-export type FailureCategory = "network" | "environment" | "timing" | "assertion" | "other";
-export const FAILURE_CATEGORIES: readonly FailureCategory[] = [
-  "network",
-  "environment",
-  "timing",
-  "assertion",
-  "other",
-];
 export type Trend = "worsening" | "improving" | "steady";
 
 export interface ScorePoint {
@@ -203,18 +205,39 @@ export const fetchRepos = () => getJson<RepoInfo[]>("/api/repos");
 export const fetchSummary = (scope: Scope) =>
   getJson<Summary>(withQuery("/api/summary", scopeParams(scope)));
 
+/**
+ * Sets the endpoint's filter params from the table, in each entry's declared
+ * `order` — the byte order of the hand-written params.set calls this table
+ * replaced, so the derived requests are byte-identical to those.
+ */
+function setWireParams<Q extends TestQuery | JobQuery>(
+  params: URLSearchParams,
+  q: Q,
+  wires: (WireParam<Q> | undefined)[],
+): void {
+  const mapped: { w: WireParam<Q>; v: string }[] = [];
+  for (const w of wires) {
+    if (!w) continue;
+    const v = w.value(q);
+    if (v != null) mapped.push({ w, v });
+  }
+  mapped.sort((a, b) => a.w.order - b.w.order);
+  for (const { w, v } of mapped) params.set(w.param, v);
+}
+
 export function fetchTests(q: TestQuery): Promise<TestPage> {
+  // Scope and paging stay hand-written: they are not list filters.
   const params = scopeParams(q);
   params.set("page", String(q.page));
   params.set("page_size", String(q.pageSize));
-  params.set("sort", q.sort);
-  if (q.showStable) params.set("include_stable", "true");
-  if (q.category) params.set("category", q.category);
-  if (q.quarantined) params.set("quarantined", "true");
-  if (q.broken) params.set("broken", "true");
-  if (q.issue) params.set("has_issue", String(q.issue === "linked"));
-  if (q.newWithinDays != null) params.set("new_within_days", String(q.newWithinDays));
-  if (q.q) params.set("q", q.q);
+  // Every filter the Tests endpoint accepts comes from the table, emitted in
+  // the table's wire order (sort, include_stable, category, quarantined,
+  // broken, has_issue, new_within_days, q) — the pre-table api.ts byte order.
+  setWireParams(
+    params,
+    q,
+    LIST_FILTERS.map((d) => d.wire?.tests),
+  );
   return getJson<TestPage>(withQuery("/api/tests", params));
 }
 
@@ -329,16 +352,19 @@ export interface JobQuery {
 }
 
 export function fetchJobs(q: JobQuery): Promise<JobPage> {
+  // Jobs takes no project, so the scope param stays hand-written here, as does
+  // paging. The filters come from the table, emitted in the table's wire order
+  // (sort, include_stable, q, pipeline, has_issue, new_within_days) — the
+  // pre-table api.ts byte order.
   const params = new URLSearchParams();
   if (q.repo) params.set("repo", q.repo);
   params.set("page", String(q.page));
   params.set("page_size", String(q.pageSize));
-  params.set("sort", q.sort);
-  if (q.showStable) params.set("include_stable", "true");
-  if (q.q) params.set("q", q.q);
-  if (q.pipeline) params.set("pipeline", q.pipeline);
-  if (q.issue) params.set("has_issue", String(q.issue === "linked"));
-  if (q.newWithinDays != null) params.set("new_within_days", String(q.newWithinDays));
+  setWireParams(
+    params,
+    q,
+    LIST_FILTERS.map((d) => d.wire?.jobs),
+  );
   return getJson<JobPage>(withQuery("/api/jobs", params));
 }
 
