@@ -1529,9 +1529,11 @@ async fn old_states(
                 (
                     score(get(&row, "flakiness_score")?, "flakiness_score")?,
                     get::<Option<DateTimeWithTimeZone>>(&row, "flaky_since")?,
-                    fail_streak
-                        .then(|| get::<i32>(&row, "fail_streak"))
-                        .transpose()?,
+                    if fail_streak {
+                        Some(get::<i32>(&row, "fail_streak")?)
+                    } else {
+                        None
+                    },
                 ),
             );
         }

@@ -562,9 +562,7 @@ mod tests {
     fn a_json_event_omits_the_url_without_a_public_url() {
         let payloads = render_json(&[recorded_test_change()], "");
         assert_eq!(payloads.len(), 1, "one event renders one payload");
-        let Some(payload) = payloads.first() else {
-            return;
-        };
+        let payload = payloads.first().expect("one event renders one payload");
         assert!(!payload.as_object().expect("an object").contains_key("url"));
     }
 
