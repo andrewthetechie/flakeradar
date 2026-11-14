@@ -390,11 +390,17 @@ The response has these fields:
 - `failures` has one entry for each test that failed or errored in a run of
   that attempt. Each entry has the current `tier`, `flakiness_score`,
   `confirmed_flake_count`, `clean_streak` and `quarantined` of the test, so
-  you can apply your own threshold. `status` is the last try of the test in
-  that run. A test that passed on retry has `status: "passed"` and
-  `failed_attempts` above 0. `message` is the first 1 KB of the failure
-  message. The list holds at most 500 entries. When there are more,
-  `truncated` is `true`, and `total_failures` gives the full count.
+  you can apply your own threshold. `infra_suspect` is `true` when the run
+  the failure came from is suspected infrastructure: most of its tests failed
+  together, so the cause is likely the environment and not the tests.
+  FlakeRadar leaves such a run out of scoring, so the failure says nothing
+  about the test's own flakiness. See
+  [Suspected infrastructure](concepts.md#suspected-infrastructure).
+  `status` is the last try of the test in that run. A test that passed on
+  retry has `status: "passed"` and `failed_attempts` above 0. `message` is the
+  first 1 KB of the failure message. The list holds at most 500 entries. When
+  there are more, `truncated` is `true`, and `total_failures` gives the full
+  count.
 - `failed_jobs` lists the failed jobs of that attempt. `outcome` is `explained`
   when a failing test in the same job explains the failure. It is also
   `explained` when the job is a summary job (`summary: true`) and another
