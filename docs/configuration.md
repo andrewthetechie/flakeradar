@@ -23,7 +23,7 @@ The table gives each name without the `FLAKERADAR_` prefix.
 | `DATABASE_URL` | `postgresql://flakeradar:flakeradar@localhost:5432/flakeradar` | PostgreSQL only. SQLx reads the libpq spellings. An old `postgresql+asyncpg://` URL must drop the `+asyncpg`, and `?ssl=` must become `?sslmode=`. Docker Compose builds this URL itself. |
 | `HOST` / `PORT` | `127.0.0.1` / `8000` | The address that the binary binds. The container image sets `FLAKERADAR_HOST=0.0.0.0`. |
 | `DB_COMMAND_TIMEOUT_SECONDS` | `30` | The time that one SQL statement can run before PostgreSQL cancels it. |
-| `FLAKE_THRESHOLD` | `0.30` | The score at which a test or job becomes flaky. It also sets the tier split in the `/metrics` gauges. |
+| `FLAKE_THRESHOLD` | `0.30` | The score at which a test or job becomes flaky. The `/metrics` gauges count the tier state (`flaky_since`), which `FLAKE_THRESHOLD` and `RECOVER_THRESHOLD` drive. |
 | `RECOVER_THRESHOLD` | `0.20` | The score below which a flaky test or job recovers, clearing its flaky state. It must not be greater than `FLAKE_THRESHOLD`: the band between the two is what stops a score that hovers at the flake threshold from changing the tier on every report ([ADR 0012](adr/0012-tier-hysteresis.md)). |
 | `SCORE_WINDOW` / `SCORE_DECAY` | `50` / `0.85` | The number of executions to score, and the weight for recent executions. |
 | `BROKEN_STREAK` | `5` | The number of consecutive failures on the default branch at which a test is [broken](concepts.md#broken-tests). `0` disables broken detection. |
