@@ -784,3 +784,74 @@ async fn a_tests_tier_reads_the_stored_flaky_state() {
         .expect("the Test");
     assert_eq!(detail.test.tier, Tier::Suspect);
 }
+
+/// Every SQL tier comparison reads the stored flaky state, not the score.
+#[tokio::test]
+async fn every_sql_tier_comparison_reads_the_stored_flaky_state() {
+    let db = TestDb::new().await.expect("a test database");
+    let project = make_project().repo("acme/app").create(&db).await;
+    // `a` is flaky below the Flake threshold, `b` is above the threshold with
+    // nothing stored, and `c` is stable.
+    make_test_case(&project)
+        .name("a")
+        .flakiness_score(0.25)
+        .flaky_since(Some(FIXTURE_INSTANT.fixed_offset()))
+        .create(&db)
+        .await;
+    make_test_case(&project)
+        .name("b")
+        .flakiness_score(0.35)
+        .flaky_since(None)
+        .create(&db)
+        .await;
+    make_test_case(&project).name("c").create(&db).await;
+
+    let counted = summary(db.connection(), &Scope::default(), &settings())
+        .await
+        .expect("the summary");
+    assert_eq!(
+        (
+            counted.flaky_tests,
+            counted.suspect_tests,
+            counted.new_flaky_7d
+        ),
+        (1, 1, 1),
+        "`a` is the flaky row, `b` the suspect, and `a` is new because it has no Score history"
+    );
+
+    let page = list_tests(
+        db.connection(),
+        &Scope::default(),
+        &TestListFilters::default(),
+        &options(|options| options.flaky_only = true),
+        &settings(),
+    )
+    .await
+    .expect("the page");
+    assert_eq!(page.total, 1);
+    assert_eq!(page.items[0].name, "a");
+
+    // The same three shapes as Jobs of one Pipeline.
+    let pipeline = make_pipeline().repo("acme/app").create(&db).await;
+    make_job(&pipeline)
+        .name("a")
+        .flakiness_score(0.25)
+        .flaky_since(Some(FIXTURE_INSTANT.fixed_offset()))
+        .create(&db)
+        .await;
+    make_job(&pipeline)
+        .name("b")
+        .flakiness_score(0.35)
+        .flaky_since(None)
+        .create(&db)
+        .await;
+    make_job(&pipeline).name("c").create(&db).await;
+    let jobs = job_summary(db.connection(), None, &settings())
+        .await
+        .expect("the job summary");
+    assert_eq!(
+        (jobs.flaky_jobs, jobs.suspect_jobs),
+        (1, 1),
+        "a Job counts by its stored flaky state, exactly as a Test does"
+    );
+}

@@ -56,11 +56,39 @@
         "suite": "unit",
         "tier": "flaky",
         "trend": null
+      },
+      {
+        "broken": false,
+        "classname": "tests.test_cart",
+        "clean_streak": 5,
+        "confirmed_flake_count": 0,
+        "fail_streak": 0,
+        "failure_category": "network",
+        "file": "tests/test_cart.py",
+        "fingerprint": "d5eacdb1a07dd752b366dfc83460ecf374a791e6",
+        "flakiness_score": 0.2132,
+        "github_issue_closed": false,
+        "github_issue_number": null,
+        "github_issue_url": null,
+        "id": 2,
+        "last_seen_at": "<timestamp>",
+        "last_status": "passed",
+        "line": 30,
+        "name": "test_suspect",
+        "project": "default",
+        "quarantine_expires_at": null,
+        "quarantine_reason": null,
+        "quarantined": false,
+        "quarantined_at": null,
+        "repo": "o/r",
+        "suite": "unit",
+        "tier": "flaky",
+        "trend": null
       }
     ],
     "page": 1,
     "page_size": 50,
-    "total": 2
+    "total": 3
   },
   "content-type": "application/json",
   "request": {

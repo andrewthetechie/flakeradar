@@ -1210,7 +1210,7 @@
   },
   {
     "id": "tier-hysteresis",
-    "reason": "ADR 0012: a row keeps the flaky tier until its score falls under the Recover threshold, so a `tier` the Rust server reads from `flaky_since` can answer `suspect` where the recorded run (scored against the Flake threshold alone) answered `flaky`, for rows between the two thresholds. The SQL tier filters stay score-based until hyst-sql lands, so these are exactly the `tier` fields of these goldens and nothing else.",
+    "reason": "ADR 0012: a row keeps the flaky tier until its score falls under the Recover threshold, so a `tier` the Rust server reads from `flaky_since` can answer `suspect` where the recorded run (scored against the Flake threshold alone) answered `flaky`, for rows between the two thresholds. These are exactly the `tier` fields of these goldens and nothing else.",
     "allows": [
       {
         "file": "golden/flaky-tests/14.json",
@@ -1271,6 +1271,48 @@
         "field": "body.items.0.tier",
         "pythonValue": "suspect",
         "rustValue": "flaky"
+      }
+    ]
+  },
+  {
+    "id": "tier-state-counts",
+    "reason": "The SQL tier comparisons now read `flaky_since` (ADR 0012) instead of comparing the score with the Flake threshold, so the held-flaky `test_suspect` (score 0.2132, state set) counts as flaky rather than suspect in the summary tiles, and it is counted as newly flaky because it has no Score history to compare with. These are exactly the three summary count fields of these two goldens and nothing else.",
+    "allows": [
+      {
+        "file": "golden/flaky-tests/42.json",
+        "field": "body.flaky_tests",
+        "pythonValue": 2,
+        "rustValue": 3
+      },
+      {
+        "file": "golden/flaky-tests/42.json",
+        "field": "body.new_flaky_7d",
+        "pythonValue": 2,
+        "rustValue": 3
+      },
+      {
+        "file": "golden/flaky-tests/42.json",
+        "field": "body.suspect_tests",
+        "pythonValue": 1,
+        "rustValue": 0
+      },
+      {
+        "file": "golden/flaky-tests/43.json",
+        "field": "body.flaky_tests",
+        "pythonValue": 2,
+        "rustValue": 3
+      },
+      {
+        "file": "golden/flaky-tests/43.json",
+        "field": "body.new_flaky_7d",
+        "pythonValue": 2,
+        "rustValue": 3
+      },
+      {
+        "file": "golden/flaky-tests/43.json",
+        "field": "body.suspect_tests",
+        "pythonValue": 1,
+        "rustValue": 0
       }
     ]
   }
