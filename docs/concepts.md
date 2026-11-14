@@ -60,6 +60,30 @@ Proven flakes count on all branches, because a pass and a fail on the same
 commit show nondeterminism on the same code. Until a report gives the default
 branch, all branches count.
 
+### Suspected infrastructure
+
+When most of a large run fails together, the cause is usually the runner, the
+network or a shared service, and not each test. FlakeRadar then leaves the run
+out of scoring. A run is suspected infrastructure when both hold:
+
+- it has at least `FLAKERADAR_INFRA_MIN_TESTS` distinct tests (default `20`),
+  and
+- at least `FLAKERADAR_INFRA_FAIL_SHARE` of them (default `0.8`) failed or
+  errored on their last attempt.
+
+The last attempt per test decides, so a test that passed on retry does not push
+the run over the share. A small run is never judged: a suite of 3 tests that
+fails entirely has a broken test, not a bad runner. Each run is judged alone, so
+the other runs of the same CI run keep scoring.
+
+Nothing is deleted. The executions stay stored, counted and listed, with their
+failure messages. Only the scoring window drops them, and it does so before the
+window limit, so the run neither scores nor takes up a slot. The flip score, the
+proven flake count, the clean streak, the fail streak and the dominant failure
+category therefore ignore the run. Job scoring and the filing gate still see
+those executions, so a failing test in such a run still explains its job's
+failure. See [ADR 0013](adr/0013-mass-failure-exclusion.md).
+
 ## Broken tests
 
 A test that fails on the default branch in `FLAKERADAR_BROKEN_STREAK`
