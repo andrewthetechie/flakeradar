@@ -123,3 +123,4 @@ With no arguments, the script builds and runs every sample dir that has a
 | cargo-nextest | [quarantine-filter.sh](nextest/quarantine-filter.sh) | -E filterset with not(...) |
 | Vitest / Jest | [vitest-jest/flakeradar-quarantine.mjs](vitest-jest/flakeradar-quarantine.mjs) | testNamePattern negative lookahead |
 | Go | [quarantine-skip.sh](go/quarantine-skip.sh) | go test -skip regexp (Go 1.20+) |
+| Playwright | [playwright/flakeradar-quarantine.ts](playwright/flakeradar-quarantine.ts) | grepInvert in playwright.config.ts |
