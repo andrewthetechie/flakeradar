@@ -316,10 +316,10 @@ const JOBS_BOARD: EntityBoard = EntityBoard {
 /// into a state the query has to guess about.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TierFilter {
-    /// At or above the Flake threshold: the MCP flaky-only listing and the
-    /// "became flaky recently" window.
+    /// The rows whose stored flaky state is set: the MCP flaky-only listing
+    /// and the "became flaky recently" window.
     FlakyOnly,
-    /// Above a zero score: the stable-hiding default.
+    /// Above a zero score, or flaky: the stable-hiding default.
     AboveZero,
     /// Every row.
     All,
@@ -370,14 +370,15 @@ impl Board<'_> {
         let mut joins = String::new();
         match self.tier {
             TierFilter::FlakyOnly => {
-                let placeholder = conditions.bind(Value::from(self.threshold));
-                conditions.raw(format!(
-                    "{}.flakiness_score >= {placeholder}",
-                    self.entity.alias
-                ));
+                conditions.raw(format!("{}.flaky_since IS NOT NULL", self.entity.alias));
             }
             TierFilter::AboveZero => {
-                conditions.raw(format!("{}.flakiness_score > 0", self.entity.alias));
+                // A row can be flaky at a score of 0 when the Recover threshold
+                // is 0, so the state counts as above zero on its own.
+                conditions.raw(format!(
+                    "({}.flakiness_score > 0 OR {}.flaky_since IS NOT NULL)",
+                    self.entity.alias, self.entity.alias
+                ));
             }
             TierFilter::All => {}
         }
@@ -401,6 +402,8 @@ impl Board<'_> {
                 self.entity.alias,
                 self.today - Duration::days(days),
             );
+            // The window compares a past Score, which has no `flaky_since`:
+            // history records the score of its own day, not today's tier state.
             let placeholder = conditions.bind(Value::from(self.threshold));
             conditions.raw(format!(
                 "(past.score IS NULL OR past.score < {placeholder})"
@@ -772,7 +775,7 @@ pub async fn summary(
 ) -> Result<SummaryOut, DbError> {
     let threshold = settings.flake_threshold;
     let today = settings.today();
-    let counts = test_counts(db, scope, threshold).await?;
+    let counts = test_counts(db, scope).await?;
     let new_flaky = new_flaky_count(db, &TEST_TALLY, threshold, today, |binds| {
         scope_conditions(scope, "r.name", "p.name", binds);
     })
@@ -800,9 +803,9 @@ pub async fn summary(
 struct TestCounts {
     /// Every Test in scope.
     total: i64,
-    /// Tests at or above the Flake threshold.
+    /// Tests whose stored flaky state is set.
     flaky: i64,
-    /// Tests above zero but below the threshold.
+    /// Tests above zero that are not flaky.
     suspect: i64,
     /// Tests with at least one Proven flake.
     proven: i64,
@@ -811,13 +814,9 @@ struct TestCounts {
 }
 
 /// The five dashboard tile counts and the Run count, in one statement.
-async fn test_counts(
-    db: &impl ConnectionTrait,
-    scope: &Scope,
-    threshold: f64,
-) -> Result<TestCounts, DbError> {
-    // `$1` is the threshold everywhere; the Runs subquery and the scope follow.
-    let mut runs = Binds::after(2);
+async fn test_counts(db: &impl ConnectionTrait, scope: &Scope) -> Result<TestCounts, DbError> {
+    // The Runs subquery and the scope of the counts are the only binds.
+    let mut runs = Binds::after(1);
     scope_conditions(scope, "trr.name", "tp.name", &mut runs);
     let runs_sql = format!(
         "SELECT count(*) FROM test_runs tr \
@@ -825,15 +824,14 @@ async fn test_counts(
            JOIN repos trr ON trr.id = tp.repo_id{}",
         runs.suffix()
     );
-    let mut counts = Binds::after(2 + runs.values().len());
+    let mut counts = Binds::after(1 + runs.values().len());
     scope_conditions(scope, "r.name", "p.name", &mut counts);
-    let mut values = vec![Value::from(threshold)];
-    values.extend(runs.into_values());
+    let mut values = runs.into_values();
     values.extend(counts.clone().into_values());
     let counts_sql = format!(
         "SELECT count(*) AS total, \
-                count(*) FILTER (WHERE t.flakiness_score >= $1) AS flaky, \
-                count(*) FILTER (WHERE t.flakiness_score > 0 AND t.flakiness_score < $1) AS suspect, \
+                count(*) FILTER (WHERE t.flaky_since IS NOT NULL) AS flaky, \
+                count(*) FILTER (WHERE t.flaky_since IS NULL AND t.flakiness_score > 0) AS suspect, \
                 count(*) FILTER (WHERE t.confirmed_flake_count > 0) AS confirmed, \
                 ({runs_sql}) AS total_runs \
            FROM test_cases t \
@@ -913,7 +911,7 @@ async fn new_flaky_count(
     new_flaky.raw("(past.score IS NULL OR past.score < $1)");
     filter(&mut new_flaky);
     let new_sql = format!(
-        "SELECT count(*) FILTER (WHERE {}.flakiness_score >= $1) AS new_flaky \
+        "SELECT count(*) FILTER (WHERE {}.flaky_since IS NOT NULL) AS new_flaky \
            FROM {} \
            LEFT JOIN LATERAL ({old_point}) AS past ON true{}",
         tally.alias,
@@ -967,7 +965,7 @@ async fn category_counts(
     scope: &Scope,
 ) -> Result<BTreeMap<FailureCategory, i64>, DbError> {
     let mut categories = Binds::after(1);
-    categories.raw("t.flakiness_score > 0");
+    categories.raw("(t.flakiness_score > 0 OR t.flaky_since IS NOT NULL)");
     categories.raw("t.failure_category IS NOT NULL");
     scope_conditions(scope, "r.name", "p.name", &mut categories);
     let categories_sql = format!(
@@ -1743,22 +1741,21 @@ pub async fn job_summary(
     settings: &ReadSettings,
 ) -> Result<JobSummaryOut, DbError> {
     let threshold = settings.flake_threshold;
-    let mut counts = Binds::after(2);
+    let mut counts = Binds::after(1);
     if let Some(repo) = repo {
         counts.eq("r.name", Value::from(repo.to_owned()));
     }
     let counts_sql = format!(
         "SELECT count(*) AS total, \
-                count(*) FILTER (WHERE j.flakiness_score >= $1) AS flaky, \
-                count(*) FILTER (WHERE j.flakiness_score > 0 AND j.flakiness_score < $1) AS suspect, \
+                count(*) FILTER (WHERE j.flaky_since IS NOT NULL) AS flaky, \
+                count(*) FILTER (WHERE j.flaky_since IS NULL AND j.flakiness_score > 0) AS suspect, \
                 count(*) FILTER (WHERE j.confirmed_flake_count > 0) AS confirmed \
            FROM jobs j \
            JOIN pipelines p ON p.id = j.pipeline_id \
            JOIN repos r ON r.id = p.repo_id{}",
         counts.suffix()
     );
-    let mut values = vec![Value::from(threshold)];
-    values.extend(counts.into_values());
+    let values = counts.into_values();
     let row = required_one(db, counts_sql, values, "job summary").await?;
     let total: i64 = get(&row, "total")?;
     let flaky: i64 = get(&row, "flaky")?;

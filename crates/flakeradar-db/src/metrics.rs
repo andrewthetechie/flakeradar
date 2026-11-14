@@ -32,11 +32,12 @@ const QUEUE_SQL: &str = "
          FROM reports WHERE status = 'pending') AS oldest
 ";
 
-// The tiers are the cached score columns, classified exactly as
-// `flakeradar_core::helpers::tier_for` does: at or above the Flake threshold is flaky,
-// above 0 suspect, otherwise stable.
+// The tiers are the stored tier state: a row with `flaky_since` set is flaky,
+// one above 0 without it is suspect, otherwise stable. The rescore stamps
+// `flaky_since` from `FLAKE_THRESHOLD` and clears it at `RECOVER_THRESHOLD`, so
+// these gauges count exactly the tier every API row reports.
 const TEST_TIERS_SQL: &str = "
-    SELECT CASE WHEN flakiness_score >= $1 THEN 'flaky'
+    SELECT CASE WHEN flaky_since IS NOT NULL THEN 'flaky'
                 WHEN flakiness_score > 0 THEN 'suspect'
                 ELSE 'stable' END AS tier,
            count(*) AS count
@@ -44,7 +45,7 @@ const TEST_TIERS_SQL: &str = "
 ";
 
 const JOB_TIERS_SQL: &str = "
-    SELECT CASE WHEN flakiness_score >= $1 THEN 'flaky'
+    SELECT CASE WHEN flaky_since IS NOT NULL THEN 'flaky'
                 WHEN flakiness_score > 0 THEN 'suspect'
                 ELSE 'stable' END AS tier,
            count(*) AS count
@@ -97,28 +98,22 @@ pub async fn report_status_counts(
     counts(db, REPORT_STATUSES_SQL, "status", None).await
 }
 
-/// How many Tests hold each tier, at `threshold`.
+/// How many Tests hold each tier, by their stored `flaky_since` state.
 ///
 /// # Errors
 ///
 /// Returns [`DbError::Database`] when the statement fails.
-pub async fn test_tier_counts(
-    db: &impl ConnectionTrait,
-    threshold: f64,
-) -> Result<BTreeMap<String, i64>, DbError> {
-    counts(db, TEST_TIERS_SQL, "tier", Some(threshold)).await
+pub async fn test_tier_counts(db: &impl ConnectionTrait) -> Result<BTreeMap<String, i64>, DbError> {
+    counts(db, TEST_TIERS_SQL, "tier", None).await
 }
 
-/// How many Jobs hold each tier, at `threshold`.
+/// How many Jobs hold each tier, by their stored `flaky_since` state.
 ///
 /// # Errors
 ///
 /// Returns [`DbError::Database`] when the statement fails.
-pub async fn job_tier_counts(
-    db: &impl ConnectionTrait,
-    threshold: f64,
-) -> Result<BTreeMap<String, i64>, DbError> {
-    counts(db, JOB_TIERS_SQL, "tier", Some(threshold)).await
+pub async fn job_tier_counts(db: &impl ConnectionTrait) -> Result<BTreeMap<String, i64>, DbError> {
+    counts(db, JOB_TIERS_SQL, "tier", None).await
 }
 
 /// The Unix time of the most recently processed Report still retained.

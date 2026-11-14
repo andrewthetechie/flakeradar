@@ -102,8 +102,7 @@ pub async fn ready(State(state): State<AppState>) -> ApiResult<Response> {
     responses((status = 200, body = String, content_type = "text/plain"), (status = 503, description = "The database does not answer"))
 )]
 pub async fn metrics(State(state): State<AppState>) -> Response {
-    let threshold = state.settings().flake_threshold;
-    match collect(state.pool(), threshold).await {
+    match collect(state.pool()).await {
         Ok(snapshot) => (
             [(header::CONTENT_TYPE, PROMETHEUS_MEDIA_TYPE)],
             render(&snapshot),
@@ -147,12 +146,12 @@ struct Snapshot {
 }
 
 /// Reads every number one scrape reports.
-async fn collect(pool: &DatabaseConnection, threshold: f64) -> Result<Snapshot, DbError> {
+async fn collect(pool: &DatabaseConnection) -> Result<Snapshot, DbError> {
     Ok(Snapshot {
         facts: queue_facts(pool, WORKER_LOCK_KEY).await?,
         statuses: report_status_counts(pool).await?,
-        tests: test_tier_counts(pool, threshold).await?,
-        jobs: job_tier_counts(pool, threshold).await?,
+        tests: test_tier_counts(pool).await?,
+        jobs: job_tier_counts(pool).await?,
         last_processed: last_processed_at(pool).await?,
     })
 }

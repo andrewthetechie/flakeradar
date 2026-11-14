@@ -37,10 +37,13 @@ default is 7 days.
 `flakeradar_processor_leader 0` during a redeploy is normal. The lock moves
 between processes, so this value alone is not a reason for an alert.
 
-Two settings change the `/metrics` output:
+These settings change the `/metrics` output:
 
-- `FLAKERADAR_FLAKE_THRESHOLD` sets the tier of each test and job in the
-  `flakeradar_tests{tier}` and `flakeradar_jobs{tier}` gauges.
+- `FLAKERADAR_FLAKE_THRESHOLD` and `FLAKERADAR_RECOVER_THRESHOLD` drive the tier
+  state (`flaky_since`) that the `flakeradar_tests{tier}` and
+  `flakeradar_jobs{tier}` gauges count: a test or job whose `flaky_since` is set
+  counts as flaky even once its score has fallen under the flake threshold
+  ([ADR 0012](adr/0012-tier-hysteresis.md)).
 - `FLAKERADAR_REPORT_RETENTION_DAYS` sets when FlakeRadar deletes the processed
   reports that give the last-processed timestamp.
 

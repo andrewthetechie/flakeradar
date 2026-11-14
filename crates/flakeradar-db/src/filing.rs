@@ -270,6 +270,9 @@ pub async fn test_candidates(
         } else {
             ""
         };
+        // This comparison is the GitHub filing gate (`GITHUB_ISSUE_MIN_SCORE`):
+        // a score, not a tier. A row whose tier is merely suspect files nothing,
+        // so `flaky_since` is not what this query reads.
         let sql = format!(
             "SELECT t.*, p.name AS project_name, p.root AS root, r.name AS repo_name \
              FROM test_cases t JOIN projects p ON p.id = t.project_id \
@@ -321,6 +324,9 @@ pub async fn job_candidates(
         } else {
             ""
         };
+        // This comparison is the GitHub filing gate (`GITHUB_ISSUE_MIN_SCORE`):
+        // a score, not a tier. A Job whose tier is merely suspect files nothing,
+        // so `flaky_since` is not what this query reads.
         let sql = format!(
             "SELECT j.*, p.name AS pipeline_name, r.name AS repo_name \
              FROM jobs j JOIN pipelines p ON p.id = j.pipeline_id \

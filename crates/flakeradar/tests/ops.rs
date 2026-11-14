@@ -22,8 +22,8 @@ use flakeradar_core::types::Score;
 use flakeradar_db::WORKER_LOCK_KEY;
 use flakeradar_db::entities::projects;
 use flakeradar_test_support::{
-    CapturedLog, Reply, TestDb, app, get, make_job, make_pipeline, make_project, make_report,
-    make_test_case, settings,
+    CapturedLog, FIXTURE_INSTANT, Reply, TestDb, app, get, make_job, make_pipeline, make_project,
+    make_report, make_test_case, settings,
 };
 
 use sea_orm::{ConnectionTrait, DatabaseConnection, DbBackend, Statement, TransactionTrait as _};
@@ -373,6 +373,46 @@ async fn metrics_tiers_classify_like_tier_for() {
             Some(count.as_str()),
             "{tier}"
         );
+    }
+}
+
+#[tokio::test]
+async fn metrics_tiers_count_the_flaky_state() {
+    // The gauges count the stored tier state, so they disagree with the score in
+    // both directions: `a` is flaky at a score of 0, which the rescore leaves
+    // there when the Recover threshold is 0, and `b` is only suspect above the
+    // Flake threshold while nothing is stored.
+    let db = TestDb::new().await.expect("a test database is available");
+    let project = make_project().create(&db).await;
+    let pipeline = make_pipeline().create(&db).await;
+    for (name, score, flaky) in [("a", 0.0, true), ("b", 0.35, false), ("c", 0.0, false)] {
+        let since = flaky.then(|| FIXTURE_INSTANT.fixed_offset());
+        make_test_case(&project)
+            .name(name)
+            .flakiness_score(score)
+            .flaky_since(since)
+            .create(&db)
+            .await;
+        make_job(&pipeline)
+            .name(name)
+            .flakiness_score(score)
+            .flaky_since(since)
+            .create(&db)
+            .await;
+    }
+
+    let reply = get(&app_for(&db), "/metrics").await;
+    assert_eq!(reply.status, StatusCode::OK);
+    let got = samples(&reply.text());
+    for family in ["tests", "jobs"] {
+        for tier in ["flaky", "suspect", "stable"] {
+            assert_eq!(
+                got.get(&format!("flakeradar_{family}{{tier=\"{tier}\"}}"))
+                    .map(String::as_str),
+                Some("1"),
+                "{family} {tier}"
+            );
+        }
     }
 }
 
