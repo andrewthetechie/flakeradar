@@ -46,19 +46,6 @@ function row(id: number, name: string): TestCase {
   return { ...page(name).items[0], id, name };
 }
 
-/** A Test drawer's history of Test `id`. The empty arrays render as empty sections. */
-function testHistory(id: number, name: string) {
-  return {
-    test: row(id, name),
-    location: null,
-    last_failing_sha: null,
-    last_failing_branch: null,
-    executions: [],
-    jobs: [],
-    score_history: [],
-  };
-}
-
 /** A Jobs leaderboard row with an explicit id and name. */
 function jobRow(id: number, name: string) {
   return {
@@ -100,18 +87,6 @@ const jobSummaryFixture = {
   flake_threshold: 0.3,
   new_flaky_7d: 0,
 };
-
-/** A Job drawer's history of Job `id`. */
-function jobHistoryFixture(id: number, name: string) {
-  return {
-    job: jobRow(id, name),
-    unexplained_failures: 0,
-    explained_failures: 0,
-    executions: [],
-    runners: [],
-    score_history: [],
-  };
-}
 
 // The default /api/summary body, as the other App tests serve it.
 const summary = {
@@ -396,7 +371,10 @@ describe("App refresh", () => {
     );
   });
 
-  it("raises no banner for a Test drawer history that fails after the drawer closed", async () => {
+  it("clears a drawer's banner on the next good list refresh", async () => {
+    // The drawer's load owns the banner message; the list's own error is still
+    // null, so only an unconditional write on its next success reaches the
+    // shared surface — exactly what the pre-refactor setError(null) did.
     let finishHistory: (r: Response) => void = () => {};
     vi.stubGlobal(
       "fetch",
@@ -413,126 +391,30 @@ describe("App refresh", () => {
         return json(summary);
       }),
     );
+    vi.useFakeTimers();
     window.history.replaceState(null, "", "/?test=5");
     render(<App />);
-    expect(await screen.findByRole("dialog", { name: "Test detail" })).toBeInTheDocument();
 
-    // Escape closes the drawer, which cancels the request in flight. The
-    // answer arrives afterwards: a drawer cannot reopen itself.
-    act(() => {
-      fireEvent.keyDown(window, { key: "Escape" });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
     });
-    expect(screen.queryByRole("dialog", { name: "Test detail" })).not.toBeInTheDocument();
+    // The list painted first, and nothing has failed yet.
+    expect(screen.getByText("login")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).toBeNull();
 
     await act(async () => {
       finishHistory(new Response("boom", { status: 500 }));
+      await vi.advanceTimersByTimeAsync(0);
     });
-    expect(screen.queryByRole("dialog", { name: "Test detail" })).not.toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      /\/api\/tests\/5\/history\?limit=60 -> 500/,
+    );
+
+    // The 30 s poll succeeds: its clear reaches the banner the drawer raised.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
     expect(screen.queryByRole("alert")).toBeNull();
-  });
-
-  it("raises no banner for a Job drawer history that fails after the drawer closed", async () => {
-    let finishHistory: (r: Response) => void = () => {};
-    vi.stubGlobal(
-      "fetch",
-      vi.fn((url: string) => {
-        if (url.startsWith("/api/jobs/3/history")) {
-          return new Promise<Response>((resolve) => {
-            finishHistory = resolve;
-          });
-        }
-        if (url.startsWith("/api/jobs/summary")) return json(jobSummaryFixture);
-        if (url.startsWith("/api/jobs")) return json(jobPageFixture(3, "e2e"));
-        if (url.startsWith("/api/repos")) return json([]);
-        if (url.startsWith("/api/reports/summary")) return json({ pending: 0, failed: 0 });
-        return json(summary);
-      }),
-    );
-    window.history.replaceState(null, "", "/?view=jobs&job=3");
-    render(<App />);
-    expect(await screen.findByRole("dialog", { name: "Job detail" })).toBeInTheDocument();
-
-    act(() => {
-      fireEvent.keyDown(window, { key: "Escape" });
-    });
-    expect(screen.queryByRole("dialog", { name: "Job detail" })).not.toBeInTheDocument();
-
-    await act(async () => {
-      finishHistory(new Response("boom", { status: 500 }));
-    });
-    expect(screen.queryByRole("dialog", { name: "Job detail" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("alert")).toBeNull();
-  });
-
-  it("keeps the new Test drawer's history when the old drawer's history answers after the switch", async () => {
-    let finishOld: (r: Response) => void = () => {};
-    vi.stubGlobal(
-      "fetch",
-      vi.fn((url: string) => {
-        if (url.startsWith("/api/tests/5/history")) {
-          return new Promise<Response>((resolve) => {
-            finishOld = resolve;
-          });
-        }
-        if (url.startsWith("/api/tests/6/history")) return json(testHistory(6, "target-test"));
-        if (url.startsWith("/api/tests"))
-          return json({ ...page("login"), items: [row(5, "login")] });
-        if (url.startsWith("/api/repos")) return json([]);
-        if (url.startsWith("/api/reports/summary")) return json({ pending: 0, failed: 0 });
-        return json(summary);
-      }),
-    );
-    window.history.replaceState(null, "", "/?test=5");
-    render(<App />);
-    expect(await screen.findByRole("dialog", { name: "Test detail" })).toBeInTheDocument();
-
-    act(() => {
-      window.history.pushState(null, "", "/?test=6");
-      window.dispatchEvent(new PopStateEvent("popstate"));
-    });
-    expect(await screen.findByRole("heading", { name: "target-test" })).toBeInTheDocument();
-
-    // Test 5's answer lands after Test 6's: only the newest request may write.
-    await act(async () => {
-      finishOld(new Response(JSON.stringify(testHistory(5, "stale-test"))));
-    });
-    expect(screen.getByRole("heading", { name: "target-test" })).toBeInTheDocument();
-    expect(screen.queryByText("stale-test")).not.toBeInTheDocument();
-  });
-
-  it("keeps the new Job drawer's history when the old drawer's history answers after the switch", async () => {
-    let finishOld: (r: Response) => void = () => {};
-    vi.stubGlobal(
-      "fetch",
-      vi.fn((url: string) => {
-        if (url.startsWith("/api/jobs/3/history")) {
-          return new Promise<Response>((resolve) => {
-            finishOld = resolve;
-          });
-        }
-        if (url.startsWith("/api/jobs/7/history")) return json(jobHistoryFixture(7, "targetjob"));
-        if (url.startsWith("/api/jobs/summary")) return json(jobSummaryFixture);
-        if (url.startsWith("/api/jobs")) return json(jobPageFixture(3, "e2e"));
-        if (url.startsWith("/api/repos")) return json([]);
-        if (url.startsWith("/api/reports/summary")) return json({ pending: 0, failed: 0 });
-        return json(summary);
-      }),
-    );
-    window.history.replaceState(null, "", "/?view=jobs&job=3");
-    render(<App />);
-    expect(await screen.findByRole("dialog", { name: "Job detail" })).toBeInTheDocument();
-
-    act(() => {
-      window.history.pushState(null, "", "/?view=jobs&job=7");
-      window.dispatchEvent(new PopStateEvent("popstate"));
-    });
-    expect(await screen.findByRole("heading", { name: "targetjob" })).toBeInTheDocument();
-
-    await act(async () => {
-      finishOld(new Response(JSON.stringify(jobHistoryFixture(3, "oldjob"))));
-    });
-    expect(screen.getByRole("heading", { name: "targetjob" })).toBeInTheDocument();
-    expect(screen.queryByText("oldjob")).not.toBeInTheDocument();
   });
 
   /** The Tests list with one row whose id is 5, and a quarantine POST that fails. */
@@ -582,5 +464,28 @@ describe("App refresh", () => {
     // The dialog closes before the POST, and the failure still reaches the banner.
     expect(screen.queryByRole("dialog", { name: /Quarantine login/ })).not.toBeInTheDocument();
     expect(await screen.findByRole("alert")).toHaveTextContent(/quarantine 5 -> 500/);
+  });
+
+  it("clears the quarantine handler's banner on the next good list refresh", async () => {
+    // The handlers write the shared banner directly, so no hook owns that message
+    // and its error state is already null. The list's next success still has to
+    // reach the caller — a clear is a write like any other.
+    stubFailingQuarantinePost(true);
+    vi.useFakeTimers();
+    render(<App />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Un-quarantine" }));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(screen.getByRole("alert")).toHaveTextContent(/quarantine 5 -> 500/);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 });

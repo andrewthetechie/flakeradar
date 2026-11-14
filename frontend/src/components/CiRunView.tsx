@@ -1,12 +1,12 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   ApiError,
   fetchCiRunFailures,
-  latestWins,
   type CiRunFailedJob,
   type CiRunFailures,
   type CiRunTestFailure,
 } from "../api";
+import { useGuardedLoad, type GuardedLoader } from "../guardedLoad";
 import { breakable } from "../breakable";
 import { StatusMark } from "./StatusMark";
 import { SummaryBadge } from "./SummaryBadge";
@@ -247,42 +247,35 @@ export function CiRunView({
   onOpenTest: (testId: number) => void;
   onOpenJob: (jobId: number) => void;
 }) {
-  const [data, setData] = useState<CiRunFailures | null>(null);
   const [missing, setMissing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [reload, setReload] = useState(0);
   // Bumped when a request settles, so the next poll is timed from the answer
   // and a slow or failing one never stacks.
   const [settled, setSettled] = useState(0);
 
-  // Only the newest request may write state: an answer for an attempt the
-  // user has since picked again must not overwrite the view. The comparison
-  // belongs to the api module's latestWins guard, held here for the lifetime
-  // of the component so it outlives each poll.
-  const guardRef = useRef(latestWins());
+  // Only the newest request may write state: an answer for an attempt the user
+  // has since picked again must not overwrite the view. The guarded-load hook
+  // owns that comparison, the token and the error mapping, and keeps its guard
+  // for the lifetime of the component so it outlives each poll. This loader is
+  // a plain fetch: it takes the guard and the token and needs neither.
+  const load = useCallback<GuardedLoader<CiRunFailures>>(
+    () => fetchCiRunFailures(repo, ciRun, attempt),
+    // reload is unread here on purpose: it is the poll's re-fetch trigger,
+    // carried on the loader's identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [repo, ciRun, attempt, reload],
+  );
 
-  useEffect(() => {
-    const guard = guardRef.current;
-    const request = guard.start();
-    fetchCiRunFailures(repo, ciRun, attempt)
-      .then((d) => {
-        if (!guard.current(request)) return;
-        setData(d);
-        setMissing(false);
-        setError(null);
-        setSettled((n) => n + 1);
-      })
-      .catch((e) => {
-        if (!guard.current(request)) return;
-        const notFound = isNotFound(e);
-        // A 404 means nothing is known about this CI run, so drop whatever is
-        // on screen rather than showing a different attempt's rows.
-        if (notFound) setData(null);
-        setMissing(notFound);
-        setError(e instanceof Error ? e.message : String(e));
-        setSettled((n) => n + 1);
-      });
-  }, [repo, ciRun, attempt, reload]);
+  const { data, error } = useGuardedLoad<CiRunFailures>(load, {
+    clearErrorOnSuccess: true,
+    // A 404 means nothing is known about this CI run, so drop whatever is on
+    // screen rather than showing a different attempt's rows. Any other failure
+    // says nothing about the attempt, so its rows stay.
+    clearDataOn: isNotFound,
+    onData: () => setMissing(false),
+    onFailure: (e) => setMissing(isNotFound(e)),
+    onSettled: () => setSettled((n) => n + 1),
+  });
 
   // Reports still landing: ask again until the attempt is fully processed.
   useEffect(() => {
