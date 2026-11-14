@@ -1,8 +1,8 @@
 # Notifications
 
-FlakeRadar can post a message when a test or a job becomes flaky, and when it
-recovers. This is for teams who work in Slack and do not want an issue for each
-flaky test.
+FlakeRadar can post a message when a test or a job becomes flaky, when it
+recovers, and when a test becomes broken. This is for teams who work in Slack and
+do not want an issue for each flaky test.
 
 ## Set up
 
@@ -17,15 +17,19 @@ FLAKERADAR_PUBLIC_URL=https://flakeradar.example.com
 
 ## Events
 
-FlakeRadar sends a message only when a test or job changes tier: when it becomes
-flaky, or when its flaky state is cleared. A test or job becomes flaky when its
-score reaches the flake threshold, and stays flaky until its score falls below the
-recover threshold:
+FlakeRadar sends a message when a test or job changes tier — when it becomes
+flaky, or when its flaky state is cleared — and when a test becomes broken. A
+test or job becomes flaky when its score reaches the flake threshold, and stays
+flaky until its score falls below the recover threshold. A test becomes broken
+when its fail streak on the default branch reaches the broken threshold, and a
+pass on the default branch resets that streak. A job has no fail streak, so it
+never sends a broken event:
 
 | Event | When |
 |---|---|
 | `test.flaky` | The score of a test reached the flake threshold, setting its flaky state. |
 | `test.recovered` | The score of a test fell below the recover threshold, clearing its flaky state. |
+| `test.broken` | The fail streak of a test on the default branch reached the broken threshold, marking it broken. |
 | `job.flaky` | The score of a job reached the flake threshold, setting its flaky state. |
 | `job.recovered` | The score of a job fell below the recover threshold, clearing its flaky state. |
 
@@ -41,12 +45,14 @@ FlakeRadar sends nothing in these cases:
   that it changed. The log records how many events FlakeRadar dropped.
 - Retention deletes old executions, and a score falls as a result. The log
   records how many events FlakeRadar dropped.
-- A test that is now [broken](concepts.md#broken-tests) leaves the flaky tier.
-  A broken test has not recovered, so there is no closing event. Thus
-  `test.flaky` can be the last event that you see for that test. When someone
-  fixes the test later, you get an event only when the flaky state moves again: a
-  score that reaches the flake threshold sends a new `test.flaky`, and a later
-  score below the recover threshold sends `test.recovered`.
+- A test that is [broken](concepts.md#broken-tests) leaves the flaky tier. A
+  broken test has not recovered, so that crossing sends no `test.recovered`. The
+  break itself sent `test.broken`, when the fail streak first reached the broken
+  threshold, and a test that stops being broken sends nothing: the pass that
+  resets the streak is no event. So `test.flaky` or `test.broken` can be the last
+  event that you see for a test, and you hear about it again when its flaky state
+  moves — a score that reaches the flake threshold sends a new `test.flaky`, and a
+  later score below the recover threshold sends `test.recovered`.
 
 ## Formats
 
@@ -76,12 +82,19 @@ that the report changed. One report is one request:
 A job event has `"project": null` and a `job` object with `id`, `pipeline`,
 `name`, `flakiness_score`, `tier` and `confirmed_flake_count`. Its `url` opens
 the jobs view. FlakeRadar leaves out `url` when `FLAKERADAR_PUBLIC_URL` is
-empty.
+empty. A `test.broken` event has the same keys as the one above, with
+`"event": "test.broken"` and the tier and score the test has now.
 
 `slack` posts `{"text": ...}` with one line for each event:
 
 ```
 FlakeRadar: acme/app / backend — test "test_login" became flaky (score 0.42) https://flakeradar.example.com/?repo=acme%2Fapp&project=backend&test=42
+```
+
+A broken test names the branch it broke on:
+
+```
+FlakeRadar: acme/app / backend — test "test_login" is broken on the default branch (score 0.00) https://flakeradar.example.com/?repo=acme%2Fapp&project=backend&test=42
 ```
 
 ## Delivery

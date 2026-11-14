@@ -199,6 +199,17 @@ fn a_standalone_document_keeps_its_undefined_entity_refused() {
 }
 
 #[test]
+fn a_standalone_word_without_a_value_is_refused() {
+    // `standalone` with no `=` and no value is a declaration no reader can
+    // interpret, so the document is refused rather than guessed at, and the
+    // undefined reference is not skipped to rescue it.
+    let error = refused(
+        br#"<?xml version="1.0" standalone?><!DOCTYPE t SYSTEM "x.dtd"><testsuite><testcase name="a&nope;b"/></testsuite>"#,
+    );
+    assert!(matches!(error, ParseError::InvalidXml { .. }), "{error}");
+}
+
+#[test]
 fn an_empty_entity_reference_is_refused() {
     // `&;` names no entity, not even the empty one: the skip reads it as no
     // reference at all and leaves the text for the parser, which refuses it.

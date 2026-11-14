@@ -166,4 +166,24 @@ describe("LeaderboardControls sort and filter handlers", () => {
     // fallback renders the box unchecked.
     expect(screen.getByRole("checkbox", { name: /broken on default branch/i })).not.toBeChecked();
   });
+
+  it("the broken checkbox reports the new value", () => {
+    const onBroken = vi.fn();
+    const { unmount } = render(
+      <LeaderboardControls {...base} broken={false} onBroken={onBroken} />,
+    );
+    fireEvent.click(screen.getByRole("checkbox", { name: /broken on default branch/i }));
+    expect(onBroken).toHaveBeenLastCalledWith(true);
+    unmount();
+    render(<LeaderboardControls {...base} broken={true} onBroken={onBroken} />);
+    fireEvent.click(screen.getByRole("checkbox", { name: /broken on default branch/i }));
+    expect(onBroken).toHaveBeenLastCalledWith(false);
+  });
+
+  it("shows no broken checkbox for a view without the handler (jobs)", () => {
+    render(<LeaderboardControls {...base} />);
+    expect(
+      screen.queryByRole("checkbox", { name: /broken on default branch/i }),
+    ).not.toBeInTheDocument();
+  });
 });

@@ -26,11 +26,12 @@ pub enum WebhookFormat {
     Slack,
 }
 
-/// One Test's or Job's crossing of the Flake threshold, snapshotted at detection.
+/// One event about a Test or Job, snapshotted at detection.
 ///
 /// `tier` is the new tier, so the direction of the event follows from it and the
-/// two can never disagree. Test values come from the same rescore that wrote
-/// them; a Job has no Project and no Failure category.
+/// two can never disagree, except for a broken change, which reports a Fail
+/// streak instead of a crossing. Test values come from the same rescore that
+/// wrote them; a Job has no Project and no Failure category.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TierChange {
     /// Whether a Test or a Job crossed.
@@ -55,13 +56,19 @@ pub struct TierChange {
     pub pipeline: Option<String>,
     /// The Test's Failure category, or `None` for a Job.
     pub failure_category: Option<FailureCategory>,
+    /// This change reports a Test whose Fail streak just reached the broken
+    /// threshold, not a tier crossing.
+    pub broken: bool,
 }
 
 impl TierChange {
-    /// The event name: `test.flaky`, `test.recovered`, `job.flaky` or
-    /// `job.recovered`.
+    /// The event name: `test.broken`, `test.flaky`, `test.recovered`,
+    /// `job.flaky` or `job.recovered`.
     #[must_use]
     pub fn event(&self) -> String {
+        if self.broken {
+            return format!("{}.broken", self.kind.as_str());
+        }
         let direction = if self.tier == Tier::Flaky {
             "flaky"
         } else {
@@ -206,7 +213,10 @@ fn slack_line(change: &TierChange, public_url: &str) -> String {
             .as_deref()
             .map_or_else(String::new, |pipeline| format!(" in {pipeline}")),
     };
-    let verb = if change.tier == Tier::Flaky {
+    let verb = if change.broken {
+        // Only a Test can be broken, so the wording needs no Job variant.
+        "is broken on the default branch"
+    } else if change.tier == Tier::Flaky {
         "became flaky"
     } else {
         "recovered"
@@ -272,6 +282,7 @@ mod tests {
             classname: Some("tests.login".to_owned()),
             pipeline: None,
             failure_category: Some(FailureCategory::Assertion),
+            broken: false,
         }
     }
 
@@ -288,7 +299,73 @@ mod tests {
             classname: None,
             pipeline: Some("ci.yml".to_owned()),
             failure_category: None,
+            broken: false,
         }
+    }
+
+    /// The same Test, reported broken instead of crossing.
+    fn broken_change() -> TierChange {
+        TierChange {
+            broken: true,
+            ..test_change()
+        }
+    }
+
+    #[test]
+    fn a_broken_change_is_its_own_event() {
+        assert_eq!(broken_change().event(), "test.broken");
+    }
+
+    #[test]
+    fn a_broken_json_event_has_the_flaky_event_keys() {
+        let broken = render_json(&[broken_change()], "https://flakes.example");
+        let flaky = render_json(&[test_change()], "https://flakes.example");
+        let broken = broken.first().expect("one payload");
+        let flaky = flaky.first().expect("one payload");
+        assert_eq!(broken["event"], json!("test.broken"));
+        assert_eq!(
+            broken
+                .as_object()
+                .expect("an object")
+                .keys()
+                .collect::<Vec<_>>(),
+            flaky
+                .as_object()
+                .expect("an object")
+                .keys()
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            broken["test"]
+                .as_object()
+                .expect("an object")
+                .keys()
+                .collect::<Vec<_>>(),
+            flaky["test"]
+                .as_object()
+                .expect("an object")
+                .keys()
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a_broken_slack_line_names_the_default_branch() {
+        assert_eq!(
+            render_slack(&[broken_change()], "")["text"],
+            json!(
+                "FlakeRadar: acme/app / frontend — test \"test_login\" is broken on the \
+                 default branch (score 0.50)"
+            )
+        );
+        assert_eq!(
+            render_slack(&[broken_change()], "https://flakes.example")["text"],
+            json!(
+                "FlakeRadar: acme/app / frontend — test \"test_login\" is broken on the \
+                 default branch (score 0.50) \
+                 https://flakes.example/?repo=acme%2Fapp&project=frontend&test=7"
+            )
+        );
     }
 
     #[test]
@@ -402,6 +479,7 @@ mod tests {
             classname: Some("tests.test_auth".to_owned()),
             pipeline: None,
             failure_category: Some(FailureCategory::Timing),
+            broken: false,
         }
     }
 
@@ -420,6 +498,7 @@ mod tests {
             classname: None,
             pipeline: Some(".github/workflows/ci.yml".to_owned()),
             failure_category: None,
+            broken: false,
         }
     }
 
@@ -483,9 +562,7 @@ mod tests {
     fn a_json_event_omits_the_url_without_a_public_url() {
         let payloads = render_json(&[recorded_test_change()], "");
         assert_eq!(payloads.len(), 1, "one event renders one payload");
-        let Some(payload) = payloads.first() else {
-            return;
-        };
+        let payload = payloads.first().expect("one event renders one payload");
         assert!(!payload.as_object().expect("an object").contains_key("url"));
     }
 

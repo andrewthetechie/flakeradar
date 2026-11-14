@@ -152,10 +152,12 @@ threshold moves nothing, and a move between Stable and Suspect is not one either
 because it crosses no state. See [ADR 0012](docs/adr/0012-tier-hysteresis.md).
 
 **Notification**:
-A message about a Tier change, sent to every configured Webhook URL: a Test or
-Job that became flaky, or one that left the flaky tier. A Test that is now
-broken has not recovered and sends none; its later fix sends one only if the
-score crosses the threshold again. A Report that changes the Default branch
+A message sent to every configured Webhook URL: a Test or Job that became flaky,
+one that left the flaky tier, or a Test whose **Fail streak** just reached the
+broken threshold on the Default branch (`test.broken`). A Test that is now broken
+has not recovered, so leaving the flaky tier sends it no `test.recovered`; a Test
+that stops being broken sends nothing, and its later fix sends a Notification only
+if the score crosses the threshold again. A Report that changes the Default branch
 sends none, and neither does a retention prune. A Notification is best effort:
 FlakeRadar keeps no record of it, so one that is not delivered is lost.
 _Avoid_: Alert, webhook (that is the transport, not the message)

@@ -444,6 +444,7 @@ mod tests {
             classname: Some("tests.test_cart".to_owned()),
             pipeline: None,
             failure_category: None,
+            broken: false,
         }
     }
 
