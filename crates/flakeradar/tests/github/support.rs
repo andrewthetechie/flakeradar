@@ -15,7 +15,7 @@ use flakeradar_db::processing::ProcessOutcome;
     reason = "the module's own users name these helpers through it"
 )]
 pub(crate) use flakeradar_test_support::{
-    CapturedLog, IssueLink as Link, link_of, link_table, stamp, stamp_link, stamp_note,
+    CapturedLog, IssueLink as Link, clear_note, link_of, link_table, stamp, stamp_link, stamp_note,
 };
 use flakeradar_test_support::{
     TestDb, make_execution, make_job, make_job_execution, make_pipeline, make_project, make_run,

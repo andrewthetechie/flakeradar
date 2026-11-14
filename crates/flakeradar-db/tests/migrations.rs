@@ -342,6 +342,22 @@ fn ignores_semicolons_in_line_comments() {
 }
 
 #[test]
+fn a_dash_that_does_not_open_a_comment_is_sql() {
+    // Only `--` starts a comment, so arithmetic keeps its own dash.
+    assert_eq!(split_statements("SELECT 1 - 2;"), ["SELECT 1 - 2"]);
+}
+
+#[test]
+fn an_unterminated_quote_keeps_the_rest_of_the_script() {
+    // The quote never closes before the script ends, so the semicolons after it
+    // stay inside the one statement the script holds.
+    assert_eq!(
+        split_statements("SELECT 'open; SELECT 2;"),
+        ["SELECT 'open; SELECT 2;"]
+    );
+}
+
+#[test]
 fn skips_blank_statements() {
     assert_eq!(split_statements(";\n ;\n"), Vec::<&str>::new());
 }

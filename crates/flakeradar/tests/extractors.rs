@@ -20,7 +20,7 @@ use axum::http::StatusCode;
 use axum::routing::{get, post};
 use flakeradar::{
     error::ApiError, extract::ApiJson, extract::ApiPath, extract::ApiQuery,
-    extract::FromJsonObject, extract::Validate, extract::query_loc,
+    extract::FromJsonObject, extract::Validate, extract::body_loc, extract::query_loc,
 };
 use flakeradar_core::{dto::LocSegment, dto::ValidationIssue, lax};
 use serde::Deserialize;
@@ -244,6 +244,19 @@ async fn call(
             .expect("the fixture request builds")
     };
     send(&extractor_app(), request).await
+}
+
+#[test]
+fn a_body_field_is_located_under_the_body_scope() {
+    // The `loc` a model's own 422 reports for a body field, which is the shape a
+    // client reads back: the part first, then the field in it.
+    assert_eq!(
+        body_loc("name"),
+        vec![
+            LocSegment::Field("body".to_owned()),
+            LocSegment::Field("name".to_owned()),
+        ]
+    );
 }
 
 /// Asserts the reply is one 422 carrying exactly `(type, loc)`.
