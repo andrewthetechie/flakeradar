@@ -45,6 +45,31 @@ pub const BROKEN_STREAK: i64 = 5;
 /// change here moves Tests between tiers and announces the move.
 pub const FLAKE_THRESHOLD: f64 = 0.30;
 
+/// The share of a Run's Tests that must fail for the Run to count as suspected
+/// infrastructure.
+///
+/// Most of a large Run failing at once has one cause — the runner, the network, a
+/// shared service — rather than one cause per Test, and four fifths is where that
+/// reading beats the literal one: a regression rarely reaches that far, and requiring
+/// every Test to fail would miss a runner that broke halfway through. The processor's
+/// marking rule compares a Run's failing-Test share to it and leaves a Run at or
+/// above it out of scoring. Lowering it writes a real regression off as a bad runner;
+/// raising it lets one bad runner move every Test it touched.
+/// `FLAKERADAR_INFRA_FAIL_SHARE` sets it.
+pub const INFRA_FAIL_SHARE: f64 = 0.8;
+
+/// The fewest distinct Tests a Run must hold to be judged for suspected
+/// infrastructure at all.
+///
+/// The share is meaningless on a small Run: a 3-Test Report that fails entirely is a
+/// broken Test, and a floor of 1 would call it infrastructure. Twenty distinct Tests
+/// is large enough that a shared cause is the simpler explanation when most of them
+/// fail together. The processor's marking rule asks this of a Run before it asks the
+/// share. Lowering the floor writes a small suite's real outage off as infrastructure;
+/// raising it leaves a mass failure scored, so the Tests it touched look flaky or
+/// broken. `FLAKERADAR_INFRA_MIN_TESTS` sets it.
+pub const INFRA_MIN_TESTS: i64 = 20;
+
 /// The Flakiness score a Test or Job must reach before FlakeRadar files an Issue.
 ///
 /// It ships at [`FLAKE_THRESHOLD`]'s value on purpose: an Issue is the record of a

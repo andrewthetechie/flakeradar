@@ -2210,6 +2210,8 @@ fn the_processing_settings_debug_names_its_fields() {
         "broken_streak",
         "flake_threshold",
         "max_report_retries",
+        "infra_fail_share",
+        "infra_min_tests",
     ] {
         assert!(text.contains(field), "{text}");
     }

@@ -72,6 +72,12 @@ pub struct ProcessingSettings {
     pub flake_threshold: f64,
     /// How many retries a transient failure may spend.
     pub max_report_retries: i32,
+    /// The share of a Run's Tests that must fail for the Run to be suspected
+    /// infrastructure.
+    pub infra_fail_share: f64,
+    /// The fewest distinct Tests a Run must hold to be judged for suspected
+    /// infrastructure at all.
+    pub infra_min_tests: i64,
     /// Where "now" and "today" come from.
     pub clock: SharedClock,
 }
@@ -84,6 +90,8 @@ impl Default for ProcessingSettings {
             broken_streak: defaults::BROKEN_STREAK,
             flake_threshold: defaults::FLAKE_THRESHOLD,
             max_report_retries: defaults::MAX_REPORT_RETRIES,
+            infra_fail_share: defaults::INFRA_FAIL_SHARE,
+            infra_min_tests: defaults::INFRA_MIN_TESTS,
             clock: std::sync::Arc::new(SystemClock),
         }
     }
@@ -97,6 +105,8 @@ impl fmt::Debug for ProcessingSettings {
             .field("broken_streak", &self.broken_streak)
             .field("flake_threshold", &self.flake_threshold)
             .field("max_report_retries", &self.max_report_retries)
+            .field("infra_fail_share", &self.infra_fail_share)
+            .field("infra_min_tests", &self.infra_min_tests)
             .finish_non_exhaustive()
     }
 }
