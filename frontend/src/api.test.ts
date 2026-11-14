@@ -201,9 +201,11 @@ describe("GET request builders", () => {
     ]);
   });
 
-  // The derived block emits in LIST_FILTERS order (q, sort, stable, cause,
-  // quarantined, broken, issue, new), so a set q precedes sort here.
-  it("fetchTests maps every filter through the table, in table order", async () => {
+  // The derived block emits in each entry's declared wire order (sort, stable,
+  // cause, quarantined, broken, issue, new, q) — the byte order of the
+  // hand-written params.set calls api.ts had before the table, so a set q comes
+  // last and the request bytes match the pre-table code exactly.
+  it("fetchTests maps every filter through the table, in the declared wire order", async () => {
     const calls = stubFetch();
     await fetchTests({
       repo: "a/b",
@@ -220,8 +222,8 @@ describe("GET request builders", () => {
       q: "login",
     });
     expect(calls.map((c) => c.path)).toEqual([
-      "/api/tests?repo=a%2Fb&page=1&page_size=50&q=login&sort=proven&include_stable=true" +
-        "&category=timing&quarantined=true&broken=true&has_issue=true&new_within_days=7",
+      "/api/tests?repo=a%2Fb&page=1&page_size=50&sort=proven&include_stable=true" +
+        "&category=timing&quarantined=true&broken=true&has_issue=true&new_within_days=7&q=login",
     ]);
   });
 
@@ -270,7 +272,9 @@ describe("GET request builders", () => {
     ]);
   });
 
-  it("fetchJobs maps every Jobs filter through the table, in table order", async () => {
+  // Jobs' wire order (sort, stable, q, pipeline, issue, new) also matches the
+  // hand-written params.set calls api.ts had before the table.
+  it("fetchJobs maps every Jobs filter through the table, in the declared wire order", async () => {
     const calls = stubFetch();
     await fetchJobs({
       repo: "a/b",
@@ -284,8 +288,8 @@ describe("GET request builders", () => {
       q: "login",
     });
     expect(calls.map((c) => c.path)).toEqual([
-      "/api/jobs?repo=a%2Fb&page=1&page_size=50&q=login&sort=score&include_stable=true" +
-        "&has_issue=false&pipeline=ci.yml&new_within_days=7",
+      "/api/jobs?repo=a%2Fb&page=1&page_size=50&sort=score&include_stable=true" +
+        "&q=login&pipeline=ci.yml&has_issue=false&new_within_days=7",
     ]);
   });
 

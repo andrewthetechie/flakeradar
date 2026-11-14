@@ -83,13 +83,18 @@ function positiveInt(raw: string | null): number | null {
   return n >= 1 ? n : null;
 }
 
-/** One endpoint's spelling of a list filter: the wire parameter name and the
- *  value to send for it, or `null` to leave the param out. Spelled exactly as
- *  `api.ts` writes the query today. */
+/** One endpoint's spelling of a list filter: the wire parameter name, the value
+ *  to send for it (or `null` to leave the param out), and the position it takes
+ *  in the query string. Spelled exactly as the hand-written `params.set` calls
+ *  `api.ts` had before this table, bytes included. */
 export interface WireParam<Q> {
   /** Wire parameter name, which differs from the URL param for some filters
    *  (`stable` goes out as `include_stable`, `cause` as `category`). */
   param: string;
+  /** Position among the endpoint's filter params; the derived loop sorts on it.
+   *  The two endpoints take a filter at different positions (tests sends `q`
+   *  last, jobs third), so the order is per endpoint, not per filter. */
+  order: number;
   /** Reads the endpoint's query object, so the mapping has no state of its own. */
   value: (q: Q) => string | null;
 }
@@ -197,8 +202,9 @@ export const LIST_FILTERS: ListFilterDescriptor[] = [
       if (v) p.set("q", v);
     },
     wire: {
-      tests: { param: "q", value: (q) => q.q || null },
-      jobs: { param: "q", value: (q) => q.q || null },
+      // tests sends q last, jobs third — each matches the hand-written api.ts.
+      tests: { param: "q", order: 7, value: (q) => q.q || null },
+      jobs: { param: "q", order: 2, value: (q) => q.q || null },
     },
   }),
   listFilter({
@@ -210,10 +216,11 @@ export const LIST_FILTERS: ListFilterDescriptor[] = [
     serialize: (p, v) => {
       if (v !== "score") p.set("sort", v);
     },
-    // Both endpoints always take a sort, as `params.set("sort", …)` does today.
+    // Both endpoints always take a sort, first among the filters, as the
+    // hand-written `params.set("sort", …)` did.
     wire: {
-      tests: { param: "sort", value: (q) => q.sort },
-      jobs: { param: "sort", value: (q) => q.sort },
+      tests: { param: "sort", order: 0, value: (q) => q.sort },
+      jobs: { param: "sort", order: 0, value: (q) => q.sort },
     },
   }),
   listFilter({
@@ -223,8 +230,16 @@ export const LIST_FILTERS: ListFilterDescriptor[] = [
     views: ["tests", "jobs"],
     ...flag("stable"),
     wire: {
-      tests: { param: "include_stable", value: (q) => (q.showStable ? "true" : null) },
-      jobs: { param: "include_stable", value: (q) => (q.showStable ? "true" : null) },
+      tests: {
+        param: "include_stable",
+        order: 1,
+        value: (q) => (q.showStable ? "true" : null),
+      },
+      jobs: {
+        param: "include_stable",
+        order: 1,
+        value: (q) => (q.showStable ? "true" : null),
+      },
     },
   }),
   listFilter({
@@ -233,7 +248,7 @@ export const LIST_FILTERS: ListFilterDescriptor[] = [
     relists: true,
     views: ["tests"],
     ...enumFilter("cause", FAILURE_CATEGORIES),
-    wire: { tests: { param: "category", value: (q) => q.category } },
+    wire: { tests: { param: "category", order: 2, value: (q) => q.category } },
   }),
   // Tests-only on the wire, like cause; the URL params still survive a view switch.
   listFilter({
@@ -242,7 +257,13 @@ export const LIST_FILTERS: ListFilterDescriptor[] = [
     relists: true,
     views: ["tests"],
     ...flag("quarantined"),
-    wire: { tests: { param: "quarantined", value: (q) => (q.quarantined ? "true" : null) } },
+    wire: {
+      tests: {
+        param: "quarantined",
+        order: 3,
+        value: (q) => (q.quarantined ? "true" : null),
+      },
+    },
   }),
   listFilter({
     param: "broken",
@@ -250,7 +271,9 @@ export const LIST_FILTERS: ListFilterDescriptor[] = [
     relists: true,
     views: ["tests"],
     ...flag("broken"),
-    wire: { tests: { param: "broken", value: (q) => (q.broken ? "true" : null) } },
+    wire: {
+      tests: { param: "broken", order: 4, value: (q) => (q.broken ? "true" : null) },
+    },
   }),
   listFilter({
     param: "issue",
@@ -261,10 +284,12 @@ export const LIST_FILTERS: ListFilterDescriptor[] = [
     wire: {
       tests: {
         param: "has_issue",
+        order: 5,
         value: (q) => (q.issue == null ? null : String(q.issue === "linked")),
       },
       jobs: {
         param: "has_issue",
+        order: 4,
         value: (q) => (q.issue == null ? null : String(q.issue === "linked")),
       },
     },
@@ -275,7 +300,7 @@ export const LIST_FILTERS: ListFilterDescriptor[] = [
     relists: true,
     views: ["jobs"],
     ...optionalString("pipeline"),
-    wire: { jobs: { param: "pipeline", value: (q) => q.pipeline } },
+    wire: { jobs: { param: "pipeline", order: 3, value: (q) => q.pipeline } },
   }),
   listFilter({
     param: "new",
@@ -289,10 +314,12 @@ export const LIST_FILTERS: ListFilterDescriptor[] = [
     wire: {
       tests: {
         param: "new_within_days",
+        order: 6,
         value: (q) => (q.newWithinDays == null ? null : String(q.newWithinDays)),
       },
       jobs: {
         param: "new_within_days",
+        order: 5,
         value: (q) => (q.newWithinDays == null ? null : String(q.newWithinDays)),
       },
     },

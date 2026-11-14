@@ -4,7 +4,7 @@
 // spelling; fetchTests/fetchJobs below build their filter params from it. The
 // module graph stays acyclic: urlState.ts imports only *types* from this module,
 // so importing its table at runtime here cannot loop back.
-import { LIST_FILTERS, type FailureCategory } from "./urlState";
+import { LIST_FILTERS, type FailureCategory, type WireParam } from "./urlState";
 // Home of the taxonomy is urlState.ts, whose `cause` descriptor reads it at
 // table init. Re-exported so every importer keeps its `from "./api"` import.
 export { FAILURE_CATEGORIES } from "./urlState";
@@ -205,22 +205,39 @@ export const fetchRepos = () => getJson<RepoInfo[]>("/api/repos");
 export const fetchSummary = (scope: Scope) =>
   getJson<Summary>(withQuery("/api/summary", scopeParams(scope)));
 
+/**
+ * Sets the endpoint's filter params from the table, in each entry's declared
+ * `order` — the byte order of the hand-written params.set calls this table
+ * replaced, so the derived requests are byte-identical to those.
+ */
+function setWireParams<Q extends TestQuery | JobQuery>(
+  params: URLSearchParams,
+  q: Q,
+  wires: (WireParam<Q> | undefined)[],
+): void {
+  const mapped: { w: WireParam<Q>; v: string }[] = [];
+  for (const w of wires) {
+    if (!w) continue;
+    const v = w.value(q);
+    if (v != null) mapped.push({ w, v });
+  }
+  mapped.sort((a, b) => a.w.order - b.w.order);
+  for (const { w, v } of mapped) params.set(w.param, v);
+}
+
 export function fetchTests(q: TestQuery): Promise<TestPage> {
   // Scope and paging stay hand-written: they are not list filters.
   const params = scopeParams(q);
   params.set("page", String(q.page));
   params.set("page_size", String(q.pageSize));
-  // Every filter the Tests endpoint accepts comes from the table, in table
-  // order (q, sort, include_stable, category, quarantined, broken, has_issue,
-  // new_within_days) — so a set `q` now precedes `sort` instead of coming last.
-  // Every pinned exact URL (api.test.ts, viewData.test.ts, App.refresh.test.tsx)
-  // leaves q unset, so those bytes are unchanged.
-  for (const d of LIST_FILTERS) {
-    const w = d.wire?.tests;
-    if (!w) continue;
-    const v = w.value(q);
-    if (v != null) params.set(w.param, v);
-  }
+  // Every filter the Tests endpoint accepts comes from the table, emitted in
+  // the table's wire order (sort, include_stable, category, quarantined,
+  // broken, has_issue, new_within_days, q) — the pre-table api.ts byte order.
+  setWireParams(
+    params,
+    q,
+    LIST_FILTERS.map((d) => d.wire?.tests),
+  );
   return getJson<TestPage>(withQuery("/api/tests", params));
 }
 
@@ -336,21 +353,18 @@ export interface JobQuery {
 
 export function fetchJobs(q: JobQuery): Promise<JobPage> {
   // Jobs takes no project, so the scope param stays hand-written here, as does
-  // paging. The filters come from the table, in table order (q, sort,
-  // include_stable, has_issue, pipeline, new_within_days): a set `q` now precedes
-  // `sort` and `has_issue` now precedes `pipeline`. No pinned exact URL sets
-  // q, pipeline or issue, so those bytes are unchanged (App.test.tsx only checks
-  // the params it names with `toContain`).
+  // paging. The filters come from the table, emitted in the table's wire order
+  // (sort, include_stable, q, pipeline, has_issue, new_within_days) — the
+  // pre-table api.ts byte order.
   const params = new URLSearchParams();
   if (q.repo) params.set("repo", q.repo);
   params.set("page", String(q.page));
   params.set("page_size", String(q.pageSize));
-  for (const d of LIST_FILTERS) {
-    const w = d.wire?.jobs;
-    if (!w) continue;
-    const v = w.value(q);
-    if (v != null) params.set(w.param, v);
-  }
+  setWireParams(
+    params,
+    q,
+    LIST_FILTERS.map((d) => d.wire?.jobs),
+  );
   return getJson<JobPage>(withQuery("/api/jobs", params));
 }
 
