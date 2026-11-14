@@ -22,9 +22,9 @@ fn score(value: f64) -> Score {
 
 #[test]
 fn tier_thresholds_are_inclusive_at_the_top() {
-    assert_eq!(tier_for(score(0.3), 0.3), Tier::Flaky);
-    assert_eq!(tier_for(score(f64::MIN_POSITIVE), 0.3), Tier::Suspect);
-    assert_eq!(tier_for(Score::ZERO, 0.3), Tier::Stable);
+    assert_eq!(tier_for(score(0.25), true), Tier::Flaky);
+    assert_eq!(tier_for(score(0.30), false), Tier::Suspect);
+    assert_eq!(tier_for(Score::ZERO, false), Tier::Stable);
 }
 
 #[test]

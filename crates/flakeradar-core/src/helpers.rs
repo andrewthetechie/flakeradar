@@ -32,14 +32,15 @@ pub const TREND_DAYS: i64 = 14;
 /// lowering it makes every arrow flicker between runs.
 pub const TREND_DELTA: f64 = 0.05;
 
-/// The Flakiness tier a score falls in.
+/// The Flakiness tier a row is in.
 ///
-/// A score at or above the Flake threshold is flaky; above zero is suspect; zero
-/// is stable. The score is a [`Score`], not a bare number, so a caller cannot
-/// hand the threshold where the score belongs: the two arguments are different
-/// types, and the first one has already been checked against 0 to 1. The
-/// threshold stays the configured number it is, because an instance may set it
-/// outside that range only through the start-up rule that refuses it.
+/// A row whose flaky state is set is flaky; a score above zero is suspect; zero
+/// is stable. `flaky` is the row's `flaky_since IS NOT NULL`, which [`next_flaky_since`]
+/// moves at the two thresholds and nowhere in between, so a score that drifts back
+/// under the Flake threshold does not un-flaky a row by itself. The score still
+/// separates suspect from stable, because a row that was never flaky has nothing
+/// stored. The score is a [`Score`], not a bare number, so a caller cannot hand
+/// the state where the score belongs.
 ///
 /// # Examples
 ///
@@ -47,13 +48,15 @@ pub const TREND_DELTA: f64 = 0.05;
 /// use flakeradar_core::{helpers::tier_for, model::Tier, types::Score};
 ///
 /// let score = |value| Score::new(value).expect("a score");
-/// assert_eq!(tier_for(score(0.5), 0.5), Tier::Flaky);
-/// assert_eq!(tier_for(score(0.1), 0.5), Tier::Suspect);
-/// assert_eq!(tier_for(Score::ZERO, 0.5), Tier::Stable);
+/// // A stored flaky state is flaky even at a score below the Flake threshold.
+/// assert_eq!(tier_for(score(0.25), true), Tier::Flaky);
+/// // No stored state: a score above zero is suspect.
+/// assert_eq!(tier_for(score(0.30), false), Tier::Suspect);
+/// assert_eq!(tier_for(Score::ZERO, false), Tier::Stable);
 /// ```
 #[must_use]
-pub fn tier_for(score: Score, threshold: f64) -> Tier {
-    if score.as_f64() >= threshold {
+pub fn tier_for(score: Score, flaky: bool) -> Tier {
+    if flaky {
         Tier::Flaky
     } else if score.as_f64() > 0.0 {
         Tier::Suspect

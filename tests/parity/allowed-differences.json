@@ -1207,5 +1207,71 @@
         }
       }
     ]
+  },
+  {
+    "id": "tier-hysteresis",
+    "reason": "ADR 0012: a row keeps the flaky tier until its score falls under the Recover threshold, so a `tier` the Rust server reads from `flaky_since` can answer `suspect` where the recorded run (scored against the Flake threshold alone) answered `flaky`, for rows between the two thresholds. The SQL tier filters stay score-based until hyst-sql lands, so these are exactly the `tier` fields of these goldens and nothing else.",
+    "allows": [
+      {
+        "file": "golden/flaky-tests/14.json",
+        "field": "body.items.2.tier",
+        "pythonValue": "suspect",
+        "rustValue": "flaky"
+      },
+      {
+        "file": "golden/flaky-tests/15.json",
+        "field": "body.items.2.tier",
+        "pythonValue": "suspect",
+        "rustValue": "flaky"
+      },
+      {
+        "file": "golden/flaky-tests/17.json",
+        "field": "body.items.2.tier",
+        "pythonValue": "suspect",
+        "rustValue": "flaky"
+      },
+      {
+        "file": "golden/flaky-tests/18.json",
+        "field": "body.items.1.tier",
+        "pythonValue": "suspect",
+        "rustValue": "flaky"
+      },
+      {
+        "file": "golden/flaky-tests/19.json",
+        "field": "body.items.2.tier",
+        "pythonValue": "suspect",
+        "rustValue": "flaky"
+      },
+      {
+        "file": "golden/flaky-tests/22.json",
+        "field": "body.items.0.tier",
+        "pythonValue": "suspect",
+        "rustValue": "flaky"
+      },
+      {
+        "file": "golden/flaky-tests/27.json",
+        "field": "body.items.2.tier",
+        "pythonValue": "suspect",
+        "rustValue": "flaky"
+      },
+      {
+        "file": "golden/flaky-tests/28.json",
+        "field": "body.items.2.tier",
+        "pythonValue": "suspect",
+        "rustValue": "flaky"
+      },
+      {
+        "file": "golden/flaky-tests/29.json",
+        "field": "body.items.2.tier",
+        "pythonValue": "suspect",
+        "rustValue": "flaky"
+      },
+      {
+        "file": "golden/flaky-tests/31.json",
+        "field": "body.items.0.tier",
+        "pythonValue": "suspect",
+        "rustValue": "flaky"
+      }
+    ]
   }
 ]
