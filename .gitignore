@@ -11,6 +11,8 @@ frontend/tsconfig.tsbuildinfo
 frontend/test-results/
 # The Vitest/Jest sample installs its runners and both runners cache under them.
 samples/quarantine/vitest-jest/**/node_modules/
+# The Playwright sample installs its runner the same way.
+samples/quarantine/playwright/**/node_modules/
 
 # Env
 .env
