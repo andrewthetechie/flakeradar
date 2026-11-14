@@ -414,6 +414,8 @@ export interface CiRunTestFailure {
   name: string;
   run_id: number;
   ci_job_id: string | null;
+  /** Whether the Run this failure came from is suspected infrastructure, so scoring leaves it out (ADR 0013). */
+  infra_suspect: boolean;
   /** The Test's last Execution in this Run: failed | error | passed (on retry) | skipped. */
   status: string;
   /** Failed + error Executions of this Test in this Run. */
