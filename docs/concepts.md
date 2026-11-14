@@ -40,10 +40,17 @@ FlakeRadar ignores `skipped` executions. It counts `error` as a failure.
 
 Tests are in three tiers:
 
-- flaky: the score is at or above the threshold (`FLAKERADAR_FLAKE_THRESHOLD`,
-  default `0.30`).
-- suspect: the score is above 0 and below the threshold.
-- stable: the score is 0.
+- flaky: the test reached the flake threshold (`FLAKERADAR_FLAKE_THRESHOLD`,
+  default `0.30`) and its score has not fallen below the recover threshold
+  (`FLAKERADAR_RECOVER_THRESHOLD`, default `0.20`).
+- suspect: the score is above 0 and the test is not flaky.
+- stable: the score is 0 and the test is not flaky.
+
+FlakeRadar stores when a test became flaky, as `flaky_since`, and clears it only
+when the score falls below the recover threshold. A test whose score sits between
+the two thresholds keeps the tier it already has, so a score that hovers at the
+flake threshold does not move the test in and out of the flaky tier on every
+report. See [ADR 0012](adr/0012-tier-hysteresis.md).
 
 The leaderboard does not show stable tests unless you ask for them. The same
 rules and tiers apply to CI jobs. For a job, only unexplained failures count.

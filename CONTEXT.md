@@ -102,16 +102,28 @@ A Test's or Job's Flakiness score and Proven flake count at the end of each day,
 The number of non-skipped Executions of a Test or Job on the Default branch since its last failure. After a fix, a growing Clean streak shows that the fix held.
 
 **Flake threshold**:
-The Flakiness score at or above which a Test counts as a Flaky test.
+The Flakiness score at or above which a Test or Job becomes flaky.
+
+**Recover threshold**:
+The Flakiness score below which a flaky Test or Job's `flaky_since` clears and it
+stops being flaky. It is lower than the Flake threshold by design, and must not
+exceed it: the band between the two is what keeps a score that hovers at the Flake
+threshold from moving a Test in and out of the flaky tier on every Report.
 
 **Flaky test**:
-A Test whose Flakiness score is at or above the Flake threshold.
+A Test whose `flaky_since` is set: it reached the Flake threshold, which set the
+instant, and its score has not yet fallen below the Recover threshold, which would
+clear it. The state is stored on the row by the rescore, and every tier the server
+computes reads it rather than the score.
 
 **New flaky test**:
 A Flaky test (or Job) that became flaky within the last N days: its Flakiness score is at or above the Flake threshold now, and N days ago it was below the threshold — or it has no Score history that old. The leaderboard's `new=7` toggle and the `new_within_days` API and MCP argument list them.
 
 **Suspect test**:
-A Test whose Flakiness score is above 0 but below the Flake threshold.
+A Test that is neither Flaky nor Stable: its Flakiness score is above 0 and its
+`flaky_since` is NULL. The score bound stays, but the state qualifies it — a score
+at or above the Flake threshold with no stored `flaky_since` reads as Suspect,
+because the tier follows the state and not the score alone.
 
 **Stable test**:
 A Test whose Flakiness score is 0.
@@ -133,9 +145,11 @@ A reversible human decision that marks a Test as one whose failures a team toler
 ### How changes are announced
 
 **Tier change**:
-A Test or Job crossing the Flake threshold, in either direction, as a rescore
-detected it. A move between Stable and Suspect is not one, although the tier
-differs, because it crosses nothing.
+A move of a Test or Job's `flaky_since` as a rescore detected it: from NULL to set
+(`test.flaky` / `job.flaky`) or from set to NULL (`test.recovered` /
+`job.recovered`). A score that drifts between the Flake threshold and the Recover
+threshold moves nothing, and a move between Stable and Suspect is not one either,
+because it crosses no state. See [ADR 0012](docs/adr/0012-tier-hysteresis.md).
 
 **Notification**:
 A message about a Tier change, sent to every configured Webhook URL: a Test or
