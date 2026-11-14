@@ -1456,7 +1456,7 @@ pub async fn rescore(
             Update::of(
                 *id,
                 windows.get(id),
-                old.get(id).and_then(|&(_, flaky_since)| flaky_since),
+                old.get(id).and_then(|&(_, flaky_since, _)| flaky_since),
                 settings,
             )
         })
@@ -1495,8 +1495,9 @@ async fn write_day_counts(
     write_today_history(db, kind, &history_updates, settings.clock.today()).await
 }
 
-/// What one row holds before a rescore replaces it.
-type OldRow = (Score, Option<DateTimeWithTimeZone>);
+/// What one row holds before a rescore replaces it: its Score, its flaky state,
+/// and its Fail streak. A Job stores no Fail streak, so its row carries `None`.
+type OldRow = (Score, Option<DateTimeWithTimeZone>, Option<i32>);
 
 /// The scores and flaky states a rescore is about to replace, read before the update.
 ///
@@ -1507,9 +1508,16 @@ async fn old_states(
     kind: EntityKind,
     ids: &[i32],
 ) -> Result<BTreeMap<i32, OldRow>, DbError> {
-    let from = match kind {
-        EntityKind::Test => "SELECT id, flakiness_score, flaky_since FROM test_cases WHERE id IN ",
-        EntityKind::Job => "SELECT id, flakiness_score, flaky_since FROM jobs WHERE id IN ",
+    // Only a Test stores a Fail streak, so a Job's row reads none.
+    let (from, fail_streak) = match kind {
+        EntityKind::Test => (
+            "SELECT id, flakiness_score, flaky_since, fail_streak FROM test_cases WHERE id IN ",
+            true,
+        ),
+        EntityKind::Job => (
+            "SELECT id, flakiness_score, flaky_since FROM jobs WHERE id IN ",
+            false,
+        ),
     };
     let mut scores = BTreeMap::new();
     for chunk in chunks(ids) {
@@ -1521,6 +1529,9 @@ async fn old_states(
                 (
                     score(get(&row, "flakiness_score")?, "flakiness_score")?,
                     get::<Option<DateTimeWithTimeZone>>(&row, "flaky_since")?,
+                    fail_streak
+                        .then(|| get::<i32>(&row, "fail_streak"))
+                        .transpose()?,
                 ),
             );
         }
@@ -1536,8 +1547,15 @@ async fn old_states(
 fn crossed(update: &Update, old: &BTreeMap<i32, OldRow>) -> bool {
     let before = old
         .get(&update.id)
-        .is_some_and(|(_, flaky_since)| flaky_since.is_some());
+        .is_some_and(|(_, flaky_since, _)| flaky_since.is_some());
     before != update.flaky_since.is_some()
+}
+
+/// The Fail streak a row held before this rescore, or 0 when it had no state.
+///
+/// A Job stores no Fail streak, so its row reads as one that never was broken.
+fn old_fail_streak(old: &BTreeMap<i32, OldRow>, id: i32) -> i64 {
+    i64::from(old.get(&id).and_then(|&(_, _, streak)| streak).unwrap_or(0))
 }
 
 /// What differs between a Test's and a Job's Tier change.
@@ -1549,6 +1567,11 @@ struct Notices {
     /// A Job always has. A Test that is now broken has not fixed itself, so it
     /// sends no event.
     recovered: fn(&Update, &ProcessingSettings) -> bool,
+    /// Whether a row whose Fail streak was `old` has just reached the broken
+    /// threshold, so it sends a broken change.
+    ///
+    /// Only a Test stores a Fail streak, so a Job's row never breaks.
+    broken: fn(i64, &Update, &ProcessingSettings) -> bool,
     /// Builds the event from one row's name columns.
     change: fn(&Update, &QueryResult) -> Result<TierChange, DbError>,
 }
@@ -1557,6 +1580,7 @@ struct Notices {
 const TEST_NOTICES: Notices = Notices {
     names_sql: test_names_sql,
     recovered: test_recovered,
+    broken: test_broken,
     change: test_change,
 };
 
@@ -1564,6 +1588,7 @@ const TEST_NOTICES: Notices = Notices {
 const JOB_NOTICES: Notices = Notices {
     names_sql: job_names_sql,
     recovered: job_recovered,
+    broken: job_broken,
     change: job_change,
 };
 
@@ -1597,6 +1622,17 @@ fn test_recovered(update: &Update, settings: &ProcessingSettings) -> bool {
 /// Whether a Job that left the flaky tier has recovered.
 fn job_recovered(_update: &Update, _settings: &ProcessingSettings) -> bool {
     true
+}
+
+/// Whether a Test whose Fail streak was `old` has just become broken.
+fn test_broken(old_fail_streak: i64, update: &Update, settings: &ProcessingSettings) -> bool {
+    !is_broken(old_fail_streak, settings.broken_streak)
+        && is_broken(i64::from(update.fail_streak), settings.broken_streak)
+}
+
+/// A Job stores no Fail streak, so no Job ever becomes broken.
+fn job_broken(_old_fail_streak: i64, _update: &Update, _settings: &ProcessingSettings) -> bool {
+    false
 }
 
 /// The Tier change a Test's row names.
@@ -1646,24 +1682,36 @@ async fn tier_changes(
     old: &BTreeMap<i32, OldRow>,
     settings: &ProcessingSettings,
 ) -> Result<Vec<TierChange>, DbError> {
-    let mut crossing: Vec<Update> = updates
+    let crossing: BTreeMap<i32, Update> = updates
         .iter()
         .filter(|update| {
             crossed(update, old)
                 && (tier_for(update.flakiness_score, update.flaky_since.is_some()) == Tier::Flaky
                     || (notices.recovered)(update, settings))
         })
-        .copied()
+        .map(|update| (update.id, *update))
         .collect();
-    if crossing.is_empty() {
+    // A Fail streak that reaches the broken threshold is an event even when no
+    // tier moved; only a Test has a streak to cross.
+    let broken: BTreeMap<i32, Update> = updates
+        .iter()
+        .filter(|update| (notices.broken)(old_fail_streak(old, update.id), update, settings))
+        .map(|update| (update.id, *update))
+        .collect();
+    let by_id: BTreeMap<i32, Update> = crossing
+        .iter()
+        .chain(broken.iter())
+        .map(|(id, update)| (*id, *update))
+        .collect();
+    if by_id.is_empty() {
         return Ok(Vec::new());
     }
     // The events go out in id order whatever order the caller listed the ids in:
-    // the named rows are read back into a map keyed by id.
-    crossing.sort_unstable_by_key(|update| update.id);
-    let by_id: BTreeMap<i32, Update> = crossing.iter().map(|update| (update.id, *update)).collect();
-    let ids: Vec<i32> = crossing.iter().map(|update| update.id).collect();
-    let mut named: BTreeMap<i32, TierChange> = BTreeMap::new();
+    // the named rows are read back into a map keyed by id, and the keys of that
+    // union order the output, so a tier crossing comes before the broken change
+    // of the same id.
+    let ids: Vec<i32> = by_id.keys().copied().collect();
+    let mut named: BTreeMap<i32, Vec<TierChange>> = BTreeMap::new();
     for chunk in chunks(&ids) {
         let placeholders = placeholder_list(1, chunk.len());
         let sql = (notices.names_sql)(&placeholders);
@@ -1673,13 +1721,26 @@ async fn tier_changes(
             let Some(update) = by_id.get(&id) else {
                 continue;
             };
-            named.insert(id, (notices.change)(update, &row)?);
+            // Both changes of one id are built from the same row: the crossing,
+            // then the broken change that sets the flag on it.
+            let mut changes = Vec::new();
+            if crossing.contains_key(&id) {
+                changes.push((notices.change)(update, &row)?);
+            }
+            if broken.contains_key(&id) {
+                let mut change = (notices.change)(update, &row)?;
+                change.broken = true;
+                changes.push(change);
+            }
+            named.insert(id, changes);
         }
     }
     // A row deleted before this read names nothing, so it sends nothing.
-    Ok(crossing
+    Ok(ids
         .iter()
-        .filter_map(|update| named.get(&update.id).cloned())
+        .filter_map(|id| named.get(id))
+        .flatten()
+        .cloned()
         .collect())
 }
 

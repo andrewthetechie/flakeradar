@@ -1506,8 +1506,80 @@ async fn a_broken_test_reports_no_recovery() {
         if sha == "d" {
             let row = test(&db).await;
             assert_eq!((row.flakiness_score, row.fail_streak), (0.0, 2));
-            assert_eq!(outcome.tier_changes, Vec::new());
+            let events: Vec<String> = outcome
+                .tier_changes
+                .iter()
+                .map(flakeradar_core::notify::TierChange::event)
+                .collect();
+            assert_eq!(
+                events,
+                vec!["test.broken".to_owned()],
+                "the broken Test reports its break, and never a recovery"
+            );
         }
+    }
+}
+
+#[tokio::test]
+async fn failures_to_the_broken_threshold_send_exactly_one_test_broken() {
+    let db = TestDb::new().await.expect("a test database");
+    let project = project(&db, "acme/app", "backend").await;
+    let settings = settings_with(|settings| settings.broken_streak = 2);
+    let mut events: Vec<Vec<String>> = Vec::new();
+    let mut broken: Vec<i64> = Vec::new();
+    for (index, sha) in ["a", "b", "c"].into_iter().enumerate() {
+        queue_with(&db, &project, &make_junit(&[("t", "failed")]), |b| {
+            let builder = b.branch("main").commit_sha(sha);
+            if index == 0 {
+                builder.default_branch("main")
+            } else {
+                builder
+            }
+        })
+        .await;
+        let outcome = process_next(db.connection(), &settings)
+            .await
+            .expect("the processor runs")
+            .expect("a Report");
+        events.push(
+            outcome
+                .tier_changes
+                .iter()
+                .map(flakeradar_core::notify::TierChange::event)
+                .collect(),
+        );
+        broken.extend(outcome.tier_changes.iter().map(|change| change.id));
+    }
+    // The second Report's two Failures reach the broken threshold of 2; the third
+    // extends a streak that is already broken, so it sends nothing.
+    let expected: Vec<Vec<String>> = vec![Vec::new(), vec!["test.broken".to_owned()], Vec::new()];
+    assert_eq!(events, expected);
+    assert_eq!(broken, vec![i64::from(test(&db).await.id)]);
+}
+
+#[tokio::test]
+async fn a_broken_streak_of_zero_never_sends_a_broken_change() {
+    let db = TestDb::new().await.expect("a test database");
+    let project = project(&db, "acme/app", "backend").await;
+    let settings = settings_with(|settings| settings.broken_streak = 0);
+    for index in 0..5 {
+        queue_with(&db, &project, &make_junit(&[("t", "failed")]), |b| {
+            let builder = b.branch("main").commit_sha(&format!("m{index}"));
+            if index == 0 {
+                builder.default_branch("main")
+            } else {
+                builder
+            }
+        })
+        .await;
+        let outcome = process_next(db.connection(), &settings)
+            .await
+            .expect("the processor runs")
+            .expect("a Report");
+        assert!(
+            outcome.tier_changes.iter().all(|change| !change.broken),
+            "a broken threshold of 0 disables the broken change"
+        );
     }
 }
 
