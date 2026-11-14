@@ -224,7 +224,11 @@ mod form {
         assert_eq!(
             document,
             serde_json::json!({
-                "columns": ["test_runs.infra_suspect"],
+                "columns": [
+                    "test_runs.infra_suspect",
+                    "test_cases.flaky_since",
+                    "jobs.flaky_since"
+                ],
                 "fields": ["CiRunTestFailureOut.infra_suspect"],
                 "paths": [],
                 "query_params": []

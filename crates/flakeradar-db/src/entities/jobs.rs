@@ -24,6 +24,7 @@ pub struct Model {
     pub github_issue_filed: Option<bool>,
     pub github_issue_closed: bool,
     pub github_issue_fixed_noted_at: Option<DateTimeWithTimeZone>,
+    pub flaky_since: Option<DateTimeWithTimeZone>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
