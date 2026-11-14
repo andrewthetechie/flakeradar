@@ -23,11 +23,11 @@ use wiremock::matchers::{any, method, path};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
 use crate::support::{
-    CREATED, CapturedLog, Loopback, TOKEN, api, clean_streak_of, fixed_settings, flaky_job,
-    flaky_test, flaky_test_in, gh_settings, lines_with, link_of, link_table, mount_comment,
-    mount_create, mount_issue, mount_patch, mount_state, note_row, noted, requested_calls,
-    requested_paths, set_clean_streak, stage_mid_request, stamp, stamp_link, stamp_note, sync,
-    sync_with, unstopped,
+    CREATED, CapturedLog, Loopback, TOKEN, api, clean_streak_of, clear_note, fixed_settings,
+    flaky_job, flaky_test, flaky_test_in, gh_settings, lines_with, link_of, link_table,
+    mount_comment, mount_create, mount_issue, mount_patch, mount_state, note_row, noted,
+    requested_calls, requested_paths, set_clean_streak, stage_mid_request, stamp, stamp_link,
+    stamp_note, sync, sync_with, unstopped,
 };
 
 /// One Test's stored fixed-note stamp.
@@ -84,14 +84,7 @@ async fn the_fixed_note_comments_once_with_the_configured_sentence() {
     let db = TestDb::new().await.expect("a test database");
     let test = flaky_test(&db).await;
     stamp_link(&db, EntityKind::Test, test, stamp().number(12).checked()).await;
-    db.connection()
-        .execute_raw(Statement::from_sql_and_values(
-            DbBackend::Postgres,
-            "UPDATE test_cases SET clean_streak = 5 WHERE id = $1",
-            [Value::from(test)],
-        ))
-        .await
-        .expect("the streak writes");
+    set_clean_streak(&db, "test_cases", test, 5).await;
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/repos/acme/app/issues/12/comments"))
@@ -135,14 +128,7 @@ async fn the_fixed_note_comments_once_with_the_configured_sentence() {
     assert_eq!(server.received_requests().await.expect("a record").len(), 1);
 
     // A failed run reset the Clean streak and the stamp: the fix is noteable again.
-    db.connection()
-        .execute_raw(Statement::from_sql_and_values(
-            DbBackend::Postgres,
-            "UPDATE test_cases SET github_issue_fixed_noted_at = NULL WHERE id = $1",
-            [Value::from(test)],
-        ))
-        .await
-        .expect("the stamp clears");
+    clear_note(&db, EntityKind::Test, test).await;
     github::note_fixed_for(
         db.connection(),
         EntityKind::Test,

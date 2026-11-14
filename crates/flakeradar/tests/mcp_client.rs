@@ -205,6 +205,41 @@ async fn a_real_mcp_client_reads_a_tool_error() {
 }
 
 #[tokio::test]
+async fn a_real_mcp_client_reads_every_ci_run_refusal() {
+    // A run id the tool cannot look up is refused before any query: a blank one,
+    // an attempt below the first, and one past the column's bound. The refusal is
+    // an ordinary tool error, the shape an agent reads.
+    let db = TestDb::new().await.expect("a test database is available");
+    let (client, serving) = connect(&db).await;
+
+    let refusals = [
+        (
+            json!({"repo": "acme/app", "ci_run_id": " "}),
+            "ci_run_id must not be empty",
+        ),
+        (
+            json!({"repo": "acme/app", "ci_run_id": "1", "ci_run_attempt": 0}),
+            "ci_run_attempt must be 1 or more",
+        ),
+        (
+            json!({"repo": "acme/app", "ci_run_id": "1".repeat(256)}),
+            "CI run not found",
+        ),
+    ];
+    for (arguments, expected) in refusals {
+        let refused = call(&client, "ci_run_failures", arguments).await;
+        assert_eq!(refused.is_error, Some(true), "{refused:?}");
+        assert!(
+            format!("{refused:?}").contains(expected),
+            "the refusal says {expected:?}: {refused:?}"
+        );
+    }
+
+    client.cancel().await.expect("the client stops");
+    serving.abort();
+}
+
+#[tokio::test]
 async fn a_real_mcp_client_links_and_unlinks_an_issue() {
     let db = TestDb::new().await.expect("a test database is available");
     let test_id = seed(&db).await;

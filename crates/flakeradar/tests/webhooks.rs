@@ -116,6 +116,10 @@ async fn one_request_per_report_carries_every_event_of_it() {
     let batch = outcome(vec![test_change(), job_change()]);
     LeaderTask::enqueue(worker.as_ref(), &batch).expect("the queue takes the outcome");
     until_finished(worker.queue(), 1).await;
+    assert!(
+        worker.queue().is_empty(),
+        "the batch the task finished is no longer waiting"
+    );
     LeaderTask::stop(worker.as_ref())
         .await
         .expect("the task stops");

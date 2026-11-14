@@ -83,6 +83,28 @@ async fn a_token_the_header_cannot_carry_goes_out_with_no_credentials() {
     );
 }
 
+#[test]
+fn the_remaining_rate_limit_is_the_header_or_unknown() {
+    // The log line a rate limit leaves carries this text, so it reads the header
+    // when GitHub sent one and says "unknown" when it did not.
+    let answer = |headers: &[(&str, &str)]| {
+        let mut map = reqwest::header::HeaderMap::new();
+        for (name, value) in headers {
+            map.insert(
+                reqwest::header::HeaderName::from_bytes(name.as_bytes()).expect("a header name"),
+                reqwest::header::HeaderValue::from_str(value).expect("a header value"),
+            );
+        }
+        github::Answer::new(403, map, String::new())
+    };
+
+    assert_eq!(
+        answer(&[("x-ratelimit-remaining", "42")]).remaining_text(),
+        "42"
+    );
+    assert_eq!(answer(&[]).remaining_text(), "unknown");
+}
+
 #[tokio::test]
 async fn a_rate_limit_classifies_only_throttling() {
     use reqwest::header::HeaderMap;

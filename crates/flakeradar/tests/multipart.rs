@@ -171,6 +171,18 @@ fn an_unterminated_quote_is_not_the_field_name() {
 }
 
 #[test]
+fn a_blank_line_inside_the_headers_is_skipped() {
+    // A client that ends a header line with a bare LF leaves an empty line
+    // behind it. It names no header, and the part is still the field it says.
+    let body = b"--b\r\nContent-Disposition: form-data; name=\"report\"; filename=\"r.xml\"\n\n\
+                 X-Pad: 1\r\n\r\n<x/>\r\n--b--\r\n";
+    assert_eq!(
+        field_of(body, "multipart/form-data; boundary=b"),
+        Some(&b"<x/>"[..])
+    );
+}
+
+#[test]
 fn a_parameter_that_names_nothing_is_skipped() {
     let body = b"--b\r\nContent-Disposition: form-data; flag; size=9; name=\"report\"; \
                  filename=\"r.xml\"\r\nX-Ok: 1\r\n\r\n<x/>\r\n--b--\r\n";
@@ -193,6 +205,8 @@ fn a_header_line_that_is_no_header_is_a_malformed_body() {
         &b"Content-Disposition: form-data; name=\"report\"; filename=\"r.xml\"\r\nX-NoColon"[..],
         &b"X-NoColon\r\nContent-Disposition: form-data; name=\"report\"; filename=\"r.xml\""[..],
         &b"Content-Disposition: form-data; name=\"report\"; filename=\"r.xml\"\r\nX Bad: 1"[..],
+        // A line that opens with the colon names no header at all.
+        &b"Content-Disposition: form-data; name=\"report\"; filename=\"r.xml\"\r\n: 1"[..],
     ] {
         let mut body = b"--b\r\n".to_vec();
         body.extend_from_slice(headers);
