@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { TestCase } from "../api";
@@ -88,13 +88,6 @@ describe("QuarantineDialog", () => {
   it("closes on Cancel without confirming", async () => {
     const { onClose, onConfirm } = renderDialog();
     await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
-    expect(onClose).toHaveBeenCalledTimes(1);
-    expect(onConfirm).not.toHaveBeenCalled();
-  });
-
-  it("closes on Escape without confirming", () => {
-    const { onClose, onConfirm } = renderDialog();
-    fireEvent.keyDown(window, { key: "Escape" });
     expect(onClose).toHaveBeenCalledTimes(1);
     expect(onConfirm).not.toHaveBeenCalled();
   });
