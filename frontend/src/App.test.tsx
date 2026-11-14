@@ -675,6 +675,71 @@ describe("App", () => {
     expect(banner.textContent).not.toContain("Error: ");
   });
 
+  /**
+   * A Jobs view whose Job 3 history load is held back, so a test can reject it
+   * after the leaderboard painted: the refresh's setError(null) would otherwise
+   * wipe the banner the drawer raises.
+   */
+  function stubJobHistoryRejection() {
+    let failHistory: (reason: unknown) => void = () => {};
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        if (url.startsWith("/api/jobs/3/history")) {
+          return new Promise<Response>((_, reject) => {
+            failHistory = reject;
+          });
+        }
+        if (url.startsWith("/api/jobs/summary")) return json(jobSummaryFixture);
+        if (url.startsWith("/api/jobs")) return json(jobPageFixture);
+        if (url.startsWith("/api/repos")) return json([]);
+        if (url.startsWith("/api/reports/summary")) return json({ pending: 0, failed: 0 });
+        return json({});
+      }),
+    );
+    window.history.replaceState(null, "", "/?view=jobs&repo=x%2Fy&job=3");
+    return { fail: (reason: unknown) => failHistory(reason) };
+  }
+
+  it("surfaces a non-Error rejection from a Job drawer history as text", async () => {
+    const { fail } = stubJobHistoryRejection();
+    render(<App />);
+    expect(await screen.findByText("e2e")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+
+    await act(async () => {
+      fail("backend down");
+    });
+    expect(await screen.findByRole("alert")).toHaveTextContent("backend down");
+  });
+
+  it("surfaces a non-Error rejection from a Test drawer history as text", async () => {
+    let failHistory: (reason: unknown) => void = () => {};
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        if (url.startsWith("/api/tests/5/history")) {
+          return new Promise<Response>((_, reject) => {
+            failHistory = reject;
+          });
+        }
+        if (url.startsWith("/api/tests")) return json(page("login"));
+        if (url.startsWith("/api/repos")) return json([]);
+        if (url.startsWith("/api/reports/summary")) return json({ pending: 0, failed: 0 });
+        return json(testsSummary);
+      }),
+    );
+    render(<App />);
+    await userEvent.click(await screen.findByText("login"));
+    await act(async () => {});
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+
+    await act(async () => {
+      failHistory("backend down");
+    });
+    expect(await screen.findByRole("alert")).toHaveTextContent("backend down");
+  });
+
   it("sends the stored pipeline and issue filters to /api/jobs", async () => {
     const urls: string[] = [];
     vi.stubGlobal(
@@ -849,6 +914,62 @@ describe("App", () => {
     expect(window.location.search).toBe("?quarantined=1&issue=none");
     // The Pipeline filter belongs to the Jobs view only.
     expect(screen.queryByRole("combobox", { name: /pipeline/i })).not.toBeInTheDocument();
+  });
+
+  it("sends broken for the broken-on-default-branch toggle, in the Tests view only", async () => {
+    const urls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        urls.push(url);
+        if (url.startsWith("/api/jobs/summary"))
+          return json({
+            total_jobs: 0,
+            flaky_jobs: 0,
+            suspect_jobs: 0,
+            confirmed_flaky_jobs: 0,
+            job_executions_30d: 0,
+            job_failures_30d: 0,
+            flake_threshold: 0.3,
+            new_flaky_7d: 0,
+            pipelines: [],
+          });
+        if (url.startsWith("/api/jobs"))
+          return json({ items: [], total: 0, page: 1, page_size: 50 });
+        if (url.startsWith("/api/tests")) return json(page("login"));
+        if (url.startsWith("/api/repos")) return json([]);
+        if (url.startsWith("/api/reports/summary")) return json({ pending: 0, failed: 0 });
+        return json(testsSummary);
+      }),
+    );
+    render(<App />);
+    await act(async () => {});
+    const lastUrl = (prefix: string) => urls.filter((u) => u.startsWith(prefix)).at(-1) ?? "";
+    const param = (url: string, name: string) =>
+      new URL(url, "http://localhost").searchParams.get(name);
+    const toggle = () => screen.getByRole("checkbox", { name: /broken on default branch/i });
+
+    // Off by default: the API is asked without the parameter.
+    expect(toggle()).not.toBeChecked();
+    expect(param(lastUrl("/api/tests"), "broken")).toBeNull();
+
+    await userEvent.click(toggle());
+    await act(async () => {});
+    expect(param(lastUrl("/api/tests"), "broken")).toBe("true");
+    expect(window.location.search).toBe("?broken=1");
+
+    // Toggling back clears the URL and the parameter.
+    await userEvent.click(toggle());
+    await act(async () => {});
+    expect(param(lastUrl("/api/tests"), "broken")).toBeNull();
+    expect(window.location.search).toBe("");
+
+    // Broken on the default branch is a Test property, so the Jobs view drops the control.
+    await userEvent.click(screen.getByRole("button", { name: "jobs" }));
+    await act(async () => {});
+    expect(
+      screen.queryByRole("checkbox", { name: /broken on default branch/i }),
+    ).not.toBeInTheDocument();
   });
 
   it("sends new_within_days for the new-flaky toggle, in both views", async () => {
@@ -1034,6 +1155,34 @@ describe("App", () => {
     await act(async () => {});
 
     expect(screen.getByRole("alert")).toHaveTextContent("backend down");
+  });
+
+  it("surfaces the error when confirming a quarantine fails", async () => {
+    const row: TestCase = { ...page("login").items[0], quarantined: false };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        // Reject with a non-Error so the `String(e)` arm of the error handler runs.
+        if (url.includes("/quarantine")) return Promise.reject("backend down");
+        if (url.startsWith("/api/tests"))
+          return json({ items: [row], total: 1, page: 1, page_size: 50 });
+        if (url.startsWith("/api/repos")) return json([]);
+        if (url.startsWith("/api/reports/summary")) return json({ pending: 0, failed: 0 });
+        return json(testsSummary);
+      }),
+    );
+    render(<App />);
+    expect(await screen.findByText("login")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Quarantine" }));
+    const dialog = await screen.findByRole("dialog", { name: /Quarantine login/ });
+    await userEvent.type(within(dialog).getByRole("textbox", { name: /Reason/ }), "flaky on CI");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Confirm" }));
+    await act(async () => {});
+
+    expect(screen.getByRole("alert")).toHaveTextContent("backend down");
+    // The dialog closes whatever the answer was, so the person can retry from the row.
+    expect(screen.queryByRole("dialog", { name: /Quarantine login/ })).not.toBeInTheDocument();
   });
 
   // ---- Navigation wiring (issue #80): drawers, views, sort, filters, paging ----

@@ -1,7 +1,7 @@
-import { useEffect } from "react";
 import type { JobExecution, JobHistory } from "../api";
 import { breakable } from "../breakable";
 import { IssueLink } from "./IssueLink";
+import { Overlay } from "./Overlay";
 import { Sparkline } from "./Sparkline";
 import { StatusMark } from "./StatusMark";
 import { SummaryBadge } from "./SummaryBadge";
@@ -45,191 +45,167 @@ export function JobDrawer({
   onOpenJob: (jobId: number) => void;
   onOpenCiRun: (repo: string, ciRun: string, attempt: number | null) => void;
 }) {
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
   const loaded = history != null && history.job.id === jobId;
   const job = history?.job;
   return (
-    <>
-      <div className="fixed inset-0 z-20 bg-scrim" onClick={onClose} aria-hidden />
-      <aside
-        className="fixed inset-y-0 right-0 z-21 w-full max-w-190 animate-slide-in overflow-y-auto border-l border-line bg-surface px-5 pt-4 pb-8 shadow-2xl"
-        role="dialog"
-        aria-modal="true"
-        aria-label="Job detail"
-      >
-        <div className="mb-2 flex items-start justify-between gap-3">
-          <div className="text-xs text-link [overflow-wrap:anywhere]">
-            {job ? breakable(`${job.repo} · ${job.pipeline}`) : "Loading…"}
-          </div>
-          <button
-            type="button"
-            className="btn grid size-8 place-items-center p-0 text-lg leading-none"
-            onClick={onClose}
-            aria-label="Close"
-          >
-            ×
-          </button>
-        </div>
-        {loaded && job && (
-          <>
-            <h2 className="text-lg font-semibold leading-snug [overflow-wrap:anywhere]">
-              {breakable(job.name)}
-              {job.summary && <SummaryBadge className="ml-2" />}
-            </h2>
-            <div className="mb-3 text-xs text-muted">
-              {job.github_issue_number != null && (
-                <>
-                  <IssueLink
-                    number={job.github_issue_number}
-                    url={job.github_issue_url}
-                    closed={job.github_issue_closed}
-                    className="text-link underline-offset-2 hover:underline"
-                  >
-                    issue #{job.github_issue_number}
-                  </IssueLink>
-                </>
-              )}
-            </div>
-            <div className="mb-4 rounded-lg border border-line bg-surface-2 px-3 py-2 text-xs text-text-2">
-              {history.unexplained_failures} unexplained failure
-              {history.unexplained_failures === 1 ? "" : "s"} · {history.explained_failures}{" "}
-              explained by tests (last {history.executions.length} executions) · clean streak{" "}
-              {history.job.clean_streak}
-            </div>
-
-            <div className="mb-4">
-              <div className="mb-1 text-xs text-muted">Flakiness score, last 90 days</div>
-              <Sparkline points={history.score_history} label="Flakiness score" />
-            </div>
-
-            {history.runners.length > 0 && (
-              <div className="mb-4">
-                <div className="mb-1 text-xs text-muted" id="runner-stats-heading">
-                  Failures by runner
-                </div>
-                <table
-                  className="w-full border-collapse text-xs"
-                  aria-labelledby="runner-stats-heading"
+    <Overlay
+      variant="drawer"
+      label="Job detail"
+      onClose={onClose}
+      breadcrumb={job ? breakable(`${job.repo} · ${job.pipeline}`) : "Loading…"}
+    >
+      {loaded && job && (
+        <>
+          <h2 className="text-lg font-semibold leading-snug [overflow-wrap:anywhere]">
+            {breakable(job.name)}
+            {job.summary && <SummaryBadge className="ml-2" />}
+          </h2>
+          <div className="mb-3 text-xs text-muted">
+            {job.github_issue_number != null && (
+              <>
+                <IssueLink
+                  number={job.github_issue_number}
+                  url={job.github_issue_url}
+                  closed={job.github_issue_closed}
+                  className="text-link underline-offset-2 hover:underline"
                 >
-                  <thead>
-                    <tr className="border-b border-line text-left text-muted">
-                      <th className="py-1.5 pr-3 font-medium">Runner</th>
-                      <th className="py-1.5 pr-3 font-medium">Executions</th>
-                      <th className="py-1.5 pr-3 font-medium">Unexplained</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {history.runners.map((r, i) => (
-                      <tr
-                        key={`${r.runner_name ?? ""}|${r.labels.join(",")}|${i}`}
-                        className="border-b border-line tabular-nums [&>td]:py-2 [&>td]:pr-3"
-                      >
-                        <td>{r.runner_name ?? (r.labels.join(", ") || "(no labels)")}</td>
-                        <td>{r.executions}</td>
-                        <td>{r.unexplained_failures}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                  issue #{job.github_issue_number}
+                </IssueLink>
+              </>
             )}
+          </div>
+          <div className="mb-4 rounded-lg border border-line bg-surface-2 px-3 py-2 text-xs text-text-2">
+            {history.unexplained_failures} unexplained failure
+            {history.unexplained_failures === 1 ? "" : "s"} · {history.explained_failures} explained
+            by tests (last {history.executions.length} executions) · clean streak{" "}
+            {history.job.clean_streak}
+          </div>
 
-            <table className="w-full border-collapse text-xs">
-              <thead>
-                <tr className="border-b border-line text-left text-muted">
-                  <th className="py-1.5 pr-3 font-medium">Outcome</th>
-                  <th className="py-1.5 pr-3 font-medium">Commit</th>
-                  <th className="py-1.5 pr-3 font-medium">Branch</th>
-                  <th className="py-1.5 pr-3 font-medium">Runner</th>
-                  <th className="py-1.5 pr-3 font-medium">When</th>
-                </tr>
-              </thead>
-              <tbody>
-                {history.executions.map((e) => (
-                  <tr
-                    key={e.id}
-                    className="border-b border-line tabular-nums whitespace-nowrap [&>td]:py-2 [&>td]:pr-3"
-                  >
-                    <td className="min-w-32">
-                      <div className="flex items-center gap-1.5 whitespace-nowrap">
-                        <OutcomeCell e={e} />
-                        <button
-                          type="button"
-                          onClick={() => onOpenCiRun(job.repo, e.ci_run_id, e.ci_run_attempt)}
-                          className="text-link underline-offset-2 hover:underline"
-                          title={`Open CI run ${e.ci_run_id}, attempt ${e.ci_run_attempt}`}
-                        >
-                          run {e.ci_run_id}
-                        </button>
-                        <span className="text-muted">attempt {e.ci_run_attempt}</span>
-                      </div>
-                      {e.outcome === "explained" && e.explained_by.length > 0 && (
-                        <div className="mt-1 flex flex-wrap gap-1 whitespace-normal">
-                          {e.explained_by.map((t) => (
-                            <button
-                              key={t.test_id}
-                              type="button"
-                              onClick={() => onOpenTest(t.test_id)}
-                              className="rounded border border-line bg-surface px-1.5 py-0.5 text-xs text-link hover:underline"
-                              title="Open this Test"
-                            >
-                              {t.project} · {t.name} ({t.status})
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                      {e.outcome === "explained" && e.explained_by_jobs.length > 0 && (
-                        <div className="mt-1 flex flex-wrap gap-1 whitespace-normal">
-                          {e.explained_by_jobs.map((j, i) => (
-                            <button
-                              key={`${j.job_id}-${i}`}
-                              type="button"
-                              onClick={() => onOpenJob(j.job_id)}
-                              className="rounded border border-line bg-surface px-1.5 py-0.5 text-xs text-link hover:underline"
-                              title="Open this Job"
-                            >
-                              {j.pipeline} · {j.name}
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                    </td>
-                    <td className="font-mono">{e.commit_sha.slice(0, 10)}</td>
-                    <td>{e.branch}</td>
-                    <td className="whitespace-nowrap">
-                      <div>{e.runner_name || "—"}</div>
-                      {e.runner_labels.length > 0 && (
-                        <div className="text-muted">{e.runner_labels.join(", ")}</div>
-                      )}
-                    </td>
-                    <td>
-                      {e.url ? (
-                        <a
-                          className="text-link underline-offset-2 hover:underline"
-                          href={e.url}
-                          target="_blank"
-                          rel="noreferrer"
-                        >
-                          {fmtWhen(e.created_at)}
-                        </a>
-                      ) : (
-                        fmtWhen(e.created_at)
-                      )}
-                    </td>
+          <div className="mb-4">
+            <div className="mb-1 text-xs text-muted">Flakiness score, last 90 days</div>
+            <Sparkline points={history.score_history} label="Flakiness score" />
+          </div>
+
+          {history.runners.length > 0 && (
+            <div className="mb-4">
+              <div className="mb-1 text-xs text-muted" id="runner-stats-heading">
+                Failures by runner
+              </div>
+              <table
+                className="w-full border-collapse text-xs"
+                aria-labelledby="runner-stats-heading"
+              >
+                <thead>
+                  <tr className="border-b border-line text-left text-muted">
+                    <th className="py-1.5 pr-3 font-medium">Runner</th>
+                    <th className="py-1.5 pr-3 font-medium">Executions</th>
+                    <th className="py-1.5 pr-3 font-medium">Unexplained</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </>
-        )}
-      </aside>
-    </>
+                </thead>
+                <tbody>
+                  {history.runners.map((r, i) => (
+                    <tr
+                      key={`${r.runner_name ?? ""}|${r.labels.join(",")}|${i}`}
+                      className="border-b border-line tabular-nums [&>td]:py-2 [&>td]:pr-3"
+                    >
+                      <td>{r.runner_name ?? (r.labels.join(", ") || "(no labels)")}</td>
+                      <td>{r.executions}</td>
+                      <td>{r.unexplained_failures}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          <table className="w-full border-collapse text-xs">
+            <thead>
+              <tr className="border-b border-line text-left text-muted">
+                <th className="py-1.5 pr-3 font-medium">Outcome</th>
+                <th className="py-1.5 pr-3 font-medium">Commit</th>
+                <th className="py-1.5 pr-3 font-medium">Branch</th>
+                <th className="py-1.5 pr-3 font-medium">Runner</th>
+                <th className="py-1.5 pr-3 font-medium">When</th>
+              </tr>
+            </thead>
+            <tbody>
+              {history.executions.map((e) => (
+                <tr
+                  key={e.id}
+                  className="border-b border-line tabular-nums whitespace-nowrap [&>td]:py-2 [&>td]:pr-3"
+                >
+                  <td className="min-w-32">
+                    <div className="flex items-center gap-1.5 whitespace-nowrap">
+                      <OutcomeCell e={e} />
+                      <button
+                        type="button"
+                        onClick={() => onOpenCiRun(job.repo, e.ci_run_id, e.ci_run_attempt)}
+                        className="text-link underline-offset-2 hover:underline"
+                        title={`Open CI run ${e.ci_run_id}, attempt ${e.ci_run_attempt}`}
+                      >
+                        run {e.ci_run_id}
+                      </button>
+                      <span className="text-muted">attempt {e.ci_run_attempt}</span>
+                    </div>
+                    {e.outcome === "explained" && e.explained_by.length > 0 && (
+                      <div className="mt-1 flex flex-wrap gap-1 whitespace-normal">
+                        {e.explained_by.map((t) => (
+                          <button
+                            key={t.test_id}
+                            type="button"
+                            onClick={() => onOpenTest(t.test_id)}
+                            className="rounded border border-line bg-surface px-1.5 py-0.5 text-xs text-link hover:underline"
+                            title="Open this Test"
+                          >
+                            {t.project} · {t.name} ({t.status})
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                    {e.outcome === "explained" && e.explained_by_jobs.length > 0 && (
+                      <div className="mt-1 flex flex-wrap gap-1 whitespace-normal">
+                        {e.explained_by_jobs.map((j, i) => (
+                          <button
+                            key={`${j.job_id}-${i}`}
+                            type="button"
+                            onClick={() => onOpenJob(j.job_id)}
+                            className="rounded border border-line bg-surface px-1.5 py-0.5 text-xs text-link hover:underline"
+                            title="Open this Job"
+                          >
+                            {j.pipeline} · {j.name}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </td>
+                  <td className="font-mono">{e.commit_sha.slice(0, 10)}</td>
+                  <td>{e.branch}</td>
+                  <td className="whitespace-nowrap">
+                    <div>{e.runner_name || "—"}</div>
+                    {e.runner_labels.length > 0 && (
+                      <div className="text-muted">{e.runner_labels.join(", ")}</div>
+                    )}
+                  </td>
+                  <td>
+                    {e.url ? (
+                      <a
+                        className="text-link underline-offset-2 hover:underline"
+                        href={e.url}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        {fmtWhen(e.created_at)}
+                      </a>
+                    ) : (
+                      fmtWhen(e.created_at)
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
+      )}
+    </Overlay>
   );
 }

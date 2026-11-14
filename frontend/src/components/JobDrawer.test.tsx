@@ -268,11 +268,4 @@ describe("JobDrawer", () => {
       "1",
     ]);
   });
-
-  it("closes on Escape and the close button", async () => {
-    const { onClose } = renderDrawer();
-    fireEvent.keyDown(window, { key: "Escape" });
-    await userEvent.click(screen.getByRole("button", { name: "Close" }));
-    expect(onClose).toHaveBeenCalledTimes(2);
-  });
 });
