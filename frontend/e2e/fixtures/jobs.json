@@ -14,6 +14,8 @@
       "last_status": "failed",
       "last_seen_at": "2026-01-02T14:12:00Z",
       "summary": false,
+      "acknowledged_until": null,
+      "acknowledge_reason": null,
       "github_issue_number": 12,
       "github_issue_url": "https://github.com/demo/shop/issues/12",
       "github_issue_closed": false
@@ -32,6 +34,8 @@
       "last_status": "failed",
       "last_seen_at": "2026-01-02T14:12:00Z",
       "summary": false,
+      "acknowledged_until": null,
+      "acknowledge_reason": null,
       "github_issue_number": null,
       "github_issue_url": null,
       "github_issue_closed": false
@@ -50,6 +54,8 @@
       "last_status": "passed",
       "last_seen_at": "2026-01-02T14:12:00Z",
       "summary": false,
+      "acknowledged_until": null,
+      "acknowledge_reason": null,
       "github_issue_number": null,
       "github_issue_url": null,
       "github_issue_closed": false
