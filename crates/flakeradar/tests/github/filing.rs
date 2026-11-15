@@ -2,13 +2,17 @@
 
 // Rust guideline compliant 2026-07-21
 
+use std::sync::Arc;
+
+use chrono::{DateTime, FixedOffset, TimeDelta};
 use flakeradar::github::{self, Api};
 use flakeradar::settings::Secret;
 use flakeradar::settings::Settings;
 use flakeradar_core::model::EntityKind;
+use flakeradar_db::clock::SharedClock;
 use flakeradar_test_support::{
-    TestDb, make_execution, make_job, make_job_execution, make_pipeline, make_project, make_run,
-    make_test_case, system_clock,
+    FIXTURE_INSTANT, FixedClock, TestDb, make_execution, make_job, make_job_execution,
+    make_pipeline, make_project, make_run, make_test_case, system_clock,
 };
 use sea_orm::ConnectionTrait as _;
 use sea_orm::EntityTrait as _;
@@ -263,6 +267,98 @@ async fn a_link_a_human_made_is_never_refiled() {
             .await
             .expect("a record")
             .is_empty()
+    );
+}
+
+/// Acknowledges one Test or Job until `until`, as the acknowledge route would.
+async fn acknowledge(db: &TestDb, table: &str, id: i32, until: DateTime<FixedOffset>) {
+    db.connection()
+        .execute_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            format!("UPDATE {table} SET acknowledged_until = $2 WHERE id = $1"),
+            [Value::from(id), Value::from(until)],
+        ))
+        .await
+        .expect("the acknowledgement writes");
+}
+
+#[tokio::test]
+async fn an_acknowledged_row_is_never_filed() {
+    let db = TestDb::new().await.expect("a test database");
+    let test = flaky_test(&db).await;
+    let job = flaky_job(&db).await;
+    let until = (FIXTURE_INSTANT + TimeDelta::days(7)).fixed_offset();
+    acknowledge(&db, "test_cases", test, until).await;
+    acknowledge(&db, "jobs", job, until).await;
+    let server = MockServer::start().await;
+    let settings = gh_settings(&[]);
+    let clock: SharedClock = Arc::new(FixedClock::new(FIXTURE_INSTANT.fixed_offset()));
+
+    for (kind, ids, table, id) in [
+        (EntityKind::Test, vec![test], "test_cases", test),
+        (EntityKind::Job, vec![job], "jobs", job),
+    ] {
+        let filed = github::file_for(
+            db.connection(),
+            kind,
+            &ids,
+            &settings,
+            &api(&server),
+            &clock,
+            &unstopped(),
+        )
+        .await;
+        assert!(
+            filed.linked.is_empty(),
+            "an acknowledged row in {table} is no filing candidate"
+        );
+        assert_eq!(link_of(&db, kind, id).await.number, None);
+    }
+    assert!(
+        server
+            .received_requests()
+            .await
+            .expect("a record")
+            .is_empty(),
+        "an acknowledged row sends nothing to GitHub"
+    );
+}
+
+#[tokio::test]
+async fn a_lapsed_acknowledgement_files_again() {
+    let db = TestDb::new().await.expect("a test database");
+    let test = flaky_test(&db).await;
+    acknowledge(
+        &db,
+        "test_cases",
+        test,
+        (FIXTURE_INSTANT - TimeDelta::days(1)).fixed_offset(),
+    )
+    .await;
+    let server = MockServer::start().await;
+    mount_create(
+        &server,
+        ResponseTemplate::new(201).set_body_json(json!({"number": 5})),
+    )
+    .await;
+    let settings = gh_settings(&[]);
+    let clock: SharedClock = Arc::new(FixedClock::new(FIXTURE_INSTANT.fixed_offset()));
+
+    let filed = github::file_for(
+        db.connection(),
+        EntityKind::Test,
+        &[test],
+        &settings,
+        &api(&server),
+        &clock,
+        &unstopped(),
+    )
+    .await;
+    assert_eq!(filed.linked.into_iter().collect::<Vec<_>>(), vec![test]);
+    assert_eq!(
+        link_of(&db, EntityKind::Test, test).await.number,
+        Some(5),
+        "a row whose acknowledgement ended files like any other"
     );
 }
 

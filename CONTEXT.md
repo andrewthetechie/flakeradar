@@ -146,7 +146,8 @@ A reversible human decision that marks a Test as one whose failures a team toler
 A reversible human decision, for 1 to 30 days with an optional reason, that a
 Test or Job is known and owned. It ends at its date (the prune step clears it)
 or when a person clears it. Unlike **Quarantine** it never lets the test runner
-skip a Test, and it applies to Jobs too.
+skip a Test, and it applies to Jobs too. While it lasts, FlakeRadar sends no
+**Notification** and files no issue for the Test or Job.
 
 _Avoid_: Snooze, mute, ignore.
 

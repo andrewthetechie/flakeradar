@@ -201,14 +201,16 @@ async fn window_failures(
     Ok(counts)
 }
 
-/// The gate's binds, in the order both filing statements place them, and whether the
-/// fourth of them exists.
+/// The gate's binds, in the order both filing statements place them, and whether
+/// the fourth of them exists.
 ///
 /// `$1` is the chunk of ids, `$2` and `$3` the score and Proven-flake minimums, and
 /// `$4` the fixed-note streak — bound only when the gate sets one, which is the third
 /// part of the answer because the statement has to leave its clause out at the same
-/// time. Each statement keeps its own clause text, so the SQL stays greppable.
-fn gate_binds(chunk: &[i32], gate: &FilingGate) -> (bool, Vec<Value>) {
+/// time. The last bind is the acknowledgement instant, `$4` or `$5` depending on
+/// whether that streak clause is there; the statement always has it. Each statement
+/// keeps its own clause text, so the SQL stays greppable.
+fn gate_binds(chunk: &[i32], gate: &FilingGate, now: DateTime<FixedOffset>) -> (bool, Vec<Value>) {
     let mut values = vec![
         int_array(chunk),
         Value::from(gate.min_score),
@@ -221,6 +223,7 @@ fn gate_binds(chunk: &[i32], gate: &FilingGate) -> (bool, Vec<Value>) {
         }
         None => false,
     };
+    values.push(Value::from(now));
     (streak, values)
 }
 
@@ -251,7 +254,8 @@ pub struct JobCandidate {
 /// The Tests that meet `gate` and still have no open issue.
 ///
 /// `window` is the number of newest Executions the failure minimum counts over,
-/// read only when the gate sets one.
+/// read only when the gate sets one. `now` is the instant the gate compares an
+/// acknowledgement against: a row acknowledged past it files nothing.
 ///
 /// # Errors
 ///
@@ -261,14 +265,20 @@ pub async fn test_candidates(
     test_ids: &[i32],
     gate: &FilingGate,
     window: usize,
+    now: DateTime<FixedOffset>,
 ) -> Result<Vec<TestCandidate>, DbError> {
     let mut candidates = Vec::new();
     for chunk in chunks(test_ids) {
-        let (streak, values) = gate_binds(chunk, gate);
+        let (streak, values) = gate_binds(chunk, gate, now);
         let fixed = if streak {
             " AND t.clean_streak < $4"
         } else {
             ""
+        };
+        let ack = if streak {
+            " AND (t.acknowledged_until IS NULL OR t.acknowledged_until <= $5)"
+        } else {
+            " AND (t.acknowledged_until IS NULL OR t.acknowledged_until <= $4)"
         };
         // This comparison is the GitHub filing gate (`GITHUB_ISSUE_MIN_SCORE`):
         // a score, not a tier. A row whose tier is merely suspect files nothing,
@@ -278,7 +288,7 @@ pub async fn test_candidates(
              FROM test_cases t JOIN projects p ON p.id = t.project_id \
              JOIN repos r ON r.id = p.repo_id \
              WHERE t.id = ANY($1::INTEGER[]) AND t.flakiness_score >= $2 \
-               AND t.confirmed_flake_count >= $3 AND t.github_issue_number IS NULL{fixed} \
+               AND t.confirmed_flake_count >= $3 AND t.github_issue_number IS NULL{fixed}{ack} \
              ORDER BY t.id"
         );
         for row in rows(db, sql, values).await? {
@@ -307,6 +317,9 @@ pub async fn test_candidates(
 
 /// The github-provider Jobs that meet `gate` and still have no open issue.
 ///
+/// `now` is the instant the gate compares an acknowledgement against: a Job
+/// acknowledged past it files nothing.
+///
 /// # Errors
 ///
 /// Returns [`DbError::Database`] when a statement fails.
@@ -315,14 +328,20 @@ pub async fn job_candidates(
     job_ids: &[i32],
     gate: &FilingGate,
     window: usize,
+    now: DateTime<FixedOffset>,
 ) -> Result<Vec<JobCandidate>, DbError> {
     let mut candidates = Vec::new();
     for chunk in chunks(job_ids) {
-        let (streak, values) = gate_binds(chunk, gate);
+        let (streak, values) = gate_binds(chunk, gate, now);
         let fixed = if streak {
             " AND j.clean_streak < $4"
         } else {
             ""
+        };
+        let ack = if streak {
+            " AND (j.acknowledged_until IS NULL OR j.acknowledged_until <= $5)"
+        } else {
+            " AND (j.acknowledged_until IS NULL OR j.acknowledged_until <= $4)"
         };
         // This comparison is the GitHub filing gate (`GITHUB_ISSUE_MIN_SCORE`):
         // a score, not a tier. A Job whose tier is merely suspect files nothing,
@@ -333,7 +352,7 @@ pub async fn job_candidates(
              JOIN repos r ON r.id = p.repo_id \
              WHERE j.id = ANY($1::INTEGER[]) AND p.provider = 'github' \
                AND j.flakiness_score >= $2 AND j.confirmed_flake_count >= $3 \
-               AND j.github_issue_number IS NULL{fixed} \
+               AND j.github_issue_number IS NULL{fixed}{ack} \
              ORDER BY j.id"
         );
         for row in rows(db, sql, values).await? {

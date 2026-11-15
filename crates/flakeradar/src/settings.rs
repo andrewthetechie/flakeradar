@@ -1024,6 +1024,7 @@ mod tests {
 
     use anyhow::Context as _;
 
+    use super::LineCounted;
     use super::{
         DEFAULT_DATABASE_URL, DEFAULT_HOST, DEFAULT_INSECURE_TOKEN, DEFAULT_PORT, Secret, Settings,
         SettingsError, assert_secure_token, check_api_token, environment_values, is_default_token,
@@ -1400,6 +1401,19 @@ mod tests {
         check_api_token("a-real-token", None).expect("a real token is allowed");
         assert!(!is_default_token("a-real-token"));
         assert!(is_default_token(DEFAULT_INSECURE_TOKEN));
+    }
+
+    #[test]
+    fn a_read_into_an_empty_buffer_answers_zero() {
+        let mut lines = LineCounted::new(std::io::Cursor::new(b"A=1\nB=2\n".to_vec()));
+        assert_eq!(std::io::Read::read(&mut lines, &mut []).expect("a read"), 0);
+        // The zero-length read consumed nothing, so the next read is the first line.
+        let mut buf = [0_u8; 4];
+        assert_eq!(
+            std::io::Read::read(&mut lines, &mut buf).expect("a read"),
+            4
+        );
+        assert_eq!(&buf, b"A=1\n");
     }
 
     #[test]

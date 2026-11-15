@@ -137,6 +137,17 @@ async fn project(db: &TestDb) -> projects::Model {
 }
 
 #[tokio::test]
+async fn a_worker_that_never_started_never_resolves_its_end() {
+    let db = TestDb::new().await.expect("a test database");
+    let worker = worker(&db, shared_lock(&lock(&db)), fast());
+    // `serve` selects on `ended` as well as the shutdown signal, so a loop that
+    // never ran must hold that select open rather than end the process.
+    tokio::time::timeout(Duration::from_millis(20), worker.ended())
+        .await
+        .expect_err("a loop that never started resolves nothing");
+}
+
+#[tokio::test]
 async fn the_leader_processes_queued_reports_and_hands_them_over() {
     let db = TestDb::new().await.expect("a test database");
     let project = project(&db).await;

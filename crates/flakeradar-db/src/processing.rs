@@ -1436,6 +1436,9 @@ fn notices_of(kind: EntityKind) -> &'static Notices {
 /// between a Test and a Job is a window statement, a write statement and a set of
 /// Notices.
 ///
+/// A row Acknowledged past the clock is still written, but sends no Notification,
+/// and the skipped Notification is not sent when the acknowledgement ends.
+///
 /// # Errors
 ///
 /// Returns [`DbError::Database`] when a read or write fails.
@@ -1562,7 +1565,8 @@ fn old_fail_streak(old: &BTreeMap<i32, OldRow>, id: i32) -> i64 {
 
 /// What differs between a Test's and a Job's Tier change.
 struct Notices {
-    /// The statement naming the rows an event reports, by id.
+    /// The statement naming the rows an event reports, by id, and reading their
+    /// acknowledgement.
     names_sql: fn(&str) -> String,
     /// Whether a row that left the flaky tier has recovered.
     ///
@@ -1597,7 +1601,7 @@ const JOB_NOTICES: Notices = Notices {
 /// The statement naming the Tests an event reports, by id.
 fn test_names_sql(placeholders: &str) -> String {
     format!(
-        "SELECT t.id, t.classname, t.name, p.name AS project, r.name AS repo \
+        "SELECT t.id, t.classname, t.name, t.acknowledged_until, p.name AS project, r.name AS repo \
            FROM test_cases t \
            JOIN projects p ON p.id = t.project_id \
            JOIN repos r ON r.id = p.repo_id \
@@ -1608,7 +1612,7 @@ fn test_names_sql(placeholders: &str) -> String {
 /// The statement naming the Jobs an event reports, by id.
 fn job_names_sql(placeholders: &str) -> String {
     format!(
-        "SELECT j.id, j.name, p.name AS pipeline, r.name AS repo \
+        "SELECT j.id, j.name, j.acknowledged_until, p.name AS pipeline, r.name AS repo \
            FROM jobs j \
            JOIN pipelines p ON p.id = j.pipeline_id \
            JOIN repos r ON r.id = p.repo_id \
@@ -1713,6 +1717,7 @@ async fn tier_changes(
     // union order the output, so a tier crossing comes before the broken change
     // of the same id.
     let ids: Vec<i32> = by_id.keys().copied().collect();
+    let now = settings.clock.now();
     let mut named: BTreeMap<i32, Vec<TierChange>> = BTreeMap::new();
     for chunk in chunks(&ids) {
         let placeholders = placeholder_list(1, chunk.len());
@@ -1723,6 +1728,13 @@ async fn tier_changes(
             let Some(update) = by_id.get(&id) else {
                 continue;
             };
+            // An acknowledged row is dropped like a deleted one, so it sends no
+            // event. Its caller still writes the Tier, so nothing arrives when
+            // the acknowledgement ends.
+            let acknowledged = get::<Option<DateTimeWithTimeZone>>(&row, "acknowledged_until")?;
+            if acknowledged.is_some_and(|until| until > now) {
+                continue;
+            }
             // Both changes of one id are built from the same row: the crossing,
             // then the broken change that sets the flag on it.
             let mut changes = Vec::new();
