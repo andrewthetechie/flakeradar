@@ -49,6 +49,10 @@ export interface TestCase {
   quarantined_at: string | null;
   quarantine_reason: string | null;
   quarantine_expires_at: string | null;
+  /** When the acknowledgement lapses (RFC 3339), or null when unacknowledged. */
+  acknowledged_until: string | null;
+  /** Why a person acknowledged the Test, or null. */
+  acknowledge_reason: string | null;
   github_issue_number: number | null;
   github_issue_url: string | null;
   github_issue_closed: boolean;
@@ -135,6 +139,9 @@ export interface TestQuery extends Scope {
   showStable: boolean;
   category: FailureCategory | null;
   quarantined: boolean;
+  /** List only acknowledged Tests, sent as `acknowledged=true`. No view filter
+   *  wires it yet: the "Acknowledged only" control belongs to ack-ui-jobs. */
+  acknowledged: boolean;
   /** List only Tests broken on the Default branch, or false for any. */
   broken: boolean;
   issue: IssueFilter | null;
@@ -238,6 +245,9 @@ export function fetchTests(q: TestQuery): Promise<TestPage> {
     q,
     LIST_FILTERS.map((d) => d.wire?.tests),
   );
+  // `acknowledged` stays hand-written: the table is ViewState-driven and
+  // ViewState has no acknowledged field until ack-ui-jobs.
+  if (q.acknowledged) params.set("acknowledged", "true");
   return getJson<TestPage>(withQuery("/api/tests", params));
 }
 
@@ -259,6 +269,10 @@ export interface Job {
   last_status: string;
   last_seen_at: string;
   summary: boolean; // a summary Job (CONTEXT.md) that runs no tests; its explained failures are never scored
+  /** When the acknowledgement lapses (RFC 3339), or null when unacknowledged. */
+  acknowledged_until: string | null;
+  /** Why a person acknowledged the Job, or null. */
+  acknowledge_reason: string | null;
   github_issue_number: number | null;
   github_issue_url: string | null;
   github_issue_closed: boolean;
@@ -344,6 +358,9 @@ export interface JobQuery {
   showStable: boolean;
   /** Exact Pipeline name to list, or null for every pipeline. */
   pipeline: string | null;
+  /** List only acknowledged Jobs, sent as `acknowledged=true`. No view filter
+   *  wires it yet: the "Acknowledged only" control belongs to ack-ui-jobs. */
+  acknowledged: boolean;
   /** Filter by Issue link, or null for any. */
   issue: IssueFilter | null;
   /** List only Jobs that became flaky in the last N days, or null for any. */
@@ -365,6 +382,8 @@ export function fetchJobs(q: JobQuery): Promise<JobPage> {
     q,
     LIST_FILTERS.map((d) => d.wire?.jobs),
   );
+  // Hand-written here too, for the same reason as in fetchTests.
+  if (q.acknowledged) params.set("acknowledged", "true");
   return getJson<JobPage>(withQuery("/api/jobs", params));
 }
 
@@ -393,6 +412,26 @@ export async function setQuarantine(
   });
   if (!resp.ok) throw new ApiError(`quarantine ${id} -> ${resp.status}`, resp.status);
   return resp.json() as Promise<TestCase>;
+}
+
+/** `reason` and `days` only mean something when acknowledging; the backend clears
+ *  both on an un-acknowledge, so leaving them out sends nothing new. */
+export async function setAcknowledge(
+  kind: "tests" | "jobs",
+  id: number,
+  acknowledged: boolean,
+  opts?: { reason?: string | null; days?: number | null },
+): Promise<TestCase | Job> {
+  const body: Record<string, boolean | string | number> = { acknowledged };
+  if (opts?.reason != null) body.reason = opts.reason;
+  if (opts?.days != null) body.days = opts.days;
+  const resp = await fetch(`/api/${kind}/${id}/acknowledge`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw new ApiError(`acknowledge ${kind} ${id} -> ${resp.status}`, resp.status);
+  return resp.json() as Promise<TestCase | Job>;
 }
 
 // --- Report queue (task 13) ----------------------------------------------

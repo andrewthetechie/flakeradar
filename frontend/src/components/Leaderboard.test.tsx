@@ -27,6 +27,8 @@ const test: TestCase = {
   quarantined_at: null,
   quarantine_reason: null,
   quarantine_expires_at: null,
+  acknowledged_until: null,
+  acknowledge_reason: null,
   github_issue_number: null,
   github_issue_url: null,
   github_issue_closed: false,
