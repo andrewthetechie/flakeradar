@@ -80,6 +80,37 @@ async fn a_fixed_note_is_stamped_with_the_clock_it_was_given() {
 }
 
 #[tokio::test]
+async fn no_token_is_a_silent_no_op() {
+    let db = TestDb::new().await.expect("a test database");
+    let test = flaky_test(&db).await;
+    stamp_link(&db, EntityKind::Test, test, stamp().number(12).checked()).await;
+    set_clean_streak(&db, "test_cases", test, 5).await;
+    let server = MockServer::start().await;
+    let api = Api::new(Secret::new(""), &server.uri()).expect("the HTTP client builds");
+
+    let report = github::note_fixed_for(
+        db.connection(),
+        EntityKind::Test,
+        &[test],
+        &fixed_settings(&[]),
+        &api,
+        &system_clock(),
+        &unstopped(),
+    )
+    .await;
+    assert_eq!(report.stopped, None, "the batch ran to its end");
+    assert_eq!(noted_at(&db, test).await, None, "no note was stamped");
+    assert!(
+        server
+            .received_requests()
+            .await
+            .expect("a record")
+            .is_empty(),
+        "an API without a token sends nothing"
+    );
+}
+
+#[tokio::test]
 async fn the_fixed_note_comments_once_with_the_configured_sentence() {
     let db = TestDb::new().await.expect("a test database");
     let test = flaky_test(&db).await;
@@ -270,6 +301,56 @@ async fn the_fixed_note_closes_the_issue_only_when_asked() {
     assert_eq!(
         body,
         json!({"state": "closed", "state_reason": "completed"})
+    );
+}
+
+#[tokio::test]
+async fn a_stop_that_fires_during_the_close_ends_the_batch_there() {
+    let db = TestDb::new().await.expect("a test database");
+    let test = flaky_test(&db).await;
+    stamp_link(&db, EntityKind::Test, test, stamp().number(12).checked()).await;
+    set_clean_streak(&db, "test_cases", test, 5).await;
+    let server = MockServer::start().await;
+    let stop = unstopped();
+    let listener = stop.clone();
+    Mock::given(method("PATCH"))
+        .and(path("/repos/acme/app/issues/12"))
+        .respond_with(move |_request: &Request| {
+            listener.cancel();
+            ResponseTemplate::new(200)
+        })
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/repos/acme/app/issues/12/comments"))
+        .respond_with(ResponseTemplate::new(201))
+        .mount(&server)
+        .await;
+    let settings = fixed_settings(&[("FLAKERADAR_GITHUB_CLOSE_FIXED", "true")]);
+
+    let report = github::note_fixed_for(
+        db.connection(),
+        EntityKind::Test,
+        &[test],
+        &settings,
+        &api(&server),
+        &system_clock(),
+        &stop,
+    )
+    .await;
+    // The close is recorded, so the issue never stays open unnoted; the batch
+    // ends there rather than reaching a row the stop no longer serves.
+    assert_eq!(
+        report.stopped,
+        Some(github::BatchStop::Stopped),
+        "a stop that fired during the close ends the batch"
+    );
+    assert_eq!(
+        requested_paths(&server).await,
+        vec![
+            "/repos/acme/app/issues/12/comments",
+            "/repos/acme/app/issues/12"
+        ]
     );
 }
 

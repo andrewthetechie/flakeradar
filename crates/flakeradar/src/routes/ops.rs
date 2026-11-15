@@ -259,6 +259,9 @@ mod tests {
         assert_eq!(render_seconds(90.0), "90.0");
         assert_eq!(render_seconds(0.125), "0.125");
         assert_eq!(render_seconds(1_700_000_000.5), "1700000000.5");
+        // A value Rust's Display spells without a decimal point passes through
+        // unchanged: the scrape renders whatever number it measured.
+        assert_eq!(render_seconds(f64::INFINITY), "inf");
     }
 
     #[test]
