@@ -14,5 +14,5 @@
     "TestOut.acknowledge_reason"
   ],
   "paths": ["POST /api/tests/{test_id}/acknowledge"],
-  "query_params": []
+  "query_params": ["GET /api/tests acknowledged"]
 }

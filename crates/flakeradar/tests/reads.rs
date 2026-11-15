@@ -829,6 +829,63 @@ async fn the_quarantined_filter_includes_stable_tests() {
     assert_eq!(item_names(&default), ["quarantined_flaky", "flaky"]);
 }
 
+/// A timestamp `days` from now, as the database stores it.
+fn days_from_now(days: i64) -> DateTimeWithTimeZone {
+    (Utc::now() + Duration::days(days)).fixed_offset()
+}
+
+/// The acknowledgement fixture: a stable and a flaky Test acknowledged for a
+/// week, a flaky Test nobody acknowledged, and one acknowledged in the past.
+async fn seed_acknowledge(db: &TestDb) {
+    let project = make_project()
+        .repo("acme/app")
+        .project("backend")
+        .create(db)
+        .await;
+    make_test_case(&project)
+        .name("acked_stable")
+        .acknowledged_until(days_from_now(7))
+        .acknowledge_reason("known")
+        .create(db)
+        .await;
+    make_test_case(&project)
+        .name("acked_flaky")
+        .flakiness_score(0.8)
+        .acknowledged_until(days_from_now(7))
+        .acknowledge_reason("known")
+        .create(db)
+        .await;
+    make_test_case(&project)
+        .name("flaky")
+        .flakiness_score(0.6)
+        .create(db)
+        .await;
+    make_test_case(&project)
+        .name("lapsed")
+        .flakiness_score(0.5)
+        .acknowledged_until(days_from_now(-1))
+        .acknowledge_reason("known")
+        .create(db)
+        .await;
+}
+
+#[tokio::test]
+async fn the_acknowledged_filter_includes_stable_tests() {
+    let db = TestDb::new().await.expect("a test database");
+    seed_acknowledge(&db).await;
+    let app = app(&db, &[]);
+    let page = get(&app, "/api/tests?repo=acme/app&acknowledged=true")
+        .await
+        .json();
+    assert_eq!(item_names(&page), ["acked_flaky", "acked_stable"]);
+    assert_eq!(page["total"], 2);
+    let lapsed = get(&app, "/api/tests?repo=acme/app&acknowledged=false")
+        .await
+        .json();
+    assert_eq!(item_names(&lapsed), ["flaky", "lapsed"]);
+    assert_eq!(lapsed["total"], 2);
+}
+
 #[tokio::test]
 async fn quarantined_false_excludes_quarantined_tests() {
     let db = TestDb::new().await.expect("a test database");

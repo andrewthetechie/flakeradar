@@ -609,6 +609,8 @@ pub struct TestListFilters {
     pub category: Option<FailureCategory>,
     /// The quarantine state to list; `None` lists both.
     pub quarantined: Option<bool>,
+    /// The acknowledgement state to list; `None` lists both.
+    pub acknowledged: Option<bool>,
     /// Whether to list only broken Tests.
     pub broken: bool,
 }
@@ -692,6 +694,17 @@ pub async fn list_tests(
     if let Some(quarantined) = filters.quarantined {
         filter.eq("t.quarantined", Value::from(quarantined));
     }
+    // An acknowledgement is live while its expiry is in the future.
+    if let Some(acknowledged) = filters.acknowledged {
+        let placeholder = filter.bind(Value::from(settings.clock.now()));
+        if acknowledged {
+            filter.raw(format!("t.acknowledged_until > {placeholder}"));
+        } else {
+            filter.raw(format!(
+                "(t.acknowledged_until IS NULL OR t.acknowledged_until <= {placeholder})"
+            ));
+        }
+    }
     if filters.broken {
         if settings.broken_streak > 0 {
             let placeholder = filter.bind(Value::from(settings.broken_streak));
@@ -701,8 +714,9 @@ pub async fn list_tests(
             filter.raw("FALSE");
         }
     }
-    // A quarantine or broken filter keeps the stable rows it selected by.
-    let keeps_stable_rows = filters.quarantined == Some(true) || filters.broken;
+    // A quarantine, acknowledgement or broken filter keeps the stable rows it selected by.
+    let keeps_stable_rows =
+        filters.quarantined == Some(true) || filters.acknowledged == Some(true) || filters.broken;
     let board = Board {
         entity: &TESTS_BOARD,
         options,

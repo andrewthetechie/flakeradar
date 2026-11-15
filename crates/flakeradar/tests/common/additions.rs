@@ -213,7 +213,7 @@ mod form {
     }
 
     /// The fixture as it ships: the added columns and response fields, the
-    /// acknowledge route, one empty list, and nothing to report.
+    /// acknowledge route and query parameter, and nothing to report.
     #[test]
     fn the_shipped_fixture_holds_the_added_column_and_field_and_reports_nothing() {
         let path = root().join("additions.json");
@@ -239,7 +239,7 @@ mod form {
                     "TestOut.acknowledge_reason"
                 ],
                 "paths": ["POST /api/tests/{test_id}/acknowledge"],
-                "query_params": []
+                "query_params": ["GET /api/tests acknowledged"]
             }),
             "{}",
             path.display()

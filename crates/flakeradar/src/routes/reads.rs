@@ -248,6 +248,8 @@ pub struct TestsQuery {
     #[serde(default, deserialize_with = "flakeradar_core::dto::lax_bool::optional")]
     quarantined: Option<bool>,
     #[serde(default, deserialize_with = "flakeradar_core::dto::lax_bool::optional")]
+    acknowledged: Option<bool>,
+    #[serde(default, deserialize_with = "flakeradar_core::dto::lax_bool::optional")]
     has_issue: Option<bool>,
     #[serde(default, deserialize_with = "flakeradar_core::dto::lax_int::optional")]
     new_within_days: Option<i64>,
@@ -280,6 +282,7 @@ impl TestsQuery {
                 .as_deref()
                 .and_then(FailureCategory::from_wire),
             quarantined: self.quarantined,
+            acknowledged: self.acknowledged,
             broken: self.broken.unwrap_or(false),
         };
         let options = ListOptions {
@@ -444,6 +447,7 @@ pub async fn repos(State(state): State<AppState>) -> RouteResult<Json<Vec<RepoOu
         ("category" = Option<String>, Query, description = "A Failure category"),
         ("q" = Option<String>, Query, description = "A literal substring of name, classname or file"),
         ("quarantined" = Option<bool>, Query, description = "The quarantine state to list"),
+        ("acknowledged" = Option<bool>, Query, description = "The acknowledgement state to list"),
         ("has_issue" = Option<bool>, Query, description = "Whether a GitHub issue is linked"),
         ("new_within_days" = Option<i64>, Query, description = "Only Tests that became flaky in this many days, 1-90"),
         ("broken" = Option<bool>, Query, description = "Only Tests whose Fail streak reached the broken threshold")
