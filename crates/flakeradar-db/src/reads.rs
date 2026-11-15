@@ -576,6 +576,8 @@ pub(crate) fn job_out(row: &QueryResult, trend: Option<Trend>) -> Result<JobOut,
         last_status: get(row, "last_status")?,
         last_seen_at: timestamp(row, "last_seen_at")?,
         summary: get(row, "summary")?,
+        acknowledged_until: optional_timestamp(row, "acknowledged_until")?,
+        acknowledge_reason: get(row, "acknowledge_reason")?,
         github_issue_number: issue_number,
         github_issue_url,
         github_issue_closed: get(row, "github_issue_closed")?,
@@ -1251,14 +1253,14 @@ pub async fn set_quarantine(
     Ok(Some(test))
 }
 
-/// A human's acknowledgement decision for one Test.
+/// A human's acknowledgement decision for one Test or Job.
 ///
 /// The body states a flag beside two values that only mean something when it is
 /// set, so the decision is one value: what the person decided, and what they said
 /// and for how long when they acknowledged.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AcknowledgeDecision {
-    /// Acknowledge the Test, with the reason and the day count the person gave.
+    /// Acknowledge the Test or Job, with the reason and the day count the person gave.
     Acknowledge {
         /// Why the person acknowledged it.
         reason: Option<String>,
@@ -1309,6 +1311,50 @@ pub async fn set_acknowledge(
     test.acknowledged_until = until.map(|at| at.with_timezone(&Utc));
     test.acknowledge_reason = reason;
     Ok(Some(test))
+}
+
+/// Stores a human's acknowledgement decision for one Job.
+///
+/// Every write stores the decision's values, so acknowledging without a reason
+/// clears the old one instead of keeping a stale decision.
+///
+/// Returns `Ok(None)` when no Job has `job_id`.
+///
+/// # Errors
+///
+/// Returns [`DbError::Database`] when a statement fails.
+pub async fn set_job_acknowledge(
+    db: &impl ConnectionTrait,
+    job_id: i64,
+    decision: AcknowledgeDecision,
+    settings: &ReadSettings,
+) -> Result<Option<JobOut>, DbError> {
+    let sql = format!("{JOBS_SELECT} {JOBS_FROM} WHERE j.id = $1");
+    let Some(row) = one(db, sql, vec![Value::from(job_id)]).await? else {
+        return Ok(None);
+    };
+    let stored_id: i32 = get(&row, "id")?;
+    let now = settings.clock.now();
+    let (reason, until) = match decision {
+        AcknowledgeDecision::Acknowledge { reason, days } => {
+            (reason, Some(now + Duration::days(days)))
+        }
+        AcknowledgeDecision::Clear => (None, None),
+    };
+    let statement = Statement::from_sql_and_values(
+        DbBackend::Postgres,
+        "UPDATE jobs SET acknowledged_until = $2, acknowledge_reason = $3 WHERE id = $1",
+        [
+            Value::from(stored_id),
+            Value::from(until),
+            Value::from(reason.clone()),
+        ],
+    );
+    db.execute_raw(statement).await?;
+    let mut job = job_out(&row, None)?;
+    job.acknowledged_until = until.map(|at| at.with_timezone(&Utc));
+    job.acknowledge_reason = reason;
+    Ok(Some(job))
 }
 
 /// For test runners: the quarantined Tests to skip in one Repo and Project.

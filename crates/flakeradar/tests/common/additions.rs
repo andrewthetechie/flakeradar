@@ -236,9 +236,14 @@ mod form {
                 "fields": [
                     "CiRunTestFailureOut.infra_suspect",
                     "TestOut.acknowledged_until",
-                    "TestOut.acknowledge_reason"
+                    "TestOut.acknowledge_reason",
+                    "JobOut.acknowledged_until",
+                    "JobOut.acknowledge_reason"
                 ],
-                "paths": ["POST /api/tests/{test_id}/acknowledge"],
+                "paths": [
+                    "POST /api/tests/{test_id}/acknowledge",
+                    "POST /api/jobs/{job_id}/acknowledge"
+                ],
                 "query_params": ["GET /api/tests acknowledged"]
             }),
             "{}",

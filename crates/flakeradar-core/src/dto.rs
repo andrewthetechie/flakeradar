@@ -1663,6 +1663,11 @@ pub struct JobOut {
     pub last_seen_at: DateTime<Utc>,
     /// Whether the Job is a Summary Job.
     pub summary: bool,
+    /// When the acknowledgement lapses.
+    #[serde(with = "optional_timestamp")]
+    pub acknowledged_until: Option<DateTime<Utc>>,
+    /// Why a person acknowledged the Job.
+    pub acknowledge_reason: Option<String>,
     /// The GitHub issue the Job is linked to.
     pub github_issue_number: Option<i64>,
     /// The linked issue's url, when the Pipeline is on GitHub.

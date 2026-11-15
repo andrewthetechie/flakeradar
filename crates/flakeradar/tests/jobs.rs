@@ -9,10 +9,10 @@
     reason = "a test fails loudly when a fixture or an answer does not behave"
 )]
 
-use chrono::{Duration, Utc};
+use chrono::{DateTime, Duration, FixedOffset, Utc};
 use flakeradar_test_support::{
     TestDb, app, get, make_execution, make_job, make_job_execution, make_job_score, make_pipeline,
-    make_project, make_run, make_test_case,
+    make_project, make_run, make_test_case, post,
 };
 
 use serde_json::{Value, json};
@@ -30,6 +30,17 @@ fn item_names(page: &Value) -> Vec<String> {
         .iter()
         .map(|item| item["name"].as_str().expect("a name").to_owned())
         .collect()
+}
+
+/// One JSON `POST` to `uri`, as the dashboard sends it.
+async fn post_json(app: &axum::Router, uri: &str, body: Value) -> flakeradar_test_support::Reply {
+    post(
+        app,
+        uri,
+        &[("content-type", "application/json")],
+        body.to_string(),
+    )
+    .await
 }
 
 #[tokio::test]
@@ -52,6 +63,70 @@ async fn list_jobs_filters_stable_and_sorts_worst_first() {
         .json();
     assert_eq!(item_names(&all), ["a", "b", "c"]);
     assert_eq!(all["total"], 3);
+}
+
+#[tokio::test]
+async fn acknowledge_sets_and_clears_one_job() {
+    let db = TestDb::new().await.expect("a test database");
+    let pipeline = make_pipeline().repo("acme/app").create(&db).await;
+    let job = make_job(&pipeline)
+        .name("unit")
+        .flakiness_score(0.6)
+        .create(&db)
+        .await;
+    let app = app(&db, &[]);
+    let url = format!("/api/jobs/{}/acknowledge", job.id);
+
+    let on = post_json(
+        &app,
+        &url,
+        json!({"acknowledged": true, "reason": "runner pool flaky", "days": 30}),
+    )
+    .await;
+    assert_eq!(on.status, 200);
+    assert_eq!(on.json()["acknowledge_reason"], "runner pool flaky");
+    let until: DateTime<FixedOffset> =
+        DateTime::parse_from_rfc3339(on.json()["acknowledged_until"].as_str().expect("an expiry"))
+            .expect("the expiry is RFC 3339");
+    let expected = Utc::now() + Duration::days(30);
+    assert!((until.with_timezone(&Utc) - expected).abs() < Duration::minutes(5));
+
+    // The stored row carries the decision, as the Job's history serves it.
+    let stored = get(&app, &format!("/api/jobs/{}/history", job.id))
+        .await
+        .json();
+    assert_eq!(stored["job"]["acknowledge_reason"], "runner pool flaky");
+    assert_eq!(
+        stored["job"]["acknowledged_until"],
+        on.json()["acknowledged_until"]
+    );
+
+    for days in [0, 31] {
+        let bad = post_json(&app, &url, json!({"acknowledged": true, "days": days})).await;
+        assert_eq!(bad.status, 422);
+        assert_eq!(bad.json()["detail"][0]["loc"], json!(["body", "days"]));
+    }
+
+    // A rejected body never touched the stored acknowledgement.
+    let stored = get(&app, &format!("/api/jobs/{}/history", job.id))
+        .await
+        .json();
+    assert_eq!(stored["job"]["acknowledge_reason"], "runner pool flaky");
+
+    let off = post_json(&app, &url, json!({"acknowledged": false})).await;
+    assert_eq!(off.status, 200);
+    assert_eq!(off.json()["acknowledged_until"], Value::Null);
+    assert_eq!(off.json()["acknowledge_reason"], Value::Null);
+
+    let missing = post(
+        &app,
+        "/api/jobs/999999/acknowledge",
+        &[("content-type", "application/json")],
+        json!({"acknowledged": true, "days": 30}).to_string(),
+    )
+    .await;
+    assert_eq!(missing.status, 404);
+    assert_eq!(missing.json(), json!({"detail": "Job not found"}));
 }
 
 #[tokio::test]
