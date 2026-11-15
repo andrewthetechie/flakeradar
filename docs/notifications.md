@@ -53,6 +53,13 @@ FlakeRadar sends nothing in these cases:
   event that you see for a test, and you hear about it again when its flaky state
   moves — a score that reaches the flake threshold sends a new `test.flaky`, and a
   later score below the recover threshold sends `test.recovered`.
+- A test or job that a person acknowledged. While the acknowledgement lasts,
+  FlakeRadar sends nothing for it, whatever its score does: the team has said
+  that flake is known and owned, so the channel needs no news about it. The
+  state itself still moves — a report sets or clears the flaky state as usual
+  — only the announcement is dropped, so a crossing the acknowledgement skipped
+  is not sent when the acknowledgement ends. After it ends, the next crossing
+  sends its event.
 
 ## Formats
 

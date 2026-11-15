@@ -59,6 +59,12 @@ job that already has that clean streak gets no new issue. Its fix holds, so it
 is not a current flake. See [When the fix holds](#when-the-fix-holds).
 A failure resets the streak and makes filing possible again.
 
+A test or job that a person acknowledged is the other case that sends nothing:
+FlakeRadar opens no new issue for it while the acknowledgement lasts, whatever
+its score — the flake is known and owned, so the tracker needs no second copy.
+An acknowledged test or job that already has an issue link keeps that link.
+When the acknowledgement ends, the gate above applies again.
+
 For a job, the failure count includes only unexplained failures.
 
 ## Duplicate issues
