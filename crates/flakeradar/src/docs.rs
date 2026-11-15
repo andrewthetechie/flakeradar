@@ -14,14 +14,15 @@ use axum::http::header;
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
 use flakeradar_core::{
-    dto::CiRunFailedJobOut, dto::CiRunFailuresOut, dto::CiRunTestFailureOut, dto::DeletedCountsOut,
-    dto::ExecutionOut, dto::ExplainingJobOut, dto::ExplainingTestOut, dto::HistoryOut,
-    dto::IngestAccepted, dto::IssueLinkIn, dto::JobExecutionOut, dto::JobHistoryOut, dto::JobOut,
-    dto::JobPage, dto::JobResultIn, dto::JobSummaryOut, dto::LocSegment, dto::LocationOut,
-    dto::PipelineReportIn, dto::ProjectDeleteOut, dto::ProjectOut, dto::QuarantineIn,
-    dto::QuarantineItem, dto::ReadinessOut, dto::RepoDeleteOut, dto::RepoOut, dto::ReportCountsOut,
-    dto::ReportOut, dto::ReportSummaryOut, dto::RunnerStatOut, dto::ScorePointOut, dto::SummaryOut,
-    dto::TestJobLinkOut, dto::TestOut, dto::TestPage, dto::ValidationIssue, model::JobStatus,
+    dto::AcknowledgeIn, dto::CiRunFailedJobOut, dto::CiRunFailuresOut, dto::CiRunTestFailureOut,
+    dto::DeletedCountsOut, dto::ExecutionOut, dto::ExplainingJobOut, dto::ExplainingTestOut,
+    dto::HistoryOut, dto::IngestAccepted, dto::IssueLinkIn, dto::JobExecutionOut,
+    dto::JobHistoryOut, dto::JobOut, dto::JobPage, dto::JobResultIn, dto::JobSummaryOut,
+    dto::LocSegment, dto::LocationOut, dto::PipelineReportIn, dto::ProjectDeleteOut,
+    dto::ProjectOut, dto::QuarantineIn, dto::QuarantineItem, dto::ReadinessOut, dto::RepoDeleteOut,
+    dto::RepoOut, dto::ReportCountsOut, dto::ReportOut, dto::ReportSummaryOut, dto::RunnerStatOut,
+    dto::ScorePointOut, dto::SummaryOut, dto::TestJobLinkOut, dto::TestOut, dto::TestPage,
+    dto::ValidationIssue, model::JobStatus,
 };
 use utoipa::OpenApi;
 use utoipa::openapi::OpenApi as OpenApiDocument;
@@ -107,6 +108,7 @@ pub const REDOC_SCRIPT: &[u8] = include_bytes!("../assets/redoc.standalone.js");
         JobSummaryOut,
         QuarantineIn,
         QuarantineItem,
+        AcknowledgeIn,
         CiRunTestFailureOut,
         CiRunFailedJobOut,
         CiRunFailuresOut,

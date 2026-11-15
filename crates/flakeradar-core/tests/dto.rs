@@ -17,10 +17,10 @@
 use chrono::{DateTime, NaiveDate, TimeZone as _, Utc};
 use flakeradar_core::dto::lax_bool;
 use flakeradar_core::{
-    dto::BodyRefusal, dto::IssueLinkIn, dto::JobResultIn, dto::LocSegment, dto::PipelineReportIn,
-    dto::QuarantineIn, dto::ReportOut, dto::ScorePointOut, dto::TestOut, dto::ValidationIssue,
-    model::ExecutionStatus, model::ReportKind, model::ReportStatus, model::Tier, model::Trend,
-    types::CiRunId, types::Fingerprint, types::Score,
+    dto::AcknowledgeIn, dto::BodyRefusal, dto::IssueLinkIn, dto::JobResultIn, dto::LocSegment,
+    dto::PipelineReportIn, dto::QuarantineIn, dto::ReportOut, dto::ScorePointOut, dto::TestOut,
+    dto::ValidationIssue, model::ExecutionStatus, model::ReportKind, model::ReportStatus,
+    model::Tier, model::Trend, types::CiRunId, types::Fingerprint, types::Score,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -531,6 +531,99 @@ fn a_quarantine_body_keeps_the_optional_fields_when_present() {
         (explicit_nulls.reason, explicit_nulls.expires_in_days),
         (None, None)
     );
+}
+
+/// Reads an acknowledgement body the way the route reads one.
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "the helper returns the issues but fails loudly on a fixture that is no object"
+)]
+fn acknowledged(body: &Value) -> Result<AcknowledgeIn, Vec<ValidationIssue>> {
+    let object = body
+        .as_object()
+        .unwrap_or_else(|| panic!("the fixture is a JSON object: {body}"));
+    AcknowledgeIn::from_value(object)
+}
+
+#[test]
+fn an_acknowledge_body_requires_the_flag_and_the_days_it_names() {
+    let issues = acknowledged(&json!({"reason": "known"}))
+        .expect_err("a body without `acknowledged` is refused");
+    assert_eq!(issues[0].r#type, "missing");
+    assert_eq!(
+        issues[0].loc,
+        [
+            LocSegment::Field("body".to_owned()),
+            LocSegment::Field("acknowledged".to_owned())
+        ]
+    );
+
+    let issues = acknowledged(&json!({"acknowledged": true}))
+        .expect_err("an acknowledgement without `days` is refused");
+    assert_eq!(issues[0].r#type, "missing");
+    assert_eq!(
+        issues[0].loc,
+        [
+            LocSegment::Field("body".to_owned()),
+            LocSegment::Field("days".to_owned())
+        ]
+    );
+}
+
+#[test]
+fn an_acknowledge_body_takes_a_day_count_between_one_and_thirty() {
+    for days in [1, 30] {
+        let body = acknowledged(&json!({"acknowledged": true, "days": days}))
+            .unwrap_or_else(|issues| panic!("{days} days is in range: {issues:?}"));
+        assert_eq!(body.days, Some(days));
+    }
+
+    let issues = acknowledged(&json!({"acknowledged": true, "days": 0}))
+        .expect_err("zero days is below the minimum");
+    assert_eq!(issues[0].r#type, "greater_than_equal");
+    assert_eq!(
+        issues[0].loc,
+        [
+            LocSegment::Field("body".to_owned()),
+            LocSegment::Field("days".to_owned())
+        ]
+    );
+
+    let issues = acknowledged(&json!({"acknowledged": true, "days": 31}))
+        .expect_err("31 days is past the maximum");
+    assert_eq!(issues[0].r#type, "less_than_equal");
+    assert_eq!(
+        issues[0].loc,
+        [
+            LocSegment::Field("body".to_owned()),
+            LocSegment::Field("days".to_owned())
+        ]
+    );
+}
+
+#[test]
+fn an_acknowledge_body_refuses_a_reason_over_five_hundred_characters() {
+    let issues = acknowledged(&json!({"acknowledged": true, "reason": "r".repeat(501)}))
+        .expect_err("a 501-character reason is refused");
+    assert_eq!(issues[0].r#type, "string_too_long");
+    assert_eq!(
+        issues[0].loc,
+        [
+            LocSegment::Field("body".to_owned()),
+            LocSegment::Field("reason".to_owned())
+        ]
+    );
+    let body = acknowledged(&json!({"acknowledged": true, "reason": "r".repeat(500), "days": 7}))
+        .expect("500 characters is the longest reason");
+    assert_eq!(body.reason, Some("r".repeat(500)));
+}
+
+#[test]
+fn an_acknowledge_body_ignores_the_reason_and_days_when_not_acknowledging() {
+    let body = acknowledged(&json!({"acknowledged": false, "reason": "known", "days": 999}))
+        .expect("an un-acknowledge stores nothing, so the two fields are ignored");
+    assert!(!body.acknowledged);
+    assert_eq!((body.reason, body.days), (None, None));
 }
 
 /// A body whose one field is read as a required lax boolean.

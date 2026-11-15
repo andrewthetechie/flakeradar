@@ -1902,6 +1902,107 @@ const QUARANTINE_REASON_MAX: usize = 500;
 /// forget a Test forever, so it is refused with the recorded 422.
 const QUARANTINE_DAYS_MAX: i64 = 365;
 
+/// A human's acknowledgement decision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct AcknowledgeIn {
+    /// Whether the Test is acknowledged, in any spelling [`lax_bool`] accepts.
+    #[serde(deserialize_with = "lax_bool::deserialize")]
+    pub acknowledged: bool,
+    /// Why the human acknowledged it.
+    #[serde(default)]
+    pub reason: Option<String>,
+    /// How many days the acknowledgement lasts.
+    #[serde(default)]
+    pub days: Option<i64>,
+}
+
+impl AcknowledgeIn {
+    /// Reads an acknowledgement body with the lax rules this API applies.
+    ///
+    /// # Errors
+    ///
+    /// Returns every issue the body has, in field order, which the 422's `detail`
+    /// list carries.
+    pub fn from_value(
+        object: &serde_json::Map<String, Value>,
+    ) -> Result<Self, Vec<ValidationIssue>> {
+        let fields = lax::Fields::new(object, body_loc_root());
+        let mut issues = Vec::new();
+
+        let acknowledged = fields
+            .required("acknowledged", &mut issues)
+            .and_then(|value| {
+                lax::recorded(lax::boolean(value, fields.loc("acknowledged")), &mut issues)
+            })
+            .unwrap_or_default();
+        let mut reason = None;
+        let mut days = None;
+        if acknowledged {
+            // An un-acknowledge stores nothing, so the two values that only an
+            // acknowledgement carries are skipped, not validated.
+            if let Some(text) = fields
+                .field("reason")
+                .filter(|value| !value.is_null())
+                .and_then(|value| {
+                    lax::recorded(lax::string(value, fields.loc("reason")), &mut issues)
+                })
+            {
+                lax::refuse_nul(&text, fields.loc("reason"), &mut issues);
+                if text.chars().count() > ACKNOWLEDGE_REASON_MAX {
+                    issues.push(ValidationIssue::string_too_long(
+                        fields.loc("reason"),
+                        Value::from(text.clone()),
+                        ACKNOWLEDGE_REASON_MAX,
+                    ));
+                }
+                reason = Some(text);
+            }
+            if let Some(value) = fields.required("days", &mut issues) {
+                match lax::recorded(lax::integer(value, fields.loc("days")), &mut issues) {
+                    Some(day) if day < 1 => issues.push(ValidationIssue::greater_than_equal(
+                        fields.loc("days"),
+                        value.clone(),
+                        1,
+                    )),
+                    Some(day) if day > ACKNOWLEDGE_DAYS_MAX => {
+                        issues.push(ValidationIssue::less_than_equal(
+                            fields.loc("days"),
+                            value.clone(),
+                            ACKNOWLEDGE_DAYS_MAX,
+                        ));
+                    }
+                    Some(day) => days = Some(day),
+                    // A value that is no integer has recorded its own issue.
+                    None => {}
+                }
+            }
+        }
+
+        issues.finish().map(|()| Self {
+            acknowledged,
+            reason,
+            days,
+        })
+    }
+}
+
+/// The longest acknowledgement reason a human may record, in code points.
+///
+/// A reason is a sentence or two, such as "fails on CI's Windows runner, see
+/// issue 42"; 500 characters holds that with room to spare. The bound is the
+/// quarantine reason's, so the two decisions a human files read the same, and a
+/// longer one is refused with the recorded 422.
+const ACKNOWLEDGE_REASON_MAX: usize = 500;
+
+/// The most days an acknowledgement may last.
+///
+/// An acknowledgement is one person saying they own a Test for now, unlike a
+/// quarantine, which parks it for as long as a fix may take. It expires unless
+/// its owner renews it, so 30 days is the longest claim the API takes: anything
+/// longer would be a way to stop looking at a Test, so it is refused with the
+/// recorded 422.
+const ACKNOWLEDGE_DAYS_MAX: i64 = 30;
+
 /// One quarantined Test in the quarantine list.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct QuarantineItem {
