@@ -116,7 +116,8 @@ async fn a_second_migration_run_migrates_nothing() {
             "0001_baseline",
             "0002_infra_suspect",
             "0003_flaky_since",
-            "0004_acknowledge"
+            "0004_acknowledge",
+            "0005_issue_reopen"
         ]
     );
 }
@@ -195,6 +196,33 @@ async fn the_added_acknowledge_columns_are_nullable() {
     }
 }
 
+/// The columns `0005_issue_reopen` adds, as the applied schema records them: both
+/// nullable, with the integer and timestamp types the migration asks for.
+#[tokio::test]
+async fn the_added_issue_reopen_columns_are_nullable() {
+    let db = TestDb::new().await.expect("a migrated test database");
+    for (table, column, data_type) in [
+        ("test_cases", "github_issue_last_closed_number", "integer"),
+        (
+            "test_cases",
+            "github_issue_last_closed_at",
+            "timestamp with time zone",
+        ),
+        ("jobs", "github_issue_last_closed_number", "integer"),
+        (
+            "jobs",
+            "github_issue_last_closed_at",
+            "timestamp with time zone",
+        ),
+    ] {
+        assert_eq!(
+            column_shape(db.connection(), table, column).await,
+            (data_type.to_owned(), "YES".to_owned()),
+            "{table}.{column} is {data_type} and nullable"
+        );
+    }
+}
+
 /// A migration set with two entries after the baseline, one depending on the other.
 const ORDERED: &[(&str, &str)] = &[
     ("0001_baseline", BASELINE_SQL),
@@ -237,27 +265,32 @@ fn the_migrator_lists_the_baseline_and_the_added_migration_by_name() {
     let migrations = Migrator::migrations();
     assert_eq!(
         migrations.len(),
-        4,
+        5,
         "the shipped set holds the baseline and every migration after it"
     );
     assert_eq!(
-        migrations.first().expect("a set with four entries").name(),
+        migrations.first().expect("a set with five entries").name(),
         "0001_baseline",
         "the recorded name is unchanged, so an existing install still matches"
     );
     assert_eq!(
-        migrations.get(1).expect("a set with four entries").name(),
+        migrations.get(1).expect("a set with five entries").name(),
         "0002_infra_suspect",
         "the added migration is recorded under its own name"
     );
     assert_eq!(
-        migrations.get(2).expect("a set with four entries").name(),
+        migrations.get(2).expect("a set with five entries").name(),
         "0003_flaky_since",
         "the added migration is recorded under its own name"
     );
     assert_eq!(
-        migrations.get(3).expect("a set with four entries").name(),
+        migrations.get(3).expect("a set with five entries").name(),
         "0004_acknowledge",
+        "the added migration is recorded under its own name"
+    );
+    assert_eq!(
+        migrations.get(4).expect("a set with five entries").name(),
+        "0005_issue_reopen",
         "the added migration is recorded under its own name"
     );
 }

@@ -231,7 +231,11 @@ mod form {
                     "test_cases.acknowledged_until",
                     "test_cases.acknowledge_reason",
                     "jobs.acknowledged_until",
-                    "jobs.acknowledge_reason"
+                    "jobs.acknowledge_reason",
+                    "test_cases.github_issue_last_closed_number",
+                    "test_cases.github_issue_last_closed_at",
+                    "jobs.github_issue_last_closed_number",
+                    "jobs.github_issue_last_closed_at"
                 ],
                 "fields": [
                     "CiRunTestFailureOut.infra_suspect",

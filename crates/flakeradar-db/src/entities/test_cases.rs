@@ -42,6 +42,8 @@ pub struct Model {
     pub acknowledged_until: Option<DateTimeWithTimeZone>,
     #[sea_orm(column_type = "Text", nullable)]
     pub acknowledge_reason: Option<String>,
+    pub github_issue_last_closed_number: Option<i32>,
+    pub github_issue_last_closed_at: Option<DateTimeWithTimeZone>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
