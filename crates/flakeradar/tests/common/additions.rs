@@ -244,7 +244,10 @@ mod form {
                     "POST /api/tests/{test_id}/acknowledge",
                     "POST /api/jobs/{job_id}/acknowledge"
                 ],
-                "query_params": ["GET /api/tests acknowledged"]
+                "query_params": [
+                    "GET /api/tests acknowledged",
+                    "GET /api/jobs acknowledged"
+                ]
             }),
             "{}",
             path.display()

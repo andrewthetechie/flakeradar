@@ -324,6 +324,8 @@ pub struct JobsQuery {
     pipeline: Option<String>,
     #[serde(default, deserialize_with = "flakeradar_core::dto::lax_bool::optional")]
     has_issue: Option<bool>,
+    #[serde(default, deserialize_with = "flakeradar_core::dto::lax_bool::optional")]
+    acknowledged: Option<bool>,
     #[serde(default, deserialize_with = "flakeradar_core::dto::lax_int::optional")]
     new_within_days: Option<i64>,
 }
@@ -675,6 +677,7 @@ pub async fn quarantine(
         ("q" = Option<String>, Query, description = "A literal substring of the Job or Pipeline name"),
         ("pipeline" = Option<String>, Query, description = "An exact Pipeline name"),
         ("has_issue" = Option<bool>, Query, description = "Whether a GitHub issue is linked"),
+        ("acknowledged" = Option<bool>, Query, description = "The acknowledgement state to list"),
         ("new_within_days" = Option<i64>, Query, description = "Only Jobs that became flaky in this many days, 1-90")
     ),
     responses((status = 200, body = JobPage))
@@ -703,6 +706,7 @@ pub async fn jobs(
     };
     let filters = JobListFilters {
         pipeline: query.pipeline.clone(),
+        acknowledged: query.acknowledged,
     };
     Ok(Json(
         list_jobs(

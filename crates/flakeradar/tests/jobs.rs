@@ -66,6 +66,44 @@ async fn list_jobs_filters_stable_and_sorts_worst_first() {
 }
 
 #[tokio::test]
+async fn the_acknowledged_filter_applies_to_jobs() {
+    let db = TestDb::new().await.expect("a test database");
+    let pipeline = make_pipeline().repo("acme/app").create(&db).await;
+    for (name, score, ack_days) in [
+        ("acked_stable", 0.0, Some(7)),
+        ("acked_flaky", 0.8, Some(7)),
+        ("flaky", 0.6, None),
+        ("lapsed", 0.5, Some(-1)),
+    ] {
+        let mut job = make_job(&pipeline).name(name).flakiness_score(score);
+        if let Some(days) = ack_days {
+            job = job.acknowledged_until((Utc::now() + Duration::days(days)).fixed_offset());
+        }
+        job.create(&db).await;
+    }
+    let app = app(&db, &[]);
+    let live = get(&app, "/api/jobs?repo=acme/app&acknowledged=true")
+        .await
+        .json();
+    assert_eq!(item_names(&live), ["acked_flaky", "acked_stable"]);
+    assert_eq!(live["total"], 2);
+    let none = get(&app, "/api/jobs?repo=acme/app&acknowledged=false")
+        .await
+        .json();
+    assert_eq!(item_names(&none), ["flaky", "lapsed"]);
+    assert_eq!(none["total"], 2);
+    // Without the filter, a stable acknowledged Job is hidden like any other stable row.
+    let both = get(&app, "/api/jobs?repo=acme/app&include_stable=true")
+        .await
+        .json();
+    assert_eq!(
+        item_names(&both),
+        ["acked_flaky", "flaky", "lapsed", "acked_stable"]
+    );
+    assert_eq!(both["total"], 4);
+}
+
+#[tokio::test]
 async fn acknowledge_sets_and_clears_one_job() {
     let db = TestDb::new().await.expect("a test database");
     let pipeline = make_pipeline().repo("acme/app").create(&db).await;

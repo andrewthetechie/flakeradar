@@ -622,6 +622,8 @@ pub struct TestListFilters {
 pub struct JobListFilters {
     /// The exact Pipeline name to list.
     pub pipeline: Option<String>,
+    /// The acknowledgement state to list; `None` lists both.
+    pub acknowledged: Option<bool>,
 }
 
 /// The paging, sorting and searching a leaderboard request asks for.
@@ -759,12 +761,24 @@ pub async fn list_jobs(
     if let Some(pipeline) = &filters.pipeline {
         filter.eq("p.name", Value::from(pipeline.clone()));
     }
-    // ADR 0004: Jobs have no Quarantine, so no Job listing keeps stable rows.
+    // An acknowledgement is live while its expiry is in the future.
+    if let Some(acknowledged) = filters.acknowledged {
+        let placeholder = filter.bind(Value::from(settings.clock.now()));
+        if acknowledged {
+            filter.raw(format!("j.acknowledged_until > {placeholder}"));
+        } else {
+            filter.raw(format!(
+                "(j.acknowledged_until IS NULL OR j.acknowledged_until <= {placeholder})"
+            ));
+        }
+    }
+    // ADR 0004: Jobs have no Quarantine, so only an acknowledged filter keeps
+    // the stable rows it selected.
     let board = Board {
         entity: &JOBS_BOARD,
         options,
         filter,
-        tier: TierFilter::of(options, false),
+        tier: TierFilter::of(options, filters.acknowledged == Some(true)),
         threshold: settings.flake_threshold,
         today: settings.today(),
     };
