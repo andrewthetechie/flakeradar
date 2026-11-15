@@ -26,6 +26,8 @@ export interface ViewState {
   quarantined: boolean;
   /** Tests view: list only Tests broken on the Default branch (stable ones). */
   broken: boolean;
+  /** Both leaderboard views: list only what a person acknowledged (still live). */
+  acknowledged: boolean;
   /** Both leaderboard views: filter by Issue link, or null for any. */
   issue: IssueFilter | null;
   /** Jobs view: exact Pipeline name to list, or null for every pipeline. */
@@ -52,6 +54,7 @@ export const DEFAULT_VIEW: ViewState = {
   cause: null,
   quarantined: false,
   broken: false,
+  acknowledged: false,
   issue: null,
   pipeline: null,
   newDays: null,
@@ -172,9 +175,9 @@ const enumFilter = <V extends string>(param: string, values: readonly V[]) => ({
 });
 
 /** Emission order (pinned by tests): repo, project, q | sort, stable, cause,
- *  quarantined, broken, issue, pipeline, new. The hand-written params (view,
- *  ci_run, attempt, test, job, page) are emitted between q and sort: serializeViewState
- *  splits the table at the sort descriptor. */
+ *  quarantined, broken, acknowledged, issue, pipeline, new. The hand-written
+ *  params (view, ci_run, attempt, test, job, page) are emitted between q and sort:
+ *  serializeViewState splits the table at the sort descriptor. */
 export const LIST_FILTERS: ListFilterDescriptor[] = [
   // repo and project carry no `wire`: scopeParams (api.ts) writes those params.
   listFilter({
@@ -273,6 +276,25 @@ export const LIST_FILTERS: ListFilterDescriptor[] = [
     ...flag("broken"),
     wire: {
       tests: { param: "broken", order: 4, value: (q) => (q.broken ? "true" : null) },
+    },
+  }),
+  listFilter({
+    param: "acknowledged",
+    field: "acknowledged",
+    relists: true,
+    views: ["tests", "jobs"],
+    ...flag("acknowledged"),
+    wire: {
+      tests: {
+        param: "acknowledged",
+        order: 8,
+        value: (q) => (q.acknowledged ? "true" : null),
+      },
+      jobs: {
+        param: "acknowledged",
+        order: 6,
+        value: (q) => (q.acknowledged ? "true" : null),
+      },
     },
   }),
   listFilter({

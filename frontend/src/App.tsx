@@ -4,6 +4,7 @@ import {
   setAcknowledge,
   setQuarantine,
   type History,
+  type Job,
   type JobHistory,
   type JobPage,
   type JobSummary,
@@ -49,6 +50,7 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [pendingQuarantine, setPendingQuarantine] = useState<TestCase | null>(null);
   const [pendingAcknowledge, setPendingAcknowledge] = useState<TestCase | null>(null);
+  const [pendingJobAcknowledge, setPendingJobAcknowledge] = useState<Job | null>(null);
 
   const {
     repo,
@@ -58,6 +60,7 @@ export default function App() {
     cause,
     quarantined,
     broken,
+    acknowledged,
     issue,
     newDays,
     pipeline,
@@ -84,6 +87,7 @@ export default function App() {
           cause,
           quarantined,
           broken,
+          acknowledged,
           issue,
           newDays,
           pipeline,
@@ -102,6 +106,7 @@ export default function App() {
       cause,
       quarantined,
       broken,
+      acknowledged,
       issue,
       newDays,
       pipeline,
@@ -243,6 +248,43 @@ export default function App() {
     [refresh],
   );
 
+  // The Job acknowledge handlers reload the drawer themselves: its loader is
+  // keyed on the scope alone, so `refresh` alone leaves it showing the Job as
+  // it was before the mutation.
+  const reloadJobHistory = jobHistoryLoad.refresh;
+
+  const onToggleJobAcknowledge = useCallback(
+    async (j: Job) => {
+      if (isAcknowledged(j.acknowledged_until)) {
+        try {
+          await setAcknowledge("jobs", j.id, false);
+          await refresh();
+          await reloadJobHistory();
+        } catch (e) {
+          setError(e instanceof Error ? e.message : String(e));
+        }
+        return;
+      }
+      // Acknowledging is a human decision: ask for the reason and the duration first.
+      setPendingJobAcknowledge(j);
+    },
+    [refresh, reloadJobHistory],
+  );
+
+  const confirmJobAcknowledge = useCallback(
+    async (j: Job, choice: AcknowledgeChoice) => {
+      setPendingJobAcknowledge(null);
+      try {
+        await setAcknowledge("jobs", j.id, true, { reason: choice.reason, days: choice.days });
+        await refresh();
+        await reloadJobHistory();
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [refresh, reloadJobHistory],
+  );
+
   const closeDrawer = useCallback(() => {
     if (kind === "jobs") setView({ job: null });
     else setView({ test: null });
@@ -338,6 +380,7 @@ export default function App() {
               causeCounts={summary?.category_counts ?? null}
               quarantined={quarantined}
               broken={broken}
+              acknowledged={acknowledged}
               issue={issue}
               newDays={newDays}
               pipelines={jobSummary?.pipelines ?? []}
@@ -349,6 +392,10 @@ export default function App() {
               onCause={offers("cause") ? (c) => setView({ cause: c }) : undefined}
               onQuarantined={offers("quarantined") ? (v) => setView({ quarantined: v }) : undefined}
               onBroken={offers("broken") ? (v) => setView({ broken: v }) : undefined}
+              // acknowledged is offered on both leaderboard views — the only views
+              // that render these controls — so unlike the view-specific filters
+              // above it passes its handler unconditionally.
+              onAcknowledged={(v) => setView({ acknowledged: v })}
               onPipeline={offers("pipeline") ? (p) => setView({ pipeline: p }) : undefined}
               onIssue={(i) => setView({ issue: i })}
               onNewDays={(d) => setView({ newDays: d })}
@@ -418,6 +465,16 @@ export default function App() {
           onConfirm={(choice) => void confirmAcknowledge(pendingAcknowledge, choice)}
         />
       )}
+      {pendingJobAcknowledge != null && (
+        <AcknowledgeDialog
+          name={pendingJobAcknowledge.name}
+          scope={`${pendingJobAcknowledge.repo} · ${pendingJobAcknowledge.pipeline}`}
+          onClose={() => setPendingJobAcknowledge(null)}
+          // The dialog only renders for a pending Job, so the callback always
+          // has one: no null check inside confirmJobAcknowledge.
+          onConfirm={(choice) => void confirmJobAcknowledge(pendingJobAcknowledge, choice)}
+        />
+      )}
       {kind === "jobs" && view.job != null && (
         <JobDrawer
           jobId={view.job}
@@ -426,6 +483,7 @@ export default function App() {
           onOpenTest={openTestFromJob}
           onOpenJob={(jobId) => setView({ job: jobId })}
           onOpenCiRun={openCiRun}
+          onAcknowledge={onToggleJobAcknowledge}
         />
       )}
 

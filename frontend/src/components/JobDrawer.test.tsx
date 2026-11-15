@@ -94,6 +94,7 @@ function renderDrawer(overrides: Partial<JobHistory> = {}, onClose = vi.fn()) {
   const onOpenTest = vi.fn();
   const onOpenJob = vi.fn();
   const onOpenCiRun = vi.fn();
+  const onAcknowledge = vi.fn();
   render(
     <JobDrawer
       jobId={3}
@@ -102,9 +103,10 @@ function renderDrawer(overrides: Partial<JobHistory> = {}, onClose = vi.fn()) {
       onOpenTest={onOpenTest}
       onOpenJob={onOpenJob}
       onOpenCiRun={onOpenCiRun}
+      onAcknowledge={onAcknowledge}
     />,
   );
-  return { onClose, onOpenTest, onOpenJob, onOpenCiRun };
+  return { onClose, onOpenTest, onOpenJob, onOpenCiRun, onAcknowledge };
 }
 
 describe("JobDrawer", () => {
@@ -169,6 +171,47 @@ describe("JobDrawer", () => {
     const { onOpenCiRun } = renderDrawer();
     await userEvent.click(screen.getByRole("button", { name: "run 2" }));
     expect(onOpenCiRun).toHaveBeenCalledWith("acme/app", "2", 1);
+  });
+
+  it("offers Acknowledge for a Job with none", () => {
+    renderDrawer();
+    expect(screen.getByRole("button", { name: "Acknowledge" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Clear acknowledgement" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/acknowledged until/)).not.toBeInTheDocument();
+  });
+
+  it("toggles acknowledge for the shown Job", async () => {
+    const { onAcknowledge } = renderDrawer();
+    await userEvent.click(screen.getByRole("button", { name: "Acknowledge" }));
+    expect(onAcknowledge).toHaveBeenCalledWith(history.job);
+  });
+
+  it("shows Clear acknowledgement and the reason of an acknowledged Job", () => {
+    renderDrawer({
+      job: {
+        ...history.job,
+        acknowledged_until: "2999-01-01T00:00:00Z",
+        acknowledge_reason: "known flake",
+      },
+    });
+    expect(screen.getByRole("button", { name: "Clear acknowledgement" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Acknowledge" })).not.toBeInTheDocument();
+    expect(screen.getByText(/known flake/)).toBeInTheDocument();
+    expect(screen.getByText(/acknowledged until 2999-01-01T00:00:00Z/)).toBeInTheDocument();
+  });
+
+  it("offers Acknowledge, not Clear, for a lapsed acknowledgement", () => {
+    renderDrawer({
+      job: {
+        ...history.job,
+        acknowledged_until: "2000-01-01T00:00:00Z",
+        acknowledge_reason: "stale note",
+      },
+    });
+    expect(screen.getByRole("button", { name: "Acknowledge" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Clear acknowledgement" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/stale note/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/acknowledged until/)).not.toBeInTheDocument();
   });
 
   it("shows the summary badge and buttons for the explaining sibling Jobs", async () => {

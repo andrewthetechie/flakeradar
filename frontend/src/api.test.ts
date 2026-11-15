@@ -288,9 +288,8 @@ describe("GET request builders", () => {
     ]);
   });
 
-  // The acknowledged flag is not in the list-filter table (ViewState has no
-  // field for it until ack-ui-jobs), so the fetchers set it by hand after the
-  // derived block and it lands last in the URL.
+  // The acknowledged flag is a table entry like the rest; its wire order puts it
+  // last on both endpoints, where the hand-written params.set call used to land.
   it("fetchTests sends acknowledged=true", async () => {
     const calls = stubFetch();
     await fetchTests({

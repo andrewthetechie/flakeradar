@@ -1,7 +1,8 @@
-import type { JobExecution, JobHistory } from "../api";
+import type { Job, JobExecution, JobHistory } from "../api";
 import { breakable } from "../breakable";
 import { IssueLink } from "./IssueLink";
 import { Overlay } from "./Overlay";
+import { isAcknowledged } from "./resultCells";
 import { Sparkline } from "./Sparkline";
 import { StatusMark } from "./StatusMark";
 import { SummaryBadge } from "./SummaryBadge";
@@ -37,6 +38,7 @@ export function JobDrawer({
   onOpenTest,
   onOpenJob,
   onOpenCiRun,
+  onAcknowledge,
 }: {
   jobId: number;
   history: JobHistory | null;
@@ -44,6 +46,7 @@ export function JobDrawer({
   onOpenTest: (testId: number) => void;
   onOpenJob: (jobId: number) => void;
   onOpenCiRun: (repo: string, ciRun: string, attempt: number | null) => void;
+  onAcknowledge: (job: Job) => void;
 }) {
   const loaded = history != null && history.job.id === jobId;
   const job = history?.job;
@@ -74,6 +77,21 @@ export function JobDrawer({
               </>
             )}
           </div>
+          <div className="mb-4 flex justify-end">
+            <button type="button" className="btn" onClick={() => onAcknowledge(job)}>
+              {isAcknowledged(job.acknowledged_until) ? "Clear acknowledgement" : "Acknowledge"}
+            </button>
+          </div>
+          {isAcknowledged(job.acknowledged_until) && (
+            <div className="-mt-2 mb-4 text-xs text-muted [overflow-wrap:anywhere]">
+              {job.acknowledge_reason != null && (
+                <div>Reason: {breakable(job.acknowledge_reason)}</div>
+              )}
+              {job.acknowledged_until != null && (
+                <div>acknowledged until {job.acknowledged_until}</div>
+              )}
+            </div>
+          )}
           <div className="mb-4 rounded-lg border border-line bg-surface-2 px-3 py-2 text-xs text-text-2">
             {history.unexplained_failures} unexplained failure
             {history.unexplained_failures === 1 ? "" : "s"} · {history.explained_failures} explained

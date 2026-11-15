@@ -26,6 +26,7 @@ describe("view state in the URL", () => {
       cause: null,
       quarantined: false,
       broken: false,
+      acknowledged: false,
       issue: null,
       pipeline: null,
       newDays: null,
@@ -53,6 +54,7 @@ describe("view state in the URL", () => {
       cause: null,
       quarantined: false,
       broken: false,
+      acknowledged: false,
       issue: null,
       pipeline: null,
       newDays: null,
@@ -80,6 +82,7 @@ describe("view state in the URL", () => {
       cause: null,
       quarantined: false,
       broken: false,
+      acknowledged: false,
       issue: null,
       pipeline: null,
       newDays: null,
@@ -138,6 +141,15 @@ describe("view state in the URL", () => {
     expect(serializeViewState(view)).toBe("?repo=a%2Fb&quarantined=1&issue=linked");
     expect(parseViewState("?repo=a%2Fb&quarantined=1&issue=linked")).toEqual(view);
     expect(serializeViewState({ ...DEFAULT_VIEW, issue: "none" })).toBe("?issue=none");
+  });
+
+  it("round-trips the acknowledged filter, emitted after broken", () => {
+    const view = { ...DEFAULT_VIEW, repo: "a/b", acknowledged: true, broken: true };
+    expect(serializeViewState(view)).toBe("?repo=a%2Fb&broken=1&acknowledged=1");
+    expect(parseViewState("?acknowledged=1").acknowledged).toBe(true);
+    expect(parseViewState("?repo=a%2Fb&broken=1&acknowledged=1")).toEqual(view);
+    expect(serializeViewState({ ...DEFAULT_VIEW, acknowledged: false })).toBe("");
+    expect(parseViewState("?acknowledged=0").acknowledged).toBe(false);
   });
 
   it("round-trips the new-in-the-last-7-days filter", () => {
@@ -289,6 +301,7 @@ describe("LIST_FILTERS", () => {
     cause: "timing",
     quarantined: true,
     broken: true,
+    acknowledged: true,
     issue: "linked",
     pipeline: ".github/workflows/nightly.yml",
     new: 7,
@@ -321,6 +334,7 @@ describe("LIST_FILTERS", () => {
     cause: ["tests"],
     quarantined: ["tests"],
     broken: ["tests"],
+    acknowledged: ["tests", "jobs"],
     issue: ["tests", "jobs"],
     pipeline: ["jobs"],
     new: ["tests", "jobs"],
@@ -436,6 +450,12 @@ describe("LIST_FILTERS", () => {
       jobs: null,
       defaults: null,
     },
+    acknowledged: {
+      patch: { acknowledged: true },
+      tests: "acknowledged=true",
+      jobs: "acknowledged=true",
+      defaults: null,
+    },
     issue: {
       // The one value transform: "linked" is has_issue=true, "none" is false.
       patch: { issue: "linked" },
@@ -473,8 +493,18 @@ describe("LIST_FILTERS", () => {
   // endpoints take a filter at different positions (tests sends q last, jobs
   // third), which is why the order lives per wire entry rather than in the table.
   const WIRE_ORDER: Record<"tests" | "jobs", string[]> = {
-    tests: ["sort", "stable", "cause", "quarantined", "broken", "issue", "new", "q"],
-    jobs: ["sort", "stable", "q", "pipeline", "issue", "new"],
+    tests: [
+      "sort",
+      "stable",
+      "cause",
+      "quarantined",
+      "broken",
+      "issue",
+      "new",
+      "q",
+      "acknowledged",
+    ],
+    jobs: ["sort", "stable", "q", "pipeline", "issue", "new", "acknowledged"],
   };
 
   it.each(["tests", "jobs"] as const)(

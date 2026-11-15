@@ -101,6 +101,17 @@ describe("loadTestsBundle", () => {
       queue: queueFixture,
     });
   });
+
+  it("carries acknowledged=true onto the Tests URL", async () => {
+    const urls = stubFetch();
+    const guard = latestWins();
+    await unwrap(loadTestsBundle(filters({ acknowledged: true }), guard, guard.start()));
+
+    const url = urls.find((candidate) => candidate.startsWith("/api/tests?"));
+    expect(url).toBe(
+      "/api/tests?repo=a%2Fb&project=backend&page=2&page_size=50&sort=score&acknowledged=true",
+    );
+  });
 });
 
 describe("loadJobsBundle", () => {
@@ -126,6 +137,17 @@ describe("loadJobsBundle", () => {
       queue: queueFixture,
     });
   });
+
+  it("carries acknowledged=true onto the Jobs URL", async () => {
+    const urls = stubFetch();
+    const guard = latestWins();
+    await unwrap(
+      loadJobsBundle(filters({ view: "jobs", acknowledged: true }), guard, guard.start()),
+    );
+
+    const url = urls.find((candidate) => candidate.startsWith("/api/jobs?"));
+    expect(url).toBe("/api/jobs?repo=a%2Fb&page=2&page_size=50&sort=score&acknowledged=true");
+  });
 });
 
 /**
@@ -145,6 +167,7 @@ describe("per-view filter reach", () => {
     cause: "timing",
     quarantined: true,
     broken: true,
+    acknowledged: true,
     issue: "none",
     pipeline: "ci.yml",
     newDays: 7,
@@ -167,6 +190,10 @@ describe("per-view filter reach", () => {
     cause: { tests: ["category=timing", "sort=score"], jobs: ["sort=score"] },
     quarantined: { tests: ["quarantined=true", "sort=score"], jobs: ["sort=score"] },
     broken: { tests: ["broken=true", "sort=score"], jobs: ["sort=score"] },
+    acknowledged: {
+      tests: ["acknowledged=true", "sort=score"],
+      jobs: ["acknowledged=true", "sort=score"],
+    },
     issue: { tests: ["has_issue=false", "sort=score"], jobs: ["has_issue=false", "sort=score"] },
     pipeline: { tests: ["sort=score"], jobs: ["pipeline=ci.yml", "sort=score"] },
     new: {

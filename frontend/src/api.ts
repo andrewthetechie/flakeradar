@@ -139,8 +139,7 @@ export interface TestQuery extends Scope {
   showStable: boolean;
   category: FailureCategory | null;
   quarantined: boolean;
-  /** List only acknowledged Tests, sent as `acknowledged=true`. No view filter
-   *  wires it yet: the "Acknowledged only" control belongs to ack-ui-jobs. */
+  /** List only acknowledged Tests, sent as `acknowledged=true`. */
   acknowledged: boolean;
   /** List only Tests broken on the Default branch, or false for any. */
   broken: boolean;
@@ -239,15 +238,13 @@ export function fetchTests(q: TestQuery): Promise<TestPage> {
   params.set("page_size", String(q.pageSize));
   // Every filter the Tests endpoint accepts comes from the table, emitted in
   // the table's wire order (sort, include_stable, category, quarantined,
-  // broken, has_issue, new_within_days, q) — the pre-table api.ts byte order.
+  // broken, has_issue, new_within_days, q, acknowledged) — the pre-table
+  // api.ts byte order.
   setWireParams(
     params,
     q,
     LIST_FILTERS.map((d) => d.wire?.tests),
   );
-  // `acknowledged` stays hand-written: the table is ViewState-driven and
-  // ViewState has no acknowledged field until ack-ui-jobs.
-  if (q.acknowledged) params.set("acknowledged", "true");
   return getJson<TestPage>(withQuery("/api/tests", params));
 }
 
@@ -358,8 +355,7 @@ export interface JobQuery {
   showStable: boolean;
   /** Exact Pipeline name to list, or null for every pipeline. */
   pipeline: string | null;
-  /** List only acknowledged Jobs, sent as `acknowledged=true`. No view filter
-   *  wires it yet: the "Acknowledged only" control belongs to ack-ui-jobs. */
+  /** List only acknowledged Jobs, sent as `acknowledged=true`. */
   acknowledged: boolean;
   /** Filter by Issue link, or null for any. */
   issue: IssueFilter | null;
@@ -371,8 +367,8 @@ export interface JobQuery {
 export function fetchJobs(q: JobQuery): Promise<JobPage> {
   // Jobs takes no project, so the scope param stays hand-written here, as does
   // paging. The filters come from the table, emitted in the table's wire order
-  // (sort, include_stable, q, pipeline, has_issue, new_within_days) — the
-  // pre-table api.ts byte order.
+  // (sort, include_stable, q, pipeline, has_issue, new_within_days,
+  // acknowledged) — the pre-table api.ts byte order.
   const params = new URLSearchParams();
   if (q.repo) params.set("repo", q.repo);
   params.set("page", String(q.page));
@@ -382,8 +378,6 @@ export function fetchJobs(q: JobQuery): Promise<JobPage> {
     q,
     LIST_FILTERS.map((d) => d.wire?.jobs),
   );
-  // Hand-written here too, for the same reason as in fetchTests.
-  if (q.acknowledged) params.set("acknowledged", "true");
   return getJson<JobPage>(withQuery("/api/jobs", params));
 }
 
