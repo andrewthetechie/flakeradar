@@ -82,7 +82,10 @@ pub(super) fn call(server: &McpServer, arguments: Value) -> BoxFuture<'_, ToolRe
             check_new_within_days(days)?;
         }
         let name = normalize_repo(&args.repo)?;
-        let filters = JobListFilters { pipeline: None };
+        let filters = JobListFilters {
+            pipeline: None,
+            acknowledged: None,
+        };
         let options =
             ListOptions::top_flaky(args.limit, args.include_suspect, args.new_within_days);
         let page = reads::list_jobs(

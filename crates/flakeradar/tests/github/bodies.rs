@@ -326,6 +326,8 @@ fn a_job_body_names_every_outcome_runner_and_link_it_has() {
             last_status: "failed".to_owned(),
             last_seen_at: FIXTURE_INSTANT,
             summary: false,
+            acknowledged_until: None,
+            acknowledge_reason: None,
             github_issue_number: None,
             github_issue_url: None,
             github_issue_closed: false,

@@ -74,9 +74,10 @@ A `project` filter needs `repo`.
 
 | Endpoint | Auth | Purpose |
 |---|---|---|
-| `GET /api/jobs?repo=&include_stable=&sort=&page=&page_size=&q=&pipeline=&has_issue=&new_within_days=` | none | The jobs leaderboard for a repo, worst first. `q` (200 characters maximum) filters by a literal substring of the job or pipeline name, and includes stable jobs. `pipeline` filters by the exact pipeline name. `has_issue` filters by linked GitHub issue. `new_within_days` (1 to 90) lists only new flaky jobs, which are jobs that became flaky in the last N days. It shows only flaky jobs. |
+| `GET /api/jobs?repo=&include_stable=&sort=&page=&page_size=&q=&pipeline=&has_issue=&acknowledged=&new_within_days=` | none | The jobs leaderboard for a repo, worst first. `q` (200 characters maximum) filters by a literal substring of the job or pipeline name, and includes stable jobs. `pipeline` filters by the exact pipeline name. `has_issue` filters by linked GitHub issue. `acknowledged=true` lists each acknowledged job, including stable jobs; `acknowledged=false` lists jobs with no live acknowledgement. `new_within_days` (1 to 90) lists only new flaky jobs, which are jobs that became flaky in the last N days. It shows only flaky jobs. |
 | `GET /api/jobs/summary?repo=` | none | Job summary tiles, and `pipelines`: the sorted, distinct pipeline names of the scope. The scope is that repo, or all repos without `repo`. `job_executions_30d` and `job_failures_30d` are the sums of job score history over the last 30 days. |
 | `GET /api/jobs/{id}/history?limit=` | none | One job: recent job executions, each marked `passed`, `failed`, `explained` or `skipped`, with the tests that explain them, `score_history` (90 days), `clean_streak` and `trend`. |
+| `POST /api/jobs/{id}/acknowledge` | none | Set or clear an acknowledgement. The body is `{"acknowledged": bool, "reason"?: str (max 500), "days"?: int (1 to 30)}`; `days` is required when `acknowledged` is `true`, and `reason` and `days` are ignored when it is `false`. The response is the job, with `acknowledged_until` and `acknowledge_reason`; `acknowledged` `false` clears both. `404` for a job that does not exist. |
 | `PUT /api/jobs/{id}/issue?replace=`, `DELETE /api/jobs/{id}/issue` | `X-API-Key` | The same as for a test. GitHub pipelines only. |
 
 ## CI runs

@@ -17,11 +17,11 @@ use flakeradar_core::defaults;
 use flakeradar_core::limits::{LIST_LIMIT_MAX, NEW_WITHIN_DAYS_MAX};
 use flakeradar_core::{
     classify::FailureCategory, dto::AcknowledgeIn, dto::CiRunFailuresOut, dto::FinishIssues,
-    dto::HistoryOut, dto::Issues, dto::JobHistoryOut, dto::JobPage, dto::JobSummaryOut,
-    dto::NAME_MAX, dto::PATH_MAX, dto::PIPELINE_MAX, dto::PROJECT_MAX, dto::QuarantineIn,
-    dto::QuarantineItem, dto::RepoOut, dto::SummaryOut, dto::TestOut, dto::TestPage,
-    dto::ValidationIssue, identity::normalize_project, identity::normalize_repo, lax,
-    types::CiRunId,
+    dto::HistoryOut, dto::Issues, dto::JobHistoryOut, dto::JobOut, dto::JobPage,
+    dto::JobSummaryOut, dto::NAME_MAX, dto::PATH_MAX, dto::PIPELINE_MAX, dto::PROJECT_MAX,
+    dto::QuarantineIn, dto::QuarantineItem, dto::RepoOut, dto::SummaryOut, dto::TestOut,
+    dto::TestPage, dto::ValidationIssue, identity::normalize_project, identity::normalize_repo,
+    lax, types::CiRunId,
 };
 use flakeradar_db::{
     reads::AcknowledgeDecision, reads::DEFAULT_EXECUTIONS_LIMIT, reads::FAILURES_LIMIT,
@@ -29,7 +29,8 @@ use flakeradar_db::{
     reads::QuarantineDecision, reads::ReadSettings, reads::Scope, reads::SortKey,
     reads::TestListFilters, reads::ci_run_failures, reads::get_job, reads::get_test,
     reads::job_summary, reads::list_jobs, reads::list_repos, reads::list_tests,
-    reads::quarantine_list, reads::set_acknowledge, reads::set_quarantine, reads::summary,
+    reads::quarantine_list, reads::set_acknowledge, reads::set_job_acknowledge,
+    reads::set_quarantine, reads::summary,
 };
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
@@ -58,6 +59,7 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/api/jobs/summary", get(jobs_summary))
         .route("/api/jobs", get(jobs))
         .route("/api/jobs/{job_id}/history", get(job_history))
+        .route("/api/jobs/{job_id}/acknowledge", post(acknowledge_job))
         .route("/api/ci-runs/{ci_run_id}/failures", get(ci_run))
 }
 
@@ -322,6 +324,8 @@ pub struct JobsQuery {
     pipeline: Option<String>,
     #[serde(default, deserialize_with = "flakeradar_core::dto::lax_bool::optional")]
     has_issue: Option<bool>,
+    #[serde(default, deserialize_with = "flakeradar_core::dto::lax_bool::optional")]
+    acknowledged: Option<bool>,
     #[serde(default, deserialize_with = "flakeradar_core::dto::lax_int::optional")]
     new_within_days: Option<i64>,
 }
@@ -673,6 +677,7 @@ pub async fn quarantine(
         ("q" = Option<String>, Query, description = "A literal substring of the Job or Pipeline name"),
         ("pipeline" = Option<String>, Query, description = "An exact Pipeline name"),
         ("has_issue" = Option<bool>, Query, description = "Whether a GitHub issue is linked"),
+        ("acknowledged" = Option<bool>, Query, description = "The acknowledgement state to list"),
         ("new_within_days" = Option<i64>, Query, description = "Only Jobs that became flaky in this many days, 1-90")
     ),
     responses((status = 200, body = JobPage))
@@ -701,6 +706,7 @@ pub async fn jobs(
     };
     let filters = JobListFilters {
         pipeline: query.pipeline.clone(),
+        acknowledged: query.acknowledged,
     };
     Ok(Json(
         list_jobs(
@@ -772,6 +778,59 @@ pub async fn job_history(
     .await?;
     match history {
         Some(history) => Ok(Json(history)),
+        None => Err(RouteError::NotFound("Job not found".to_owned())),
+    }
+}
+
+/// Stores a human's acknowledgement decision for one Job.
+///
+/// # Errors
+///
+/// Answers 404 for an id that names no Job, 422 for a body the schema refuses,
+/// and 500 when a query fails.
+///
+/// # Panics
+///
+/// Never on client input: the body reader requires a day count on an
+/// acknowledgement, so the read of that count panics only if the reader stops
+/// holding its own rule.
+#[utoipa::path(
+    post,
+    path = "/api/jobs/{job_id}/acknowledge",
+    tag = "reads",
+    params(("job_id" = i64, Path, description = "The Job's id")),
+    request_body = AcknowledgeIn,
+    responses(
+        (status = 200, body = JobOut),
+        (status = 404, description = "Job not found"),
+        (status = 422, description = "A reason over 500 characters or a day count outside 1-30 days")
+    )
+)]
+pub async fn acknowledge_job(
+    State(state): State<AppState>,
+    ApiPath(path): ApiPath<JobPath>,
+    ApiJson(body): ApiJson<AcknowledgeIn>,
+) -> RouteResult<Json<JobOut>> {
+    // The body states a flag and the two values that belong to it; the engine
+    // takes the decision they describe, so it never sees a flag.
+    let decision = if body.acknowledged {
+        #[expect(
+            clippy::expect_used,
+            reason = "the body reader requires a day count on an acknowledgement, so \
+                      a missing one is a reader bug, never a body a client can send"
+        )]
+        let days = body.days.expect("an acknowledged body carries a day count");
+        AcknowledgeDecision::Acknowledge {
+            reason: body.reason,
+            days,
+        }
+    } else {
+        AcknowledgeDecision::Clear
+    };
+    let stored =
+        set_job_acknowledge(state.pool(), path.job_id, decision, &read_settings(&state)).await?;
+    match stored {
+        Some(job) => Ok(Json(job)),
         None => Err(RouteError::NotFound("Job not found".to_owned())),
     }
 }
