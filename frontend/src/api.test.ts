@@ -8,11 +8,13 @@ import {
   fetchTests,
   latestWins,
   scopeParams,
+  setAcknowledge,
   setQuarantine,
 } from "./api";
 
 interface Call {
   path: string;
+  method?: string;
   body?: Record<string, unknown>;
 }
 
@@ -22,6 +24,7 @@ function stubFetch(): Call[] {
   vi.stubGlobal("fetch", async (input: string | URL, init?: RequestInit) => {
     calls.push({
       path: String(input),
+      method: init?.method,
       body: init?.body == null ? undefined : (JSON.parse(String(init.body)) as Call["body"]),
     });
     return { ok: true, status: 200, json: async () => ({}) } as Response;
@@ -46,6 +49,7 @@ describe("setQuarantine", () => {
     expect(calls).toEqual([
       {
         path: "/api/tests/7/quarantine",
+        method: "POST",
         body: { quarantined: true, reason: "flaky on Windows", expires_in_days: 14 },
       },
     ]);
@@ -55,6 +59,38 @@ describe("setQuarantine", () => {
     const calls = stubFetch();
     await setQuarantine(7, false, { reason: null, expiresInDays: null });
     expect(calls[0]?.body).toEqual({ quarantined: false });
+  });
+});
+
+describe("setAcknowledge", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("posts the reason and the days to the kind's endpoint", async () => {
+    const calls = stubFetch();
+    await setAcknowledge("jobs", 3, true, { reason: "runner pool", days: 7 });
+    expect(calls).toEqual([
+      {
+        path: "/api/jobs/3/acknowledge",
+        method: "POST",
+        body: { acknowledged: true, reason: "runner pool", days: 7 },
+      },
+    ]);
+  });
+
+  it("omits the empty choices so a clear stays a plain toggle", async () => {
+    const calls = stubFetch();
+    await setAcknowledge("tests", 7, false);
+    expect(calls[0]?.body).toEqual({ acknowledged: false });
+  });
+
+  it("rejects a 422 with the status the backend answered", async () => {
+    stubFailure(422);
+    const e = await setAcknowledge("tests", 7, true, { reason: "flaky", days: 99 }).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(e).toBeInstanceOf(ApiError);
+    expect((e as ApiError).status).toBe(422);
   });
 });
 
@@ -170,6 +206,7 @@ describe("GET request builders", () => {
       showStable: true,
       category: "timing",
       quarantined: false,
+      acknowledged: false,
       broken: false,
       issue: null,
       newWithinDays: null,
@@ -191,6 +228,7 @@ describe("GET request builders", () => {
       showStable: false,
       category: null,
       quarantined: false,
+      acknowledged: false,
       broken: true,
       issue: null,
       newWithinDays: null,
@@ -216,6 +254,7 @@ describe("GET request builders", () => {
       showStable: true,
       category: "timing",
       quarantined: true,
+      acknowledged: false,
       broken: true,
       issue: "linked",
       newWithinDays: 7,
@@ -238,6 +277,7 @@ describe("GET request builders", () => {
       showStable: false,
       category: null,
       quarantined: false,
+      acknowledged: false,
       broken: false,
       issue: "none",
       newWithinDays: null,
@@ -245,6 +285,31 @@ describe("GET request builders", () => {
     });
     expect(calls.map((c) => c.path)).toEqual([
       "/api/tests?repo=a%2Fb&page=1&page_size=50&sort=score&has_issue=false",
+    ]);
+  });
+
+  // The acknowledged flag is not in the list-filter table (ViewState has no
+  // field for it until ack-ui-jobs), so the fetchers set it by hand after the
+  // derived block and it lands last in the URL.
+  it("fetchTests sends acknowledged=true", async () => {
+    const calls = stubFetch();
+    await fetchTests({
+      repo: "a/b",
+      project: null,
+      page: 1,
+      pageSize: 50,
+      sort: "score",
+      showStable: false,
+      category: null,
+      quarantined: false,
+      acknowledged: true,
+      broken: false,
+      issue: null,
+      newWithinDays: null,
+      q: "",
+    });
+    expect(calls.map((c) => c.path)).toEqual([
+      "/api/tests?repo=a%2Fb&page=1&page_size=50&sort=score&acknowledged=true",
     ]);
   });
 
@@ -263,6 +328,7 @@ describe("GET request builders", () => {
       sort: "score",
       showStable: true,
       pipeline: null,
+      acknowledged: false,
       issue: null,
       newWithinDays: null,
       q: "",
@@ -283,6 +349,7 @@ describe("GET request builders", () => {
       sort: "score",
       showStable: true,
       pipeline: "ci.yml",
+      acknowledged: false,
       issue: "none",
       newWithinDays: 7,
       q: "login",
@@ -302,12 +369,32 @@ describe("GET request builders", () => {
       sort: "proven",
       showStable: false,
       pipeline: null,
+      acknowledged: false,
       issue: "linked",
       newWithinDays: null,
       q: "",
     });
     expect(calls.map((c) => c.path)).toEqual([
       "/api/jobs?repo=a%2Fb&page=1&page_size=50&sort=proven&has_issue=true",
+    ]);
+  });
+
+  it("fetchJobs sends acknowledged=true", async () => {
+    const calls = stubFetch();
+    await fetchJobs({
+      repo: "a/b",
+      page: 1,
+      pageSize: 50,
+      sort: "score",
+      showStable: false,
+      pipeline: null,
+      acknowledged: true,
+      issue: null,
+      newWithinDays: null,
+      q: "",
+    });
+    expect(calls.map((c) => c.path)).toEqual([
+      "/api/jobs?repo=a%2Fb&page=1&page_size=50&sort=score&acknowledged=true",
     ]);
   });
 

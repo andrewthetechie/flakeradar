@@ -27,6 +27,8 @@ const test: TestCase = {
   quarantined_at: null,
   quarantine_reason: null,
   quarantine_expires_at: null,
+  acknowledged_until: null,
+  acknowledge_reason: null,
   github_issue_number: null,
   github_issue_url: null,
   github_issue_closed: false,
@@ -107,6 +109,38 @@ describe("Leaderboard", () => {
       />,
     );
     expect(screen.getByText(/broken on default branch/)).toBeInTheDocument();
+  });
+
+  it("shows the acknowledged pill only while the acknowledgement is live", () => {
+    const { unmount } = render(
+      <Leaderboard
+        tests={[{ ...test, acknowledged_until: "2999-01-01T00:00:00Z" }]}
+        scope={{ repo: null, project: null }}
+        showStable={false}
+        selectedId={null}
+        onSelect={() => {}}
+        onToggleQuarantine={() => {}}
+      />,
+    );
+    const pill = screen.getByText(/acknowledged/);
+    expect(pill).toBeInTheDocument();
+    expect(pill).toHaveAttribute("title", "Acknowledged until 2999-01-01T00:00:00Z");
+    unmount();
+
+    for (const acknowledged_until of ["2000-01-01T00:00:00Z", null]) {
+      render(
+        <Leaderboard
+          tests={[{ ...test, acknowledged_until }]}
+          scope={{ repo: null, project: null }}
+          showStable={false}
+          selectedId={null}
+          onSelect={() => {}}
+          onToggleQuarantine={() => {}}
+        />,
+      );
+      expect(screen.queryByText(/acknowledged/)).toBeNull();
+      unmount();
+    }
   });
 
   it("explains the empty state when stable tests are hidden", () => {

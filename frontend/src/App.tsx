@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   fetchFailedReports,
+  setAcknowledge,
   setQuarantine,
   type History,
   type JobHistory,
@@ -12,6 +13,7 @@ import {
   type TestCase,
   type TestPage,
 } from "./api";
+import { AcknowledgeDialog, type AcknowledgeChoice } from "./components/AcknowledgeDialog";
 import { CiRunView } from "./components/CiRunView";
 import { JobDrawer } from "./components/JobDrawer";
 import { JobLeaderboard } from "./components/JobLeaderboard";
@@ -21,6 +23,7 @@ import { LeaderboardControls } from "./components/LeaderboardControls";
 import { Pagination } from "./components/Pagination";
 import { QueueIndicator } from "./components/QueueIndicator";
 import { QuarantineDialog, type QuarantineChoice } from "./components/QuarantineDialog";
+import { isAcknowledged } from "./components/resultCells";
 import { ScopePicker } from "./components/ScopePicker";
 import { StatTiles } from "./components/StatTiles";
 import { TestDrawer } from "./components/TestDrawer";
@@ -45,6 +48,7 @@ export default function App() {
   // single writer knows what is showing. Every write therefore goes through.
   const [error, setError] = useState<string | null>(null);
   const [pendingQuarantine, setPendingQuarantine] = useState<TestCase | null>(null);
+  const [pendingAcknowledge, setPendingAcknowledge] = useState<TestCase | null>(null);
 
   const {
     repo,
@@ -209,6 +213,36 @@ export default function App() {
     [refresh],
   );
 
+  const onToggleAcknowledge = useCallback(
+    async (t: TestCase) => {
+      if (isAcknowledged(t.acknowledged_until)) {
+        try {
+          await setAcknowledge("tests", t.id, false);
+          await refresh();
+        } catch (e) {
+          setError(e instanceof Error ? e.message : String(e));
+        }
+        return;
+      }
+      // Acknowledging is a human decision: ask for the reason and the duration first.
+      setPendingAcknowledge(t);
+    },
+    [refresh],
+  );
+
+  const confirmAcknowledge = useCallback(
+    async (t: TestCase, choice: AcknowledgeChoice) => {
+      setPendingAcknowledge(null);
+      try {
+        await setAcknowledge("tests", t.id, true, { reason: choice.reason, days: choice.days });
+        await refresh();
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [refresh],
+  );
+
   const closeDrawer = useCallback(() => {
     if (kind === "jobs") setView({ job: null });
     else setView({ test: null });
@@ -360,6 +394,7 @@ export default function App() {
           history={testHistoryLoad.data}
           onClose={closeDrawer}
           onToggleQuarantine={onToggleQuarantine}
+          onToggleAcknowledge={onToggleAcknowledge}
           onOpenJob={openJobFromTest}
           onOpenCiRun={openCiRun}
         />
@@ -371,6 +406,16 @@ export default function App() {
           // The dialog only renders for a pending Test, so the callback always
           // has one: no null check inside confirmQuarantine.
           onConfirm={(choice) => void confirmQuarantine(pendingQuarantine, choice)}
+        />
+      )}
+      {pendingAcknowledge != null && (
+        <AcknowledgeDialog
+          name={pendingAcknowledge.name}
+          scope={`${pendingAcknowledge.repo} / ${pendingAcknowledge.project}`}
+          onClose={() => setPendingAcknowledge(null)}
+          // The dialog only renders for a pending Test, so the callback always
+          // has one: no null check inside confirmAcknowledge.
+          onConfirm={(choice) => void confirmAcknowledge(pendingAcknowledge, choice)}
         />
       )}
       {kind === "jobs" && view.job != null && (

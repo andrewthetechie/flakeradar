@@ -29,6 +29,8 @@ function page(name: string): TestPage {
     quarantined_at: null,
     quarantine_reason: null,
     quarantine_expires_at: null,
+    acknowledged_until: null,
+    acknowledge_reason: null,
     github_issue_number: null,
     github_issue_url: null,
     github_issue_closed: false,
@@ -94,6 +96,8 @@ function testHistory(id: number, overrides: Partial<History> = {}): History {
       quarantined_at: null,
       quarantine_reason: null,
       quarantine_expires_at: null,
+      acknowledged_until: null,
+      acknowledge_reason: null,
       github_issue_number: null,
       github_issue_url: null,
       github_issue_closed: false,
@@ -168,6 +172,8 @@ function jobHistory(overrides: Partial<JobHistory> = {}): JobHistory {
       last_status: "failed",
       last_seen_at: "2026-09-25T00:00:00Z",
       summary: false,
+      acknowledged_until: null,
+      acknowledge_reason: null,
       github_issue_number: null,
       github_issue_url: null,
       github_issue_closed: false,
@@ -1039,13 +1045,18 @@ describe("App", () => {
     expect(window.location.search).toBe("?view=jobs&new=7");
   });
 
-  /** The Tests list, with the row's quarantine state chosen by the caller. */
-  function stubTests(quarantined: boolean) {
+  /**
+   * The Tests list, with the row's quarantine state chosen by the caller. The
+   * optional `acknowledgedUntil` sets the row's and the drawer history's
+   * acknowledgement end date, so the drawer shows the matching button.
+   */
+  function stubTests(quarantined: boolean, acknowledgedUntil: string | null = null) {
     const calls: { url: string; body: Record<string, unknown> | null }[] = [];
     const row: TestCase = {
       ...page("login").items[0],
       quarantined,
       quarantined_at: quarantined ? "2026-09-25T00:00:00Z" : null,
+      acknowledged_until: acknowledgedUntil,
     };
     vi.stubGlobal(
       "fetch",
@@ -1054,6 +1065,13 @@ describe("App", () => {
           init?.body == null ? null : (JSON.parse(String(init.body)) as Record<string, unknown>);
         calls.push({ url, body });
         if (url.includes("/quarantine")) return json({ ...row, ...body });
+        if (url.includes("/acknowledge")) return json({ ...row, ...body });
+        if (url.includes("/history"))
+          return json(
+            testHistory(5, {
+              test: { ...testHistory(5).test, acknowledged_until: acknowledgedUntil },
+            }),
+          );
         if (url.startsWith("/api/tests"))
           return json({ items: [row], total: 1, page: 1, page_size: 50 });
         if (url.startsWith("/api/repos")) return json([]);
@@ -1073,8 +1091,9 @@ describe("App", () => {
       }),
     );
     const posts = () => calls.filter((c) => c.url.includes("/quarantine"));
+    const acks = () => calls.filter((c) => c.url.includes("/acknowledge"));
     const lists = () => calls.filter((c) => c.url.startsWith("/api/tests?")).length;
-    return { posts, lists };
+    return { posts, acks, lists };
   }
 
   it("asks for a reason and an expiry, then posts them and refreshes", async () => {
@@ -1183,6 +1202,192 @@ describe("App", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("backend down");
     // The dialog closes whatever the answer was, so the person can retry from the row.
     expect(screen.queryByRole("dialog", { name: /Quarantine login/ })).not.toBeInTheDocument();
+  });
+
+  /** Opens the Test drawer for the "login" row, like the leaderboard would. */
+  async function openDrawer() {
+    await userEvent.click(screen.getByText("login"));
+    const drawer = await screen.findByRole("dialog", { name: "Test detail" });
+    // The drawer's button acts on the history's Test, which the history fetch populates.
+    await within(drawer).findByText("renders");
+    return drawer;
+  }
+
+  it("asks for a reason and a duration, then acknowledges and refreshes", async () => {
+    const { acks, lists } = stubTests(false);
+    render(<App />);
+    expect(await screen.findByText("login")).toBeInTheDocument();
+    const drawer = await openDrawer();
+    expect(acks()).toHaveLength(0);
+
+    await userEvent.click(within(drawer).getByRole("button", { name: "Acknowledge" }));
+    const dialog = await screen.findByRole("dialog", { name: /Acknowledge renders/ });
+    await userEvent.type(within(dialog).getByRole("textbox", { name: /Reason/ }), "known flake");
+    await userEvent.click(within(dialog).getByRole("radio", { name: "30 days" }));
+    const listsBefore = lists();
+    await userEvent.click(within(dialog).getByRole("button", { name: "Confirm" }));
+    await act(async () => {});
+
+    expect(acks()).toHaveLength(1);
+    expect(acks()[0].url).toBe("/api/tests/5/acknowledge");
+    expect(acks()[0].body).toEqual({
+      acknowledged: true,
+      reason: "known flake",
+      days: 30,
+    });
+    // Confirming refetches the lists so the row shows as acknowledged.
+    expect(lists()).toBeGreaterThan(listsBefore);
+    expect(screen.queryByRole("dialog", { name: /Acknowledge renders/ })).not.toBeInTheDocument();
+  });
+
+  it("clears an acknowledgement with one click and no dialog", async () => {
+    const { acks, lists } = stubTests(false, "2999-01-01T00:00:00Z");
+    render(<App />);
+    expect(await screen.findByText("login")).toBeInTheDocument();
+    const drawer = await openDrawer();
+
+    await userEvent.click(within(drawer).getByRole("button", { name: "Clear acknowledgement" }));
+    await act(async () => {});
+
+    expect(acks()).toHaveLength(1);
+    expect(acks()[0].body).toEqual({ acknowledged: false });
+    expect(lists()).toBeGreaterThan(1);
+    expect(screen.queryByRole("dialog", { name: /Acknowledge renders/ })).not.toBeInTheDocument();
+  });
+
+  it("surfaces the error when acknowledging fails", async () => {
+    const row: TestCase = { ...page("login").items[0] };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        // Reject with a non-Error so the `String(e)` arm of the error handler runs.
+        if (url.includes("/acknowledge")) return Promise.reject("backend down");
+        if (url.includes("/history")) return json(testHistory(5));
+        if (url.startsWith("/api/tests"))
+          return json({ items: [row], total: 1, page: 1, page_size: 50 });
+        if (url.startsWith("/api/repos")) return json([]);
+        if (url.startsWith("/api/reports/summary")) return json({ pending: 0, failed: 0 });
+        return json(testsSummary);
+      }),
+    );
+    render(<App />);
+    expect(await screen.findByText("login")).toBeInTheDocument();
+    const drawer = await openDrawer();
+
+    await userEvent.click(within(drawer).getByRole("button", { name: "Acknowledge" }));
+    const dialog = await screen.findByRole("dialog", { name: /Acknowledge renders/ });
+    await userEvent.click(within(dialog).getByRole("button", { name: "Confirm" }));
+    await act(async () => {});
+
+    expect(screen.getByRole("alert")).toHaveTextContent("backend down");
+    expect(screen.queryByRole("dialog", { name: /Acknowledge renders/ })).not.toBeInTheDocument();
+  });
+
+  it("surfaces the error when clearing an acknowledgement fails", async () => {
+    const row: TestCase = { ...page("login").items[0], acknowledged_until: "2999-01-01T00:00:00Z" };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        // Reject with a non-Error so the `String(e)` arm of the error handler runs.
+        if (url.includes("/acknowledge")) return Promise.reject("backend down");
+        if (url.includes("/history"))
+          return json(
+            testHistory(5, {
+              test: { ...testHistory(5).test, acknowledged_until: "2999-01-01T00:00:00Z" },
+            }),
+          );
+        if (url.startsWith("/api/tests"))
+          return json({ items: [row], total: 1, page: 1, page_size: 50 });
+        if (url.startsWith("/api/repos")) return json([]);
+        if (url.startsWith("/api/reports/summary")) return json({ pending: 0, failed: 0 });
+        return json(testsSummary);
+      }),
+    );
+    render(<App />);
+    expect(await screen.findByText("login")).toBeInTheDocument();
+    const drawer = await openDrawer();
+
+    await userEvent.click(within(drawer).getByRole("button", { name: "Clear acknowledgement" }));
+    await act(async () => {});
+
+    expect(screen.getByRole("alert")).toHaveTextContent("backend down");
+  });
+
+  it("surfaces an ApiError message when acknowledging fails", async () => {
+    const row: TestCase = { ...page("login").items[0] };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        // A non-2xx answer makes setAcknowledge throw an ApiError, so the error
+        // handler's `e instanceof Error` arm runs; the string arm has its own test.
+        if (url.includes("/acknowledge"))
+          return Promise.resolve(new Response("nope", { status: 500 }));
+        if (url.includes("/history")) return json(testHistory(5));
+        if (url.startsWith("/api/tests"))
+          return json({ items: [row], total: 1, page: 1, page_size: 50 });
+        if (url.startsWith("/api/repos")) return json([]);
+        if (url.startsWith("/api/reports/summary")) return json({ pending: 0, failed: 0 });
+        return json(testsSummary);
+      }),
+    );
+    render(<App />);
+    expect(await screen.findByText("login")).toBeInTheDocument();
+    const drawer = await openDrawer();
+
+    await userEvent.click(within(drawer).getByRole("button", { name: "Acknowledge" }));
+    const dialog = await screen.findByRole("dialog", { name: /Acknowledge renders/ });
+    await userEvent.click(within(dialog).getByRole("button", { name: "Confirm" }));
+    await act(async () => {});
+
+    expect(screen.getByRole("alert")).toHaveTextContent(/acknowledge tests 5 -> 500/);
+    expect(screen.queryByRole("dialog", { name: /Acknowledge renders/ })).not.toBeInTheDocument();
+  });
+
+  it("surfaces an ApiError message when clearing an acknowledgement fails", async () => {
+    const row: TestCase = { ...page("login").items[0], acknowledged_until: "2999-01-01T00:00:00Z" };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        // A non-2xx answer makes setAcknowledge throw an ApiError, so the error
+        // handler's `e instanceof Error` arm runs; the string arm has its own test.
+        if (url.includes("/acknowledge"))
+          return Promise.resolve(new Response("nope", { status: 500 }));
+        if (url.includes("/history"))
+          return json(
+            testHistory(5, {
+              test: { ...testHistory(5).test, acknowledged_until: "2999-01-01T00:00:00Z" },
+            }),
+          );
+        if (url.startsWith("/api/tests"))
+          return json({ items: [row], total: 1, page: 1, page_size: 50 });
+        if (url.startsWith("/api/repos")) return json([]);
+        if (url.startsWith("/api/reports/summary")) return json({ pending: 0, failed: 0 });
+        return json(testsSummary);
+      }),
+    );
+    render(<App />);
+    expect(await screen.findByText("login")).toBeInTheDocument();
+    const drawer = await openDrawer();
+
+    await userEvent.click(within(drawer).getByRole("button", { name: "Clear acknowledgement" }));
+    await act(async () => {});
+
+    expect(screen.getByRole("alert")).toHaveTextContent(/acknowledge tests 5 -> 500/);
+  });
+
+  it("does not post anything when the Acknowledge dialog is cancelled", async () => {
+    const { acks } = stubTests(false);
+    render(<App />);
+    expect(await screen.findByText("login")).toBeInTheDocument();
+    const drawer = await openDrawer();
+
+    await userEvent.click(within(drawer).getByRole("button", { name: "Acknowledge" }));
+    const dialog = await screen.findByRole("dialog", { name: /Acknowledge renders/ });
+    await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await act(async () => {});
+
+    expect(acks()).toHaveLength(0);
+    expect(screen.queryByRole("dialog", { name: /Acknowledge renders/ })).not.toBeInTheDocument();
   });
 
   // ---- Navigation wiring (issue #80): drawers, views, sort, filters, paging ----

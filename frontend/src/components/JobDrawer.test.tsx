@@ -19,6 +19,8 @@ const history: JobHistory = {
     last_status: "failed",
     last_seen_at: "2026-09-25T00:00:00Z",
     summary: false,
+    acknowledged_until: null,
+    acknowledge_reason: null,
     github_issue_number: null,
     github_issue_url: null,
     github_issue_closed: false,

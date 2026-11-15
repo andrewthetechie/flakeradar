@@ -2,7 +2,7 @@ import type { History, TestCase } from "../api";
 import { breakable } from "../breakable";
 import { IssueLink } from "./IssueLink";
 import { Overlay } from "./Overlay";
-import { BrokenPill } from "./resultCells";
+import { BrokenPill, isAcknowledged } from "./resultCells";
 import { TestDetail } from "./TestDetail";
 
 /** Whole days from now until an ISO timestamp, rounding a partial day up. */
@@ -16,6 +16,7 @@ export function TestDrawer({
   history,
   onClose,
   onToggleQuarantine,
+  onToggleAcknowledge,
   onOpenJob,
   onOpenCiRun,
 }: {
@@ -23,6 +24,7 @@ export function TestDrawer({
   history: History | null;
   onClose: () => void;
   onToggleQuarantine: (t: TestCase) => void;
+  onToggleAcknowledge: (t: TestCase) => void;
   onOpenJob: (jobId: number) => void;
   onOpenCiRun: (repo: string, ciRun: string, attempt: number | null) => void;
 }) {
@@ -81,9 +83,24 @@ export function TestDrawer({
                 </span>
               )}
             </div>
-            <button type="button" className="btn" onClick={() => onToggleQuarantine(history.test)}>
-              {history.test.quarantined ? "Un-quarantine" : "Quarantine"}
-            </button>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                className="btn"
+                onClick={() => onToggleQuarantine(history.test)}
+              >
+                {history.test.quarantined ? "Un-quarantine" : "Quarantine"}
+              </button>
+              <button
+                type="button"
+                className="btn"
+                onClick={() => onToggleAcknowledge(history.test)}
+              >
+                {isAcknowledged(history.test.acknowledged_until)
+                  ? "Clear acknowledgement"
+                  : "Acknowledge"}
+              </button>
+            </div>
           </div>
           {history.test.quarantined && (
             <div className="-mt-2 mb-4 text-xs text-muted [overflow-wrap:anywhere]">
@@ -92,6 +109,16 @@ export function TestDrawer({
               )}
               {history.test.quarantine_expires_at != null && (
                 <div>expires in {daysUntil(history.test.quarantine_expires_at)} days</div>
+              )}
+            </div>
+          )}
+          {isAcknowledged(history.test.acknowledged_until) && (
+            <div className="-mt-2 mb-4 text-xs text-muted [overflow-wrap:anywhere]">
+              {history.test.acknowledge_reason != null && (
+                <div>Reason: {breakable(history.test.acknowledge_reason)}</div>
+              )}
+              {history.test.acknowledged_until != null && (
+                <div>acknowledged until {history.test.acknowledged_until}</div>
               )}
             </div>
           )}

@@ -30,6 +30,8 @@ const history: History = {
     quarantined_at: null,
     quarantine_reason: null,
     quarantine_expires_at: null,
+    acknowledged_until: null,
+    acknowledge_reason: null,
     github_issue_number: null,
     github_issue_url: null,
     github_issue_closed: false,
@@ -94,7 +96,12 @@ const history: History = {
   ],
 };
 
-function renderDrawer(overrides: Partial<History> = {}, onClose = vi.fn(), onQ = vi.fn()) {
+function renderDrawer(
+  overrides: Partial<History> = {},
+  onClose = vi.fn(),
+  onQ = vi.fn(),
+  onAck = vi.fn(),
+) {
   const onOpenJob = vi.fn();
   const onOpenCiRun = vi.fn();
   render(
@@ -103,11 +110,12 @@ function renderDrawer(overrides: Partial<History> = {}, onClose = vi.fn(), onQ =
       history={{ ...history, ...overrides }}
       onClose={onClose}
       onToggleQuarantine={onQ}
+      onToggleAcknowledge={onAck}
       onOpenJob={onOpenJob}
       onOpenCiRun={onOpenCiRun}
     />,
   );
-  return { onClose, onQ, onOpenJob, onOpenCiRun };
+  return { onClose, onQ, onAck, onOpenJob, onOpenCiRun };
 }
 
 describe("TestDrawer", () => {
@@ -248,6 +256,47 @@ describe("TestDrawer", () => {
     expect(screen.queryByText(/expires in/)).not.toBeInTheDocument();
   });
 
+  it("offers Acknowledge for a test with none", () => {
+    renderDrawer();
+    expect(screen.getByRole("button", { name: "Acknowledge" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Clear acknowledgement" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/acknowledged until/)).not.toBeInTheDocument();
+  });
+
+  it("toggles acknowledge for the shown test", async () => {
+    const { onAck } = renderDrawer();
+    await userEvent.click(screen.getByRole("button", { name: "Acknowledge" }));
+    expect(onAck).toHaveBeenCalledWith(history.test);
+  });
+
+  it("shows Clear acknowledgement and the reason of an acknowledged test", () => {
+    renderDrawer({
+      test: {
+        ...history.test,
+        acknowledged_until: "2999-01-01T00:00:00Z",
+        acknowledge_reason: "known flake",
+      },
+    });
+    expect(screen.getByRole("button", { name: "Clear acknowledgement" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Acknowledge" })).not.toBeInTheDocument();
+    expect(screen.getByText(/known flake/)).toBeInTheDocument();
+    expect(screen.getByText(/acknowledged until 2999-01-01T00:00:00Z/)).toBeInTheDocument();
+  });
+
+  it("offers Acknowledge, not Clear, for a lapsed acknowledgement", () => {
+    renderDrawer({
+      test: {
+        ...history.test,
+        acknowledged_until: "2000-01-01T00:00:00Z",
+        acknowledge_reason: "stale note",
+      },
+    });
+    expect(screen.getByRole("button", { name: "Acknowledge" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Clear acknowledgement" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/stale note/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/acknowledged until/)).not.toBeInTheDocument();
+  });
+
   it("shows a loading state until the right test's history arrives", () => {
     render(
       <TestDrawer
@@ -255,6 +304,7 @@ describe("TestDrawer", () => {
         history={history}
         onClose={() => {}}
         onToggleQuarantine={() => {}}
+        onToggleAcknowledge={() => {}}
         onOpenJob={() => {}}
         onOpenCiRun={() => {}}
       />,

@@ -5,6 +5,7 @@ import {
   ProvenCell,
   BrokenPill,
   QuarantinedPill,
+  AcknowledgedPill,
   StatusIssueCell,
 } from "./resultCells";
 
@@ -78,6 +79,7 @@ export function Leaderboard({
                 <div className="font-semibold [overflow-wrap:anywhere]">
                   {t.broken && <BrokenPill />}
                   {t.quarantined && <QuarantinedPill />}
+                  <AcknowledgedPill until={t.acknowledged_until} />
                   {breakable(t.name)}
                 </div>
                 <div className="text-xs text-muted [overflow-wrap:anywhere]">
