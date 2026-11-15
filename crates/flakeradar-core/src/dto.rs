@@ -1492,6 +1492,11 @@ pub struct TestOut {
     /// When the quarantine lapses.
     #[serde(with = "optional_timestamp")]
     pub quarantine_expires_at: Option<DateTime<Utc>>,
+    /// When the acknowledgement lapses.
+    #[serde(with = "optional_timestamp")]
+    pub acknowledged_until: Option<DateTime<Utc>>,
+    /// Why a person acknowledged the Test.
+    pub acknowledge_reason: Option<String>,
     /// The GitHub issue the Test is linked to.
     pub github_issue_number: Option<i64>,
     /// The linked issue's url.

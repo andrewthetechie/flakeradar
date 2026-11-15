@@ -1259,6 +1259,103 @@ async fn quarantine_toggles_and_lists_one_project() {
 }
 
 #[tokio::test]
+async fn acknowledge_sets_and_clears_one_test() {
+    let db = TestDb::new().await.expect("a test database");
+    let test_id = seed_detail(&db, None, None, "frontend").await;
+    let app = token_app(&db);
+    let url = format!("/api/tests/{test_id}/acknowledge");
+
+    let on = post(
+        &app,
+        &url,
+        &[],
+        json!({"acknowledged": true, "reason": "known, fix in #12", "days": 7}).to_string(),
+    )
+    .await;
+    assert_eq!(on.status, 200);
+    assert_eq!(on.json()["acknowledge_reason"], "known, fix in #12");
+    let until: DateTime<FixedOffset> =
+        DateTime::parse_from_rfc3339(on.json()["acknowledged_until"].as_str().expect("an expiry"))
+            .expect("the expiry is RFC 3339");
+    let expected = Utc::now() + Duration::days(7);
+    assert!((until.with_timezone(&Utc) - expected).abs() < Duration::minutes(5));
+
+    // The stored row carries the decision, as the Test's history serves it.
+    let stored = get(&app, &format!("/api/tests/{test_id}/history"))
+        .await
+        .json();
+    assert_eq!(stored["test"]["acknowledge_reason"], "known, fix in #12");
+    assert_eq!(
+        stored["test"]["acknowledged_until"],
+        on.json()["acknowledged_until"]
+    );
+
+    for days in [0, 31] {
+        let bad = post(
+            &app,
+            &url,
+            &[],
+            json!({"acknowledged": true, "days": days}).to_string(),
+        )
+        .await;
+        assert_eq!(bad.status, 422);
+        assert_eq!(bad.json()["detail"][0]["loc"], json!(["body", "days"]));
+    }
+    let missing = post(&app, &url, &[], json!({"acknowledged": true}).to_string()).await;
+    assert_eq!(missing.status, 422);
+    assert_eq!(missing.json()["detail"][0]["type"], "missing");
+    assert_eq!(missing.json()["detail"][0]["loc"], json!(["body", "days"]));
+    let long_reason = post(
+        &app,
+        &url,
+        &[],
+        json!({"acknowledged": true, "reason": "x".repeat(501), "days": 7}).to_string(),
+    )
+    .await;
+    assert_eq!(long_reason.status, 422);
+    assert_eq!(
+        long_reason.json()["detail"][0]["loc"],
+        json!(["body", "reason"])
+    );
+
+    // A rejected body never touched the stored acknowledgement.
+    let stored = get(&app, &format!("/api/tests/{test_id}/history"))
+        .await
+        .json();
+    assert_eq!(stored["test"]["acknowledge_reason"], "known, fix in #12");
+    assert_eq!(
+        stored["test"]["acknowledged_until"],
+        on.json()["acknowledged_until"]
+    );
+
+    // Acknowledging again without a reason clears the old one.
+    let re_on = post(
+        &app,
+        &url,
+        &[],
+        json!({"acknowledged": true, "days": 7}).to_string(),
+    )
+    .await;
+    assert_eq!(re_on.status, 200);
+    assert_eq!(re_on.json()["acknowledge_reason"], Value::Null);
+
+    let off = post(&app, &url, &[], json!({"acknowledged": false}).to_string()).await;
+    assert_eq!(off.json()["acknowledged_until"], Value::Null);
+    assert_eq!(off.json()["acknowledge_reason"], Value::Null);
+    assert_eq!(
+        post(
+            &app,
+            "/api/tests/999999/acknowledge",
+            &[],
+            json!({"acknowledged": true, "days": 7}).to_string(),
+        )
+        .await
+        .status,
+        404
+    );
+}
+
+#[tokio::test]
 async fn quarantine_takes_the_lax_boolean_and_404s_a_missing_test() {
     let db = TestDb::new().await.expect("a test database");
     let app = token_app(&db);

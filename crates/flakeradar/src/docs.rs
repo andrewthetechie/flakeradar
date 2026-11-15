@@ -61,6 +61,7 @@ pub const REDOC_SCRIPT: &[u8] = include_bytes!("../assets/redoc.standalone.js");
         reads::test_summary,
         reads::test_history,
         reads::quarantine_test,
+        reads::acknowledge_test,
         reads::quarantine,
         reads::jobs,
         reads::jobs_summary,
