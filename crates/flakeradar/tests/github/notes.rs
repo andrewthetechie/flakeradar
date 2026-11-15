@@ -605,6 +605,156 @@ async fn stopping_waits_for_the_close_and_reads_its_answer() {
 }
 
 #[tokio::test]
+async fn a_stop_that_already_fired_ends_the_batch_before_its_first_row() {
+    let db = TestDb::new().await.expect("a test database");
+    let test = flaky_test(&db).await;
+    stamp_link(&db, EntityKind::Test, test, stamp().number(12).checked()).await;
+    set_clean_streak(&db, "test_cases", test, 3).await;
+    let server = MockServer::start().await;
+    let stop = unstopped();
+    stop.cancel();
+
+    let (report, logged) = CapturedLog::during_call(Box::pin(async {
+        github::note_fixed_for(
+            db.connection(),
+            EntityKind::Test,
+            &[test],
+            &fixed_settings(&[]),
+            &api(&server),
+            &system_clock(),
+            &stop,
+        )
+        .await
+    }))
+    .await;
+
+    assert_eq!(
+        report.stopped,
+        Some(github::BatchStop::Stopped),
+        "a stop that fired before the batch reports the stop"
+    );
+    assert!(
+        report.skipped.is_empty(),
+        "no row was reached, so none was skipped"
+    );
+    assert!(
+        requested_paths(&server).await.is_empty(),
+        "a stop before the first row sends no request"
+    );
+    // The operator reads why the batch ended from the log, not from a report
+    // nobody prints, so the stopped line carries the entity it was serving.
+    assert!(
+        lines_with(&logged, "stopping the fixed-note batch").len() == 1,
+        "the stop names itself once: {logged}"
+    );
+}
+
+#[tokio::test]
+async fn a_stop_that_lands_with_the_comment_ends_after_the_stamp() {
+    let db = TestDb::new().await.expect("a test database");
+    let test = flaky_test(&db).await;
+    stamp_link(&db, EntityKind::Test, test, stamp().number(12).checked()).await;
+    set_clean_streak(&db, "test_cases", test, 3).await;
+    let server = MockServer::start().await;
+    // The comment's stub cancels the stop while it serves the answer, so the
+    // stop lands between the comment and the stamp, the gap a dropped stop would
+    // use to leave the issue open with the comment lost.
+    let stopping = CancellationToken::new();
+    let cancelling = stopping.clone();
+    Mock::given(method("POST"))
+        .and(path("/repos/acme/app/issues/12/comments"))
+        .respond_with(move |_request: &Request| {
+            cancelling.cancel();
+            ResponseTemplate::new(201)
+        })
+        .mount(&server)
+        .await;
+
+    let settings = fixed_settings(&[("FLAKERADAR_GITHUB_CLOSE_FIXED", "true")]);
+    let report = github::note_fixed_for(
+        db.connection(),
+        EntityKind::Test,
+        &[test],
+        &settings,
+        &api(&server),
+        &system_clock(),
+        &stopping,
+    )
+    .await;
+
+    assert_eq!(
+        report.stopped,
+        Some(github::BatchStop::Stopped),
+        "a stop the comment's answer carried ends the batch"
+    );
+    assert!(
+        noted(&db, "test_cases", test).await,
+        "the stamp is written before the stop ends the batch"
+    );
+    assert_eq!(
+        requested_paths(&server).await,
+        vec!["/repos/acme/app/issues/12/comments"],
+        "the batch ends before the close is asked"
+    );
+}
+
+#[tokio::test]
+async fn a_repo_denied_close_still_reads_a_stop_that_landed_during_it() {
+    let db = TestDb::new().await.expect("a test database");
+    let test = flaky_test(&db).await;
+    stamp_link(&db, EntityKind::Test, test, stamp().number(77).checked()).await;
+    set_clean_streak(&db, "test_cases", test, 3).await;
+    let server = MockServer::start().await;
+    mount_comment(&server, "acme/app", 77, ResponseTemplate::new(201)).await;
+    // The close's stub cancels the stop while it serves a 403, so the batch
+    // records the skipped Repo from the answer and then stops on the signal.
+    let stopping = CancellationToken::new();
+    let cancelling = stopping.clone();
+    Mock::given(method("PATCH"))
+        .and(path("/repos/acme/app/issues/77"))
+        .respond_with(move |_request: &Request| {
+            cancelling.cancel();
+            ResponseTemplate::new(403)
+        })
+        .mount(&server)
+        .await;
+
+    let settings = fixed_settings(&[("FLAKERADAR_GITHUB_CLOSE_FIXED", "true")]);
+    let report = github::note_fixed_for(
+        db.connection(),
+        EntityKind::Test,
+        &[test],
+        &settings,
+        &api(&server),
+        &system_clock(),
+        &stopping,
+    )
+    .await;
+
+    assert_eq!(
+        report.stopped,
+        Some(github::BatchStop::Stopped),
+        "a stop the close's answer carried ends the batch after it"
+    );
+    assert_eq!(
+        report.skipped,
+        std::collections::BTreeSet::from(["acme/app".to_owned()]),
+        "the denied Repo is skipped even though the batch stopped"
+    );
+    assert!(
+        noted(&db, "test_cases", test).await,
+        "the close runs through its answer, so the stamp stands"
+    );
+    assert_eq!(
+        requested_paths(&server).await,
+        vec![
+            "/repos/acme/app/issues/77/comments",
+            "/repos/acme/app/issues/77"
+        ]
+    );
+}
+
+#[tokio::test]
 async fn a_note_rate_limit_stops_the_batch() {
     for (status, headers) in [(429, None), (403, Some(("x-ratelimit-remaining", "0")))] {
         let db = TestDb::new().await.expect("a test database");

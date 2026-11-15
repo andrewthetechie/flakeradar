@@ -1,5 +1,13 @@
 {
-  "columns": ["test_runs.infra_suspect", "test_cases.flaky_since", "jobs.flaky_since"],
+  "columns": [
+    "test_runs.infra_suspect",
+    "test_cases.flaky_since",
+    "jobs.flaky_since",
+    "test_cases.acknowledged_until",
+    "test_cases.acknowledge_reason",
+    "jobs.acknowledged_until",
+    "jobs.acknowledge_reason"
+  ],
   "fields": ["CiRunTestFailureOut.infra_suspect"],
   "paths": [],
   "query_params": []

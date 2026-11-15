@@ -190,6 +190,8 @@ pub struct TestCaseBuilder {
     quarantined_at: Option<DateTimeWithTimeZone>,
     quarantine_reason: Option<String>,
     quarantine_expires_at: Option<DateTimeWithTimeZone>,
+    acknowledged_until: Option<DateTimeWithTimeZone>,
+    acknowledge_reason: Option<String>,
     // Outer None: the setter was never called, so build derives it (see
     // `default_flaky_since`); Some(None): the test forced NULL explicitly.
     #[expect(
@@ -222,6 +224,8 @@ pub fn make_test_case(project: &projects::Model) -> TestCaseBuilder {
         quarantined_at: None,
         quarantine_reason: None,
         quarantine_expires_at: None,
+        acknowledged_until: None,
+        acknowledge_reason: None,
         flaky_since: None,
     }
 }
@@ -361,6 +365,20 @@ impl TestCaseBuilder {
         self
     }
 
+    /// Sets when the acknowledgement ends on its own.
+    #[must_use]
+    pub fn acknowledged_until(mut self, at: DateTimeWithTimeZone) -> Self {
+        self.acknowledged_until = Some(at);
+        self
+    }
+
+    /// Records why a person acknowledged the Test.
+    #[must_use]
+    pub fn acknowledge_reason(mut self, reason: &str) -> Self {
+        self.acknowledge_reason = Some(reason.to_owned());
+        self
+    }
+
     /// Inserts the Test into `db`, or panics naming this builder.
     ///
     /// # Panics
@@ -410,6 +428,8 @@ impl TestCaseBuilder {
                 quarantined_at: Set(self.quarantined_at),
                 quarantine_reason: Set(self.quarantine_reason),
                 quarantine_expires_at: Set(self.quarantine_expires_at),
+                acknowledged_until: Set(self.acknowledged_until),
+                acknowledge_reason: Set(self.acknowledge_reason),
                 github_issue_number: Set(self.github_issue_number),
                 github_issue_filed: Set(None),
                 github_issue_checked_at: Set(None),
@@ -755,6 +775,8 @@ pub struct JobBuilder {
     last_seen_at: Option<DateTimeWithTimeZone>,
     github_issue_fixed_noted_at: Option<DateTimeWithTimeZone>,
     github_issue_number: Option<i32>,
+    acknowledged_until: Option<DateTimeWithTimeZone>,
+    acknowledge_reason: Option<String>,
     // Outer None: the setter was never called, so build derives it (see
     // `default_flaky_since`); Some(None): the test forced NULL explicitly.
     #[expect(
@@ -777,6 +799,8 @@ pub fn make_job(pipeline: &pipelines::Model) -> JobBuilder {
         last_seen_at: None,
         github_issue_fixed_noted_at: None,
         github_issue_number: None,
+        acknowledged_until: None,
+        acknowledge_reason: None,
         flaky_since: None,
     }
 }
@@ -839,6 +863,20 @@ impl JobBuilder {
         self
     }
 
+    /// Sets when the acknowledgement ends on its own.
+    #[must_use]
+    pub fn acknowledged_until(mut self, at: DateTimeWithTimeZone) -> Self {
+        self.acknowledged_until = Some(at);
+        self
+    }
+
+    /// Records why a person acknowledged the Job.
+    #[must_use]
+    pub fn acknowledge_reason(mut self, reason: &str) -> Self {
+        self.acknowledge_reason = Some(reason.to_owned());
+        self
+    }
+
     /// Inserts the Job into `db`, or panics naming this builder.
     ///
     /// # Panics
@@ -875,6 +913,8 @@ impl JobBuilder {
                 github_issue_checked_at: Set(None),
                 github_issue_closed: Set(false),
                 github_issue_fixed_noted_at: Set(self.github_issue_fixed_noted_at),
+                acknowledged_until: Set(self.acknowledged_until),
+                acknowledge_reason: Set(self.acknowledge_reason),
                 created_at: Set(now()),
                 ..Default::default()
             },
