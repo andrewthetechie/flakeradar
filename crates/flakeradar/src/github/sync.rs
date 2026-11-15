@@ -137,7 +137,7 @@ async fn clear_if_closed(
                 entity_id = row.entity_id,
                 "issue gone; re-arming the link"
             );
-            issue_links::Check::Rearmed
+            issue_links::Check::Gone
         }
         Action::SkipRepo => {
             tracing::warn!(

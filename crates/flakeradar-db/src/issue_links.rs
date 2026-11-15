@@ -5,7 +5,8 @@
 //! it, the GitHub filer stores a number it just filed, and the issue-state sync
 //! takes its rotation list from [`linked_for_check`]. A linked entity is treated
 //! exactly like a filed one: the filer skips it, and the sync clears the link
-//! when the issue closes as completed or is gone.
+//! when the issue closes as completed — remembering the number it cleared and
+//! when it saw the close — or is gone, which it never remembers.
 //!
 //! The rules live in the engines, once for both targets; only an intended
 //! per-target difference is `github_provider_only` (a Job may link an issue only
@@ -13,6 +14,8 @@
 //! which is the one place the engines switch on the target.
 
 // Rust guideline compliant 2026-07-21
+
+use std::collections::BTreeMap;
 
 use chrono::{DateTime, FixedOffset, Utc};
 use flakeradar_core::{
@@ -27,7 +30,7 @@ use crate::reads::{
     JOBS_FROM, JOBS_SELECT, ReadSettings, TESTS_FROM, TESTS_SELECT, job_out, optional_timestamp,
     test_out,
 };
-use crate::sql::{get, one, rows};
+use crate::sql::{get, one, placeholder_list, rows};
 
 /// The table that holds `kind`'s link columns.
 const fn link_table(kind: EntityKind) -> &'static str {
@@ -215,7 +218,9 @@ async fn write_link(
     let sql = format!(
         "UPDATE {} SET github_issue_number = $2, github_issue_checked_at = $3, \
          github_issue_filed = $4, github_issue_closed = $5, \
-         github_issue_fixed_noted_at = $6 WHERE id = $1",
+         github_issue_fixed_noted_at = $6, \
+         github_issue_last_closed_number = NULL, github_issue_last_closed_at = NULL \
+         WHERE id = $1",
         link_table(target)
     );
     // A front door linked this one, so FlakeRadar must not close it.
@@ -444,7 +449,9 @@ pub async fn store_filed_link(
     let sql = format!(
         "UPDATE {} SET github_issue_number = $2, github_issue_checked_at = NULL, \
          github_issue_filed = TRUE, github_issue_closed = FALSE, \
-         github_issue_fixed_noted_at = NULL WHERE id = $1",
+         github_issue_fixed_noted_at = NULL, \
+         github_issue_last_closed_number = NULL, github_issue_last_closed_at = NULL \
+         WHERE id = $1",
         link_table(target)
     );
     let result = db
@@ -462,8 +469,12 @@ pub async fn store_filed_link(
 pub enum Check {
     /// The answer changed nothing: the link keeps its number and its flags.
     Kept,
-    /// The issue is closed or gone: clear the link so the next Report files again.
+    /// The issue closed as completed: clear the link so the next Report files
+    /// again, and remember which number closed and when.
     Rearmed,
+    /// The issue is gone: clear the link so the next Report files again, and
+    /// remember nothing.
+    Gone,
     /// The issue was closed as not planned: keep the link and flag the row.
     Declined,
     /// A declined issue was reopened, so filing is live again.
@@ -481,6 +492,8 @@ pub enum Check {
 /// The stamp lands for every answer, whatever it said, which is what keeps a link
 /// whose answer stays unusable rotating instead of pinning the front of the queue;
 /// a caller leaves a rate-limited or unanswered row unwritten so it is retried first.
+/// A [`Check::Rearmed`] answer also stores the close it saw: the cleared number and
+/// the instant of this check. [`Check::Gone`] stores nothing.
 ///
 /// # Errors
 ///
@@ -497,6 +510,14 @@ pub async fn record_check(
     match check {
         Check::Kept => {}
         Check::Rearmed => set.extend([
+            "github_issue_number = NULL",
+            "github_issue_filed = NULL",
+            "github_issue_closed = FALSE",
+            "github_issue_fixed_noted_at = NULL",
+            "github_issue_last_closed_number = $2",
+            "github_issue_last_closed_at = $3",
+        ]),
+        Check::Gone => set.extend([
             "github_issue_number = NULL",
             "github_issue_filed = NULL",
             "github_issue_closed = FALSE",
@@ -518,6 +539,39 @@ pub async fn record_check(
         ))
         .await?;
     Ok(result.rows_affected() > 0)
+}
+
+/// Reads the close a [`Check::Rearmed`] answer stored, for the ids that have one.
+///
+/// The filer uses the pair to reopen the issue a completed close cleared, so an
+/// id without a stored close is simply missing from the answer.
+///
+/// # Errors
+///
+/// Returns [`DbError::Database`] when the statement fails.
+pub async fn last_closed(
+    db: &impl ConnectionTrait,
+    kind: EntityKind,
+    ids: &[i32],
+) -> Result<BTreeMap<i32, (i32, DateTime<Utc>)>, DbError> {
+    let mut map = BTreeMap::new();
+    if ids.is_empty() {
+        return Ok(map);
+    }
+    let sql = format!(
+        "SELECT id, github_issue_last_closed_number, github_issue_last_closed_at \
+           FROM {} WHERE id IN ({}) AND github_issue_last_closed_number IS NOT NULL",
+        link_table(kind),
+        placeholder_list(1, ids.len()),
+    );
+    let values = ids.iter().map(Value::from).collect();
+    for row in rows(db, sql, values).await? {
+        let id: i32 = get(&row, "id")?;
+        let number: i32 = get(&row, "github_issue_last_closed_number")?;
+        let at: DateTime<Utc> = get(&row, "github_issue_last_closed_at")?;
+        map.insert(id, (number, at));
+    }
+    Ok(map)
 }
 
 /// What a conditional fixed-note stamp found.

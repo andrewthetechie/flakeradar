@@ -87,8 +87,20 @@ async fn the_sync_rearms_a_link_whose_issue_closed() {
         ResponseTemplate::new(200).set_body_json(json!({"state": "open"})),
     )
     .await;
+    let instant = Utc
+        .with_ymd_and_hms(2001, 2, 3, 4, 5, 6)
+        .unwrap()
+        .fixed_offset();
+    let clock: SharedClock = Arc::new(FixedClock::new(instant));
 
-    sync(&db, &server).await;
+    github::sync_closed_issues(
+        db.connection(),
+        &gh_settings(&[]),
+        &api(&server),
+        &clock,
+        &unstopped(),
+    )
+    .await;
     let link = link_of(&db, EntityKind::Test, test).await;
     assert_eq!(
         link.number, None,
@@ -96,6 +108,16 @@ async fn the_sync_rearms_a_link_whose_issue_closed() {
     );
     assert_eq!(link.filed, None);
     assert!(!link.closed);
+    assert_eq!(
+        link.last_closed_number,
+        Some(12),
+        "the close is remembered with the number it cleared"
+    );
+    assert_eq!(
+        link.last_closed_at,
+        Some(instant),
+        "the close is stamped with the clock the sync was given"
+    );
     assert_eq!(
         link_of(&db, EntityKind::Test, still_open).await.number,
         Some(22),
@@ -125,6 +147,14 @@ async fn the_sync_keeps_a_link_closed_as_not_planned() {
     );
     assert_eq!(link.filed, Some(true), "the link is still ours");
     assert!(link.checked(), "and the link stays in the sync rotation");
+    assert_eq!(
+        link.last_closed_number, None,
+        "a not-planned close is never remembered"
+    );
+    assert_eq!(
+        link.last_closed_at, None,
+        "and neither is an instant for it"
+    );
     assert!(link.closed, "and the row records why");
 }
 
@@ -752,6 +782,14 @@ async fn gone_issue_rearms_its_link(kind: EntityKind) {
     assert_eq!(link.number, None, "a gone issue re-arms");
     assert!(link.checked(), "and the check stamp is kept");
     assert!(!link.closed, "and the declined flag is not set");
+    assert_eq!(
+        link.last_closed_number, None,
+        "a gone issue is never remembered"
+    );
+    assert_eq!(
+        link.last_closed_at, None,
+        "and neither is an instant for it"
+    );
 }
 
 #[tokio::test]
