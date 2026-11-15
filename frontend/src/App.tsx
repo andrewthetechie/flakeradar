@@ -248,12 +248,18 @@ export default function App() {
     [refresh],
   );
 
+  // The Job acknowledge handlers reload the drawer themselves: its loader is
+  // keyed on the scope alone, so `refresh` alone leaves it showing the Job as
+  // it was before the mutation.
+  const reloadJobHistory = jobHistoryLoad.refresh;
+
   const onToggleJobAcknowledge = useCallback(
     async (j: Job) => {
       if (isAcknowledged(j.acknowledged_until)) {
         try {
           await setAcknowledge("jobs", j.id, false);
           await refresh();
+          await reloadJobHistory();
         } catch (e) {
           setError(e instanceof Error ? e.message : String(e));
         }
@@ -262,7 +268,7 @@ export default function App() {
       // Acknowledging is a human decision: ask for the reason and the duration first.
       setPendingJobAcknowledge(j);
     },
-    [refresh],
+    [refresh, reloadJobHistory],
   );
 
   const confirmJobAcknowledge = useCallback(
@@ -271,11 +277,12 @@ export default function App() {
       try {
         await setAcknowledge("jobs", j.id, true, { reason: choice.reason, days: choice.days });
         await refresh();
+        await reloadJobHistory();
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
       }
     },
-    [refresh],
+    [refresh, reloadJobHistory],
   );
 
   const closeDrawer = useCallback(() => {

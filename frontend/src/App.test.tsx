@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { History, JobHistory, TestCase, TestPage } from "./api";
+import type { History, Job, JobHistory, TestCase, TestPage } from "./api";
 import App from "./App";
 
 function page(name: string): TestPage {
@@ -1388,6 +1388,105 @@ describe("App", () => {
 
     expect(acks()).toHaveLength(0);
     expect(screen.queryByRole("dialog", { name: /Acknowledge renders/ })).not.toBeInTheDocument();
+  });
+
+  /**
+   * The Jobs view with Job 3's drawer open, whose acknowledgement starts at
+   * `initial` and changes when the acknowledge POST arrives, so the drawer's
+   * next history fetch shows what the mutation did.
+   */
+  function stubJobsAck(initial: {
+    acknowledged_until: string | null;
+    acknowledge_reason: string | null;
+  }) {
+    const calls: { url: string; body: Record<string, unknown> | null }[] = [];
+    let ack = initial;
+    const job = (): Job => ({ ...jobHistory().job, ...ack });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string, init?: RequestInit) => {
+        const body =
+          init?.body == null ? null : (JSON.parse(String(init.body)) as Record<string, unknown>);
+        calls.push({ url, body });
+        if (url.includes("/acknowledge")) {
+          ack =
+            body?.acknowledged === true
+              ? {
+                  acknowledged_until: "2999-01-01T00:00:00Z",
+                  acknowledge_reason: typeof body.reason === "string" ? body.reason : null,
+                }
+              : { acknowledged_until: null, acknowledge_reason: null };
+          return json(job());
+        }
+        if (url.startsWith("/api/jobs/3/history")) return json(jobHistory({ job: job() }));
+        if (url.startsWith("/api/jobs/summary")) return json(jobSummaryFixture);
+        if (url.startsWith("/api/jobs"))
+          return json({
+            ...jobPageFixture,
+            items: [{ ...jobPageFixture.items[0], ...ack }],
+          });
+        if (url.startsWith("/api/repos")) return json([]);
+        if (url.startsWith("/api/reports/summary")) return json({ pending: 0, failed: 0 });
+        return json(jobSummaryFixture);
+      }),
+    );
+    return {
+      acks: () => calls.filter((c) => c.url.includes("/acknowledge")),
+      histories: () => calls.filter((c) => c.url.startsWith("/api/jobs/3/history")).length,
+      lists: () => calls.filter((c) => c.url.startsWith("/api/jobs?")).length,
+    };
+  }
+
+  it("reloads the Job drawer after acknowledging, so it shows the new state", async () => {
+    const { acks, histories, lists } = stubJobsAck({
+      acknowledged_until: null,
+      acknowledge_reason: null,
+    });
+    window.history.replaceState(null, "", "/?view=jobs&job=3");
+    render(<App />);
+    const drawer = await screen.findByRole("dialog", { name: "Job detail" });
+    await within(drawer).findByRole("button", { name: "Acknowledge" });
+    const historiesBefore = histories();
+    const listsBefore = lists();
+
+    await userEvent.click(within(drawer).getByRole("button", { name: "Acknowledge" }));
+    const dialog = await screen.findByRole("dialog", { name: /Acknowledge e2e/ });
+    await userEvent.type(within(dialog).getByRole("textbox", { name: /Reason/ }), "known flake");
+    await userEvent.click(within(dialog).getByRole("radio", { name: "30 days" }));
+    await userEvent.click(within(dialog).getByRole("button", { name: "Confirm" }));
+    await act(async () => {});
+
+    expect(acks()).toHaveLength(1);
+    expect(acks()[0].url).toBe("/api/jobs/3/acknowledge");
+    expect(acks()[0].body).toEqual({ acknowledged: true, reason: "known flake", days: 30 });
+    // Both the list and the open drawer reload, so neither keeps stale state.
+    expect(histories()).toBeGreaterThan(historiesBefore);
+    expect(lists()).toBeGreaterThan(listsBefore);
+    expect(
+      await within(drawer).findByRole("button", { name: "Clear acknowledgement" }),
+    ).toBeInTheDocument();
+    expect(within(drawer).getByText(/known flake/)).toBeInTheDocument();
+  });
+
+  it("reloads the Job drawer after clearing its acknowledgement", async () => {
+    const { acks, histories } = stubJobsAck({
+      acknowledged_until: "2999-01-01T00:00:00Z",
+      acknowledge_reason: "known flake",
+    });
+    window.history.replaceState(null, "", "/?view=jobs&job=3");
+    render(<App />);
+    const drawer = await screen.findByRole("dialog", { name: "Job detail" });
+    await within(drawer).findByRole("button", { name: "Clear acknowledgement" });
+    const historiesBefore = histories();
+
+    await userEvent.click(within(drawer).getByRole("button", { name: "Clear acknowledgement" }));
+    await act(async () => {});
+
+    expect(acks()).toHaveLength(1);
+    expect(acks()[0].body).toEqual({ acknowledged: false });
+    expect(histories()).toBeGreaterThan(historiesBefore);
+    expect(await within(drawer).findByRole("button", { name: "Acknowledge" })).toBeInTheDocument();
+    expect(within(drawer).queryByText(/acknowledged until/)).not.toBeInTheDocument();
   });
 
   // ---- Navigation wiring (issue #80): drawers, views, sort, filters, paging ----
