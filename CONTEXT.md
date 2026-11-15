@@ -142,6 +142,14 @@ an unknown Default branch counting every branch) resets it to 0.
 **Quarantine**:
 A reversible human decision that marks a Test as one whose failures a team tolerates, in one of two modes the workflow picks: the test runner may skip it (the skip list at `GET /api/quarantine`), or it runs the Test and the summary action gates the job on it (`gate: true`). What is stored stays one boolean, so the person decides that a Test is quarantined and the workflow decides how it is honoured. The person who quarantines can record a reason and set an expiry; when the expiry passes, maintenance (the prune step) clears the quarantine — still a human decision, because a person set the expiry. FlakeRadar never quarantines a Test on its own, and agents cannot quarantine through the MCP server.
 
+**Acknowledge**:
+A reversible human decision, for 1 to 30 days with an optional reason, that a
+Test or Job is known and owned. It ends at its date (the prune step clears it)
+or when a person clears it. Unlike **Quarantine** it never lets the test runner
+skip a Test, and it applies to Jobs too.
+
+_Avoid_: Snooze, mute, ignore.
+
 ### How changes are announced
 
 **Tier change**:
