@@ -26,6 +26,7 @@ export function LeaderboardControls({
   causeCounts,
   quarantined,
   broken,
+  acknowledged,
   issue,
   newDays,
   pipelines,
@@ -37,6 +38,7 @@ export function LeaderboardControls({
   onCause,
   onQuarantined,
   onBroken,
+  onAcknowledged,
   onIssue,
   onNewDays,
   onPipeline,
@@ -49,6 +51,8 @@ export function LeaderboardControls({
   causeCounts?: Record<FailureCategory, number> | null;
   quarantined?: boolean;
   broken?: boolean;
+  /** Both views: list only what a person acknowledged (still live). */
+  acknowledged?: boolean;
   issue?: IssueFilter | null;
   /** Both views: days window of the "new flaky" filter, or null when it is off. */
   newDays?: number | null;
@@ -62,6 +66,7 @@ export function LeaderboardControls({
   onCause?: (cause: FailureCategory | null) => void;
   onQuarantined?: (quarantined: boolean) => void;
   onBroken?: (broken: boolean) => void;
+  onAcknowledged?: (acknowledged: boolean) => void;
   onIssue?: (issue: IssueFilter | null) => void;
   /** Both views: turn the "new flaky" filter on with the day window, or off with null. */
   onNewDays?: (newDays: number | null) => void;
@@ -186,6 +191,17 @@ export function LeaderboardControls({
             onChange={(e) => onBroken(e.target.checked)}
           />
           Broken on default branch
+        </label>
+      )}
+      {onAcknowledged && (
+        <label className="flex cursor-pointer items-center gap-2">
+          <input
+            type="checkbox"
+            className="size-3.5 accent-(--signal)"
+            checked={acknowledged ?? false}
+            onChange={(e) => onAcknowledged(e.target.checked)}
+          />
+          Acknowledged only
         </label>
       )}
       {onNewDays && (

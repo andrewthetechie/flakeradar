@@ -60,6 +60,7 @@ export default function App() {
     cause,
     quarantined,
     broken,
+    acknowledged,
     issue,
     newDays,
     pipeline,
@@ -86,6 +87,7 @@ export default function App() {
           cause,
           quarantined,
           broken,
+          acknowledged,
           issue,
           newDays,
           pipeline,
@@ -104,6 +106,7 @@ export default function App() {
       cause,
       quarantined,
       broken,
+      acknowledged,
       issue,
       newDays,
       pipeline,
@@ -370,6 +373,7 @@ export default function App() {
               causeCounts={summary?.category_counts ?? null}
               quarantined={quarantined}
               broken={broken}
+              acknowledged={acknowledged}
               issue={issue}
               newDays={newDays}
               pipelines={jobSummary?.pipelines ?? []}
@@ -381,6 +385,9 @@ export default function App() {
               onCause={offers("cause") ? (c) => setView({ cause: c }) : undefined}
               onQuarantined={offers("quarantined") ? (v) => setView({ quarantined: v }) : undefined}
               onBroken={offers("broken") ? (v) => setView({ broken: v }) : undefined}
+              onAcknowledged={
+                offers("acknowledged") ? (v) => setView({ acknowledged: v }) : undefined
+              }
               onPipeline={offers("pipeline") ? (p) => setView({ pipeline: p }) : undefined}
               onIssue={(i) => setView({ issue: i })}
               onNewDays={(d) => setView({ newDays: d })}

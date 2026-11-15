@@ -73,6 +73,7 @@ export type ViewFilters = Pick<
   | "cause"
   | "quarantined"
   | "broken"
+  | "acknowledged"
   | "issue"
   | "newDays"
   | "pipeline"

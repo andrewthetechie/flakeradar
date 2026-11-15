@@ -186,4 +186,21 @@ describe("LeaderboardControls sort and filter handlers", () => {
       screen.queryByRole("checkbox", { name: /broken on default branch/i }),
     ).not.toBeInTheDocument();
   });
+
+  it("checking the box reports acknowledged only", () => {
+    const onAcknowledged = vi.fn();
+    render(<LeaderboardControls {...base} acknowledged={false} onAcknowledged={onAcknowledged} />);
+    fireEvent.click(screen.getByRole("checkbox", { name: /acknowledged only/i }));
+    expect(onAcknowledged).toHaveBeenCalledWith(true);
+  });
+
+  it("the acknowledged box defaults to unchecked when the value is unknown", () => {
+    render(<LeaderboardControls {...base} onAcknowledged={() => {}} />);
+    expect(screen.getByRole("checkbox", { name: /acknowledged only/i })).not.toBeChecked();
+  });
+
+  it("shows no acknowledged checkbox for a view without the handler", () => {
+    render(<LeaderboardControls {...base} />);
+    expect(screen.queryByRole("checkbox", { name: /acknowledged only/i })).not.toBeInTheDocument();
+  });
 });
