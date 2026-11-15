@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use chrono::{DateTime, FixedOffset, TimeDelta, Utc};
 use flakeradar_db::entities::{
-    job_executions, job_score_history, reports, test_cases, test_executions, test_runs,
+    job_executions, job_score_history, jobs, reports, test_cases, test_executions, test_runs,
     test_score_history,
 };
 use flakeradar_db::{
@@ -403,6 +403,7 @@ async fn prune_clears_expired_quarantines_only() {
         .expect("the prune runs");
 
     assert_eq!(result.expired_quarantines, 1, "{result:?}");
+    assert_eq!(result.expired_acknowledgements, 0, "{result:?}");
     let cleared = test_cases::Entity::find_by_id(expired.id)
         .one(db.connection())
         .await
@@ -442,6 +443,106 @@ async fn prune_clears_expired_quarantines_only() {
 }
 
 #[tokio::test]
+async fn prune_clears_expired_acknowledgements_only() {
+    let now = now();
+    let db = TestDb::new().await.expect("a test database");
+    let project = make_project()
+        .repo("acme/app")
+        .project("backend")
+        .create(&db)
+        .await;
+    let expired = make_test_case(&project)
+        .name("expired")
+        .acknowledged_until(days_before(now, 1))
+        .acknowledge_reason("known")
+        .create(&db)
+        .await;
+    let future = make_test_case(&project)
+        .name("future")
+        .acknowledged_until(now + TimeDelta::days(5))
+        .acknowledge_reason("next week")
+        .create(&db)
+        .await;
+    let future_until = future.acknowledged_until;
+    let pipeline = make_pipeline().repo("acme/app").create(&db).await;
+    let expired_job = make_job(&pipeline)
+        .name("deploy")
+        .acknowledged_until(days_before(now, 2))
+        .acknowledge_reason("owned")
+        .create(&db)
+        .await;
+    let log = CapturedLog::install();
+
+    let result = prune(db.connection(), now, &retention(), &processing(now))
+        .await
+        .expect("the prune runs");
+
+    assert_eq!(result.expired_acknowledgements, 2, "{result:?}");
+    let cleared = test_cases::Entity::find_by_id(expired.id)
+        .one(db.connection())
+        .await
+        .expect("the Test reads")
+        .expect("the Test exists");
+    assert_eq!(cleared.acknowledged_until, None);
+    assert_eq!(cleared.acknowledge_reason, None);
+    let cleared_job = jobs::Entity::find_by_id(expired_job.id)
+        .one(db.connection())
+        .await
+        .expect("the Job reads")
+        .expect("the Job exists");
+    assert_eq!(cleared_job.acknowledged_until, None);
+    assert_eq!(cleared_job.acknowledge_reason, None);
+    let kept_future = test_cases::Entity::find_by_id(future.id)
+        .one(db.connection())
+        .await
+        .expect("the Test reads")
+        .expect("the Test exists");
+    assert_eq!(kept_future.acknowledged_until, future_until);
+    assert_eq!(kept_future.acknowledge_reason.as_deref(), Some("next week"));
+    assert!(
+        log.lines()
+            .contains(&format!("kind=\"test\" id={}", expired.id)),
+        "the clear names the Test and its kind: {}",
+        log.lines()
+    );
+    assert!(
+        log.lines()
+            .contains(&format!("kind=\"job\" id={}", expired_job.id)),
+        "the clear names the Job and its kind: {}",
+        log.lines()
+    );
+}
+
+#[tokio::test]
+async fn prune_leaves_an_acknowledgement_without_a_date() {
+    let now = now();
+    let db = TestDb::new().await.expect("a test database");
+    let project = make_project()
+        .repo("acme/app")
+        .project("backend")
+        .create(&db)
+        .await;
+    let stale = make_test_case(&project)
+        .name("stale")
+        .acknowledge_reason("stale")
+        .create(&db)
+        .await;
+
+    let result = prune(db.connection(), now, &retention(), &processing(now))
+        .await
+        .expect("the prune runs");
+
+    assert_eq!(result.expired_acknowledgements, 0, "{result:?}");
+    let kept = test_cases::Entity::find_by_id(stale.id)
+        .one(db.connection())
+        .await
+        .expect("the Test reads")
+        .expect("the Test exists");
+    assert_eq!(kept.acknowledged_until, None);
+    assert_eq!(kept.acknowledge_reason.as_deref(), Some("stale"));
+}
+
+#[tokio::test]
 async fn an_expiry_round_clears_every_due_quarantine_in_one_statement() {
     let now = now();
     let db = TestDb::new().await.expect("a test database");
@@ -472,6 +573,40 @@ async fn an_expiry_round_clears_every_due_quarantine_in_one_statement() {
     assert_eq!(
         statements, 1,
         "one statement clears every due quarantine, not one per Test"
+    );
+}
+
+#[tokio::test]
+async fn an_expiry_round_clears_every_due_acknowledgement_in_one_statement() {
+    let now = now();
+    let db = TestDb::new().await.expect("a test database");
+    let project = make_project()
+        .repo("acme/app")
+        .project("backend")
+        .create(&db)
+        .await;
+    for name in ["one", "two", "three"] {
+        make_test_case(&project)
+            .name(name)
+            .acknowledged_until(days_before(now, 1))
+            .acknowledge_reason("known")
+            .create(&db)
+            .await;
+    }
+    audit_test_case_updates(&db).await;
+
+    let result = prune(db.connection(), now, &retention(), &processing(now))
+        .await
+        .expect("the prune runs");
+
+    assert_eq!(result.expired_acknowledgements, 3, "{result:?}");
+    // The audit counts UPDATE statements, not rows: the quarantine clear adds
+    // its own always-run statement, so the acknowledgement clear is the second
+    // and clears every due row whatever the backlog.
+    let statements = test_case_updates(&db).await;
+    assert_eq!(
+        statements, 2,
+        "one statement clears every due acknowledgement, not one per Test"
     );
 }
 
@@ -766,7 +901,7 @@ async fn prune_rescores_job_with_no_executions_left() {
         .expect("the prune runs");
 
     assert_eq!(result.job_executions, 1);
-    let row = flakeradar_db::entities::jobs::Entity::find_by_id(job.id)
+    let row = jobs::Entity::find_by_id(job.id)
         .one(db.connection())
         .await
         .expect("the Job reads")
@@ -806,7 +941,7 @@ async fn prune_rescores_job_from_remaining_executions() {
         .expect("the prune runs");
 
     assert_eq!(result.job_executions, 1);
-    let row = flakeradar_db::entities::jobs::Entity::find_by_id(job.id)
+    let row = jobs::Entity::find_by_id(job.id)
         .one(db.connection())
         .await
         .expect("the Job reads")

@@ -29,7 +29,7 @@ use crate::clock::MonotonicClock;
 use crate::entities::{reports, test_executions, test_runs};
 use crate::error::DbError;
 use crate::processing::{ProcessingSettings, rescore};
-use crate::sql::{bigint_array, get, rows};
+use crate::sql::{bigint_array, get, one, rows};
 
 /// The largest retention window a setting may ask for, in days.
 ///
@@ -91,6 +91,8 @@ pub struct PruneResult {
     pub job_score_history: u64,
     /// Quarantines whose human-set expiry had passed, cleared in this round.
     pub expired_quarantines: u64,
+    /// Acknowledgements whose human-set end had passed, cleared in this round.
+    pub expired_acknowledgements: u64,
     /// Tier changes the rescore of a deleted Execution's Test or Job dropped.
     ///
     /// A prune is not news, so these Notifications are never sent (ADR 0009);
@@ -115,6 +117,7 @@ impl PruneResult {
         self.test_score_history += round.test_score_history;
         self.job_score_history += round.job_score_history;
         self.expired_quarantines += round.expired_quarantines;
+        self.expired_acknowledgements += round.expired_acknowledgements;
         self.notifications_dropped += round.notifications_dropped;
     }
 
@@ -205,6 +208,7 @@ pub async fn prune(
     let notifications_dropped =
         drop_silent_tier_changes(db, &stale_tests, &stale_jobs, processing).await?;
     let expired_quarantines = clear_expired_quarantines(db, now).await?;
+    let expired_acknowledgements = clear_expired_acknowledgements(db, now).await?;
 
     Ok(PruneResult {
         reports,
@@ -215,6 +219,7 @@ pub async fn prune(
         test_score_history,
         job_score_history,
         expired_quarantines,
+        expired_acknowledgements,
         notifications_dropped,
     })
 }
@@ -475,6 +480,52 @@ async fn clear_expired_quarantines(
     Ok(u64::try_from(cleared.len()).unwrap_or(u64::MAX))
 }
 
+/// Clears every acknowledgement whose human-set end has passed, in this round.
+///
+/// One `UPDATE ... RETURNING` per table clears that table's whole set, so the
+/// number of statements no longer grows with the number of expired rows. A
+/// table is only updated when it has a due row, so a round with nothing due
+/// sends no `UPDATE` at all. Each cleared Test or Job still gets the line an
+/// operator reads.
+async fn clear_expired_acknowledgements(
+    db: &impl ConnectionTrait,
+    now: DateTimeWithTimeZone,
+) -> Result<u64, DbError> {
+    let mut cleared = 0;
+    for (kind, table) in [(EntityKind::Test, "test_cases"), (EntityKind::Job, "jobs")] {
+        let due = one(
+            db,
+            format!("SELECT 1 FROM {table} WHERE acknowledged_until <= $1 LIMIT 1"),
+            vec![Value::from(now)],
+        )
+        .await?;
+        if due.is_none() {
+            continue;
+        }
+        let expired = rows(
+            db,
+            format!(
+                "UPDATE {table} SET acknowledged_until = NULL, acknowledge_reason = NULL \
+                  WHERE acknowledged_until <= $1 \
+                  RETURNING id, name"
+            ),
+            vec![Value::from(now)],
+        )
+        .await?;
+        for row in &expired {
+            info!(
+                name: "retention.acknowledgement_expired",
+                kind = kind.as_str(),
+                id = get::<i32>(row, "id")?,
+                name = %get::<String>(row, "name")?,
+                "Acknowledgement expired; cleared"
+            );
+        }
+        cleared += u64::try_from(expired.len()).unwrap_or(u64::MAX);
+    }
+    Ok(cleared)
+}
+
 /// Deletes the expired backlog in committed batches, stopping at the time budget.
 ///
 /// Every round is committed before the next one starts, so a later failure
@@ -525,6 +576,7 @@ pub async fn run_prune(
     let runs = totals.runs;
     let score_history_rows = totals.score_history();
     let expired_quarantines = totals.expired_quarantines;
+    let expired_acknowledgements = totals.expired_acknowledgements;
     let notifications_dropped = totals.notifications_dropped;
     info!(
         name: "retention.prune.finished",
@@ -535,6 +587,7 @@ pub async fn run_prune(
         runs,
         score_history_rows,
         expired_quarantines,
+        expired_acknowledgements,
         notifications_dropped,
         "Retention prune finished",
     );
