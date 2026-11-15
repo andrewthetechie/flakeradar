@@ -1393,12 +1393,16 @@ describe("App", () => {
   /**
    * The Jobs view with Job 3's drawer open, whose acknowledgement starts at
    * `initial` and changes when the acknowledge POST arrives, so the drawer's
-   * next history fetch shows what the mutation did.
+   * next history fetch shows what the mutation did. The optional `ackFailure`
+   * replaces the acknowledge POST's answer, to test the mutation's error path.
    */
-  function stubJobsAck(initial: {
-    acknowledged_until: string | null;
-    acknowledge_reason: string | null;
-  }) {
+  function stubJobsAck(
+    initial: {
+      acknowledged_until: string | null;
+      acknowledge_reason: string | null;
+    },
+    ackFailure?: () => Response | Promise<Response>,
+  ) {
     const calls: { url: string; body: Record<string, unknown> | null }[] = [];
     let ack = initial;
     const job = (): Job => ({ ...jobHistory().job, ...ack });
@@ -1409,6 +1413,7 @@ describe("App", () => {
           init?.body == null ? null : (JSON.parse(String(init.body)) as Record<string, unknown>);
         calls.push({ url, body });
         if (url.includes("/acknowledge")) {
+          if (ackFailure) return ackFailure();
           ack =
             body?.acknowledged === true
               ? {
@@ -1487,6 +1492,94 @@ describe("App", () => {
     expect(histories()).toBeGreaterThan(historiesBefore);
     expect(await within(drawer).findByRole("button", { name: "Acknowledge" })).toBeInTheDocument();
     expect(within(drawer).queryByText(/acknowledged until/)).not.toBeInTheDocument();
+  });
+
+  /** Opens Job 3's drawer on the Jobs view, like the leaderboard would. */
+  async function openJobDrawer() {
+    window.history.replaceState(null, "", "/?view=jobs&job=3");
+    render(<App />);
+    return await screen.findByRole("dialog", { name: "Job detail" });
+  }
+
+  it("surfaces the error when clearing a Job's acknowledgement fails", async () => {
+    stubJobsAck(
+      { acknowledged_until: "2999-01-01T00:00:00Z", acknowledge_reason: "known flake" },
+      // Reject with a non-Error so the `String(e)` arm of the error handler runs.
+      () => Promise.reject("backend down"),
+    );
+    const drawer = await openJobDrawer();
+
+    await userEvent.click(
+      await within(drawer).findByRole("button", { name: "Clear acknowledgement" }),
+    );
+    await act(async () => {});
+
+    expect(screen.getByRole("alert")).toHaveTextContent("backend down");
+  });
+
+  it("surfaces an ApiError message when clearing a Job's acknowledgement fails", async () => {
+    stubJobsAck(
+      { acknowledged_until: "2999-01-01T00:00:00Z", acknowledge_reason: "known flake" },
+      // A non-2xx answer makes setAcknowledge throw an ApiError, so the error
+      // handler's `e instanceof Error` arm runs; the string arm has its own test.
+      () => Promise.resolve(new Response("nope", { status: 500 })),
+    );
+    const drawer = await openJobDrawer();
+
+    await userEvent.click(
+      await within(drawer).findByRole("button", { name: "Clear acknowledgement" }),
+    );
+    await act(async () => {});
+
+    expect(screen.getByRole("alert")).toHaveTextContent(/acknowledge jobs 3 -> 500/);
+  });
+
+  it("surfaces the error when confirming a Job's acknowledgement fails", async () => {
+    stubJobsAck(
+      { acknowledged_until: null, acknowledge_reason: null },
+      // Reject with a non-Error so the `String(e)` arm of the error handler runs.
+      () => Promise.reject("backend down"),
+    );
+    const drawer = await openJobDrawer();
+
+    await userEvent.click(await within(drawer).findByRole("button", { name: "Acknowledge" }));
+    const dialog = await screen.findByRole("dialog", { name: /Acknowledge e2e/ });
+    await userEvent.click(within(dialog).getByRole("button", { name: "Confirm" }));
+    await act(async () => {});
+
+    expect(screen.getByRole("alert")).toHaveTextContent("backend down");
+    expect(screen.queryByRole("dialog", { name: /Acknowledge e2e/ })).not.toBeInTheDocument();
+  });
+
+  it("surfaces an ApiError message when confirming a Job's acknowledgement fails", async () => {
+    stubJobsAck(
+      { acknowledged_until: null, acknowledge_reason: null },
+      // A non-2xx answer makes setAcknowledge throw an ApiError, so the error
+      // handler's `e instanceof Error` arm runs; the string arm has its own test.
+      () => Promise.resolve(new Response("nope", { status: 500 })),
+    );
+    const drawer = await openJobDrawer();
+
+    await userEvent.click(await within(drawer).findByRole("button", { name: "Acknowledge" }));
+    const dialog = await screen.findByRole("dialog", { name: /Acknowledge e2e/ });
+    await userEvent.click(within(dialog).getByRole("button", { name: "Confirm" }));
+    await act(async () => {});
+
+    expect(screen.getByRole("alert")).toHaveTextContent(/acknowledge jobs 3 -> 500/);
+    expect(screen.queryByRole("dialog", { name: /Acknowledge e2e/ })).not.toBeInTheDocument();
+  });
+
+  it("does not post anything when the Job Acknowledge dialog is cancelled", async () => {
+    const { acks } = stubJobsAck({ acknowledged_until: null, acknowledge_reason: null });
+    const drawer = await openJobDrawer();
+
+    await userEvent.click(await within(drawer).findByRole("button", { name: "Acknowledge" }));
+    const dialog = await screen.findByRole("dialog", { name: /Acknowledge e2e/ });
+    await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await act(async () => {});
+
+    expect(acks()).toHaveLength(0);
+    expect(screen.queryByRole("dialog", { name: /Acknowledge e2e/ })).not.toBeInTheDocument();
   });
 
   // ---- Navigation wiring (issue #80): drawers, views, sort, filters, paging ----
@@ -1708,6 +1801,40 @@ describe("App", () => {
     await act(async () => {});
     expect(param(last("/api/tests"), "category")).toBe("timing");
     expect(window.location.search).toBe("?sort=proven&stable=1&cause=timing");
+  });
+
+  it("wires the acknowledged filter to the URL and the request", async () => {
+    const urls = stubOrdered([
+      ["/api/tests", () => json(page("login"))],
+      ["/api/jobs/summary", () => json(jobSummaryFixture)],
+      ["/api/jobs", () => json(jobPageFixture)],
+      ["/api/repos", () => json([])],
+      ["/api/reports/summary", () => json({ pending: 0, failed: 0 })],
+      ["/api/summary", () => json(testsSummary)],
+    ]);
+    render(<App />);
+    await act(async () => {});
+    const param = (prefix: string, name: string) =>
+      new URL(
+        urls.filter((u) => u.startsWith(prefix)).at(-1) ?? "",
+        "http://localhost",
+      ).searchParams.get(name);
+
+    await userEvent.click(screen.getByRole("checkbox", { name: "Acknowledged only" }));
+    await act(async () => {});
+    expect(param("/api/tests", "acknowledged")).toBe("true");
+    expect(window.location.search).toBe("?acknowledged=1");
+
+    // The Jobs view keeps the filter and sends it to /api/jobs too.
+    await userEvent.click(screen.getByRole("button", { name: "jobs" }));
+    await act(async () => {});
+    expect(param("/api/jobs", "acknowledged")).toBe("true");
+    expect(window.location.search).toBe("?view=jobs&acknowledged=1");
+
+    // Unchecking clears the URL and the parameter.
+    await userEvent.click(screen.getByRole("checkbox", { name: "Acknowledged only" }));
+    await act(async () => {});
+    expect(window.location.search).toBe("?view=jobs");
   });
 
   it("paginates, writing the page to the URL and the request", async () => {

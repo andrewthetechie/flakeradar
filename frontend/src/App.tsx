@@ -392,9 +392,10 @@ export default function App() {
               onCause={offers("cause") ? (c) => setView({ cause: c }) : undefined}
               onQuarantined={offers("quarantined") ? (v) => setView({ quarantined: v }) : undefined}
               onBroken={offers("broken") ? (v) => setView({ broken: v }) : undefined}
-              onAcknowledged={
-                offers("acknowledged") ? (v) => setView({ acknowledged: v }) : undefined
-              }
+              // acknowledged is offered on both leaderboard views — the only views
+              // that render these controls — so unlike the view-specific filters
+              // above it passes its handler unconditionally.
+              onAcknowledged={(v) => setView({ acknowledged: v })}
               onPipeline={offers("pipeline") ? (p) => setView({ pipeline: p }) : undefined}
               onIssue={(i) => setView({ issue: i })}
               onNewDays={(d) => setView({ newDays: d })}
