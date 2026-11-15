@@ -45,6 +45,36 @@ describe("JobLeaderboard", () => {
     expect(screen.getByText("failed")).toBeInTheDocument();
   });
 
+  it("shows the acknowledged pill only while the acknowledgement is live", () => {
+    const { unmount } = render(
+      <JobLeaderboard
+        jobs={[job({ acknowledged_until: "2999-01-01T00:00:00Z" })]}
+        repo="acme/app"
+        showStable={false}
+        selectedId={null}
+        onSelect={vi.fn()}
+      />,
+    );
+    const pill = screen.getByText("✓ acknowledged");
+    expect(pill).toBeInTheDocument();
+    expect(pill).toHaveAttribute("title", "Acknowledged until 2999-01-01T00:00:00Z");
+    unmount();
+
+    for (const acknowledged_until of ["2000-01-01T00:00:00Z", null]) {
+      render(
+        <JobLeaderboard
+          jobs={[job({ acknowledged_until })]}
+          repo="acme/app"
+          showStable={false}
+          selectedId={null}
+          onSelect={vi.fn()}
+        />,
+      );
+      expect(screen.queryByText("✓ acknowledged")).toBeNull();
+      unmount();
+    }
+  });
+
   it("shows the repo when no repo is selected", () => {
     render(
       <JobLeaderboard

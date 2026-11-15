@@ -1,6 +1,6 @@
 import type { Job } from "../api";
 import { breakable } from "../breakable";
-import { FlakinessCell, ProvenCell, StatusIssueCell } from "./resultCells";
+import { AcknowledgedPill, FlakinessCell, ProvenCell, StatusIssueCell } from "./resultCells";
 import { SummaryBadge } from "./SummaryBadge";
 
 function jobLabel(job: Job, repo: string | null): string | null {
@@ -68,6 +68,7 @@ export function JobLeaderboard({
               <td className="px-4 py-2.5 align-top">
                 {label && <div className="text-xs text-link [overflow-wrap:anywhere]">{label}</div>}
                 <div className="font-semibold [overflow-wrap:anywhere]">
+                  <AcknowledgedPill until={j.acknowledged_until} />
                   {breakable(j.name)}
                   {j.summary && <SummaryBadge className="ml-1.5" />}
                 </div>
