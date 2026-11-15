@@ -13,7 +13,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use chrono::{DateTime, FixedOffset};
+use chrono::{DateTime, FixedOffset, TimeDelta};
 use flakeradar_core::{
     dto::JobResultIn, dto::PipelineReportIn, dto::pipeline_body, helpers::is_broken,
     helpers::tier_for, model::EntityKind, model::ExecutionStatus, model::JobStatus,
@@ -1442,6 +1442,124 @@ async fn tier_changes_are_emitted_in_id_order() {
 }
 
 #[tokio::test]
+async fn an_acknowledged_test_sends_no_tier_change() {
+    let db = TestDb::new().await.expect("a test database");
+    let project = project(&db, "acme/app", "backend").await;
+    db.connection()
+        .execute_unprepared("UPDATE repos SET default_branch = 'main'")
+        .await
+        .expect("the Default branch");
+    let first = flakeradar_test_support::make_test_case(&project)
+        .name("a")
+        .create(&db)
+        .await;
+    let second = flakeradar_test_support::make_test_case(&project)
+        .name("b")
+        .acknowledged_until((at() + TimeDelta::days(1)).fixed_offset())
+        .create(&db)
+        .await;
+    // The same fail then pass on two commits that makes both Tests cross the
+    // Flake threshold in `tier_changes_are_emitted_in_id_order`.
+    for (sha, status) in [("f", "failed"), ("g", "passed")] {
+        let run = flakeradar_test_support::make_run(&project)
+            .commit_sha(sha)
+            .branch("main")
+            .create(&db)
+            .await;
+        for row in [&first, &second] {
+            flakeradar_test_support::make_execution(row, &run)
+                .status(status)
+                .create(&db)
+                .await;
+        }
+    }
+    let changes = rescore(
+        db.connection(),
+        EntityKind::Test,
+        &[second.id, first.id],
+        None,
+        &notify_settings(),
+    )
+    .await
+    .expect("the rescore");
+    assert_eq!(
+        changes.iter().map(|change| change.id).collect::<Vec<_>>(),
+        [i64::from(first.id)],
+        "the acknowledged Test sends no `test.flaky`"
+    );
+    // The rescore still writes the Tier, so the event it dropped during the
+    // acknowledgement does not arrive once the acknowledgement ends.
+    assert!(
+        tests(&db)
+            .await
+            .iter()
+            .any(|row| row.id == second.id && row.flaky_since.is_some()),
+        "the acknowledged Test still stores its flaky state"
+    );
+    db.connection()
+        .execute_unprepared("UPDATE test_cases SET acknowledged_until = NULL")
+        .await
+        .expect("the acknowledgement ends");
+    let changes = rescore(
+        db.connection(),
+        EntityKind::Test,
+        &[first.id, second.id],
+        None,
+        &notify_settings(),
+    )
+    .await
+    .expect("the second rescore");
+    assert_eq!(changes, Vec::new(), "a dropped event is not sent later");
+}
+
+#[tokio::test]
+async fn a_lapsed_acknowledgement_sends_its_tier_change() {
+    let db = TestDb::new().await.expect("a test database");
+    let project = project(&db, "acme/app", "backend").await;
+    db.connection()
+        .execute_unprepared("UPDATE repos SET default_branch = 'main'")
+        .await
+        .expect("the Default branch");
+    // The acknowledgement ended a day before the rescore's clock, so the Test is
+    // announced exactly as an unacknowledged one.
+    let first = flakeradar_test_support::make_test_case(&project)
+        .name("a")
+        .acknowledged_until((at() - TimeDelta::days(1)).fixed_offset())
+        .create(&db)
+        .await;
+    let second = flakeradar_test_support::make_test_case(&project)
+        .name("b")
+        .create(&db)
+        .await;
+    for (sha, status) in [("f", "failed"), ("g", "passed")] {
+        let run = flakeradar_test_support::make_run(&project)
+            .commit_sha(sha)
+            .branch("main")
+            .create(&db)
+            .await;
+        for row in [&first, &second] {
+            flakeradar_test_support::make_execution(row, &run)
+                .status(status)
+                .create(&db)
+                .await;
+        }
+    }
+    let changes = rescore(
+        db.connection(),
+        EntityKind::Test,
+        &[second.id, first.id],
+        None,
+        &notify_settings(),
+    )
+    .await
+    .expect("the rescore");
+    assert_eq!(
+        changes.iter().map(|change| change.id).collect::<Vec<_>>(),
+        [i64::from(first.id), i64::from(second.id)]
+    );
+}
+
+#[tokio::test]
 async fn job_tier_changes_are_emitted_in_id_order() {
     // The webhook task posts Tier changes in the order this rescore emits them,
     // so a Job rescore on ids listed out of order must still emit by id.
@@ -1477,6 +1595,54 @@ async fn job_tier_changes_are_emitted_in_id_order() {
     assert_eq!(
         changes.iter().map(|change| change.id).collect::<Vec<_>>(),
         [i64::from(first.id), i64::from(second.id)]
+    );
+}
+
+#[tokio::test]
+async fn an_acknowledged_job_sends_no_tier_change() {
+    let db = TestDb::new().await.expect("a test database");
+    let pipeline = make_pipeline().repo("acme/app").create(&db).await;
+    db.connection()
+        .execute_unprepared("UPDATE repos SET default_branch = 'main'")
+        .await
+        .expect("the Default branch");
+    let first = make_job(&pipeline).name("first").create(&db).await;
+    let second = make_job(&pipeline)
+        .name("second")
+        .acknowledged_until((at() + TimeDelta::days(1)).fixed_offset())
+        .create(&db)
+        .await;
+    // The same unexplained failure then pass that makes both Jobs cross the
+    // Flake threshold in `job_tier_changes_are_emitted_in_id_order`.
+    for (ci_job_id, status) in [("f", "failed"), ("g", "passed")] {
+        for job in [&first, &second] {
+            make_job_execution(job)
+                .ci_job_id(ci_job_id)
+                .status(status)
+                .create(&db)
+                .await;
+        }
+    }
+    let changes = rescore(
+        db.connection(),
+        EntityKind::Job,
+        &[second.id, first.id],
+        None,
+        &notify_settings(),
+    )
+    .await
+    .expect("the rescore");
+    assert_eq!(
+        changes.iter().map(|change| change.id).collect::<Vec<_>>(),
+        [i64::from(first.id)],
+        "the acknowledged Job sends no `job.flaky`"
+    );
+    assert!(
+        jobs(&db)
+            .await
+            .iter()
+            .any(|row| row.id == second.id && row.flaky_since.is_some()),
+        "the acknowledged Job still stores its flaky state"
     );
 }
 
