@@ -1313,6 +1313,68 @@ describe("App", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("backend down");
   });
 
+  it("surfaces an ApiError message when acknowledging fails", async () => {
+    const row: TestCase = { ...page("login").items[0] };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        // A non-2xx answer makes setAcknowledge throw an ApiError, so the error
+        // handler's `e instanceof Error` arm runs; the string arm has its own test.
+        if (url.includes("/acknowledge"))
+          return Promise.resolve(new Response("nope", { status: 500 }));
+        if (url.includes("/history")) return json(testHistory(5));
+        if (url.startsWith("/api/tests"))
+          return json({ items: [row], total: 1, page: 1, page_size: 50 });
+        if (url.startsWith("/api/repos")) return json([]);
+        if (url.startsWith("/api/reports/summary")) return json({ pending: 0, failed: 0 });
+        return json(testsSummary);
+      }),
+    );
+    render(<App />);
+    expect(await screen.findByText("login")).toBeInTheDocument();
+    const drawer = await openDrawer();
+
+    await userEvent.click(within(drawer).getByRole("button", { name: "Acknowledge" }));
+    const dialog = await screen.findByRole("dialog", { name: /Acknowledge renders/ });
+    await userEvent.click(within(dialog).getByRole("button", { name: "Confirm" }));
+    await act(async () => {});
+
+    expect(screen.getByRole("alert")).toHaveTextContent(/acknowledge tests 5 -> 500/);
+    expect(screen.queryByRole("dialog", { name: /Acknowledge renders/ })).not.toBeInTheDocument();
+  });
+
+  it("surfaces an ApiError message when clearing an acknowledgement fails", async () => {
+    const row: TestCase = { ...page("login").items[0], acknowledged_until: "2999-01-01T00:00:00Z" };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        // A non-2xx answer makes setAcknowledge throw an ApiError, so the error
+        // handler's `e instanceof Error` arm runs; the string arm has its own test.
+        if (url.includes("/acknowledge"))
+          return Promise.resolve(new Response("nope", { status: 500 }));
+        if (url.includes("/history"))
+          return json(
+            testHistory(5, {
+              test: { ...testHistory(5).test, acknowledged_until: "2999-01-01T00:00:00Z" },
+            }),
+          );
+        if (url.startsWith("/api/tests"))
+          return json({ items: [row], total: 1, page: 1, page_size: 50 });
+        if (url.startsWith("/api/repos")) return json([]);
+        if (url.startsWith("/api/reports/summary")) return json({ pending: 0, failed: 0 });
+        return json(testsSummary);
+      }),
+    );
+    render(<App />);
+    expect(await screen.findByText("login")).toBeInTheDocument();
+    const drawer = await openDrawer();
+
+    await userEvent.click(within(drawer).getByRole("button", { name: "Clear acknowledgement" }));
+    await act(async () => {});
+
+    expect(screen.getByRole("alert")).toHaveTextContent(/acknowledge tests 5 -> 500/);
+  });
+
   it("does not post anything when the Acknowledge dialog is cancelled", async () => {
     const { acks } = stubTests(false);
     render(<App />);
