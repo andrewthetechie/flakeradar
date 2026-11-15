@@ -30,6 +30,10 @@ pub struct IssueLink {
     pub closed: bool,
     /// When a fixed-fix comment was stamped, if it was.
     pub noted_at: Option<DateTime<FixedOffset>>,
+    /// The issue number a completed close cleared, if the sync remembered one.
+    pub last_closed_number: Option<i32>,
+    /// When the sync saw that close, if it remembered one.
+    pub last_closed_at: Option<DateTime<FixedOffset>>,
 }
 
 impl IssueLink {
@@ -59,7 +63,8 @@ pub fn link_table(kind: EntityKind) -> &'static str {
 pub async fn link_of(db: &TestDb, kind: EntityKind, id: i32) -> IssueLink {
     let sql = format!(
         "SELECT github_issue_number, github_issue_filed, github_issue_checked_at, \
-                github_issue_closed, github_issue_fixed_noted_at \
+                github_issue_closed, github_issue_fixed_noted_at, \
+                github_issue_last_closed_number, github_issue_last_closed_at \
            FROM {} WHERE id = $1",
         link_table(kind)
     );
@@ -81,6 +86,12 @@ pub async fn link_of(db: &TestDb, kind: EntityKind, id: i32) -> IssueLink {
         noted_at: row
             .try_get("", "github_issue_fixed_noted_at")
             .expect("a stamp"),
+        last_closed_number: row
+            .try_get("", "github_issue_last_closed_number")
+            .expect("a number"),
+        last_closed_at: row
+            .try_get("", "github_issue_last_closed_at")
+            .expect("a stamp"),
     }
 }
 
@@ -94,6 +105,7 @@ pub struct Stamp {
     filed: Option<bool>,
     checked: bool,
     closed: bool,
+    last_closed: Option<(i32, DateTime<FixedOffset>)>,
 }
 
 /// A stamp with no link and no check.
@@ -132,6 +144,13 @@ impl Stamp {
         self.closed = true;
         self
     }
+
+    /// Stores the close the sync remembered: the cleared issue `number`, seen at `at`.
+    #[must_use]
+    pub fn last_closed(mut self, number: i32, at: DateTime<FixedOffset>) -> Self {
+        self.last_closed = Some((number, at));
+        self
+    }
 }
 
 /// Writes `stamp` over one Test's or Job's link columns, as an earlier pass would have.
@@ -139,9 +158,15 @@ pub async fn stamp_link(db: &TestDb, kind: EntityKind, id: i32, stamp: Stamp) {
     let sql = format!(
         "UPDATE {} SET github_issue_number = $2, github_issue_filed = $3, \
          github_issue_checked_at = CASE WHEN $4 THEN now() ELSE NULL END, \
-         github_issue_closed = $5 WHERE id = $1",
+         github_issue_closed = $5, \
+         github_issue_last_closed_number = $6, github_issue_last_closed_at = $7 \
+         WHERE id = $1",
         link_table(kind)
     );
+    let (last_closed_number, last_closed_at) = match stamp.last_closed {
+        Some((number, at)) => (Some(number), Some(at)),
+        None => (None, None),
+    };
     db.connection()
         .execute_raw(Statement::from_sql_and_values(
             DbBackend::Postgres,
@@ -152,6 +177,8 @@ pub async fn stamp_link(db: &TestDb, kind: EntityKind, id: i32, stamp: Stamp) {
                 Value::from(stamp.filed),
                 Value::from(stamp.checked),
                 Value::from(stamp.closed),
+                Value::from(last_closed_number),
+                Value::from(last_closed_at),
             ],
         ))
         .await

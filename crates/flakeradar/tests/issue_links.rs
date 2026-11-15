@@ -14,7 +14,7 @@ use axum::http::{Method, StatusCode};
 use flakeradar_core::model::EntityKind;
 use flakeradar_test_support::{
     Reply, TestDb, app, get, link_of, make_job, make_pipeline, make_project, make_test_case, post,
-    request, request_with_headers, send, settings, system_clock,
+    request, request_with_headers, send, settings, stamp, stamp_link, system_clock,
 };
 
 use sea_orm::ConnectionTrait as _;
@@ -965,4 +965,89 @@ async fn a_link_body_that_fails_while_it_is_read_is_a_500() {
         "{}",
         reply.text()
     );
+}
+
+/// A stored close survives until a new link clears it, and `last_closed` reads
+/// only the rows that still hold one.
+#[tokio::test]
+async fn a_new_link_clears_a_stored_close_and_last_closed_reads_what_remains() {
+    use std::collections::BTreeMap;
+
+    use chrono::{TimeZone as _, Utc};
+    use flakeradar_db::issue_links::{last_closed, store_filed_link};
+
+    let db = TestDb::new().await.expect("a test database");
+    let mut rows = Vec::new();
+    for repo in ["acme/kept", "acme/refiled", "acme/relinked"] {
+        let project = make_project()
+            .repo(repo)
+            .project("default")
+            .create(&db)
+            .await;
+        let test = make_test_case(&project)
+            .name("test_total")
+            .classname("tests.test_cart")
+            .create(&db)
+            .await;
+        rows.push(test.id);
+    }
+    let kept = rows[0];
+    let refiled = rows[1];
+    let relinked = rows[2];
+    let instant = Utc.with_ymd_and_hms(2001, 2, 3, 4, 5, 6).unwrap();
+    for id in [kept, refiled, relinked] {
+        stamp_link(
+            &db,
+            EntityKind::Test,
+            id,
+            stamp().number(11).last_closed(12, instant.fixed_offset()),
+        )
+        .await;
+    }
+
+    // FlakeRadar files a new issue over the stored close.
+    store_filed_link(db.connection(), EntityKind::Test, i64::from(refiled), 13)
+        .await
+        .expect("the filed link stores");
+    // A person links a new issue over the stored close.
+    let reply = put(
+        &app(&db, &[("FLAKERADAR_API_TOKEN", TOKEN)]),
+        &format!("/api/tests/{relinked}/issue?replace=true"),
+        &json!({"number": 14}),
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::OK);
+
+    for (id, what) in [(refiled, "a filed link"), (relinked, "a person's link")] {
+        let link = link_of(&db, EntityKind::Test, id).await;
+        assert_eq!(
+            link.last_closed_number, None,
+            "{what} clears the stored close"
+        );
+        assert_eq!(
+            link.last_closed_at, None,
+            "{what} clears the close's instant"
+        );
+    }
+    assert_eq!(
+        link_of(&db, EntityKind::Test, kept)
+            .await
+            .last_closed_number,
+        Some(12),
+        "a row nobody re-links keeps its stored close"
+    );
+
+    let found = last_closed(
+        db.connection(),
+        EntityKind::Test,
+        &[kept, refiled, relinked],
+    )
+    .await
+    .expect("the read answers");
+    assert_eq!(found, BTreeMap::from([(kept, (12, instant))]));
+
+    let empty = last_closed(db.connection(), EntityKind::Test, &[])
+        .await
+        .expect("the empty read answers");
+    assert!(empty.is_empty());
 }
