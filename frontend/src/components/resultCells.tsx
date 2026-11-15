@@ -45,6 +45,24 @@ export function BrokenPill() {
   );
 }
 
+/** True while an acknowledgement is live: a set end date still in the future. */
+export function isAcknowledged(until: string | null): boolean {
+  return until != null && Date.parse(until) > Date.now();
+}
+
+/** Shown next to a test name while a person owns its flakiness (issue #161). */
+export function AcknowledgedPill({ until }: { until: string | null }) {
+  if (!isAcknowledged(until)) return null;
+  return (
+    <span
+      className="mr-1.5 rounded border border-muted px-1 text-[11px] font-normal text-muted"
+      title={`Acknowledged until ${until}`}
+    >
+      ✓ acknowledged
+    </span>
+  );
+}
+
 /** Score bar, formatted score, trend mark, tier label and optional likely-cause badge. */
 export function FlakinessCell({
   score,
