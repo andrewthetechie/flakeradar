@@ -104,6 +104,7 @@ pub(super) fn call(server: &McpServer, arguments: Value) -> BoxFuture<'_, ToolRe
             file: args.file,
             category,
             quarantined: None,
+            acknowledged: None,
             broken: false,
         };
         let options =

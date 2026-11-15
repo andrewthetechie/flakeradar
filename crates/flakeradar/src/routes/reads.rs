@@ -16,19 +16,20 @@ use axum::{Router, middleware};
 use flakeradar_core::defaults;
 use flakeradar_core::limits::{LIST_LIMIT_MAX, NEW_WITHIN_DAYS_MAX};
 use flakeradar_core::{
-    classify::FailureCategory, dto::CiRunFailuresOut, dto::FinishIssues, dto::HistoryOut,
-    dto::Issues, dto::JobHistoryOut, dto::JobPage, dto::JobSummaryOut, dto::NAME_MAX,
-    dto::PATH_MAX, dto::PIPELINE_MAX, dto::PROJECT_MAX, dto::QuarantineIn, dto::QuarantineItem,
-    dto::RepoOut, dto::SummaryOut, dto::TestOut, dto::TestPage, dto::ValidationIssue,
-    identity::normalize_project, identity::normalize_repo, lax, types::CiRunId,
+    classify::FailureCategory, dto::AcknowledgeIn, dto::CiRunFailuresOut, dto::FinishIssues,
+    dto::HistoryOut, dto::Issues, dto::JobHistoryOut, dto::JobPage, dto::JobSummaryOut,
+    dto::NAME_MAX, dto::PATH_MAX, dto::PIPELINE_MAX, dto::PROJECT_MAX, dto::QuarantineIn,
+    dto::QuarantineItem, dto::RepoOut, dto::SummaryOut, dto::TestOut, dto::TestPage,
+    dto::ValidationIssue, identity::normalize_project, identity::normalize_repo, lax,
+    types::CiRunId,
 };
 use flakeradar_db::{
-    reads::DEFAULT_EXECUTIONS_LIMIT, reads::FAILURES_LIMIT, reads::JobListFilters,
-    reads::ListOptions, reads::MAX_EXECUTIONS_LIMIT, reads::QuarantineDecision,
-    reads::ReadSettings, reads::Scope, reads::SortKey, reads::TestListFilters,
-    reads::ci_run_failures, reads::get_job, reads::get_test, reads::job_summary, reads::list_jobs,
-    reads::list_repos, reads::list_tests, reads::quarantine_list, reads::set_quarantine,
-    reads::summary,
+    reads::AcknowledgeDecision, reads::DEFAULT_EXECUTIONS_LIMIT, reads::FAILURES_LIMIT,
+    reads::JobListFilters, reads::ListOptions, reads::MAX_EXECUTIONS_LIMIT,
+    reads::QuarantineDecision, reads::ReadSettings, reads::Scope, reads::SortKey,
+    reads::TestListFilters, reads::ci_run_failures, reads::get_job, reads::get_test,
+    reads::job_summary, reads::list_jobs, reads::list_repos, reads::list_tests,
+    reads::quarantine_list, reads::set_acknowledge, reads::set_quarantine, reads::summary,
 };
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
@@ -51,6 +52,7 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/api/summary", get(test_summary))
         .route("/api/tests/{test_id}/history", get(test_history))
         .route("/api/tests/{test_id}/quarantine", post(quarantine_test))
+        .route("/api/tests/{test_id}/acknowledge", post(acknowledge_test))
         .route("/api/quarantine", get(quarantine).layer(token))
         // Declared before /api/jobs/{job_id}/... so "summary" is not read as an id.
         .route("/api/jobs/summary", get(jobs_summary))
@@ -246,6 +248,8 @@ pub struct TestsQuery {
     #[serde(default, deserialize_with = "flakeradar_core::dto::lax_bool::optional")]
     quarantined: Option<bool>,
     #[serde(default, deserialize_with = "flakeradar_core::dto::lax_bool::optional")]
+    acknowledged: Option<bool>,
+    #[serde(default, deserialize_with = "flakeradar_core::dto::lax_bool::optional")]
     has_issue: Option<bool>,
     #[serde(default, deserialize_with = "flakeradar_core::dto::lax_int::optional")]
     new_within_days: Option<i64>,
@@ -278,6 +282,7 @@ impl TestsQuery {
                 .as_deref()
                 .and_then(FailureCategory::from_wire),
             quarantined: self.quarantined,
+            acknowledged: self.acknowledged,
             broken: self.broken.unwrap_or(false),
         };
         let options = ListOptions {
@@ -442,6 +447,7 @@ pub async fn repos(State(state): State<AppState>) -> RouteResult<Json<Vec<RepoOu
         ("category" = Option<String>, Query, description = "A Failure category"),
         ("q" = Option<String>, Query, description = "A literal substring of name, classname or file"),
         ("quarantined" = Option<bool>, Query, description = "The quarantine state to list"),
+        ("acknowledged" = Option<bool>, Query, description = "The acknowledgement state to list"),
         ("has_issue" = Option<bool>, Query, description = "Whether a GitHub issue is linked"),
         ("new_within_days" = Option<i64>, Query, description = "Only Tests that became flaky in this many days, 1-90"),
         ("broken" = Option<bool>, Query, description = "Only Tests whose Fail streak reached the broken threshold")
@@ -563,6 +569,59 @@ pub async fn quarantine_test(
     };
     let stored =
         set_quarantine(state.pool(), path.test_id, decision, &read_settings(&state)).await?;
+    match stored {
+        Some(test) => Ok(Json(test)),
+        None => Err(RouteError::NotFound("Test not found".to_owned())),
+    }
+}
+
+/// Stores a human's acknowledgement decision for one Test.
+///
+/// # Errors
+///
+/// Answers 404 for an id that names no Test, 422 for a body the schema refuses,
+/// and 500 when a query fails.
+///
+/// # Panics
+///
+/// Never on client input: the body reader requires a day count on an
+/// acknowledgement, so the read of that count panics only if the reader stops
+/// holding its own rule.
+#[utoipa::path(
+    post,
+    path = "/api/tests/{test_id}/acknowledge",
+    tag = "reads",
+    params(("test_id" = i64, Path, description = "The Test's id")),
+    request_body = AcknowledgeIn,
+    responses(
+        (status = 200, body = TestOut),
+        (status = 404, description = "Test not found"),
+        (status = 422, description = "A reason over 500 characters or a day count outside 1-30 days")
+    )
+)]
+pub async fn acknowledge_test(
+    State(state): State<AppState>,
+    ApiPath(path): ApiPath<TestPath>,
+    ApiJson(body): ApiJson<AcknowledgeIn>,
+) -> RouteResult<Json<TestOut>> {
+    // The body states a flag and the two values that belong to it; the engine
+    // takes the decision they describe, so it never sees a flag.
+    let decision = if body.acknowledged {
+        #[expect(
+            clippy::expect_used,
+            reason = "the body reader requires a day count on an acknowledgement, so \
+                      a missing one is a reader bug, never a body a client can send"
+        )]
+        let days = body.days.expect("an acknowledged body carries a day count");
+        AcknowledgeDecision::Acknowledge {
+            reason: body.reason,
+            days,
+        }
+    } else {
+        AcknowledgeDecision::Clear
+    };
+    let stored =
+        set_acknowledge(state.pool(), path.test_id, decision, &read_settings(&state)).await?;
     match stored {
         Some(test) => Ok(Json(test)),
         None => Err(RouteError::NotFound("Test not found".to_owned())),

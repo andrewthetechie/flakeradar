@@ -164,6 +164,12 @@ impl FromJsonObject for flakeradar_core::dto::QuarantineIn {
     }
 }
 
+impl FromJsonObject for flakeradar_core::dto::AcknowledgeIn {
+    fn from_object(object: &Map<String, Value>) -> ApiResult<Self> {
+        Self::from_value(object).map_err(ApiError::unprocessable)
+    }
+}
+
 impl FromJsonObject for flakeradar_core::dto::IssueLinkIn {
     fn from_object(object: &Map<String, Value>) -> ApiResult<Self> {
         Self::from_value(object).map_err(ApiError::unprocessable)

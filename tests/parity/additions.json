@@ -8,7 +8,11 @@
     "jobs.acknowledged_until",
     "jobs.acknowledge_reason"
   ],
-  "fields": ["CiRunTestFailureOut.infra_suspect"],
-  "paths": [],
-  "query_params": []
+  "fields": [
+    "CiRunTestFailureOut.infra_suspect",
+    "TestOut.acknowledged_until",
+    "TestOut.acknowledge_reason"
+  ],
+  "paths": ["POST /api/tests/{test_id}/acknowledge"],
+  "query_params": ["GET /api/tests acknowledged"]
 }

@@ -543,6 +543,8 @@ pub(crate) fn test_out(
         quarantined_at: optional_timestamp(row, "quarantined_at")?,
         quarantine_reason: get(row, "quarantine_reason")?,
         quarantine_expires_at: optional_timestamp(row, "quarantine_expires_at")?,
+        acknowledged_until: optional_timestamp(row, "acknowledged_until")?,
+        acknowledge_reason: get(row, "acknowledge_reason")?,
         github_issue_number: issue_number,
         github_issue_url: source_url,
         github_issue_closed: get(row, "github_issue_closed")?,
@@ -607,6 +609,8 @@ pub struct TestListFilters {
     pub category: Option<FailureCategory>,
     /// The quarantine state to list; `None` lists both.
     pub quarantined: Option<bool>,
+    /// The acknowledgement state to list; `None` lists both.
+    pub acknowledged: Option<bool>,
     /// Whether to list only broken Tests.
     pub broken: bool,
 }
@@ -690,6 +694,17 @@ pub async fn list_tests(
     if let Some(quarantined) = filters.quarantined {
         filter.eq("t.quarantined", Value::from(quarantined));
     }
+    // An acknowledgement is live while its expiry is in the future.
+    if let Some(acknowledged) = filters.acknowledged {
+        let placeholder = filter.bind(Value::from(settings.clock.now()));
+        if acknowledged {
+            filter.raw(format!("t.acknowledged_until > {placeholder}"));
+        } else {
+            filter.raw(format!(
+                "(t.acknowledged_until IS NULL OR t.acknowledged_until <= {placeholder})"
+            ));
+        }
+    }
     if filters.broken {
         if settings.broken_streak > 0 {
             let placeholder = filter.bind(Value::from(settings.broken_streak));
@@ -699,8 +714,9 @@ pub async fn list_tests(
             filter.raw("FALSE");
         }
     }
-    // A quarantine or broken filter keeps the stable rows it selected by.
-    let keeps_stable_rows = filters.quarantined == Some(true) || filters.broken;
+    // A quarantine, acknowledgement or broken filter keeps the stable rows it selected by.
+    let keeps_stable_rows =
+        filters.quarantined == Some(true) || filters.acknowledged == Some(true) || filters.broken;
     let board = Board {
         entity: &TESTS_BOARD,
         options,
@@ -1232,6 +1248,66 @@ pub async fn set_quarantine(
     test.quarantined_at = quarantined_at.map(|at| at.with_timezone(&Utc));
     test.quarantine_reason = reason;
     test.quarantine_expires_at = expires_at.map(|at| at.with_timezone(&Utc));
+    Ok(Some(test))
+}
+
+/// A human's acknowledgement decision for one Test.
+///
+/// The body states a flag beside two values that only mean something when it is
+/// set, so the decision is one value: what the person decided, and what they said
+/// and for how long when they acknowledged.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AcknowledgeDecision {
+    /// Acknowledge the Test, with the reason and the day count the person gave.
+    Acknowledge {
+        /// Why the person acknowledged it.
+        reason: Option<String>,
+        /// How many days the acknowledgement lasts.
+        days: i64,
+    },
+    /// Withdraw the acknowledgement: clear the expiry and the reason.
+    Clear,
+}
+
+/// Stores a human's acknowledgement decision for one Test.
+///
+/// Every write stores the decision's values, so acknowledging without a reason
+/// clears the old one instead of keeping a stale decision.
+///
+/// # Errors
+///
+/// Returns [`DbError::Database`] when a statement fails.
+pub async fn set_acknowledge(
+    db: &impl ConnectionTrait,
+    test_id: i64,
+    decision: AcknowledgeDecision,
+    settings: &ReadSettings,
+) -> Result<Option<TestOut>, DbError> {
+    let sql = format!("{TESTS_SELECT} {TESTS_FROM} WHERE t.id = $1");
+    let Some(row) = one(db, sql, vec![Value::from(test_id)]).await? else {
+        return Ok(None);
+    };
+    let stored_id: i32 = get(&row, "id")?;
+    let now = settings.clock.now();
+    let (reason, until) = match decision {
+        AcknowledgeDecision::Acknowledge { reason, days } => {
+            (reason, Some(now + Duration::days(days)))
+        }
+        AcknowledgeDecision::Clear => (None, None),
+    };
+    let statement = Statement::from_sql_and_values(
+        DbBackend::Postgres,
+        "UPDATE test_cases SET acknowledged_until = $2, acknowledge_reason = $3 WHERE id = $1",
+        [
+            Value::from(stored_id),
+            Value::from(until),
+            Value::from(reason.clone()),
+        ],
+    );
+    db.execute_raw(statement).await?;
+    let mut test = test_out(&row, settings.broken_streak, None)?;
+    test.acknowledged_until = until.map(|at| at.with_timezone(&Utc));
+    test.acknowledge_reason = reason;
     Ok(Some(test))
 }
 

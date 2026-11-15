@@ -42,10 +42,11 @@ parameter.
 
 | Endpoint | Auth | Purpose |
 |---|---|---|
-| `GET /api/tests?repo=&project=&include_stable=&sort=&page=&page_size=&file=&category=&q=&quarantined=&has_issue=&new_within_days=` | none | The paginated leaderboard. See [Leaderboard filters](#leaderboard-filters). |
+| `GET /api/tests?repo=&project=&include_stable=&sort=&page=&page_size=&file=&category=&q=&quarantined=&acknowledged=&has_issue=&new_within_days=` | none | The paginated leaderboard. See [Leaderboard filters](#leaderboard-filters). |
 | `GET /api/tests/{id}/history?limit=` | none | One test: the location and permalink, the last failing commit, executions with failure details, the jobs that its runs came from, `score_history` (90 days), `clean_streak` and `trend`. |
 | `GET /api/summary?repo=&project=` | none | Dashboard tiles for tests. `executions_30d` and `failures_30d` are the sums of score history over the last 30 days. `total_runs` counts each CI run ingested. `category_counts` gives the number of flaky and suspect tests for each likely cause. |
 | `POST /api/tests/{id}/quarantine` | none | Set or clear quarantine. The body is `{"quarantined": bool, "reason"?: str (max 500), "expires_in_days"?: int (1 to 365)}`. The response is the test, with `quarantine_reason` and `quarantine_expires_at`. Removing the quarantine clears the reason and the expiry. |
+| `POST /api/tests/{id}/acknowledge` | none | Set or clear an acknowledgement. The body is `{"acknowledged": bool, "reason"?: str (max 500), "days"?: int (1 to 30)}`; `days` is required when `acknowledged` is `true`, and `reason` and `days` are ignored when it is `false`. The response is the test, with `acknowledged_until` and `acknowledge_reason`; `acknowledged` `false` clears both. `404` for a test that does not exist. |
 | `GET /api/quarantine?repo=&project=` | `X-API-Key` | The quarantined tests of one repo and project, for the test runner. Each item has `reason` and `expires_at`. See [Quarantine](concepts.md#quarantine). |
 | `PUT /api/tests/{id}/issue?replace=` | `X-API-Key` | Link a GitHub issue filed elsewhere. The body is `{"number": int, "url"?: str}`. `409` when a different issue is linked and `replace` is not `true`. See [Issues filed elsewhere](github-issues.md#issues-filed-elsewhere). |
 | `DELETE /api/tests/{id}/issue` | `X-API-Key` | Remove the issue link of a test. |
@@ -62,6 +63,7 @@ These parameters of `GET /api/tests` filter and sort the leaderboard:
 - `q` (200 characters maximum) filters by a literal substring of the name,
   classname or file. It includes stable tests.
 - `quarantined=true` lists each quarantined test, including stable tests.
+- `acknowledged=true` lists each acknowledged test, including stable tests.
 - `has_issue` filters by linked GitHub issue.
 - `new_within_days` (1 to 90) lists only new flaky tests, which are tests that
   became flaky in the last N days. It shows only flaky tests.
