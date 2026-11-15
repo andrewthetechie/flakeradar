@@ -36,9 +36,10 @@ pub fn filing_gate(settings: &Settings) -> FilingGate {
 ///
 /// The two entities share the batch and differ in what an issue body reads: a Test
 /// quotes its own Executions, a Job quotes its history, which the read settings
-/// build from `clock` — the Test arm never reads it. One entry point states the
-/// gate, the emptiness and the finished log once; `test_requests` and
-/// `job_requests` keep the two candidate selections.
+/// build from `clock`. Both gates read `clock` for the acknowledgement instant, so
+/// an acknowledged row files nothing. One entry point states the gate, the emptiness
+/// and the finished log once; `test_requests` and `job_requests` keep the two
+/// candidate selections.
 ///
 /// The report names the entity ids it linked, so the caller can keep the fixed-note
 /// step off a link this same Report created.
@@ -55,7 +56,7 @@ pub async fn file_for(
         return BatchReport::default();
     }
     let batch = match kind {
-        EntityKind::Test => Box::pin(test_requests(db, ids, settings)).await,
+        EntityKind::Test => Box::pin(test_requests(db, ids, settings, clock)).await,
         EntityKind::Job => Box::pin(job_requests(db, ids, settings, clock)).await,
     };
     if batch.is_empty() {
@@ -74,20 +75,27 @@ async fn test_requests(
     db: &(impl ConnectionTrait + TransactionTrait),
     ids: &[i32],
     settings: &Settings,
+    clock: &SharedClock,
 ) -> Vec<FileRequest> {
-    let candidates =
-        match filing::test_candidates(db, ids, &filing_gate(settings), settings.score_window).await
-        {
-            Ok(candidates) => candidates,
-            Err(error) => {
-                tracing::warn!(
-                    name: "github.filing.test_candidates_unreadable",
-                    error = %error,
-                    "GitHub issue filing could not read its Test candidates",
-                );
-                return Vec::new();
-            }
-        };
+    let candidates = match filing::test_candidates(
+        db,
+        ids,
+        &filing_gate(settings),
+        settings.score_window,
+        clock.now(),
+    )
+    .await
+    {
+        Ok(candidates) => candidates,
+        Err(error) => {
+            tracing::warn!(
+                name: "github.filing.test_candidates_unreadable",
+                error = %error,
+                "GitHub issue filing could not read its Test candidates",
+            );
+            return Vec::new();
+        }
+    };
     let mut batch = Vec::new();
     for candidate in candidates {
         let recent = match filing::recent_executions(db, candidate.test.id, BODY_EXECUTIONS).await {
@@ -133,6 +141,7 @@ async fn job_requests(
         ids,
         &filing_gate(settings),
         settings.score_window,
+        clock.now(),
     )
     .await
     {
