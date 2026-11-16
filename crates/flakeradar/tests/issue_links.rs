@@ -945,6 +945,39 @@ async fn a_failed_link_query_answers_the_plain_text_500() {
 }
 
 #[tokio::test]
+async fn a_link_write_that_fails_midway_is_a_500() {
+    let db = TestDb::new().await.expect("a test database");
+    let test = one_test(&db).await;
+    // The reads all succeed and only the write is refused: a trigger that raises
+    // on the row's UPDATE is what a write the server rejects behaves as.
+    for statement in [
+        "CREATE FUNCTION refuse_link_write() RETURNS trigger AS $$ BEGIN \
+         RAISE EXCEPTION 'the link write is broken'; END; $$ LANGUAGE plpgsql",
+        "CREATE TRIGGER refuse_link_write BEFORE UPDATE ON test_cases \
+         FOR EACH ROW EXECUTE FUNCTION refuse_link_write()",
+    ] {
+        db.connection()
+            .execute_unprepared(statement)
+            .await
+            .expect("the trigger installs");
+    }
+
+    let reply = put(
+        &app(&db, &[("FLAKERADAR_API_TOKEN", TOKEN)]),
+        &format!("/api/tests/{}/issue", test.id),
+        &json!({"number": 12}),
+    )
+    .await;
+    assert_eq!(reply.status, 500);
+    assert_eq!(reply.text(), "Internal Server Error");
+    assert_eq!(
+        link_of(&db, EntityKind::Test, test.id).await.number,
+        None,
+        "the refused write stores no link"
+    );
+}
+
+#[tokio::test]
 async fn a_link_body_that_fails_while_it_is_read_is_a_500() {
     let db = TestDb::new().await.expect("a test database");
     let stream = futures_util::stream::iter(vec![

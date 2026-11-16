@@ -879,12 +879,15 @@ async fn the_job_sync_rearms_a_closed_issue_and_the_filer_files_again() {
         ResponseTemplate::new(201).set_body_json(json!({"number": 77})),
     )
     .await;
+    // Reopen is off for this second filing: the sync just remembered issue 77's
+    // close moments ago, so the default window would reopen 77 and this test
+    // asserts the re-armed Job is filed a fresh issue instead.
     assert_eq!(
         github::file_for(
             db.connection(),
             EntityKind::Job,
             &[job],
-            &gh_settings(&[]),
+            &gh_settings(&[("FLAKERADAR_GITHUB_REOPEN_DAYS", "0")]),
             &api(&refile),
             &system_clock(),
             &unstopped()

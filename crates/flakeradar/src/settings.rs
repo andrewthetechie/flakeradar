@@ -392,6 +392,10 @@ fn read_github(settings: &mut Settings, raw: &Raw<'_>) -> Result<(), SettingsErr
         &mut settings.github_close_fixed,
         raw.boolean("GITHUB_CLOSE_FIXED")?,
     );
+    set_if_some(
+        &mut settings.github_reopen_days,
+        raw.whole("GITHUB_REOPEN_DAYS")?,
+    );
     Ok(())
 }
 
@@ -437,6 +441,9 @@ pub struct Settings {
     pub github_fixed_streak: i64,
     /// Whether to also close the issue whose fix appears to hold.
     pub github_close_fixed: bool,
+    /// How many days a closed issue stays eligible to be reopened instead of
+    /// refiled; `0` disables reopening. Defaults to `defaults::GITHUB_REOPEN_DAYS`.
+    pub github_reopen_days: i64,
     /// The public base URL of this instance, used for deep links. Empty means none.
     pub public_url: String,
     /// The Flakiness score at or above which a Test or Job counts as flaky.
@@ -513,6 +520,7 @@ impl Default for Settings {
             github_sync_batch: defaults::GITHUB_SYNC_BATCH,
             github_fixed_streak: 0,
             github_close_fixed: false,
+            github_reopen_days: defaults::GITHUB_REOPEN_DAYS,
             public_url: String::new(),
             flake_threshold: defaults::FLAKE_THRESHOLD,
             recover_threshold: defaults::RECOVER_THRESHOLD,
@@ -711,6 +719,7 @@ impl Settings {
         )?;
         at_least("GITHUB_SYNC_BATCH", &self.github_sync_batch, &0)?;
         at_least("GITHUB_FIXED_STREAK", &self.github_fixed_streak, &0)?;
+        at_least("GITHUB_REOPEN_DAYS", &self.github_reopen_days, &0)?;
         fraction("FLAKE_THRESHOLD", self.flake_threshold)?;
         fraction("RECOVER_THRESHOLD", self.recover_threshold)?;
         // The Recover threshold is the floor of a band that starts at the Flake
@@ -1027,7 +1036,8 @@ mod tests {
     use super::LineCounted;
     use super::{
         DEFAULT_DATABASE_URL, DEFAULT_HOST, DEFAULT_INSECURE_TOKEN, DEFAULT_PORT, Secret, Settings,
-        SettingsError, assert_secure_token, check_api_token, environment_values, is_default_token,
+        SettingsError, assert_secure_token, check_api_token, dotenv_values, environment_values,
+        is_default_token,
     };
 
     /// A settings map holding `pairs`.
@@ -1092,6 +1102,7 @@ mod tests {
         assert_eq!(settings.github_sync_batch, 2000);
         assert_eq!(settings.github_fixed_streak, 0);
         assert!(!settings.github_close_fixed);
+        assert_eq!(settings.github_reopen_days, 30);
         assert_eq!(settings.public_url, "");
         assert_eq!(settings.flake_threshold, 0.30);
         assert_eq!(settings.recover_threshold, 0.20);
@@ -1134,6 +1145,7 @@ mod tests {
             ("FLAKERADAR_GITHUB_SYNC_BATCH", "10"),
             ("FLAKERADAR_GITHUB_FIXED_STREAK", "11"),
             ("FLAKERADAR_GITHUB_CLOSE_FIXED", "true"),
+            ("FLAKERADAR_GITHUB_REOPEN_DAYS", "7"),
             ("FLAKERADAR_PUBLIC_URL", "https://flake.example.com"),
             ("FLAKERADAR_FLAKE_THRESHOLD", "0.5"),
             ("FLAKERADAR_RECOVER_THRESHOLD", "0.1"),
@@ -1175,6 +1187,7 @@ mod tests {
         assert_eq!(settings.github_sync_batch, 10);
         assert_eq!(settings.github_fixed_streak, 11);
         assert!(settings.github_close_fixed);
+        assert_eq!(settings.github_reopen_days, 7);
         assert_eq!(settings.public_url, "https://flake.example.com");
         assert_eq!(settings.flake_threshold, 0.5);
         assert_eq!(settings.recover_threshold, 0.1);
@@ -1511,6 +1524,41 @@ mod tests {
     }
 
     #[test]
+    fn from_env_reads_the_checkout_dotenv() {
+        let dir = std::env::temp_dir().join(format!("flakeradar-env-cwd-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("the directory is created");
+        std::fs::write(dir.join(".env"), "FLAKERADAR_API_TOKEN=a-real-token\n")
+            .expect("the fixture is written");
+        let original = std::env::current_dir().expect("the working directory");
+        std::env::set_current_dir(&dir).expect("the working directory changes");
+
+        let settings = Settings::from_env().expect("the file alone holds a valid configuration");
+
+        assert_eq!(settings.api_token.expose(), "a-real-token");
+        std::env::set_current_dir(original).expect("the working directory is restored");
+        std::fs::remove_dir_all(&dir).expect("the directory is removed");
+    }
+
+    #[test]
+    fn a_dotenv_file_that_cannot_be_opened_is_refused_by_its_path() {
+        let path = std::env::temp_dir().join(format!("flakeradar-env-gone-{}", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let error = dotenv_values(&path).expect_err("a missing file cannot be read");
+        assert!(error.to_string().contains("flakeradar-env-gone"), "{error}");
+    }
+
+    #[test]
+    fn a_dotenv_read_that_fails_midway_is_refused_by_its_path() {
+        // A directory opens but cannot be read, so the failure is an IO error
+        // rather than a line parse: the error names the file alone.
+        let dir = std::env::temp_dir().join(format!("flakeradar-env-dir-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("the directory is created");
+        let error = dotenv_values(&dir).expect_err("a directory cannot be read as a dotenv file");
+        assert!(error.to_string().contains("flakeradar-env-dir"), "{error}");
+        std::fs::remove_dir(&dir).expect("the directory is removed");
+    }
+
+    #[test]
     fn a_malformed_dotenv_file_names_itself() {
         let path = dotenv_fixture("malformed", "this line has no separator\n");
         let error =
@@ -1590,6 +1638,7 @@ mod tests {
             ("FLAKERADAR_DB_COMMAND_TIMEOUT_SECONDS", "-1"),
             ("FLAKERADAR_BROKEN_STREAK", "-1"),
             ("FLAKERADAR_GITHUB_FIXED_STREAK", "-2"),
+            ("FLAKERADAR_GITHUB_REOPEN_DAYS", "-1"),
             ("FLAKERADAR_GITHUB_SYNC_BATCH", "-5"),
             ("FLAKERADAR_GITHUB_ISSUE_MIN_PROVEN_FLAKES", "-1"),
             ("FLAKERADAR_GITHUB_ISSUE_MIN_FAILURES", "-1"),

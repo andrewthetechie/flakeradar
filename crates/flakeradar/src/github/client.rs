@@ -402,4 +402,18 @@ impl Api {
         )
         .await
     }
+
+    /// Reopens one issue.
+    pub(super) async fn reopen_issue(
+        &self,
+        repo: &str,
+        number: i32,
+    ) -> Result<Answer, TransportError> {
+        self.send(
+            Method::PATCH,
+            &format!("/repos/{repo}/issues/{number}"),
+            Some(json!({"state": "open"})),
+        )
+        .await
+    }
 }

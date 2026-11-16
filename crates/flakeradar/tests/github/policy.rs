@@ -49,20 +49,19 @@ fn classify_names_every_answer_as_one_verdict() {
     assert_eq!(classified(302, &[], Success::Created), Verdict::Other);
 }
 
-#[test]
-fn every_operation_judges_every_verdict_as_the_table_states() {
+/// The expected pair is the recorded policy, one row per operation. The cells
+/// that differ between operations are the ones that always did: a 404 in a sync
+/// re-arms the link, a 401 on the note paths costs only its item, the
+/// post-delete close has no Repo skip at all, and a gone issue on a reopen
+/// re-arms the link so the filer files fresh.
+fn pinned_policy() -> [(github::Operation, [(github::Verdict, github::Action); 8]); 6] {
     use github::Action::{Rearm, SkipRepo, SkipRow, Stop, Use};
-    use github::Operation::{CloseDeleted, CloseNote, File, Note, Sync};
+    use github::Operation::{CloseDeleted, CloseNote, File, Note, Reopen, Sync};
     use github::Verdict::{
         Accepted, Gone, NotFound, Other, RateLimited, RepoDenied, Unauthorized, Unreachable,
     };
-    use github::{Action, Operation, Verdict, action};
 
-    // The expected pair is the recorded policy, one row per operation. The three
-    // cells that differ between operations are the ones that always did: a 404 in a
-    // sync re-arms the link, a 401 on the note paths costs only its item, and the
-    // post-delete close has no Repo skip at all.
-    let policy: [(Operation, [(Verdict, Action); 8]); 5] = [
+    [
         (
             File,
             [
@@ -128,10 +127,29 @@ fn every_operation_judges_every_verdict_as_the_table_states() {
                 (Unreachable, SkipRow),
             ],
         ),
-    ];
+        (
+            Reopen,
+            [
+                (Accepted, Use),
+                (RateLimited, Stop),
+                (Unauthorized, SkipRepo),
+                (RepoDenied, SkipRepo),
+                (NotFound, Rearm),
+                (Gone, Rearm),
+                (Other, SkipRow),
+                (Unreachable, Stop),
+            ],
+        ),
+    ]
+}
 
-    let mut stated: Vec<(Operation, Verdict)> = Vec::new();
-    for (operation, row) in policy {
+#[test]
+fn every_operation_judges_every_verdict_as_the_table_states() {
+    use github::Verdict::Unreachable;
+    use github::{Action, action};
+
+    let mut stated: Vec<(github::Operation, github::Verdict)> = Vec::new();
+    for (operation, row) in pinned_policy() {
         for (verdict, expected) in row {
             assert!(
                 !stated.contains(&(operation, verdict)),
@@ -148,7 +166,7 @@ fn every_operation_judges_every_verdict_as_the_table_states() {
                 // every loop read the body without a second check.
                 assert_ne!(
                     action(operation, verdict),
-                    Use,
+                    Action::Use,
                     "{operation:?} cannot use an answer it does not have"
                 );
             }
@@ -156,7 +174,7 @@ fn every_operation_judges_every_verdict_as_the_table_states() {
     }
     assert_eq!(
         stated.len(),
-        40,
+        48,
         "every operation and verdict pair is stated"
     );
 }

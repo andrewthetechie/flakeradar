@@ -35,6 +35,7 @@ The table gives each name without the `FLAKERADAR_` prefix.
 | `GITHUB_SYNC_BATCH` | `2000` | How many linked tests, and separately how many linked jobs, the maintenance sync checks in each run. The oldest checks run first. |
 | `GITHUB_FIXED_STREAK` | `0` (disabled) | The clean streak at which FlakeRadar comments one time on the linked issue that the fix appears to hold. |
 | `GITHUB_CLOSE_FIXED` | `false` | Also close the issue as completed when FlakeRadar posts that comment. |
+| `GITHUB_REOPEN_DAYS` | `30` | How many days a completed close is remembered: a flake within the window reopens the issue with a comment instead of filing a new one. `0` disables reopening. |
 | `WEBHOOK_URLS` | empty (disabled) | Comma-separated URLs that get [notifications](notifications.md). |
 | `WEBHOOK_FORMAT` | `json` | `json` posts a list of event objects. `slack` posts `{"text": ...}` with one line for each event. |
 | `PUBLIC_URL` | empty | The base URL of this instance. When it is set, fixed-note comments and notifications have links to the test, the job or the dashboard. |

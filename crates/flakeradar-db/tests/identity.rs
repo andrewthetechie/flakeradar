@@ -119,6 +119,59 @@ async fn a_blocked_insert_surfaces_as_a_database_error() {
     assert!(matches!(missing_project, DbError::Database(_)));
 }
 
+/// Makes every row an insert creates vanish again, so the read-back after the
+/// insert finds nothing: the race an admin delete running on another connection
+/// can win.
+async fn vanish_new_rows(db: &impl ConnectionTrait) {
+    for statement in [
+        "CREATE FUNCTION drop_new_row() RETURNS trigger LANGUAGE plpgsql AS $$ \
+         BEGIN DELETE FROM repos WHERE id = NEW.id; DELETE FROM projects \
+         WHERE id = NEW.id; RETURN NULL; END $$",
+        "CREATE TRIGGER drop_new_repo AFTER INSERT ON repos \
+         FOR EACH ROW EXECUTE FUNCTION drop_new_row()",
+        "CREATE TRIGGER drop_new_project AFTER INSERT ON projects \
+         FOR EACH ROW EXECUTE FUNCTION drop_new_row()",
+    ] {
+        db.execute_raw(Statement::from_string(
+            DatabaseBackend::Postgres,
+            statement.to_owned(),
+        ))
+        .await
+        .expect("the trigger is installed");
+    }
+}
+
+#[tokio::test]
+async fn a_row_vanished_between_insert_and_read_back_is_an_error() {
+    let db = TestDb::new().await.expect("a migrated test database");
+    // The Repo exists before the trigger, so the Project call below gets past
+    // its Repo select and loses the Project row it inserted instead.
+    get_or_create_repo(db.connection(), "acme/app", at())
+        .await
+        .expect("a Repo");
+    vanish_new_rows(db.connection()).await;
+
+    let repo_error = get_or_create_repo(db.connection(), "acme/new", at())
+        .await
+        .expect_err("the inserted Repo vanished before its read-back");
+    assert!(
+        repo_error
+            .to_string()
+            .contains("vanished between its insert and its read-back"),
+        "{repo_error}"
+    );
+
+    let project_error = get_or_create_project(db.connection(), "acme/app", "backend", at())
+        .await
+        .expect_err("the inserted Project vanished before its read-back");
+    assert!(
+        project_error
+            .to_string()
+            .contains("vanished between its insert and its read-back"),
+        "{project_error}"
+    );
+}
+
 #[tokio::test]
 async fn a_closed_connection_surfaces_as_a_database_error() {
     let db = TestDb::new().await.expect("a migrated test database");

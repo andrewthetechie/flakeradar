@@ -73,9 +73,14 @@ FlakeRadar stores the number of the issue on the test or job. While the test or
 job has that link, FlakeRadar opens no new issue for it.
 
 At each maintenance interval, FlakeRadar asks GitHub for the state of each
-stored issue. When an issue is closed as completed, or deleted, FlakeRadar
-clears the stored number. A later report that makes the test flaky again then
-opens a new issue.
+stored issue. When an issue is closed as completed, FlakeRadar clears the
+stored number and remembers the close. When a later report makes the test or
+job flaky again within `GITHUB_REOPEN_DAYS` days (default `30`), FlakeRadar
+reopens that issue with the comment "FlakeRadar reopened this issue: the flaky
+test or CI job it tracks is flaky again." instead of opening a new one. An
+issue that was deleted is never reopened: the next report opens a new issue.
+Setting `FLAKERADAR_GITHUB_REOPEN_DAYS=0` turns reopening off, so every
+re-flake opens a new issue.
 
 An issue closed as not planned is the exception. The team has said that the
 flake is known and accepted. Thus FlakeRadar keeps the link, sets

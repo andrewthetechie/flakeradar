@@ -31,10 +31,11 @@
 //! - A call that nothing answers ([`Verdict::Unreachable`]) ends filing, the sync
 //!   and the fixed note; the post-delete close costs that one issue and goes on.
 //! - A 401, 403, 404 or 410 costs the Repo for the rest of a filing, noting or sync
-//!   batch, apart from the three cells the table spells out: a 404 in the sync is
+//!   batch, apart from the four cells the table spells out: a 404 in the sync is
 //!   the issue itself being gone, so the link re-arms; a 404 or 410 in the
-//!   post-delete close is the issue already being gone; and bad credentials (401)
-//!   are a per-item failure on the note paths, not a Repo-wide one.
+//!   post-delete close is the issue already being gone; a 404 or 410 on a reopen
+//!   PATCH is the issue being gone, so the filer files fresh instead; and bad
+//!   credentials (401) are a per-item failure on the note paths, not a Repo-wide one.
 //! - Any other answer costs that one row, and the batch goes on.
 //! - After an admin delete, any failure but a rate limit costs that one issue.
 //! - A row deleted between a filing POST and the filer's commit costs that
@@ -97,7 +98,7 @@ pub use client::{
     API_BASE, API_VERSION, Answer, Api, RESPONSE_TEXT_MAX, Success, TIMEOUT_SECONDS, TransportError,
 };
 #[doc(inline)]
-pub use filing::{file_for, filing_gate};
+pub use filing::{REOPEN_COMMENT, file_for, filing_gate};
 #[doc(inline)]
 pub use notes::note_fixed_for;
 #[doc(inline)]

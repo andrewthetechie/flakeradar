@@ -24,8 +24,8 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 use crate::support::{
     CapturedLog, TOKEN, api, explain_job_execution, fail_link_stores, file_batch,
     file_batch_logged, fixed_settings, flaky_job, flaky_job_in, flaky_row, flaky_test,
-    flaky_test_in, gh_settings, lines_with, link_of, link_table, mount_create, note_batch,
-    requested_paths, stamp, stamp_link, unstopped,
+    flaky_test_in, gh_settings, lines_with, link_of, link_table, mount_comment, mount_create,
+    mount_patch, note_batch, requested_calls, requested_paths, stamp, stamp_link, unstopped,
 };
 
 #[tokio::test]
@@ -147,6 +147,820 @@ async fn a_flaky_test_is_filed_in_its_own_repo_with_its_evidence() {
     assert!(user_agent.starts_with("flakeradar/"), "{user_agent}");
 }
 
+/// A fixed clock standing at the fixture instant, wrapped the way `file_for` reads it.
+fn fixture_clock() -> SharedClock {
+    Arc::new(FixedClock::new(FIXTURE_INSTANT.fixed_offset()))
+}
+
+/// Stages a flaky row of `kind` whose re-armed link remembers issue 12's close,
+/// `days` before the fixture instant the fixed clock stands at.
+async fn flaky_with_last_closed(kind: EntityKind, days: i64) -> (TestDb, i32) {
+    let db = TestDb::new().await.expect("a test database");
+    let id = match kind {
+        EntityKind::Test => flaky_test(&db).await,
+        EntityKind::Job => flaky_job(&db).await,
+    };
+    stamp_link(
+        &db,
+        kind,
+        id,
+        stamp().last_closed(12, FIXTURE_INSTANT.fixed_offset() - TimeDelta::days(days)),
+    )
+    .await;
+    (db, id)
+}
+
+/// A row whose remembered close is inside the reopen window is reopened, not refiled.
+async fn a_recently_closed_issue_is_reopened_not_refiled(kind: EntityKind) {
+    let (db, id) = flaky_with_last_closed(kind, 10).await;
+    let server = MockServer::start().await;
+    mount_patch(
+        &server,
+        "acme/app",
+        12,
+        ResponseTemplate::new(200).set_body_json(json!({"number": 12, "state": "open"})),
+    )
+    .await;
+    mount_comment(&server, "acme/app", 12, ResponseTemplate::new(201)).await;
+
+    let filed = github::file_for(
+        db.connection(),
+        kind,
+        &[id],
+        &gh_settings(&[]),
+        &api(&server),
+        &fixture_clock(),
+        &unstopped(),
+    )
+    .await;
+
+    assert_eq!(
+        filed.linked.into_iter().collect::<Vec<_>>(),
+        vec![id],
+        "the reopen is stored as FlakeRadar's own link"
+    );
+    assert_eq!(
+        requested_calls(&server).await,
+        vec![
+            ("PATCH".to_owned(), "/repos/acme/app/issues/12".to_owned()),
+            (
+                "POST".to_owned(),
+                "/repos/acme/app/issues/12/comments".to_owned()
+            ),
+        ],
+        "the issue is reopened and commented, never refiled"
+    );
+    let requests = server
+        .received_requests()
+        .await
+        .expect("the stub records requests");
+    assert_eq!(requests.len(), 2, "one reopen PATCH and one comment");
+    let patch_body: Json =
+        serde_json::from_slice(&requests.first().expect("the PATCH is first").body)
+            .expect("the body is JSON");
+    assert_eq!(patch_body, json!({"state": "open"}), "the PATCH reopens");
+    let comment_body: Json =
+        serde_json::from_slice(&requests.get(1).expect("the comment is second").body)
+            .expect("the body is JSON");
+    assert_eq!(
+        comment_body.get("body"),
+        Some(&json!(github::REOPEN_COMMENT)),
+        "the comment is the reopen comment"
+    );
+    let link = link_of(&db, kind, id).await;
+    assert_eq!(link.number, Some(12), "the reopened issue is linked");
+    assert_eq!(
+        link.filed,
+        Some(true),
+        "a reopened link is FlakeRadar's own"
+    );
+    assert_eq!(
+        link.last_closed_number, None,
+        "storing the reopen clears the remembered close"
+    );
+    assert_eq!(link.last_closed_at, None, "the close time is cleared too");
+    assert!(!link.checked(), "a reopened link is checked first");
+    assert!(!link.closed, "a reopened link is open");
+}
+
+#[tokio::test]
+async fn a_recently_closed_issue_is_reopened_not_refiled_for_a_test() {
+    a_recently_closed_issue_is_reopened_not_refiled(EntityKind::Test).await;
+}
+
+#[tokio::test]
+async fn a_recently_closed_issue_is_reopened_not_refiled_for_a_job() {
+    a_recently_closed_issue_is_reopened_not_refiled(EntityKind::Job).await;
+}
+
+/// One refile scenario: the remembered close `days` before the fixture instant
+/// is outside the reopen window (or the setting is off), so the row is filed a
+/// fresh issue and nothing is patched.
+async fn a_stale_or_disabled_reopen_refiles(kind: EntityKind, days: i64, settings: &Settings) {
+    let (db, id) = flaky_with_last_closed(kind, days).await;
+    let server = MockServer::start().await;
+    mount_create(
+        &server,
+        ResponseTemplate::new(201).set_body_json(json!({"number": 40})),
+    )
+    .await;
+
+    let filed = github::file_for(
+        db.connection(),
+        kind,
+        &[id],
+        settings,
+        &api(&server),
+        &fixture_clock(),
+        &unstopped(),
+    )
+    .await;
+
+    assert_eq!(
+        filed.linked.into_iter().collect::<Vec<_>>(),
+        vec![id],
+        "the row is filed a fresh issue"
+    );
+    assert_eq!(
+        requested_calls(&server).await,
+        vec![("POST".to_owned(), "/repos/acme/app/issues".to_owned())],
+        "no reopen PATCH is sent"
+    );
+    let link = link_of(&db, kind, id).await;
+    assert_eq!(link.number, Some(40), "the fresh issue is linked");
+    assert_eq!(link.filed, Some(true), "a filed link is FlakeRadar's own");
+    assert_eq!(
+        link.last_closed_number, None,
+        "storing the filing clears the remembered close"
+    );
+    assert_eq!(link.last_closed_at, None, "the close time is cleared too");
+}
+
+#[tokio::test]
+async fn a_link_closed_31_days_ago_is_refiled_not_reopened_for_a_test() {
+    a_stale_or_disabled_reopen_refiles(EntityKind::Test, 31, &gh_settings(&[])).await;
+}
+
+#[tokio::test]
+async fn a_link_closed_31_days_ago_is_refiled_not_reopened_for_a_job() {
+    a_stale_or_disabled_reopen_refiles(EntityKind::Job, 31, &gh_settings(&[])).await;
+}
+
+/// A close at the fixture instant itself is inside any window the zero guard
+/// would guard: if the `github_reopen_days == 0` early return were removed, the
+/// zero-day window would still admit this close and the filer would PATCH
+/// instead of refile, failing the `requested_calls` assertion below.
+#[tokio::test]
+async fn reopen_days_zero_refiles_instead_of_reopening_for_a_test() {
+    a_stale_or_disabled_reopen_refiles(
+        EntityKind::Test,
+        0,
+        &gh_settings(&[("FLAKERADAR_GITHUB_REOPEN_DAYS", "0")]),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn reopen_days_zero_refiles_instead_of_reopening_for_a_job() {
+    a_stale_or_disabled_reopen_refiles(
+        EntityKind::Job,
+        0,
+        &gh_settings(&[("FLAKERADAR_GITHUB_REOPEN_DAYS", "0")]),
+    )
+    .await;
+}
+
+/// A reopen window wider than `TimeDelta` can represent reopens instead of
+/// panicking: the setting is clamped to the widest window, which keeps every
+/// remembered close.
+async fn an_oversized_reopen_window_reopens_instead_of_panicking(kind: EntityKind) {
+    let (db, id) = flaky_with_last_closed(kind, 10).await;
+    let server = MockServer::start().await;
+    mount_patch(
+        &server,
+        "acme/app",
+        12,
+        ResponseTemplate::new(200).set_body_json(json!({"number": 12, "state": "open"})),
+    )
+    .await;
+    mount_comment(&server, "acme/app", 12, ResponseTemplate::new(201)).await;
+
+    let filed = github::file_for(
+        db.connection(),
+        kind,
+        &[id],
+        &gh_settings(&[("FLAKERADAR_GITHUB_REOPEN_DAYS", "9223372036854775807")]),
+        &api(&server),
+        &fixture_clock(),
+        &unstopped(),
+    )
+    .await;
+
+    assert_eq!(
+        filed.linked.into_iter().collect::<Vec<_>>(),
+        vec![id],
+        "the reopen is stored as FlakeRadar's own link"
+    );
+    assert_eq!(
+        requested_calls(&server).await,
+        vec![
+            ("PATCH".to_owned(), "/repos/acme/app/issues/12".to_owned()),
+            (
+                "POST".to_owned(),
+                "/repos/acme/app/issues/12/comments".to_owned()
+            ),
+        ],
+        "the unrepresentable window reopens, never panics"
+    );
+}
+
+#[tokio::test]
+async fn an_oversized_reopen_window_reopens_instead_of_panicking_for_a_test() {
+    an_oversized_reopen_window_reopens_instead_of_panicking(EntityKind::Test).await;
+}
+
+#[tokio::test]
+async fn an_oversized_reopen_window_reopens_instead_of_panicking_for_a_job() {
+    an_oversized_reopen_window_reopens_instead_of_panicking(EntityKind::Job).await;
+}
+
+/// A gone issue is refiled: the 404 re-arm falls through to the create.
+async fn a_gone_issue_refiles_after_the_reopen_fails(kind: EntityKind, status: u16) {
+    let (db, id) = flaky_with_last_closed(kind, 10).await;
+    let server = MockServer::start().await;
+    mount_patch(
+        &server,
+        "acme/app",
+        12,
+        ResponseTemplate::new(status).set_body_json(json!({"message": "Not Found"})),
+    )
+    .await;
+    mount_create(
+        &server,
+        ResponseTemplate::new(201).set_body_json(json!({"number": 40})),
+    )
+    .await;
+
+    let (filed, logged) = CapturedLog::during_call(github::file_for(
+        db.connection(),
+        kind,
+        &[id],
+        &gh_settings(&[]),
+        &api(&server),
+        &fixture_clock(),
+        &unstopped(),
+    ))
+    .await;
+
+    assert_eq!(
+        filed.linked.into_iter().collect::<Vec<_>>(),
+        vec![id],
+        "the fresh issue is filed and linked"
+    );
+    assert_eq!(
+        requested_calls(&server).await,
+        vec![
+            ("PATCH".to_owned(), "/repos/acme/app/issues/12".to_owned()),
+            ("POST".to_owned(), "/repos/acme/app/issues".to_owned()),
+        ],
+        "the failed reopen is followed by the create"
+    );
+    assert_eq!(
+        link_of(&db, kind, id).await.number,
+        Some(40),
+        "the fresh issue's number is stored"
+    );
+    let gone = lines_with(&logged, "the issue to reopen is gone");
+    assert_eq!(gone.len(), 1, "{logged}");
+    assert!(
+        gone.first()
+            .is_some_and(|line| line.contains("filing a fresh issue")),
+        "{logged}"
+    );
+    let filed_line = lines_with(&logged, "filed a GitHub issue");
+    assert_eq!(filed_line.len(), 1, "{logged}");
+}
+
+#[tokio::test]
+async fn a_404_reopen_files_a_fresh_issue_for_a_test() {
+    a_gone_issue_refiles_after_the_reopen_fails(EntityKind::Test, 404).await;
+}
+
+#[tokio::test]
+async fn a_404_reopen_files_a_fresh_issue_for_a_job() {
+    a_gone_issue_refiles_after_the_reopen_fails(EntityKind::Job, 404).await;
+}
+
+/// A rate-limited reopen ends the batch with nothing stored.
+async fn a_rate_limited_reopen_stops_the_batch(kind: EntityKind) {
+    let (db, id) = flaky_with_last_closed(kind, 10).await;
+    let server = MockServer::start().await;
+    mount_patch(
+        &server,
+        "acme/app",
+        12,
+        ResponseTemplate::new(429)
+            .insert_header("x-ratelimit-remaining", "0")
+            .set_body_json(json!({"message": "API rate limit exceeded"})),
+    )
+    .await;
+    mount_create(
+        &server,
+        ResponseTemplate::new(201).set_body_json(json!({"number": 40})),
+    )
+    .await;
+
+    let (filed, logged) = CapturedLog::during_call(github::file_for(
+        db.connection(),
+        kind,
+        &[id],
+        &gh_settings(&[]),
+        &api(&server),
+        &fixture_clock(),
+        &unstopped(),
+    ))
+    .await;
+
+    assert!(
+        filed.linked.is_empty(),
+        "a rate-limited reopen stores nothing"
+    );
+    assert_eq!(
+        filed.stopped,
+        Some(github::BatchStop::RateLimited),
+        "the batch ends as rate limited"
+    );
+    assert_eq!(
+        requested_calls(&server).await,
+        vec![("PATCH".to_owned(), "/repos/acme/app/issues/12".to_owned())],
+        "the rate limit stops the batch after the reopen"
+    );
+    assert_eq!(
+        link_of(&db, kind, id).await.number,
+        None,
+        "no link is stored"
+    );
+    let limited = lines_with(&logged, "GitHub rate limit; stopping the filing batch");
+    assert_eq!(limited.len(), 1, "{logged}");
+    assert!(
+        limited
+            .first()
+            .is_some_and(|line| line.contains("remaining")),
+        "{logged}"
+    );
+}
+
+#[tokio::test]
+async fn a_429_reopen_stops_the_batch_with_nothing_stored_for_a_test() {
+    a_rate_limited_reopen_stops_the_batch(EntityKind::Test).await;
+}
+
+#[tokio::test]
+async fn a_429_reopen_stops_the_batch_with_nothing_stored_for_a_job() {
+    a_rate_limited_reopen_stops_the_batch(EntityKind::Job).await;
+}
+
+/// A Repo the token may not reopen is skipped for that reason alone: the batch
+/// carries no create and stores nothing, and the log says which Repo was skipped.
+async fn a_denied_reopen_skips_that_repo(kind: EntityKind) {
+    let (db, id) = flaky_with_last_closed(kind, 10).await;
+    let server = MockServer::start().await;
+    mount_patch(
+        &server,
+        "acme/app",
+        12,
+        ResponseTemplate::new(403).set_body_json(json!({"message": "Forbidden"})),
+    )
+    .await;
+    mount_create(
+        &server,
+        ResponseTemplate::new(201).set_body_json(json!({"number": 40})),
+    )
+    .await;
+
+    let (filed, logged) = CapturedLog::during_call(github::file_for(
+        db.connection(),
+        kind,
+        &[id],
+        &gh_settings(&[]),
+        &api(&server),
+        &fixture_clock(),
+        &unstopped(),
+    ))
+    .await;
+
+    assert!(
+        filed.linked.is_empty(),
+        "a Repo the reopen was denied for stores nothing"
+    );
+    assert!(
+        filed.stopped.is_none(),
+        "a skipped Repo does not end the batch"
+    );
+    assert_eq!(
+        requested_calls(&server).await,
+        vec![("PATCH".to_owned(), "/repos/acme/app/issues/12".to_owned())],
+        "the denied reopen is not followed by the create"
+    );
+    assert_eq!(
+        link_of(&db, kind, id).await.number,
+        None,
+        "no link is stored"
+    );
+    let skipped = lines_with(&logged, "GitHub issue reopen skipped for this Repo");
+    assert_eq!(skipped.len(), 1, "{logged}");
+    assert!(
+        skipped
+            .first()
+            .is_some_and(|line| line.contains("acme/app")),
+        "{logged}"
+    );
+    assert!(
+        skipped.first().is_some_and(|line| line.contains("403")),
+        "{logged}"
+    );
+}
+
+#[tokio::test]
+async fn a_denied_reopen_skips_that_repo_for_a_test() {
+    a_denied_reopen_skips_that_repo(EntityKind::Test).await;
+}
+
+#[tokio::test]
+async fn a_denied_reopen_skips_that_repo_for_a_job() {
+    a_denied_reopen_skips_that_repo(EntityKind::Job).await;
+}
+
+/// A reopen that fails for a reason that is neither denial nor rate limit costs
+/// the row nothing: the batch goes on without a create and stores no link.
+async fn a_reopen_that_fails_for_another_reason_costs_the_row_nothing(kind: EntityKind) {
+    let (db, id) = flaky_with_last_closed(kind, 10).await;
+    let server = MockServer::start().await;
+    mount_patch(
+        &server,
+        "acme/app",
+        12,
+        ResponseTemplate::new(500).set_body_json(json!({"message": "Server Error"})),
+    )
+    .await;
+    mount_create(
+        &server,
+        ResponseTemplate::new(201).set_body_json(json!({"number": 40})),
+    )
+    .await;
+
+    let (filed, logged) = CapturedLog::during_call(github::file_for(
+        db.connection(),
+        kind,
+        &[id],
+        &gh_settings(&[]),
+        &api(&server),
+        &fixture_clock(),
+        &unstopped(),
+    ))
+    .await;
+
+    assert!(filed.linked.is_empty(), "a failed reopen stores nothing");
+    assert!(
+        filed.stopped.is_none(),
+        "a failed row does not end the batch"
+    );
+    assert_eq!(
+        requested_calls(&server).await,
+        vec![("PATCH".to_owned(), "/repos/acme/app/issues/12".to_owned())],
+        "the failed reopen is not followed by the create"
+    );
+    assert_eq!(
+        link_of(&db, kind, id).await.number,
+        None,
+        "no link is stored"
+    );
+    let failed_row = lines_with(&logged, "GitHub issue reopen failed");
+    assert_eq!(failed_row.len(), 1, "{logged}");
+    assert!(
+        failed_row.first().is_some_and(|line| line.contains("500")),
+        "{logged}"
+    );
+}
+
+#[tokio::test]
+async fn a_reopen_that_fails_for_another_reason_costs_the_row_nothing_for_a_test() {
+    a_reopen_that_fails_for_another_reason_costs_the_row_nothing(EntityKind::Test).await;
+}
+
+#[tokio::test]
+async fn a_reopen_that_fails_for_another_reason_costs_the_row_nothing_for_a_job() {
+    a_reopen_that_fails_for_another_reason_costs_the_row_nothing(EntityKind::Job).await;
+}
+
+/// A reopen comment that fails costs nothing: the issue is open again and the
+/// link is stored, and the log says the comment was the only casualty.
+async fn a_failed_reopen_comment_leaves_the_reopen_standing(kind: EntityKind) {
+    let (db, id) = flaky_with_last_closed(kind, 10).await;
+    let server = MockServer::start().await;
+    mount_patch(
+        &server,
+        "acme/app",
+        12,
+        ResponseTemplate::new(200).set_body_json(json!({"number": 12, "state": "open"})),
+    )
+    .await;
+    mount_comment(&server, "acme/app", 12, ResponseTemplate::new(500)).await;
+
+    let (filed, logged) = CapturedLog::during_call(github::file_for(
+        db.connection(),
+        kind,
+        &[id],
+        &gh_settings(&[]),
+        &api(&server),
+        &fixture_clock(),
+        &unstopped(),
+    ))
+    .await;
+
+    assert_eq!(
+        filed.linked.into_iter().collect::<Vec<_>>(),
+        vec![id],
+        "the reopen is linked even though its comment failed"
+    );
+    assert_eq!(
+        link_of(&db, kind, id).await.number,
+        Some(12),
+        "the reopened issue is linked"
+    );
+    let comment_failed = lines_with(&logged, "the reopen comment failed");
+    assert_eq!(comment_failed.len(), 1, "{logged}");
+    assert!(
+        comment_failed
+            .first()
+            .is_some_and(|line| line.contains("the reopen and its link stand")),
+        "{logged}"
+    );
+    assert!(
+        !logged.contains("GitHub issue reopen failed"),
+        "the reopen itself answered 200: {logged}"
+    );
+    let reopened = lines_with(&logged, "reopened a GitHub issue");
+    assert_eq!(reopened.len(), 1, "{logged}");
+}
+
+#[tokio::test]
+async fn a_failed_reopen_comment_leaves_the_reopen_standing_for_a_test() {
+    a_failed_reopen_comment_leaves_the_reopen_standing(EntityKind::Test).await;
+}
+
+#[tokio::test]
+async fn a_failed_reopen_comment_leaves_the_reopen_standing_for_a_job() {
+    a_failed_reopen_comment_leaves_the_reopen_standing(EntityKind::Job).await;
+}
+
+/// A row deleted while reopening leaves the freshly reopened issue open: the
+/// store affects no row, the batch goes on, and the log says what happened.
+async fn a_row_deleted_while_reopening_leaves_the_issue_open(kind: EntityKind) {
+    let (db, id) = flaky_with_last_closed(kind, 10).await;
+    let server = MockServer::start().await;
+    mount_patch(
+        &server,
+        "acme/app",
+        12,
+        ResponseTemplate::new(200).set_body_json(json!({"number": 12, "state": "open"})),
+    )
+    .await;
+    mount_comment(&server, "acme/app", 12, ResponseTemplate::new(201)).await;
+    // The admin delete wins the race: a trigger that suppresses the row's UPDATE
+    // makes the link store affect no row, which is what a vanished row behaves as.
+    db.connection()
+        .execute_raw(Statement::from_string(
+            DbBackend::Postgres,
+            "CREATE FUNCTION drop_reopen_link() RETURNS trigger AS $$ BEGIN \
+             RETURN NULL; END; $$ LANGUAGE plpgsql"
+                .to_owned(),
+        ))
+        .await
+        .expect("the vanish trigger installs");
+    db.connection()
+        .execute_raw(Statement::from_string(
+            DbBackend::Postgres,
+            format!(
+                "CREATE TRIGGER drop_reopen_link BEFORE UPDATE ON {} \
+                 FOR EACH ROW EXECUTE FUNCTION drop_reopen_link()",
+                link_table(kind)
+            ),
+        ))
+        .await
+        .expect("the vanish trigger installs");
+
+    let (filed, logged) = CapturedLog::during_call(github::file_for(
+        db.connection(),
+        kind,
+        &[id],
+        &gh_settings(&[]),
+        &api(&server),
+        &fixture_clock(),
+        &unstopped(),
+    ))
+    .await;
+
+    assert!(filed.linked.is_empty(), "a vanished row is not a link");
+    assert!(
+        filed.stopped.is_none(),
+        "a vanished row does not end the batch"
+    );
+    assert_eq!(
+        requested_calls(&server).await,
+        vec![
+            ("PATCH".to_owned(), "/repos/acme/app/issues/12".to_owned()),
+            (
+                "POST".to_owned(),
+                "/repos/acme/app/issues/12/comments".to_owned()
+            ),
+        ],
+        "the issue is reopened and commented before the store learns the row is gone"
+    );
+    let row_gone = lines_with(&logged, "row deleted (admin delete) while reopening");
+    assert_eq!(row_gone.len(), 1, "{logged}");
+    assert!(
+        row_gone
+            .first()
+            .is_some_and(|line| line.contains("left the issue open")),
+        "{logged}"
+    );
+}
+
+#[tokio::test]
+async fn a_row_deleted_while_reopening_leaves_the_issue_open_for_a_test() {
+    a_row_deleted_while_reopening_leaves_the_issue_open(EntityKind::Test).await;
+}
+
+#[tokio::test]
+async fn a_row_deleted_while_reopening_leaves_the_issue_open_for_a_job() {
+    a_row_deleted_while_reopening_leaves_the_issue_open(EntityKind::Job).await;
+}
+
+/// A reopen whose link cannot be stored ends the batch: the issue stays open and
+/// the log says the store, not GitHub, is what failed.
+async fn a_reopen_store_failure_stops_the_batch(kind: EntityKind) {
+    let (db, id) = flaky_with_last_closed(kind, 10).await;
+    let server = MockServer::start().await;
+    mount_patch(
+        &server,
+        "acme/app",
+        12,
+        ResponseTemplate::new(200).set_body_json(json!({"number": 12, "state": "open"})),
+    )
+    .await;
+    mount_comment(&server, "acme/app", 12, ResponseTemplate::new(201)).await;
+    fail_link_stores(&db, link_table(kind)).await;
+
+    let (filed, logged) = CapturedLog::during_call(github::file_for(
+        db.connection(),
+        kind,
+        &[id],
+        &gh_settings(&[]),
+        &api(&server),
+        &fixture_clock(),
+        &unstopped(),
+    ))
+    .await;
+
+    assert!(filed.linked.is_empty(), "a failed store links nothing");
+    assert_eq!(
+        filed.stopped,
+        Some(github::BatchStop::StoreFailed),
+        "the batch reports why it ended"
+    );
+    assert_eq!(
+        requested_calls(&server).await,
+        vec![
+            ("PATCH".to_owned(), "/repos/acme/app/issues/12".to_owned()),
+            (
+                "POST".to_owned(),
+                "/repos/acme/app/issues/12/comments".to_owned()
+            ),
+        ],
+        "the reopen comment is posted before the store is reached"
+    );
+    assert_eq!(
+        link_of(&db, kind, id).await.number,
+        None,
+        "no link is stored"
+    );
+    let failed_store = lines_with(&logged, "could not store its link");
+    assert_eq!(failed_store.len(), 1, "{logged}");
+    assert!(
+        failed_store
+            .first()
+            .is_some_and(|line| line.contains("acme/app")),
+        "{logged}"
+    );
+    assert!(
+        failed_store
+            .first()
+            .is_some_and(|line| line.contains("number=12")),
+        "{logged}"
+    );
+}
+
+#[tokio::test]
+async fn a_reopen_store_failure_stops_the_batch_for_a_test() {
+    a_reopen_store_failure_stops_the_batch(EntityKind::Test).await;
+}
+
+#[tokio::test]
+async fn a_reopen_store_failure_stops_the_batch_for_a_job() {
+    a_reopen_store_failure_stops_the_batch(EntityKind::Job).await;
+}
+
+/// A remembered close the filer cannot read costs only the reopen: the row files
+/// a fresh issue, and that link's store failing ends the batch.
+#[tokio::test]
+async fn a_last_closed_read_that_fails_files_fresh_and_the_store_stops_the_batch() {
+    let (db, id) = flaky_with_last_closed(EntityKind::Test, 10).await;
+    // The read of the remembered closes is what fails: the columns it selects
+    // are gone, which is what a schema drift the server does not know behaves as.
+    for statement in [
+        "ALTER TABLE test_cases DROP COLUMN github_issue_last_closed_number",
+        "ALTER TABLE test_cases DROP COLUMN github_issue_last_closed_at",
+    ] {
+        db.connection()
+            .execute_unprepared(statement)
+            .await
+            .expect("the column is dropped");
+    }
+    let server = MockServer::start().await;
+    mount_create(
+        &server,
+        ResponseTemplate::new(201).set_body_json(json!({"number": 40})),
+    )
+    .await;
+
+    let (filed, logged) = CapturedLog::during_call(github::file_for(
+        db.connection(),
+        EntityKind::Test,
+        &[id],
+        &gh_settings(&[]),
+        &api(&server),
+        &fixture_clock(),
+        &unstopped(),
+    ))
+    .await;
+
+    assert!(filed.linked.is_empty(), "a failed store links nothing");
+    assert_eq!(
+        filed.stopped,
+        Some(github::BatchStop::StoreFailed),
+        "the batch reports why it ended"
+    );
+    assert_eq!(
+        requested_calls(&server).await,
+        vec![("POST".to_owned(), "/repos/acme/app/issues".to_owned())],
+        "the failed read costs only the reopen; the create still runs"
+    );
+    let unreadable = lines_with(&logged, "could not read the closes a re-arm remembered");
+    assert_eq!(unreadable.len(), 1, "{logged}");
+    assert!(
+        unreadable
+            .first()
+            .is_some_and(|line| line.contains("entity=\"test\"")),
+        "{logged}"
+    );
+}
+
+/// A GitHub nothing answers ends the batch at the reopen, with nothing stored.
+#[tokio::test]
+async fn a_network_error_at_the_reopen_stops_the_batch_and_stores_nothing() {
+    let (db, id) = flaky_with_last_closed(EntityKind::Test, 10).await;
+    // Nothing listens on this port.
+    let api = Api::new(Secret::new(TOKEN), "http://127.0.0.1:1").expect("the HTTP client builds");
+
+    let (filed, logged) = CapturedLog::during_call(github::file_for(
+        db.connection(),
+        EntityKind::Test,
+        &[id],
+        &gh_settings(&[]),
+        &api,
+        &fixture_clock(),
+        &unstopped(),
+    ))
+    .await;
+
+    assert!(filed.linked.is_empty());
+    assert_eq!(
+        filed.stopped,
+        Some(github::BatchStop::Unreachable),
+        "the batch reports that nothing answered"
+    );
+    assert_eq!(link_of(&db, EntityKind::Test, id).await.number, None);
+    let unreachable = lines_with(&logged, "GitHub unreachable, skipping issue filing");
+    assert_eq!(unreachable.len(), 1, "{logged}");
+    assert!(
+        unreachable
+            .first()
+            .is_some_and(|line| line.contains("entity=\"test\"")),
+        "{logged}"
+    );
+}
+
 #[tokio::test]
 async fn a_test_below_the_score_gate_is_not_filed() {
     let db = TestDb::new().await.expect("a test database");
@@ -243,7 +1057,13 @@ async fn the_proven_flake_gate_and_the_failure_gate_each_withhold_a_filing() {
 async fn a_link_a_human_made_is_never_refiled() {
     let db = TestDb::new().await.expect("a test database");
     let test = flaky_test(&db).await;
-    stamp_link(&db, EntityKind::Test, test, stamp().number(12).checked()).await;
+    stamp_link(
+        &db,
+        EntityKind::Test,
+        test,
+        stamp().number_filed_elsewhere(12).checked(),
+    )
+    .await;
     let server = MockServer::start().await;
     let settings = gh_settings(&[]);
 
