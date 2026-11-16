@@ -24,8 +24,8 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 use crate::support::{
     CapturedLog, TOKEN, api, explain_job_execution, fail_link_stores, file_batch,
     file_batch_logged, fixed_settings, flaky_job, flaky_job_in, flaky_row, flaky_test,
-    flaky_test_in, gh_settings, lines_with, link_of, link_table, mount_create, note_batch,
-    requested_paths, stamp, stamp_link, unstopped,
+    flaky_test_in, gh_settings, lines_with, link_of, link_table, mount_comment, mount_create,
+    mount_patch, note_batch, requested_calls, requested_paths, stamp, stamp_link, unstopped,
 };
 
 #[tokio::test]
@@ -145,6 +145,301 @@ async fn a_flaky_test_is_filed_in_its_own_repo_with_its_evidence() {
         .and_then(|value| value.to_str().ok())
         .expect("GitHub requires a user agent");
     assert!(user_agent.starts_with("flakeradar/"), "{user_agent}");
+}
+
+/// A fixed clock standing at the fixture instant, wrapped the way `file_for` reads it.
+fn fixture_clock() -> SharedClock {
+    Arc::new(FixedClock::new(FIXTURE_INSTANT.fixed_offset()))
+}
+
+/// Stages a flaky row of `kind` whose re-armed link remembers issue 12's close,
+/// `days` before the fixture instant the fixed clock stands at.
+async fn flaky_with_last_closed(kind: EntityKind, days: i64) -> (TestDb, i32) {
+    let db = TestDb::new().await.expect("a test database");
+    let id = match kind {
+        EntityKind::Test => flaky_test(&db).await,
+        EntityKind::Job => flaky_job(&db).await,
+    };
+    stamp_link(
+        &db,
+        kind,
+        id,
+        stamp().last_closed(12, FIXTURE_INSTANT.fixed_offset() - TimeDelta::days(days)),
+    )
+    .await;
+    (db, id)
+}
+
+/// A row whose remembered close is inside the reopen window is reopened, not refiled.
+async fn a_recently_closed_issue_is_reopened_not_refiled(kind: EntityKind) {
+    let (db, id) = flaky_with_last_closed(kind, 10).await;
+    let server = MockServer::start().await;
+    mount_patch(
+        &server,
+        "acme/app",
+        12,
+        ResponseTemplate::new(200).set_body_json(json!({"number": 12, "state": "open"})),
+    )
+    .await;
+    mount_comment(&server, "acme/app", 12, ResponseTemplate::new(201)).await;
+
+    let filed = github::file_for(
+        db.connection(),
+        kind,
+        &[id],
+        &gh_settings(&[]),
+        &api(&server),
+        &fixture_clock(),
+        &unstopped(),
+    )
+    .await;
+
+    assert_eq!(
+        filed.linked.into_iter().collect::<Vec<_>>(),
+        vec![id],
+        "the reopen is stored as FlakeRadar's own link"
+    );
+    assert_eq!(
+        requested_calls(&server).await,
+        vec![
+            ("PATCH".to_owned(), "/repos/acme/app/issues/12".to_owned()),
+            (
+                "POST".to_owned(),
+                "/repos/acme/app/issues/12/comments".to_owned()
+            ),
+        ],
+        "the issue is reopened and commented, never refiled"
+    );
+    let requests = server
+        .received_requests()
+        .await
+        .expect("the stub records requests");
+    assert_eq!(requests.len(), 2, "one reopen PATCH and one comment");
+    let patch_body: Json =
+        serde_json::from_slice(&requests.first().expect("the PATCH is first").body)
+            .expect("the body is JSON");
+    assert_eq!(patch_body, json!({"state": "open"}), "the PATCH reopens");
+    let comment_body: Json =
+        serde_json::from_slice(&requests.get(1).expect("the comment is second").body)
+            .expect("the body is JSON");
+    assert_eq!(
+        comment_body.get("body"),
+        Some(&json!(github::REOPEN_COMMENT)),
+        "the comment is the reopen comment"
+    );
+    let link = link_of(&db, kind, id).await;
+    assert_eq!(link.number, Some(12), "the reopened issue is linked");
+    assert_eq!(
+        link.filed,
+        Some(true),
+        "a reopened link is FlakeRadar's own"
+    );
+    assert_eq!(
+        link.last_closed_number, None,
+        "storing the reopen clears the remembered close"
+    );
+    assert_eq!(link.last_closed_at, None, "the close time is cleared too");
+    assert!(!link.checked(), "a reopened link is checked first");
+    assert!(!link.closed, "a reopened link is open");
+}
+
+#[tokio::test]
+async fn a_recently_closed_issue_is_reopened_not_refiled_for_a_test() {
+    a_recently_closed_issue_is_reopened_not_refiled(EntityKind::Test).await;
+}
+
+#[tokio::test]
+async fn a_recently_closed_issue_is_reopened_not_refiled_for_a_job() {
+    a_recently_closed_issue_is_reopened_not_refiled(EntityKind::Job).await;
+}
+
+/// One refile scenario: the remembered close is outside the reopen window (or the
+/// setting is off), so the row is filed a fresh issue and nothing is patched.
+async fn a_stale_or_disabled_reopen_refiles(kind: EntityKind, settings: &Settings) {
+    let (db, id) = flaky_with_last_closed(kind, 31).await;
+    let server = MockServer::start().await;
+    mount_create(
+        &server,
+        ResponseTemplate::new(201).set_body_json(json!({"number": 40})),
+    )
+    .await;
+
+    let filed = github::file_for(
+        db.connection(),
+        kind,
+        &[id],
+        settings,
+        &api(&server),
+        &fixture_clock(),
+        &unstopped(),
+    )
+    .await;
+
+    assert_eq!(
+        filed.linked.into_iter().collect::<Vec<_>>(),
+        vec![id],
+        "the row is filed a fresh issue"
+    );
+    assert_eq!(
+        requested_calls(&server).await,
+        vec![("POST".to_owned(), "/repos/acme/app/issues".to_owned())],
+        "no reopen PATCH is sent"
+    );
+    let link = link_of(&db, kind, id).await;
+    assert_eq!(link.number, Some(40), "the fresh issue is linked");
+    assert_eq!(link.filed, Some(true), "a filed link is FlakeRadar's own");
+    assert_eq!(
+        link.last_closed_number, None,
+        "storing the filing clears the remembered close"
+    );
+    assert_eq!(link.last_closed_at, None, "the close time is cleared too");
+}
+
+#[tokio::test]
+async fn a_link_closed_31_days_ago_is_refiled_not_reopened_for_a_test() {
+    a_stale_or_disabled_reopen_refiles(EntityKind::Test, &gh_settings(&[])).await;
+}
+
+#[tokio::test]
+async fn a_link_closed_31_days_ago_is_refiled_not_reopened_for_a_job() {
+    a_stale_or_disabled_reopen_refiles(EntityKind::Job, &gh_settings(&[])).await;
+}
+
+#[tokio::test]
+async fn reopen_days_zero_refiles_instead_of_reopening_for_a_test() {
+    a_stale_or_disabled_reopen_refiles(
+        EntityKind::Test,
+        &gh_settings(&[("FLAKERADAR_GITHUB_REOPEN_DAYS", "0")]),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn reopen_days_zero_refiles_instead_of_reopening_for_a_job() {
+    a_stale_or_disabled_reopen_refiles(
+        EntityKind::Job,
+        &gh_settings(&[("FLAKERADAR_GITHUB_REOPEN_DAYS", "0")]),
+    )
+    .await;
+}
+
+/// A gone issue is refiled: the 404 re-arm falls through to the create.
+async fn a_gone_issue_refiles_after_the_reopen_fails(kind: EntityKind, status: u16) {
+    let (db, id) = flaky_with_last_closed(kind, 10).await;
+    let server = MockServer::start().await;
+    mount_patch(
+        &server,
+        "acme/app",
+        12,
+        ResponseTemplate::new(status).set_body_json(json!({"message": "Not Found"})),
+    )
+    .await;
+    mount_create(
+        &server,
+        ResponseTemplate::new(201).set_body_json(json!({"number": 40})),
+    )
+    .await;
+
+    let filed = github::file_for(
+        db.connection(),
+        kind,
+        &[id],
+        &gh_settings(&[]),
+        &api(&server),
+        &fixture_clock(),
+        &unstopped(),
+    )
+    .await;
+
+    assert_eq!(
+        filed.linked.into_iter().collect::<Vec<_>>(),
+        vec![id],
+        "the fresh issue is filed and linked"
+    );
+    assert_eq!(
+        requested_calls(&server).await,
+        vec![
+            ("PATCH".to_owned(), "/repos/acme/app/issues/12".to_owned()),
+            ("POST".to_owned(), "/repos/acme/app/issues".to_owned()),
+        ],
+        "the failed reopen is followed by the create"
+    );
+    assert_eq!(
+        link_of(&db, kind, id).await.number,
+        Some(40),
+        "the fresh issue's number is stored"
+    );
+}
+
+#[tokio::test]
+async fn a_404_reopen_files_a_fresh_issue_for_a_test() {
+    a_gone_issue_refiles_after_the_reopen_fails(EntityKind::Test, 404).await;
+}
+
+#[tokio::test]
+async fn a_404_reopen_files_a_fresh_issue_for_a_job() {
+    a_gone_issue_refiles_after_the_reopen_fails(EntityKind::Job, 404).await;
+}
+
+/// A rate-limited reopen ends the batch with nothing stored.
+async fn a_rate_limited_reopen_stops_the_batch(kind: EntityKind) {
+    let (db, id) = flaky_with_last_closed(kind, 10).await;
+    let server = MockServer::start().await;
+    mount_patch(
+        &server,
+        "acme/app",
+        12,
+        ResponseTemplate::new(429)
+            .insert_header("x-ratelimit-remaining", "0")
+            .set_body_json(json!({"message": "API rate limit exceeded"})),
+    )
+    .await;
+    mount_create(
+        &server,
+        ResponseTemplate::new(201).set_body_json(json!({"number": 40})),
+    )
+    .await;
+
+    let filed = github::file_for(
+        db.connection(),
+        kind,
+        &[id],
+        &gh_settings(&[]),
+        &api(&server),
+        &fixture_clock(),
+        &unstopped(),
+    )
+    .await;
+
+    assert!(
+        filed.linked.is_empty(),
+        "a rate-limited reopen stores nothing"
+    );
+    assert_eq!(
+        filed.stopped,
+        Some(github::BatchStop::RateLimited),
+        "the batch ends as rate limited"
+    );
+    assert_eq!(
+        requested_calls(&server).await,
+        vec![("PATCH".to_owned(), "/repos/acme/app/issues/12".to_owned())],
+        "the rate limit stops the batch after the reopen"
+    );
+    assert_eq!(
+        link_of(&db, kind, id).await.number,
+        None,
+        "no link is stored"
+    );
+}
+
+#[tokio::test]
+async fn a_429_reopen_stops_the_batch_with_nothing_stored_for_a_test() {
+    a_rate_limited_reopen_stops_the_batch(EntityKind::Test).await;
+}
+
+#[tokio::test]
+async fn a_429_reopen_stops_the_batch_with_nothing_stored_for_a_job() {
+    a_rate_limited_reopen_stops_the_batch(EntityKind::Job).await;
 }
 
 #[tokio::test]

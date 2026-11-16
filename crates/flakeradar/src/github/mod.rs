@@ -98,7 +98,7 @@ pub use client::{
     API_BASE, API_VERSION, Answer, Api, RESPONSE_TEXT_MAX, Success, TIMEOUT_SECONDS, TransportError,
 };
 #[doc(inline)]
-pub use filing::{file_for, filing_gate};
+pub use filing::{REOPEN_COMMENT, file_for, filing_gate};
 #[doc(inline)]
 pub use notes::note_fixed_for;
 #[doc(inline)]
