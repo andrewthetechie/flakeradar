@@ -253,10 +253,11 @@ async fn a_recently_closed_issue_is_reopened_not_refiled_for_a_job() {
     a_recently_closed_issue_is_reopened_not_refiled(EntityKind::Job).await;
 }
 
-/// One refile scenario: the remembered close is outside the reopen window (or the
-/// setting is off), so the row is filed a fresh issue and nothing is patched.
-async fn a_stale_or_disabled_reopen_refiles(kind: EntityKind, settings: &Settings) {
-    let (db, id) = flaky_with_last_closed(kind, 31).await;
+/// One refile scenario: the remembered close `days` before the fixture instant
+/// is outside the reopen window (or the setting is off), so the row is filed a
+/// fresh issue and nothing is patched.
+async fn a_stale_or_disabled_reopen_refiles(kind: EntityKind, days: i64, settings: &Settings) {
+    let (db, id) = flaky_with_last_closed(kind, days).await;
     let server = MockServer::start().await;
     mount_create(
         &server,
@@ -297,18 +298,23 @@ async fn a_stale_or_disabled_reopen_refiles(kind: EntityKind, settings: &Setting
 
 #[tokio::test]
 async fn a_link_closed_31_days_ago_is_refiled_not_reopened_for_a_test() {
-    a_stale_or_disabled_reopen_refiles(EntityKind::Test, &gh_settings(&[])).await;
+    a_stale_or_disabled_reopen_refiles(EntityKind::Test, 31, &gh_settings(&[])).await;
 }
 
 #[tokio::test]
 async fn a_link_closed_31_days_ago_is_refiled_not_reopened_for_a_job() {
-    a_stale_or_disabled_reopen_refiles(EntityKind::Job, &gh_settings(&[])).await;
+    a_stale_or_disabled_reopen_refiles(EntityKind::Job, 31, &gh_settings(&[])).await;
 }
 
+/// A close at the fixture instant itself is inside any window the zero guard
+/// would guard: if the `github_reopen_days == 0` early return were removed, the
+/// zero-day window would still admit this close and the filer would PATCH
+/// instead of refile, failing the `requested_calls` assertion below.
 #[tokio::test]
 async fn reopen_days_zero_refiles_instead_of_reopening_for_a_test() {
     a_stale_or_disabled_reopen_refiles(
         EntityKind::Test,
+        0,
         &gh_settings(&[("FLAKERADAR_GITHUB_REOPEN_DAYS", "0")]),
     )
     .await;
@@ -318,6 +324,7 @@ async fn reopen_days_zero_refiles_instead_of_reopening_for_a_test() {
 async fn reopen_days_zero_refiles_instead_of_reopening_for_a_job() {
     a_stale_or_disabled_reopen_refiles(
         EntityKind::Job,
+        0,
         &gh_settings(&[("FLAKERADAR_GITHUB_REOPEN_DAYS", "0")]),
     )
     .await;
