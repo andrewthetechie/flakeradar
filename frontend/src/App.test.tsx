@@ -1103,6 +1103,9 @@ describe("App", () => {
   // nothing, the pending entity clears whatever the answer, the refresh and
   // drawer reloads after a settled confirm, the error mapping — are pinned by
   // the confirmed-decision module's own suite (confirmedDecision.test.ts).
+  // The user-visible failure surface stays asserted here too: a rejecting
+  // acknowledge POST closes the dialog and reaches the role="alert" banner,
+  // like the quarantine cases in App.refresh.test.tsx.
   it("the leaderboard Quarantine button opens the Quarantine dialog", async () => {
     stubTests(false);
     render(<App />);
@@ -1205,15 +1208,53 @@ describe("App", () => {
     expect(acks()[0].body).toEqual({ acknowledged: true, reason: "known flake", days: 30 });
   });
 
+  /** The Tests list with its drawer history, and an acknowledge POST that fails. */
+  function stubFailingTestAcknowledgePost() {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        // /acknowledge must be matched before the /api/tests list.
+        if (url.includes("/acknowledge")) {
+          return Promise.resolve(new Response("nope", { status: 500 }));
+        }
+        if (url.startsWith("/api/tests/5/history")) return json(testHistory(5));
+        if (url.startsWith("/api/tests")) return json(page("login"));
+        if (url.startsWith("/api/repos")) return json([]);
+        if (url.startsWith("/api/reports/summary")) return json({ pending: 0, failed: 0 });
+        return json(testsSummary);
+      }),
+    );
+  }
+
+  it("closes the Test acknowledge dialog and shows the banner when the POST fails", async () => {
+    stubFailingTestAcknowledgePost();
+    render(<App />);
+    expect(await screen.findByText("login")).toBeInTheDocument();
+    const drawer = await openDrawer();
+
+    await userEvent.click(within(drawer).getByRole("button", { name: "Acknowledge" }));
+    const dialog = await screen.findByRole("dialog", { name: /Acknowledge renders/ });
+    // The reason is optional, so confirming right away is a valid choice.
+    await userEvent.click(within(dialog).getByRole("button", { name: "Confirm" }));
+    await act(async () => {});
+
+    // The dialog closes before the POST, and the failure still reaches the banner.
+    expect(screen.queryByRole("dialog", { name: /Acknowledge renders/ })).not.toBeInTheDocument();
+    expect(await screen.findByRole("alert")).toHaveTextContent(/acknowledge tests 5 -> 500/);
+  });
+
   /**
    * The Jobs view with Job 3's drawer open, whose acknowledgement starts at
    * `initial` and changes when the acknowledge POST arrives, so the drawer's
    * next history fetch shows what the mutation did.
    */
-  function stubJobsAck(initial: {
-    acknowledged_until: string | null;
-    acknowledge_reason: string | null;
-  }) {
+  function stubJobsAck(
+    initial: {
+      acknowledged_until: string | null;
+      acknowledge_reason: string | null;
+    },
+    fail = false,
+  ) {
     const calls: { url: string; body: Record<string, unknown> | null }[] = [];
     let ack = initial;
     const job = (): Job => ({ ...jobHistory().job, ...ack });
@@ -1224,6 +1265,7 @@ describe("App", () => {
           init?.body == null ? null : (JSON.parse(String(init.body)) as Record<string, unknown>);
         calls.push({ url, body });
         if (url.includes("/acknowledge")) {
+          if (fail) return Promise.resolve(new Response("nope", { status: 500 }));
           ack =
             body?.acknowledged === true
               ? {
@@ -1305,6 +1347,27 @@ describe("App", () => {
 
     expect(acks()).toHaveLength(1);
     expect(acks()[0].body).toEqual({ acknowledged: false });
+  });
+
+  it("closes the Job acknowledge dialog and shows the banner when the POST fails", async () => {
+    stubJobsAck(
+      {
+        acknowledged_until: null,
+        acknowledge_reason: null,
+      },
+      true,
+    );
+    const drawer = await openJobDrawer();
+    await within(drawer).findByRole("button", { name: "Acknowledge" });
+
+    await userEvent.click(within(drawer).getByRole("button", { name: "Acknowledge" }));
+    const dialog = await screen.findByRole("dialog", { name: /Acknowledge e2e/ });
+    await userEvent.click(within(dialog).getByRole("button", { name: "Confirm" }));
+    await act(async () => {});
+
+    // The dialog closes before the POST, and the failure still reaches the banner.
+    expect(screen.queryByRole("dialog", { name: /Acknowledge e2e/ })).not.toBeInTheDocument();
+    expect(await screen.findByRole("alert")).toHaveTextContent(/acknowledge jobs 3 -> 500/);
   });
 
   /** Opens Job 3's drawer on the Jobs view, like the leaderboard would. */
