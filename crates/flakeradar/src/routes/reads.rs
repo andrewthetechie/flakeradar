@@ -24,7 +24,7 @@ use flakeradar_core::{
     lax, types::CiRunId,
 };
 use flakeradar_db::{
-    reads::AcknowledgeDecision, reads::DEFAULT_EXECUTIONS_LIMIT, reads::FAILURES_LIMIT,
+    acknowledge::AcknowledgeDecision, reads::DEFAULT_EXECUTIONS_LIMIT, reads::FAILURES_LIMIT,
     reads::JobListFilters, reads::ListOptions, reads::MAX_EXECUTIONS_LIMIT,
     reads::QuarantineDecision, reads::ReadSettings, reads::Scope, reads::SortKey,
     reads::TestListFilters, reads::ci_run_failures, reads::get_job, reads::get_test,

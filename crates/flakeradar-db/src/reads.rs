@@ -1267,23 +1267,9 @@ pub async fn set_quarantine(
     Ok(Some(test))
 }
 
-/// A human's acknowledgement decision for one Test or Job.
-///
-/// The body states a flag beside two values that only mean something when it is
-/// set, so the decision is one value: what the person decided, and what they said
-/// and for how long when they acknowledged.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum AcknowledgeDecision {
-    /// Acknowledge the Test or Job, with the reason and the day count the person gave.
-    Acknowledge {
-        /// Why the person acknowledged it.
-        reason: Option<String>,
-        /// How many days the acknowledgement lasts.
-        days: i64,
-    },
-    /// Withdraw the acknowledgement: clear the expiry and the reason.
-    Clear,
-}
+// The acknowledgement decision moved to `acknowledge`; the two write functions
+// below still take it until their routes delegate there instead.
+use crate::acknowledge::AcknowledgeDecision;
 
 /// Stores a human's acknowledgement decision for one Test.
 ///
