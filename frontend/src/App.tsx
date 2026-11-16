@@ -30,6 +30,7 @@ import { StatTiles } from "./components/StatTiles";
 import { TestDrawer } from "./components/TestDrawer";
 import { ThemeToggle } from "./components/ThemeToggle";
 import { ViewToggle } from "./components/ViewToggle";
+import { useConfirmedDecision } from "./confirmedDecision";
 import { useGuardedLoad, type GuardedLoader } from "./guardedLoad";
 import { LIST_FILTERS, useViewState, type ViewState } from "./urlState";
 import { loadJobHistory, loadTestHistory, loadViewBundle, type ViewBundle } from "./viewData";
@@ -45,10 +46,9 @@ export default function App() {
   const [page, setPage] = useState<TestPage | null>(null);
   const [jobPage, setJobPage] = useState<JobPage | null>(null);
   // The dashboard's one error surface: the three guarded loads mirror their own
-  // writes into it and the quarantine handlers below write it directly, so no
+  // writes into it and the acknowledge handlers below write it directly, so no
   // single writer knows what is showing. Every write therefore goes through.
   const [error, setError] = useState<string | null>(null);
-  const [pendingQuarantine, setPendingQuarantine] = useState<TestCase | null>(null);
   const [pendingAcknowledge, setPendingAcknowledge] = useState<TestCase | null>(null);
   const [pendingJobAcknowledge, setPendingJobAcknowledge] = useState<Job | null>(null);
 
@@ -185,38 +185,22 @@ export default function App() {
     onErrorChange: setError,
   });
 
-  const onToggleQuarantine = useCallback(
-    async (t: TestCase) => {
-      if (t.quarantined) {
-        try {
-          await setQuarantine(t.id, false);
-          await refresh();
-        } catch (e) {
-          setError(e instanceof Error ? e.message : String(e));
-        }
-        return;
-      }
-      // Quarantining is a human decision: ask for the reason and the expiry first.
-      setPendingQuarantine(t);
-    },
-    [refresh],
-  );
-
-  const confirmQuarantine = useCallback(
-    async (t: TestCase, choice: QuarantineChoice) => {
-      setPendingQuarantine(null);
-      try {
-        await setQuarantine(t.id, true, {
-          reason: choice.reason,
-          expiresInDays: choice.expiresInDays,
-        });
-        await refresh();
-      } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
-      }
-    },
-    [refresh],
-  );
+  // Quarantining a Test: the direct path un-quarantines a quarantined row with
+  // one click; the confirm path posts the reason and expiry the dialog
+  // collected. The flow itself — pending, dialog split, refresh, error mapping
+  // — lives in the confirmed-decision module.
+  const quarantine = useConfirmedDecision<TestCase, QuarantineChoice>({
+    call: (t, decided, choice) =>
+      choice == null
+        ? setQuarantine(t.id, decided)
+        : setQuarantine(t.id, decided, {
+            reason: choice.reason,
+            expiresInDays: choice.expiresInDays,
+          }),
+    isDecided: (t) => t.quarantined,
+    refresh,
+    onError: setError,
+  });
 
   const onToggleAcknowledge = useCallback(
     async (t: TestCase) => {
@@ -420,7 +404,7 @@ export default function App() {
                 search={q}
                 selectedId={view.test}
                 onSelect={(id) => setView({ test: id })}
-                onToggleQuarantine={onToggleQuarantine}
+                onToggleQuarantine={(t) => void quarantine.toggle(t)}
               />
             )}
           </div>
@@ -440,19 +424,17 @@ export default function App() {
           testId={view.test}
           history={testHistoryLoad.data}
           onClose={closeDrawer}
-          onToggleQuarantine={onToggleQuarantine}
+          onToggleQuarantine={(t) => void quarantine.toggle(t)}
           onToggleAcknowledge={onToggleAcknowledge}
           onOpenJob={openJobFromTest}
           onOpenCiRun={openCiRun}
         />
       )}
-      {pendingQuarantine != null && (
+      {quarantine.pending != null && (
         <QuarantineDialog
-          test={pendingQuarantine}
-          onClose={() => setPendingQuarantine(null)}
-          // The dialog only renders for a pending Test, so the callback always
-          // has one: no null check inside confirmQuarantine.
-          onConfirm={(choice) => void confirmQuarantine(pendingQuarantine, choice)}
+          test={quarantine.pending}
+          onClose={quarantine.cancel}
+          onConfirm={(choice) => void quarantine.confirm(choice)}
         />
       )}
       {pendingAcknowledge != null && (
