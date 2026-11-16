@@ -49,6 +49,8 @@ pub enum Operation {
     CloseNote,
     /// Commenting on and closing the issues an admin delete stranded.
     CloseDeleted,
+    /// Reopening an issue whose completed close the filer is re-filing.
+    Reopen,
 }
 
 /// What one operation does when GitHub answers with one verdict.
@@ -138,27 +140,28 @@ impl RemovalReport {
 /// A row is an operation and a column a verdict, and every cell is what the
 /// reference does with that pair:
 ///
-/// | verdict | `File` | `Sync` | `Note` | `CloseNote` | `CloseDeleted` |
-/// |---|---|---|---|---|---|
-/// | `Accepted` | use | use | use | use | use |
-/// | `RateLimited` | stop | stop | stop | stop | stop |
-/// | `Unauthorized` | skip Repo | skip Repo | skip row | skip row | skip row |
-/// | `RepoDenied` | skip Repo | skip Repo | skip Repo | skip Repo | skip row |
-/// | `NotFound` | skip Repo | re-arm | skip Repo | skip Repo | skip row |
-/// | `Gone` | skip Repo | skip Repo | skip Repo | skip Repo | skip row |
-/// | `Other` | skip row | skip row | skip row | skip row | skip row |
-/// | `Unreachable` | stop | stop | stop | stop | skip row |
+/// | verdict | `File` | `Sync` | `Note` | `CloseNote` | `CloseDeleted` | `Reopen` |
+/// |---|---|---|---|---|---|---|
+/// | `Accepted` | use | use | use | use | use | use |
+/// | `RateLimited` | stop | stop | stop | stop | stop | stop |
+/// | `Unauthorized` | skip Repo | skip Repo | skip row | skip row | skip row | skip Repo |
+/// | `RepoDenied` | skip Repo | skip Repo | skip Repo | skip Repo | skip row | skip Repo |
+/// | `NotFound` | skip Repo | re-arm | skip Repo | skip Repo | skip row | re-arm |
+/// | `Gone` | skip Repo | skip Repo | skip Repo | skip Repo | skip row | re-arm |
+/// | `Other` | skip row | skip row | skip row | skip row | skip row | skip row |
+/// | `Unreachable` | stop | stop | stop | stop | skip row | stop |
 ///
-/// Three cells break the pattern, each for the operation's own reason:
+/// Four cells break the pattern, each for the operation's own reason:
 /// a `404` in the sync is the issue itself being gone, so the link re-arms rather
 /// than the Repo being skipped; a `401` is a per-item failure on the note paths,
-/// because bad credentials are not Repo-wide there; and the post-delete close has
-/// no Repo-skip cell at all, because it works through one Repo's numbers and
-/// skipping the Repo would end the batch.
+/// because bad credentials are not Repo-wide there; a `404` or `410` on a reopen
+/// is the issue being gone, so the link re-arms and the filer files fresh; and
+/// the post-delete close has no Repo-skip cell at all, because it works through
+/// one Repo's numbers and skipping the Repo would end the batch.
 #[must_use]
 pub fn action(operation: Operation, verdict: Verdict) -> Action {
     use Action::{Rearm, SkipRepo, SkipRow, Stop, Use};
-    use Operation::{CloseDeleted, CloseNote, File, Note, Sync};
+    use Operation::{CloseDeleted, CloseNote, File, Note, Reopen, Sync};
     use Verdict::{
         Accepted, Gone, NotFound, Other, RateLimited, RepoDenied, Unauthorized, Unreachable,
     };
@@ -186,6 +189,13 @@ pub fn action(operation: Operation, verdict: Verdict) -> Action {
             Accepted => Use,
             RateLimited => Stop,
             Unauthorized | RepoDenied | NotFound | Gone | Other | Unreachable => SkipRow,
+        },
+        Reopen => match verdict {
+            Accepted => Use,
+            RateLimited | Unreachable => Stop,
+            NotFound | Gone => Rearm,
+            Unauthorized | RepoDenied => SkipRepo,
+            Other => SkipRow,
         },
     }
 }
