@@ -20,6 +20,7 @@
     )
 )]
 
+pub mod acknowledge;
 mod attribution;
 mod batching;
 pub mod clock;

@@ -21,16 +21,30 @@ use flakeradar_core::{
     dto::JobSummaryOut, dto::NAME_MAX, dto::PATH_MAX, dto::PIPELINE_MAX, dto::PROJECT_MAX,
     dto::QuarantineIn, dto::QuarantineItem, dto::RepoOut, dto::SummaryOut, dto::TestOut,
     dto::TestPage, dto::ValidationIssue, identity::normalize_project, identity::normalize_repo,
-    lax, types::CiRunId,
+    lax, model::EntityKind, types::CiRunId,
 };
 use flakeradar_db::{
-    reads::AcknowledgeDecision, reads::DEFAULT_EXECUTIONS_LIMIT, reads::FAILURES_LIMIT,
-    reads::JobListFilters, reads::ListOptions, reads::MAX_EXECUTIONS_LIMIT,
-    reads::QuarantineDecision, reads::ReadSettings, reads::Scope, reads::SortKey,
-    reads::TestListFilters, reads::ci_run_failures, reads::get_job, reads::get_test,
-    reads::job_summary, reads::list_jobs, reads::list_repos, reads::list_tests,
-    reads::quarantine_list, reads::set_acknowledge, reads::set_job_acknowledge,
-    reads::set_quarantine, reads::summary,
+    acknowledge::{self, AcknowledgedOut},
+    reads::DEFAULT_EXECUTIONS_LIMIT,
+    reads::FAILURES_LIMIT,
+    reads::JobListFilters,
+    reads::ListOptions,
+    reads::MAX_EXECUTIONS_LIMIT,
+    reads::QuarantineDecision,
+    reads::ReadSettings,
+    reads::Scope,
+    reads::SortKey,
+    reads::TestListFilters,
+    reads::ci_run_failures,
+    reads::get_job,
+    reads::get_test,
+    reads::job_summary,
+    reads::list_jobs,
+    reads::list_repos,
+    reads::list_tests,
+    reads::quarantine_list,
+    reads::set_quarantine,
+    reads::summary,
 };
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
@@ -585,12 +599,6 @@ pub async fn quarantine_test(
 ///
 /// Answers 404 for an id that names no Test, 422 for a body the schema refuses,
 /// and 500 when a query fails.
-///
-/// # Panics
-///
-/// Never on client input: the body reader requires a day count on an
-/// acknowledgement, so the read of that count panics only if the reader stops
-/// holding its own rule.
 #[utoipa::path(
     post,
     path = "/api/tests/{test_id}/acknowledge",
@@ -607,28 +615,40 @@ pub async fn acknowledge_test(
     State(state): State<AppState>,
     ApiPath(path): ApiPath<TestPath>,
     ApiJson(body): ApiJson<AcknowledgeIn>,
-) -> RouteResult<Json<TestOut>> {
-    // The body states a flag and the two values that belong to it; the engine
-    // takes the decision they describe, so it never sees a flag.
-    let decision = if body.acknowledged {
-        #[expect(
-            clippy::expect_used,
-            reason = "the body reader requires a day count on an acknowledgement, so \
-                      a missing one is a reader bug, never a body a client can send"
-        )]
-        let days = body.days.expect("an acknowledged body carries a day count");
-        AcknowledgeDecision::Acknowledge {
-            reason: body.reason,
-            days,
-        }
-    } else {
-        AcknowledgeDecision::Clear
-    };
-    let stored =
-        set_acknowledge(state.pool(), path.test_id, decision, &read_settings(&state)).await?;
+) -> RouteResult<Json<AcknowledgedOut>> {
+    write_acknowledge(
+        &state,
+        EntityKind::Test,
+        path.test_id,
+        body,
+        "Test not found",
+    )
+    .await
+}
+
+/// The two acknowledge routes' one write: the kind and the id name the row, and
+/// the answer is that row as the read serves it.
+///
+/// The route owns only the 404 text and the documented path; how a body becomes
+/// a decision, and what the write stores, are `acknowledge`'s.
+async fn write_acknowledge(
+    state: &AppState,
+    kind: EntityKind,
+    id: i64,
+    body: AcknowledgeIn,
+    not_found: &str,
+) -> RouteResult<Json<AcknowledgedOut>> {
+    let stored = acknowledge::set_acknowledge(
+        state.pool(),
+        kind,
+        id,
+        acknowledge::decision(body),
+        &read_settings(state),
+    )
+    .await?;
     match stored {
-        Some(test) => Ok(Json(test)),
-        None => Err(RouteError::NotFound("Test not found".to_owned())),
+        Some(out) => Ok(Json(out)),
+        None => Err(RouteError::NotFound(not_found.to_owned())),
     }
 }
 
@@ -788,12 +808,6 @@ pub async fn job_history(
 ///
 /// Answers 404 for an id that names no Job, 422 for a body the schema refuses,
 /// and 500 when a query fails.
-///
-/// # Panics
-///
-/// Never on client input: the body reader requires a day count on an
-/// acknowledgement, so the read of that count panics only if the reader stops
-/// holding its own rule.
 #[utoipa::path(
     post,
     path = "/api/jobs/{job_id}/acknowledge",
@@ -810,29 +824,8 @@ pub async fn acknowledge_job(
     State(state): State<AppState>,
     ApiPath(path): ApiPath<JobPath>,
     ApiJson(body): ApiJson<AcknowledgeIn>,
-) -> RouteResult<Json<JobOut>> {
-    // The body states a flag and the two values that belong to it; the engine
-    // takes the decision they describe, so it never sees a flag.
-    let decision = if body.acknowledged {
-        #[expect(
-            clippy::expect_used,
-            reason = "the body reader requires a day count on an acknowledgement, so \
-                      a missing one is a reader bug, never a body a client can send"
-        )]
-        let days = body.days.expect("an acknowledged body carries a day count");
-        AcknowledgeDecision::Acknowledge {
-            reason: body.reason,
-            days,
-        }
-    } else {
-        AcknowledgeDecision::Clear
-    };
-    let stored =
-        set_job_acknowledge(state.pool(), path.job_id, decision, &read_settings(&state)).await?;
-    match stored {
-        Some(job) => Ok(Json(job)),
-        None => Err(RouteError::NotFound("Job not found".to_owned())),
-    }
+) -> RouteResult<Json<AcknowledgedOut>> {
+    write_acknowledge(&state, EntityKind::Job, path.job_id, body, "Job not found").await
 }
 
 /// The failing Tests and failed Jobs of one CI run attempt.
