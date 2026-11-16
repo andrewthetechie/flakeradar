@@ -29,7 +29,7 @@ use axum::Router;
 use flakeradar_db::processing::ProcessingSettings;
 use flakeradar_test_support::{TestDb, app, get, make_project, make_report, post};
 use serde_json::{Value, json};
-use wiremock::matchers::{method, path};
+use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 /// The token the app requires and the script presents as `FR_TOKEN`.
@@ -866,6 +866,98 @@ async fn summary_action_pr_comment_updates_the_existing_marked_comment() {
         .expect("the stub records requests");
     let patched = sent(&requests, "PATCH", "/repos/acme/app/issues/comments/555")
         .expect("the marked comment was edited");
+    let body: Value = serde_json::from_slice(&patched.body).expect("the body is JSON");
+    let comment = body["body"].as_str().expect("the comment carries a body");
+    assert!(
+        comment.starts_with("<!-- flakeradar-summary:ci/test -->"),
+        "the edit keeps the marker first: {comment}"
+    );
+    assert!(
+        comment.contains("test_beta"),
+        "the edit carries the fresh table: {comment}"
+    );
+    serving.abort();
+}
+
+#[tokio::test]
+async fn summary_action_pr_comment_updates_the_first_marked_comment_across_pages() {
+    // When an earlier duplicate left two marked comments on different list
+    // pages, the first one is the comment the script must edit: paging stops at
+    // the first match, and the later duplicate is left untouched.
+    let db = TestDb::new().await.expect("a test database");
+    let app = router(&db);
+    let (base_url, serving) = serve(&db).await;
+    let server = MockServer::start().await;
+    upload(&app, one_failure_junit()).await;
+    process_all(&db).await;
+    // A full first page (100 entries) whose marked comment is its last entry,
+    // and a short second page holding a duplicate marked comment.
+    let mut page_one: Vec<Value> = (0..99)
+        .map(|i| json!({"id": i, "body": format!("filler comment {i}")}))
+        .collect();
+    page_one.push(json!({"id": 555, "body": "<!-- flakeradar-summary:ci/test -->\nold"}));
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/app/issues/12/comments"))
+        .and(query_param("page", "1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(page_one))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/app/issues/12/comments"))
+        .and(query_param("page", "2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"id": 999, "body": "<!-- flakeradar-summary:ci/test -->\nold"},
+            {"id": 1000, "body": "filler comment"}
+        ])))
+        // The first match stops the paging, so the duplicate page is never read.
+        .expect(0)
+        .mount(&server)
+        .await;
+    Mock::given(method("PATCH"))
+        .and(path("/repos/acme/app/issues/comments/555"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": 555})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("PATCH"))
+        .and(path("/repos/acme/app/issues/comments/999"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": 999})))
+        .expect(0)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/repos/acme/app/issues/12/comments"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({"id": 777})))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let file = summary_file("pr_comment_first_across_pages");
+    let event = event_file("first_across_pages", PR_EVENT);
+
+    let (code, output) = run_summary(
+        &base_url,
+        "false",
+        "failure",
+        "5",
+        &file,
+        &[
+            ("GITHUB_API_URL", &server.uri()),
+            ("FR_PR_COMMENT", "true"),
+            ("FR_GITHUB_TOKEN", "gh-token"),
+            ("FR_COMMENT_KEY", "ci/test"),
+            ("GITHUB_EVENT_PATH", &event),
+        ],
+    )
+    .await;
+
+    assert_eq!(code, 0, "an updated comment never fails the step: {output}");
+    let requests = server
+        .received_requests()
+        .await
+        .expect("the stub records requests");
+    let patched = sent(&requests, "PATCH", "/repos/acme/app/issues/comments/555")
+        .expect("the first marked comment was edited");
     let body: Value = serde_json::from_slice(&patched.body).expect("the body is JSON");
     let comment = body["body"].as_str().expect("the comment carries a body");
     assert!(

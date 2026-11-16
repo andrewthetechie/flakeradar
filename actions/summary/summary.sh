@@ -225,7 +225,11 @@ ${markdown}"
     found=$(jq -r --arg m "$marker" \
       '[.[] | select(.body | startswith($m))][0].id // ""' "$comment_file" 2>/dev/null) || found=""
     if [ -n "$found" ]; then
+      # The first match on the first page that holds one wins: a later page's
+      # duplicate (from an earlier bug or a copied comment) is never edited, so
+      # the comment the reader sees first is the one kept up to date.
       comment_id="$found"
+      break
     fi
     # A short page was the last one; a full one may have a successor.
     count=$(jq 'length' "$comment_file" 2>/dev/null) || count=0
