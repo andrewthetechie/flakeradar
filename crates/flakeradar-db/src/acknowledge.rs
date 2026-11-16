@@ -17,6 +17,7 @@
 use chrono::{Duration, Utc};
 use flakeradar_core::{dto::AcknowledgeIn, dto::JobOut, dto::TestOut, model::EntityKind};
 use sea_orm::{ConnectionTrait, DbBackend, Statement, Value};
+use serde::Serialize;
 
 use crate::error::DbError;
 use crate::reads::{
@@ -46,10 +47,13 @@ pub enum AcknowledgeDecision {
 /// shape.
 ///
 /// A caller asks for one target and gets that target's row, so the variant is
-/// settled by the query that ran and no handler has to guess. The routes answer
-/// `Json<TestOut>` or `Json<JobOut>`, so they reach into the variant rather than
-/// serializing this enum; `utoipa` keeps naming the concrete body per route.
-#[derive(Debug, Clone)]
+/// settled by the query that ran and no handler has to guess. `untagged` means the
+/// wire is the wrapped DTO exactly: the same `TestOut` or `JobOut` body its
+/// leaderboard serves, which is why the routes answer `Json<AcknowledgedOut>`
+/// rather than reaching into a variant. `utoipa` still names the concrete body
+/// per route.
+#[derive(Debug, Clone, Serialize)]
+#[serde(untagged)]
 pub enum AcknowledgedOut {
     /// A Test, in the leaderboard shape.
     Test(TestOut),
