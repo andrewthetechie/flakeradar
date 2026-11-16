@@ -185,6 +185,7 @@ pub struct TestCaseBuilder {
     failure_category: Option<String>,
     quarantined: bool,
     last_seen_at: Option<DateTimeWithTimeZone>,
+    first_seen_at: Option<DateTimeWithTimeZone>,
     github_issue_fixed_noted_at: Option<DateTimeWithTimeZone>,
     github_issue_number: Option<i32>,
     quarantined_at: Option<DateTimeWithTimeZone>,
@@ -219,6 +220,7 @@ pub fn make_test_case(project: &projects::Model) -> TestCaseBuilder {
         failure_category: None,
         quarantined: false,
         last_seen_at: None,
+        first_seen_at: None,
         github_issue_fixed_noted_at: None,
         github_issue_number: None,
         quarantined_at: None,
@@ -285,6 +287,13 @@ impl TestCaseBuilder {
     #[must_use]
     pub fn last_seen_at(mut self, at: DateTimeWithTimeZone) -> Self {
         self.last_seen_at = Some(at);
+        self
+    }
+
+    /// Sets when the Test was first seen.
+    #[must_use]
+    pub fn first_seen_at(mut self, at: DateTimeWithTimeZone) -> Self {
+        self.first_seen_at = Some(at);
         self
     }
 
@@ -424,6 +433,7 @@ impl TestCaseBuilder {
                 line: Set(self.line),
                 last_status: Set("passed".to_owned()),
                 last_seen_at: Set(self.last_seen_at.unwrap_or_else(now)),
+                first_seen_at: Set(self.first_seen_at.unwrap_or_else(now)),
                 quarantined: Set(quarantined),
                 quarantined_at: Set(self.quarantined_at),
                 quarantine_reason: Set(self.quarantine_reason),
@@ -1434,5 +1444,39 @@ impl ReportBuilder {
             },
         )
         .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! The defaults a row is seeded with are the ones the module doc states, so
+    //! they are pinned here rather than left to whichever integration test
+    //! happens to reach a setter first.
+
+    use crate::db::TestDb;
+    use crate::factories::{FIXTURE_INSTANT, make_project, make_test_case};
+
+    /// A Test built without a first-seen setter takes the fixture instant, and
+    /// the setter overrides it, so a test states how old its Test is.
+    #[tokio::test]
+    async fn a_test_defaults_to_the_fixture_instant_and_the_setter_overrides_it() {
+        let db = TestDb::new().await.expect("a migrated test database");
+        let project = make_project().create(&db).await;
+        let at = (FIXTURE_INSTANT - chrono::Duration::days(3)).fixed_offset();
+
+        let seeded = make_test_case(&project).create(&db).await;
+        assert_eq!(seeded.first_seen_at, FIXTURE_INSTANT.fixed_offset());
+        assert_eq!(seeded.last_seen_at, FIXTURE_INSTANT.fixed_offset());
+
+        let told = make_test_case(&project)
+            .name("t_old")
+            .first_seen_at(at)
+            .create(&db)
+            .await;
+        assert_eq!(
+            told.first_seen_at, at,
+            "the setter decides the first-seen instant"
+        );
+        assert_eq!(told.last_seen_at, FIXTURE_INSTANT.fixed_offset());
     }
 }

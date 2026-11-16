@@ -419,6 +419,8 @@ pub struct Settings {
     pub score_decay: f64,
     /// Consecutive default-branch failures at which a Test counts as broken.
     pub broken_streak: i64,
+    /// How many days a Test stays new; see [`defaults::NEW_TEST_DAYS`] for why a week.
+    pub new_test_days: i64,
     /// The GitHub token; empty disables the GitHub integration.
     pub github_token: Secret,
     /// The label applied to every auto-filed GitHub issue.
@@ -512,6 +514,7 @@ impl Default for Settings {
             score_window: defaults::SCORE_WINDOW,
             score_decay: defaults::SCORE_DECAY,
             broken_streak: defaults::BROKEN_STREAK,
+            new_test_days: defaults::NEW_TEST_DAYS,
             github_token: Secret::new(""),
             github_issue_label: "flakeradar".to_owned(),
             github_issue_min_score: defaults::GITHUB_ISSUE_MIN_SCORE,
@@ -613,6 +616,7 @@ impl Settings {
         set_if_some(&mut settings.score_window, raw.whole("SCORE_WINDOW")?);
         set_if_some(&mut settings.score_decay, raw.float("SCORE_DECAY")?);
         set_if_some(&mut settings.broken_streak, raw.whole("BROKEN_STREAK")?);
+        set_if_some(&mut settings.new_test_days, raw.whole("NEW_TEST_DAYS")?);
         read_github(&mut settings, &raw)?;
         set_if_some(&mut settings.public_url, raw.text("PUBLIC_URL"));
         set_if_some(&mut settings.flake_threshold, raw.float("FLAKE_THRESHOLD")?);
@@ -706,6 +710,8 @@ impl Settings {
         at_least("SCORE_WINDOW", &self.score_window, &1)?;
         fraction("SCORE_DECAY", self.score_decay)?;
         at_least("BROKEN_STREAK", &self.broken_streak, &0)?;
+        // 0 would leave every Test inside the window forever, so nothing is new.
+        at_least("NEW_TEST_DAYS", &self.new_test_days, &1)?;
         fraction("GITHUB_ISSUE_MIN_SCORE", self.github_issue_min_score)?;
         at_least(
             "GITHUB_ISSUE_MIN_PROVEN_FLAKES",
@@ -1094,6 +1100,7 @@ mod tests {
         assert_eq!(settings.score_window, 50);
         assert_eq!(settings.score_decay, 0.85);
         assert_eq!(settings.broken_streak, 5);
+        assert_eq!(settings.new_test_days, 7);
         assert_eq!(settings.github_token.expose(), "");
         assert_eq!(settings.github_issue_label, "flakeradar");
         assert_eq!(settings.github_issue_min_score, 0.30);
@@ -1164,6 +1171,7 @@ mod tests {
             ("FLAKERADAR_FAILED_REPORT_RETENTION_DAYS", "2"),
             ("FLAKERADAR_EXECUTION_RETENTION_DAYS", "3"),
             ("FLAKERADAR_SCORE_HISTORY_RETENTION_DAYS", "4"),
+            ("FLAKERADAR_NEW_TEST_DAYS", "3"),
             ("FLAKERADAR_PRUNE_INTERVAL_SECONDS", "6"),
             ("FLAKERADAR_PRUNE_BATCH", "7"),
             ("FLAKERADAR_PRUNE_TIME_BUDGET_SECONDS", "8"),
@@ -1214,6 +1222,7 @@ mod tests {
         assert_eq!(settings.failed_report_retention_days, 2);
         assert_eq!(settings.execution_retention_days, 3);
         assert_eq!(settings.score_history_retention_days, 4);
+        assert_eq!(settings.new_test_days, 3);
         assert_eq!(settings.prune_interval, Duration::from_secs(6));
         assert_eq!(settings.prune_batch, 7);
         assert_eq!(settings.prune_time_budget_seconds, 8.0);
@@ -1647,6 +1656,7 @@ mod tests {
             ("FLAKERADAR_FAILED_REPORT_RETENTION_DAYS", "-1"),
             ("FLAKERADAR_EXECUTION_RETENTION_DAYS", "-30"),
             ("FLAKERADAR_SCORE_HISTORY_RETENTION_DAYS", "-1"),
+            ("FLAKERADAR_NEW_TEST_DAYS", "0"),
             ("FLAKERADAR_PRUNE_BATCH", "0"),
             ("FLAKERADAR_INFRA_FAIL_SHARE", "0"),
             ("FLAKERADAR_INFRA_FAIL_SHARE", "1.5"),

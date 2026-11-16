@@ -184,6 +184,15 @@ pub const EXECUTION_RETENTION_DAYS: i64 = 90;
 /// (ADR 0007); the table grows by one row per Test or Job per day.
 pub const SCORE_HISTORY_RETENTION_DAYS: i64 = 365;
 
+/// How many days after a Test is first seen it still counts as new.
+///
+/// A week is long enough that a Test which has survived its first week is no
+/// longer treated as new, and short enough that a freshly added Test still
+/// shows up while whoever added it is still paying attention. Only the
+/// `new-tests` read of the setting uses it, so changing it changes nothing
+/// already stored: the same Test answers differently from the same rows.
+pub const NEW_TEST_DAYS: i64 = 7;
+
 /// How many rows one prune round deletes per table.
 ///
 /// Bounded batches keep every `DELETE` well under the statement timeout even when

@@ -10,11 +10,17 @@
 )]
 
 use flakeradar_db::{
-    BASELINE_SQL, DbError, Migrator, run_migrations, split_statements, sql_migrations,
+    BASELINE_SQL, DbError, MIGRATIONS, Migrator, get_or_create_project, run_migrations,
+    split_statements, sql_migrations,
 };
-use flakeradar_test_support::TestDb;
-use sea_orm::{ConnectionTrait, DatabaseBackend, Statement};
+use flakeradar_test_support::{TestDb, make_execution, make_run, make_test_case};
+use sea_orm::{ConnectionTrait, DatabaseBackend, EntityTrait, Statement};
 use sea_orm_migration::prelude::{MigrationTrait, MigratorTrait};
+
+/// Parses an RFC 3339 instant, so the backfill inputs read as timestamps.
+fn parsed(instant: &str) -> chrono::DateTime<chrono::FixedOffset> {
+    chrono::DateTime::parse_from_rfc3339(instant).expect("a readable instant")
+}
 
 /// Every table the baseline creates, sorted.
 const APP_TABLES: [&str; 11] = [
@@ -117,7 +123,8 @@ async fn a_second_migration_run_migrates_nothing() {
             "0002_infra_suspect",
             "0003_flaky_since",
             "0004_acknowledge",
-            "0005_issue_reopen"
+            "0005_issue_reopen",
+            "0006_first_seen"
         ]
     );
 }
@@ -223,6 +230,76 @@ async fn the_added_issue_reopen_columns_are_nullable() {
     }
 }
 
+/// The column `0006_first_seen` adds, as the applied schema records it: NOT NULL,
+/// backfilled from each Test's earliest Execution, or from `last_seen_at` when
+/// the Test has none.
+#[tokio::test]
+async fn the_added_first_seen_column_is_not_null_and_backfilled() {
+    let db = TestDb::new().await.expect("a migrated test database");
+    let project = get_or_create_project(
+        db.connection(),
+        "acme/app",
+        "backend",
+        parsed("2026-09-01T00:00:00+00:00"),
+    )
+    .await
+    .expect("a Project");
+    let a = make_test_case(&project).create(&db).await;
+    let with_no_executions = make_test_case(&project)
+        .name("t2")
+        .last_seen_at(parsed("2026-09-10T00:00:00+00:00").fixed_offset())
+        .create(&db)
+        .await;
+    let run = make_run(&project).create(&db).await;
+    make_execution(&a, &run)
+        .created_at(parsed("2026-09-05T00:00:00+00:00"))
+        .create(&db)
+        .await;
+    make_execution(&a, &run)
+        .created_at(parsed("2026-09-01T00:00:00+00:00"))
+        .create(&db)
+        .await;
+
+    let (_, sql) = MIGRATIONS
+        .iter()
+        .find(|(name, _)| *name == "0006_first_seen")
+        .expect("the first-seen migration is in the set");
+    let backfill = split_statements(sql)
+        .into_iter()
+        .find(|statement| statement.contains("UPDATE test_cases"))
+        .expect("the migration holds the backfill");
+    db.connection()
+        .execute_unprepared(backfill)
+        .await
+        .expect("the backfill runs");
+
+    let a_row = flakeradar_db::entities::test_cases::Entity::find_by_id(a.id)
+        .one(db.connection())
+        .await
+        .expect("the Tests are readable")
+        .expect("the Test exists");
+    let b_row = flakeradar_db::entities::test_cases::Entity::find_by_id(with_no_executions.id)
+        .one(db.connection())
+        .await
+        .expect("the Tests are readable")
+        .expect("the Test exists");
+    assert_eq!(
+        a_row.first_seen_at,
+        parsed("2026-09-01T00:00:00+00:00"),
+        "the backfill takes the earliest Execution"
+    );
+    assert_eq!(
+        b_row.first_seen_at,
+        parsed("2026-09-10T00:00:00+00:00"),
+        "a Test with no Executions falls back to last_seen_at"
+    );
+    assert_eq!(
+        column_shape(db.connection(), "test_cases", "first_seen_at").await,
+        ("timestamp with time zone".to_owned(), "NO".to_owned()),
+        "test_cases.first_seen_at is a timestamp and NOT NULL"
+    );
+}
+
 /// A migration set with two entries after the baseline, one depending on the other.
 const ORDERED: &[(&str, &str)] = &[
     ("0001_baseline", BASELINE_SQL),
@@ -265,32 +342,37 @@ fn the_migrator_lists_the_baseline_and_the_added_migration_by_name() {
     let migrations = Migrator::migrations();
     assert_eq!(
         migrations.len(),
-        5,
+        6,
         "the shipped set holds the baseline and every migration after it"
     );
     assert_eq!(
-        migrations.first().expect("a set with five entries").name(),
+        migrations.first().expect("a set with six entries").name(),
         "0001_baseline",
         "the recorded name is unchanged, so an existing install still matches"
     );
     assert_eq!(
-        migrations.get(1).expect("a set with five entries").name(),
+        migrations.get(1).expect("a set with six entries").name(),
         "0002_infra_suspect",
         "the added migration is recorded under its own name"
     );
     assert_eq!(
-        migrations.get(2).expect("a set with five entries").name(),
+        migrations.get(2).expect("a set with six entries").name(),
         "0003_flaky_since",
         "the added migration is recorded under its own name"
     );
     assert_eq!(
-        migrations.get(3).expect("a set with five entries").name(),
+        migrations.get(3).expect("a set with six entries").name(),
         "0004_acknowledge",
         "the added migration is recorded under its own name"
     );
     assert_eq!(
-        migrations.get(4).expect("a set with five entries").name(),
+        migrations.get(4).expect("a set with six entries").name(),
         "0005_issue_reopen",
+        "the added migration is recorded under its own name"
+    );
+    assert_eq!(
+        migrations.get(5).expect("a set with six entries").name(),
+        "0006_first_seen",
         "the added migration is recorded under its own name"
     );
 }
