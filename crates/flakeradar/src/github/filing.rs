@@ -219,6 +219,14 @@ async fn job_requests(
     batch
 }
 
+/// The largest reopen window `TimeDelta` can represent, in days.
+///
+/// The window is `clock now - last_closed <= days`; `chrono` cannot represent a
+/// duration wider than `i64::MAX` milliseconds, so a larger setting is clamped
+/// rather than panicking. A window this wide keeps every remembered close,
+/// which is what a setting that large meant anyway.
+const MAX_REOPEN_DAYS: i64 = 100_000;
+
 /// The issue numbers a reopen may revive, keyed by the entity id that remembers them.
 ///
 /// A row whose completed close the issue-state sync stored within
@@ -248,7 +256,7 @@ async fn reopen_numbers(
             return BTreeMap::new();
         }
     };
-    let window = TimeDelta::days(settings.github_reopen_days);
+    let window = TimeDelta::days(settings.github_reopen_days.clamp(0, MAX_REOPEN_DAYS));
     closed
         .into_iter()
         .filter(|(_, (_, at))| clock.now().signed_duration_since(*at) <= window)

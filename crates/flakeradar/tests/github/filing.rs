@@ -323,6 +323,60 @@ async fn reopen_days_zero_refiles_instead_of_reopening_for_a_job() {
     .await;
 }
 
+/// A reopen window wider than `TimeDelta` can represent reopens instead of
+/// panicking: the setting is clamped to the widest window, which keeps every
+/// remembered close.
+async fn an_oversized_reopen_window_reopens_instead_of_panicking(kind: EntityKind) {
+    let (db, id) = flaky_with_last_closed(kind, 10).await;
+    let server = MockServer::start().await;
+    mount_patch(
+        &server,
+        "acme/app",
+        12,
+        ResponseTemplate::new(200).set_body_json(json!({"number": 12, "state": "open"})),
+    )
+    .await;
+    mount_comment(&server, "acme/app", 12, ResponseTemplate::new(201)).await;
+
+    let filed = github::file_for(
+        db.connection(),
+        kind,
+        &[id],
+        &gh_settings(&[("FLAKERADAR_GITHUB_REOPEN_DAYS", "9223372036854775807")]),
+        &api(&server),
+        &fixture_clock(),
+        &unstopped(),
+    )
+    .await;
+
+    assert_eq!(
+        filed.linked.into_iter().collect::<Vec<_>>(),
+        vec![id],
+        "the reopen is stored as FlakeRadar's own link"
+    );
+    assert_eq!(
+        requested_calls(&server).await,
+        vec![
+            ("PATCH".to_owned(), "/repos/acme/app/issues/12".to_owned()),
+            (
+                "POST".to_owned(),
+                "/repos/acme/app/issues/12/comments".to_owned()
+            ),
+        ],
+        "the unrepresentable window reopens, never panics"
+    );
+}
+
+#[tokio::test]
+async fn an_oversized_reopen_window_reopens_instead_of_panicking_for_a_test() {
+    an_oversized_reopen_window_reopens_instead_of_panicking(EntityKind::Test).await;
+}
+
+#[tokio::test]
+async fn an_oversized_reopen_window_reopens_instead_of_panicking_for_a_job() {
+    an_oversized_reopen_window_reopens_instead_of_panicking(EntityKind::Job).await;
+}
+
 /// A gone issue is refiled: the 404 re-arm falls through to the create.
 async fn a_gone_issue_refiles_after_the_reopen_fails(kind: EntityKind, status: u16) {
     let (db, id) = flaky_with_last_closed(kind, 10).await;
