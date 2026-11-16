@@ -841,6 +841,7 @@ async fn upsert_test_cases(
             classname: Set(reported.case.classname.clone()),
             name: Set(reported.case.name.clone()),
             last_seen_at: Set(now),
+            first_seen_at: Set(now),
             ..Default::default()
         })
         .collect();

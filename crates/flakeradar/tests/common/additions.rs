@@ -235,7 +235,8 @@ mod form {
                     "test_cases.github_issue_last_closed_number",
                     "test_cases.github_issue_last_closed_at",
                     "jobs.github_issue_last_closed_number",
-                    "jobs.github_issue_last_closed_at"
+                    "jobs.github_issue_last_closed_at",
+                    "test_cases.first_seen_at"
                 ],
                 "fields": [
                     "CiRunTestFailureOut.infra_suspect",

@@ -185,6 +185,7 @@ pub struct TestCaseBuilder {
     failure_category: Option<String>,
     quarantined: bool,
     last_seen_at: Option<DateTimeWithTimeZone>,
+    first_seen_at: Option<DateTimeWithTimeZone>,
     github_issue_fixed_noted_at: Option<DateTimeWithTimeZone>,
     github_issue_number: Option<i32>,
     quarantined_at: Option<DateTimeWithTimeZone>,
@@ -219,6 +220,7 @@ pub fn make_test_case(project: &projects::Model) -> TestCaseBuilder {
         failure_category: None,
         quarantined: false,
         last_seen_at: None,
+        first_seen_at: None,
         github_issue_fixed_noted_at: None,
         github_issue_number: None,
         quarantined_at: None,
@@ -285,6 +287,13 @@ impl TestCaseBuilder {
     #[must_use]
     pub fn last_seen_at(mut self, at: DateTimeWithTimeZone) -> Self {
         self.last_seen_at = Some(at);
+        self
+    }
+
+    /// Sets when the Test was first seen.
+    #[must_use]
+    pub fn first_seen_at(mut self, at: DateTimeWithTimeZone) -> Self {
+        self.first_seen_at = Some(at);
         self
     }
 
@@ -424,6 +433,7 @@ impl TestCaseBuilder {
                 line: Set(self.line),
                 last_status: Set("passed".to_owned()),
                 last_seen_at: Set(self.last_seen_at.unwrap_or_else(now)),
+                first_seen_at: Set(self.first_seen_at.unwrap_or_else(now)),
                 quarantined: Set(quarantined),
                 quarantined_at: Set(self.quarantined_at),
                 quarantine_reason: Set(self.quarantine_reason),

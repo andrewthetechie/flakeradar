@@ -40,6 +40,10 @@ pub const MIGRATIONS: &[(&str, &str)] = &[
         "0005_issue_reopen",
         include_str!("../migrations/0005_issue_reopen.sql"),
     ),
+    (
+        "0006_first_seen",
+        include_str!("../migrations/0006_first_seen.sql"),
+    ),
 ];
 
 /// One [`SqlMigration`] per `(name, SQL)` entry, in the order the list gives.

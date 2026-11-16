@@ -350,6 +350,35 @@ async fn a_report_becomes_a_run_with_its_counts() {
     assert_eq!(message, "assert 1 == 2");
 }
 
+/// The first Report to carry a Test stamps when it was first seen, and a later
+/// Report leaves that instant alone.
+#[tokio::test]
+async fn a_new_test_records_its_first_seen_and_a_later_report_keeps_it() {
+    let db = TestDb::new().await.expect("a test database");
+    let project = project(&db, "acme/app", "backend").await;
+    let body = make_junit(&[("test_a", "passed")]);
+
+    queue(&db, &project, &body).await;
+    drain(&db, &settings()).await;
+    assert_eq!(
+        test(&db).await.first_seen_at,
+        at().fixed_offset(),
+        "the first Report stamps first_seen_at with the processing clock"
+    );
+
+    let later = ProcessingSettings {
+        clock: Arc::new(FixedClock::new(at() + TimeDelta::days(1))),
+        ..settings()
+    };
+    queue(&db, &project, &body).await;
+    drain(&db, &later).await;
+    assert_eq!(
+        test(&db).await.first_seen_at,
+        at().fixed_offset(),
+        "a Report a day later leaves the first-seen instant unchanged"
+    );
+}
+
 #[tokio::test]
 async fn a_same_sha_retry_is_a_proven_flake() {
     let db = TestDb::new().await.expect("a test database");
