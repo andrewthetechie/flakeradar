@@ -30,6 +30,37 @@ FR_GATE="${FR_GATE:-false}"
 # The test step's own outcome (success / failure / cancelled / skipped). Only gate
 # mode reads it, and only when FlakeRadar cannot decide the exit itself.
 FR_TEST_OUTCOME="${FR_TEST_OUTCOME:-}"
+# PR comment mode: "true" keeps one FlakeRadar comment per job on the pull
+# request up to date (the send block lives after the poll). Whether a comment
+# applies to this run is decided here, from the runner environment: the event
+# file names the pull request, and a fork PR never gets one.
+FR_PR_COMMENT="${FR_PR_COMMENT:-false}"
+FR_GITHUB_TOKEN="${FR_GITHUB_TOKEN:-}"
+FR_COMMENT_KEY="${FR_COMMENT_KEY:-}"
+comment_key="$FR_COMMENT_KEY"
+if [ -z "$comment_key" ]; then
+  # Action-metadata input defaults cannot use the github/job contexts, so the
+  # workflow and job name stand in for the key here, not in the action metadata.
+  comment_key="${GITHUB_WORKFLOW:-}/${GITHUB_JOB:-}"
+fi
+comment_pr=""
+comment_repo=""
+if [ "$FR_PR_COMMENT" = "true" ] && [ -n "${GITHUB_EVENT_PATH:-}" ] \
+   && [ -f "${GITHUB_EVENT_PATH}" ]; then
+  comment_pr=$(jq -r '.pull_request.number // ""' "$GITHUB_EVENT_PATH" 2>/dev/null) \
+    || comment_pr=""
+  comment_repo=$(jq -r '.pull_request.base.repo.full_name // ""' "$GITHUB_EVENT_PATH" 2>/dev/null) \
+    || comment_repo=""
+  head_repo=$(jq -r '.pull_request.head.repo.full_name // ""' "$GITHUB_EVENT_PATH" 2>/dev/null) \
+    || head_repo=""
+  # Not a pull-request event, or a fork (the head repository differs from the
+  # base one, or is null, and the token is scoped to the base repository): the
+  # comment does not apply to this run, so nothing is sent.
+  if [ -z "$comment_pr" ] || [ -z "$comment_repo" ] || [ "$head_repo" != "$comment_repo" ]; then
+    comment_pr=""
+    comment_repo=""
+  fi
+fi
 
 # The failures endpoint reports per-attempt counts for the whole run (all jobs).
 # We poll until pending reaches 0, then keep only the failures this job owns
@@ -42,9 +73,11 @@ enc_repo=$(jq -rn --arg r "$FR_REPO" '$r | @uri')
 # was requested (the self-test uses that stable path to inspect the content).
 step_file="${GITHUB_STEP_SUMMARY:-}"
 extra_file="$FR_SUMMARY_FILE"
-if [ -z "$step_file" ] && [ -z "$extra_file" ] && [ "$FR_GATE" != "true" ]; then
-  # Nothing to write and nothing to decide. With the gate on the script still polls
-  # and decides, and append_summary below tolerates two empty targets.
+if [ -z "$step_file" ] && [ -z "$extra_file" ] && [ "$FR_GATE" != "true" ] \
+   && [ "$FR_PR_COMMENT" != "true" ]; then
+  # Nothing to write and nothing to decide. With the gate on, or the comment on,
+  # the script still polls and decides or sends, and append_summary below
+  # tolerates two empty targets.
   echo "::notice::FlakeRadar summary: no summary target (GITHUB_STEP_SUMMARY is unset); nothing to write to."
   exit 0
 fi

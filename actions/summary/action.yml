@@ -49,6 +49,18 @@ inputs:
     description: "The test step's outcome, i.e. steps.<id>.outcome of the step that ran the tests: success, failure, cancelled or skipped. Used only in gate mode, when FlakeRadar cannot decide the exit. Defaults to empty."
     required: false
     default: ""
+  pr-comment:
+    description: "\"true\" makes the step also keep one FlakeRadar comment per job on the pull request, found again and edited on re-runs. Any other value, the default, sends nothing to GitHub. Needs a non-fork pull_request event and permissions: pull-requests: write."
+    required: false
+    default: "false"
+  github-token:
+    description: "The token the pull-request comment is sent with. Defaults to the run's token (github.token); pass one with the pull-requests: write permission if the default cannot comment."
+    required: false
+    default: "${{ github.token }}"
+  comment-key:
+    description: "Key that identifies this job's comment, inside the hidden marker that finds it again on re-runs. Defaults to the workflow and job name (GITHUB_WORKFLOW/GITHUB_JOB); matrix users add their leg, e.g. ci/test-${{ matrix.os }}."
+    required: false
+    default: ""
 runs:
   using: composite
   steps:
@@ -66,4 +78,7 @@ runs:
         FR_SUMMARY_FILE: ${{ inputs.summary-file }}
         FR_GATE: ${{ inputs.gate }}
         FR_TEST_OUTCOME: ${{ inputs.test-outcome }}
+        FR_PR_COMMENT: ${{ inputs.pr-comment }}
+        FR_GITHUB_TOKEN: ${{ inputs.github-token }}
+        FR_COMMENT_KEY: ${{ inputs.comment-key }}
       run: bash "${{ github.action_path }}/summary.sh"

@@ -29,6 +29,7 @@ use axum::Router;
 use flakeradar_db::processing::ProcessingSettings;
 use flakeradar_test_support::{TestDb, app, get, make_project, make_report, post};
 use serde_json::{Value, json};
+use wiremock::MockServer;
 
 /// The token the app requires and the script presents as `FR_TOKEN`.
 const TOKEN: &str = "summary-token";
@@ -118,13 +119,24 @@ fn summary_file(case: &str) -> String {
     path.to_string_lossy().into_owned()
 }
 
+/// An event JSON file named for `case` under the temporary directory, holding
+/// `json`: what the runner puts at `GITHUB_EVENT_PATH`.
+fn event_file(case: &str, json: &str) -> String {
+    let path = std::env::temp_dir().join(format!("flakeradar-summary-action-{case}.json"));
+    std::fs::write(&path, json).expect("writing the event file succeeds");
+    path.to_string_lossy().into_owned()
+}
+
 /// Runs `actions/summary/summary.sh` as the CI step does, against `base_url`.
 ///
 /// The child gets only the variables the action's `env:` block passes, plus `PATH`
 /// so it finds `bash`, `curl` and `jq`: clearing the rest keeps `GITHUB_STEP_SUMMARY`
 /// off the run, which is what makes `summary_file` the only summary target.
-/// `timeout` is the script's `FR_TIMEOUT`, and the unreachable case needs a `0`
-/// deadline. Answers the exit code and stdout plus stderr.
+/// `extra_env` carries the runner-provided variables a case needs, such as
+/// `GITHUB_EVENT_PATH` and `GITHUB_API_URL` — after the clear they are the only
+/// way those reach the script. `timeout` is the script's `FR_TIMEOUT`, and the
+/// unreachable case needs a `0` deadline. Answers the exit code and stdout plus
+/// stderr.
 ///
 /// `.output()` blocks until the script exits and the script polls the app this test
 /// serves, so it runs on a blocking thread rather than the runtime one that answers
@@ -135,6 +147,7 @@ async fn run_summary(
     test_outcome: &str,
     timeout: &str,
     summary_file: &str,
+    extra_env: &[(&str, &str)],
 ) -> (i32, String) {
     let script = summary_script();
     let base_url = base_url.to_owned();
@@ -142,9 +155,14 @@ async fn run_summary(
     let outcome = test_outcome.to_owned();
     let timeout = timeout.to_owned();
     let file = summary_file.to_owned();
+    let extra: Vec<(String, String)> = extra_env
+        .iter()
+        .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+        .collect();
     let path = std::env::var_os("PATH").unwrap_or_default();
     let output = tokio::task::spawn_blocking(move || {
-        std::process::Command::new("bash")
+        let mut command = std::process::Command::new("bash");
+        command
             .arg(script)
             .env_clear()
             .env("PATH", path)
@@ -158,8 +176,11 @@ async fn run_summary(
             .env("FR_POLL_INTERVAL", POLL_INTERVAL)
             .env("FR_SUMMARY_FILE", file)
             .env("FR_GATE", gate)
-            .env("FR_TEST_OUTCOME", outcome)
-            .output()
+            .env("FR_TEST_OUTCOME", outcome);
+        for (key, value) in &extra {
+            command.env(key, value);
+        }
+        command.output()
     })
     .await
     .expect("the summary script ran on a blocking thread")
@@ -185,6 +206,20 @@ fn two_failures_junit() -> &'static str {
     <testcase classname="tests.test_app" name="test_alpha" time="0.512">
       <failure message="AssertionError: boom">AssertionError</failure>
     </testcase>
+    <testcase classname="tests.test_app" name="test_beta" time="0.902">
+      <failure message="AssertionError: boom">AssertionError</failure>
+    </testcase>
+  </testsuite>
+</testsuites>
+"#
+}
+
+/// One report with a single failed Test in job [`JOB_ID`], failing for the first
+/// time: the smallest job that still has a failure to talk about.
+fn one_failure_junit() -> &'static str {
+    r#"<?xml version="1.0" encoding="utf-8"?>
+<testsuites>
+  <testsuite name="pytest" errors="0" failures="1" skipped="0" tests="1" time="1.412">
     <testcase classname="tests.test_app" name="test_beta" time="0.902">
       <failure message="AssertionError: boom">AssertionError</failure>
     </testcase>
@@ -261,7 +296,7 @@ async fn summary_action_gate_on_exits_zero_when_every_failure_is_quarantined() {
     }
     let file = summary_file("gate_on_all_quarantined");
 
-    let (code, output) = run_summary(&base_url, "true", "failure", "5", &file).await;
+    let (code, output) = run_summary(&base_url, "true", "failure", "5", &file, &[]).await;
 
     assert_eq!(code, 0, "a quarantined failure is not the job's: {output}");
     let written = std::fs::read_to_string(&file)
@@ -295,7 +330,7 @@ async fn summary_action_gate_on_exits_one_and_names_an_unquarantined_failure() {
     quarantine(&app, "test_alpha").await;
     let file = summary_file("gate_on_one_unquarantined");
 
-    let (code, output) = run_summary(&base_url, "true", "failure", "5", &file).await;
+    let (code, output) = run_summary(&base_url, "true", "failure", "5", &file, &[]).await;
 
     assert_eq!(code, 1, "an unquarantined failure fails the gate: {output}");
     assert!(
@@ -334,7 +369,7 @@ async fn summary_action_gate_on_ignores_a_failure_that_passed_on_retry() {
 
     for outcome in ["success", "failure"] {
         let file = summary_file(&format!("gate_on_passed_on_retry_{outcome}"));
-        let (code, output) = run_summary(&base_url, "true", outcome, "5", &file).await;
+        let (code, output) = run_summary(&base_url, "true", outcome, "5", &file, &[]).await;
         assert_eq!(
             code, 0,
             "a Test that passed on retry with outcome {outcome}: {output}"
@@ -362,7 +397,7 @@ async fn summary_action_gate_on_without_a_summary_target_still_decides() {
     quarantine(&app, "test_alpha").await;
 
     // An empty `summary-file` and a cleared environment mean no target at all.
-    let (code, output) = run_summary(&base_url, "true", "failure", "5", "").await;
+    let (code, output) = run_summary(&base_url, "true", "failure", "5", "", &[]).await;
     assert_eq!(
         code, 1,
         "the gate polls and decides with nothing to write to: {output}"
@@ -373,7 +408,7 @@ async fn summary_action_gate_on_without_a_summary_target_still_decides() {
     );
 
     // With the gate off, that early exit is the unchanged behaviour.
-    let (code, output) = run_summary(&base_url, "false", "failure", "5", "").await;
+    let (code, output) = run_summary(&base_url, "false", "failure", "5", "", &[]).await;
     assert_eq!(code, 0, "the gate-off early exit stays: {output}");
     assert!(
         output.contains("no summary target"),
@@ -396,7 +431,7 @@ async fn summary_action_gate_true_and_unreachable_follows_the_test_outcome() {
 
     for (outcome, expected) in [("failure", 1), ("success", 0)] {
         let file = summary_file(&format!("unreachable_{outcome}"));
-        let (code, output) = run_summary(&base_url, "true", outcome, "0", &file).await;
+        let (code, output) = run_summary(&base_url, "true", outcome, "0", &file, &[]).await;
         assert_eq!(
             code, expected,
             "unreachable with outcome {outcome} decides on the test step: {output}"
@@ -415,7 +450,7 @@ async fn summary_action_gate_true_and_unreachable_follows_the_test_outcome() {
 
     // With the gate off this is the old read-only step again: exit 0.
     let file = summary_file("unreachable_gate_off");
-    let (code, output) = run_summary(&base_url, "false", "failure", "0", &file).await;
+    let (code, output) = run_summary(&base_url, "false", "failure", "0", &file, &[]).await;
     assert_eq!(code, 0, "the gate-off unreachable path stays: {output}");
     assert!(
         !output.contains("::notice::FlakeRadar gate"),
@@ -424,7 +459,7 @@ async fn summary_action_gate_true_and_unreachable_follows_the_test_outcome() {
 
     // And with no summary target at all, the early exit must not skip the decision:
     // the fallback still happens, because it is the only thing gate mode has.
-    let (code, output) = run_summary(&base_url, "true", "failure", "0", "").await;
+    let (code, output) = run_summary(&base_url, "true", "failure", "0", "", &[]).await;
     assert_eq!(
         code, 1,
         "the fallback decides with nothing to write to: {output}"
@@ -446,7 +481,7 @@ async fn summary_action_gate_true_and_timeout_follows_the_test_outcome() {
 
     for (outcome, expected) in [("failure", 1), ("success", 0)] {
         let file = summary_file(&format!("timeout_{outcome}"));
-        let (code, output) = run_summary(&base_url, "true", outcome, "0", &file).await;
+        let (code, output) = run_summary(&base_url, "true", outcome, "0", &file, &[]).await;
         assert_eq!(
             code, expected,
             "timeout with outcome {outcome} decides on the test step: {output}"
@@ -484,7 +519,7 @@ async fn summary_action_gate_true_and_incomplete_answer_follows_the_test_outcome
 
     for (outcome, expected) in [("failure", 1), ("success", 0)] {
         let file = summary_file(&format!("incomplete_{outcome}"));
-        let (code, output) = run_summary(&base_url, "true", outcome, "5", &file).await;
+        let (code, output) = run_summary(&base_url, "true", outcome, "5", &file, &[]).await;
         assert_eq!(
             code, expected,
             "an incomplete answer with outcome {outcome} decides on the test step: {output}"
@@ -514,7 +549,7 @@ async fn summary_action_gate_off_writes_the_table_and_never_fails_the_job() {
     process_all(&db).await;
     let file = summary_file("gate_off_writes_the_table_and_never_fails_the_job");
 
-    let (code, output) = run_summary(&base_url, "false", "failure", "5", &file).await;
+    let (code, output) = run_summary(&base_url, "false", "failure", "5", &file, &[]).await;
 
     assert_eq!(
         code, 0,
@@ -534,5 +569,153 @@ async fn summary_action_gate_off_writes_the_table_and_never_fails_the_job() {
             "{name} is not in the table: {written}"
         );
     }
+    serving.abort();
+}
+
+/// The stub every skip case points `GITHUB_API_URL` at: nothing is mounted, so
+/// any request the script makes is one it must not have made, and
+/// `received_requests` sees it all the same.
+///
+/// The runner variables the comment decision reads ride in on [`run_summary`]'s
+/// `extra_env`, because the action's own `env:` block passes only the inputs.
+#[tokio::test]
+async fn summary_action_pr_comment_sends_nothing_for_a_fork_pr() {
+    // A fork's head repository is not the base one the token is scoped to, so the
+    // comment does not apply to this run: the step still polls, still writes the
+    // same job summary, and still exits 0 — it just sends nothing.
+    let db = TestDb::new().await.expect("a test database");
+    let app = router(&db);
+    let (base_url, serving) = serve(&db).await;
+    let server = MockServer::start().await;
+    upload(&app, one_failure_junit()).await;
+    process_all(&db).await;
+    let file = summary_file("pr_comment_fork");
+    let event = event_file(
+        "fork",
+        r#"{"pull_request":{"number":12,"head":{"repo":{"full_name":"someone/app"}},"base":{"repo":{"full_name":"acme/app"}}}}"#,
+    );
+
+    let (code, output) = run_summary(
+        &base_url,
+        "false",
+        "failure",
+        "5",
+        &file,
+        &[
+            ("GITHUB_API_URL", &server.uri()),
+            ("FR_PR_COMMENT", "true"),
+            ("FR_GITHUB_TOKEN", "gh-token"),
+            ("FR_COMMENT_KEY", "ci/test"),
+            ("GITHUB_EVENT_PATH", &event),
+        ],
+    )
+    .await;
+
+    assert_eq!(code, 0, "a fork PR never fails the step: {output}");
+    let written = std::fs::read_to_string(&file)
+        .unwrap_or_else(|error| panic!("reading {file}: {error}\n{output}"));
+    assert!(
+        written.contains("0 of 1 failures are known flaky tests"),
+        "the summary is still written with the comment on: {written}"
+    );
+    let requests = server
+        .received_requests()
+        .await
+        .expect("the stub records requests");
+    assert!(
+        requests.is_empty(),
+        "a fork PR must send nothing: {} requests",
+        requests.len()
+    );
+    serving.abort();
+}
+
+#[tokio::test]
+async fn summary_action_pr_comment_sends_nothing_without_a_pull_request_event() {
+    // A push (or any non pull_request event) has no pull request to comment on:
+    // nothing is sent, and the step stays read-only.
+    let db = TestDb::new().await.expect("a test database");
+    let app = router(&db);
+    let (base_url, serving) = serve(&db).await;
+    let server = MockServer::start().await;
+    upload(&app, one_failure_junit()).await;
+    process_all(&db).await;
+    let file = summary_file("pr_comment_not_a_pr");
+    let event = event_file("not_a_pr", r#"{"ref":"refs/heads/main"}"#);
+
+    let (code, output) = run_summary(
+        &base_url,
+        "false",
+        "failure",
+        "5",
+        &file,
+        &[
+            ("GITHUB_API_URL", &server.uri()),
+            ("FR_PR_COMMENT", "true"),
+            ("FR_GITHUB_TOKEN", "gh-token"),
+            ("FR_COMMENT_KEY", "ci/test"),
+            ("GITHUB_EVENT_PATH", &event),
+        ],
+    )
+    .await;
+
+    assert_eq!(
+        code, 0,
+        "an event without a pull_request never fails: {output}"
+    );
+    let requests = server
+        .received_requests()
+        .await
+        .expect("the stub records requests");
+    assert!(
+        requests.is_empty(),
+        "an event without a pull_request must send nothing: {} requests",
+        requests.len()
+    );
+    serving.abort();
+}
+
+#[tokio::test]
+async fn summary_action_pr_comment_sends_nothing_when_it_is_off() {
+    // The default: `pr-comment` false sends nothing to GitHub, whatever the event
+    // says — a workflow that never asked for comments gets none.
+    let db = TestDb::new().await.expect("a test database");
+    let app = router(&db);
+    let (base_url, serving) = serve(&db).await;
+    let server = MockServer::start().await;
+    upload(&app, one_failure_junit()).await;
+    process_all(&db).await;
+    let file = summary_file("pr_comment_off");
+    let event = event_file(
+        "off",
+        r#"{"pull_request":{"number":12,"head":{"repo":{"full_name":"acme/app"}},"base":{"repo":{"full_name":"acme/app"}}}}"#,
+    );
+
+    let (code, output) = run_summary(
+        &base_url,
+        "false",
+        "failure",
+        "5",
+        &file,
+        &[
+            ("GITHUB_API_URL", &server.uri()),
+            ("FR_PR_COMMENT", "false"),
+            ("FR_GITHUB_TOKEN", "gh-token"),
+            ("FR_COMMENT_KEY", "ci/test"),
+            ("GITHUB_EVENT_PATH", &event),
+        ],
+    )
+    .await;
+
+    assert_eq!(code, 0, "the default never fails the step: {output}");
+    let requests = server
+        .received_requests()
+        .await
+        .expect("the stub records requests");
+    assert!(
+        requests.is_empty(),
+        "pr-comment off must send nothing: {} requests",
+        requests.len()
+    );
     serving.abort();
 }
