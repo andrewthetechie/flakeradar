@@ -1446,3 +1446,37 @@ impl ReportBuilder {
         .await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! The defaults a row is seeded with are the ones the module doc states, so
+    //! they are pinned here rather than left to whichever integration test
+    //! happens to reach a setter first.
+
+    use crate::db::TestDb;
+    use crate::factories::{FIXTURE_INSTANT, make_project, make_test_case};
+
+    /// A Test built without a first-seen setter takes the fixture instant, and
+    /// the setter overrides it, so a test states how old its Test is.
+    #[tokio::test]
+    async fn a_test_defaults_to_the_fixture_instant_and_the_setter_overrides_it() {
+        let db = TestDb::new().await.expect("a migrated test database");
+        let project = make_project().create(&db).await;
+        let at = (FIXTURE_INSTANT - chrono::Duration::days(3)).fixed_offset();
+
+        let seeded = make_test_case(&project).create(&db).await;
+        assert_eq!(seeded.first_seen_at, FIXTURE_INSTANT.fixed_offset());
+        assert_eq!(seeded.last_seen_at, FIXTURE_INSTANT.fixed_offset());
+
+        let told = make_test_case(&project)
+            .name("t_old")
+            .first_seen_at(at)
+            .create(&db)
+            .await;
+        assert_eq!(
+            told.first_seen_at, at,
+            "the setter decides the first-seen instant"
+        );
+        assert_eq!(told.last_seen_at, FIXTURE_INSTANT.fixed_offset());
+    }
+}
