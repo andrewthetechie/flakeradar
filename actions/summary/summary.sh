@@ -209,6 +209,7 @@ ${markdown}"
   # Find our earlier comment: list page by page until a page holds fewer than
   # 100 comments, and take the first comment whose body starts with the marker.
   comment_id=""
+  list_ok=true                  # a failed list leaves the state unknown
   page=1
   while :; do
     # 000 means curl itself failed (network / DNS / connection refused).
@@ -218,6 +219,7 @@ ${markdown}"
       2>/dev/null) || http_code="000"
     if [ "$http_code" != "200" ]; then
       echo "::warning::FlakeRadar summary: listing the pull request's comments failed (HTTP ${http_code})."
+      list_ok=false
       break
     fi
     found=$(jq -r --arg m "$marker" \
@@ -246,12 +248,15 @@ ${markdown}"
       2*) ;;
       *) echo "::warning::FlakeRadar summary: updating the pull request comment failed (HTTP ${http_code})." ;;
     esac
-  elif [ "$(jq -r --arg job "$FR_JOB_ID" '
+  elif [ "$list_ok" = true ] && [ "$(jq -r --arg job "$FR_JOB_ID" '
       ([ .failures[] | select($job == "" or .ci_job_id == $job) ] | length) > 0
     ' "$resp_file" 2>/dev/null)" = "true" ]; then
     # Nothing of ours exists, and the job has failures (the table's own job
     # filter): post the first comment. A green job without a comment stays
-    # silent instead of announcing its emptiness.
+    # silent instead of announcing its emptiness. A failed listing above leaves
+    # the state unknown — our comment may exist — so nothing is posted: a
+    # warning was already printed, and skipping beats duplicating the comment
+    # on the next re-run.
     comment_json=$(jq -cn --arg body "$comment_body" '{body: $body}')
     http_code=$(curl -sS -o "$comment_file" -w '%{http_code}' --max-time 20 \
       -X POST "${gh_headers[@]}" -H "Content-Type: application/json" \

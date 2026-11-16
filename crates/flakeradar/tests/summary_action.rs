@@ -1118,6 +1118,76 @@ async fn summary_action_pr_comment_warns_and_stays_green_when_github_fails() {
 }
 
 #[tokio::test]
+async fn summary_action_pr_comment_posts_nothing_when_the_comment_list_fails() {
+    // The list call failing leaves it unknown whether our comment exists: a POST
+    // would duplicate it on the next re-run, so a failed listing only warns and
+    // stays silent — with the exit untouched, as for any other failed call.
+    let db = TestDb::new().await.expect("a test database");
+    let app = router(&db);
+    let (base_url, serving) = serve(&db).await;
+    let server = MockServer::start().await;
+    upload(&app, one_failure_junit()).await;
+    process_all(&db).await;
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/app/issues/12/comments"))
+        .respond_with(ResponseTemplate::new(500).set_body_json(json!({"message": "no"})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/repos/acme/app/issues/12/comments"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({"id": 777})))
+        .expect(0)
+        .mount(&server)
+        .await;
+    Mock::given(method("PATCH"))
+        .and(path("/repos/acme/app/issues/comments/555"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": 555})))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let file = summary_file("pr_comment_list_error");
+    let event = event_file("list_error", PR_EVENT);
+
+    let (code, output) = run_summary(
+        &base_url,
+        "false",
+        "failure",
+        "5",
+        &file,
+        &[
+            ("GITHUB_API_URL", &server.uri()),
+            ("FR_PR_COMMENT", "true"),
+            ("FR_GITHUB_TOKEN", "gh-token"),
+            ("FR_COMMENT_KEY", "ci/test"),
+            ("GITHUB_EVENT_PATH", &event),
+        ],
+    )
+    .await;
+
+    assert_eq!(code, 0, "a failed list never fails the step: {output}");
+    assert_eq!(
+        output.matches("::warning::").count(),
+        1,
+        "exactly one warning names the failed listing: {output}"
+    );
+    let requests = server
+        .received_requests()
+        .await
+        .expect("the stub records requests");
+    assert!(
+        sent(&requests, "POST", "/repos/acme/app/issues/12/comments").is_none(),
+        "an unknown comment state must not post a duplicate: {requests:?}"
+    );
+    assert_eq!(
+        requests.len(),
+        1,
+        "only the failed listing went out: {requests:?}"
+    );
+    serving.abort();
+}
+
+#[tokio::test]
 async fn summary_action_pr_comment_sends_the_comment_before_the_gate_decides() {
     // The comment is sent before the gate runs, so a gated failure still leaves
     // its comment on the pull request even though the step then exits 1.
