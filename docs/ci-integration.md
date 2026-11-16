@@ -419,9 +419,11 @@ failures stay until `EXECUTION_RETENTION_DAYS`.
 
 Add `andrewthetechie/flakeradar/actions/summary@<ref>` as a step after the
 report action. It reads the failures endpoint and writes to the GitHub job
-summary which failures of this job FlakeRadar already knows as flaky. It only
-reads, and it fails the job only in gate mode (`gate: true`). With `gate` false or
-unset — the default — the step exits 0 whatever the failures are.
+summary which failures of this job FlakeRadar already knows as flaky. It fails
+the job only in gate mode (`gate: true`); with `gate` false or unset — the
+default — the step exits 0 whatever the failures are. The step writes to GitHub
+only the job summary, unless `pr-comment` is `true`, which additionally writes
+one pull-request comment (see below).
 
 In gate mode the summary step decides the job instead of the test command, so the
 test step runs with `continue-on-error: true` and the summary step reads its
@@ -466,6 +468,9 @@ choice and not a second flag on the Test.
 | `summary-file` | no | Also append the same Markdown to this file path. The self-test uses it to examine the output. |
 | `gate` | no (`false`) | `true` fails the step for a failure of this job that is not quarantined, and prints one `::error::` line naming those failures. Any other value — the default — keeps the read-only behaviour, where the step exits 0 whatever the failures are. |
 | `test-outcome` | no (empty) | The outcome of the step that ran the tests — `${{ steps.tests.outcome }}`: `success`, `failure`, `cancelled` or `skipped`. Gate mode reads it only when FlakeRadar cannot decide; `success` is the only value that then exits 0. |
+| `pr-comment` | no (`false`) | `true` also writes one pull-request comment with this job's table (see below). Any other value — the default — sends nothing to GitHub. |
+| `github-token` | no (`${{ github.token }}`) | The token the pull-request comment call authenticates with. The job needs `permissions: pull-requests: write` for it. |
+| `comment-key` | no (empty = `<workflow>/<job>`) | The marker namespace of the pull-request comment: one comment per key. The empty default already gives each job its own comment; a matrix job passes its leg explicitly, such as `ci/test-${{ matrix.os }}`. |
 
 The action polls `GET /api/ci-runs/{id}/failures?repo=...&ci_run_attempt=...`
 until `reports.pending` is 0. It then keeps only the failures with the
@@ -504,3 +509,26 @@ not have falls back to `test-outcome`: `success` is the only value that exits 0,
 covers an answer that cannot settle the question — `truncated` true, or
 `reports.failed` above 0. One `::notice::` line names the rule that could not
 decide. See [ADR 0011](adr/0011-quarantine-gate-mode.md).
+
+With `pr-comment: true` the step also writes one comment on the pull request.
+Its first line is the marker `<!-- flakeradar-summary:<comment-key> -->`,
+followed by the same table the job summary gets. The step finds the existing
+comment by that marker before it writes: on a re-run it edits that comment
+instead of adding a second one. With `comment-key` empty the key is
+`<workflow>/<job>`, so each job of the workflow keeps its own comment; a matrix
+job passes its leg, such as `ci/test-${{ matrix.os }}`.
+
+The step stays silent — it sends nothing to GitHub — when the event is not a
+pull request, or when the pull request comes from a fork of the repository,
+because the workflow's token cannot comment there. The comment is written before
+the gate decides, so a gated failure still gets its comment. A failed GitHub
+call prints one `::warning::` line and never changes the exit code. The comment
+call authenticates with `github-token`, so the job needs:
+
+```yaml
+permissions:
+  pull-requests: write
+```
+
+Without that permission the step fails to comment and the only hint is the
+`::warning::` line, so set it before the first run.
