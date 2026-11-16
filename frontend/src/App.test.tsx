@@ -1096,12 +1096,13 @@ describe("App", () => {
     return { posts, acks, lists };
   }
 
-  // Mutation wiring: each trigger surface opens the right dialog, and the
-  // direct path posts the api's reset body. The flow rules themselves —
-  // nothing posts until Confirm, cancel records nothing, the pending entity
-  // clears whatever the answer, the refresh and drawer reloads after a
-  // settled confirm, the error mapping — are pinned by the confirmed-decision
-  // module's own suite (confirmedDecision.test.ts).
+  // Mutation wiring: each trigger surface opens the right dialog, the direct
+  // path posts the api's reset body, and the confirm path posts the body the
+  // dialog collected — the choice-to-api mapping lives in App's declarations.
+  // The flow rules themselves — nothing posts until Confirm, cancel records
+  // nothing, the pending entity clears whatever the answer, the refresh and
+  // drawer reloads after a settled confirm, the error mapping — are pinned by
+  // the confirmed-decision module's own suite (confirmedDecision.test.ts).
   it("the leaderboard Quarantine button opens the Quarantine dialog", async () => {
     stubTests(false);
     render(<App />);
@@ -1131,6 +1132,27 @@ describe("App", () => {
 
     expect(posts()).toHaveLength(1);
     expect(posts()[0].body).toEqual({ quarantined: false });
+  });
+
+  it("a confirmed quarantine posts the reason and expiry the dialog collected", async () => {
+    const { posts } = stubTests(false);
+    render(<App />);
+    expect(await screen.findByText("login")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Quarantine" }));
+    const dialog = await screen.findByRole("dialog", { name: /Quarantine login/ });
+    await userEvent.type(within(dialog).getByRole("textbox", { name: /Reason/ }), "flaky on CI");
+    await userEvent.click(within(dialog).getByRole("radio", { name: "14 days" }));
+    await userEvent.click(within(dialog).getByRole("button", { name: "Confirm" }));
+    await act(async () => {});
+
+    expect(posts()).toHaveLength(1);
+    expect(posts()[0].url).toBe("/api/tests/5/quarantine");
+    expect(posts()[0].body).toEqual({
+      quarantined: true,
+      reason: "flaky on CI",
+      expires_in_days: 14,
+    });
   });
 
   /** Opens the Test drawer for the "login" row, like the leaderboard would. */
@@ -1163,6 +1185,24 @@ describe("App", () => {
 
     expect(acks()).toHaveLength(1);
     expect(acks()[0].body).toEqual({ acknowledged: false });
+  });
+
+  it("a confirmed Test acknowledgement posts the reason and duration the dialog collected", async () => {
+    const { acks } = stubTests(false);
+    render(<App />);
+    expect(await screen.findByText("login")).toBeInTheDocument();
+    const drawer = await openDrawer();
+
+    await userEvent.click(within(drawer).getByRole("button", { name: "Acknowledge" }));
+    const dialog = await screen.findByRole("dialog", { name: /Acknowledge renders/ });
+    await userEvent.type(within(dialog).getByRole("textbox", { name: /Reason/ }), "known flake");
+    await userEvent.click(within(dialog).getByRole("radio", { name: "30 days" }));
+    await userEvent.click(within(dialog).getByRole("button", { name: "Confirm" }));
+    await act(async () => {});
+
+    expect(acks()).toHaveLength(1);
+    expect(acks()[0].url).toBe("/api/tests/5/acknowledge");
+    expect(acks()[0].body).toEqual({ acknowledged: true, reason: "known flake", days: 30 });
   });
 
   /**
