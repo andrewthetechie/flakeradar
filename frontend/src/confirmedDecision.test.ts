@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, renderHook } from "@testing-library/react";
+import { ApiError } from "./api";
 import { useConfirmedDecision } from "./confirmedDecision";
 
 /** A call whose answer the test hands over by hand. */
@@ -281,6 +282,36 @@ describe("useConfirmedDecision", () => {
     });
     expect(onError).toHaveBeenCalledWith("quarantine 7 -> 500");
     expect(log).toEqual(["call", "error:quarantine 7 -> 500"]);
+  });
+
+  /**
+   * The api rejects failed mutations with an ApiError, so the hook's Error arm
+   * must keep its message — the "<url> -> <status>" wording the dashboard
+   * banner shows.
+   */
+  it("a rejecting call maps an ApiError's message onto the error callback", async () => {
+    const log: string[] = [];
+    const onError = vi.fn((message: string) => log.push(`error:${message}`));
+    const { result } = renderHook(() =>
+      useConfirmedDecision<Row, Choice>({
+        call: step("call", log, () =>
+          Promise.reject(new ApiError("acknowledge tests 5 -> 500", 500)),
+        ),
+        isDecided: (t) => t.decided,
+        refresh: step("refresh", log, () => Promise.resolve()),
+        onError,
+      }),
+    );
+    await act(async () => {
+      await result.current.toggle(row(5, false));
+    });
+
+    await act(async () => {
+      await result.current.confirm(choice);
+      await settled();
+    });
+    expect(onError).toHaveBeenCalledWith("acknowledge tests 5 -> 500");
+    expect(log).toEqual(["call", "error:acknowledge tests 5 -> 500"]);
   });
 
   it("a non-Error rejection is mapped through String onto the error callback", async () => {

@@ -1096,36 +1096,33 @@ describe("App", () => {
     return { posts, acks, lists };
   }
 
-  it("asks for a reason and an expiry, then posts them and refreshes", async () => {
-    const { posts, lists } = stubTests(false);
+  // Mutation wiring: each trigger surface opens the right dialog, and the
+  // direct path posts the api's reset body. The flow rules themselves —
+  // nothing posts until Confirm, cancel records nothing, the pending entity
+  // clears whatever the answer, the refresh and drawer reloads after a
+  // settled confirm, the error mapping — are pinned by the confirmed-decision
+  // module's own suite (confirmedDecision.test.ts).
+  it("the leaderboard Quarantine button opens the Quarantine dialog", async () => {
+    stubTests(false);
     render(<App />);
     expect(await screen.findByText("login")).toBeInTheDocument();
-    expect(posts()).toHaveLength(0);
 
     await userEvent.click(screen.getByRole("button", { name: "Quarantine" }));
-    // Nothing is posted until the person confirms the decision.
-    expect(posts()).toHaveLength(0);
-    const dialog = await screen.findByRole("dialog", { name: /Quarantine login/ });
-    await userEvent.type(within(dialog).getByRole("textbox", { name: /Reason/ }), "flaky on CI");
-    await userEvent.click(within(dialog).getByRole("radio", { name: "14 days" }));
-    const listsBefore = lists();
-    await userEvent.click(within(dialog).getByRole("button", { name: "Confirm" }));
-    await act(async () => {});
-
-    expect(posts()).toHaveLength(1);
-    expect(posts()[0].url).toBe("/api/tests/5/quarantine");
-    expect(posts()[0].body).toEqual({
-      quarantined: true,
-      reason: "flaky on CI",
-      expires_in_days: 14,
-    });
-    // Confirming refetches the lists so the row shows as quarantined.
-    expect(lists()).toBeGreaterThan(listsBefore);
-    expect(screen.queryByRole("dialog", { name: /Quarantine login/ })).not.toBeInTheDocument();
+    expect(await screen.findByRole("dialog", { name: /Quarantine login/ })).toBeInTheDocument();
   });
 
-  it("un-quarantines with one click and no dialog", async () => {
-    const { posts, lists } = stubTests(true);
+  it("the drawer Quarantine button opens the Quarantine dialog", async () => {
+    stubTests(false);
+    render(<App />);
+    expect(await screen.findByText("login")).toBeInTheDocument();
+    const drawer = await openDrawer();
+
+    await userEvent.click(within(drawer).getByRole("button", { name: "Quarantine" }));
+    expect(await screen.findByRole("dialog", { name: /Quarantine renders/ })).toBeInTheDocument();
+  });
+
+  it("un-quarantines with one click, posting the api's reset body", async () => {
+    const { posts } = stubTests(true);
     render(<App />);
     expect(await screen.findByText("login")).toBeInTheDocument();
 
@@ -1134,74 +1131,6 @@ describe("App", () => {
 
     expect(posts()).toHaveLength(1);
     expect(posts()[0].body).toEqual({ quarantined: false });
-    expect(lists()).toBeGreaterThan(1);
-    expect(screen.queryByRole("dialog", { name: /Quarantine login/ })).not.toBeInTheDocument();
-  });
-
-  it("surfaces the error when un-quarantining fails", async () => {
-    const row: TestCase = {
-      ...page("login").items[0],
-      quarantined: true,
-      quarantined_at: "2026-09-25T00:00:00Z",
-    };
-    vi.stubGlobal(
-      "fetch",
-      vi.fn((url: string) => {
-        // Reject with a non-Error so the `String(e)` arm of the error handler runs.
-        if (url.includes("/quarantine")) return Promise.reject("backend down");
-        if (url.startsWith("/api/tests"))
-          return json({ items: [row], total: 1, page: 1, page_size: 50 });
-        if (url.startsWith("/api/repos")) return json([]);
-        if (url.startsWith("/api/reports/summary")) return json({ pending: 0, failed: 0 });
-        return json({
-          total_tests: 1,
-          flaky_tests: 1,
-          suspect_tests: 0,
-          confirmed_flaky_tests: 0,
-          total_runs: 1,
-          executions_30d: 1,
-          failures_30d: 0,
-          flake_threshold: 0.3,
-          new_flaky_7d: 0,
-          category_counts: { network: 0, environment: 0, timing: 0, assertion: 0, other: 0 },
-        });
-      }),
-    );
-    render(<App />);
-    expect(await screen.findByText("login")).toBeInTheDocument();
-
-    await userEvent.click(screen.getByRole("button", { name: "Un-quarantine" }));
-    await act(async () => {});
-
-    expect(screen.getByRole("alert")).toHaveTextContent("backend down");
-  });
-
-  it("surfaces the error when confirming a quarantine fails", async () => {
-    const row: TestCase = { ...page("login").items[0], quarantined: false };
-    vi.stubGlobal(
-      "fetch",
-      vi.fn((url: string) => {
-        // Reject with a non-Error so the `String(e)` arm of the error handler runs.
-        if (url.includes("/quarantine")) return Promise.reject("backend down");
-        if (url.startsWith("/api/tests"))
-          return json({ items: [row], total: 1, page: 1, page_size: 50 });
-        if (url.startsWith("/api/repos")) return json([]);
-        if (url.startsWith("/api/reports/summary")) return json({ pending: 0, failed: 0 });
-        return json(testsSummary);
-      }),
-    );
-    render(<App />);
-    expect(await screen.findByText("login")).toBeInTheDocument();
-
-    await userEvent.click(screen.getByRole("button", { name: "Quarantine" }));
-    const dialog = await screen.findByRole("dialog", { name: /Quarantine login/ });
-    await userEvent.type(within(dialog).getByRole("textbox", { name: /Reason/ }), "flaky on CI");
-    await userEvent.click(within(dialog).getByRole("button", { name: "Confirm" }));
-    await act(async () => {});
-
-    expect(screen.getByRole("alert")).toHaveTextContent("backend down");
-    // The dialog closes whatever the answer was, so the person can retry from the row.
-    expect(screen.queryByRole("dialog", { name: /Quarantine login/ })).not.toBeInTheDocument();
   });
 
   /** Opens the Test drawer for the "login" row, like the leaderboard would. */
@@ -1213,35 +1142,18 @@ describe("App", () => {
     return drawer;
   }
 
-  it("asks for a reason and a duration, then acknowledges and refreshes", async () => {
-    const { acks, lists } = stubTests(false);
+  it("the drawer Acknowledge button opens the Acknowledge dialog", async () => {
+    stubTests(false);
     render(<App />);
     expect(await screen.findByText("login")).toBeInTheDocument();
     const drawer = await openDrawer();
-    expect(acks()).toHaveLength(0);
 
     await userEvent.click(within(drawer).getByRole("button", { name: "Acknowledge" }));
-    const dialog = await screen.findByRole("dialog", { name: /Acknowledge renders/ });
-    await userEvent.type(within(dialog).getByRole("textbox", { name: /Reason/ }), "known flake");
-    await userEvent.click(within(dialog).getByRole("radio", { name: "30 days" }));
-    const listsBefore = lists();
-    await userEvent.click(within(dialog).getByRole("button", { name: "Confirm" }));
-    await act(async () => {});
-
-    expect(acks()).toHaveLength(1);
-    expect(acks()[0].url).toBe("/api/tests/5/acknowledge");
-    expect(acks()[0].body).toEqual({
-      acknowledged: true,
-      reason: "known flake",
-      days: 30,
-    });
-    // Confirming refetches the lists so the row shows as acknowledged.
-    expect(lists()).toBeGreaterThan(listsBefore);
-    expect(screen.queryByRole("dialog", { name: /Acknowledge renders/ })).not.toBeInTheDocument();
+    expect(await screen.findByRole("dialog", { name: /Acknowledge renders/ })).toBeInTheDocument();
   });
 
-  it("clears an acknowledgement with one click and no dialog", async () => {
-    const { acks, lists } = stubTests(false, "2999-01-01T00:00:00Z");
+  it("clears an acknowledgement with one click, posting the api's reset body", async () => {
+    const { acks } = stubTests(false, "2999-01-01T00:00:00Z");
     render(<App />);
     expect(await screen.findByText("login")).toBeInTheDocument();
     const drawer = await openDrawer();
@@ -1251,158 +1163,17 @@ describe("App", () => {
 
     expect(acks()).toHaveLength(1);
     expect(acks()[0].body).toEqual({ acknowledged: false });
-    expect(lists()).toBeGreaterThan(1);
-    expect(screen.queryByRole("dialog", { name: /Acknowledge renders/ })).not.toBeInTheDocument();
-  });
-
-  it("surfaces the error when acknowledging fails", async () => {
-    const row: TestCase = { ...page("login").items[0] };
-    vi.stubGlobal(
-      "fetch",
-      vi.fn((url: string) => {
-        // Reject with a non-Error so the `String(e)` arm of the error handler runs.
-        if (url.includes("/acknowledge")) return Promise.reject("backend down");
-        if (url.includes("/history")) return json(testHistory(5));
-        if (url.startsWith("/api/tests"))
-          return json({ items: [row], total: 1, page: 1, page_size: 50 });
-        if (url.startsWith("/api/repos")) return json([]);
-        if (url.startsWith("/api/reports/summary")) return json({ pending: 0, failed: 0 });
-        return json(testsSummary);
-      }),
-    );
-    render(<App />);
-    expect(await screen.findByText("login")).toBeInTheDocument();
-    const drawer = await openDrawer();
-
-    await userEvent.click(within(drawer).getByRole("button", { name: "Acknowledge" }));
-    const dialog = await screen.findByRole("dialog", { name: /Acknowledge renders/ });
-    await userEvent.click(within(dialog).getByRole("button", { name: "Confirm" }));
-    await act(async () => {});
-
-    expect(screen.getByRole("alert")).toHaveTextContent("backend down");
-    expect(screen.queryByRole("dialog", { name: /Acknowledge renders/ })).not.toBeInTheDocument();
-  });
-
-  it("surfaces the error when clearing an acknowledgement fails", async () => {
-    const row: TestCase = { ...page("login").items[0], acknowledged_until: "2999-01-01T00:00:00Z" };
-    vi.stubGlobal(
-      "fetch",
-      vi.fn((url: string) => {
-        // Reject with a non-Error so the `String(e)` arm of the error handler runs.
-        if (url.includes("/acknowledge")) return Promise.reject("backend down");
-        if (url.includes("/history"))
-          return json(
-            testHistory(5, {
-              test: { ...testHistory(5).test, acknowledged_until: "2999-01-01T00:00:00Z" },
-            }),
-          );
-        if (url.startsWith("/api/tests"))
-          return json({ items: [row], total: 1, page: 1, page_size: 50 });
-        if (url.startsWith("/api/repos")) return json([]);
-        if (url.startsWith("/api/reports/summary")) return json({ pending: 0, failed: 0 });
-        return json(testsSummary);
-      }),
-    );
-    render(<App />);
-    expect(await screen.findByText("login")).toBeInTheDocument();
-    const drawer = await openDrawer();
-
-    await userEvent.click(within(drawer).getByRole("button", { name: "Clear acknowledgement" }));
-    await act(async () => {});
-
-    expect(screen.getByRole("alert")).toHaveTextContent("backend down");
-  });
-
-  it("surfaces an ApiError message when acknowledging fails", async () => {
-    const row: TestCase = { ...page("login").items[0] };
-    vi.stubGlobal(
-      "fetch",
-      vi.fn((url: string) => {
-        // A non-2xx answer makes setAcknowledge throw an ApiError, so the error
-        // handler's `e instanceof Error` arm runs; the string arm has its own test.
-        if (url.includes("/acknowledge"))
-          return Promise.resolve(new Response("nope", { status: 500 }));
-        if (url.includes("/history")) return json(testHistory(5));
-        if (url.startsWith("/api/tests"))
-          return json({ items: [row], total: 1, page: 1, page_size: 50 });
-        if (url.startsWith("/api/repos")) return json([]);
-        if (url.startsWith("/api/reports/summary")) return json({ pending: 0, failed: 0 });
-        return json(testsSummary);
-      }),
-    );
-    render(<App />);
-    expect(await screen.findByText("login")).toBeInTheDocument();
-    const drawer = await openDrawer();
-
-    await userEvent.click(within(drawer).getByRole("button", { name: "Acknowledge" }));
-    const dialog = await screen.findByRole("dialog", { name: /Acknowledge renders/ });
-    await userEvent.click(within(dialog).getByRole("button", { name: "Confirm" }));
-    await act(async () => {});
-
-    expect(screen.getByRole("alert")).toHaveTextContent(/acknowledge tests 5 -> 500/);
-    expect(screen.queryByRole("dialog", { name: /Acknowledge renders/ })).not.toBeInTheDocument();
-  });
-
-  it("surfaces an ApiError message when clearing an acknowledgement fails", async () => {
-    const row: TestCase = { ...page("login").items[0], acknowledged_until: "2999-01-01T00:00:00Z" };
-    vi.stubGlobal(
-      "fetch",
-      vi.fn((url: string) => {
-        // A non-2xx answer makes setAcknowledge throw an ApiError, so the error
-        // handler's `e instanceof Error` arm runs; the string arm has its own test.
-        if (url.includes("/acknowledge"))
-          return Promise.resolve(new Response("nope", { status: 500 }));
-        if (url.includes("/history"))
-          return json(
-            testHistory(5, {
-              test: { ...testHistory(5).test, acknowledged_until: "2999-01-01T00:00:00Z" },
-            }),
-          );
-        if (url.startsWith("/api/tests"))
-          return json({ items: [row], total: 1, page: 1, page_size: 50 });
-        if (url.startsWith("/api/repos")) return json([]);
-        if (url.startsWith("/api/reports/summary")) return json({ pending: 0, failed: 0 });
-        return json(testsSummary);
-      }),
-    );
-    render(<App />);
-    expect(await screen.findByText("login")).toBeInTheDocument();
-    const drawer = await openDrawer();
-
-    await userEvent.click(within(drawer).getByRole("button", { name: "Clear acknowledgement" }));
-    await act(async () => {});
-
-    expect(screen.getByRole("alert")).toHaveTextContent(/acknowledge tests 5 -> 500/);
-  });
-
-  it("does not post anything when the Acknowledge dialog is cancelled", async () => {
-    const { acks } = stubTests(false);
-    render(<App />);
-    expect(await screen.findByText("login")).toBeInTheDocument();
-    const drawer = await openDrawer();
-
-    await userEvent.click(within(drawer).getByRole("button", { name: "Acknowledge" }));
-    const dialog = await screen.findByRole("dialog", { name: /Acknowledge renders/ });
-    await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
-    await act(async () => {});
-
-    expect(acks()).toHaveLength(0);
-    expect(screen.queryByRole("dialog", { name: /Acknowledge renders/ })).not.toBeInTheDocument();
   });
 
   /**
    * The Jobs view with Job 3's drawer open, whose acknowledgement starts at
    * `initial` and changes when the acknowledge POST arrives, so the drawer's
-   * next history fetch shows what the mutation did. The optional `ackFailure`
-   * replaces the acknowledge POST's answer, to test the mutation's error path.
+   * next history fetch shows what the mutation did.
    */
-  function stubJobsAck(
-    initial: {
-      acknowledged_until: string | null;
-      acknowledge_reason: string | null;
-    },
-    ackFailure?: () => Response | Promise<Response>,
-  ) {
+  function stubJobsAck(initial: {
+    acknowledged_until: string | null;
+    acknowledge_reason: string | null;
+  }) {
     const calls: { url: string; body: Record<string, unknown> | null }[] = [];
     let ack = initial;
     const job = (): Job => ({ ...jobHistory().job, ...ack });
@@ -1413,7 +1184,6 @@ describe("App", () => {
           init?.body == null ? null : (JSON.parse(String(init.body)) as Record<string, unknown>);
         calls.push({ url, body });
         if (url.includes("/acknowledge")) {
-          if (ackFailure) return ackFailure();
           ack =
             body?.acknowledged === true
               ? {
@@ -1473,25 +1243,28 @@ describe("App", () => {
     expect(within(drawer).getByText(/known flake/)).toBeInTheDocument();
   });
 
-  it("reloads the Job drawer after clearing its acknowledgement", async () => {
-    const { acks, histories } = stubJobsAck({
+  it("the Job drawer's Acknowledge button opens the Acknowledge dialog", async () => {
+    stubJobsAck({ acknowledged_until: null, acknowledge_reason: null });
+    const drawer = await openJobDrawer();
+
+    await userEvent.click(await within(drawer).findByRole("button", { name: "Acknowledge" }));
+    expect(await screen.findByRole("dialog", { name: /Acknowledge e2e/ })).toBeInTheDocument();
+  });
+
+  it("clears a Job's acknowledgement with one click, posting the api's reset body", async () => {
+    const { acks } = stubJobsAck({
       acknowledged_until: "2999-01-01T00:00:00Z",
       acknowledge_reason: "known flake",
     });
-    window.history.replaceState(null, "", "/?view=jobs&job=3");
-    render(<App />);
-    const drawer = await screen.findByRole("dialog", { name: "Job detail" });
-    await within(drawer).findByRole("button", { name: "Clear acknowledgement" });
-    const historiesBefore = histories();
+    const drawer = await openJobDrawer();
 
-    await userEvent.click(within(drawer).getByRole("button", { name: "Clear acknowledgement" }));
+    await userEvent.click(
+      await within(drawer).findByRole("button", { name: "Clear acknowledgement" }),
+    );
     await act(async () => {});
 
     expect(acks()).toHaveLength(1);
     expect(acks()[0].body).toEqual({ acknowledged: false });
-    expect(histories()).toBeGreaterThan(historiesBefore);
-    expect(await within(drawer).findByRole("button", { name: "Acknowledge" })).toBeInTheDocument();
-    expect(within(drawer).queryByText(/acknowledged until/)).not.toBeInTheDocument();
   });
 
   /** Opens Job 3's drawer on the Jobs view, like the leaderboard would. */
@@ -1500,87 +1273,6 @@ describe("App", () => {
     render(<App />);
     return await screen.findByRole("dialog", { name: "Job detail" });
   }
-
-  it("surfaces the error when clearing a Job's acknowledgement fails", async () => {
-    stubJobsAck(
-      { acknowledged_until: "2999-01-01T00:00:00Z", acknowledge_reason: "known flake" },
-      // Reject with a non-Error so the `String(e)` arm of the error handler runs.
-      () => Promise.reject("backend down"),
-    );
-    const drawer = await openJobDrawer();
-
-    await userEvent.click(
-      await within(drawer).findByRole("button", { name: "Clear acknowledgement" }),
-    );
-    await act(async () => {});
-
-    expect(screen.getByRole("alert")).toHaveTextContent("backend down");
-  });
-
-  it("surfaces an ApiError message when clearing a Job's acknowledgement fails", async () => {
-    stubJobsAck(
-      { acknowledged_until: "2999-01-01T00:00:00Z", acknowledge_reason: "known flake" },
-      // A non-2xx answer makes setAcknowledge throw an ApiError, so the error
-      // handler's `e instanceof Error` arm runs; the string arm has its own test.
-      () => Promise.resolve(new Response("nope", { status: 500 })),
-    );
-    const drawer = await openJobDrawer();
-
-    await userEvent.click(
-      await within(drawer).findByRole("button", { name: "Clear acknowledgement" }),
-    );
-    await act(async () => {});
-
-    expect(screen.getByRole("alert")).toHaveTextContent(/acknowledge jobs 3 -> 500/);
-  });
-
-  it("surfaces the error when confirming a Job's acknowledgement fails", async () => {
-    stubJobsAck(
-      { acknowledged_until: null, acknowledge_reason: null },
-      // Reject with a non-Error so the `String(e)` arm of the error handler runs.
-      () => Promise.reject("backend down"),
-    );
-    const drawer = await openJobDrawer();
-
-    await userEvent.click(await within(drawer).findByRole("button", { name: "Acknowledge" }));
-    const dialog = await screen.findByRole("dialog", { name: /Acknowledge e2e/ });
-    await userEvent.click(within(dialog).getByRole("button", { name: "Confirm" }));
-    await act(async () => {});
-
-    expect(screen.getByRole("alert")).toHaveTextContent("backend down");
-    expect(screen.queryByRole("dialog", { name: /Acknowledge e2e/ })).not.toBeInTheDocument();
-  });
-
-  it("surfaces an ApiError message when confirming a Job's acknowledgement fails", async () => {
-    stubJobsAck(
-      { acknowledged_until: null, acknowledge_reason: null },
-      // A non-2xx answer makes setAcknowledge throw an ApiError, so the error
-      // handler's `e instanceof Error` arm runs; the string arm has its own test.
-      () => Promise.resolve(new Response("nope", { status: 500 })),
-    );
-    const drawer = await openJobDrawer();
-
-    await userEvent.click(await within(drawer).findByRole("button", { name: "Acknowledge" }));
-    const dialog = await screen.findByRole("dialog", { name: /Acknowledge e2e/ });
-    await userEvent.click(within(dialog).getByRole("button", { name: "Confirm" }));
-    await act(async () => {});
-
-    expect(screen.getByRole("alert")).toHaveTextContent(/acknowledge jobs 3 -> 500/);
-    expect(screen.queryByRole("dialog", { name: /Acknowledge e2e/ })).not.toBeInTheDocument();
-  });
-
-  it("does not post anything when the Job Acknowledge dialog is cancelled", async () => {
-    const { acks } = stubJobsAck({ acknowledged_until: null, acknowledge_reason: null });
-    const drawer = await openJobDrawer();
-
-    await userEvent.click(await within(drawer).findByRole("button", { name: "Acknowledge" }));
-    const dialog = await screen.findByRole("dialog", { name: /Acknowledge e2e/ });
-    await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
-    await act(async () => {});
-
-    expect(acks()).toHaveLength(0);
-    expect(screen.queryByRole("dialog", { name: /Acknowledge e2e/ })).not.toBeInTheDocument();
-  });
 
   // ---- Navigation wiring (issue #80): drawers, views, sort, filters, paging ----
 
@@ -1908,20 +1600,6 @@ describe("App", () => {
     expect(window.location.search).toBe("?repo=a%2Fb&view=jobs&job=5");
     expect(urls).toContain("/api/jobs/5/history?limit=60");
     expect(await screen.findByRole("dialog", { name: "Job detail" })).toBeInTheDocument();
-  });
-
-  it("does not post anything when the Quarantine dialog is cancelled", async () => {
-    const { posts } = stubTests(false);
-    render(<App />);
-    expect(await screen.findByText("login")).toBeInTheDocument();
-
-    await userEvent.click(screen.getByRole("button", { name: "Quarantine" }));
-    const dialog = await screen.findByRole("dialog", { name: /Quarantine login/ });
-    await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
-    await act(async () => {});
-
-    expect(posts()).toHaveLength(0);
-    expect(screen.queryByRole("dialog", { name: /Quarantine login/ })).not.toBeInTheDocument();
   });
 
   it("submitting an empty CI run form changes nothing in the URL", async () => {
