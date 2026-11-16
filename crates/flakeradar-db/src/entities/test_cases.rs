@@ -25,7 +25,6 @@ pub struct Model {
     pub confirmed_flake_count: i32,
     pub last_status: String,
     pub last_seen_at: DateTimeWithTimeZone,
-    pub first_seen_at: DateTimeWithTimeZone,
     pub quarantined: bool,
     pub quarantined_at: Option<DateTimeWithTimeZone>,
     pub github_issue_number: Option<i32>,
@@ -45,6 +44,7 @@ pub struct Model {
     pub acknowledge_reason: Option<String>,
     pub github_issue_last_closed_number: Option<i32>,
     pub github_issue_last_closed_at: Option<DateTimeWithTimeZone>,
+    pub first_seen_at: DateTimeWithTimeZone,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
