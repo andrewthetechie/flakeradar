@@ -257,6 +257,62 @@ async fn the_sync_stamps_a_checked_link_with_the_tasks_clock() {
 }
 
 #[tokio::test]
+async fn a_builder_called_after_the_task_started_is_a_no_op() {
+    let db = TestDb::new().await.expect("a test database");
+    let test = flaky_test(&db).await;
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/repos/acme/app/issues"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({"number": 7})))
+        .mount(&server)
+        .await;
+    let worker = GitHubWorker::new(
+        db.connection().clone(),
+        Arc::new(settings()),
+        Api::new(Secret::new(TOKEN), &server.uri()).expect("the HTTP client builds"),
+        Duration::from_secs(3600),
+    );
+    LeaderTask::start(&worker).await;
+    // A builder that arrived late must not swap the shared state mid-flight: the
+    // guard makes it a no-op, and the task keeps working with what it was built.
+    let worker = worker.with_clock(Arc::new(FixedClock::new(
+        Utc.with_ymd_and_hms(2001, 2, 3, 4, 5, 6)
+            .unwrap()
+            .fixed_offset(),
+    )));
+
+    LeaderTask::enqueue(&worker, &processed(&[test])).expect("the queue takes the outcome");
+    until_finished(worker.queue(), 1).await;
+    assert_eq!(
+        server.received_requests().await.expect("a record").len(),
+        1,
+        "the task still files with the client it was built with"
+    );
+    LeaderTask::stop(&worker).await.expect("the task stops");
+    assert_eq!(
+        link_of_later(&db, test).await,
+        Some(7),
+        "the filing this task already did stands"
+    );
+}
+
+/// The number the row's filing stored, once the task has finished with it.
+async fn link_of_later(db: &TestDb, test: i32) -> Option<i32> {
+    let row = db
+        .connection()
+        .query_one_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "SELECT github_issue_number FROM test_cases WHERE id = $1",
+            [Value::from(test)],
+        ))
+        .await
+        .expect("the row reads")
+        .expect("the Test exists");
+    row.try_get::<Option<i32>>("", "github_issue_number")
+        .expect("a number")
+}
+
+#[tokio::test]
 async fn an_outcome_with_no_touched_ids_files_nothing() {
     let db = TestDb::new().await.expect("a test database");
     let server = MockServer::start().await;

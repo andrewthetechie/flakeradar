@@ -488,7 +488,7 @@ async fn stopping_a_worker_that_never_started_is_a_no_op() {
 #[tokio::test]
 async fn a_failed_election_is_retried() {
     let db = TestDb::new().await.expect("a test database");
-    let failing = Arc::new(FailingLock::new());
+    let failing = Arc::new(FailingLock::default());
     let worker = Arc::new(worker(&db, shared_lock(&failing), fast()));
     let log = CapturedLog::install();
     Arc::clone(&worker).start().await;
@@ -714,7 +714,7 @@ async fn an_unexpected_loop_error_drops_leadership_and_processing_goes_on() {
     let counted = Arc::new(CountingLock::new(&db));
     let worker = Arc::new(
         worker(&db, shared_lock(&counted), fast())
-            .with_processor(Arc::new(FailingOnceProcessor::new())),
+            .with_processor(Arc::new(FailingOnceProcessor::default())),
     );
     Arc::clone(&worker).start().await;
 

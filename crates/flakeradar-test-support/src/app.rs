@@ -321,3 +321,26 @@ async fn read_request(socket: &mut tokio::net::TcpStream) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! The path rule the stand-in asset source keeps: `.` and `..` resolve
+    //! before the lookup, as a directory on disk would.
+
+    use super::MemoryAssets;
+    use flakeradar::assets::AssetSource as _;
+
+    #[test]
+    fn an_asset_path_with_dot_dot_segments_resolves_before_the_lookup() {
+        let assets = MemoryAssets::new(&[("index.html", b"<p>page</p>" as &[u8], "\"e1\"")]);
+        let found = assets.get("/sub/../index.html");
+        assert!(found.is_some(), "the path the double dot names is served");
+    }
+
+    #[test]
+    fn an_asset_path_that_climbs_past_the_root_resolves_to_the_root() {
+        let assets = MemoryAssets::new(&[("index.html", b"<p>page</p>" as &[u8], "\"e1\"")]);
+        let found = assets.get("/../../index.html");
+        assert!(found.is_some(), "a climb past the root lands at the root");
+    }
+}

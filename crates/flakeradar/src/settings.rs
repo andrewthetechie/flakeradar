@@ -1036,7 +1036,8 @@ mod tests {
     use super::LineCounted;
     use super::{
         DEFAULT_DATABASE_URL, DEFAULT_HOST, DEFAULT_INSECURE_TOKEN, DEFAULT_PORT, Secret, Settings,
-        SettingsError, assert_secure_token, check_api_token, environment_values, is_default_token,
+        SettingsError, assert_secure_token, check_api_token, dotenv_values, environment_values,
+        is_default_token,
     };
 
     /// A settings map holding `pairs`.
@@ -1520,6 +1521,41 @@ mod tests {
         let path = std::env::temp_dir().join("flakeradar-env-absent");
         let values = environment_values(&path, std::iter::empty()).expect("a missing file is fine");
         assert!(values.is_empty());
+    }
+
+    #[test]
+    fn from_env_reads_the_checkout_dotenv() {
+        let dir = std::env::temp_dir().join(format!("flakeradar-env-cwd-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("the directory is created");
+        std::fs::write(dir.join(".env"), "FLAKERADAR_API_TOKEN=a-real-token\n")
+            .expect("the fixture is written");
+        let original = std::env::current_dir().expect("the working directory");
+        std::env::set_current_dir(&dir).expect("the working directory changes");
+
+        let settings = Settings::from_env().expect("the file alone holds a valid configuration");
+
+        assert_eq!(settings.api_token.expose(), "a-real-token");
+        std::env::set_current_dir(original).expect("the working directory is restored");
+        std::fs::remove_dir_all(&dir).expect("the directory is removed");
+    }
+
+    #[test]
+    fn a_dotenv_file_that_cannot_be_opened_is_refused_by_its_path() {
+        let path = std::env::temp_dir().join(format!("flakeradar-env-gone-{}", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let error = dotenv_values(&path).expect_err("a missing file cannot be read");
+        assert!(error.to_string().contains("flakeradar-env-gone"), "{error}");
+    }
+
+    #[test]
+    fn a_dotenv_read_that_fails_midway_is_refused_by_its_path() {
+        // A directory opens but cannot be read, so the failure is an IO error
+        // rather than a line parse: the error names the file alone.
+        let dir = std::env::temp_dir().join(format!("flakeradar-env-dir-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("the directory is created");
+        let error = dotenv_values(&dir).expect_err("a directory cannot be read as a dotenv file");
+        assert!(error.to_string().contains("flakeradar-env-dir"), "{error}");
+        std::fs::remove_dir(&dir).expect("the directory is removed");
     }
 
     #[test]

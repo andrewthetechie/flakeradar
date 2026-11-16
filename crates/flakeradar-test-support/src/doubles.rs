@@ -792,3 +792,45 @@ impl std::io::Write for SharedWriter {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! The doubles with behaviour of their own are units too.
+
+    use std::io::Write as _;
+    use std::sync::{Arc, Mutex};
+
+    use super::{CapturedLog, FailingLock, SharedWriter};
+    use flakeradar::worker::LockSession as _;
+
+    #[tokio::test]
+    async fn a_failing_lock_defaults_to_itself_and_keeps_its_check_healthy() {
+        let lock = FailingLock::default();
+        lock.check()
+            .await
+            .expect("the check is the healthy half of the double");
+        assert_eq!(lock.try_locks(), 0, "the check takes no election");
+    }
+
+    #[test]
+    fn a_shared_writer_appends_what_it_is_given() {
+        let buffer = Arc::new(Mutex::new(Vec::new()));
+        let mut writer = SharedWriter(Arc::clone(&buffer));
+        writer.write_all(b"logged").expect("the sink takes bytes");
+        writer.flush().expect("the sink flushes");
+        assert_eq!(
+            buffer
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_slice(),
+            b"logged"
+        );
+    }
+
+    #[test]
+    fn a_capture_reads_back_what_the_body_wrote() {
+        let log = CapturedLog::install();
+        tracing::warn!(name: "test.capture.holds_one_line", "the one line the capture holds");
+        assert_eq!(log.lines_holding("the one line").len(), 1);
+    }
+}

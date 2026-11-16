@@ -211,9 +211,15 @@ fn run_docker(args: &[&str]) -> Result<String, TestError> {
 
 #[cfg(test)]
 mod tests {
-    //! URL rewriting needs no server, so it is checked here.
+    //! The helpers that need no server: URL rewriting, the lock, the readiness
+    //! probe, and the answers Docker gives when it cannot help.
 
-    use super::{answers_a_connection, with_database};
+    use std::net::{Ipv4Addr, TcpListener};
+    use std::thread;
+
+    use super::{
+        answers_a_connection, container_status, lock, run_docker, wait_until_ready, with_database,
+    };
     use crate::error::TestError;
 
     #[test]
@@ -243,6 +249,57 @@ mod tests {
         assert!(
             matches!(&outcome, Err(TestError::Fixture(message)) if message.contains("is not a URL")),
             "{outcome:?}"
+        );
+    }
+
+    #[test]
+    fn the_cross_process_lock_opens_and_locks() {
+        let held = lock().expect("the lock file opens and locks");
+        assert!(held.metadata().is_ok(), "the lock file exists");
+    }
+
+    #[test]
+    fn docker_with_no_such_container_answers_no_status() {
+        // Whether Docker is missing entirely or only knows nothing of the
+        // container, the state is None; whatever it answers, it is not blank.
+        let status = container_status();
+        assert!(
+            status.as_ref().is_none_or(|answer| !answer.is_empty()),
+            "{status:?}"
+        );
+    }
+
+    #[test]
+    fn a_docker_command_that_cannot_run_is_an_error() {
+        let outcome = run_docker(&["--definitely-not-a-flag"]);
+        assert!(outcome.is_err(), "{outcome:?}");
+    }
+
+    #[test]
+    fn a_port_that_answers_the_ssl_request_is_ready() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("a loopback port binds");
+        let port = listener
+            .local_addr()
+            .expect("a bound port has an address")
+            .port();
+        // A stand-in server that answers every probe with `N`, the answer a
+        // PostgreSQL server gives when it does not require SSL.
+        let _greeter = thread::spawn(move || {
+            let mut request = [0_u8; 8];
+            while let Ok((mut stream, _)) = listener.accept() {
+                use std::io::{Read as _, Write as _};
+                let _ = stream.read_exact(&mut request);
+                let _ = stream.write_all(b"N");
+            }
+        });
+
+        assert!(
+            answers_a_connection(port),
+            "an N answer is a server that takes connections"
+        );
+        assert!(
+            wait_until_ready(port).is_ok(),
+            "the port answers a real connection"
         );
     }
 }
