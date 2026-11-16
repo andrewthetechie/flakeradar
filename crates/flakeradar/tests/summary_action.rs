@@ -29,7 +29,8 @@ use axum::Router;
 use flakeradar_db::processing::ProcessingSettings;
 use flakeradar_test_support::{TestDb, app, get, make_project, make_report, post};
 use serde_json::{Value, json};
-use wiremock::MockServer;
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 /// The token the app requires and the script presents as `FR_TOKEN`.
 const TOKEN: &str = "summary-token";
@@ -209,6 +210,18 @@ fn two_failures_junit() -> &'static str {
     <testcase classname="tests.test_app" name="test_beta" time="0.902">
       <failure message="AssertionError: boom">AssertionError</failure>
     </testcase>
+  </testsuite>
+</testsuites>
+"#
+}
+
+/// One report whose only Test passed: the smallest job with no failures to talk
+/// about, for the comment cases that must update or stay silent.
+fn all_passing_junit() -> &'static str {
+    r#"<?xml version="1.0" encoding="utf-8"?>
+<testsuites>
+  <testsuite name="pytest" errors="0" failures="0" skipped="0" tests="1" time="1.412">
+    <testcase classname="tests.test_app" name="test_ok" time="0.902"/>
   </testsuite>
 </testsuites>
 "#
@@ -716,6 +729,454 @@ async fn summary_action_pr_comment_sends_nothing_when_it_is_off() {
         requests.is_empty(),
         "pr-comment off must send nothing: {} requests",
         requests.len()
+    );
+    serving.abort();
+}
+
+/// The `pull_request` event of a non-fork run: number 12, head and base repo
+/// [`REPO`] — the event file every send case points `GITHUB_EVENT_PATH` at.
+const PR_EVENT: &str = r#"{"pull_request":{"number":12,"head":{"repo":{"full_name":"acme/app"}},"base":{"repo":{"full_name":"acme/app"}}}}"#;
+
+/// The one request in `requests` that hit `verb` on `route`, if any.
+fn sent<'a>(
+    requests: &'a [wiremock::Request],
+    verb: &str,
+    route: &str,
+) -> Option<&'a wiremock::Request> {
+    requests
+        .iter()
+        .find(|request| request.method.as_str() == verb && request.url.path() == route)
+}
+
+#[tokio::test]
+async fn summary_action_pr_comment_posts_a_new_comment_when_none_exists() {
+    // A PR event with failures and no marked comment yet: the script posts the
+    // marked Markdown once, and the marker line is what a re-run will find.
+    let db = TestDb::new().await.expect("a test database");
+    let app = router(&db);
+    let (base_url, serving) = serve(&db).await;
+    let server = MockServer::start().await;
+    upload(&app, one_failure_junit()).await;
+    process_all(&db).await;
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/app/issues/12/comments"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/repos/acme/app/issues/12/comments"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({"id": 777})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let file = summary_file("pr_comment_new");
+    let event = event_file("new", PR_EVENT);
+
+    let (code, output) = run_summary(
+        &base_url,
+        "false",
+        "failure",
+        "5",
+        &file,
+        &[
+            ("GITHUB_API_URL", &server.uri()),
+            ("FR_PR_COMMENT", "true"),
+            ("FR_GITHUB_TOKEN", "gh-token"),
+            ("FR_COMMENT_KEY", "ci/test"),
+            ("GITHUB_EVENT_PATH", &event),
+        ],
+    )
+    .await;
+
+    assert_eq!(code, 0, "a created comment never fails the step: {output}");
+    let requests = server
+        .received_requests()
+        .await
+        .expect("the stub records requests");
+    let posted = sent(&requests, "POST", "/repos/acme/app/issues/12/comments")
+        .expect("the comment was posted");
+    let body: Value = serde_json::from_slice(&posted.body).expect("the body is JSON");
+    let comment = body["body"].as_str().expect("the comment carries a body");
+    assert!(
+        comment.starts_with("<!-- flakeradar-summary:ci/test -->"),
+        "the marker is the comment's first line: {comment}"
+    );
+    assert!(
+        comment.contains("test_beta"),
+        "the comment is this job's failure table: {comment}"
+    );
+    serving.abort();
+}
+
+#[tokio::test]
+async fn summary_action_pr_comment_updates_the_existing_marked_comment() {
+    // A re-run finds its earlier comment by the marker and edits it instead of
+    // piling up a second one: one PATCH to that id, never a POST.
+    let db = TestDb::new().await.expect("a test database");
+    let app = router(&db);
+    let (base_url, serving) = serve(&db).await;
+    let server = MockServer::start().await;
+    upload(&app, one_failure_junit()).await;
+    process_all(&db).await;
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/app/issues/12/comments"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"id": 555, "body": "<!-- flakeradar-summary:ci/test -->\nold"},
+            {"id": 556, "body": "someone else's review comment"}
+        ])))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("PATCH"))
+        .and(path("/repos/acme/app/issues/comments/555"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": 555})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/repos/acme/app/issues/12/comments"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({"id": 777})))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let file = summary_file("pr_comment_update");
+    let event = event_file("update", PR_EVENT);
+
+    let (code, output) = run_summary(
+        &base_url,
+        "false",
+        "failure",
+        "5",
+        &file,
+        &[
+            ("GITHUB_API_URL", &server.uri()),
+            ("FR_PR_COMMENT", "true"),
+            ("FR_GITHUB_TOKEN", "gh-token"),
+            ("FR_COMMENT_KEY", "ci/test"),
+            ("GITHUB_EVENT_PATH", &event),
+        ],
+    )
+    .await;
+
+    assert_eq!(code, 0, "an updated comment never fails the step: {output}");
+    let requests = server
+        .received_requests()
+        .await
+        .expect("the stub records requests");
+    let patched = sent(&requests, "PATCH", "/repos/acme/app/issues/comments/555")
+        .expect("the marked comment was edited");
+    let body: Value = serde_json::from_slice(&patched.body).expect("the body is JSON");
+    let comment = body["body"].as_str().expect("the comment carries a body");
+    assert!(
+        comment.starts_with("<!-- flakeradar-summary:ci/test -->"),
+        "the edit keeps the marker first: {comment}"
+    );
+    assert!(
+        comment.contains("test_beta"),
+        "the edit carries the fresh table: {comment}"
+    );
+    serving.abort();
+}
+
+#[tokio::test]
+async fn summary_action_pr_comment_updates_the_comment_even_with_no_failures() {
+    // A green re-run of a job whose marked comment exists must not leave the old
+    // red table behind: the comment is edited to the no-failures line.
+    let db = TestDb::new().await.expect("a test database");
+    let app = router(&db);
+    let (base_url, serving) = serve(&db).await;
+    let server = MockServer::start().await;
+    upload(&app, all_passing_junit()).await;
+    process_all(&db).await;
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/app/issues/12/comments"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!([
+                {"id": 555, "body": "<!-- flakeradar-summary:ci/test -->\n**FlakeRadar:** 0 of 1 failures are known flaky tests."}
+            ])),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("PATCH"))
+        .and(path("/repos/acme/app/issues/comments/555"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": 555})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/repos/acme/app/issues/12/comments"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({"id": 777})))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let file = summary_file("pr_comment_green_update");
+    let event = event_file("green_update", PR_EVENT);
+
+    let (code, output) = run_summary(
+        &base_url,
+        "false",
+        "success",
+        "5",
+        &file,
+        &[
+            ("GITHUB_API_URL", &server.uri()),
+            ("FR_PR_COMMENT", "true"),
+            ("FR_GITHUB_TOKEN", "gh-token"),
+            ("FR_COMMENT_KEY", "ci/test"),
+            ("GITHUB_EVENT_PATH", &event),
+        ],
+    )
+    .await;
+
+    assert_eq!(code, 0, "a green job never fails the step: {output}");
+    let requests = server
+        .received_requests()
+        .await
+        .expect("the stub records requests");
+    let patched = sent(&requests, "PATCH", "/repos/acme/app/issues/comments/555")
+        .expect("the marked comment was edited");
+    let body: Value = serde_json::from_slice(&patched.body).expect("the body is JSON");
+    assert!(
+        body["body"]
+            .as_str()
+            .expect("the comment carries a body")
+            .contains("no failed tests reported for this CI job"),
+        "a green re-run clears the table in place: {}",
+        body["body"]
+    );
+    serving.abort();
+}
+
+#[tokio::test]
+async fn summary_action_pr_comment_sends_nothing_for_a_green_job_without_a_comment() {
+    // No failures and no comment of ours to update: creating one would only say
+    // "nothing failed", so the job stays silent — the list call is all it makes.
+    let db = TestDb::new().await.expect("a test database");
+    let app = router(&db);
+    let (base_url, serving) = serve(&db).await;
+    let server = MockServer::start().await;
+    upload(&app, all_passing_junit()).await;
+    process_all(&db).await;
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/app/issues/12/comments"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/repos/acme/app/issues/12/comments"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({"id": 777})))
+        .expect(0)
+        .mount(&server)
+        .await;
+    Mock::given(method("PATCH"))
+        .and(path("/repos/acme/app/issues/comments/555"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": 555})))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let file = summary_file("pr_comment_green_new");
+    let event = event_file("green_new", PR_EVENT);
+
+    let (code, output) = run_summary(
+        &base_url,
+        "false",
+        "success",
+        "5",
+        &file,
+        &[
+            ("GITHUB_API_URL", &server.uri()),
+            ("FR_PR_COMMENT", "true"),
+            ("FR_GITHUB_TOKEN", "gh-token"),
+            ("FR_COMMENT_KEY", "ci/test"),
+            ("GITHUB_EVENT_PATH", &event),
+        ],
+    )
+    .await;
+
+    assert_eq!(code, 0, "a silent green job never fails the step: {output}");
+    let requests = server
+        .received_requests()
+        .await
+        .expect("the stub records requests");
+    assert_eq!(requests.len(), 1, "only the listing went out: {requests:?}");
+    serving.abort();
+}
+
+#[tokio::test]
+async fn summary_action_pr_comment_uses_the_workflow_and_job_when_the_key_is_empty() {
+    // The default key stands in for comment-key, because action metadata cannot
+    // read the workflow and job contexts: the marker then names CI/test.
+    let db = TestDb::new().await.expect("a test database");
+    let app = router(&db);
+    let (base_url, serving) = serve(&db).await;
+    let server = MockServer::start().await;
+    upload(&app, one_failure_junit()).await;
+    process_all(&db).await;
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/app/issues/12/comments"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/repos/acme/app/issues/12/comments"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({"id": 777})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let file = summary_file("pr_comment_default_key");
+    let event = event_file("default_key", PR_EVENT);
+
+    let (code, output) = run_summary(
+        &base_url,
+        "false",
+        "failure",
+        "5",
+        &file,
+        &[
+            ("GITHUB_API_URL", &server.uri()),
+            ("FR_PR_COMMENT", "true"),
+            ("FR_GITHUB_TOKEN", "gh-token"),
+            ("FR_COMMENT_KEY", ""),
+            ("GITHUB_WORKFLOW", "CI"),
+            ("GITHUB_JOB", "test"),
+            ("GITHUB_EVENT_PATH", &event),
+        ],
+    )
+    .await;
+
+    assert_eq!(code, 0, "the default key never fails the step: {output}");
+    let requests = server
+        .received_requests()
+        .await
+        .expect("the stub records requests");
+    let posted = sent(&requests, "POST", "/repos/acme/app/issues/12/comments")
+        .expect("the comment was posted");
+    let body: Value = serde_json::from_slice(&posted.body).expect("the body is JSON");
+    assert!(
+        body["body"]
+            .as_str()
+            .expect("the comment carries a body")
+            .starts_with("<!-- flakeradar-summary:CI/test -->"),
+        "the marker uses workflow/job when comment-key is empty: {}",
+        body["body"]
+    );
+    serving.abort();
+}
+
+#[tokio::test]
+async fn summary_action_pr_comment_warns_and_stays_green_when_github_fails() {
+    // GitHub answers 500: one warning line, and the exit is untouched — with the
+    // gate off the step still succeeds, because a comment is not worth a job.
+    let db = TestDb::new().await.expect("a test database");
+    let app = router(&db);
+    let (base_url, serving) = serve(&db).await;
+    let server = MockServer::start().await;
+    upload(&app, one_failure_junit()).await;
+    process_all(&db).await;
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/app/issues/12/comments"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/repos/acme/app/issues/12/comments"))
+        .respond_with(ResponseTemplate::new(500).set_body_json(json!({"message": "no"})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let file = summary_file("pr_comment_github_error");
+    let event = event_file("github_error", PR_EVENT);
+
+    let (code, output) = run_summary(
+        &base_url,
+        "false",
+        "failure",
+        "5",
+        &file,
+        &[
+            ("GITHUB_API_URL", &server.uri()),
+            ("FR_PR_COMMENT", "true"),
+            ("FR_GITHUB_TOKEN", "gh-token"),
+            ("FR_COMMENT_KEY", "ci/test"),
+            ("GITHUB_EVENT_PATH", &event),
+        ],
+    )
+    .await;
+
+    assert_eq!(code, 0, "a failed call never fails the step: {output}");
+    assert_eq!(
+        output.matches("::warning::").count(),
+        1,
+        "exactly one warning names the failed call: {output}"
+    );
+    serving.abort();
+}
+
+#[tokio::test]
+async fn summary_action_pr_comment_sends_the_comment_before_the_gate_decides() {
+    // The comment is sent before the gate runs, so a gated failure still leaves
+    // its comment on the pull request even though the step then exits 1.
+    let db = TestDb::new().await.expect("a test database");
+    let app = router(&db);
+    let (base_url, serving) = serve(&db).await;
+    let server = MockServer::start().await;
+    upload(&app, one_failure_junit()).await;
+    process_all(&db).await;
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/app/issues/12/comments"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"id": 555, "body": "<!-- flakeradar-summary:ci/test -->\nold"}
+        ])))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("PATCH"))
+        .and(path("/repos/acme/app/issues/comments/555"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": 555})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/repos/acme/app/issues/12/comments"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({"id": 777})))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let file = summary_file("pr_comment_gate_order");
+    let event = event_file("gate_order", PR_EVENT);
+
+    let (code, output) = run_summary(
+        &base_url,
+        "true",
+        "failure",
+        "5",
+        &file,
+        &[
+            ("GITHUB_API_URL", &server.uri()),
+            ("FR_PR_COMMENT", "true"),
+            ("FR_GITHUB_TOKEN", "gh-token"),
+            ("FR_COMMENT_KEY", "ci/test"),
+            ("GITHUB_EVENT_PATH", &event),
+        ],
+    )
+    .await;
+
+    assert_eq!(
+        code, 1,
+        "the unquarantined failure still fails the gate: {output}"
+    );
+    let requests = server
+        .received_requests()
+        .await
+        .expect("the stub records requests");
+    assert!(
+        sent(&requests, "PATCH", "/repos/acme/app/issues/comments/555").is_some(),
+        "the comment went out before the gate decided: {requests:?}"
     );
     serving.abort();
 }

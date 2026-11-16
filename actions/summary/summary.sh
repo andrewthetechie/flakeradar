@@ -187,6 +187,84 @@ markdown=$(jq -r \
 
 append_summary "$markdown"
 
+# --- Keep one FlakeRadar comment per job on the pull request up to date. ---
+# The comment's first line is the marker that finds it again on a re-run; the
+# rest is the same Markdown the job summary got above. Every failed GitHub call
+# prints one warning and never changes the exit: this block runs before the
+# gate, so a job the gate is about to fail still gets its comment, and with the
+# gate off every path here stays exit 0.
+if [ -n "$comment_pr" ] && [ -n "$comment_repo" ]; then
+  marker="<!-- flakeradar-summary:${comment_key} -->"
+  comment_body="${marker}
+${markdown}"
+  api_url="${GITHUB_API_URL:-https://api.github.com}"
+  gh_headers=(
+    -H "Authorization: Bearer ${FR_GITHUB_TOKEN}"
+    -H "Accept: application/vnd.github+json"
+    -H "X-GitHub-Api-Version: 2022-11-28"
+  )
+  comment_file="$(mktemp)"
+  trap 'rm -f "$resp_file" "$comment_file"' EXIT
+
+  # Find our earlier comment: list page by page until a page holds fewer than
+  # 100 comments, and take the first comment whose body starts with the marker.
+  comment_id=""
+  page=1
+  while :; do
+    # 000 means curl itself failed (network / DNS / connection refused).
+    http_code=$(curl -sS -o "$comment_file" -w '%{http_code}' --max-time 20 \
+      "${gh_headers[@]}" \
+      "${api_url}/repos/${comment_repo}/issues/${comment_pr}/comments?per_page=100&page=${page}" \
+      2>/dev/null) || http_code="000"
+    if [ "$http_code" != "200" ]; then
+      echo "::warning::FlakeRadar summary: listing the pull request's comments failed (HTTP ${http_code})."
+      break
+    fi
+    found=$(jq -r --arg m "$marker" \
+      '[.[] | select(.body | startswith($m))][0].id // ""' "$comment_file" 2>/dev/null) || found=""
+    if [ -n "$found" ]; then
+      comment_id="$found"
+    fi
+    # A short page was the last one; a full one may have a successor.
+    count=$(jq 'length' "$comment_file" 2>/dev/null) || count=0
+    if [ "$count" -lt 100 ]; then
+      break
+    fi
+    page=$((page + 1))
+  done
+
+  if [ -n "$comment_id" ]; then
+    # Our comment is already there: edit it, also when this job now has no
+    # failures, so a green re-run clears the stale table in place.
+    comment_json=$(jq -cn --arg body "$comment_body" '{body: $body}')
+    http_code=$(curl -sS -o "$comment_file" -w '%{http_code}' --max-time 20 \
+      -X PATCH "${gh_headers[@]}" -H "Content-Type: application/json" \
+      -d "$comment_json" \
+      "${api_url}/repos/${comment_repo}/issues/comments/${comment_id}" \
+      2>/dev/null) || http_code="000"
+    case "$http_code" in
+      2*) ;;
+      *) echo "::warning::FlakeRadar summary: updating the pull request comment failed (HTTP ${http_code})." ;;
+    esac
+  elif [ "$(jq -r --arg job "$FR_JOB_ID" '
+      ([ .failures[] | select($job == "" or .ci_job_id == $job) ] | length) > 0
+    ' "$resp_file" 2>/dev/null)" = "true" ]; then
+    # Nothing of ours exists, and the job has failures (the table's own job
+    # filter): post the first comment. A green job without a comment stays
+    # silent instead of announcing its emptiness.
+    comment_json=$(jq -cn --arg body "$comment_body" '{body: $body}')
+    http_code=$(curl -sS -o "$comment_file" -w '%{http_code}' --max-time 20 \
+      -X POST "${gh_headers[@]}" -H "Content-Type: application/json" \
+      -d "$comment_json" \
+      "${api_url}/repos/${comment_repo}/issues/${comment_pr}/comments" \
+      2>/dev/null) || http_code="000"
+    case "$http_code" in
+      2*) ;;
+      *) echo "::warning::FlakeRadar summary: creating the pull request comment failed (HTTP ${http_code})." ;;
+    esac
+  fi
+fi
+
 # --- Gate mode: fail the job for a failure that is not quarantined. ---
 # The same job filter as the table above, so the gate decides on what the reader
 # just saw. A failure whose newest status is "passed" passed on retry and is
