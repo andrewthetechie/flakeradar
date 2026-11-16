@@ -102,6 +102,16 @@ pub const GITHUB_ISSUE_MIN_SCORE: f64 = 0.30;
 /// `github::sync` reads it and `FLAKERADAR_GITHUB_SYNC_BATCH` sets it.
 pub const GITHUB_SYNC_BATCH: i64 = 2000;
 
+/// How many days an Issue FlakeRadar closed as completed stays eligible to be
+/// reopened instead of refiled.
+///
+/// An issue the sync saw closed within this many days of a new flake means the
+/// same flake is back, so FlakeRadar reopens the issue with a comment and keeps
+/// its history in one place; after the window the flake is treated as new and a
+/// duplicate issue is filed. `0` turns reopening off, so every flake files anew.
+/// `github::filing` reads it and `FLAKERADAR_GITHUB_REOPEN_DAYS` sets it.
+pub const GITHUB_REOPEN_DAYS: i64 = 30;
+
 /// How long the Report processor waits after a claim that found nothing.
 ///
 /// One second is the longest an upload should wait behind a queue it believes is
