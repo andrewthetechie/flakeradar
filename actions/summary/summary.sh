@@ -30,6 +30,37 @@ FR_GATE="${FR_GATE:-false}"
 # The test step's own outcome (success / failure / cancelled / skipped). Only gate
 # mode reads it, and only when FlakeRadar cannot decide the exit itself.
 FR_TEST_OUTCOME="${FR_TEST_OUTCOME:-}"
+# PR comment mode: "true" keeps one FlakeRadar comment per job on the pull
+# request up to date (the send block lives after the poll). Whether a comment
+# applies to this run is decided here, from the runner environment: the event
+# file names the pull request, and a fork PR never gets one.
+FR_PR_COMMENT="${FR_PR_COMMENT:-false}"
+FR_GITHUB_TOKEN="${FR_GITHUB_TOKEN:-}"
+FR_COMMENT_KEY="${FR_COMMENT_KEY:-}"
+comment_key="$FR_COMMENT_KEY"
+if [ -z "$comment_key" ]; then
+  # Action-metadata input defaults cannot use the github/job contexts, so the
+  # workflow and job name stand in for the key here, not in the action metadata.
+  comment_key="${GITHUB_WORKFLOW:-}/${GITHUB_JOB:-}"
+fi
+comment_pr=""
+comment_repo=""
+if [ "$FR_PR_COMMENT" = "true" ] && [ -n "${GITHUB_EVENT_PATH:-}" ] \
+   && [ -f "${GITHUB_EVENT_PATH}" ]; then
+  comment_pr=$(jq -r '.pull_request.number // ""' "$GITHUB_EVENT_PATH" 2>/dev/null) \
+    || comment_pr=""
+  comment_repo=$(jq -r '.pull_request.base.repo.full_name // ""' "$GITHUB_EVENT_PATH" 2>/dev/null) \
+    || comment_repo=""
+  head_repo=$(jq -r '.pull_request.head.repo.full_name // ""' "$GITHUB_EVENT_PATH" 2>/dev/null) \
+    || head_repo=""
+  # Not a pull-request event, or a fork (the head repository differs from the
+  # base one, or is null, and the token is scoped to the base repository): the
+  # comment does not apply to this run, so nothing is sent.
+  if [ -z "$comment_pr" ] || [ -z "$comment_repo" ] || [ "$head_repo" != "$comment_repo" ]; then
+    comment_pr=""
+    comment_repo=""
+  fi
+fi
 
 # The failures endpoint reports per-attempt counts for the whole run (all jobs).
 # We poll until pending reaches 0, then keep only the failures this job owns
@@ -42,9 +73,11 @@ enc_repo=$(jq -rn --arg r "$FR_REPO" '$r | @uri')
 # was requested (the self-test uses that stable path to inspect the content).
 step_file="${GITHUB_STEP_SUMMARY:-}"
 extra_file="$FR_SUMMARY_FILE"
-if [ -z "$step_file" ] && [ -z "$extra_file" ] && [ "$FR_GATE" != "true" ]; then
-  # Nothing to write and nothing to decide. With the gate on the script still polls
-  # and decides, and append_summary below tolerates two empty targets.
+if [ -z "$step_file" ] && [ -z "$extra_file" ] && [ "$FR_GATE" != "true" ] \
+   && [ "$FR_PR_COMMENT" != "true" ]; then
+  # Nothing to write and nothing to decide. With the gate on, or the comment on,
+  # the script still polls and decides or sends, and append_summary below
+  # tolerates two empty targets.
   echo "::notice::FlakeRadar summary: no summary target (GITHUB_STEP_SUMMARY is unset); nothing to write to."
   exit 0
 fi
@@ -153,6 +186,93 @@ markdown=$(jq -r \
 ' "$resp_file")
 
 append_summary "$markdown"
+
+# --- Keep one FlakeRadar comment per job on the pull request up to date. ---
+# The comment's first line is the marker that finds it again on a re-run; the
+# rest is the same Markdown the job summary got above. Every failed GitHub call
+# prints one warning and never changes the exit: this block runs before the
+# gate, so a job the gate is about to fail still gets its comment, and with the
+# gate off every path here stays exit 0.
+if [ -n "$comment_pr" ] && [ -n "$comment_repo" ]; then
+  marker="<!-- flakeradar-summary:${comment_key} -->"
+  comment_body="${marker}
+${markdown}"
+  api_url="${GITHUB_API_URL:-https://api.github.com}"
+  gh_headers=(
+    -H "Authorization: Bearer ${FR_GITHUB_TOKEN}"
+    -H "Accept: application/vnd.github+json"
+    -H "X-GitHub-Api-Version: 2022-11-28"
+  )
+  comment_file="$(mktemp)"
+  trap 'rm -f "$resp_file" "$comment_file"' EXIT
+
+  # Find our earlier comment: list page by page until a page holds fewer than
+  # 100 comments, and take the first comment whose body starts with the marker.
+  comment_id=""
+  list_ok=true                  # a failed list leaves the state unknown
+  page=1
+  while :; do
+    # 000 means curl itself failed (network / DNS / connection refused).
+    http_code=$(curl -sS -o "$comment_file" -w '%{http_code}' --max-time 20 \
+      "${gh_headers[@]}" \
+      "${api_url}/repos/${comment_repo}/issues/${comment_pr}/comments?per_page=100&page=${page}" \
+      2>/dev/null) || http_code="000"
+    if [ "$http_code" != "200" ]; then
+      echo "::warning::FlakeRadar summary: listing the pull request's comments failed (HTTP ${http_code})."
+      list_ok=false
+      break
+    fi
+    found=$(jq -r --arg m "$marker" \
+      '[.[] | select(.body | startswith($m))][0].id // ""' "$comment_file" 2>/dev/null) || found=""
+    if [ -n "$found" ]; then
+      # The first match on the first page that holds one wins: a later page's
+      # duplicate (from an earlier bug or a copied comment) is never edited, so
+      # the comment the reader sees first is the one kept up to date.
+      comment_id="$found"
+      break
+    fi
+    # A short page was the last one; a full one may have a successor.
+    count=$(jq 'length' "$comment_file" 2>/dev/null) || count=0
+    if [ "$count" -lt 100 ]; then
+      break
+    fi
+    page=$((page + 1))
+  done
+
+  if [ -n "$comment_id" ]; then
+    # Our comment is already there: edit it, also when this job now has no
+    # failures, so a green re-run clears the stale table in place.
+    comment_json=$(jq -cn --arg body "$comment_body" '{body: $body}')
+    http_code=$(curl -sS -o "$comment_file" -w '%{http_code}' --max-time 20 \
+      -X PATCH "${gh_headers[@]}" -H "Content-Type: application/json" \
+      -d "$comment_json" \
+      "${api_url}/repos/${comment_repo}/issues/comments/${comment_id}" \
+      2>/dev/null) || http_code="000"
+    case "$http_code" in
+      2*) ;;
+      *) echo "::warning::FlakeRadar summary: updating the pull request comment failed (HTTP ${http_code})." ;;
+    esac
+  elif [ "$list_ok" = true ] && [ "$(jq -r --arg job "$FR_JOB_ID" '
+      ([ .failures[] | select($job == "" or .ci_job_id == $job) ] | length) > 0
+    ' "$resp_file" 2>/dev/null)" = "true" ]; then
+    # Nothing of ours exists, and the job has failures (the table's own job
+    # filter): post the first comment. A green job without a comment stays
+    # silent instead of announcing its emptiness. A failed listing above leaves
+    # the state unknown — our comment may exist — so nothing is posted: a
+    # warning was already printed, and skipping beats duplicating the comment
+    # on the next re-run.
+    comment_json=$(jq -cn --arg body "$comment_body" '{body: $body}')
+    http_code=$(curl -sS -o "$comment_file" -w '%{http_code}' --max-time 20 \
+      -X POST "${gh_headers[@]}" -H "Content-Type: application/json" \
+      -d "$comment_json" \
+      "${api_url}/repos/${comment_repo}/issues/${comment_pr}/comments" \
+      2>/dev/null) || http_code="000"
+    case "$http_code" in
+      2*) ;;
+      *) echo "::warning::FlakeRadar summary: creating the pull request comment failed (HTTP ${http_code})." ;;
+    esac
+  fi
+fi
 
 # --- Gate mode: fail the job for a failure that is not quarantined. ---
 # The same job filter as the table above, so the gate decides on what the reader
