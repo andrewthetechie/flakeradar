@@ -58,7 +58,7 @@ inputs:
     required: false
     default: "${{ github.token }}"
   comment-key:
-    description: "Key that identifies this job's comment, inside the hidden marker that finds it again on re-runs. Defaults to the workflow and job name (GITHUB_WORKFLOW/GITHUB_JOB); matrix users add their leg, e.g. ci/test-${{ matrix.os }}."
+    description: "Key that identifies this job's comment, inside the hidden marker that finds it again on re-runs. Defaults to the workflow and job name (GITHUB_WORKFLOW/GITHUB_JOB); matrix users add their leg, e.g. ci/test-ubuntu."
     required: false
     default: ""
 runs:
