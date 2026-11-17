@@ -30,6 +30,7 @@ import { StatTiles } from "./components/StatTiles";
 import { TestDrawer } from "./components/TestDrawer";
 import { ThemeToggle } from "./components/ThemeToggle";
 import { ViewToggle } from "./components/ViewToggle";
+import { useConfirmedDecision } from "./confirmedDecision";
 import { useGuardedLoad, type GuardedLoader } from "./guardedLoad";
 import { LIST_FILTERS, useViewState, type ViewState } from "./urlState";
 import { loadJobHistory, loadTestHistory, loadViewBundle, type ViewBundle } from "./viewData";
@@ -44,13 +45,10 @@ export default function App() {
   const [queue, setQueue] = useState<ReportSummary | null>(null);
   const [page, setPage] = useState<TestPage | null>(null);
   const [jobPage, setJobPage] = useState<JobPage | null>(null);
-  // The dashboard's one error surface: the three guarded loads mirror their own
-  // writes into it and the quarantine handlers below write it directly, so no
-  // single writer knows what is showing. Every write therefore goes through.
+  // The dashboard's one error surface: the guarded loads and the confirmed
+  // decisions mirror their own writes into it, so no single writer knows what
+  // is showing. Every write therefore goes through.
   const [error, setError] = useState<string | null>(null);
-  const [pendingQuarantine, setPendingQuarantine] = useState<TestCase | null>(null);
-  const [pendingAcknowledge, setPendingAcknowledge] = useState<TestCase | null>(null);
-  const [pendingJobAcknowledge, setPendingJobAcknowledge] = useState<Job | null>(null);
 
   const {
     repo,
@@ -185,105 +183,54 @@ export default function App() {
     onErrorChange: setError,
   });
 
-  const onToggleQuarantine = useCallback(
-    async (t: TestCase) => {
-      if (t.quarantined) {
-        try {
-          await setQuarantine(t.id, false);
-          await refresh();
-        } catch (e) {
-          setError(e instanceof Error ? e.message : String(e));
-        }
-        return;
-      }
-      // Quarantining is a human decision: ask for the reason and the expiry first.
-      setPendingQuarantine(t);
-    },
-    [refresh],
-  );
+  // Quarantining a Test: the direct path un-quarantines a quarantined row with
+  // one click; the confirm path posts the reason and expiry the dialog
+  // collected. The flow itself — pending, dialog split, refresh, error mapping
+  // — lives in the confirmed-decision module.
+  const quarantine = useConfirmedDecision<TestCase, QuarantineChoice>({
+    call: (t, decided, choice) =>
+      choice == null
+        ? setQuarantine(t.id, decided)
+        : setQuarantine(t.id, decided, {
+            reason: choice.reason,
+            expiresInDays: choice.expiresInDays,
+          }),
+    isDecided: (t) => t.quarantined,
+    refresh,
+    onError: setError,
+  });
 
-  const confirmQuarantine = useCallback(
-    async (t: TestCase, choice: QuarantineChoice) => {
-      setPendingQuarantine(null);
-      try {
-        await setQuarantine(t.id, true, {
-          reason: choice.reason,
-          expiresInDays: choice.expiresInDays,
-        });
-        await refresh();
-      } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
-      }
-    },
-    [refresh],
-  );
+  // Acknowledging a Test: the direct path clears an acknowledged row with one
+  // click; the confirm path posts the reason and duration the dialog collected.
+  const testAcknowledge = useConfirmedDecision<TestCase, AcknowledgeChoice>({
+    call: (t, decided, choice) =>
+      choice == null
+        ? setAcknowledge("tests", t.id, decided)
+        : setAcknowledge("tests", t.id, decided, {
+            reason: choice.reason,
+            days: choice.days,
+          }),
+    isDecided: (t) => isAcknowledged(t.acknowledged_until),
+    refresh,
+    onError: setError,
+  });
 
-  const onToggleAcknowledge = useCallback(
-    async (t: TestCase) => {
-      if (isAcknowledged(t.acknowledged_until)) {
-        try {
-          await setAcknowledge("tests", t.id, false);
-          await refresh();
-        } catch (e) {
-          setError(e instanceof Error ? e.message : String(e));
-        }
-        return;
-      }
-      // Acknowledging is a human decision: ask for the reason and the duration first.
-      setPendingAcknowledge(t);
-    },
-    [refresh],
-  );
-
-  const confirmAcknowledge = useCallback(
-    async (t: TestCase, choice: AcknowledgeChoice) => {
-      setPendingAcknowledge(null);
-      try {
-        await setAcknowledge("tests", t.id, true, { reason: choice.reason, days: choice.days });
-        await refresh();
-      } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
-      }
-    },
-    [refresh],
-  );
-
-  // The Job acknowledge handlers reload the drawer themselves: its loader is
-  // keyed on the scope alone, so `refresh` alone leaves it showing the Job as
-  // it was before the mutation.
-  const reloadJobHistory = jobHistoryLoad.refresh;
-
-  const onToggleJobAcknowledge = useCallback(
-    async (j: Job) => {
-      if (isAcknowledged(j.acknowledged_until)) {
-        try {
-          await setAcknowledge("jobs", j.id, false);
-          await refresh();
-          await reloadJobHistory();
-        } catch (e) {
-          setError(e instanceof Error ? e.message : String(e));
-        }
-        return;
-      }
-      // Acknowledging is a human decision: ask for the reason and the duration first.
-      setPendingJobAcknowledge(j);
-    },
-    [refresh, reloadJobHistory],
-  );
-
-  const confirmJobAcknowledge = useCallback(
-    async (j: Job, choice: AcknowledgeChoice) => {
-      setPendingJobAcknowledge(null);
-      try {
-        await setAcknowledge("jobs", j.id, true, { reason: choice.reason, days: choice.days });
-        await refresh();
-        await reloadJobHistory();
-      } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
-      }
-    },
-    [refresh, reloadJobHistory],
-  );
+  // The Job decision reloads the drawer itself: its loader is keyed on the
+  // scope alone, so `refresh` alone leaves it showing the Job as it was before
+  // the mutation.
+  const jobAcknowledge = useConfirmedDecision<Job, AcknowledgeChoice>({
+    call: (j, decided, choice) =>
+      choice == null
+        ? setAcknowledge("jobs", j.id, decided)
+        : setAcknowledge("jobs", j.id, decided, {
+            reason: choice.reason,
+            days: choice.days,
+          }),
+    isDecided: (j) => isAcknowledged(j.acknowledged_until),
+    refresh,
+    reloads: [jobHistoryLoad.refresh],
+    onError: setError,
+  });
 
   const closeDrawer = useCallback(() => {
     if (kind === "jobs") setView({ job: null });
@@ -420,7 +367,7 @@ export default function App() {
                 search={q}
                 selectedId={view.test}
                 onSelect={(id) => setView({ test: id })}
-                onToggleQuarantine={onToggleQuarantine}
+                onToggleQuarantine={(t) => void quarantine.toggle(t)}
               />
             )}
           </div>
@@ -440,39 +387,33 @@ export default function App() {
           testId={view.test}
           history={testHistoryLoad.data}
           onClose={closeDrawer}
-          onToggleQuarantine={onToggleQuarantine}
-          onToggleAcknowledge={onToggleAcknowledge}
+          onToggleQuarantine={(t) => void quarantine.toggle(t)}
+          onToggleAcknowledge={(t) => void testAcknowledge.toggle(t)}
           onOpenJob={openJobFromTest}
           onOpenCiRun={openCiRun}
         />
       )}
-      {pendingQuarantine != null && (
+      {quarantine.pending != null && (
         <QuarantineDialog
-          test={pendingQuarantine}
-          onClose={() => setPendingQuarantine(null)}
-          // The dialog only renders for a pending Test, so the callback always
-          // has one: no null check inside confirmQuarantine.
-          onConfirm={(choice) => void confirmQuarantine(pendingQuarantine, choice)}
+          test={quarantine.pending}
+          onClose={quarantine.cancel}
+          onConfirm={(choice) => void quarantine.confirm(choice)}
         />
       )}
-      {pendingAcknowledge != null && (
+      {testAcknowledge.pending != null && (
         <AcknowledgeDialog
-          name={pendingAcknowledge.name}
-          scope={`${pendingAcknowledge.repo} / ${pendingAcknowledge.project}`}
-          onClose={() => setPendingAcknowledge(null)}
-          // The dialog only renders for a pending Test, so the callback always
-          // has one: no null check inside confirmAcknowledge.
-          onConfirm={(choice) => void confirmAcknowledge(pendingAcknowledge, choice)}
+          name={testAcknowledge.pending.name}
+          scope={`${testAcknowledge.pending.repo} / ${testAcknowledge.pending.project}`}
+          onClose={testAcknowledge.cancel}
+          onConfirm={(choice) => void testAcknowledge.confirm(choice)}
         />
       )}
-      {pendingJobAcknowledge != null && (
+      {jobAcknowledge.pending != null && (
         <AcknowledgeDialog
-          name={pendingJobAcknowledge.name}
-          scope={`${pendingJobAcknowledge.repo} · ${pendingJobAcknowledge.pipeline}`}
-          onClose={() => setPendingJobAcknowledge(null)}
-          // The dialog only renders for a pending Job, so the callback always
-          // has one: no null check inside confirmJobAcknowledge.
-          onConfirm={(choice) => void confirmJobAcknowledge(pendingJobAcknowledge, choice)}
+          name={jobAcknowledge.pending.name}
+          scope={`${jobAcknowledge.pending.repo} · ${jobAcknowledge.pending.pipeline}`}
+          onClose={jobAcknowledge.cancel}
+          onConfirm={(choice) => void jobAcknowledge.confirm(choice)}
         />
       )}
       {kind === "jobs" && view.job != null && (
@@ -483,7 +424,7 @@ export default function App() {
           onOpenTest={openTestFromJob}
           onOpenJob={(jobId) => setView({ job: jobId })}
           onOpenCiRun={openCiRun}
-          onAcknowledge={onToggleJobAcknowledge}
+          onAcknowledge={(j) => void jobAcknowledge.toggle(j)}
         />
       )}
 
