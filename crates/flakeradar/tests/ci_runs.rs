@@ -357,7 +357,8 @@ async fn a_failure_entry_carries_every_field() {
             "quarantined": true,
             "github_issue_number": 9,
             "github_issue_url": "https://github.com/acme/app/issues/9",
-            "github_issue_closed": false
+            "github_issue_closed": false,
+            "new": false
         }])
     );
     assert_eq!(body["total_failures"], 1);
@@ -388,6 +389,56 @@ async fn a_failure_entry_marks_a_broken_test() {
         .json();
     assert_eq!(body["failures"][0]["fail_streak"], 5);
     assert_eq!(body["failures"][0]["broken"], true);
+}
+
+#[tokio::test]
+async fn a_failure_entry_marks_a_recently_added_test_as_new() {
+    let db = TestDb::new().await.expect("a test database");
+    let project = make_project()
+        .repo("acme/app")
+        .project("backend")
+        .create(&db)
+        .await;
+    let fresh = make_test_case(&project)
+        .name("fresh")
+        .first_seen_at((chrono::Utc::now() - chrono::Duration::days(2)).into())
+        .create(&db)
+        .await;
+    let old = make_test_case(&project)
+        .name("old")
+        .first_seen_at((chrono::Utc::now() - chrono::Duration::days(30)).into())
+        .create(&db)
+        .await;
+    let run = make_run(&project)
+        .ci_run_id("100")
+        .ci_run_attempt(1)
+        .create(&db)
+        .await;
+    make_execution(&fresh, &run)
+        .status("failed")
+        .create(&db)
+        .await;
+    make_execution(&old, &run)
+        .status("failed")
+        .create(&db)
+        .await;
+    let body = get(&app(&db, &[]), &url("100", "acme/app", ""))
+        .await
+        .json();
+    let fresh = body["failures"]
+        .as_array()
+        .expect("the failures")
+        .iter()
+        .find(|failure| failure["name"] == "fresh")
+        .expect("the fresh failure");
+    let old = body["failures"]
+        .as_array()
+        .expect("the failures")
+        .iter()
+        .find(|failure| failure["name"] == "old")
+        .expect("the old failure");
+    assert_eq!(fresh["new"], true);
+    assert_eq!(old["new"], false);
 }
 
 #[tokio::test]

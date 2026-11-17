@@ -341,6 +341,54 @@ async fn list_tests_sorts_by_proven_flakes_and_by_last_seen() {
 }
 
 #[tokio::test]
+async fn the_listing_reports_a_first_seen_timestamp_and_whether_the_test_is_new() {
+    let db = TestDb::new().await.expect("a test database");
+    let project = make_project().create(&db).await;
+    let seen = |at: &str| DateTime::parse_from_rfc3339(at).expect("a fixed instant");
+    make_test_case(&project)
+        .name("fresh")
+        .flakiness_score(0.4)
+        .first_seen_at(seen("2026-10-15T00:00:00+00:00"))
+        .create(&db)
+        .await;
+    make_test_case(&project)
+        .name("old")
+        .flakiness_score(0.4)
+        .first_seen_at(seen("2026-10-01T00:00:00+00:00"))
+        .create(&db)
+        .await;
+    let page = list_tests(
+        db.connection(),
+        &Scope::default(),
+        &TestListFilters::default(),
+        &options(|options| options.sort = SortKey::LastSeen),
+        &settings(),
+    )
+    .await
+    .expect("the page");
+    let fresh = page
+        .items
+        .iter()
+        .find(|test| test.name == "fresh")
+        .expect("the fresh test");
+    let old_out = page
+        .items
+        .iter()
+        .find(|test| test.name == "old")
+        .expect("the old test");
+    assert!(fresh.new);
+    assert!(!old_out.new);
+    assert_eq!(
+        old_out.first_seen_at,
+        seen("2026-10-01T00:00:00+00:00").with_timezone(&chrono::Utc)
+    );
+    assert_eq!(
+        serde_json::to_value(old_out.first_seen_at).expect("the timestamp serializes"),
+        "2026-10-01T00:00:00Z"
+    );
+}
+
+#[tokio::test]
 async fn a_ci_run_listing_caps_its_failures_and_flags_the_rest() {
     let db = TestDb::new().await.expect("a test database");
     let project = make_project()

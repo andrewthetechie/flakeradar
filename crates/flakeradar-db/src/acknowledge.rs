@@ -148,7 +148,7 @@ pub async fn set_acknowledge(
     db.execute_raw(statement).await?;
     let out = match kind {
         EntityKind::Test => {
-            let mut test = test_out(&row, settings.broken_streak, None)?;
+            let mut test = test_out(&row, settings, None)?;
             test.acknowledged_until = until.map(|at| at.with_timezone(&Utc));
             test.acknowledge_reason = reason;
             AcknowledgedOut::Test(test)

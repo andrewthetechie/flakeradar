@@ -390,7 +390,10 @@ The response has these fields:
 - `failures` has one entry for each test that failed or errored in a run of
   that attempt. Each entry has the current `tier`, `flakiness_score`,
   `confirmed_flake_count`, `clean_streak` and `quarantined` of the test, so
-  you can apply your own threshold. `infra_suspect` is `true` when the run
+  you can apply your own threshold. `new` is `true` while the test was first
+  seen fewer than `NEW_TEST_DAYS` days ago, so a recently added test can be
+  told apart from an old test that started to flake. `infra_suspect` is `true`
+  when the run
   the failure came from is suspected infrastructure: most of its tests failed
   together, so the cause is likely the environment and not the tests.
   FlakeRadar leaves such a run out of scoring, so the failure says nothing

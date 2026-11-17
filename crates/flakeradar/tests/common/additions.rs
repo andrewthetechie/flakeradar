@@ -243,7 +243,10 @@ mod form {
                     "TestOut.acknowledged_until",
                     "TestOut.acknowledge_reason",
                     "JobOut.acknowledged_until",
-                    "JobOut.acknowledge_reason"
+                    "JobOut.acknowledge_reason",
+                    "TestOut.first_seen_at",
+                    "TestOut.new",
+                    "CiRunTestFailureOut.new"
                 ],
                 "paths": [
                     "POST /api/tests/{test_id}/acknowledge",
