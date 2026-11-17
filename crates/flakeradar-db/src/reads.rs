@@ -120,6 +120,9 @@ pub struct ReadSettings {
     pub broken_streak: i64,
     /// How many recent Executions the runner statistics weigh.
     pub score_window: usize,
+    /// How many days after a Test is first seen it still counts as new; only
+    /// the `new` read uses it, so changing it changes nothing already stored.
+    pub new_test_days: i64,
     /// Where "today" comes from, so a test controls the history cut-offs.
     pub clock: SharedClock,
 }
@@ -140,6 +143,7 @@ impl Default for ReadSettings {
             flake_threshold: defaults::FLAKE_THRESHOLD,
             broken_streak: defaults::BROKEN_STREAK,
             score_window: defaults::SCORE_WINDOW,
+            new_test_days: defaults::NEW_TEST_DAYS,
             clock: std::sync::Arc::new(crate::clock::SystemClock),
         }
     }
@@ -502,10 +506,16 @@ pub async fn list_repos(db: &impl ConnectionTrait) -> Result<Vec<RepoOut>, DbErr
     Ok(repos)
 }
 
+/// Whether a Test first seen at `first_seen_at` is within the new-test window.
+fn is_new(first_seen_at: DateTime<Utc>, settings: &ReadSettings) -> bool {
+    first_seen_at
+        > settings.clock.now().with_timezone(&Utc) - Duration::days(settings.new_test_days)
+}
+
 /// Reads one Test row into its response shape.
 pub(crate) fn test_out(
     row: &QueryResult,
-    broken_streak: i64,
+    settings: &ReadSettings,
     trend: Option<Trend>,
 ) -> Result<TestOut, DbError> {
     let score = score(get(row, "flakiness_score")?, "flakiness_score")?;
@@ -517,6 +527,7 @@ pub(crate) fn test_out(
     let issue_number = issue_number.map(id);
     let fail_streak = i64::from(get::<i32>(row, "fail_streak")?);
     let source_url = issue_url(&repo, issue_number);
+    let first_seen_at = timestamp(row, "first_seen_at")?;
     Ok(TestOut {
         id: id(get(row, "id")?),
         repo,
@@ -535,7 +546,7 @@ pub(crate) fn test_out(
         ),
         clean_streak: i64::from(get::<i32>(row, "clean_streak")?),
         fail_streak,
-        broken: is_broken(fail_streak, broken_streak),
+        broken: is_broken(fail_streak, settings.broken_streak),
         trend,
         last_status: execution_status(&get::<String>(row, "last_status")?)?,
         last_seen_at: timestamp(row, "last_seen_at")?,
@@ -548,6 +559,8 @@ pub(crate) fn test_out(
         github_issue_number: issue_number,
         github_issue_url: source_url,
         github_issue_closed: get(row, "github_issue_closed")?,
+        first_seen_at,
+        new: is_new(first_seen_at, settings),
     })
 }
 
@@ -731,7 +744,7 @@ pub async fn list_tests(
     };
     let page = board.run(db).await?;
     let items = read_items(db, EntityKind::Test, &page.rows, settings, |row, trend| {
-        test_out(row, settings.broken_streak, trend)
+        test_out(row, settings, trend)
     })
     .await?;
     Ok(TestPage {
@@ -1087,7 +1100,7 @@ pub async fn get_test(
     let score = score(get(&row, "flakiness_score")?, "flakiness_score")?;
     let test = test_out(
         &row,
-        settings.broken_streak,
+        settings,
         trend_for(score.as_f64(), past.get(&stored_id).copied()),
     )?;
 
@@ -1259,7 +1272,7 @@ pub async fn set_quarantine(
         ],
     );
     db.execute_raw(statement).await?;
-    let mut test = test_out(&row, settings.broken_streak, None)?;
+    let mut test = test_out(&row, settings, None)?;
     test.quarantined = quarantined;
     test.quarantined_at = quarantined_at.map(|at| at.with_timezone(&Utc));
     test.quarantine_reason = reason;
@@ -1352,7 +1365,7 @@ pub async fn search_tests(
     values.extend(binds.into_values());
     let rows = rows(db, sql, values).await?;
     read_items(db, EntityKind::Test, &rows, settings, |row, trend| {
-        test_out(row, settings.broken_streak, trend)
+        test_out(row, settings, trend)
     })
     .await
 }
@@ -2187,6 +2200,7 @@ fn ci_run_failure_item(
         github_issue_number: issue_number,
         github_issue_url: issue_url(repo_name, issue_number),
         github_issue_closed: get(row, "github_issue_closed")?,
+        new: is_new(timestamp(row, "first_seen_at")?, settings),
     }))
 }
 

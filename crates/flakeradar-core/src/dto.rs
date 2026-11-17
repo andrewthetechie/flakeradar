@@ -1440,6 +1440,11 @@ pub struct ProjectDeleteOut {
 }
 
 /// One Test as the leaderboard serves it.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "a flat wire DTO: broken, quarantined, new and github_issue_closed are \
+              independent answers, and the JSON shape is the contract"
+)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct TestOut {
     /// The Test's id.
@@ -1503,6 +1508,11 @@ pub struct TestOut {
     pub github_issue_url: Option<String>,
     /// Whether the linked issue was closed as not planned.
     pub github_issue_closed: bool,
+    /// When the Test was first seen.
+    #[serde(with = "timestamp")]
+    pub first_seen_at: DateTime<Utc>,
+    /// Whether the Test was first seen within the new-test window.
+    pub new: bool,
 }
 
 /// One page of Tests.
@@ -2052,8 +2062,8 @@ pub struct ReportCountsOut {
 /// One failing Test in a CI run attempt.
 #[expect(
     clippy::struct_excessive_bools,
-    reason = "a flat wire DTO: broken, quarantined, infra_suspect and \
-              github_issue_closed are four independent answers, and the JSON shape is the contract"
+    reason = "a flat wire DTO: broken, quarantined, infra_suspect, new and \
+              github_issue_closed are independent answers, and the JSON shape is the contract"
 )]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct CiRunTestFailureOut {
@@ -2101,6 +2111,8 @@ pub struct CiRunTestFailureOut {
     pub github_issue_url: Option<String>,
     /// Whether the linked issue was closed as not planned.
     pub github_issue_closed: bool,
+    /// Whether the Test was first seen within the new-test window.
+    pub new: bool,
 }
 
 /// One failed Job in a CI run attempt.

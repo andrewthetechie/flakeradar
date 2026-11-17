@@ -192,6 +192,8 @@ fn a_test_out_keeps_every_field_the_consumers_read() {
         github_issue_number: None,
         github_issue_url: None,
         github_issue_closed: false,
+        first_seen_at: at(0),
+        new: false,
     };
     let value = serde_json::to_value(&test).expect("the test serializes");
     for field in [
@@ -223,6 +225,8 @@ fn a_test_out_keeps_every_field_the_consumers_read() {
         "github_issue_number",
         "github_issue_url",
         "github_issue_closed",
+        "first_seen_at",
+        "new",
     ] {
         assert!(
             value.get(field).is_some(),

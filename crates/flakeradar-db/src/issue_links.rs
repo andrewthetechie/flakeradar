@@ -178,11 +178,7 @@ fn out_for(
     settings: &ReadSettings,
 ) -> Result<LinkedOut, DbError> {
     match target {
-        EntityKind::Test => Ok(LinkedOut::Test(test_out(
-            row,
-            settings.broken_streak,
-            None,
-        )?)),
+        EntityKind::Test => Ok(LinkedOut::Test(test_out(row, settings, None)?)),
         EntityKind::Job => Ok(LinkedOut::Job(job_out(row, None)?)),
     }
 }

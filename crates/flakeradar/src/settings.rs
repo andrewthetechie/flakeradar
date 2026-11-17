@@ -563,6 +563,7 @@ impl Settings {
             flake_threshold: self.flake_threshold,
             broken_streak: self.broken_streak,
             score_window: self.score_window,
+            new_test_days: self.new_test_days,
             clock,
         }
     }
@@ -1769,6 +1770,10 @@ mod tests {
             reads.flake_threshold
         );
         assert_eq!(
+            settings.reads(Arc::clone(&clock)).new_test_days,
+            reads.new_test_days
+        );
+        assert_eq!(
             settings.processing(Arc::clone(&clock)).max_report_retries,
             processing.max_report_retries
         );
@@ -1781,5 +1786,13 @@ mod tests {
             processing.infra_min_tests
         );
         assert_eq!(settings.retention(), retention);
+    }
+
+    #[test]
+    fn reads_carries_new_test_days_through() {
+        let settings = Settings::from_map(&map(&[("FLAKERADAR_NEW_TEST_DAYS", "3")]))
+            .expect("the fixture is valid");
+        let clock: flakeradar_db::clock::SharedClock = Arc::new(flakeradar_db::clock::SystemClock);
+        assert_eq!(settings.reads(clock).new_test_days, 3);
     }
 }
