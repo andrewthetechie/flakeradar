@@ -25,6 +25,7 @@
       "clean_streak": 3,
       "fail_streak": 0,
       "broken": false,
+      "new": false,
       "quarantined": false,
       "github_issue_number": null,
       "github_issue_url": null,
