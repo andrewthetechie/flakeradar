@@ -300,6 +300,7 @@ impl TestsQuery {
             quarantined: self.quarantined,
             acknowledged: self.acknowledged,
             broken: self.broken.unwrap_or(false),
+            new: false,
         };
         let options = ListOptions {
             include_stable: self.include_stable.unwrap_or(false),
