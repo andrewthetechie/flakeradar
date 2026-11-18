@@ -116,8 +116,16 @@ instant, and its score has not yet fallen below the Recover threshold, which wou
 clear it. The state is stored on the row by the rescore, and every tier the server
 computes reads it rather than the score.
 
+**New test**:
+A Test first seen within `NEW_TEST_DAYS` days: `first_seen_at` stores when the
+Report first mentioned it, and it is reported as `new` while that instant is
+within the window. It is about being recently added, not about flakiness, so a
+New test can be Stable and `GET /api/tests?new=true` still lists it. Unlike
+**New flaky test**, it needs no Flake threshold, and the window applies to Tests
+only, not to Jobs.
+
 **New flaky test**:
-A Flaky test (or Job) that became flaky within the last N days: its Flakiness score is at or above the Flake threshold now, and N days ago it was below the threshold — or it has no Score history that old. The leaderboard's `new=7` toggle and the `new_within_days` API and MCP argument list them.
+A Flaky test (or Job) that became flaky within the last N days: its Flakiness score is at or above the Flake threshold now, and N days ago it was below the threshold — or it has no Score history that old. The leaderboard's `new=7` toggle and the `new_within_days` API and MCP argument list them. Unlike **New test**, which is about being recently added, it must be flaky.
 
 **Suspect test**:
 A Test that is neither Flaky nor Stable: its Flakiness score is above 0 and its
