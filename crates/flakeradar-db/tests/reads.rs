@@ -341,6 +341,73 @@ async fn list_tests_sorts_by_proven_flakes_and_by_last_seen() {
     assert_eq!(by_seen.items.len(), 2);
 }
 
+/// The impact order lists the Test that broke the most CI runs first, whatever its
+/// score, and `impact` is the spelling the query parameter takes.
+#[tokio::test]
+async fn list_tests_sorts_by_impacted_runs() {
+    assert_eq!(SortKey::parse("impact"), Some(SortKey::Impact));
+    assert_eq!(SortKey::parse("score"), Some(SortKey::Score));
+    assert_eq!(SortKey::default(), SortKey::Score);
+
+    let db = TestDb::new().await.expect("a test database");
+    let project = impact_project(&db, Some("main")).await;
+    let ran = instant("2026-10-15T09:00:00+00:00");
+    let scored = make_test_case(&project)
+        .name("scored")
+        .flakiness_score(0.4)
+        .create(&db)
+        .await;
+    let first_run = make_run(&project)
+        .ci_run_id("100")
+        .branch("main")
+        .created_at(ran)
+        .create(&db)
+        .await;
+    make_execution(&scored, &first_run)
+        .status("failed")
+        .created_at(ran)
+        .duration(1.0)
+        .create(&db)
+        .await;
+    let costly = make_test_case(&project)
+        .name("costly")
+        .flakiness_score(0.3)
+        .create(&db)
+        .await;
+    for ci_run_id in ["200", "201", "202"] {
+        let run = make_run(&project)
+            .ci_run_id(ci_run_id)
+            .branch("feat/x")
+            .created_at(ran)
+            .create(&db)
+            .await;
+        make_execution(&costly, &run)
+            .status("failed")
+            .created_at(ran)
+            .duration(1.0)
+            .create(&db)
+            .await;
+    }
+
+    let by_impact = list_tests(
+        db.connection(),
+        &Scope::default(),
+        &TestListFilters::default(),
+        &options(|options| options.sort = SortKey::Impact),
+        &settings(),
+    )
+    .await
+    .expect("the page");
+    assert_eq!(by_impact.items[0].name, "costly");
+    assert_eq!(by_impact.items[1].name, "scored");
+    assert_eq!(by_impact.items[0].impacted_runs, 3);
+    assert_eq!(by_impact.items[1].impacted_runs, 1);
+
+    // The default order is unchanged: the higher score still leads.
+    let by_score = listed_tests(&db).await;
+    assert_eq!(by_score.items[0].name, "scored");
+}
+
 /// An instant from its RFC 3339 text, for a fixture that names its own date.
 fn instant(text: &str) -> DateTime<FixedOffset> {
     DateTime::parse_from_rfc3339(text).expect("a fixed instant")

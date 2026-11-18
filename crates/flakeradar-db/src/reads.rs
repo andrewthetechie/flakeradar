@@ -220,11 +220,13 @@ pub enum SortKey {
     LastSeen,
     /// Most Proven flakes first.
     Proven,
+    /// Most impacted CI runs first.
+    Impact,
 }
 
 impl SortKey {
     /// The spellings the query parameter takes, in the order the 422 lists them.
-    pub const SPELLINGS: [&'static str; 3] = ["score", "last_seen", "proven"];
+    pub const SPELLINGS: [&'static str; 4] = ["score", "last_seen", "proven", "impact"];
 
     /// Parses the query parameter's value.
     #[must_use]
@@ -233,6 +235,7 @@ impl SortKey {
             "score" => Some(Self::Score),
             "last_seen" => Some(Self::LastSeen),
             "proven" => Some(Self::Proven),
+            "impact" => Some(Self::Impact),
             _ => None,
         }
     }
@@ -506,6 +509,8 @@ impl Board<'_> {
             SortKey::Score => "flakiness_score DESC, last_seen_at DESC, id",
             SortKey::LastSeen => "last_seen_at DESC, id DESC",
             SortKey::Proven => "confirmed_flake_count DESC, flakiness_score DESC, id",
+            // The lateral's own output column, so the page orders it bare.
+            SortKey::Impact => "impacted_runs DESC, flakiness_score DESC, id",
         };
         let page = self.options.page;
         let page_size = self.options.page_size;
@@ -2389,6 +2394,7 @@ mod tests {
         assert_eq!(SortKey::parse("score"), Some(SortKey::Score));
         assert_eq!(SortKey::parse("last_seen"), Some(SortKey::LastSeen));
         assert_eq!(SortKey::parse("proven"), Some(SortKey::Proven));
+        assert_eq!(SortKey::parse("impact"), Some(SortKey::Impact));
         assert_eq!(SortKey::parse("name"), None);
         assert_eq!(SortKey::default(), SortKey::Score);
     }
