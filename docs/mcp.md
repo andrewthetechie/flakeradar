@@ -57,10 +57,10 @@ In production, always use HTTPS, so that the token is not sent as clear text.
 |---|---|
 | `list_repos` | All repos, with their projects. |
 | `list_projects(repo)` | The projects of one repo. |
-| `top_flaky_tests(repo, project?, limit=20, include_suspect=true, file?, category?, new_within_days?)` | The worst tests first. `category` (network, environment, timing, assertion or other) filters by likely cause. `new_within_days=N` (1 to 90) lists only what became flaky in the last N days. |
+| `top_flaky_tests(repo, project?, limit=20, include_suspect=true, file?, category?, new_within_days?, sort?)` | The worst tests first. `category` (network, environment, timing, assertion or other) filters by likely cause. `new_within_days=N` (1 to 90) lists only what became flaky in the last N days. `sort` is `score` (the default), `last_seen`, `proven` or `impact`, which lists the tests that broke the most CI runs first. |
 | `search_tests(repo, query, project?, limit=20)` | Tests whose name, classname or file contains `query`. |
 | `get_test(test_id \| repo+project+name[+classname], executions_limit=20)` | The location and GitHub permalink, the last failing commit, the latest failure message and traceback (4 KB maximum), recent executions, and up to 30 days of score history. |
-| `top_flaky_jobs(repo, limit=20, include_suspect=true, new_within_days?)` | The worst CI jobs first. Scores count only unexplained failures. `new_within_days=N` (1 to 90) lists only what became flaky in the last N days. |
+| `top_flaky_jobs(repo, limit=20, include_suspect=true, new_within_days?, sort?)` | The worst CI jobs first. Scores count only unexplained failures. `new_within_days=N` (1 to 90) lists only what became flaky in the last N days. `sort` is `score` (the default), `last_seen`, `proven` or `impact`, which lists the jobs that broke the most CI runs first. |
 | `search_jobs(repo, query, limit=20)` | Jobs whose name or pipeline contains `query`. |
 | `get_job(job_id \| repo+name[+pipeline], executions_limit=20)` | Unexplained and explained failures, recent executions with the tests that explain them, and up to 30 days of score history. |
 | `ci_run_failures(repo, ci_run_id, ci_run_attempt?)` | The failing tests of one CI run attempt (the latest by default) with their current tier and score, its failed jobs (explained or unexplained), and its report counts. |
