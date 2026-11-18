@@ -257,6 +257,11 @@ fn day(days: i64) -> chrono::NaiveDate {
     (Utc::now() - chrono::Duration::days(days)).date_naive()
 }
 
+/// An instant `hours` before now, so a row lands inside a "recent" window.
+fn hours_ago(hours: i64) -> chrono::DateTime<chrono::FixedOffset> {
+    (Utc::now() - chrono::Duration::hours(hours)).fixed_offset()
+}
+
 /// The Repo, Projects, Tests and Executions the read tools are asserted over.
 ///
 /// It is the read suite's seed: one Repo with two Projects, a flaky Test
@@ -773,6 +778,63 @@ async fn top_flaky_tests_filters_by_category() {
     .await;
 }
 
+#[tokio::test]
+async fn top_flaky_tests_orders_by_impact() {
+    let db = TestDb::new().await.expect("a test database is available");
+    let app = mcp_app(&db);
+    let project = make_project()
+        .repo("acme/app")
+        .project("backend")
+        .create(&db)
+        .await;
+    // One failure in one CI run, and the same failure in three: the second Test
+    // costs more runs despite the lower score, which is what `sort=impact` answers.
+    let scored = make_test_case(&project)
+        .name("scored")
+        .flakiness_score(0.4)
+        .create(&db)
+        .await;
+    let costly = make_test_case(&project)
+        .name("costly")
+        .flakiness_score(0.3)
+        .create(&db)
+        .await;
+    let mut runs = Vec::new();
+    for ci_run_id in ["100", "101", "102"] {
+        runs.push(make_run(&project).ci_run_id(ci_run_id).create(&db).await);
+    }
+    // The app reads the wall clock, so the failures must be stamped inside the
+    // 30-day impact window rather than at the factories' fixture instant.
+    make_execution(&scored, &runs[0])
+        .status("failed")
+        .created_at(hours_ago(1))
+        .create(&db)
+        .await;
+    for run in &runs {
+        make_execution(&costly, run)
+            .status("failed")
+            .created_at(hours_ago(1))
+            .create(&db)
+            .await;
+    }
+    let by_impact = call(
+        &app,
+        "top_flaky_tests",
+        json!({"repo": "acme/app", "sort": "impact"}),
+    )
+    .await;
+    assert_eq!(names(&by_impact), ["costly", "scored"]);
+    let by_score = call(&app, "top_flaky_tests", json!({"repo": "acme/app"})).await;
+    assert_eq!(names(&by_score), ["scored", "costly"], "no sort is score");
+    refused(
+        &app,
+        "top_flaky_tests",
+        json!({"repo": "acme/app", "sort": "bogus"}),
+        "sort must be one of 'score', 'last_seen', 'proven', 'impact'",
+    )
+    .await;
+}
+
 /// Two Tests and two Jobs of one Repo: one became flaky this week, one a month ago.
 async fn seed_new_within_days(db: &TestDb) {
     let project = make_project()
@@ -1086,6 +1148,22 @@ async fn top_flaky_jobs_lists_worst_first() {
         )
         .await;
     }
+    refused(
+        &app,
+        "top_flaky_jobs",
+        json!({"repo": "acme/app", "sort": "bogus"}),
+        "sort must be one of 'score', 'last_seen', 'proven', 'impact'",
+    )
+    .await;
+    // The seeded Jobs' failures sit at the fixture instant, so every Job ties at
+    // zero impacted runs and the order is the score order again.
+    let impacted = call(
+        &app,
+        "top_flaky_jobs",
+        json!({"repo": "acme/app", "sort": "impact"}),
+    )
+    .await;
+    assert_eq!(names(&impacted), ["e2e (ubuntu-latest)", "test"]);
 }
 
 #[tokio::test]

@@ -161,6 +161,17 @@
           },
           "repo": {
             "type": "string"
+          },
+          "sort": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -374,6 +385,17 @@
           },
           "repo": {
             "type": "string"
+          },
+          "sort": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [

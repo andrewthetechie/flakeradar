@@ -30,7 +30,7 @@ use flakeradar_core::{
     model::EntityKind, py::TRUNCATION_MARKER, py::strip_wire_whitespace,
 };
 use flakeradar_db::issue_links::LinkError;
-use flakeradar_db::reads::{ReadError, ReadSettings, Scope};
+use flakeradar_db::reads::{ReadError, ReadSettings, Scope, SortKey};
 use flakeradar_db::{DbError, clock::SharedClock, clock::SystemClock};
 use rmcp::ErrorData as McpError;
 use rmcp::ServerHandler;
@@ -562,6 +562,20 @@ fn parse_category(text: &str) -> Result<FailureCategory, ToolFailure> {
             FailureCategory::ALL
                 .iter()
                 .map(|category| category.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))
+    })
+}
+
+/// The sort order a `sort` argument names.
+fn parse_sort(text: &str) -> Result<SortKey, ToolFailure> {
+    SortKey::parse(text).ok_or_else(|| {
+        ToolFailure::Tool(format!(
+            "sort must be one of {}",
+            SortKey::SPELLINGS
+                .iter()
+                .map(|spelling| format!("'{spelling}'"))
                 .collect::<Vec<_>>()
                 .join(", ")
         ))
