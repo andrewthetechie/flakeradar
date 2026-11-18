@@ -128,6 +128,24 @@ describe("LeaderboardControls sort and filter handlers", () => {
     expect(onSort).toHaveBeenCalledWith("last_seen");
   });
 
+  it("the sort select reports the impact key", () => {
+    const onSort = vi.fn();
+    render(<LeaderboardControls {...base} onSort={onSort} />);
+    fireEvent.change(screen.getByRole("combobox", { name: /sort by/i }), {
+      target: { value: "impact" },
+    });
+    expect(onSort).toHaveBeenCalledWith("impact");
+  });
+
+  it("the sort select lists Impact after Proven flakes", () => {
+    render(<LeaderboardControls {...base} />);
+    expect(
+      within(screen.getByRole("combobox", { name: /sort by/i }))
+        .getAllByRole("option")
+        .map((o) => o.textContent),
+    ).toEqual(["Flakiness score", "Last seen", "Proven flakes", "Impact"]);
+  });
+
   it("the cause select reports the category, and Any reports null", () => {
     const onCause = vi.fn();
     render(<LeaderboardControls {...base} cause={null} causeCounts={null} onCause={onCause} />);
