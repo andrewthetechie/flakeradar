@@ -14,7 +14,7 @@ use flakeradar_db::reads::{self, ListOptions, TestListFilters};
 use crate::mcp::{
     BoxFuture, DEFAULT_LIMIT, McpServer, ToolAnswer, ToolResult, check_limit,
     check_new_within_days, default_limit, default_true, lax_boolean, lax_integer,
-    lax_optional_integer, nullable, parse, parse_category, read_only, scope,
+    lax_optional_integer, nullable, parse, parse_category, parse_sort, read_only, scope,
 };
 
 /// The tool's name on the wire.
@@ -62,6 +62,9 @@ struct TopFlakyTestsArgs {
     /// The "became flaky recently" window, in days.
     #[serde(default, deserialize_with = "lax_optional_integer")]
     new_within_days: Option<i64>,
+    /// The sort order, or none for `score`.
+    #[serde(default)]
+    sort: Option<String>,
 }
 
 /// The tool's argument schema.
@@ -76,6 +79,7 @@ pub(super) fn input_schema() -> Value {
             "new_within_days": nullable("integer"),
             "project": nullable("string"),
             "repo": {"type": "string"},
+            "sort": nullable("string"),
         },
         "required": ["repo"],
         "type": "object",
@@ -96,6 +100,10 @@ pub(super) fn call(server: &McpServer, arguments: Value) -> BoxFuture<'_, ToolRe
             Some(text) => Some(parse_category(text)?),
             None => None,
         };
+        let sort = match args.sort.as_deref() {
+            Some(text) => Some(parse_sort(text)?),
+            None => None,
+        };
         if let Some(days) = args.new_within_days {
             check_new_within_days(days)?;
         }
@@ -108,8 +116,11 @@ pub(super) fn call(server: &McpServer, arguments: Value) -> BoxFuture<'_, ToolRe
             broken: false,
             new: false,
         };
-        let options =
+        let mut options =
             ListOptions::top_flaky(args.limit, args.include_suspect, args.new_within_days);
+        if let Some(sort) = sort {
+            options.sort = sort;
+        }
         let page = reads::list_tests(
             server.pool(),
             &scope,
