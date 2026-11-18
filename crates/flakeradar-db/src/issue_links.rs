@@ -27,8 +27,8 @@ use serde::Serialize;
 
 use crate::error::DbError;
 use crate::reads::{
-    JOBS_FROM, JOBS_SELECT, ReadSettings, TESTS_FROM, TESTS_SELECT, job_out, optional_timestamp,
-    test_out,
+    IMPACT_COLUMNS, JOBS_FROM, JOBS_SELECT, ReadSettings, TESTS_FROM, TESTS_SELECT,
+    impact_lateral_sql, impact_since, job_out, optional_timestamp, test_out,
 };
 use crate::sql::{get, one, placeholder_list, rows};
 
@@ -258,7 +258,7 @@ pub async fn link_issue(
     let transaction = db.begin().await?;
     let row = one(
         &transaction,
-        locked_select_sql(target),
+        locked_select_sql(target, impact_since(settings)),
         vec![Value::from(target_id)],
     )
     .await?;
@@ -324,7 +324,7 @@ pub async fn unlink_issue(
     let transaction = db.begin().await?;
     let row = one(
         &transaction,
-        locked_select_sql(target),
+        locked_select_sql(target, impact_since(settings)),
         vec![Value::from(target_id)],
     )
     .await?;
@@ -369,19 +369,25 @@ fn stored_number(number: i64) -> i32 {
 }
 
 /// The locked select of one target, as SQL.
-fn locked_select_sql(target: EntityKind) -> String {
+///
+/// It carries the impact columns because the row feeds the leaderboard's own
+/// mapper: without the lateral the answer names unknown columns. Locking stays
+/// legal because the lateral is on the target's non-null side.
+fn locked_select_sql(target: EntityKind, since: DateTime<Utc>) -> String {
     match target {
         EntityKind::Test => format!(
-            "{TESTS_SELECT}, t.github_issue_checked_at AS checked_at, \
+            "{TESTS_SELECT}{IMPACT_COLUMNS}, t.github_issue_checked_at AS checked_at, \
              t.github_issue_closed AS closed, \
              t.github_issue_fixed_noted_at AS fixed_noted_at \
-             {TESTS_FROM} WHERE t.id = $1 FOR UPDATE OF t"
+             {TESTS_FROM}{} WHERE t.id = $1 FOR UPDATE OF t",
+            impact_lateral_sql(EntityKind::Test, since)
         ),
         EntityKind::Job => format!(
-            "{JOBS_SELECT}, j.github_issue_checked_at AS checked_at, \
+            "{JOBS_SELECT}{IMPACT_COLUMNS}, j.github_issue_checked_at AS checked_at, \
              j.github_issue_closed AS closed, \
              j.github_issue_fixed_noted_at AS fixed_noted_at \
-             {JOBS_FROM} WHERE j.id = $1 FOR UPDATE OF j"
+             {JOBS_FROM}{} WHERE j.id = $1 FOR UPDATE OF j",
+            impact_lateral_sql(EntityKind::Job, since)
         ),
     }
 }

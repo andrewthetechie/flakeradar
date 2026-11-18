@@ -14,14 +14,15 @@
 
 // Rust guideline compliant 2026-07-21
 
-use chrono::{Duration, Utc};
+use chrono::{DateTime, Duration, Utc};
 use flakeradar_core::{dto::AcknowledgeIn, dto::JobOut, dto::TestOut, model::EntityKind};
 use sea_orm::{ConnectionTrait, DbBackend, Statement, Value};
 use serde::Serialize;
 
 use crate::error::DbError;
 use crate::reads::{
-    JOBS_FROM, JOBS_SELECT, ReadSettings, TESTS_FROM, TESTS_SELECT, job_out, test_out,
+    IMPACT_COLUMNS, JOBS_FROM, JOBS_SELECT, ReadSettings, TESTS_FROM, TESTS_SELECT,
+    impact_lateral_sql, impact_since, job_out, test_out,
 };
 use crate::sql::{get, one};
 
@@ -70,10 +71,19 @@ const fn acknowledge_table(kind: EntityKind) -> &'static str {
 }
 
 /// The select of one target's row, as SQL.
-fn select_sql(kind: EntityKind) -> String {
+///
+/// It carries the impact columns because the row feeds the leaderboard's own
+/// mapper: without the lateral the answer names unknown columns.
+fn select_sql(kind: EntityKind, since: DateTime<Utc>) -> String {
     match kind {
-        EntityKind::Test => format!("{TESTS_SELECT} {TESTS_FROM} WHERE t.id = $1"),
-        EntityKind::Job => format!("{JOBS_SELECT} {JOBS_FROM} WHERE j.id = $1"),
+        EntityKind::Test => format!(
+            "{TESTS_SELECT}{IMPACT_COLUMNS} {TESTS_FROM}{} WHERE t.id = $1",
+            impact_lateral_sql(EntityKind::Test, since)
+        ),
+        EntityKind::Job => format!(
+            "{JOBS_SELECT}{IMPACT_COLUMNS} {JOBS_FROM}{} WHERE j.id = $1",
+            impact_lateral_sql(EntityKind::Job, since)
+        ),
     }
 }
 
@@ -121,7 +131,13 @@ pub async fn set_acknowledge(
     decision: AcknowledgeDecision,
     settings: &ReadSettings,
 ) -> Result<Option<AcknowledgedOut>, DbError> {
-    let Some(row) = one(db, select_sql(kind), vec![Value::from(id)]).await? else {
+    let Some(row) = one(
+        db,
+        select_sql(kind, impact_since(settings)),
+        vec![Value::from(id)],
+    )
+    .await?
+    else {
         return Ok(None);
     };
     let stored_id: i32 = get(&row, "id")?;
