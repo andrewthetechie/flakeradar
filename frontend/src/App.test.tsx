@@ -34,6 +34,9 @@ function page(name: string): TestPage {
     github_issue_number: null,
     github_issue_url: null,
     github_issue_closed: false,
+    impacted_runs: 0,
+    impacted_branches: 0,
+    time_lost_seconds: 0,
   };
   return { items: [test], total: 1, page: 1, page_size: 50 };
 }
@@ -101,6 +104,9 @@ function testHistory(id: number, overrides: Partial<History> = {}): History {
       github_issue_number: null,
       github_issue_url: null,
       github_issue_closed: false,
+      impacted_runs: 0,
+      impacted_branches: 0,
+      time_lost_seconds: 0,
     },
     location: {
       path: "frontend/src/app.test.ts",
@@ -177,6 +183,9 @@ function jobHistory(overrides: Partial<JobHistory> = {}): JobHistory {
       github_issue_number: null,
       github_issue_url: null,
       github_issue_closed: false,
+      impacted_runs: 0,
+      impacted_branches: 0,
+      time_lost_seconds: 0,
     },
     unexplained_failures: 1,
     explained_failures: 1,

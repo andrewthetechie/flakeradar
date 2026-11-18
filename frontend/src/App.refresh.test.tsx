@@ -37,6 +37,9 @@ function page(name: string): TestPage {
     github_issue_number: null,
     github_issue_url: null,
     github_issue_closed: false,
+    impacted_runs: 0,
+    impacted_branches: 0,
+    time_lost_seconds: 0,
   };
   return { items: [test], total: 1, page: 1, page_size: 50 };
 }

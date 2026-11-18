@@ -5,6 +5,7 @@ const SORT_LABELS: Record<SortKey, string> = {
   score: "Flakiness score",
   last_seen: "Last seen",
   proven: "Proven flakes",
+  impact: "Impact",
 };
 
 const ISSUE_LABELS: Record<IssueFilter, string> = {

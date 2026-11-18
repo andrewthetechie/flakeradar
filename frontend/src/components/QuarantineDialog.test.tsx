@@ -33,6 +33,9 @@ const test: TestCase = {
   github_issue_number: null,
   github_issue_url: null,
   github_issue_closed: false,
+  impacted_runs: 0,
+  impacted_branches: 0,
+  time_lost_seconds: 0,
 };
 
 function renderDialog(onClose = vi.fn(), onConfirm = vi.fn()) {
