@@ -109,6 +109,7 @@
    Quarantine stays one tap away in the slide-over. */
 @media (max-width: 640px) {
   .leaderboard .col-proof,
+  .leaderboard .col-impact,
   .leaderboard .col-status,
   .leaderboard .col-actions {
     display: none;

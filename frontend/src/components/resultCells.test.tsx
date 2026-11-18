@@ -91,7 +91,17 @@ describe("ImpactCell", () => {
       "CI runs with a failure in the last 30 days, on 1 non-default branches",
     );
     expect(screen.getByText("2m lost")).toBeInTheDocument();
-    expect(runs.closest("td")).toHaveClass("max-sm:hidden");
+    expect(runs.closest("td")).toHaveClass("col-impact");
+  });
+
+  it("hides the impact cell with the phone rule, not a Tailwind breakpoint", () => {
+    // Tailwind 4's max-sm:hidden is `width < 40rem`, so it leaves the column visible at
+    // a 640px viewport, where the stylesheet's phone rule already hides Proof. The
+    // column hides with the same `col-*` hook as Proof, status and actions instead.
+    render(inRow(<ImpactCell runs={3} branches={1} seconds={90} />));
+    const cls = screen.getByText("3 runs").closest("td")?.className ?? "";
+    expect(cls).toContain("col-impact");
+    expect(cls).not.toContain("max-sm:hidden");
   });
 
   it("shows a dash when nothing was impacted", () => {

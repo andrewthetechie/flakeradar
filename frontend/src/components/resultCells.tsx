@@ -125,7 +125,9 @@ export function formatLostDuration(seconds: number): string {
   return `${(seconds / 3600).toFixed(1)}h`;
 }
 
-/** Impact cell: the runs a flake broke in the last 30 days and the CI time it cost. */
+/** Impact cell: the runs a flake broke in the last 30 days and the CI time it cost.
+ * `col-impact` is the phone rule in styles.css, the same mechanism as Proof: Tailwind's
+ * max-sm:hidden is `width < 40rem`, so it leaves the column visible at exactly 640px. */
 export function ImpactCell({
   runs,
   branches,
@@ -136,7 +138,7 @@ export function ImpactCell({
   seconds: number;
 }) {
   return (
-    <td className="max-sm:hidden px-4 py-2.5 align-top text-xs whitespace-nowrap">
+    <td className="col-impact px-4 py-2.5 align-top text-xs whitespace-nowrap">
       {runs > 0 ? (
         <span
           title={`CI runs with a failure in the last 30 days, on ${branches} non-default branches`}

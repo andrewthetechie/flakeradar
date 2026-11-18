@@ -77,10 +77,10 @@ describe("Leaderboard", () => {
     );
     const header = screen.getByText("Impact");
     expect(header).toBeInTheDocument();
-    expect(header).toHaveClass("max-sm:hidden");
+    expect(header).toHaveClass("col-impact");
     expect(screen.getByText("3 runs")).toBeInTheDocument();
     expect(screen.getByText("2m lost")).toBeInTheDocument();
-    expect(screen.getByText("3 runs").closest("td")).toHaveClass("max-sm:hidden");
+    expect(screen.getByText("3 runs").closest("td")).toHaveClass("col-impact");
   });
 
   it("shows a dash in the impact column when no run was impacted", () => {

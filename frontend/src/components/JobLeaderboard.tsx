@@ -55,7 +55,7 @@ export function JobLeaderboard({
           <th className={th}>Job</th>
           <th className={th}>Flakiness</th>
           <th className={`col-proof ${th}`}>Proof</th>
-          <th className={`max-sm:hidden ${th}`}>Impact</th>
+          <th className={`col-impact ${th}`}>Impact</th>
           <th className={`col-status ${th}`}>Last status</th>
           <th className={th}>Last seen</th>
         </tr>

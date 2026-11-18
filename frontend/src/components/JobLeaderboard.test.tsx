@@ -58,7 +58,7 @@ describe("JobLeaderboard", () => {
         onSelect={vi.fn()}
       />,
     );
-    expect(screen.getByText("Impact")).toHaveClass("max-sm:hidden");
+    expect(screen.getByText("Impact")).toHaveClass("col-impact");
     expect(screen.getByText("2 runs")).toBeInTheDocument();
     expect(screen.getByText("1.5h lost")).toBeInTheDocument();
   });
