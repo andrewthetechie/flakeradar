@@ -628,6 +628,9 @@ pub struct TestListFilters {
     pub acknowledged: Option<bool>,
     /// Whether to list only broken Tests.
     pub broken: bool,
+    /// Whether to list only Tests first seen within the new-test window of
+    /// `new_test_days` days.
+    pub new: bool,
 }
 
 /// The Jobs-only listing filters the engine must not know about.
@@ -731,9 +734,18 @@ pub async fn list_tests(
             filter.raw("FALSE");
         }
     }
-    // A quarantine, acknowledgement or broken filter keeps the stable rows it selected by.
-    let keeps_stable_rows =
-        filters.quarantined == Some(true) || filters.acknowledged == Some(true) || filters.broken;
+    // A new Test is one first seen inside the window `is_new` applies per row.
+    if filters.new {
+        let placeholder = filter.bind(Value::from(
+            settings.clock.now().with_timezone(&Utc) - Duration::days(settings.new_test_days),
+        ));
+        filter.raw(format!("t.first_seen_at > {placeholder}"));
+    }
+    // A quarantine, acknowledgement, broken or new filter keeps the stable rows it selected by.
+    let keeps_stable_rows = filters.quarantined == Some(true)
+        || filters.acknowledged == Some(true)
+        || filters.broken
+        || filters.new;
     let board = Board {
         entity: &TESTS_BOARD,
         options,

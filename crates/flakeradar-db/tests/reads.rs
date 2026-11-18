@@ -15,7 +15,8 @@ use std::sync::Arc;
 
 use chrono::{DateTime, FixedOffset};
 use flakeradar_core::{
-    dto::PipelineReportIn, dto::pipeline_body, model::ExecutionStatus, model::Tier, types::CiRunId,
+    dto::PipelineReportIn, dto::TestPage, dto::pipeline_body, model::ExecutionStatus, model::Tier,
+    types::CiRunId,
 };
 use flakeradar_db::{
     processing::ProcessingSettings, processing::process_next, reads::ListOptions,
@@ -386,6 +387,70 @@ async fn the_listing_reports_a_first_seen_timestamp_and_whether_the_test_is_new(
         serde_json::to_value(old_out.first_seen_at).expect("the timestamp serializes"),
         "2026-10-01T00:00:00Z"
     );
+}
+
+#[tokio::test]
+async fn the_new_filter_lists_only_tests_first_seen_in_the_window() {
+    let db = TestDb::new().await.expect("a test database");
+    let project = make_project().create(&db).await;
+    let seen = |at: &str| DateTime::parse_from_rfc3339(at).expect("a fixed instant");
+    // Both rows keep the factory's default score of 0, so they are Stable: listing
+    // them is the `new` filter's own stable keep, not a flaky row's.
+    make_test_case(&project)
+        .name("fresh")
+        .first_seen_at(seen("2026-10-15T00:00:00+00:00"))
+        .create(&db)
+        .await;
+    make_test_case(&project)
+        .name("old")
+        .first_seen_at(seen("2026-10-01T00:00:00+00:00"))
+        .create(&db)
+        .await;
+    let listed = |page: &TestPage| {
+        let mut names: Vec<String> = page.items.iter().map(|test| test.name.clone()).collect();
+        names.sort_unstable();
+        names
+    };
+    let page = list_tests(
+        db.connection(),
+        &Scope::default(),
+        &TestListFilters {
+            new: true,
+            ..TestListFilters::default()
+        },
+        &options(|options| options.sort = SortKey::LastSeen),
+        &settings(),
+    )
+    .await
+    .expect("the page");
+    assert_eq!(listed(&page), ["fresh"]);
+    // Without the filter, the stable-hiding default still hides both rows, as it
+    // does today.
+    let hidden = list_tests(
+        db.connection(),
+        &Scope::default(),
+        &TestListFilters::default(),
+        &options(|options| options.sort = SortKey::LastSeen),
+        &settings(),
+    )
+    .await
+    .expect("the page");
+    assert_eq!(hidden.total, 0);
+    assert_eq!(hidden.items, Vec::new());
+    // And asking for stable rows, it still answers both of them.
+    let page = list_tests(
+        db.connection(),
+        &Scope::default(),
+        &TestListFilters::default(),
+        &options(|options| {
+            options.sort = SortKey::LastSeen;
+            options.include_stable = true;
+        }),
+        &settings(),
+    )
+    .await
+    .expect("the page");
+    assert_eq!(listed(&page), ["fresh", "old"]);
 }
 
 #[tokio::test]

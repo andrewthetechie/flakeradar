@@ -42,7 +42,7 @@ parameter.
 
 | Endpoint | Auth | Purpose |
 |---|---|---|
-| `GET /api/tests?repo=&project=&include_stable=&sort=&page=&page_size=&file=&category=&q=&quarantined=&acknowledged=&has_issue=&new_within_days=` | none | The paginated leaderboard. See [Leaderboard filters](#leaderboard-filters). |
+| `GET /api/tests?repo=&project=&include_stable=&sort=&page=&page_size=&file=&category=&q=&quarantined=&acknowledged=&has_issue=&new_within_days=&new=` | none | The paginated leaderboard. See [Leaderboard filters](#leaderboard-filters). |
 | `GET /api/tests/{id}/history?limit=` | none | One test: the location and permalink, the last failing commit, executions with failure details, the jobs that its runs came from, `score_history` (90 days), `clean_streak` and `trend`. |
 | `GET /api/summary?repo=&project=` | none | Dashboard tiles for tests. `executions_30d` and `failures_30d` are the sums of score history over the last 30 days. `total_runs` counts each CI run ingested. `category_counts` gives the number of flaky and suspect tests for each likely cause. |
 | `POST /api/tests/{id}/quarantine` | none | Set or clear quarantine. The body is `{"quarantined": bool, "reason"?: str (max 500), "expires_in_days"?: int (1 to 365)}`. The response is the test, with `quarantine_reason` and `quarantine_expires_at`. Removing the quarantine clears the reason and the expiry. |
@@ -67,6 +67,10 @@ These parameters of `GET /api/tests` filter and sort the leaderboard:
 - `has_issue` filters by linked GitHub issue.
 - `new_within_days` (1 to 90) lists only new flaky tests, which are tests that
   became flaky in the last N days. It shows only flaky tests.
+- `new=true` lists each test first seen within `NEW_TEST_DAYS` days. Listed tests
+  carry `first_seen_at`, and report `new` when that timestamp is within the
+  window. It includes stable tests. This is not `new_within_days`, which lists
+  tests that became flaky recently and shows only flaky ones.
 
 A `project` filter needs `repo`.
 

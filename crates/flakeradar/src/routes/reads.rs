@@ -271,6 +271,8 @@ pub struct TestsQuery {
     new_within_days: Option<i64>,
     #[serde(default, deserialize_with = "flakeradar_core::dto::lax_bool::optional")]
     broken: Option<bool>,
+    #[serde(default, deserialize_with = "flakeradar_core::dto::lax_bool::optional")]
+    new: Option<bool>,
 }
 
 impl Validate for TestsQuery {
@@ -300,6 +302,7 @@ impl TestsQuery {
             quarantined: self.quarantined,
             acknowledged: self.acknowledged,
             broken: self.broken.unwrap_or(false),
+            new: self.new.unwrap_or(false),
         };
         let options = ListOptions {
             include_stable: self.include_stable.unwrap_or(false),
@@ -468,6 +471,7 @@ pub async fn repos(State(state): State<AppState>) -> RouteResult<Json<Vec<RepoOu
         ("acknowledged" = Option<bool>, Query, description = "The acknowledgement state to list"),
         ("has_issue" = Option<bool>, Query, description = "Whether a GitHub issue is linked"),
         ("new_within_days" = Option<i64>, Query, description = "Only Tests that became flaky in this many days, 1-90"),
+        ("new" = Option<bool>, Query, description = "Only Tests first seen within the new-test window"),
         ("broken" = Option<bool>, Query, description = "Only Tests whose Fail streak reached the broken threshold")
     ),
     responses((status = 200, body = TestPage))

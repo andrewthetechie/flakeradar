@@ -106,6 +106,7 @@ pub(super) fn call(server: &McpServer, arguments: Value) -> BoxFuture<'_, ToolRe
             quarantined: None,
             acknowledged: None,
             broken: false,
+            new: false,
         };
         let options =
             ListOptions::top_flaky(args.limit, args.include_suspect, args.new_within_days);
