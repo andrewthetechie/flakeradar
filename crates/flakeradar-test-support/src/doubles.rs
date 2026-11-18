@@ -15,7 +15,7 @@
 )]
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -579,18 +579,18 @@ impl Waiter for RecordingWaiter {
 /// the test has looked and the standby has taken over.
 ///
 /// While it is open it waits like [`TokioWaiter`](flakeradar::worker::TokioWaiter);
-/// once closed, a wait returns only when the gate is opened again.
+/// once closed, a wait returns only when the gate is opened again. The gate is a
+/// `watch` value, so a wait reads the gate and parks on it in one step: no
+/// scheduling window decides whether a wait is parked at all.
 #[derive(Debug)]
 pub struct GateWaiter {
-    open: AtomicBool,
-    signal: tokio::sync::Notify,
+    open: tokio::sync::watch::Sender<bool>,
 }
 
 impl Default for GateWaiter {
     fn default() -> Self {
         Self {
-            open: AtomicBool::new(true),
-            signal: tokio::sync::Notify::new(),
+            open: tokio::sync::watch::channel(true).0,
         }
     }
 }
@@ -598,30 +598,23 @@ impl Default for GateWaiter {
 impl GateWaiter {
     /// Stops every wait from returning until [`GateWaiter::open`].
     pub fn close(&self) {
-        self.open.store(false, Ordering::SeqCst);
+        self.open.send_replace(false);
     }
 
     /// Lets waits return again, including the ones already waiting.
     pub fn open(&self) {
-        self.open.store(true, Ordering::SeqCst);
-        self.signal.notify_waiters();
+        self.open.send_replace(true);
     }
 }
 
 impl Waiter for GateWaiter {
     fn wait(&self, delay: Duration) -> BoxFuture<'_, ()> {
+        let mut open = self.open.subscribe();
         Box::pin(async move {
-            while !self.open.load(Ordering::SeqCst) {
-                // Registered before the second look, so an open between the load
-                // and the wait cannot be missed.
-                let notified = self.signal.notified();
-                tokio::pin!(notified);
-                notified.as_mut().enable();
-                if self.open.load(Ordering::SeqCst) {
-                    return;
-                }
-                notified.await;
-            }
+            // A wait ends while the gate is open, and the read before the wait is
+            // the channel's, so a gate opened a moment ago is not missed. The
+            // error is the gate itself being dropped, which frees the wait too.
+            let _ = open.wait_for(|open| *open).await;
             tokio::time::sleep(delay).await;
         })
     }
@@ -797,11 +790,14 @@ impl std::io::Write for SharedWriter {
 mod tests {
     //! The doubles with behaviour of their own are units too.
 
+    use std::future::{Future as _, poll_fn};
     use std::io::Write as _;
     use std::sync::{Arc, Mutex};
+    use std::task::Poll;
+    use std::time::Duration;
 
-    use super::{CapturedLog, FailingLock, SharedWriter};
-    use flakeradar::worker::LockSession as _;
+    use super::{CapturedLog, FailingLock, GateWaiter, SharedWriter};
+    use flakeradar::worker::{LockSession as _, Waiter as _};
 
     #[tokio::test]
     async fn a_failing_lock_defaults_to_itself_and_keeps_its_check_healthy() {
@@ -825,6 +821,43 @@ mod tests {
                 .as_slice(),
             b"logged"
         );
+    }
+
+    #[tokio::test]
+    async fn a_closed_gate_parks_a_wait_until_it_is_opened() {
+        // A wait that is never parked still ends, so the worker's own test cannot
+        // see whether it reached the gate; this states the double's behaviour.
+        let gate = GateWaiter::default();
+        gate.close();
+        let mut wait = std::pin::pin!(gate.wait(Duration::ZERO));
+        let first = poll_fn(|context| Poll::Ready(wait.as_mut().poll(context))).await;
+        assert!(first.is_pending(), "a closed gate never returns a wait");
+
+        gate.open();
+        // Opening wakes the wait, which then sleeps out the delay it was given.
+        wait.await;
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic,
+        clippy::unwrap_used,
+        reason = "a panic while the sink's lock is held is the poison under test"
+    )]
+    fn a_shared_writer_reports_a_poisoned_sink() {
+        let buffer = Arc::new(Mutex::new(Vec::new()));
+        let poisoned = Arc::clone(&buffer);
+        let died = std::panic::catch_unwind(move || {
+            let _held = poisoned.lock().unwrap();
+            panic!("poison the sink");
+        });
+        assert!(died.is_err(), "the sink's lock was held when it panicked");
+
+        let mut writer = SharedWriter(buffer);
+        let error = writer
+            .write(b"logged")
+            .expect_err("a poisoned sink takes no bytes");
+        assert_eq!(error.kind(), std::io::ErrorKind::Other);
     }
 
     #[test]
