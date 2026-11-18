@@ -599,6 +599,7 @@ pub struct TestExecutionBuilder {
     attempt: i32,
     failure_category: Option<String>,
     created_at: Option<DateTimeWithTimeZone>,
+    duration: f64,
 }
 
 /// Builds a passing Execution of `test_case` in `run`, attempt 0.
@@ -616,6 +617,7 @@ pub fn make_execution(
         attempt: 0,
         failure_category: None,
         created_at: None,
+        duration: 0.0,
     }
 }
 
@@ -662,6 +664,13 @@ impl TestExecutionBuilder {
         self
     }
 
+    /// Sets how long the Execution ran, in seconds.
+    #[must_use]
+    pub fn duration(mut self, duration: f64) -> Self {
+        self.duration = duration;
+        self
+    }
+
     /// Inserts the Execution into `db`, or panics naming this builder.
     ///
     /// # Panics
@@ -688,7 +697,7 @@ impl TestExecutionBuilder {
                 test_case_id: Set(self.test_case_id),
                 test_run_id: Set(self.test_run_id),
                 status: Set(self.status),
-                duration: Set(0.0),
+                duration: Set(self.duration),
                 message: Set(self.message),
                 details: Set(self.details),
                 attempt: Set(self.attempt),
@@ -947,6 +956,8 @@ pub struct JobExecutionBuilder {
     runner_name: String,
     runner_labels: Vec<String>,
     created_at: Option<DateTimeWithTimeZone>,
+    started_at: Option<DateTimeWithTimeZone>,
+    completed_at: Option<DateTimeWithTimeZone>,
 }
 
 /// Builds a passing Job execution with a fresh CI job ID.
@@ -965,6 +976,8 @@ pub fn make_job_execution(job: &jobs::Model) -> JobExecutionBuilder {
         runner_name: String::new(),
         runner_labels: Vec::new(),
         created_at: None,
+        started_at: None,
+        completed_at: None,
     }
 }
 
@@ -1039,6 +1052,20 @@ impl JobExecutionBuilder {
         self
     }
 
+    /// Sets when the Job execution started, as the runner reported it.
+    #[must_use]
+    pub fn started_at(mut self, started_at: DateTime<FixedOffset>) -> Self {
+        self.started_at = Some(started_at);
+        self
+    }
+
+    /// Sets when the Job execution finished, as the runner reported it.
+    #[must_use]
+    pub fn completed_at(mut self, completed_at: DateTime<FixedOffset>) -> Self {
+        self.completed_at = Some(completed_at);
+        self
+    }
+
     /// Inserts the Job execution into `db`, or panics naming this builder.
     ///
     /// # Panics
@@ -1084,8 +1111,8 @@ impl JobExecutionBuilder {
                         .map(JsonValue::from)
                         .collect(),
                 )),
-                started_at: Set(None),
-                completed_at: Set(None),
+                started_at: Set(self.started_at),
+                completed_at: Set(self.completed_at),
                 created_at: Set(self.created_at.unwrap_or_else(now)),
                 ..Default::default()
             },

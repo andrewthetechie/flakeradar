@@ -57,6 +57,15 @@ pub const NEW_FLAKY_DAYS: i64 = 7;
 /// narrowing it hides a Test that went flaky before a weekend's confusion.
 pub const SUMMARY_WINDOW_DAYS: i64 = 30;
 
+/// The window the impact fields count failures in, in days.
+///
+/// A month is the span a reviewer ranks flakes over — the same horizon as
+/// [`SUMMARY_WINDOW_DAYS`] — and it is what the issue's cost ranking asks for.
+/// The window is computed on read, so widening it lengthens the Executions scan
+/// the lateral does for every row of a page, and narrowing it drops the failures
+/// an older bad week cost.
+pub const IMPACT_DAYS: i64 = 30;
+
 /// How many runner groups `get_job` returns, worst unexplained rate first.
 ///
 /// One Job's executions are grouped by runner, and a matrix with more than ten
@@ -211,11 +220,13 @@ pub enum SortKey {
     LastSeen,
     /// Most Proven flakes first.
     Proven,
+    /// Most impacted CI runs first.
+    Impact,
 }
 
 impl SortKey {
     /// The spellings the query parameter takes, in the order the 422 lists them.
-    pub const SPELLINGS: [&'static str; 3] = ["score", "last_seen", "proven"];
+    pub const SPELLINGS: [&'static str; 4] = ["score", "last_seen", "proven", "impact"];
 
     /// Parses the query parameter's value.
     #[must_use]
@@ -224,6 +235,7 @@ impl SortKey {
             "score" => Some(Self::Score),
             "last_seen" => Some(Self::LastSeen),
             "proven" => Some(Self::Proven),
+            "impact" => Some(Self::Impact),
             _ => None,
         }
     }
@@ -255,6 +267,66 @@ fn newest_history_join(kind: EntityKind, alias: &str, cutoff: NaiveDate) -> Stri
     let lateral = score_history::newest_history_before(kind, alias)
         .replace("$1::DATE", &format!("DATE '{}'", cutoff.format("%Y-%m-%d")));
     format!(" LEFT JOIN LATERAL ({lateral}) AS past ON true")
+}
+
+/// The instant the impact window starts: [`IMPACT_DAYS`] before the settings' clock.
+pub(crate) fn impact_since(settings: &ReadSettings) -> DateTime<Utc> {
+    settings.clock.now().with_timezone(&Utc) - Duration::days(IMPACT_DAYS)
+}
+
+/// The three impact columns, to append to the `SELECT` list of a query that joins
+/// [`impact_lateral_sql`].
+pub(crate) const IMPACT_COLUMNS: &str =
+    ", impact.impacted_runs, impact.impacted_branches, impact.time_lost_seconds";
+
+/// The SQL the impact fields add: one aggregate over the entity's failures in the
+/// window, joined per row so a page reads it in the statement that fetches it.
+///
+/// The Test arm excludes the Runs infrastructure marking flagged as suspect: their
+/// failures are not the Test's cost. The Job arm reuses the attribution rule the
+/// Job score uses, so an explained failure costs the Job nothing.
+///
+/// The cutoff is inlined as a literal for the reason [`newest_history_join`]
+/// inlines its own: the board's binds are positional and shared by the count and
+/// the page statement, so an extra bind would shift the filters' placeholders.
+pub(crate) fn impact_lateral_sql(kind: EntityKind, cutoff: DateTime<Utc>) -> String {
+    let since = format!("timestamptz '{}'", cutoff.to_rfc3339());
+    let aggregate = match kind {
+        EntityKind::Test => format!(
+            "SELECT count(DISTINCT r2.ci_run_id) FILTER (WHERE r2.ci_run_id <> '') \
+                  AS impacted_runs, \
+                  count(DISTINCT r2.branch) FILTER (WHERE r.default_branch IS NOT NULL \
+                      AND r2.branch <> r.default_branch) AS impacted_branches, \
+                  coalesce(sum(e2.duration), 0)::double precision AS time_lost_seconds \
+             FROM test_executions e2 JOIN test_runs r2 ON r2.id = e2.test_run_id \
+            WHERE e2.test_case_id = t.id \
+              AND e2.status IN ('failed', 'error') \
+              AND NOT r2.infra_suspect \
+              AND e2.created_at > {since}"
+        ),
+        // The Job tables appear under their bare names: the outer query aliases
+        // them, and [`job_execution_explained_sql`] states its rule for those.
+        EntityKind::Job => format!(
+            "SELECT count(DISTINCT job_executions.ci_run_id) \
+                  FILTER (WHERE job_executions.ci_run_id <> '') AS impacted_runs, \
+                  count(DISTINCT job_executions.branch) \
+                      FILTER (WHERE r.default_branch IS NOT NULL \
+                          AND job_executions.branch <> r.default_branch) \
+                      AS impacted_branches, \
+                  coalesce(sum(EXTRACT(EPOCH FROM \
+                      (job_executions.completed_at - job_executions.started_at))), 0) \
+                      ::double precision AS time_lost_seconds \
+             FROM job_executions \
+             JOIN jobs ON jobs.id = job_executions.job_id \
+             JOIN pipelines ON pipelines.id = jobs.pipeline_id \
+            WHERE job_executions.job_id = j.id \
+              AND job_executions.status = 'failed' \
+              AND NOT ({}) \
+              AND job_executions.created_at > {since}",
+            job_execution_explained_sql()
+        ),
+    };
+    format!(" LEFT JOIN LATERAL ({aggregate}) AS impact ON true")
 }
 
 /// A timestamp column read as UTC.
@@ -357,6 +429,8 @@ struct Board<'a> {
     threshold: f64,
     /// The UTC day the history cut-offs are relative to.
     today: NaiveDate,
+    /// The instant the impact window starts, from the settings' clock.
+    impact_since: DateTime<Utc>,
 }
 
 /// What one page of the engine returned.
@@ -414,9 +488,12 @@ impl Board<'_> {
             ));
         }
 
+        joins.push_str(&impact_lateral_sql(self.entity.kind, self.impact_since));
+
         let base = format!(
-            "{} {}{}{}",
+            "{}{} {}{}{}",
             self.entity.select,
+            IMPACT_COLUMNS,
             self.entity.from,
             joins,
             conditions.suffix()
@@ -432,6 +509,8 @@ impl Board<'_> {
             SortKey::Score => "flakiness_score DESC, last_seen_at DESC, id",
             SortKey::LastSeen => "last_seen_at DESC, id DESC",
             SortKey::Proven => "confirmed_flake_count DESC, flakiness_score DESC, id",
+            // The lateral's own output column, so the page orders it bare.
+            SortKey::Impact => "impacted_runs DESC, flakiness_score DESC, id",
         };
         let page = self.options.page;
         let page_size = self.options.page_size;
@@ -561,6 +640,9 @@ pub(crate) fn test_out(
         github_issue_closed: get(row, "github_issue_closed")?,
         first_seen_at,
         new: is_new(first_seen_at, settings),
+        impacted_runs: get(row, "impacted_runs")?,
+        impacted_branches: get(row, "impacted_branches")?,
+        time_lost_seconds: get(row, "time_lost_seconds")?,
     })
 }
 
@@ -594,6 +676,9 @@ pub(crate) fn job_out(row: &QueryResult, trend: Option<Trend>) -> Result<JobOut,
         github_issue_number: issue_number,
         github_issue_url,
         github_issue_closed: get(row, "github_issue_closed")?,
+        impacted_runs: get(row, "impacted_runs")?,
+        impacted_branches: get(row, "impacted_branches")?,
+        time_lost_seconds: get(row, "time_lost_seconds")?,
     })
 }
 
@@ -753,6 +838,7 @@ pub async fn list_tests(
         tier: TierFilter::of(options, keeps_stable_rows),
         threshold: settings.flake_threshold,
         today: settings.today(),
+        impact_since: impact_since(settings),
     };
     let page = board.run(db).await?;
     let items = read_items(db, EntityKind::Test, &page.rows, settings, |row, trend| {
@@ -806,6 +892,7 @@ pub async fn list_jobs(
         tier: TierFilter::of(options, filters.acknowledged == Some(true)),
         threshold: settings.flake_threshold,
         today: settings.today(),
+        impact_since: impact_since(settings),
     };
     let page = board.run(db).await?;
     let items = read_items(db, EntityKind::Job, &page.rows, settings, |row, trend| {
@@ -1102,7 +1189,11 @@ pub async fn get_test(
     settings: &ReadSettings,
     executions_limit: i64,
 ) -> Result<Option<HistoryOut>, DbError> {
-    let sql = format!("{TESTS_SELECT}, p.root AS project_root {TESTS_FROM} WHERE t.id = $1");
+    let impact = impact_lateral_sql(EntityKind::Test, impact_since(settings));
+    let sql = format!(
+        "{TESTS_SELECT}{IMPACT_COLUMNS}, p.root AS project_root \
+         {TESTS_FROM}{impact} WHERE t.id = $1"
+    );
     let Some(row) = one(db, sql, vec![Value::from(test_id)]).await? else {
         return Ok(None);
     };
@@ -1253,7 +1344,8 @@ pub async fn set_quarantine(
     decision: QuarantineDecision,
     settings: &ReadSettings,
 ) -> Result<Option<TestOut>, DbError> {
-    let sql = format!("{TESTS_SELECT} {TESTS_FROM} WHERE t.id = $1");
+    let impact = impact_lateral_sql(EntityKind::Test, impact_since(settings));
+    let sql = format!("{TESTS_SELECT}{IMPACT_COLUMNS} {TESTS_FROM}{impact} WHERE t.id = $1");
     let Some(row) = one(db, sql, vec![Value::from(test_id)]).await? else {
         return Ok(None);
     };
@@ -1369,8 +1461,10 @@ pub async fn search_tests(
     binds.raw(test_search("$1"));
     scope_conditions(scope, "r.name", "p.name", &mut binds);
     let limit_placeholder = binds.bind(Value::from(limit));
+    let impact = impact_lateral_sql(EntityKind::Test, impact_since(settings));
     let sql = format!(
-        "{TESTS_SELECT} {TESTS_FROM}{} ORDER BY t.flakiness_score DESC, t.id LIMIT {limit_placeholder}",
+        "{TESTS_SELECT}{IMPACT_COLUMNS} {TESTS_FROM}{impact}{} ORDER BY t.flakiness_score DESC, \
+         t.id LIMIT {limit_placeholder}",
         binds.suffix()
     );
     let mut values = vec![Value::from(format!("%{}%", escape_like(query)))];
@@ -1426,7 +1520,8 @@ pub async fn get_job(
     settings: &ReadSettings,
     executions_limit: i64,
 ) -> Result<Option<JobHistoryOut>, DbError> {
-    let sql = format!("{JOBS_SELECT} {JOBS_FROM} WHERE j.id = $1");
+    let impact = impact_lateral_sql(EntityKind::Job, impact_since(settings));
+    let sql = format!("{JOBS_SELECT}{IMPACT_COLUMNS} {JOBS_FROM}{impact} WHERE j.id = $1");
     let Some(row) = one(db, sql, vec![Value::from(job_id)]).await? else {
         return Ok(None);
     };
@@ -1874,8 +1969,9 @@ pub async fn search_jobs(
     settings: &ReadSettings,
     limit: i64,
 ) -> Result<Vec<JobOut>, DbError> {
+    let impact = impact_lateral_sql(EntityKind::Job, impact_since(settings));
     let sql = format!(
-        "{JOBS_SELECT} {JOBS_FROM} WHERE r.name = $2 AND {} \
+        "{JOBS_SELECT}{IMPACT_COLUMNS} {JOBS_FROM}{impact} WHERE r.name = $2 AND {} \
           ORDER BY j.flakiness_score DESC, j.id LIMIT $3",
         job_search("$1")
     );
@@ -2298,6 +2394,7 @@ mod tests {
         assert_eq!(SortKey::parse("score"), Some(SortKey::Score));
         assert_eq!(SortKey::parse("last_seen"), Some(SortKey::LastSeen));
         assert_eq!(SortKey::parse("proven"), Some(SortKey::Proven));
+        assert_eq!(SortKey::parse("impact"), Some(SortKey::Impact));
         assert_eq!(SortKey::parse("name"), None);
         assert_eq!(SortKey::default(), SortKey::Score);
     }

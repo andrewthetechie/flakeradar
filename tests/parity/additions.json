@@ -21,7 +21,13 @@
     "JobOut.acknowledge_reason",
     "TestOut.first_seen_at",
     "TestOut.new",
-    "CiRunTestFailureOut.new"
+    "CiRunTestFailureOut.new",
+    "TestOut.impacted_runs",
+    "TestOut.impacted_branches",
+    "TestOut.time_lost_seconds",
+    "JobOut.impacted_runs",
+    "JobOut.impacted_branches",
+    "JobOut.time_lost_seconds"
   ],
   "paths": [
     "POST /api/tests/{test_id}/acknowledge",

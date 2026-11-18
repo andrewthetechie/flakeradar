@@ -295,6 +295,45 @@ async fn sorting_and_pagination_follow_the_order_keys() {
     assert_eq!(second["items"].as_array().expect("items").len(), 1);
     assert_eq!(get(&app, "/api/tests?page_size=101").await.status, 422);
     assert_eq!(get(&app, "/api/tests?sort=name").await.status, 422);
+
+    // The impact order is accepted on both leaderboards; the order itself is
+    // proven at the db level, where the fixtures can set the impact. Here nothing
+    // is in the window, so every row ties at zero and the score order stands.
+    let impact = get(&app, "/api/tests?sort=impact").await;
+    assert_eq!(impact.status, 200, "{}", impact.text());
+    assert_eq!(
+        item_names(&impact.json()),
+        ["test_flaky", "test_flaky", "renders", "test_suspect"]
+    );
+    let jobs = get(&app, "/api/jobs?sort=impact").await;
+    assert_eq!(jobs.status, 200, "{}", jobs.text());
+
+    // The 422 and the OpenAPI parameter name all four values.
+    let bogus = get(&app, "/api/tests?sort=bogus").await.json();
+    assert_eq!(
+        bogus["detail"][0],
+        json!({
+            "type": "literal_error",
+            "loc": ["query", "sort"],
+            "msg": "Input should be 'score', 'last_seen', 'proven' or 'impact'",
+            "input": "bogus",
+            "ctx": {"expected": "'score', 'last_seen', 'proven' or 'impact'"},
+        })
+    );
+    let document = get(&app, "/openapi.json").await.json();
+    for path in ["/api/tests", "/api/jobs"] {
+        let sort = document["paths"][path]["get"]["parameters"]
+            .as_array()
+            .expect("the operation has parameters")
+            .iter()
+            .find(|parameter| parameter["name"] == json!("sort"))
+            .expect("the sort parameter");
+        assert_eq!(
+            sort["description"],
+            json!("score, last_seen, proven or impact"),
+            "{path}"
+        );
+    }
 }
 
 #[tokio::test]

@@ -161,7 +161,7 @@ fn validate_new_within_days(value: Option<i64>, issues: &mut Vec<ValidationIssue
     check_le(value, NEW_WITHIN_DAYS_MAX, "new_within_days", issues);
 }
 
-/// Records a `sort` value that is not one of the three orders.
+/// Records a `sort` value that is not one of the four orders.
 fn validate_sort(sort: Option<&String>, issues: &mut Vec<ValidationIssue>) {
     if let Some(sort) = sort
         && SortKey::parse(sort).is_none()
@@ -169,7 +169,7 @@ fn validate_sort(sort: Option<&String>, issues: &mut Vec<ValidationIssue>) {
         issues.push(ValidationIssue::literal_error(
             query_loc("sort"),
             JsonValue::from(sort.clone()),
-            "'score', 'last_seen' or 'proven'",
+            "'score', 'last_seen', 'proven' or 'impact'",
         ));
     }
 }
@@ -461,7 +461,7 @@ pub async fn repos(State(state): State<AppState>) -> RouteResult<Json<Vec<RepoOu
         ("repo" = Option<String>, Query, description = "The Repo's owner/name"),
         ("project" = Option<String>, Query, description = "The Project's name, which needs a repo"),
         ("include_stable" = Option<bool>, Query, description = "Include Tests with a zero score"),
-        ("sort" = Option<String>, Query, description = "score, last_seen or proven"),
+        ("sort" = Option<String>, Query, description = "score, last_seen, proven or impact"),
         ("page" = Option<i64>, Query, description = "The page number, from 1"),
         ("page_size" = Option<i64>, Query, description = "How many Tests a page holds, 1-100"),
         ("file" = Option<String>, Query, description = "A literal substring of the Test's file"),
@@ -695,7 +695,7 @@ pub async fn quarantine(
     params(
         ("repo" = Option<String>, Query, description = "The Repo's owner/name"),
         ("include_stable" = Option<bool>, Query, description = "Include Jobs with a zero score"),
-        ("sort" = Option<String>, Query, description = "score, last_seen or proven"),
+        ("sort" = Option<String>, Query, description = "score, last_seen, proven or impact"),
         ("page" = Option<i64>, Query, description = "The page number, from 1"),
         ("page_size" = Option<i64>, Query, description = "How many Jobs a page holds, 1-100"),
         ("q" = Option<String>, Query, description = "A literal substring of the Job or Pipeline name"),

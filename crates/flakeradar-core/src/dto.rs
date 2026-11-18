@@ -1513,6 +1513,12 @@ pub struct TestOut {
     pub first_seen_at: DateTime<Utc>,
     /// Whether the Test was first seen within the new-test window.
     pub new: bool,
+    /// How many CI runs the Test failed in within the impact window.
+    pub impacted_runs: i64,
+    /// How many non-default branches the Test's failures broke within the impact window.
+    pub impacted_branches: i64,
+    /// How many seconds of CI time the Test's failures cost within the impact window.
+    pub time_lost_seconds: f64,
 }
 
 /// One page of Tests.
@@ -1684,6 +1690,12 @@ pub struct JobOut {
     pub github_issue_url: Option<String>,
     /// Whether the linked issue was closed as not planned.
     pub github_issue_closed: bool,
+    /// How many CI runs the Job failed in within the impact window.
+    pub impacted_runs: i64,
+    /// How many non-default branches the Job's failures broke within the impact window.
+    pub impacted_branches: i64,
+    /// How many seconds of CI time the Job's failures cost within the impact window.
+    pub time_lost_seconds: f64,
 }
 
 /// One page of Jobs.

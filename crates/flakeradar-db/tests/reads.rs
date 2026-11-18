@@ -13,17 +13,17 @@
 
 use std::sync::Arc;
 
-use chrono::{DateTime, FixedOffset};
+use chrono::{DateTime, Duration, FixedOffset};
 use flakeradar_core::{
     dto::PipelineReportIn, dto::TestPage, dto::pipeline_body, model::ExecutionStatus, model::Tier,
     types::CiRunId,
 };
 use flakeradar_db::{
-    processing::ProcessingSettings, processing::process_next, reads::ListOptions,
-    reads::ReadSettings, reads::Scope, reads::SortKey, reads::TestListFilters,
-    reads::ci_run_failures, reads::find_job_ids, reads::find_test_ids, reads::get_test,
-    reads::job_summary, reads::latest_failure, reads::list_jobs, reads::list_tests,
-    reads::search_jobs, reads::search_tests, reads::summary,
+    entities::projects, entities::test_cases, processing::ProcessingSettings,
+    processing::process_next, reads::ListOptions, reads::ReadSettings, reads::Scope,
+    reads::SortKey, reads::TestListFilters, reads::ci_run_failures, reads::find_job_ids,
+    reads::find_test_ids, reads::get_test, reads::job_summary, reads::latest_failure,
+    reads::list_jobs, reads::list_tests, reads::search_jobs, reads::search_tests, reads::summary,
 };
 use flakeradar_test_support::{
     FIXTURE_INSTANT, FixedClock, TestDb, make_execution, make_job, make_job_execution,
@@ -339,6 +339,339 @@ async fn list_tests_sorts_by_proven_flakes_and_by_last_seen() {
     .await
     .expect("the page");
     assert_eq!(by_seen.items.len(), 2);
+}
+
+/// The impact order lists the Test that broke the most CI runs first, whatever its
+/// score, and `impact` is the spelling the query parameter takes.
+#[tokio::test]
+async fn list_tests_sorts_by_impacted_runs() {
+    assert_eq!(SortKey::parse("impact"), Some(SortKey::Impact));
+    assert_eq!(SortKey::parse("score"), Some(SortKey::Score));
+    assert_eq!(SortKey::default(), SortKey::Score);
+
+    let db = TestDb::new().await.expect("a test database");
+    let project = impact_project(&db, Some("main")).await;
+    let ran = instant("2026-10-15T09:00:00+00:00");
+    let scored = make_test_case(&project)
+        .name("scored")
+        .flakiness_score(0.4)
+        .create(&db)
+        .await;
+    let first_run = make_run(&project)
+        .ci_run_id("100")
+        .branch("main")
+        .created_at(ran)
+        .create(&db)
+        .await;
+    make_execution(&scored, &first_run)
+        .status("failed")
+        .created_at(ran)
+        .duration(1.0)
+        .create(&db)
+        .await;
+    let costly = make_test_case(&project)
+        .name("costly")
+        .flakiness_score(0.3)
+        .create(&db)
+        .await;
+    for ci_run_id in ["200", "201", "202"] {
+        let run = make_run(&project)
+            .ci_run_id(ci_run_id)
+            .branch("feat/x")
+            .created_at(ran)
+            .create(&db)
+            .await;
+        make_execution(&costly, &run)
+            .status("failed")
+            .created_at(ran)
+            .duration(1.0)
+            .create(&db)
+            .await;
+    }
+
+    let by_impact = list_tests(
+        db.connection(),
+        &Scope::default(),
+        &TestListFilters::default(),
+        &options(|options| options.sort = SortKey::Impact),
+        &settings(),
+    )
+    .await
+    .expect("the page");
+    assert_eq!(by_impact.items[0].name, "costly");
+    assert_eq!(by_impact.items[1].name, "scored");
+    assert_eq!(by_impact.items[0].impacted_runs, 3);
+    assert_eq!(by_impact.items[1].impacted_runs, 1);
+
+    // The default order is unchanged: the higher score still leads.
+    let by_score = listed_tests(&db).await;
+    assert_eq!(by_score.items[0].name, "scored");
+}
+
+/// An instant from its RFC 3339 text, for a fixture that names its own date.
+fn instant(text: &str) -> DateTime<FixedOffset> {
+    DateTime::parse_from_rfc3339(text).expect("a fixed instant")
+}
+
+/// A Repo with a Project, its default branch set only when the test names one.
+async fn impact_project(db: &TestDb, default_branch: Option<&str>) -> projects::Model {
+    let project = make_project().repo("acme/app").create(db).await;
+    if let Some(branch) = default_branch {
+        db.connection()
+            .execute_unprepared(&format!("UPDATE repos SET default_branch = '{branch}'"))
+            .await
+            .expect("the default branch is stored");
+    }
+    project
+}
+
+/// A Test that failed in CI runs `100` (the default branch) and `101` (a feature
+/// branch), in Executions of 1.5, 2.0 and 0.5 seconds, five days before the clock.
+async fn impact_test(db: &TestDb, project: &projects::Model) -> test_cases::Model {
+    let test = make_test_case(project)
+        .name("flaky")
+        .flakiness_score(0.6)
+        .create(db)
+        .await;
+    let ran = instant("2026-10-15T09:00:00+00:00");
+    let main_run = make_run(project)
+        .ci_run_id("100")
+        .branch("main")
+        .created_at(ran)
+        .create(db)
+        .await;
+    let feature_run = make_run(project)
+        .ci_run_id("101")
+        .branch("feat/x")
+        .created_at(ran)
+        .create(db)
+        .await;
+    make_execution(&test, &main_run)
+        .status("failed")
+        .created_at(ran)
+        .duration(1.5)
+        .create(db)
+        .await;
+    make_execution(&test, &feature_run)
+        .status("failed")
+        .created_at(ran)
+        .duration(2.0)
+        .create(db)
+        .await;
+    make_execution(&test, &feature_run)
+        .status("error")
+        .created_at(ran)
+        .duration(0.5)
+        .create(db)
+        .await;
+    test
+}
+
+/// One page of the Tests leaderboard.
+async fn listed_tests(db: &TestDb) -> TestPage {
+    list_tests(
+        db.connection(),
+        &Scope::default(),
+        &TestListFilters::default(),
+        &options(|_| {}),
+        &settings(),
+    )
+    .await
+    .expect("the page")
+}
+
+/// The listing answers how many CI runs and branches the failures broke and what
+/// they cost, in one read for the whole page.
+#[tokio::test]
+async fn the_impact_window_counts_runs_branches_and_time_lost() {
+    let db = TestDb::new().await.expect("a test database");
+    let project = impact_project(&db, Some("main")).await;
+    let test = impact_test(&db, &project).await;
+    let page = listed_tests(&db).await;
+    assert_eq!(page.items[0].impacted_runs, 2);
+    assert_eq!(page.items[0].impacted_branches, 1);
+    assert_eq!(page.items[0].time_lost_seconds, 4.0);
+
+    // A failure 31 days back is outside the window, and one in a Run the infra
+    // marking flagged is not the Test's fault: neither moves any of the three.
+    let ran = instant("2026-10-15T09:00:00+00:00");
+    let old_run = make_run(&project)
+        .ci_run_id("102")
+        .branch("feat/y")
+        .created_at(instant("2026-09-19T09:00:00+00:00"))
+        .create(&db)
+        .await;
+    make_execution(&test, &old_run)
+        .status("failed")
+        .created_at(instant("2026-09-19T09:00:00+00:00"))
+        .duration(9.0)
+        .create(&db)
+        .await;
+    let suspect_run = make_run(&project)
+        .ci_run_id("103")
+        .branch("feat/y")
+        .infra_suspect(true)
+        .created_at(ran)
+        .create(&db)
+        .await;
+    make_execution(&test, &suspect_run)
+        .status("failed")
+        .created_at(ran)
+        .duration(9.0)
+        .create(&db)
+        .await;
+    let page = listed_tests(&db).await;
+    assert_eq!(page.items[0].impacted_runs, 2);
+    assert_eq!(page.items[0].impacted_branches, 1);
+    assert_eq!(page.items[0].time_lost_seconds, 4.0);
+
+    // A Run whose reporter sent no CI run ID breaks a branch but names no run, so
+    // it moves the branch count and the time, never the run count.
+    let unnamed_run = make_run(&project)
+        .branch("release/9")
+        .created_at(ran)
+        .create(&db)
+        .await;
+    make_execution(&test, &unnamed_run)
+        .status("failed")
+        .created_at(ran)
+        .duration(1.0)
+        .create(&db)
+        .await;
+    let page = listed_tests(&db).await;
+    assert_eq!(page.items[0].impacted_runs, 2);
+    assert_eq!(page.items[0].impacted_branches, 2);
+    assert_eq!(page.items[0].time_lost_seconds, 5.0);
+
+    // The detail and the search answer the same three values: every select that
+    // feeds the mapper carries the impact rule.
+    let detail = get_test(db.connection(), i64::from(test.id), &settings(), 60)
+        .await
+        .expect("the detail")
+        .expect("the Test has a detail");
+    assert_eq!(detail.test.impacted_runs, 2);
+    assert_eq!(detail.test.impacted_branches, 2);
+    assert_eq!(detail.test.time_lost_seconds, 5.0);
+    let found = search_tests(db.connection(), &Scope::default(), "flaky", &settings(), 20)
+        .await
+        .expect("the search");
+    assert_eq!(found[0].impacted_runs, 2);
+    assert_eq!(found[0].impacted_branches, 2);
+    assert_eq!(found[0].time_lost_seconds, 5.0);
+}
+
+/// A Repo whose default branch is unknown counts no branch as impacted.
+#[tokio::test]
+async fn an_unknown_default_branch_impacts_no_branches() {
+    let db = TestDb::new().await.expect("a test database");
+    let project = impact_project(&db, None).await;
+    impact_test(&db, &project).await;
+    let page = listed_tests(&db).await;
+    assert_eq!(page.items[0].impacted_runs, 2);
+    assert_eq!(page.items[0].impacted_branches, 0);
+    assert_eq!(page.items[0].time_lost_seconds, 4.0);
+}
+
+/// The Job listing sums the unexplained failures in the window: an execution an
+/// attribution rule explains costs nothing, and one without both timestamps adds
+/// to the runs but not to the time.
+#[tokio::test]
+async fn the_impact_window_counts_unexplained_job_failures() {
+    let db = TestDb::new().await.expect("a test database");
+    let project = impact_project(&db, Some("main")).await;
+    let pipeline = make_pipeline().repo("acme/app").create(&db).await;
+    let job = make_job(&pipeline)
+        .name("unit")
+        .flakiness_score(0.6)
+        .create(&db)
+        .await;
+    let ran = instant("2026-10-15T09:00:00+00:00");
+    make_job_execution(&job)
+        .status("failed")
+        .ci_run_id("100")
+        .created_at(ran)
+        .started_at(ran)
+        .completed_at(ran + Duration::seconds(60))
+        .create(&db)
+        .await;
+    make_job_execution(&job)
+        .status("failed")
+        .ci_run_id("101")
+        .created_at(ran)
+        .started_at(ran)
+        .completed_at(ran + Duration::seconds(30))
+        .create(&db)
+        .await;
+    let listed = list_jobs(
+        db.connection(),
+        None,
+        &flakeradar_db::reads::JobListFilters::default(),
+        &options(|_| {}),
+        &settings(),
+    )
+    .await
+    .expect("the page");
+    assert_eq!(listed.items[0].impacted_runs, 2);
+    assert_eq!(listed.items[0].impacted_branches, 0);
+    assert_eq!(listed.items[0].time_lost_seconds, 90.0);
+
+    // A failure the runner never finished has no duration to charge.
+    make_job_execution(&job)
+        .status("failed")
+        .ci_run_id("102")
+        .ci_job_id("j8")
+        .created_at(ran)
+        .started_at(ran)
+        .create(&db)
+        .await;
+    // A failure on a branch that is not the default breaks one more branch.
+    make_job_execution(&job)
+        .status("failed")
+        .ci_run_id("104")
+        .ci_job_id("j10")
+        .branch("feat/j")
+        .created_at(ran)
+        .started_at(ran)
+        .completed_at(ran + Duration::seconds(10))
+        .create(&db)
+        .await;
+    // A failure with the CI job ID of a Run whose Test failed is explained.
+    make_job_execution(&job)
+        .status("failed")
+        .ci_run_id("103")
+        .ci_job_id("j9")
+        .created_at(ran)
+        .started_at(ran)
+        .completed_at(ran + Duration::seconds(60))
+        .create(&db)
+        .await;
+    let run = make_run(&project).ci_job_id("j9").create(&db).await;
+    let test = make_test_case(&project).name("explainer").create(&db).await;
+    make_execution(&test, &run)
+        .status("failed")
+        .create(&db)
+        .await;
+    let listed = list_jobs(
+        db.connection(),
+        None,
+        &flakeradar_db::reads::JobListFilters::default(),
+        &options(|_| {}),
+        &settings(),
+    )
+    .await
+    .expect("the page");
+    assert_eq!(listed.items[0].impacted_runs, 4);
+    assert_eq!(listed.items[0].impacted_branches, 1);
+    assert_eq!(listed.items[0].time_lost_seconds, 100.0);
+
+    // The Job's detail answer carries the same three values.
+    let detail = flakeradar_db::reads::get_job(db.connection(), i64::from(job.id), &settings(), 60)
+        .await
+        .expect("the detail")
+        .expect("the Job has a detail");
+    assert_eq!(detail.job.impacted_runs, 4);
+    assert_eq!(detail.job.impacted_branches, 1);
+    assert_eq!(detail.job.time_lost_seconds, 100.0);
 }
 
 #[tokio::test]
