@@ -14,8 +14,8 @@
 
 use chrono::{DateTime, Duration, FixedOffset, NaiveDateTime, Utc};
 use flakeradar_test_support::{
-    Reply, TestDb, app, get, make_execution, make_project, make_run, make_test_case,
-    make_test_score, request_with_headers, send,
+    FixedClock, Reply, TestDb, app, get, make_execution, make_project, make_run, make_test_case,
+    make_test_score, request_with_headers, send, settings,
 };
 
 use sea_orm::ConnectionTrait as _;
@@ -360,6 +360,79 @@ async fn the_broken_filter_lists_broken_stable_tests() {
     assert_eq!(item_names(&broken), ["test_broken"]);
     assert_eq!(broken["items"][0]["broken"], true);
     assert_eq!(broken["items"][0]["fail_streak"], 5);
+}
+
+/// The app over `db`, on a clock that always reads `instant`.
+fn app_at(db: &TestDb, instant: DateTime<FixedOffset>) -> axum::Router {
+    let state =
+        flakeradar::app::AppState::new(db.connection().clone(), std::sync::Arc::new(settings(&[])))
+            .expect("the app state builds")
+            .with_clock(std::sync::Arc::new(FixedClock::new(instant)));
+    flakeradar::app::build_app(state)
+}
+
+#[tokio::test]
+async fn the_new_filter_lists_only_tests_first_seen_in_the_window() {
+    let db = TestDb::new().await.expect("a test database");
+    let project = make_project()
+        .repo("andrewthetechie/writers-app")
+        .project("backend")
+        .create(&db)
+        .await;
+    let seen = |at: &str| DateTime::parse_from_rfc3339(at).expect("a fixed instant");
+    // Both rows keep the factory's default score of 0, so they are Stable: listing
+    // the fresh one is the `new` filter's own stable keep, not a flaky row's.
+    make_test_case(&project)
+        .name("fresh")
+        .first_seen_at(seen("2026-10-15T00:00:00+00:00"))
+        .create(&db)
+        .await;
+    make_test_case(&project)
+        .name("old")
+        .first_seen_at(seen("2026-10-01T00:00:00+00:00"))
+        .create(&db)
+        .await;
+
+    let app = app_at(&db, seen("2026-10-20T09:00:00+00:00"));
+    let fresh = get(&app, "/api/tests?repo=andrewthetechie/writers-app&new=true").await;
+    assert_eq!(fresh.status, 200);
+    let fresh = fresh.json();
+    assert_eq!(item_names(&fresh), ["fresh"]);
+    assert_eq!(fresh["items"][0]["new"], true);
+    // Without the filter, the stable-hiding default still hides both rows, as it
+    // does today.
+    let default = get(&app, "/api/tests?repo=andrewthetechie/writers-app")
+        .await
+        .json();
+    assert_eq!(default["total"], 0);
+    assert_eq!(default["items"], json!([]));
+    // A lax bool that is not a bool is refused like every other.
+    let maybe = get(
+        &app,
+        "/api/tests?repo=andrewthetechie/writers-app&new=maybe",
+    )
+    .await;
+    assert_eq!(maybe.status, 422);
+    assert_eq!(
+        maybe.json()["detail"],
+        json!([{
+            "type": "bool_parsing",
+            "loc": ["query", "new"],
+            "msg": "Input should be a valid boolean, unable to interpret input",
+            "input": "maybe",
+        }]),
+        "{}",
+        maybe.text()
+    );
+    // The served OpenAPI document lists the parameter.
+    let document = get(&app, "/openapi.json").await.json();
+    let parameters: Vec<&str> = document["paths"]["/api/tests"]["get"]["parameters"]
+        .as_array()
+        .expect("the operation has parameters")
+        .iter()
+        .map(|parameter| parameter["name"].as_str().expect("a parameter name"))
+        .collect();
+    assert!(parameters.contains(&"new"), "{parameters:?}");
 }
 
 #[tokio::test]

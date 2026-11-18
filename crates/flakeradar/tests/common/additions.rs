@@ -254,7 +254,8 @@ mod form {
                 ],
                 "query_params": [
                     "GET /api/tests acknowledged",
-                    "GET /api/jobs acknowledged"
+                    "GET /api/jobs acknowledged",
+                    "GET /api/tests new"
                 ]
             }),
             "{}",
