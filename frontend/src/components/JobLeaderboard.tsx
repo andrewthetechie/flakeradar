@@ -1,6 +1,12 @@
 import type { Job } from "../api";
 import { breakable } from "../breakable";
-import { AcknowledgedPill, FlakinessCell, ProvenCell, StatusIssueCell } from "./resultCells";
+import {
+  AcknowledgedPill,
+  FlakinessCell,
+  ImpactCell,
+  ProvenCell,
+  StatusIssueCell,
+} from "./resultCells";
 import { SummaryBadge } from "./SummaryBadge";
 
 function jobLabel(job: Job, repo: string | null): string | null {
@@ -49,6 +55,7 @@ export function JobLeaderboard({
           <th className={th}>Job</th>
           <th className={th}>Flakiness</th>
           <th className={`col-proof ${th}`}>Proof</th>
+          <th className={`max-sm:hidden ${th}`}>Impact</th>
           <th className={`col-status ${th}`}>Last status</th>
           <th className={th}>Last seen</th>
         </tr>
@@ -77,6 +84,11 @@ export function JobLeaderboard({
                 <FlakinessCell score={j.flakiness_score} tier={j.tier} trend={j.trend} />
               </td>
               <ProvenCell count={j.confirmed_flake_count} />
+              <ImpactCell
+                runs={j.impacted_runs}
+                branches={j.impacted_branches}
+                seconds={j.time_lost_seconds}
+              />
               <StatusIssueCell
                 status={j.last_status}
                 issueNumber={j.github_issue_number}

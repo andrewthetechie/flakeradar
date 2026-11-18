@@ -64,6 +64,41 @@ describe("Leaderboard", () => {
     expect(screen.getByText(/2× proven/)).toBeInTheDocument();
   });
 
+  it("shows the impact column with runs and CI time lost", () => {
+    render(
+      <Leaderboard
+        tests={[{ ...test, impacted_runs: 3, impacted_branches: 1, time_lost_seconds: 90 }]}
+        scope={{ repo: null, project: null }}
+        showStable={false}
+        selectedId={null}
+        onSelect={() => {}}
+        onToggleQuarantine={() => {}}
+      />,
+    );
+    const header = screen.getByText("Impact");
+    expect(header).toBeInTheDocument();
+    expect(header).toHaveClass("max-sm:hidden");
+    expect(screen.getByText("3 runs")).toBeInTheDocument();
+    expect(screen.getByText("2m lost")).toBeInTheDocument();
+    expect(screen.getByText("3 runs").closest("td")).toHaveClass("max-sm:hidden");
+  });
+
+  it("shows a dash in the impact column when no run was impacted", () => {
+    render(
+      <Leaderboard
+        tests={[test]}
+        scope={{ repo: null, project: null }}
+        showStable={false}
+        selectedId={null}
+        onSelect={() => {}}
+        onToggleQuarantine={() => {}}
+      />,
+    );
+    expect(screen.getByText("Impact")).toBeInTheDocument();
+    expect(screen.getByText("—")).toBeInTheDocument();
+    expect(screen.queryByText(/runs/)).toBeNull();
+  });
+
   it("labels the issue pill when the linked issue was closed as not planned", () => {
     render(
       <Leaderboard

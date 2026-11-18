@@ -118,6 +118,39 @@ export function ProvenCell({ count }: { count: number }) {
   );
 }
 
+/** CI time lost, rounded to seconds under a minute, minutes under an hour, and hours to one decimal. */
+export function formatLostDuration(seconds: number): string {
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
+  return `${(seconds / 3600).toFixed(1)}h`;
+}
+
+/** Impact cell: the runs a flake broke in the last 30 days and the CI time it cost. */
+export function ImpactCell({
+  runs,
+  branches,
+  seconds,
+}: {
+  runs: number;
+  branches: number;
+  seconds: number;
+}) {
+  return (
+    <td className="max-sm:hidden px-4 py-2.5 align-top text-xs whitespace-nowrap">
+      {runs > 0 ? (
+        <span
+          title={`CI runs with a failure in the last 30 days, on ${branches} non-default branches`}
+        >
+          {runs} runs
+          <span className="block text-muted">{formatLostDuration(seconds)} lost</span>
+        </span>
+      ) : (
+        <span className="text-muted">—</span>
+      )}
+    </td>
+  );
+}
+
 /** The `#N` pill linking FlakeRadar's issue, or nothing when no issue exists. */
 export function IssuePill({
   number,
