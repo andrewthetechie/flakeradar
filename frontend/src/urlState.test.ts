@@ -128,6 +128,11 @@ describe("view state in the URL", () => {
     );
   });
 
+  it("parses and serializes sort=impact", () => {
+    expect(parseViewState("?sort=impact").sort).toBe("impact");
+    expect(serializeViewState({ ...DEFAULT_VIEW, sort: "impact" })).toBe("?sort=impact");
+  });
+
   it("parses, validates and serializes cause", () => {
     expect(parseViewState("?cause=timing").cause).toBe("timing");
     expect(parseViewState("?cause=nope").cause).toBeNull();
@@ -214,6 +219,7 @@ describe("applyPatch", () => {
 
   it("sort and stable toggle reset page; selecting a test does not", () => {
     expect(applyPatch(base, { sort: "last_seen" }).page).toBe(1);
+    expect(applyPatch(base, { sort: "impact" }).page).toBe(1);
     expect(applyPatch(base, { showStable: true }).page).toBe(1);
     expect(applyPatch(base, { cause: "timing" }).page).toBe(1);
     expect(applyPatch(base, { quarantined: true }).page).toBe(1);

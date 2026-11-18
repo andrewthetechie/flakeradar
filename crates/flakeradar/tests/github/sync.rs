@@ -20,9 +20,10 @@ use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use crate::support::{
-    CREATED, Held, Loopback, TOKEN, TRUNCATED, api, flaky_job, flaky_row, flaky_test,
-    flaky_test_in, gh_settings, link_of, mount_close, mount_create, mount_issue, mount_state,
-    noted, requested_paths, stamp, stamp_link, stamp_note, sync, sync_with, unstopped,
+    CREATED, CapturedLog, Held, Loopback, TOKEN, TRUNCATED, api, fail_link_stores, flaky_job,
+    flaky_row, flaky_test, flaky_test_in, gh_settings, lines_with, link_of, mount_close,
+    mount_create, mount_issue, mount_state, noted, requested_paths, stamp, stamp_link, stamp_note,
+    sync, sync_with, unstopped,
 };
 
 #[tokio::test]
@@ -57,6 +58,51 @@ async fn the_sync_stamps_a_checked_link_with_the_clock_it_was_given() {
         link_of(&db, EntityKind::Test, test).await.checked_at,
         Some(instant),
         "the check was stamped with the clock the sync was given"
+    );
+}
+
+/// A stub answer that says the issue is still open.
+fn open_issue() -> ResponseTemplate {
+    ResponseTemplate::new(200).set_body_json(json!({"state": "open"}))
+}
+
+#[tokio::test]
+async fn a_check_that_cannot_be_written_costs_the_reported_rows_nothing() {
+    // The stamp is a write of its own, so it can fail after GitHub answered. The
+    // sync is best effort: it warns, keeps the link, and asks about the next row
+    // rather than ending the batch on a write it cannot make.
+    let db = TestDb::new().await.expect("a test database");
+    let first = flaky_test(&db).await;
+    let second = flaky_test_in(&db, "acme/app", "second", "test_total_two").await;
+    stamp_link(&db, EntityKind::Test, first, stamp().number(11)).await;
+    stamp_link(&db, EntityKind::Test, second, stamp().number(12)).await;
+    let server = MockServer::start().await;
+    for number in [11, 12] {
+        mount_issue(&server, "acme/app", number, open_issue()).await;
+    }
+    fail_link_stores(&db, "test_cases").await;
+
+    let logged = CapturedLog::during(sync(&db, &server)).await;
+
+    let mut asked = requested_paths(&server).await;
+    asked.sort();
+    assert_eq!(
+        asked,
+        vec![
+            "/repos/acme/app/issues/11".to_owned(),
+            "/repos/acme/app/issues/12".to_owned(),
+        ],
+        "the row after a failed write is still checked"
+    );
+    assert_eq!(
+        lines_with(&logged, "could not write its check").len(),
+        2,
+        "each write that could not land is logged: {logged}"
+    );
+    assert_eq!(
+        link_of(&db, EntityKind::Test, first).await.number,
+        Some(11),
+        "a write that failed leaves the link it could not stamp"
     );
 }
 

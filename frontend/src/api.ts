@@ -11,7 +11,7 @@ export { FAILURE_CATEGORIES } from "./urlState";
 export type { FailureCategory } from "./urlState";
 
 export type Tier = "flaky" | "suspect" | "stable";
-export type SortKey = "score" | "last_seen" | "proven";
+export type SortKey = "score" | "last_seen" | "proven" | "impact";
 /** Issue link filter: Tests with a linked GitHub issue, or without one. */
 export type IssueFilter = "linked" | "none";
 export type Trend = "worsening" | "improving" | "steady";
@@ -56,6 +56,12 @@ export interface TestCase {
   github_issue_number: number | null;
   github_issue_url: string | null;
   github_issue_closed: boolean;
+  /** How many CI runs the Test failed in within the impact window. */
+  impacted_runs: number;
+  /** How many non-default branches the Test's failures broke within the impact window. */
+  impacted_branches: number;
+  /** How many seconds of CI time the Test's failures cost within the impact window. */
+  time_lost_seconds: number;
 }
 
 export interface TestPage {
@@ -273,6 +279,12 @@ export interface Job {
   github_issue_number: number | null;
   github_issue_url: string | null;
   github_issue_closed: boolean;
+  /** How many CI runs the Job failed in within the impact window. */
+  impacted_runs: number;
+  /** How many non-default branches the Job's failures broke within the impact window. */
+  impacted_branches: number;
+  /** How many seconds of CI time the Job's failures cost within the impact window. */
+  time_lost_seconds: number;
 }
 
 export interface JobPage {

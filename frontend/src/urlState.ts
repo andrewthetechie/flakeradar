@@ -64,7 +64,7 @@ export const DEFAULT_VIEW: ViewState = {
   q: "",
 };
 
-const SORTS: readonly SortKey[] = ["score", "last_seen", "proven"];
+const SORTS: readonly SortKey[] = ["score", "last_seen", "proven", "impact"];
 const ISSUE_FILTERS: readonly IssueFilter[] = ["linked", "none"];
 
 /** The backend's failure taxonomy (mirrors backend/app/schemas.py). Lives here

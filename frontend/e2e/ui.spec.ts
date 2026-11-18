@@ -183,4 +183,30 @@ test.describe("ui: mocked API states", () => {
     await expect(pages.getByRole("button", { name: "Next ›" })).toBeDisabled();
     mocks.assertNoUnmocked();
   });
+
+  test("a phone-width window hides Impact with Proof, and 641px brings both back", async ({
+    page,
+    apiFailures,
+  }) => {
+    const mocks = mockApi(page, apiFailures, [
+      { match: /^\/api\/repos$/, body: readFixture("repos") },
+      { match: /^\/api\/summary$/, body: readFixture("summary") },
+      { match: /^\/api\/tests$/, body: readFixture("tests") },
+      { match: /^\/api\/reports\/summary$/, body: readFixture("reportsSummary") },
+    ]);
+    await page.goto("/?repo=demo/shop");
+    const proof = page.getByRole("columnheader", { name: "Proof" });
+    const impact = page.getByRole("columnheader", { name: "Impact" });
+    await expect(proof).toBeVisible();
+    await expect(impact).toBeVisible();
+    // The phone rule is `max-width: 640px`, so 640 is already narrow — a breakpoint
+    // that only bites below 40rem would leave Impact up while Proof is gone.
+    await page.setViewportSize({ width: 640, height: 800 });
+    await expect(proof).toBeHidden();
+    await expect(impact).toBeHidden();
+    await page.setViewportSize({ width: 641, height: 800 });
+    await expect(proof).toBeVisible();
+    await expect(impact).toBeVisible();
+    mocks.assertNoUnmocked();
+  });
 });

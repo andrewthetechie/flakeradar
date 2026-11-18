@@ -23,6 +23,9 @@ function job(overrides: Partial<Job> = {}): Job {
     github_issue_number: null,
     github_issue_url: null,
     github_issue_closed: false,
+    impacted_runs: 0,
+    impacted_branches: 0,
+    time_lost_seconds: 0,
     ...overrides,
   };
 }
@@ -43,6 +46,35 @@ describe("JobLeaderboard", () => {
     expect(screen.getByText("flaky")).toBeInTheDocument();
     expect(screen.getByText(/2× proven/)).toBeInTheDocument();
     expect(screen.getByText("failed")).toBeInTheDocument();
+  });
+
+  it("shows the impact column with runs and CI time lost", () => {
+    render(
+      <JobLeaderboard
+        jobs={[job({ impacted_runs: 2, impacted_branches: 0, time_lost_seconds: 5400 })]}
+        repo="acme/app"
+        showStable={false}
+        selectedId={null}
+        onSelect={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("Impact")).toHaveClass("col-impact");
+    expect(screen.getByText("2 runs")).toBeInTheDocument();
+    expect(screen.getByText("1.5h lost")).toBeInTheDocument();
+  });
+
+  it("shows a dash in the impact column when no run was impacted", () => {
+    render(
+      <JobLeaderboard
+        jobs={[job({ impacted_runs: 0 })]}
+        repo="acme/app"
+        showStable={false}
+        selectedId={null}
+        onSelect={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("—")).toBeInTheDocument();
+    expect(screen.queryByText(/runs/)).toBeNull();
   });
 
   it("shows the acknowledged pill only while the acknowledgement is live", () => {

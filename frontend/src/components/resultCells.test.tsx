@@ -7,10 +7,12 @@ import leaderboard from "./Leaderboard.tsx?raw";
 import resultCells from "./resultCells.tsx?raw";
 import {
   FlakinessCell,
+  ImpactCell,
   IssuePill,
   ProvenCell,
   QuarantinedPill,
   StatusIssueCell,
+  formatLostDuration,
 } from "./resultCells";
 
 const bar = (container: HTMLElement) => container.querySelector(".h-full");
@@ -68,6 +70,44 @@ describe("ProvenCell", () => {
     render(inRow(<ProvenCell count={0} />));
     expect(screen.getByText("—")).toBeInTheDocument();
     expect(screen.queryByText(/proven/)).toBeNull();
+  });
+});
+
+describe("formatLostDuration", () => {
+  it("writes seconds under a minute, minutes under an hour, and hours to one decimal", () => {
+    expect(formatLostDuration(0)).toBe("0s");
+    expect(formatLostDuration(4)).toBe("4s");
+    expect(formatLostDuration(90)).toBe("2m");
+    expect(formatLostDuration(5400)).toBe("1.5h");
+  });
+});
+
+describe("ImpactCell", () => {
+  it("shows the impacted runs, the time lost under it, and the window in the title", () => {
+    render(inRow(<ImpactCell runs={3} branches={1} seconds={90} />));
+    const runs = screen.getByText("3 runs");
+    expect(runs).toHaveAttribute(
+      "title",
+      "CI runs with a failure in the last 30 days, on 1 non-default branches",
+    );
+    expect(screen.getByText("2m lost")).toBeInTheDocument();
+    expect(runs.closest("td")).toHaveClass("col-impact");
+  });
+
+  it("hides the impact cell with the phone rule, not a Tailwind breakpoint", () => {
+    // Tailwind 4's max-sm:hidden is `width < 40rem`, so it leaves the column visible at
+    // a 640px viewport, where the stylesheet's phone rule already hides Proof. The
+    // column hides with the same `col-*` hook as Proof, status and actions instead.
+    render(inRow(<ImpactCell runs={3} branches={1} seconds={90} />));
+    const cls = screen.getByText("3 runs").closest("td")?.className ?? "";
+    expect(cls).toContain("col-impact");
+    expect(cls).not.toContain("max-sm:hidden");
+  });
+
+  it("shows a dash when nothing was impacted", () => {
+    render(inRow(<ImpactCell runs={0} branches={5} seconds={0} />));
+    expect(screen.getByText("—")).toBeInTheDocument();
+    expect(screen.queryByText(/runs/)).toBeNull();
   });
 });
 

@@ -3,6 +3,7 @@ import { breakable } from "../breakable";
 import {
   FlakinessCell,
   ProvenCell,
+  ImpactCell,
   BrokenPill,
   QuarantinedPill,
   AcknowledgedPill,
@@ -58,6 +59,7 @@ export function Leaderboard({
           <th className={th}>Test</th>
           <th className={th}>Flakiness</th>
           <th className={`col-proof ${th}`}>Proof</th>
+          <th className={`col-impact ${th}`}>Impact</th>
           <th className={`col-status ${th}`}>Last status</th>
           <th className={`col-actions ${th} text-right`}>Quarantine</th>
         </tr>
@@ -95,6 +97,11 @@ export function Leaderboard({
                 />
               </td>
               <ProvenCell count={t.confirmed_flake_count} />
+              <ImpactCell
+                runs={t.impacted_runs}
+                branches={t.impacted_branches}
+                seconds={t.time_lost_seconds}
+              />
               <StatusIssueCell
                 status={t.last_status}
                 issueNumber={t.github_issue_number}
