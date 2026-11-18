@@ -30,7 +30,10 @@
       "acknowledge_reason": null,
       "github_issue_number": null,
       "github_issue_url": null,
-      "github_issue_closed": false
+      "github_issue_closed": false,
+      "impacted_runs": 2,
+      "impacted_branches": 1,
+      "time_lost_seconds": 4.5
     },
     {
       "id": 2,
@@ -62,7 +65,10 @@
       "acknowledge_reason": null,
       "github_issue_number": null,
       "github_issue_url": null,
-      "github_issue_closed": false
+      "github_issue_closed": false,
+      "impacted_runs": 1,
+      "impacted_branches": 0,
+      "time_lost_seconds": 1.25
     },
     {
       "id": 3,
@@ -94,7 +100,10 @@
       "acknowledge_reason": null,
       "github_issue_number": null,
       "github_issue_url": null,
-      "github_issue_closed": false
+      "github_issue_closed": false,
+      "impacted_runs": 6,
+      "impacted_branches": 0,
+      "time_lost_seconds": 12.75
     }
   ],
   "total": 60,

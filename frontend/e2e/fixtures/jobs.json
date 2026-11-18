@@ -18,7 +18,10 @@
       "acknowledge_reason": null,
       "github_issue_number": 12,
       "github_issue_url": "https://github.com/demo/shop/issues/12",
-      "github_issue_closed": false
+      "github_issue_closed": false,
+      "impacted_runs": 2,
+      "impacted_branches": 1,
+      "time_lost_seconds": 90.0
     },
     {
       "id": 2,
@@ -38,7 +41,10 @@
       "acknowledge_reason": null,
       "github_issue_number": null,
       "github_issue_url": null,
-      "github_issue_closed": false
+      "github_issue_closed": false,
+      "impacted_runs": 1,
+      "impacted_branches": 0,
+      "time_lost_seconds": 42.5
     },
     {
       "id": 3,
@@ -58,7 +64,10 @@
       "acknowledge_reason": null,
       "github_issue_number": null,
       "github_issue_url": null,
-      "github_issue_closed": false
+      "github_issue_closed": false,
+      "impacted_runs": 0,
+      "impacted_branches": 0,
+      "time_lost_seconds": 0.0
     }
   ],
   "total": 4,
