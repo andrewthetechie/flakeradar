@@ -58,7 +58,8 @@ the first try in its run.
 
 These parameters of `GET /api/tests` filter and sort the leaderboard:
 
-- `sort` is `score`, `last_seen` or `proven`.
+- `sort` is `score` (the default), `last_seen`, `proven` or `impact`. `impact`
+  lists the tests that broke the most CI runs first.
 - `category` filters by likely cause.
 - `q` (200 characters maximum) filters by a literal substring of the name,
   classname or file. It includes stable tests.
@@ -74,11 +75,28 @@ These parameters of `GET /api/tests` filter and sort the leaderboard:
 
 A `project` filter needs `repo`.
 
+### Impact fields
+
+Every answer that returns a test carries them: the leaderboard, a search hit, the
+history, and the test of a quarantine, acknowledgement or issue-link response. All
+three count the last 30 days only.
+
+- `impacted_runs` is the number of distinct CI runs with a `failed` or `error`
+  execution of the test in the window. Runs with no CI run id do not add to it.
+- `impacted_branches` is the number of those runs' branches other than the repo's
+  default branch. It is `0` while the default branch is unknown.
+- `time_lost_seconds` is the total duration of those failing executions, in seconds.
+
+An execution in a run flagged as
+[suspected infrastructure](concepts.md#suspected-infrastructure) counts in none of
+the three, because such a run is not the test's cost. `sort=impact` ranks by
+`impacted_runs`, and then by score.
+
 ## Jobs
 
 | Endpoint | Auth | Purpose |
 |---|---|---|
-| `GET /api/jobs?repo=&include_stable=&sort=&page=&page_size=&q=&pipeline=&has_issue=&acknowledged=&new_within_days=` | none | The jobs leaderboard for a repo, worst first. `q` (200 characters maximum) filters by a literal substring of the job or pipeline name, and includes stable jobs. `pipeline` filters by the exact pipeline name. `has_issue` filters by linked GitHub issue. `acknowledged=true` lists each acknowledged job, including stable jobs; `acknowledged=false` lists jobs with no live acknowledgement. `new_within_days` (1 to 90) lists only new flaky jobs, which are jobs that became flaky in the last N days. It shows only flaky jobs. |
+| `GET /api/jobs?repo=&include_stable=&sort=&page=&page_size=&q=&pipeline=&has_issue=&acknowledged=&new_within_days=` | none | The jobs leaderboard for a repo, worst first. `q` (200 characters maximum) filters by a literal substring of the job or pipeline name, and includes stable jobs. `pipeline` filters by the exact pipeline name. `has_issue` filters by linked GitHub issue. `acknowledged=true` lists each acknowledged job, including stable jobs; `acknowledged=false` lists jobs with no live acknowledgement. `new_within_days` (1 to 90) lists only new flaky jobs, which are jobs that became flaky in the last N days. It shows only flaky jobs. `sort` is `score` (the default), `last_seen`, `proven` or `impact`, which lists the jobs that broke the most CI runs first. Every job answer also carries `impacted_runs`, `impacted_branches` and `time_lost_seconds`, defined as [for a test](#impact-fields) and counted over the last 30 days, but from the job's unexplained failed executions only: the same rule the job score uses, so a failure explained by a failing test costs the job nothing. Its `time_lost_seconds` sums `completed_at - started_at` over those executions that have both timestamps. |
 | `GET /api/jobs/summary?repo=` | none | Job summary tiles, and `pipelines`: the sorted, distinct pipeline names of the scope. The scope is that repo, or all repos without `repo`. `job_executions_30d` and `job_failures_30d` are the sums of job score history over the last 30 days. |
 | `GET /api/jobs/{id}/history?limit=` | none | One job: recent job executions, each marked `passed`, `failed`, `explained` or `skipped`, with the tests that explain them, `score_history` (90 days), `clean_streak` and `trend`. |
 | `POST /api/jobs/{id}/acknowledge` | none | Set or clear an acknowledgement. The body is `{"acknowledged": bool, "reason"?: str (max 500), "days"?: int (1 to 30)}`; `days` is required when `acknowledged` is `true`, and `reason` and `days` are ignored when it is `false`. The response is the job, with `acknowledged_until` and `acknowledge_reason`; `acknowledged` `false` clears both. `404` for a job that does not exist. |
