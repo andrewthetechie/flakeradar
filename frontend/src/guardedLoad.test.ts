@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, renderHook } from "@testing-library/react";
 import { useState } from "react";
 import { type LatestWins } from "./api";
-import { useGuardedLoad, type GuardedLoader } from "./guardedLoad";
+import { reloadRow, useGuardedLoad, type GuardedLoader } from "./guardedLoad";
 
 /** A loader whose answer the test hands over by hand. */
 interface Deferred<TData> {
@@ -496,6 +496,28 @@ describe("enabled", () => {
     });
     expect(result.current.error).toBeNull();
   });
+
+  it("a hook disabled mid-mutation leaves its row with nothing to reload", async () => {
+    const { load, calls } = guarded<string>([]);
+    const { rerender } = renderHook(
+      ({ on }: { on: boolean }) =>
+        useGuardedLoad(load, { enabled: on, rowReload: { kind: "tests", id: 506 } }),
+      { initialProps: { on: true } },
+    );
+    await flush();
+    expect(calls()).toBe(1);
+
+    // Closing the drawer — the case a confirmed decision can land in — gives the
+    // row key up, so the decision's reload finds no refresher and loads nothing.
+    await act(async () => {
+      rerender({ on: false });
+      await Promise.resolve();
+    });
+    await act(async () => {
+      await reloadRow("tests", 506);
+    });
+    expect(calls()).toBe(1);
+  });
 });
 
 describe("settle callbacks", () => {
@@ -754,5 +776,115 @@ describe("a shared error surface", () => {
       await result.current.drawerLoad.refresh();
     });
     expect(result.current.banner).toBe(message);
+  });
+});
+
+describe("row reloads", () => {
+  it("reloadRow runs the registered load's refresh exactly once, and registering fires no load", async () => {
+    const { load, calls } = guarded<string>([Promise.resolve("a"), Promise.resolve("b")]);
+    const { result } = renderHook(() =>
+      useGuardedLoad(load, { rowReload: { kind: "tests", id: 501 } }),
+    );
+    await flush();
+    // Mount's own load only: taking the key is not a run.
+    expect(calls()).toBe(1);
+
+    await act(async () => {
+      await reloadRow("tests", 501);
+    });
+    expect(calls()).toBe(2);
+    expect(result.current.data).toBe("b");
+  });
+
+  it("a disabled load registers nothing, and closing the drawer gives the key up", async () => {
+    const { load, calls } = guarded<string>([]);
+    // Another load owns the key first — the open drawer. A disabled hook must
+    // not take it over: that would move the reload onto a load that never runs.
+    const drawer = renderHook(() =>
+      useGuardedLoad(load, { rowReload: { kind: "tests", id: 502 } }),
+    );
+    await flush();
+    expect(calls()).toBe(1);
+
+    const { rerender } = renderHook(
+      ({ shown }: { shown: boolean }) =>
+        useGuardedLoad(load, { enabled: shown, rowReload: { kind: "tests", id: 502 } }),
+      { initialProps: { shown: false } },
+    );
+    await flush();
+    await act(async () => {
+      await reloadRow("tests", 502);
+    });
+    // The reload still reached the open load, not the disabled one.
+    expect(calls()).toBe(2);
+
+    // Opening that second hook takes the key — and closing it hands the row
+    // back, so once the first drawer goes too the row has nothing to reload.
+    await act(async () => {
+      rerender({ shown: true });
+    });
+    expect(calls()).toBe(3); // the run opening that drawer itself starts
+    await act(async () => {
+      rerender({ shown: false });
+    });
+    drawer.unmount();
+    await act(async () => {
+      await reloadRow("tests", 502);
+    });
+    expect(calls()).toBe(3);
+  });
+
+  it("unmounting unregisters the row", async () => {
+    const { load, calls } = guarded<string>([]);
+    const { unmount } = renderHook(() =>
+      useGuardedLoad(load, { rowReload: { kind: "jobs", id: 503 } }),
+    );
+    await flush();
+    expect(calls()).toBe(1);
+
+    unmount();
+    await act(async () => {
+      await reloadRow("jobs", 503);
+    });
+    expect(calls()).toBe(1);
+  });
+
+  it("the newest registration owns the key, and the older cleanup leaves it alone", async () => {
+    const one = guarded<string>([]);
+    const two = guarded<string>([]);
+    const first = renderHook(() =>
+      useGuardedLoad(one.load, { rowReload: { kind: "tests", id: 504 } }),
+    );
+    await flush();
+    const second = renderHook(() =>
+      useGuardedLoad(two.load, { rowReload: { kind: "tests", id: 504 } }),
+    );
+    await flush();
+    expect(one.calls()).toBe(1);
+    expect(two.calls()).toBe(1);
+
+    // The first hook goes away after the second took the key — the two drawer
+    // loads of a re-rendered route — so its cleanup must not unregister the
+    // entry that now belongs to the second.
+    first.unmount();
+    await act(async () => {
+      await reloadRow("tests", 504);
+    });
+    expect(one.calls()).toBe(1);
+    expect(two.calls()).toBe(2);
+    second.unmount();
+  });
+
+  it("a row no load displays resolves with nothing loaded", async () => {
+    const { load, calls } = guarded<string>([]);
+    renderHook(() => useGuardedLoad(load, { rowReload: { kind: "jobs", id: 505 } }));
+    await flush();
+
+    await act(async () => {
+      // The same id under the other kind, and an id nobody registered at all.
+      await reloadRow("tests", 505);
+      await reloadRow("jobs", 999);
+    });
+    expect(calls()).toBe(1);
   });
 });

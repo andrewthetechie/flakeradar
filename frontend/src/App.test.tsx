@@ -1057,32 +1057,80 @@ describe("App", () => {
   /**
    * The Tests list, with the row's quarantine state chosen by the caller. The
    * optional `acknowledgedUntil` sets the row's and the drawer history's
-   * acknowledgement end date, so the drawer shows the matching button.
+   * acknowledgement end date, so the drawer shows the matching button and the
+   * lines under it. Like `stubJobsAck` below, the mutation POSTs move the state
+   * every later read — the drawer's history and the list alike — answers from.
    */
   function stubTests(quarantined: boolean, acknowledgedUntil: string | null = null) {
     const calls: { url: string; body: Record<string, unknown> | null }[] = [];
-    const row: TestCase = {
-      ...page("login").items[0],
+    /** The fields the quarantine and acknowledge endpoints own on a Test row. */
+    type Mutated = Pick<
+      TestCase,
+      | "quarantined"
+      | "quarantined_at"
+      | "quarantine_reason"
+      | "quarantine_expires_at"
+      | "acknowledged_until"
+      | "acknowledge_reason"
+    >;
+    // A row already in a decided state carries the reason and expiry that
+    // state implies, so the drawer has something to show — and, after a
+    // one-click clear, something to stop showing.
+    let mutated: Mutated = {
       quarantined,
       quarantined_at: quarantined ? "2026-09-25T00:00:00Z" : null,
+      quarantine_reason: quarantined ? "flaky on CI" : null,
+      quarantine_expires_at: quarantined ? "2999-01-01T00:00:00Z" : null,
       acknowledged_until: acknowledgedUntil,
+      acknowledge_reason: acknowledgedUntil == null ? null : "known flake",
     };
+    const rowNow = (): TestCase => ({ ...page("login").items[0], ...mutated });
+    // The expiry the api would record for a quarantine of N days, measured from
+    // now so the drawer's "expires in N days" line reads the same N.
+    const expiresAt = (days: number) => new Date(Date.now() + days * 86_400_000).toISOString();
     vi.stubGlobal(
       "fetch",
       vi.fn((url: string, init?: RequestInit) => {
         const body =
           init?.body == null ? null : (JSON.parse(String(init.body)) as Record<string, unknown>);
         calls.push({ url, body });
-        if (url.includes("/quarantine")) return json({ ...row, ...body });
-        if (url.includes("/acknowledge")) return json({ ...row, ...body });
+        if (url.includes("/quarantine")) {
+          mutated =
+            body?.quarantined === true
+              ? {
+                  ...mutated,
+                  quarantined: true,
+                  quarantined_at: "2026-09-25T00:00:00Z",
+                  quarantine_reason: typeof body.reason === "string" ? body.reason : null,
+                  quarantine_expires_at:
+                    typeof body.expires_in_days === "number"
+                      ? expiresAt(body.expires_in_days)
+                      : null,
+                }
+              : {
+                  ...mutated,
+                  quarantined: false,
+                  quarantined_at: null,
+                  quarantine_reason: null,
+                  quarantine_expires_at: null,
+                };
+          return json(rowNow());
+        }
+        if (url.includes("/acknowledge")) {
+          mutated =
+            body?.acknowledged === true
+              ? {
+                  ...mutated,
+                  acknowledged_until: "2999-01-01T00:00:00Z",
+                  acknowledge_reason: typeof body.reason === "string" ? body.reason : null,
+                }
+              : { ...mutated, acknowledged_until: null, acknowledge_reason: null };
+          return json(rowNow());
+        }
         if (url.includes("/history"))
-          return json(
-            testHistory(5, {
-              test: { ...testHistory(5).test, acknowledged_until: acknowledgedUntil },
-            }),
-          );
+          return json(testHistory(5, { test: { ...testHistory(5).test, ...mutated } }));
         if (url.startsWith("/api/tests"))
-          return json({ items: [row], total: 1, page: 1, page_size: 50 });
+          return json({ items: [rowNow()], total: 1, page: 1, page_size: 50 });
         if (url.startsWith("/api/repos")) return json([]);
         if (url.startsWith("/api/reports/summary")) return json({ pending: 0, failed: 0 });
         return json({
@@ -1102,7 +1150,8 @@ describe("App", () => {
     const posts = () => calls.filter((c) => c.url.includes("/quarantine"));
     const acks = () => calls.filter((c) => c.url.includes("/acknowledge"));
     const lists = () => calls.filter((c) => c.url.startsWith("/api/tests?")).length;
-    return { posts, acks, lists };
+    const histories = () => calls.filter((c) => c.url.startsWith("/api/tests/5/history")).length;
+    return { posts, acks, lists, histories };
   }
 
   // Mutation wiring: each trigger surface opens the right dialog, the direct
@@ -1167,6 +1216,62 @@ describe("App", () => {
     });
   });
 
+  it("reloads the Test drawer after quarantining, so it shows the new state", async () => {
+    const { posts, histories, lists } = stubTests(false);
+    render(<App />);
+    expect(await screen.findByText("login")).toBeInTheDocument();
+    const drawer = await openDrawer();
+    const historiesBefore = histories();
+    const listsBefore = lists();
+
+    await userEvent.click(within(drawer).getByRole("button", { name: "Quarantine" }));
+    const dialog = await screen.findByRole("dialog", { name: /Quarantine renders/ });
+    await userEvent.type(within(dialog).getByRole("textbox", { name: /Reason/ }), "flaky on CI");
+    await userEvent.click(within(dialog).getByRole("radio", { name: "14 days" }));
+    await userEvent.click(within(dialog).getByRole("button", { name: "Confirm" }));
+    await act(async () => {});
+
+    expect(posts()).toHaveLength(1);
+    expect(posts()[0].body).toEqual({
+      quarantined: true,
+      reason: "flaky on CI",
+      expires_in_days: 14,
+    });
+    // Both the list and the open drawer reload, so neither keeps stale state.
+    expect(histories()).toBeGreaterThan(historiesBefore);
+    expect(lists()).toBeGreaterThan(listsBefore);
+    expect(
+      await within(drawer).findByRole("button", { name: "Un-quarantine" }),
+    ).toBeInTheDocument();
+    expect(within(drawer).getByText(/Reason: flaky on CI/)).toBeInTheDocument();
+    expect(within(drawer).getByText(/expires in 14 days/)).toBeInTheDocument();
+  });
+
+  it("reloads the Test drawer after un-quarantining, clearing the lines it showed", async () => {
+    const { posts, histories, lists } = stubTests(true);
+    render(<App />);
+    expect(await screen.findByText("login")).toBeInTheDocument();
+    const drawer = await openDrawer();
+    const historiesBefore = histories();
+    const listsBefore = lists();
+
+    // The drawer starts by showing what the quarantine recorded.
+    expect(within(drawer).getByText(/Reason: flaky on CI/)).toBeInTheDocument();
+    expect(within(drawer).getByText(/expires in/)).toBeInTheDocument();
+
+    await userEvent.click(within(drawer).getByRole("button", { name: "Un-quarantine" }));
+    await act(async () => {});
+
+    expect(posts()).toHaveLength(1);
+    expect(posts()[0].body).toEqual({ quarantined: false });
+    // Both the list and the open drawer reload, so neither keeps stale state.
+    expect(histories()).toBeGreaterThan(historiesBefore);
+    expect(lists()).toBeGreaterThan(listsBefore);
+    expect(await within(drawer).findByRole("button", { name: "Quarantine" })).toBeInTheDocument();
+    expect(within(drawer).queryByText(/Reason: flaky on CI/)).not.toBeInTheDocument();
+    expect(within(drawer).queryByText(/expires in/)).not.toBeInTheDocument();
+  });
+
   /** Opens the Test drawer for the "login" row, like the leaderboard would. */
   async function openDrawer() {
     await userEvent.click(screen.getByText("login"));
@@ -1199,6 +1304,31 @@ describe("App", () => {
     expect(acks()[0].body).toEqual({ acknowledged: false });
   });
 
+  it("reloads the Test drawer after clearing an acknowledgement", async () => {
+    const { acks, histories, lists } = stubTests(false, "2999-01-01T00:00:00Z");
+    render(<App />);
+    expect(await screen.findByText("login")).toBeInTheDocument();
+    const drawer = await openDrawer();
+    const historiesBefore = histories();
+    const listsBefore = lists();
+
+    // The drawer starts by showing what the acknowledgement recorded.
+    expect(within(drawer).getByText(/Reason: known flake/)).toBeInTheDocument();
+    expect(within(drawer).getByText(/acknowledged until/)).toBeInTheDocument();
+
+    await userEvent.click(within(drawer).getByRole("button", { name: "Clear acknowledgement" }));
+    await act(async () => {});
+
+    expect(acks()).toHaveLength(1);
+    expect(acks()[0].body).toEqual({ acknowledged: false });
+    // Both the list and the open drawer reload, so neither keeps stale state.
+    expect(histories()).toBeGreaterThan(historiesBefore);
+    expect(lists()).toBeGreaterThan(listsBefore);
+    expect(await within(drawer).findByRole("button", { name: "Acknowledge" })).toBeInTheDocument();
+    expect(within(drawer).queryByText(/Reason: known flake/)).not.toBeInTheDocument();
+    expect(within(drawer).queryByText(/acknowledged until/)).not.toBeInTheDocument();
+  });
+
   it("a confirmed Test acknowledgement posts the reason and duration the dialog collected", async () => {
     const { acks } = stubTests(false);
     render(<App />);
@@ -1217,6 +1347,66 @@ describe("App", () => {
     expect(acks()[0].body).toEqual({ acknowledged: true, reason: "known flake", days: 30 });
   });
 
+  it("reloads the Test drawer after acknowledging, so it shows the new state", async () => {
+    const { acks, histories, lists } = stubTests(false);
+    render(<App />);
+    expect(await screen.findByText("login")).toBeInTheDocument();
+    const drawer = await openDrawer();
+    const historiesBefore = histories();
+    const listsBefore = lists();
+
+    await userEvent.click(within(drawer).getByRole("button", { name: "Acknowledge" }));
+    const dialog = await screen.findByRole("dialog", { name: /Acknowledge renders/ });
+    await userEvent.type(within(dialog).getByRole("textbox", { name: /Reason/ }), "known flake");
+    await userEvent.click(within(dialog).getByRole("radio", { name: "30 days" }));
+    await userEvent.click(within(dialog).getByRole("button", { name: "Confirm" }));
+    await act(async () => {});
+
+    expect(acks()).toHaveLength(1);
+    expect(acks()[0].url).toBe("/api/tests/5/acknowledge");
+    expect(acks()[0].body).toEqual({ acknowledged: true, reason: "known flake", days: 30 });
+    // Both the list and the open drawer reload, so neither keeps stale state.
+    expect(histories()).toBeGreaterThan(historiesBefore);
+    expect(lists()).toBeGreaterThan(listsBefore);
+    expect(
+      await within(drawer).findByRole("button", { name: "Clear acknowledgement" }),
+    ).toBeInTheDocument();
+    expect(within(drawer).getByText(/Reason: known flake/)).toBeInTheDocument();
+    expect(within(drawer).getByText(/acknowledged until/)).toBeInTheDocument();
+  });
+
+  it("a drawer closed while its mutation is in flight updates only the list", async () => {
+    const { acks, histories, lists, finishPost } = stubSlowTestAcknowledgePost();
+    render(<App />);
+    expect(await screen.findByText("login")).toBeInTheDocument();
+    const drawer = await openDrawer();
+    const historiesBefore = histories();
+    const listsBefore = lists();
+
+    await userEvent.click(within(drawer).getByRole("button", { name: "Acknowledge" }));
+    const dialog = await screen.findByRole("dialog", { name: /Acknowledge renders/ });
+    await userEvent.type(within(dialog).getByRole("textbox", { name: /Reason/ }), "known flake");
+    await userEvent.click(within(dialog).getByRole("radio", { name: "30 days" }));
+    await userEvent.click(within(dialog).getByRole("button", { name: "Confirm" }));
+
+    // The POST is still in flight when the user closes the drawer, so by the
+    // time the mutation settles nothing displays this row any more.
+    expect(acks()).toBe(1);
+    fireEvent.keyDown(window, { key: "Escape" });
+    await act(async () => {});
+    expect(screen.queryByRole("dialog", { name: "Test detail" })).not.toBeInTheDocument();
+
+    finishPost({ ...page("login").items[0], acknowledged_until: "2999-01-01T00:00:00Z" });
+    await act(async () => {});
+
+    // Only the list refetches. The drawer's history count stays at its initial
+    // load, because a disabled hook registers nothing and its own refresh is a
+    // no-op; reloading a row nobody displays resolves quietly, with no banner.
+    expect(lists()).toBeGreaterThan(listsBefore);
+    expect(histories()).toBe(historiesBefore);
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
   /** The Tests list with its drawer history, and an acknowledge POST that fails. */
   function stubFailingTestAcknowledgePost() {
     vi.stubGlobal(
@@ -1233,6 +1423,40 @@ describe("App", () => {
         return json(testsSummary);
       }),
     );
+  }
+
+  /**
+   * The same Tests view, with an acknowledge POST that stays in flight until the
+   * test hands over its response — so a drawer can close while the mutation is
+   * still running, which is what the closed-drawer test needs to observe.
+   */
+  function stubSlowTestAcknowledgePost() {
+    const urls: string[] = [];
+    let settlePost: (response: Response) => void = () => {};
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        urls.push(url);
+        // /acknowledge must be matched before the /api/tests list.
+        if (url.includes("/acknowledge")) {
+          return new Promise<Response>((resolve) => {
+            settlePost = resolve;
+          });
+        }
+        if (url.startsWith("/api/tests/5/history")) return json(testHistory(5));
+        if (url.startsWith("/api/tests")) return json(page("login"));
+        if (url.startsWith("/api/repos")) return json([]);
+        if (url.startsWith("/api/reports/summary")) return json({ pending: 0, failed: 0 });
+        return json(testsSummary);
+      }),
+    );
+    return {
+      acks: () => urls.filter((u) => u.includes("/acknowledge")).length,
+      histories: () => urls.filter((u) => u.startsWith("/api/tests/5/history")).length,
+      lists: () => urls.filter((u) => u.startsWith("/api/tests?")).length,
+      /** Settles the in-flight POST with the row the api would have returned. */
+      finishPost: (body: unknown) => settlePost(new Response(JSON.stringify(body))),
+    };
   }
 
   it("closes the Test acknowledge dialog and shows the banner when the POST fails", async () => {

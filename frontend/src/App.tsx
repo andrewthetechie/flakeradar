@@ -138,7 +138,7 @@ export default function App() {
   // 30 s polling re-renders.
   const onSearch = useCallback((text: string) => setView({ q: text }), [setView]);
 
-  // The hook loads on mount and reloads whenever the scope changes, so this
+  // The hook loads on mount and re-fetches whenever the scope changes, so this
   // effect is the 30 s poll alone, keyed on refresh's stable identity.
   useEffect(() => {
     const timer = setInterval(() => void refresh(), REFRESH_MS);
@@ -167,6 +167,9 @@ export default function App() {
     // The early returns of the effect this replaces: only the Tests view with
     // an open drawer loads, and the ci-run view loads neither history.
     enabled: kind === "tests" && view.test != null,
+    // The drawer displays one Test, so it registers as that row's refresher: a
+    // confirmed decision on that row re-fetches this load too.
+    rowReload: view.test == null ? undefined : { kind: "tests", id: view.test },
     onErrorChange: setError,
   });
 
@@ -180,6 +183,8 @@ export default function App() {
   const jobHistoryLoad = useGuardedLoad<JobHistory>(jobHistoryLoader, {
     lifetime: "effect",
     enabled: kind === "jobs" && view.job != null,
+    // The same as the Test drawer's: this load displays one Job.
+    rowReload: view.job == null ? undefined : { kind: "jobs", id: view.job },
     onErrorChange: setError,
   });
 
@@ -197,6 +202,7 @@ export default function App() {
           }),
     isDecided: (t) => t.quarantined,
     refresh,
+    row: (t) => ({ kind: "tests", id: t.id }),
     onError: setError,
   });
 
@@ -212,12 +218,14 @@ export default function App() {
           }),
     isDecided: (t) => isAcknowledged(t.acknowledged_until),
     refresh,
+    row: (t) => ({ kind: "tests", id: t.id }),
     onError: setError,
   });
 
-  // The Job decision reloads the drawer itself: its loader is keyed on the
-  // scope alone, so `refresh` alone leaves it showing the Job as it was before
-  // the mutation.
+  // The reload rule no longer lives here: the load layer owns it. A decision
+  // names the row it mutated, and the guarded-load registry refetches whatever
+  // is open and showing that row — here, the Job drawer whose loader is keyed on
+  // the scope alone and would otherwise keep showing the pre-mutation Job.
   const jobAcknowledge = useConfirmedDecision<Job, AcknowledgeChoice>({
     call: (j, decided, choice) =>
       choice == null
@@ -228,7 +236,7 @@ export default function App() {
           }),
     isDecided: (j) => isAcknowledged(j.acknowledged_until),
     refresh,
-    reloads: [jobHistoryLoad.refresh],
+    row: (j) => ({ kind: "jobs", id: j.id }),
     onError: setError,
   });
 

@@ -7,6 +7,7 @@
 // here; the caller names the call, the "already decided" predicate and the
 // refresh targets, and renders the dialog for the returned pending entity.
 import { useCallback, useRef, useState } from "react";
+import { reloadRow, type RowKind } from "./guardedLoad";
 
 export interface ConfirmedDecisionOptions<TEntity, TChoice> {
   /**
@@ -19,7 +20,13 @@ export interface ConfirmedDecisionOptions<TEntity, TChoice> {
   isDecided: (entity: TEntity) => boolean;
   /** The list refresh, awaited after every successful call. */
   refresh: () => Promise<void>;
-  /** Extra reloads — a drawer showing the mutated row — run sequentially after `refresh`, successes only. */
+  /**
+   * The row this decision mutates, so the load layer refetches the displays
+   * showing it: after `refresh`, the open load that registered this row reloads.
+   * A row no open display shows resolves with nothing done.
+   */
+  row?: (entity: TEntity) => { kind: RowKind; id: number };
+  /** Extra reloads, run sequentially after `row`'s — the reload tail both that path and a test can drive, successes only. */
   reloads?: (() => Promise<void>)[];
   /** The caller's one error surface; App passes `setError`. */
   onError: (message: string) => void;
@@ -59,10 +66,16 @@ export function useConfirmedDecision<TEntity, TChoice>(
   const run = useCallback(
     async (entity: TEntity, decided: boolean, choice: TChoice | null): Promise<void> => {
       // Read the callbacks now, so an inline caller's callback is the live one.
-      const { call, refresh, reloads, onError } = optionsRef.current;
+      const { call, refresh, row, reloads, onError } = optionsRef.current;
       try {
         await call(entity, decided, choice);
         await refresh();
+        // The row's reload joins the same sequential tail: a drawer only
+        // refetches once the list it sits over is current again.
+        if (row != null) {
+          const target = row(entity);
+          await reloadRow(target.kind, target.id);
+        }
         for (const reload of reloads ?? []) await reload();
       } catch (e: unknown) {
         onError(e instanceof Error ? e.message : String(e));
