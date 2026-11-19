@@ -1057,9 +1057,9 @@ describe("App", () => {
   /**
    * The Tests list, with the row's quarantine state chosen by the caller. The
    * optional `acknowledgedUntil` sets the row's and the drawer history's
-   * acknowledgement end date, so the drawer shows the matching button. Like
-   * `stubJobsAck` below, the mutation POSTs move the state every later read —
-   * the drawer's history and the list alike — answers from.
+   * acknowledgement end date, so the drawer shows the matching button and the
+   * lines under it. Like `stubJobsAck` below, the mutation POSTs move the state
+   * every later read — the drawer's history and the list alike — answers from.
    */
   function stubTests(quarantined: boolean, acknowledgedUntil: string | null = null) {
     const calls: { url: string; body: Record<string, unknown> | null }[] = [];
@@ -1073,18 +1073,21 @@ describe("App", () => {
       | "acknowledged_until"
       | "acknowledge_reason"
     >;
+    // A row already in a decided state carries the reason and expiry that
+    // state implies, so the drawer has something to show — and, after a
+    // one-click clear, something to stop showing.
     let mutated: Mutated = {
       quarantined,
       quarantined_at: quarantined ? "2026-09-25T00:00:00Z" : null,
-      quarantine_reason: null,
-      quarantine_expires_at: null,
+      quarantine_reason: quarantined ? "flaky on CI" : null,
+      quarantine_expires_at: quarantined ? "2999-01-01T00:00:00Z" : null,
       acknowledged_until: acknowledgedUntil,
-      acknowledge_reason: null,
+      acknowledge_reason: acknowledgedUntil == null ? null : "known flake",
     };
     const rowNow = (): TestCase => ({ ...page("login").items[0], ...mutated });
-    // The expiry the api would record for a quarantine of N days.
-    const expiresAt = (days: number) =>
-      new Date(Date.parse("2026-09-25T00:00:00Z") + days * 86_400_000).toISOString();
+    // The expiry the api would record for a quarantine of N days, measured from
+    // now so the drawer's "expires in N days" line reads the same N.
+    const expiresAt = (days: number) => new Date(Date.now() + days * 86_400_000).toISOString();
     vi.stubGlobal(
       "fetch",
       vi.fn((url: string, init?: RequestInit) => {
@@ -1213,6 +1216,62 @@ describe("App", () => {
     });
   });
 
+  it("reloads the Test drawer after quarantining, so it shows the new state", async () => {
+    const { posts, histories, lists } = stubTests(false);
+    render(<App />);
+    expect(await screen.findByText("login")).toBeInTheDocument();
+    const drawer = await openDrawer();
+    const historiesBefore = histories();
+    const listsBefore = lists();
+
+    await userEvent.click(within(drawer).getByRole("button", { name: "Quarantine" }));
+    const dialog = await screen.findByRole("dialog", { name: /Quarantine renders/ });
+    await userEvent.type(within(dialog).getByRole("textbox", { name: /Reason/ }), "flaky on CI");
+    await userEvent.click(within(dialog).getByRole("radio", { name: "14 days" }));
+    await userEvent.click(within(dialog).getByRole("button", { name: "Confirm" }));
+    await act(async () => {});
+
+    expect(posts()).toHaveLength(1);
+    expect(posts()[0].body).toEqual({
+      quarantined: true,
+      reason: "flaky on CI",
+      expires_in_days: 14,
+    });
+    // Both the list and the open drawer reload, so neither keeps stale state.
+    expect(histories()).toBeGreaterThan(historiesBefore);
+    expect(lists()).toBeGreaterThan(listsBefore);
+    expect(
+      await within(drawer).findByRole("button", { name: "Un-quarantine" }),
+    ).toBeInTheDocument();
+    expect(within(drawer).getByText(/Reason: flaky on CI/)).toBeInTheDocument();
+    expect(within(drawer).getByText(/expires in 14 days/)).toBeInTheDocument();
+  });
+
+  it("reloads the Test drawer after un-quarantining, clearing the lines it showed", async () => {
+    const { posts, histories, lists } = stubTests(true);
+    render(<App />);
+    expect(await screen.findByText("login")).toBeInTheDocument();
+    const drawer = await openDrawer();
+    const historiesBefore = histories();
+    const listsBefore = lists();
+
+    // The drawer starts by showing what the quarantine recorded.
+    expect(within(drawer).getByText(/Reason: flaky on CI/)).toBeInTheDocument();
+    expect(within(drawer).getByText(/expires in/)).toBeInTheDocument();
+
+    await userEvent.click(within(drawer).getByRole("button", { name: "Un-quarantine" }));
+    await act(async () => {});
+
+    expect(posts()).toHaveLength(1);
+    expect(posts()[0].body).toEqual({ quarantined: false });
+    // Both the list and the open drawer reload, so neither keeps stale state.
+    expect(histories()).toBeGreaterThan(historiesBefore);
+    expect(lists()).toBeGreaterThan(listsBefore);
+    expect(await within(drawer).findByRole("button", { name: "Quarantine" })).toBeInTheDocument();
+    expect(within(drawer).queryByText(/Reason: flaky on CI/)).not.toBeInTheDocument();
+    expect(within(drawer).queryByText(/expires in/)).not.toBeInTheDocument();
+  });
+
   /** Opens the Test drawer for the "login" row, like the leaderboard would. */
   async function openDrawer() {
     await userEvent.click(screen.getByText("login"));
@@ -1245,6 +1304,31 @@ describe("App", () => {
     expect(acks()[0].body).toEqual({ acknowledged: false });
   });
 
+  it("reloads the Test drawer after clearing an acknowledgement", async () => {
+    const { acks, histories, lists } = stubTests(false, "2999-01-01T00:00:00Z");
+    render(<App />);
+    expect(await screen.findByText("login")).toBeInTheDocument();
+    const drawer = await openDrawer();
+    const historiesBefore = histories();
+    const listsBefore = lists();
+
+    // The drawer starts by showing what the acknowledgement recorded.
+    expect(within(drawer).getByText(/Reason: known flake/)).toBeInTheDocument();
+    expect(within(drawer).getByText(/acknowledged until/)).toBeInTheDocument();
+
+    await userEvent.click(within(drawer).getByRole("button", { name: "Clear acknowledgement" }));
+    await act(async () => {});
+
+    expect(acks()).toHaveLength(1);
+    expect(acks()[0].body).toEqual({ acknowledged: false });
+    // Both the list and the open drawer reload, so neither keeps stale state.
+    expect(histories()).toBeGreaterThan(historiesBefore);
+    expect(lists()).toBeGreaterThan(listsBefore);
+    expect(await within(drawer).findByRole("button", { name: "Acknowledge" })).toBeInTheDocument();
+    expect(within(drawer).queryByText(/Reason: known flake/)).not.toBeInTheDocument();
+    expect(within(drawer).queryByText(/acknowledged until/)).not.toBeInTheDocument();
+  });
+
   it("a confirmed Test acknowledgement posts the reason and duration the dialog collected", async () => {
     const { acks } = stubTests(false);
     render(<App />);
@@ -1261,6 +1345,34 @@ describe("App", () => {
     expect(acks()).toHaveLength(1);
     expect(acks()[0].url).toBe("/api/tests/5/acknowledge");
     expect(acks()[0].body).toEqual({ acknowledged: true, reason: "known flake", days: 30 });
+  });
+
+  it("reloads the Test drawer after acknowledging, so it shows the new state", async () => {
+    const { acks, histories, lists } = stubTests(false);
+    render(<App />);
+    expect(await screen.findByText("login")).toBeInTheDocument();
+    const drawer = await openDrawer();
+    const historiesBefore = histories();
+    const listsBefore = lists();
+
+    await userEvent.click(within(drawer).getByRole("button", { name: "Acknowledge" }));
+    const dialog = await screen.findByRole("dialog", { name: /Acknowledge renders/ });
+    await userEvent.type(within(dialog).getByRole("textbox", { name: /Reason/ }), "known flake");
+    await userEvent.click(within(dialog).getByRole("radio", { name: "30 days" }));
+    await userEvent.click(within(dialog).getByRole("button", { name: "Confirm" }));
+    await act(async () => {});
+
+    expect(acks()).toHaveLength(1);
+    expect(acks()[0].url).toBe("/api/tests/5/acknowledge");
+    expect(acks()[0].body).toEqual({ acknowledged: true, reason: "known flake", days: 30 });
+    // Both the list and the open drawer reload, so neither keeps stale state.
+    expect(histories()).toBeGreaterThan(historiesBefore);
+    expect(lists()).toBeGreaterThan(listsBefore);
+    expect(
+      await within(drawer).findByRole("button", { name: "Clear acknowledgement" }),
+    ).toBeInTheDocument();
+    expect(within(drawer).getByText(/Reason: known flake/)).toBeInTheDocument();
+    expect(within(drawer).getByText(/acknowledged until/)).toBeInTheDocument();
   });
 
   /** The Tests list with its drawer history, and an acknowledge POST that fails. */
