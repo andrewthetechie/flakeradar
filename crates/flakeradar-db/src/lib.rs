@@ -26,6 +26,7 @@ mod batching;
 pub mod clock;
 mod connect;
 mod deletes;
+pub mod digest;
 mod error;
 pub mod filing;
 mod identity;

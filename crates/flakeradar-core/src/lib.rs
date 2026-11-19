@@ -18,6 +18,7 @@
 
 pub mod classify;
 pub mod defaults;
+pub mod digest;
 pub mod dto;
 pub(crate) mod encodings;
 pub mod helpers;
