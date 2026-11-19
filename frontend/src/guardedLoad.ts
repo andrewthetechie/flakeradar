@@ -19,6 +19,48 @@ export type GuardedLoader<TData> = (guard: LatestWins, request: number) => Promi
 /** How long the hook's guard lives. */
 export type GuardLifetime = "component" | "effect";
 
+/** Which dashboard row a reload targets — the same union `setAcknowledge` takes. */
+export type RowKind = "tests" | "jobs";
+
+const rowKey = (kind: RowKind, id: number): string => `${kind}:${id}`;
+
+/**
+ * The reload registry: a load that displays one row — an open drawer — registers
+ * its own `refresh` here under that row, and a confirmed decision on that row
+ * calls `reloadRow` to refetch it. It is React-free module state, and the hook
+ * below is its only writer, which keeps the reload rule with the loads instead
+ * of in every caller. A row nobody displays has no entry, so reloading it is a
+ * no-op; the 30 s poll never goes through the registry.
+ */
+const rowReloads = new Map<string, () => Promise<void>>();
+
+/**
+ * Registers `reload` as the refresher of one row's displays and returns its
+ * unregistration. Registering fires no load — it only says who to refetch later.
+ */
+export function registerRowReload(
+  kind: RowKind,
+  id: number,
+  reload: () => Promise<void>,
+): () => void {
+  const key = rowKey(kind, id);
+  rowReloads.set(key, reload);
+  return () => {
+    // Only the current owner's cleanup unregisters, so a stale one cannot drop
+    // the entry a newer registration for the same row installed.
+    if (rowReloads.get(key) === reload) rowReloads.delete(key);
+  };
+}
+
+/**
+ * Awaits the refresher registered for one row, if any, and resolves without
+ * doing anything when nobody displays it. A hook-registered refresher never
+ * rejects — see `refresh` — but a caller-supplied one may, and this forwards it.
+ */
+export async function reloadRow(kind: RowKind, id: number): Promise<void> {
+  await rowReloads.get(rowKey(kind, id))?.();
+}
+
 export interface GuardedLoadOptions<TData> {
   /**
    * `"component"` (default) holds one `latestWins()` for the hook's lifetime, so
@@ -29,6 +71,12 @@ export interface GuardedLoadOptions<TData> {
   lifetime?: GuardLifetime;
   /** While false no load runs, in-flight answers are cancelled, and data resets to null. */
   enabled?: boolean;
+  /**
+   * Set by a load that displays one row — an open drawer — so a confirmed
+   * decision on that row can refetch it: while `enabled` the hook registers its
+   * own `refresh` in the registry above. Registration fires no load.
+   */
+  rowReload?: { kind: RowKind; id: number };
   /** A current success clears the error. */
   clearErrorOnSuccess?: boolean;
   /** A current failure clears the data when this answers true. */
@@ -166,6 +214,20 @@ export function useGuardedLoad<TData>(
     void refresh();
     return () => cancelRef.current?.();
   }, [enabled, refresh]);
+
+  // A stable dep for the row option, so an inline object does not re-register
+  // every render. This effect carries no load: registering only names the hook
+  // as the row's refresher, and it is deliberately not merged into the effect
+  // above so the load's identity — and with it the poll's behaviour — is intact.
+  const rowKeyOf =
+    options.rowReload == null ? null : rowKey(options.rowReload.kind, options.rowReload.id);
+  useEffect(() => {
+    const row = optionsRef.current.rowReload;
+    // A closed drawer registers nothing, so a decision on its row reloads the
+    // list only — the same rule `runOnce`'s disabled check gives the load.
+    if (!enabled || row == null) return;
+    return registerRowReload(row.kind, row.id, refresh);
+  }, [enabled, rowKeyOf, refresh]);
 
   return { data, error, refresh };
 }

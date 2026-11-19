@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, renderHook } from "@testing-library/react";
 import { ApiError } from "./api";
 import { useConfirmedDecision } from "./confirmedDecision";
+import { registerRowReload } from "./guardedLoad";
 
 /** A call whose answer the test hands over by hand. */
 interface Deferred<T> {
@@ -259,6 +260,121 @@ describe("useConfirmedDecision", () => {
       await settled();
     });
     expect(log).toEqual(["call", "refresh", "reload 1", "reload 2"]);
+  });
+
+  it("a settled confirm reloads the row it names, after the refresh and before the extra reloads", async () => {
+    // The same tail as above, fed by `row` instead of a hand-listed reload: the
+    // registry entry under the row's key is the drawer's refresher.
+    const log: string[] = [];
+    const refreshGate = deferred<void>();
+    const rowGate = deferred<void>();
+    const tailGate = deferred<void>();
+    const unregister = registerRowReload(
+      "tests",
+      7,
+      step("row", log, () => rowGate.promise),
+    );
+    // A second row's refresher: only the mutated row may answer.
+    const other = step("other row", log, () => Promise.resolve());
+    const unregisterOther = registerRowReload("jobs", 7, other);
+    const tail = step("reload 1", log, () => tailGate.promise);
+    const { result } = renderHook(() =>
+      useConfirmedDecision<Row, Choice>({
+        call: step("call", log, () => Promise.resolve()),
+        isDecided: (t) => t.decided,
+        refresh: step("refresh", log, () => refreshGate.promise),
+        row: (t) => ({ kind: "tests", id: t.id }),
+        reloads: [tail],
+        onError: () => {},
+      }),
+    );
+    await act(async () => {
+      await result.current.toggle(row(7, false));
+    });
+
+    await act(async () => {
+      void result.current.confirm(choice);
+      await settled();
+    });
+    // The refresh is still in flight: neither the row nor the tail has started.
+    expect(log).toEqual(["call", "refresh"]);
+    expect(tail).not.toHaveBeenCalled();
+
+    await act(async () => {
+      refreshGate.resolve();
+      await settled();
+    });
+    // The row's refetch is awaited too — the tail waits for it, and the other
+    // row's refresher stays silent.
+    expect(log).toEqual(["call", "refresh", "row"]);
+    expect(tail).not.toHaveBeenCalled();
+    expect(other).not.toHaveBeenCalled();
+
+    await act(async () => {
+      rowGate.resolve();
+      await settled();
+    });
+    expect(log).toEqual(["call", "refresh", "row", "reload 1"]);
+
+    await act(async () => {
+      tailGate.resolve();
+      await settled();
+    });
+    unregister();
+    unregisterOther();
+  });
+
+  it("a row no open display registered reloads nothing, and the tail still runs", async () => {
+    const log: string[] = [];
+    const onError = vi.fn((message: string) => log.push(`error:${message}`));
+    const { result } = renderHook(() =>
+      useConfirmedDecision<Row, Choice>({
+        call: step("call", log, () => Promise.resolve()),
+        isDecided: (t) => t.decided,
+        refresh: step("refresh", log, () => Promise.resolve()),
+        row: (t) => ({ kind: "jobs", id: t.id }),
+        reloads: [step("reload 1", log, () => Promise.resolve())],
+        onError,
+      }),
+    );
+
+    // Nothing registers `jobs:4`, which is a closed drawer: the list refresh is
+    // all that happens.
+    await act(async () => {
+      await result.current.toggle(row(4, true));
+      await settled();
+    });
+    expect(log).toEqual(["call", "refresh", "reload 1"]);
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it("a rejecting row refetch maps its message onto the error callback and runs nothing further", async () => {
+    const log: string[] = [];
+    const unregister = registerRowReload("tests", 6, () =>
+      Promise.reject(new Error("/api/tests/6/history?limit=60 -> 500")),
+    );
+    const tail = step("reload 1", log, () => Promise.resolve());
+    const onError = vi.fn((message: string) => log.push(`error:${message}`));
+    const { result } = renderHook(() =>
+      useConfirmedDecision<Row, Choice>({
+        call: step("call", log, () => Promise.resolve()),
+        isDecided: (t) => t.decided,
+        refresh: step("refresh", log, () => Promise.resolve()),
+        row: (t) => ({ kind: "tests", id: t.id }),
+        reloads: [tail],
+        onError,
+      }),
+    );
+
+    await act(async () => {
+      await result.current.toggle(row(6, true));
+      await settled();
+    });
+    // Successes only, as with the listed reloads: the failure ends the tail.
+    expect(onError).toHaveBeenCalledWith("/api/tests/6/history?limit=60 -> 500");
+    expect(log).toEqual(["call", "refresh", "error:/api/tests/6/history?limit=60 -> 500"]);
+    expect(tail).not.toHaveBeenCalled();
+    unregister();
   });
 
   it("a rejecting call maps an Error message onto the error callback, and runs no refresh", async () => {
