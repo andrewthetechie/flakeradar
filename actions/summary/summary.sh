@@ -107,6 +107,19 @@ gate_fallback() {
   fi
 }
 
+# One request: writes the response body to the file named first and prints the
+# HTTP status. 000 means curl itself failed (network / DNS / connection refused).
+# The summary read always times out at 20s and never retries -- unlike the ingest
+# upload in ../report/report.sh, which does -- so this stays script-internal.
+# Everything after the file goes straight to curl: method, headers, body, URL.
+http_request() {
+  local out="$1"
+  shift
+  local code
+  code=$(curl -sS -o "$out" -w '%{http_code}' --max-time 20 "$@" 2>/dev/null) || code="000"
+  printf '%s\n' "$code"
+}
+
 # --- Poll until this attempt's reports are processed, or the timeout ends. ---
 resp_file="$(mktemp)"
 trap 'rm -f "$resp_file"' EXIT
@@ -118,10 +131,9 @@ timeout_line="**FlakeRadar:** timed out after ${FR_TIMEOUT}s waiting for this CI
 
 while :; do
   now=$(date +%s)
-  # 000 means curl itself failed (network / DNS / connection refused).
-  http_code=$(curl -sS -o "$resp_file" -w '%{http_code}' --max-time 20 \
+  http_code=$(http_request "$resp_file" \
     -H "X-API-Key: ${FR_TOKEN}" \
-    "$endpoint?repo=${enc_repo}&ci_run_attempt=${FR_ATTEMPT}" 2>/dev/null) || http_code="000"
+    "$endpoint?repo=${enc_repo}&ci_run_attempt=${FR_ATTEMPT}")
 
   if [ "$http_code" = "200" ]; then
     pending=$(jq -r '.reports.pending // "unknown"' "$resp_file" 2>/dev/null)
@@ -149,22 +161,30 @@ while :; do
   sleep "$poll_interval"
 done
 
-# --- Build the Markdown table for this job's failures. ---
+# The one definition of "this job's failures" and of "known flaky", prepended to
+# the table's, the comment rule's and the gate's jq programs so the three cannot
+# drift apart: the gate decides on what the table rendered because both read
+# `rows`. $job is FR_JOB_ID; an empty $job (a run with no job id) keeps every
+# row.
+#
 # A failure is "known flaky" when FlakeRadar already knows the test: it passed
 # on retry in this run, it is a flaky test, it is broken on the default branch,
 # or it has proven flakes (it passed and failed on one commit SHA). Everything
 # else is a new failure the change may have caused. This mirrors the "Proven
 # flakes" column, so the headline count and the table never disagree.
+JQ_ROWS='def this_job: ($job == "" or .ci_job_id == $job);
+         def rows: [ .failures[] | select(this_job) ];
+         def known_flaky: (.status == "passed") or .tier == "flaky" or .broken == true or .confirmed_flake_count > 0;'
+
+# --- Build the Markdown table for this job's failures. ---
 markdown=$(jq -r \
   --arg job "$FR_JOB_ID" \
   --arg dash "$FR_DASHBOARD_URL" \
-  --arg repo "$FR_REPO" '
+  --arg repo "$FR_REPO" "$JQ_ROWS"'
   def esc: gsub("\\|"; "\\|");
-  .failures
-    | map(select($job == "" or .ci_job_id == $job))
-    | . as $fs
+  rows | . as $fs
     | ( $fs | length ) as $total
-    | ( [ $fs[] | select((.status == "passed") or .tier == "flaky" or .broken == true or .confirmed_flake_count > 0) ] | length ) as $known
+    | ( [ $fs[] | select(known_flaky) ] | length ) as $known
     | if $total == 0 then
         "**FlakeRadar:** no failed tests reported for this CI job."
       else
@@ -212,11 +232,8 @@ ${markdown}"
   list_ok=true                  # a failed list leaves the state unknown
   page=1
   while :; do
-    # 000 means curl itself failed (network / DNS / connection refused).
-    http_code=$(curl -sS -o "$comment_file" -w '%{http_code}' --max-time 20 \
-      "${gh_headers[@]}" \
-      "${api_url}/repos/${comment_repo}/issues/${comment_pr}/comments?per_page=100&page=${page}" \
-      2>/dev/null) || http_code="000"
+    http_code=$(http_request "$comment_file" "${gh_headers[@]}" \
+      "${api_url}/repos/${comment_repo}/issues/${comment_pr}/comments?per_page=100&page=${page}")
     if [ "$http_code" != "200" ]; then
       echo "::warning::FlakeRadar summary: listing the pull request's comments failed (HTTP ${http_code})."
       list_ok=false
@@ -243,30 +260,28 @@ ${markdown}"
     # Our comment is already there: edit it, also when this job now has no
     # failures, so a green re-run clears the stale table in place.
     comment_json=$(jq -cn --arg body "$comment_body" '{body: $body}')
-    http_code=$(curl -sS -o "$comment_file" -w '%{http_code}' --max-time 20 \
-      -X PATCH "${gh_headers[@]}" -H "Content-Type: application/json" \
+    http_code=$(http_request "$comment_file" -X PATCH "${gh_headers[@]}" \
+      -H "Content-Type: application/json" \
       -d "$comment_json" \
-      "${api_url}/repos/${comment_repo}/issues/comments/${comment_id}" \
-      2>/dev/null) || http_code="000"
+      "${api_url}/repos/${comment_repo}/issues/comments/${comment_id}")
     case "$http_code" in
       2*) ;;
       *) echo "::warning::FlakeRadar summary: updating the pull request comment failed (HTTP ${http_code})." ;;
     esac
-  elif [ "$list_ok" = true ] && [ "$(jq -r --arg job "$FR_JOB_ID" '
-      ([ .failures[] | select($job == "" or .ci_job_id == $job) ] | length) > 0
+  elif [ "$list_ok" = true ] && [ "$(jq -r --arg job "$FR_JOB_ID" "$JQ_ROWS"'
+      (rows | length) > 0
     ' "$resp_file" 2>/dev/null)" = "true" ]; then
-    # Nothing of ours exists, and the job has failures (the table's own job
-    # filter): post the first comment. A green job without a comment stays
+    # Nothing of ours exists, and the job has failures (`rows`, the table's own
+    # selection): post the first comment. A green job without a comment stays
     # silent instead of announcing its emptiness. A failed listing above leaves
     # the state unknown — our comment may exist — so nothing is posted: a
     # warning was already printed, and skipping beats duplicating the comment
     # on the next re-run.
     comment_json=$(jq -cn --arg body "$comment_body" '{body: $body}')
-    http_code=$(curl -sS -o "$comment_file" -w '%{http_code}' --max-time 20 \
-      -X POST "${gh_headers[@]}" -H "Content-Type: application/json" \
+    http_code=$(http_request "$comment_file" -X POST "${gh_headers[@]}" \
+      -H "Content-Type: application/json" \
       -d "$comment_json" \
-      "${api_url}/repos/${comment_repo}/issues/${comment_pr}/comments" \
-      2>/dev/null) || http_code="000"
+      "${api_url}/repos/${comment_repo}/issues/${comment_pr}/comments")
     case "$http_code" in
       2*) ;;
       *) echo "::warning::FlakeRadar summary: creating the pull request comment failed (HTTP ${http_code})." ;;
@@ -275,9 +290,10 @@ ${markdown}"
 fi
 
 # --- Gate mode: fail the job for a failure that is not quarantined. ---
-# The same job filter as the table above, so the gate decides on what the reader
-# just saw. A failure whose newest status is "passed" passed on retry and is
-# therefore not a failure of this job. resp_file still holds the polled answer.
+# The gate reads `rows`, the very selection the table rendered and the comment
+# rule tests, so it decides on what the reader just saw. A failure whose newest
+# status is "passed" passed on retry and is therefore not a failure of this job.
+# resp_file still holds the polled answer.
 if [ "$FR_GATE" = "true" ]; then
   # An answer that cannot settle the question falls back too: a list capped at
   # `truncated`, or a Report that failed to process and so lists nothing. A failed
@@ -288,9 +304,8 @@ if [ "$FR_GATE" = "true" ]; then
     gate_fallback 'the failures list is incomplete'
     exit "$gate_exit"
   fi
-  gate_blockers=$(jq -r --arg job "$FR_JOB_ID" '
-    [ .failures[]
-      | select($job == "" or .ci_job_id == $job)
+  gate_blockers=$(jq -r --arg job "$FR_JOB_ID" "$JQ_ROWS"'
+    [ rows[]
       | select(.status != "passed" and .quarantined == false)
       | .name ] | join(", ")' "$resp_file" 2>/dev/null)
   if [ -n "$gate_blockers" ] && [ "$gate_blockers" != "null" ]; then
