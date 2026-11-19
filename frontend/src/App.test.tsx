@@ -1057,32 +1057,77 @@ describe("App", () => {
   /**
    * The Tests list, with the row's quarantine state chosen by the caller. The
    * optional `acknowledgedUntil` sets the row's and the drawer history's
-   * acknowledgement end date, so the drawer shows the matching button.
+   * acknowledgement end date, so the drawer shows the matching button. Like
+   * `stubJobsAck` below, the mutation POSTs move the state every later read —
+   * the drawer's history and the list alike — answers from.
    */
   function stubTests(quarantined: boolean, acknowledgedUntil: string | null = null) {
     const calls: { url: string; body: Record<string, unknown> | null }[] = [];
-    const row: TestCase = {
-      ...page("login").items[0],
+    /** The fields the quarantine and acknowledge endpoints own on a Test row. */
+    type Mutated = Pick<
+      TestCase,
+      | "quarantined"
+      | "quarantined_at"
+      | "quarantine_reason"
+      | "quarantine_expires_at"
+      | "acknowledged_until"
+      | "acknowledge_reason"
+    >;
+    let mutated: Mutated = {
       quarantined,
       quarantined_at: quarantined ? "2026-09-25T00:00:00Z" : null,
+      quarantine_reason: null,
+      quarantine_expires_at: null,
       acknowledged_until: acknowledgedUntil,
+      acknowledge_reason: null,
     };
+    const rowNow = (): TestCase => ({ ...page("login").items[0], ...mutated });
+    // The expiry the api would record for a quarantine of N days.
+    const expiresAt = (days: number) =>
+      new Date(Date.parse("2026-09-25T00:00:00Z") + days * 86_400_000).toISOString();
     vi.stubGlobal(
       "fetch",
       vi.fn((url: string, init?: RequestInit) => {
         const body =
           init?.body == null ? null : (JSON.parse(String(init.body)) as Record<string, unknown>);
         calls.push({ url, body });
-        if (url.includes("/quarantine")) return json({ ...row, ...body });
-        if (url.includes("/acknowledge")) return json({ ...row, ...body });
+        if (url.includes("/quarantine")) {
+          mutated =
+            body?.quarantined === true
+              ? {
+                  ...mutated,
+                  quarantined: true,
+                  quarantined_at: "2026-09-25T00:00:00Z",
+                  quarantine_reason: typeof body.reason === "string" ? body.reason : null,
+                  quarantine_expires_at:
+                    typeof body.expires_in_days === "number"
+                      ? expiresAt(body.expires_in_days)
+                      : null,
+                }
+              : {
+                  ...mutated,
+                  quarantined: false,
+                  quarantined_at: null,
+                  quarantine_reason: null,
+                  quarantine_expires_at: null,
+                };
+          return json(rowNow());
+        }
+        if (url.includes("/acknowledge")) {
+          mutated =
+            body?.acknowledged === true
+              ? {
+                  ...mutated,
+                  acknowledged_until: "2999-01-01T00:00:00Z",
+                  acknowledge_reason: typeof body.reason === "string" ? body.reason : null,
+                }
+              : { ...mutated, acknowledged_until: null, acknowledge_reason: null };
+          return json(rowNow());
+        }
         if (url.includes("/history"))
-          return json(
-            testHistory(5, {
-              test: { ...testHistory(5).test, acknowledged_until: acknowledgedUntil },
-            }),
-          );
+          return json(testHistory(5, { test: { ...testHistory(5).test, ...mutated } }));
         if (url.startsWith("/api/tests"))
-          return json({ items: [row], total: 1, page: 1, page_size: 50 });
+          return json({ items: [rowNow()], total: 1, page: 1, page_size: 50 });
         if (url.startsWith("/api/repos")) return json([]);
         if (url.startsWith("/api/reports/summary")) return json({ pending: 0, failed: 0 });
         return json({
@@ -1102,7 +1147,8 @@ describe("App", () => {
     const posts = () => calls.filter((c) => c.url.includes("/quarantine"));
     const acks = () => calls.filter((c) => c.url.includes("/acknowledge"));
     const lists = () => calls.filter((c) => c.url.startsWith("/api/tests?")).length;
-    return { posts, acks, lists };
+    const histories = () => calls.filter((c) => c.url.startsWith("/api/tests/5/history")).length;
+    return { posts, acks, lists, histories };
   }
 
   // Mutation wiring: each trigger surface opens the right dialog, the direct

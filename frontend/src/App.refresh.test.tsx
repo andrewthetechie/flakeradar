@@ -4,7 +4,7 @@
 // import from each other.
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { TestCase, TestPage } from "./api";
+import type { History, JobHistory, TestCase, TestPage } from "./api";
 import App from "./App";
 
 function page(name: string): TestPage {
@@ -93,6 +93,53 @@ const jobSummaryFixture = {
   new_flaky_7d: 0,
 };
 
+/** A Test drawer's history for the row id, spare but enough for the drawer to paint. */
+function testHistoryFixture(id: number, name: string): History {
+  return {
+    test: row(id, name),
+    location: null,
+    last_failing_sha: null,
+    last_failing_branch: null,
+    jobs: [],
+    executions: [],
+    score_history: [],
+  };
+}
+
+/** A Job drawer's history for the row id, spare but enough for the drawer to paint. */
+function jobHistoryFixture(id: number, name: string): JobHistory {
+  return {
+    job: {
+      id,
+      repo: "x/y",
+      provider: "github",
+      pipeline: ".github/workflows/ci.yml",
+      name,
+      flakiness_score: 0.31,
+      tier: "flaky",
+      confirmed_flake_count: 0,
+      clean_streak: 0,
+      trend: null,
+      last_status: "failed",
+      last_seen_at: "2026-09-25T00:00:00Z",
+      summary: false,
+      acknowledged_until: null,
+      acknowledge_reason: null,
+      github_issue_number: null,
+      github_issue_url: null,
+      github_issue_closed: false,
+      impacted_runs: 0,
+      impacted_branches: 0,
+      time_lost_seconds: 0,
+    },
+    unexplained_failures: 0,
+    explained_failures: 0,
+    executions: [],
+    runners: [],
+    score_history: [],
+  };
+}
+
 // The default /api/summary body, as the other App tests serve it.
 const summary = {
   total_tests: 1,
@@ -147,6 +194,81 @@ describe("App refresh", () => {
       await vi.advanceTimersByTimeAsync(30_000);
     });
     expect(urls.filter((u) => u.startsWith("/api/tests?"))).toHaveLength(2);
+  });
+
+  // The poll's drawer exception (App.tsx): each drawer loader's identity keys on
+  // `refresh`, not on an imperative refresh() call, so the 30 s tick reloads the
+  // list and leaves an open drawer's history alone. Pinned here because the only
+  // thing that keeps it true is a dep array with an eslint-disable above it.
+  it("the 30 s poll refetches the list but never an open Test drawer", async () => {
+    const urls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        urls.push(url);
+        // /api/tests/5/history must be matched before the /api/tests list.
+        if (url.startsWith("/api/tests/5/history")) return json(testHistoryFixture(5, "login"));
+        if (url.startsWith("/api/tests"))
+          return json({ ...page("login"), items: [row(5, "login")] });
+        if (url.startsWith("/api/repos")) return json([]);
+        if (url.startsWith("/api/reports/summary")) return json({ pending: 0, failed: 0 });
+        return json(summary);
+      }),
+    );
+    vi.useFakeTimers();
+    window.history.replaceState(null, "", "/?test=5");
+    render(<App />);
+
+    const lists = () => urls.filter((u) => u.startsWith("/api/tests?")).length;
+    const histories = () => urls.filter((u) => u.startsWith("/api/tests/5/history")).length;
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    // The drawer is open, so both loads have run exactly once.
+    expect(lists()).toBe(1);
+    expect(histories()).toBe(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+    // The poll reaches the list only: the open drawer's history is not refetched.
+    expect(lists()).toBe(2);
+    expect(histories()).toBe(1);
+  });
+
+  it("the 30 s poll refetches the list but never an open Job drawer", async () => {
+    const urls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        urls.push(url);
+        if (url.startsWith("/api/jobs/3/history")) return json(jobHistoryFixture(3, "e2e"));
+        if (url.startsWith("/api/jobs/summary")) return json(jobSummaryFixture);
+        if (url.startsWith("/api/jobs")) return json(jobPageFixture(3, "e2e"));
+        if (url.startsWith("/api/repos")) return json([]);
+        if (url.startsWith("/api/reports/summary")) return json({ pending: 0, failed: 0 });
+        return json(summary);
+      }),
+    );
+    vi.useFakeTimers();
+    window.history.replaceState(null, "", "/?view=jobs&job=3");
+    render(<App />);
+
+    const lists = () => urls.filter((u) => u.startsWith("/api/jobs?")).length;
+    const histories = () => urls.filter((u) => u.startsWith("/api/jobs/3/history")).length;
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(lists()).toBe(1);
+    expect(histories()).toBe(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+    expect(lists()).toBe(2);
+    expect(histories()).toBe(1);
   });
 
   it("shows the API error banner for a 500 and clears it on the next good refresh", async () => {
