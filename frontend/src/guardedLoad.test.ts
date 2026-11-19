@@ -496,6 +496,28 @@ describe("enabled", () => {
     });
     expect(result.current.error).toBeNull();
   });
+
+  it("a hook disabled mid-mutation leaves its row with nothing to reload", async () => {
+    const { load, calls } = guarded<string>([]);
+    const { rerender } = renderHook(
+      ({ on }: { on: boolean }) =>
+        useGuardedLoad(load, { enabled: on, rowReload: { kind: "tests", id: 506 } }),
+      { initialProps: { on: true } },
+    );
+    await flush();
+    expect(calls()).toBe(1);
+
+    // Closing the drawer — the case a confirmed decision can land in — gives the
+    // row key up, so the decision's reload finds no refresher and loads nothing.
+    await act(async () => {
+      rerender({ on: false });
+      await Promise.resolve();
+    });
+    await act(async () => {
+      await reloadRow("tests", 506);
+    });
+    expect(calls()).toBe(1);
+  });
 });
 
 describe("settle callbacks", () => {

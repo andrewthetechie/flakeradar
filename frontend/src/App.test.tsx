@@ -1375,6 +1375,38 @@ describe("App", () => {
     expect(within(drawer).getByText(/acknowledged until/)).toBeInTheDocument();
   });
 
+  it("a drawer closed while its mutation is in flight updates only the list", async () => {
+    const { acks, histories, lists, finishPost } = stubSlowTestAcknowledgePost();
+    render(<App />);
+    expect(await screen.findByText("login")).toBeInTheDocument();
+    const drawer = await openDrawer();
+    const historiesBefore = histories();
+    const listsBefore = lists();
+
+    await userEvent.click(within(drawer).getByRole("button", { name: "Acknowledge" }));
+    const dialog = await screen.findByRole("dialog", { name: /Acknowledge renders/ });
+    await userEvent.type(within(dialog).getByRole("textbox", { name: /Reason/ }), "known flake");
+    await userEvent.click(within(dialog).getByRole("radio", { name: "30 days" }));
+    await userEvent.click(within(dialog).getByRole("button", { name: "Confirm" }));
+
+    // The POST is still in flight when the user closes the drawer, so by the
+    // time the mutation settles nothing displays this row any more.
+    expect(acks()).toBe(1);
+    fireEvent.keyDown(window, { key: "Escape" });
+    await act(async () => {});
+    expect(screen.queryByRole("dialog", { name: "Test detail" })).not.toBeInTheDocument();
+
+    finishPost({ ...page("login").items[0], acknowledged_until: "2999-01-01T00:00:00Z" });
+    await act(async () => {});
+
+    // Only the list refetches. The drawer's history count stays at its initial
+    // load, because a disabled hook registers nothing and its own refresh is a
+    // no-op; reloading a row nobody displays resolves quietly, with no banner.
+    expect(lists()).toBeGreaterThan(listsBefore);
+    expect(histories()).toBe(historiesBefore);
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
   /** The Tests list with its drawer history, and an acknowledge POST that fails. */
   function stubFailingTestAcknowledgePost() {
     vi.stubGlobal(
@@ -1391,6 +1423,40 @@ describe("App", () => {
         return json(testsSummary);
       }),
     );
+  }
+
+  /**
+   * The same Tests view, with an acknowledge POST that stays in flight until the
+   * test hands over its response — so a drawer can close while the mutation is
+   * still running, which is what the closed-drawer test needs to observe.
+   */
+  function stubSlowTestAcknowledgePost() {
+    const urls: string[] = [];
+    let settlePost: (response: Response) => void = () => {};
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        urls.push(url);
+        // /acknowledge must be matched before the /api/tests list.
+        if (url.includes("/acknowledge")) {
+          return new Promise<Response>((resolve) => {
+            settlePost = resolve;
+          });
+        }
+        if (url.startsWith("/api/tests/5/history")) return json(testHistory(5));
+        if (url.startsWith("/api/tests")) return json(page("login"));
+        if (url.startsWith("/api/repos")) return json([]);
+        if (url.startsWith("/api/reports/summary")) return json({ pending: 0, failed: 0 });
+        return json(testsSummary);
+      }),
+    );
+    return {
+      acks: () => urls.filter((u) => u.includes("/acknowledge")).length,
+      histories: () => urls.filter((u) => u.startsWith("/api/tests/5/history")).length,
+      lists: () => urls.filter((u) => u.startsWith("/api/tests?")).length,
+      /** Settles the in-flight POST with the row the api would have returned. */
+      finishPost: (body: unknown) => settlePost(new Response(JSON.stringify(body))),
+    };
   }
 
   it("closes the Test acknowledge dialog and shows the banner when the POST fails", async () => {
