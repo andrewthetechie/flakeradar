@@ -47,6 +47,10 @@ const ATTEMPT: &str = "1";
 /// The job the failures are attributed to and the script filters on, as `FR_JOB_ID`.
 const JOB_ID: &str = "8812";
 
+/// A second job of the same run and attempt, whose failures this job's table and
+/// gate must ignore.
+const OTHER_JOB_ID: &str = "8813";
+
 /// The sleep between polls: the report is processed before the script runs, so the
 /// first answer is final and no case should ever sleep.
 const POLL_INTERVAL: &str = "0";
@@ -76,12 +80,13 @@ async fn serve(db: &TestDb) -> (String, tokio::task::JoinHandle<()>) {
     (format!("http://{address}"), serving)
 }
 
-/// Uploads one JUnit report the way `actions/report/report.sh` does, for [`REPO`],
-/// [`RUN_ID`] and [`JOB_ID`]: the query the script builds, in its order.
-async fn upload(app: &Router, junit: &str) {
+/// Uploads one JUnit report the way `actions/report/report.sh` does, for [`REPO`]
+/// and [`RUN_ID`], attributed to the job id the caller passes: the query the script
+/// builds, in its order.
+async fn upload_as(app: &Router, junit: &str, job_id: &str) {
     let query = format!(
         "repo={REPO}&commit_sha=aaa111&branch=main&project=backend&ci_run_id={RUN_ID}&\
-         ci_run_attempt={ATTEMPT}&ci_job_id={JOB_ID}&pipeline=.github%2Fworkflows%2Fci.yml&\
+         ci_run_attempt={ATTEMPT}&ci_job_id={job_id}&pipeline=.github%2Fworkflows%2Fci.yml&\
          default_branch=main&root=backend&line_base=0"
     );
     let reply = post(
@@ -92,6 +97,11 @@ async fn upload(app: &Router, junit: &str) {
     )
     .await;
     assert_eq!(reply.status, 202, "{}", reply.json());
+}
+
+/// Uploads one JUnit report attributed to [`JOB_ID`], via [`upload_as`].
+async fn upload(app: &Router, junit: &str) {
+    upload_as(app, junit, JOB_ID).await;
 }
 
 /// Drains the queue the way the worker does, because [`router`] starts none.
@@ -234,6 +244,20 @@ fn one_failure_junit() -> &'static str {
 <testsuites>
   <testsuite name="pytest" errors="0" failures="1" skipped="0" tests="1" time="1.412">
     <testcase classname="tests.test_app" name="test_beta" time="0.902">
+      <failure message="AssertionError: boom">AssertionError</failure>
+    </testcase>
+  </testsuite>
+</testsuites>
+"#
+}
+
+/// One report with a single failed Test, named so it appears nowhere else in this
+/// file: the shape [`upload_as`] attributes to [`OTHER_JOB_ID`].
+fn other_job_failure_junit() -> &'static str {
+    r#"<?xml version="1.0" encoding="utf-8"?>
+<testsuites>
+  <testsuite name="pytest" errors="0" failures="1" skipped="0" tests="1" time="1.412">
+    <testcase classname="tests.test_app" name="test_gamma" time="0.902">
       <failure message="AssertionError: boom">AssertionError</failure>
     </testcase>
   </testsuite>
@@ -580,6 +604,75 @@ async fn summary_action_gate_off_writes_the_table_and_never_fails_the_job() {
         assert!(
             written.contains(name),
             "{name} is not in the table: {written}"
+        );
+    }
+    serving.abort();
+}
+
+#[tokio::test]
+async fn summary_action_ignores_another_jobs_failure_in_the_table_and_the_gate() {
+    // The table, the comment rule and the gate each apply the same job filter; the
+    // comment at `summary.sh:278-279` says they agree, and this case is what makes
+    // that structural: a second job's failure in the same run and attempt must
+    // appear in neither this job's table nor this job's gate decision.
+    let db = TestDb::new().await.expect("a test database");
+    let app = router(&db);
+    let (base_url, serving) = serve(&db).await;
+    upload(&app, one_failure_junit()).await;
+    upload_as(&app, other_job_failure_junit(), OTHER_JOB_ID).await;
+    process_all(&db).await;
+    let file = summary_file("second_job");
+
+    let (code, output) = run_summary(&base_url, "true", "failure", "5", &file, &[]).await;
+
+    assert_eq!(
+        code, 1,
+        "this job's own failure still fails the gate: {output}"
+    );
+    assert!(
+        output.contains("::error::") && output.contains("test_beta"),
+        "the gate names this job's Test: {output}"
+    );
+    assert!(
+        !output.contains("test_gamma"),
+        "the other job's Test is not named: {output}"
+    );
+    let written = std::fs::read_to_string(&file)
+        .unwrap_or_else(|error| panic!("reading {file}: {error}\n{output}"));
+    // One row, not two: the other job's failure never reaches the table.
+    assert!(
+        written.contains("0 of 1 failures are known flaky tests"),
+        "the headline counts only this job's failure: {written}"
+    );
+    assert!(
+        written.contains("test_beta"),
+        "this job's Test is in the table: {written}"
+    );
+    assert!(
+        !written.contains("test_gamma"),
+        "the other job's Test is not in the table: {written}"
+    );
+
+    // The other discriminating branch: with no job filter, both jobs' failures are
+    // this job's business, so the empty `$job == ""` side of the predicate shows
+    // them all.
+    let file_all = summary_file("second_job_empty_filter");
+    let (code_all, output_all) = run_summary(
+        &base_url,
+        "false",
+        "failure",
+        "5",
+        &file_all,
+        &[("FR_JOB_ID", "")],
+    )
+    .await;
+    assert_eq!(code_all, 0, "the gate is off here: {output_all}");
+    let written_all = std::fs::read_to_string(&file_all)
+        .unwrap_or_else(|error| panic!("reading {file_all}: {error}\n{output_all}"));
+    for name in ["test_beta", "test_gamma"] {
+        assert!(
+            written_all.contains(name),
+            "{name} is in the unfiltered table: {written_all}"
         );
     }
     serving.abort();
