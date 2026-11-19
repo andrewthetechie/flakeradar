@@ -611,10 +611,10 @@ async fn summary_action_gate_off_writes_the_table_and_never_fails_the_job() {
 
 #[tokio::test]
 async fn summary_action_ignores_another_jobs_failure_in_the_table_and_the_gate() {
-    // The table, the comment rule and the gate each apply the same job filter; the
-    // comment at `summary.sh:278-279` says they agree, and this case is what makes
-    // that structural: a second job's failure in the same run and attempt must
-    // appear in neither this job's table nor this job's gate decision.
+    // The table, the comment rule and the gate all select through the one `rows`
+    // definition of `summary.sh`, so a second job's failure in the same run and
+    // attempt must appear in neither this job's table nor this job's gate decision.
+    // This case is what pins that agreement.
     let db = TestDb::new().await.expect("a test database");
     let app = router(&db);
     let (base_url, serving) = serve(&db).await;
