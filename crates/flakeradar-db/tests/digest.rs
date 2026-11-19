@@ -216,6 +216,30 @@ async fn weekly_digest_answers_repos_in_name_order() {
 }
 
 #[tokio::test]
+async fn weekly_digest_lists_a_repo_whose_only_news_is_a_recovery() {
+    let db = TestDb::new().await.expect("a test database");
+    let project = make_project().repo("acme/app").create(&db).await;
+    let fixed = make_test_case(&project)
+        .name("test_fixed")
+        .create(&db)
+        .await;
+    make_test_score(&fixed, day(2026, 11, 2), 0.5)
+        .create(&db)
+        .await;
+
+    let digest = digest_of(&db, "acme/app").await;
+    assert!(
+        digest.newly_flaky.is_empty(),
+        "a Test that is not flaky now is not new news"
+    );
+    assert_eq!(
+        names(&digest.recovered),
+        ["test_fixed"],
+        "a recovery is news on its own, so the Repo is reported for it alone"
+    );
+}
+
+#[tokio::test]
 async fn top_impact_leaves_out_a_test_that_cost_nothing() {
     let db = TestDb::new().await.expect("a test database");
     let project = make_project().repo("acme/app").create(&db).await;

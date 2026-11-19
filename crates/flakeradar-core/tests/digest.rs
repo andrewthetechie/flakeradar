@@ -164,6 +164,35 @@ fn one_run_loses_its_plural_in_the_impact_line() {
 }
 
 #[test]
+fn a_list_item_missing_its_evidence_is_still_named() {
+    // A digest built without the evidence a list usually carries — here a
+    // `top_impact` Test with no time lost and a `quarantine_expiring` Test with no
+    // day — still names the Test, because the name is what a reader acts on.
+    let digest = RepoDigest {
+        repo: "acme/app".to_owned(),
+        newly_flaky: Vec::new(),
+        recovered: Vec::new(),
+        top_impact: vec![digest_test("test_login", 0.42, Some(2), None)],
+        quarantine_expiring: vec![digest_test("test_q1", 0.61, None, None)],
+    };
+    assert_eq!(
+        render_digest(
+            slice::from_ref(&digest),
+            WebhookFormat::Slack,
+            week_ending()
+        )["text"],
+        "FlakeRadar weekly digest — acme/app, week ending 2026-11-09\nTop impact: test_login\nQuarantine expiring: test_q1"
+    );
+    let event = first_event(slice::from_ref(&digest));
+    assert_eq!(event["top_impact"][0]["name"], "test_login");
+    assert!(
+        event["top_impact"][0].get("time_lost_seconds").is_none(),
+        "an absent field stays out of the JSON"
+    );
+    assert_eq!(event["quarantine_expiring"][0]["name"], "test_q1");
+}
+
+#[test]
 fn each_repo_is_a_block_and_an_empty_list_emits_no_line() {
     let quiet = RepoDigest {
         repo: "acme/other".to_owned(),
