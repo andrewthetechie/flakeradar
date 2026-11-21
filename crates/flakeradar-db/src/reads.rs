@@ -19,15 +19,14 @@ use flakeradar_core::{
     classify::FailureCategory, defaults, dto::CiRunFailedJobOut, dto::CiRunFailuresOut,
     dto::CiRunTestFailureOut, dto::ExecutionOut, dto::ExplainingTestOut, dto::HistoryOut,
     dto::JobExecutionOut, dto::JobHistoryOut, dto::JobOut, dto::JobPage, dto::JobSummaryOut,
-    dto::LocationOut, dto::QuarantineItem, dto::RepoOut, dto::ReportCountsOut, dto::RunnerStatOut,
-    dto::ScorePointOut, dto::SummaryOut, dto::TestJobLinkOut, dto::TestOut, dto::TestPage,
-    helpers::LocationRef, helpers::escape_like, helpers::is_broken, helpers::issue_url,
-    helpers::job_issue_url, helpers::permalink, helpers::repo_path, helpers::tier_for,
-    helpers::trend_for, model::EntityKind, model::ExecutionStatus, model::FailedJobOutcome,
-    model::JobOutcome, model::JobStatus, model::ReportStatus, model::Trend, types::CiRunAttempt,
-    types::CiRunId,
+    dto::LocationOut, dto::RepoOut, dto::ReportCountsOut, dto::RunnerStatOut, dto::ScorePointOut,
+    dto::SummaryOut, dto::TestJobLinkOut, dto::TestOut, dto::TestPage, helpers::LocationRef,
+    helpers::escape_like, helpers::is_broken, helpers::issue_url, helpers::job_issue_url,
+    helpers::permalink, helpers::repo_path, helpers::tier_for, helpers::trend_for,
+    model::EntityKind, model::ExecutionStatus, model::FailedJobOutcome, model::JobOutcome,
+    model::JobStatus, model::ReportStatus, model::Trend, types::CiRunAttempt, types::CiRunId,
 };
-use sea_orm::{ConnectionTrait, DbBackend, QueryResult, Statement, Value};
+use sea_orm::{ConnectionTrait, QueryResult, Value};
 use serde_json::Value as JsonValue;
 
 use crate::attribution::{
@@ -1310,119 +1309,6 @@ pub async fn test_job_links(
         });
     }
     Ok(links)
-}
-
-/// A human's quarantine decision for one Test.
-///
-/// The body states a flag beside two values that only mean something when it is
-/// set, so the decision is one value: what the person decided, and what they said
-/// and for how long when they quarantined.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum QuarantineDecision {
-    /// Quarantine the Test, with the reason and the expiry the person gave.
-    Quarantine {
-        /// Why the person quarantined it.
-        reason: Option<String>,
-        /// How many days the quarantine lasts, when they set an expiry.
-        expires_in_days: Option<i64>,
-    },
-    /// Release the Test: clear the flag, the reason and the expiry.
-    Release,
-}
-
-/// Stores a human's quarantine decision for one Test.
-///
-/// Every write stores the decision's values, so re-quarantining without a reason
-/// or an expiry clears the old ones instead of keeping a stale decision.
-///
-/// # Errors
-///
-/// Returns [`DbError::Database`] when a statement fails.
-pub async fn set_quarantine(
-    db: &impl ConnectionTrait,
-    test_id: i64,
-    decision: QuarantineDecision,
-    settings: &ReadSettings,
-) -> Result<Option<TestOut>, DbError> {
-    let impact = impact_lateral_sql(EntityKind::Test, impact_since(settings));
-    let sql = format!("{TESTS_SELECT}{IMPACT_COLUMNS} {TESTS_FROM}{impact} WHERE t.id = $1");
-    let Some(row) = one(db, sql, vec![Value::from(test_id)]).await? else {
-        return Ok(None);
-    };
-    let stored_id: i32 = get(&row, "id")?;
-    let now = settings.clock.now();
-    let (quarantined, quarantined_at, reason, expires_at) = match decision {
-        QuarantineDecision::Quarantine {
-            reason,
-            expires_in_days,
-        } => (
-            true,
-            Some(now),
-            reason,
-            expires_in_days.map(|days| now + Duration::days(days)),
-        ),
-        QuarantineDecision::Release => (false, None, None, None),
-    };
-    let statement = Statement::from_sql_and_values(
-        DbBackend::Postgres,
-        "UPDATE test_cases SET quarantined = $2, quarantined_at = $3, \
-            quarantine_reason = $4, quarantine_expires_at = $5 WHERE id = $1",
-        [
-            Value::from(stored_id),
-            Value::from(quarantined),
-            Value::from(quarantined_at),
-            Value::from(reason.clone()),
-            Value::from(expires_at),
-        ],
-    );
-    db.execute_raw(statement).await?;
-    let mut test = test_out(&row, settings, None)?;
-    test.quarantined = quarantined;
-    test.quarantined_at = quarantined_at.map(|at| at.with_timezone(&Utc));
-    test.quarantine_reason = reason;
-    test.quarantine_expires_at = expires_at.map(|at| at.with_timezone(&Utc));
-    Ok(Some(test))
-}
-
-/// For test runners: the quarantined Tests to skip in one Repo and Project.
-///
-/// # Errors
-///
-/// Returns [`DbError::Database`] when the statement fails.
-pub async fn quarantine_list(
-    db: &impl ConnectionTrait,
-    repo: &str,
-    project: &str,
-) -> Result<Vec<QuarantineItem>, DbError> {
-    let sql = "SELECT t.* FROM test_cases t \
-           JOIN projects p ON p.id = t.project_id \
-           JOIN repos r ON r.id = p.repo_id \
-          WHERE r.name = $1 AND p.name = $2 AND t.quarantined \
-          ORDER BY t.name, t.id";
-    let mut items = Vec::new();
-    for row in rows(
-        db,
-        sql,
-        vec![
-            Value::from(repo.to_owned()),
-            Value::from(project.to_owned()),
-        ],
-    )
-    .await?
-    {
-        items.push(QuarantineItem {
-            suite: get(&row, "suite")?,
-            classname: get(&row, "classname")?,
-            name: get(&row, "name")?,
-            fingerprint: fingerprint(&get::<String>(&row, "fingerprint")?, "fingerprint")?,
-            file: get(&row, "file")?,
-            line: get::<Option<i32>>(&row, "line")?.map(id),
-            quarantined_at: optional_timestamp(&row, "quarantined_at")?,
-            reason: get(&row, "quarantine_reason")?,
-            expires_at: optional_timestamp(&row, "quarantine_expires_at")?,
-        });
-    }
-    Ok(items)
 }
 
 /// The newest failing Execution of one Test, in the Execution shape.
