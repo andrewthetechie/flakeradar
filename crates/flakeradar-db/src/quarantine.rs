@@ -4,8 +4,9 @@
 //! quarantine_expires_at)` state for `test_cases`. The REST route turns a
 //! [`QuarantineIn`] body into the [`QuarantineDecision`] it describes — the one
 //! conversion in the workspace — and writes it through [`set_quarantine`];
-//! [`quarantine_list`] serves the skip list the runners poll, and the retention
-//! loop's lapse rule will live here too. A quarantined Test keeps listing in
+//! [`quarantine_list`] serves the skip list the runners poll, and
+//! [`clear_expired_quarantines`] states the lapse rule the retention loop's prune
+//! consumes. A quarantined Test keeps listing in
 //! the leaderboard, and the runner skip list serves it until the expiry clears
 //! or a new request releases it.
 
@@ -16,6 +17,7 @@ use flakeradar_core::{
     dto::{QuarantineIn, QuarantineItem, TestOut},
     model::EntityKind,
 };
+use sea_orm::entity::prelude::DateTimeWithTimeZone;
 use sea_orm::{ConnectionTrait, DbBackend, Statement, Value};
 
 use crate::error::DbError;
@@ -152,4 +154,34 @@ pub async fn quarantine_list(
         });
     }
     Ok(items)
+}
+
+/// Clears every quarantine whose human-set expiry has passed, all in this round.
+///
+/// This is the one place the four-column lapse rule is stated: a Test that
+/// expires loses the same four values a [`QuarantineDecision::Release`] stores.
+/// One `UPDATE ... RETURNING` clears the whole set, so the number of statements
+/// no longer grows with the number of expired Tests. The caller logs each
+/// cleared Test it returns, which is where the operator-facing line stays.
+///
+/// # Errors
+///
+/// Returns [`DbError::Database`] when the statement fails.
+pub async fn clear_expired_quarantines(
+    db: &impl ConnectionTrait,
+    now: DateTimeWithTimeZone,
+) -> Result<Vec<(i32, String)>, DbError> {
+    let cleared = rows(
+        db,
+        "UPDATE test_cases SET quarantined = FALSE, quarantined_at = NULL, \
+            quarantine_reason = NULL, quarantine_expires_at = NULL \
+          WHERE quarantined AND quarantine_expires_at <= $1 \
+          RETURNING id, name",
+        vec![Value::from(now)],
+    )
+    .await?;
+    cleared
+        .iter()
+        .map(|row| Ok((get::<i32>(row, "id")?, get::<String>(row, "name")?)))
+        .collect()
 }
