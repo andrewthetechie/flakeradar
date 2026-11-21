@@ -34,6 +34,7 @@ pub mod issue_links;
 mod metrics;
 mod migration;
 pub mod processing;
+pub mod quarantine;
 pub mod reads;
 mod report_intake;
 pub mod retention;

@@ -207,7 +207,16 @@ pub async fn prune(
 
     let notifications_dropped =
         drop_silent_tier_changes(db, &stale_tests, &stale_jobs, processing).await?;
-    let expired_quarantines = clear_expired_quarantines(db, now).await?;
+    let cleared_quarantines = crate::quarantine::clear_expired_quarantines(db, now).await?;
+    for (test_id, name) in &cleared_quarantines {
+        info!(
+            name: "retention.quarantine_expired",
+            test_id,
+            name = %name,
+            "Quarantine expired; cleared"
+        );
+    }
+    let expired_quarantines = u64::try_from(cleared_quarantines.len()).unwrap_or(u64::MAX);
     let expired_acknowledgements = clear_expired_acknowledgements(db, now).await?;
 
     Ok(PruneResult {
@@ -449,35 +458,6 @@ async fn drop_silent_tier_changes(
         );
     }
     Ok(u64::try_from(dropped).unwrap_or(u64::MAX))
-}
-
-/// Clears every quarantine whose human-set expiry has passed, all in this round.
-///
-/// One `UPDATE ... RETURNING` clears the whole set, so the number of statements
-/// no longer grows with the number of expired Tests. Each cleared Test still
-/// gets the line an operator reads.
-async fn clear_expired_quarantines(
-    db: &impl ConnectionTrait,
-    now: DateTimeWithTimeZone,
-) -> Result<u64, DbError> {
-    let cleared = rows(
-        db,
-        "UPDATE test_cases SET quarantined = FALSE, quarantined_at = NULL, \
-            quarantine_reason = NULL, quarantine_expires_at = NULL \
-          WHERE quarantined AND quarantine_expires_at <= $1 \
-          RETURNING id, name",
-        vec![Value::from(now)],
-    )
-    .await?;
-    for row in &cleared {
-        info!(
-            name: "retention.quarantine_expired",
-            test_id = get::<i32>(row, "id")?,
-            name = %get::<String>(row, "name")?,
-            "Quarantine expired; cleared"
-        );
-    }
-    Ok(u64::try_from(cleared.len()).unwrap_or(u64::MAX))
 }
 
 /// Clears every acknowledgement whose human-set end has passed, in this round.
