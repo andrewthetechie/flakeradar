@@ -208,6 +208,16 @@ fn postgres_url(url: &str) -> Result<String, DbError> {
     Err(DbError::NotPostgres)
 }
 
+/// Whether `url` is one of the PostgreSQL spellings FlakeRadar accepts.
+///
+/// This is the rule `postgres_url` applies before opening a pool, stated as a
+/// judgement rather than a rewrite, so a caller that only has to refuse — the
+/// start-up settings check — asks instead of restating the list.
+#[must_use]
+pub fn is_postgres_url(url: &str) -> bool {
+    postgres_url(url).is_ok()
+}
+
 #[cfg(test)]
 mod tests {
     //! URL and setting parsing need no database, so they are checked here.
@@ -215,7 +225,8 @@ mod tests {
     use sea_orm::ConnectOptions;
 
     use super::{
-        ACQUIRE_TIMEOUT, DbError, DbSettings, apply_shared, postgres_url, redact, shared_options,
+        ACQUIRE_TIMEOUT, DbError, DbSettings, apply_shared, is_postgres_url, postgres_url, redact,
+        shared_options,
     };
 
     #[test]
@@ -255,6 +266,9 @@ mod tests {
             postgres_url("postgresql+asyncpg://u:p@h:5432/d").ok(),
             Some("postgresql://u:p@h:5432/d".to_owned())
         );
+        assert!(is_postgres_url("postgresql://u:p@h:5432/d"));
+        assert!(is_postgres_url("postgres://u:p@h:5432/d"));
+        assert!(is_postgres_url("postgresql+asyncpg://u:p@h:5432/d"));
     }
 
     #[test]
@@ -264,6 +278,8 @@ mod tests {
             Err(DbError::NotPostgres)
         ));
         assert!(matches!(postgres_url(""), Err(DbError::NotPostgres)));
+        assert!(!is_postgres_url("sqlite:///./x.db"));
+        assert!(!is_postgres_url(""));
     }
 
     #[test]
