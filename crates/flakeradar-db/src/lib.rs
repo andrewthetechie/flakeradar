@@ -64,7 +64,7 @@ pub use attribution::{
 #[doc(inline)]
 pub use batching::{CHUNK, chunks, owned_chunks};
 #[doc(inline)]
-pub use connect::{DbSettings, connect, connect_session};
+pub use connect::{DbSettings, connect, connect_session, is_postgres_url};
 #[doc(inline)]
 pub use deletes::{
     DeleteError, DeletedProject, DeletedRepo, ProjectDelete, delete_project, delete_repo,
