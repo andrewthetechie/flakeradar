@@ -91,6 +91,10 @@ function positiveInt(raw: string | null): number | null {
  *  in the query string. Spelled exactly as the hand-written `params.set` calls
  *  `api.ts` had before this table, bytes included. */
 export interface WireParam<Q> {
+  /** Fetch-argument name this filter enters the endpoint's query object under,
+   *  when it differs from the ViewState field name (`cause` is read as
+   *  `category`, `newDays` as `newWithinDays`). Absent means the field name. */
+  key?: keyof Q;
   /** Wire parameter name, which differs from the URL param for some filters
    *  (`stable` goes out as `include_stable`, `cause` as `category`). */
   param: string;
@@ -251,7 +255,9 @@ export const LIST_FILTERS: ListFilterDescriptor[] = [
     relists: true,
     views: ["tests"],
     ...enumFilter("cause", FAILURE_CATEGORIES),
-    wire: { tests: { param: "category", order: 2, value: (q) => q.category } },
+    wire: {
+      tests: { key: "category", param: "category", order: 2, value: (q) => q.category },
+    },
   }),
   // Tests-only on the wire, like cause; the URL params still survive a view switch.
   listFilter({
@@ -335,11 +341,13 @@ export const LIST_FILTERS: ListFilterDescriptor[] = [
     },
     wire: {
       tests: {
+        key: "newWithinDays",
         param: "new_within_days",
         order: 6,
         value: (q) => (q.newWithinDays == null ? null : String(q.newWithinDays)),
       },
       jobs: {
+        key: "newWithinDays",
         param: "new_within_days",
         order: 5,
         value: (q) => (q.newWithinDays == null ? null : String(q.newWithinDays)),
