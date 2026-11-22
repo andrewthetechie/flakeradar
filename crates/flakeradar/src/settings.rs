@@ -771,15 +771,13 @@ impl Settings {
     ///
     /// # Errors
     ///
-    /// Returns [`SettingsError::NotPostgres`] for any other scheme. The three
-    /// PostgreSQL spellings are all accepted, because
-    /// [`flakeradar_db::connect`] rewrites them. The URL is not repeated in the
-    /// error: it holds the database password.
+    /// Returns [`SettingsError::NotPostgres`] when
+    /// [`flakeradar_db::is_postgres_url`] refuses the URL, so the accepted
+    /// PostgreSQL spellings are stated once, in the module that opens the pool.
+    /// The URL is not repeated in the error: it holds the database password.
     fn check_database_url(&self) -> Result<(), SettingsError> {
-        for prefix in ["postgresql://", "postgres://", "postgresql+asyncpg://"] {
-            if self.database_url.expose().starts_with(prefix) {
-                return Ok(());
-            }
+        if flakeradar_db::is_postgres_url(self.database_url.expose()) {
+            return Ok(());
         }
         Err(SettingsError::NotPostgres)
     }
