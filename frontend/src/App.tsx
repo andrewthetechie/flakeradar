@@ -56,6 +56,10 @@ export default function App() {
   // value does, which is what the load's dependencies key on.
   const filters = listFilterSlice(view);
   const { view: kind, page: pageNumber } = view;
+  // Bound to a local so the `repo` check below narrows inside the closures it
+  // guards: TypeScript discards a narrowed property read (`filters.repo`) in a
+  // callback, and re-checking it there would add a branch no test can reach.
+  const repo = filters.repo;
 
   // The list's whole load, guard and all: only the newest request may write
   // state, so a slow response for the old scope cannot overwrite the view the
@@ -243,18 +247,11 @@ export default function App() {
           <ViewToggle view={kind} onChange={(v) => setView({ view: v })} />
           <ScopePicker
             repos={repos}
-            scope={{ repo: filters.repo, project: filters.project }}
+            scope={{ repo, project: filters.project }}
             showProject={kind === "tests"}
             onChange={(scope) => setView(scope)}
           />
-          {filters.repo && (
-            <CiRunForm
-              repo={filters.repo}
-              onOpen={(ciRun) => {
-                if (filters.repo) openCiRun(filters.repo, ciRun, null);
-              }}
-            />
-          )}
+          {repo && <CiRunForm repo={repo} onOpen={(ciRun) => openCiRun(repo, ciRun, null)} />}
           <ThemeToggle />
         </div>
       </header>
@@ -272,9 +269,9 @@ export default function App() {
       {kind === "jobs" && jobSummary && <JobStatTiles summary={jobSummary} />}
 
       {kind === "ci-run" ? (
-        filters.repo && view.ci_run ? (
+        repo && view.ci_run ? (
           <CiRunView
-            repo={filters.repo}
+            repo={repo}
             ciRun={view.ci_run}
             attempt={view.attempt}
             onAttempt={(a) => setView({ attempt: a })}
@@ -328,7 +325,7 @@ export default function App() {
             {kind === "jobs" ? (
               <JobLeaderboard
                 jobs={jobPage?.items ?? []}
-                repo={filters.repo}
+                repo={repo}
                 showStable={filters.showStable}
                 search={filters.q}
                 selectedId={view.job}
@@ -337,7 +334,7 @@ export default function App() {
             ) : (
               <Leaderboard
                 tests={page?.items ?? []}
-                scope={{ repo: filters.repo, project: filters.project }}
+                scope={{ repo, project: filters.project }}
                 showStable={filters.showStable}
                 search={filters.q}
                 selectedId={view.test}
