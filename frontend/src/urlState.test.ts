@@ -4,6 +4,7 @@ import {
   DEFAULT_VIEW,
   LIST_FILTERS,
   applyPatch,
+  listFilterSlice,
   parseViewState,
   serializeViewState,
   useViewState,
@@ -554,6 +555,50 @@ describe("LIST_FILTERS", () => {
     } finally {
       LIST_FILTERS.pop();
     }
+  });
+});
+
+/**
+ * The load-facing projection of the table. The rule that matters is identity:
+ * a loader keyed on the slice must keep its key when the view changes only in a
+ * non-filter field (App.refresh.test.tsx pins that behaviour end to end), so a
+ * drawer opening, a page change, or a CI-run navigation answers the same slice.
+ */
+describe("listFilterSlice", () => {
+  const base: ViewState = { ...DEFAULT_VIEW, repo: "a/b", acknowledged: true };
+
+  it("answers the same slice when only the Test drawer differs", () => {
+    // test: 7 versus null — the issue's case. Reference *and* value equality.
+    const opened = listFilterSlice({ ...base, test: 7 });
+    const closed = listFilterSlice(base);
+    expect(opened).toBe(closed);
+    expect(opened).toEqual(closed);
+  });
+
+  it("a changed filter yields a different slice", () => {
+    const plain = listFilterSlice(base);
+    const quarantined = listFilterSlice({ ...base, quarantined: true });
+    expect(quarantined).not.toBe(plain);
+    expect(quarantined.quarantined).toBe(true);
+  });
+
+  it("keeps the slice across a page, CI-run, or drawer-only change", () => {
+    const plain = listFilterSlice(base);
+    expect(listFilterSlice({ ...base, page: 3 })).toBe(plain);
+    expect(listFilterSlice({ ...base, ci_run: "12345678", attempt: 2 })).toBe(plain);
+    expect(listFilterSlice({ ...base, attempt: 2 })).toBe(plain);
+    expect(listFilterSlice({ ...base, job: 4 })).toBe(plain);
+    expect(listFilterSlice({ ...base, test: 9 })).toBe(plain);
+  });
+
+  it("carries view plus exactly the fields the table owns", () => {
+    const slice = listFilterSlice(base);
+    // Derived from LIST_FILTERS at runtime: nothing here lists the fields, so a
+    // table entry shows up in the slice with no further edit.
+    expect(Object.keys(slice).sort()).toEqual(["view", ...LIST_FILTERS.map((d) => d.field)].sort());
+    expect(slice.view).toBe("tests");
+    expect(slice.repo).toBe("a/b");
+    expect(slice.acknowledged).toBe(true);
   });
 });
 

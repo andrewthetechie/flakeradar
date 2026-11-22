@@ -348,6 +348,52 @@ export const LIST_FILTERS: ListFilterDescriptor[] = [
   }),
 ];
 
+/** The ViewState fields the table owns: everything except the six fields
+ *  `parseViewState` writes by hand after its loop, which are not filters. */
+export type ListFilterField = Exclude<
+  keyof ViewState,
+  "test" | "job" | "page" | "view" | "ci_run" | "attempt"
+>;
+
+/** The filter slice a leaderboard load consumes: the table's fields, plus
+ *  `view`, which picks the endpoint. Derived from the table at the type level,
+ *  so a filter added to `LIST_FILTERS` lands here with no further edit. */
+export type ListFilters = { view: ViewKind } & Pick<ViewState, ListFilterField>;
+
+/** Single-entry memo for `listFilterSlice`. One entry suffices: every call in a
+ *  render projects the same current view. */
+let sliceCache: { source: ViewState; slice: ListFilters } | null = null;
+
+/** Project the slice `LIST_FILTERS` owns plus `view` out of a ViewState — the
+ *  one place that names the filter fields for a load, so the loader's inputs
+ *  are the table rather than a hand-written list.
+ *
+ *  Referentially stable by design: the dashboard keys its loaders on the slice,
+ *  and the fields it excludes (the drawer ids, page, CI-run fields) change the
+ *  ViewState on every `setView` without changing what is listed. A call whose
+ *  filter values equal the cached ones therefore answers the same slice, so
+ *  opening a drawer cannot refetch the list.
+ *
+ *  The memo compares against the current table, so a slice cached before an
+ *  entry was pushed onto `LIST_FILTERS` can lack that entry; only the live app
+ *  and these tests call this function. */
+export function listFilterSlice(view: ViewState): ListFilters {
+  const prev = sliceCache;
+  if (
+    prev &&
+    prev.source.view === view.view &&
+    LIST_FILTERS.every((d) => prev.source[d.field] === view[d.field])
+  ) {
+    return prev.slice;
+  }
+  // The widened-record idiom of parseViewState: TypeScript cannot narrow a
+  // union-keyed index write to the matching value type.
+  const slice: Record<string, unknown> = { view: view.view };
+  for (const d of LIST_FILTERS) slice[d.field] = view[d.field];
+  sliceCache = { source: view, slice: slice as unknown as ListFilters };
+  return sliceCache.slice;
+}
+
 export function parseViewState(search: string): ViewState {
   const p = new URLSearchParams(search);
   const out: ViewState = { ...DEFAULT_VIEW };
