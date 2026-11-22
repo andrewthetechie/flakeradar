@@ -586,6 +586,10 @@ mod tests {
 
     use flakeradar_core::dto::lax_bool;
 
+    use axum::http::StatusCode;
+
+    use crate::error::{ApiResult, Detail};
+
     use super::{
         INTEGER_TYPES, attach_query_input, body_loc, is_integer_failure, is_json_content_type,
         json_error_position, kind_for, missing_field, off_thread, path_issue,
@@ -600,6 +604,23 @@ mod tests {
             .await
             .expect("the work finishes");
         assert_ne!(here, there, "the work ran on the thread that awaited it");
+    }
+
+    #[tokio::test]
+    async fn a_blocking_worker_that_panics_answers_a_server_error() {
+        let error = off_thread("The test's work", || -> ApiResult<()> {
+            panic!("the worker panics");
+        })
+        .await
+        .expect_err("a panic is reported as an error");
+        assert_eq!(error.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        match error.detail() {
+            Detail::Text(text) => assert!(
+                text.contains("The test's work did not finish"),
+                "the message names the work: {text}"
+            ),
+            Detail::Issues(issues) => panic!("a panic is one message, not {issues:?}"),
+        }
     }
 
     #[test]
