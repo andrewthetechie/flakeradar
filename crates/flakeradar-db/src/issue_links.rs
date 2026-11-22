@@ -10,8 +10,8 @@
 //!
 //! The rules live in the engines, once for both targets; only an intended
 //! per-target difference is `github_provider_only` (a Job may link an issue only
-//! on a GitHub Pipeline). The two targets select genuinely different row shapes,
-//! which is the one place the engines switch on the target.
+//! on a GitHub Pipeline). Both read the row through `reads`' locked entity read,
+//! and switch on the target only to answer its own response shape.
 
 // Rust guideline compliant 2026-07-21
 
@@ -26,10 +26,7 @@ use sea_orm::{ConnectionTrait, DbBackend, Statement, TransactionSession, Transac
 use serde::Serialize;
 
 use crate::error::DbError;
-use crate::reads::{
-    IMPACT_COLUMNS, JOBS_FROM, JOBS_SELECT, ReadSettings, TESTS_FROM, TESTS_SELECT,
-    impact_lateral_sql, impact_since, job_out, optional_timestamp, test_out,
-};
+use crate::reads::{EntityOut, ReadSettings, entity_out, locked_entity_row, optional_timestamp};
 use crate::sql::{get, one, placeholder_list, rows};
 
 /// The table that holds `kind`'s link columns.
@@ -177,9 +174,9 @@ fn out_for(
     row: &sea_orm::QueryResult,
     settings: &ReadSettings,
 ) -> Result<LinkedOut, DbError> {
-    match target {
-        EntityKind::Test => Ok(LinkedOut::Test(test_out(row, settings, None)?)),
-        EntityKind::Job => Ok(LinkedOut::Job(job_out(row, None)?)),
+    match entity_out(row, target, settings)? {
+        EntityOut::Test(test) => Ok(LinkedOut::Test(test)),
+        EntityOut::Job(job) => Ok(LinkedOut::Job(job)),
     }
 }
 
@@ -256,12 +253,7 @@ pub async fn link_issue(
     settings: &ReadSettings,
 ) -> Result<LinkedOut, LinkError> {
     let transaction = db.begin().await?;
-    let row = one(
-        &transaction,
-        locked_select_sql(target, impact_since(settings)),
-        vec![Value::from(target_id)],
-    )
-    .await?;
+    let row = locked_entity_row(&transaction, target, target_id, settings).await?;
     let Some(row) = row else {
         transaction.rollback().await?;
         return Err(IssueLinkError::NotFound(format!("{} not found", target.name())).into());
@@ -322,12 +314,7 @@ pub async fn unlink_issue(
     settings: &ReadSettings,
 ) -> Result<LinkedOut, LinkError> {
     let transaction = db.begin().await?;
-    let row = one(
-        &transaction,
-        locked_select_sql(target, impact_since(settings)),
-        vec![Value::from(target_id)],
-    )
-    .await?;
+    let row = locked_entity_row(&transaction, target, target_id, settings).await?;
     let Some(row) = row else {
         transaction.rollback().await?;
         return Err(IssueLinkError::NotFound(format!("{} not found", target.name())).into());
@@ -366,30 +353,6 @@ fn stored_number(number: i64) -> i32 {
     // The range rule above narrowed this to 1..=MAX_ISSUE_NUMBER, and
     // MAX_ISSUE_NUMBER is i32::MAX.
     i32::try_from(number).unwrap_or(i32::MAX)
-}
-
-/// The locked select of one target, as SQL.
-///
-/// It carries the impact columns because the row feeds the leaderboard's own
-/// mapper: without the lateral the answer names unknown columns. Locking stays
-/// legal because the lateral is on the target's non-null side.
-fn locked_select_sql(target: EntityKind, since: DateTime<Utc>) -> String {
-    match target {
-        EntityKind::Test => format!(
-            "{TESTS_SELECT}{IMPACT_COLUMNS}, t.github_issue_checked_at AS checked_at, \
-             t.github_issue_closed AS closed, \
-             t.github_issue_fixed_noted_at AS fixed_noted_at \
-             {TESTS_FROM}{} WHERE t.id = $1 FOR UPDATE OF t",
-            impact_lateral_sql(EntityKind::Test, since)
-        ),
-        EntityKind::Job => format!(
-            "{JOBS_SELECT}{IMPACT_COLUMNS}, j.github_issue_checked_at AS checked_at, \
-             j.github_issue_closed AS closed, \
-             j.github_issue_fixed_noted_at AS fixed_noted_at \
-             {JOBS_FROM}{} WHERE j.id = $1 FOR UPDATE OF j",
-            impact_lateral_sql(EntityKind::Job, since)
-        ),
-    }
 }
 
 /// This target's linked rows in check order, with their Repo names.

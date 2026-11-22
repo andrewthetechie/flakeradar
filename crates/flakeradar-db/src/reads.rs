@@ -530,14 +530,14 @@ impl Board<'_> {
 }
 
 /// The row shape both leaderboards select: the entity's columns, then the names.
-pub(crate) const TESTS_SELECT: &str = "SELECT t.*, p.name AS project_name, r.name AS repo_name";
+const TESTS_SELECT: &str = "SELECT t.*, p.name AS project_name, r.name AS repo_name";
 pub(crate) const TESTS_FROM: &str = "FROM test_cases t \
      JOIN projects p ON p.id = t.project_id \
      JOIN repos r ON r.id = p.repo_id";
 
-pub(crate) const JOBS_SELECT: &str = "SELECT j.*, p.name AS pipeline_name, p.provider AS provider, \
+const JOBS_SELECT: &str = "SELECT j.*, p.name AS pipeline_name, p.provider AS provider, \
      p.repo_id AS repo_id, r.name AS repo_name";
-pub(crate) const JOBS_FROM: &str = "FROM jobs j \
+const JOBS_FROM: &str = "FROM jobs j \
      JOIN pipelines p ON p.id = j.pipeline_id \
      JOIN repos r ON r.id = p.repo_id";
 
@@ -591,7 +591,7 @@ fn is_new(first_seen_at: DateTime<Utc>, settings: &ReadSettings) -> bool {
 }
 
 /// Reads one Test row into its response shape.
-pub(crate) fn test_out(
+fn test_out(
     row: &QueryResult,
     settings: &ReadSettings,
     trend: Option<Trend>,
@@ -646,7 +646,7 @@ pub(crate) fn test_out(
 }
 
 /// Reads one Job row into its response shape.
-pub(crate) fn job_out(row: &QueryResult, trend: Option<Trend>) -> Result<JobOut, DbError> {
+fn job_out(row: &QueryResult, trend: Option<Trend>) -> Result<JobOut, DbError> {
     let score = score(get(row, "flakiness_score")?, "flakiness_score")?;
     // The tier reads the row's stored flaky state, so a score that drifted back
     // under the Flake threshold still lists as flaky until the state clears.
@@ -693,7 +693,8 @@ pub(crate) enum EntityOut {
 ///
 /// This is the one home of the one-row statement: the row shape, the impact
 /// pieces and the id filter live here, so a caller states only the kind and the
-/// id. It answers the raw row — [`entity_out`] maps it — because a write patches
+/// id. [`locked_entity_row`] is its twin for a write that locks the row first.
+/// It answers the raw row — [`entity_out`] maps it — because a write patches
 /// the columns it stored onto the mapped shape before it answers.
 ///
 /// # Errors
@@ -719,7 +720,44 @@ pub(crate) async fn entity_row(
     one(db, sql, vec![Value::from(entity_id)]).await
 }
 
-/// Maps one row of [`entity_row`] into the response shape of `kind`.
+/// The locked twin of [`entity_row`]: the same row, `FOR UPDATE`, with the three
+/// Issue-link columns the link engines read.
+///
+/// It carries the impact columns because the row feeds the leaderboard's own
+/// mapper: without the lateral the answer names unknown columns. Locking stays
+/// legal because the lateral is on the target's non-null side.
+///
+/// # Errors
+///
+/// Returns [`DbError::Database`] when the statement fails.
+pub(crate) async fn locked_entity_row(
+    db: &impl ConnectionTrait,
+    kind: EntityKind,
+    entity_id: i64,
+    settings: &ReadSettings,
+) -> Result<Option<QueryResult>, DbError> {
+    let since = impact_since(settings);
+    let sql = match kind {
+        EntityKind::Test => format!(
+            "{TESTS_SELECT}{IMPACT_COLUMNS}, t.github_issue_checked_at AS checked_at, \
+             t.github_issue_closed AS closed, \
+             t.github_issue_fixed_noted_at AS fixed_noted_at \
+             {TESTS_FROM}{} WHERE t.id = $1 FOR UPDATE OF t",
+            impact_lateral_sql(EntityKind::Test, since)
+        ),
+        EntityKind::Job => format!(
+            "{JOBS_SELECT}{IMPACT_COLUMNS}, j.github_issue_checked_at AS checked_at, \
+             j.github_issue_closed AS closed, \
+             j.github_issue_fixed_noted_at AS fixed_noted_at \
+             {JOBS_FROM}{} WHERE j.id = $1 FOR UPDATE OF j",
+            impact_lateral_sql(EntityKind::Job, since)
+        ),
+    };
+    one(db, sql, vec![Value::from(entity_id)]).await
+}
+
+/// Maps one row of [`entity_row`] or [`locked_entity_row`] into the response
+/// shape of `kind`.
 ///
 /// # Errors
 ///
