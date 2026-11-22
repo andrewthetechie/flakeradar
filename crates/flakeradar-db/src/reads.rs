@@ -29,6 +29,7 @@ use flakeradar_core::{
 use sea_orm::{ConnectionTrait, QueryResult, Value};
 use serde_json::Value as JsonValue;
 
+use crate::acknowledge::{lapsed_condition, live_condition};
 use crate::attribution::{
     explained_ci_job_ids, int_array, job_execution_explained_sql, job_window_ids_overall_sql,
     summary_explaining_siblings,
@@ -530,14 +531,14 @@ impl Board<'_> {
 }
 
 /// The row shape both leaderboards select: the entity's columns, then the names.
-pub(crate) const TESTS_SELECT: &str = "SELECT t.*, p.name AS project_name, r.name AS repo_name";
+const TESTS_SELECT: &str = "SELECT t.*, p.name AS project_name, r.name AS repo_name";
 pub(crate) const TESTS_FROM: &str = "FROM test_cases t \
      JOIN projects p ON p.id = t.project_id \
      JOIN repos r ON r.id = p.repo_id";
 
-pub(crate) const JOBS_SELECT: &str = "SELECT j.*, p.name AS pipeline_name, p.provider AS provider, \
+const JOBS_SELECT: &str = "SELECT j.*, p.name AS pipeline_name, p.provider AS provider, \
      p.repo_id AS repo_id, r.name AS repo_name";
-pub(crate) const JOBS_FROM: &str = "FROM jobs j \
+const JOBS_FROM: &str = "FROM jobs j \
      JOIN pipelines p ON p.id = j.pipeline_id \
      JOIN repos r ON r.id = p.repo_id";
 
@@ -646,7 +647,7 @@ pub(crate) fn test_out(
 }
 
 /// Reads one Job row into its response shape.
-pub(crate) fn job_out(row: &QueryResult, trend: Option<Trend>) -> Result<JobOut, DbError> {
+fn job_out(row: &QueryResult, trend: Option<Trend>) -> Result<JobOut, DbError> {
     let score = score(get(row, "flakiness_score")?, "flakiness_score")?;
     // The tier reads the row's stored flaky state, so a score that drifted back
     // under the Flake threshold still lists as flaky until the state clears.
@@ -679,6 +680,99 @@ pub(crate) fn job_out(row: &QueryResult, trend: Option<Trend>) -> Result<JobOut,
         impacted_branches: get(row, "impacted_branches")?,
         time_lost_seconds: get(row, "time_lost_seconds")?,
     })
+}
+
+/// One entity's row in its own response shape.
+pub(crate) enum EntityOut {
+    /// A Test, in the Tests leaderboard shape.
+    Test(TestOut),
+    /// A Job, in the Jobs leaderboard shape.
+    Job(JobOut),
+}
+
+/// Reads one Test or Job row in the leaderboard shape, impact columns included.
+///
+/// This is the one home of the one-row statement: the row shape, the impact
+/// pieces and the id filter live here, so a caller states only the kind and the
+/// id. [`locked_entity_row`] is its twin for a write that locks the row first.
+/// It answers the raw row — [`entity_out`] maps it — because a write patches
+/// the columns it stored onto the mapped shape before it answers.
+///
+/// # Errors
+///
+/// Returns [`DbError::Database`] when the statement fails.
+pub(crate) async fn entity_row(
+    db: &impl ConnectionTrait,
+    kind: EntityKind,
+    entity_id: i64,
+    settings: &ReadSettings,
+) -> Result<Option<QueryResult>, DbError> {
+    let since = impact_since(settings);
+    let sql = match kind {
+        EntityKind::Test => format!(
+            "{TESTS_SELECT}{IMPACT_COLUMNS} {TESTS_FROM}{} WHERE t.id = $1",
+            impact_lateral_sql(EntityKind::Test, since)
+        ),
+        EntityKind::Job => format!(
+            "{JOBS_SELECT}{IMPACT_COLUMNS} {JOBS_FROM}{} WHERE j.id = $1",
+            impact_lateral_sql(EntityKind::Job, since)
+        ),
+    };
+    one(db, sql, vec![Value::from(entity_id)]).await
+}
+
+/// The locked twin of [`entity_row`]: the same row, `FOR UPDATE`, with the three
+/// Issue-link columns the link engines read.
+///
+/// It carries the impact columns because the row feeds the leaderboard's own
+/// mapper: without the lateral the answer names unknown columns. Locking stays
+/// legal because the lateral is on the target's non-null side.
+///
+/// # Errors
+///
+/// Returns [`DbError::Database`] when the statement fails.
+pub(crate) async fn locked_entity_row(
+    db: &impl ConnectionTrait,
+    kind: EntityKind,
+    entity_id: i64,
+    settings: &ReadSettings,
+) -> Result<Option<QueryResult>, DbError> {
+    let since = impact_since(settings);
+    let sql = match kind {
+        EntityKind::Test => format!(
+            "{TESTS_SELECT}{IMPACT_COLUMNS}, t.github_issue_checked_at AS checked_at, \
+             t.github_issue_closed AS closed, \
+             t.github_issue_fixed_noted_at AS fixed_noted_at \
+             {TESTS_FROM}{} WHERE t.id = $1 FOR UPDATE OF t",
+            impact_lateral_sql(EntityKind::Test, since)
+        ),
+        EntityKind::Job => format!(
+            "{JOBS_SELECT}{IMPACT_COLUMNS}, j.github_issue_checked_at AS checked_at, \
+             j.github_issue_closed AS closed, \
+             j.github_issue_fixed_noted_at AS fixed_noted_at \
+             {JOBS_FROM}{} WHERE j.id = $1 FOR UPDATE OF j",
+            impact_lateral_sql(EntityKind::Job, since)
+        ),
+    };
+    one(db, sql, vec![Value::from(entity_id)]).await
+}
+
+/// Maps one row of [`entity_row`] or [`locked_entity_row`] into the response
+/// shape of `kind`.
+///
+/// # Errors
+///
+/// Returns [`DbError::UnusableStoredValue`] or [`DbError::UnknownExecutionStatus`]
+/// for a stored value its mapper rejects.
+pub(crate) fn entity_out(
+    row: &QueryResult,
+    kind: EntityKind,
+    settings: &ReadSettings,
+) -> Result<EntityOut, DbError> {
+    match kind {
+        EntityKind::Test => Ok(EntityOut::Test(test_out(row, settings, None)?)),
+        EntityKind::Job => Ok(EntityOut::Job(job_out(row, None)?)),
+    }
 }
 
 impl ListOptions {
@@ -798,15 +892,12 @@ pub async fn list_tests(
     if let Some(quarantined) = filters.quarantined {
         filter.eq("t.quarantined", Value::from(quarantined));
     }
-    // An acknowledgement is live while its expiry is in the future.
     if let Some(acknowledged) = filters.acknowledged {
         let placeholder = filter.bind(Value::from(settings.clock.now()));
         if acknowledged {
-            filter.raw(format!("t.acknowledged_until > {placeholder}"));
+            filter.raw(live_condition("t", &placeholder));
         } else {
-            filter.raw(format!(
-                "(t.acknowledged_until IS NULL OR t.acknowledged_until <= {placeholder})"
-            ));
+            filter.raw(lapsed_condition("t", &placeholder));
         }
     }
     if filters.broken {
@@ -871,15 +962,12 @@ pub async fn list_jobs(
     if let Some(pipeline) = &filters.pipeline {
         filter.eq("p.name", Value::from(pipeline.clone()));
     }
-    // An acknowledgement is live while its expiry is in the future.
     if let Some(acknowledged) = filters.acknowledged {
         let placeholder = filter.bind(Value::from(settings.clock.now()));
         if acknowledged {
-            filter.raw(format!("j.acknowledged_until > {placeholder}"));
+            filter.raw(live_condition("j", &placeholder));
         } else {
-            filter.raw(format!(
-                "(j.acknowledged_until IS NULL OR j.acknowledged_until <= {placeholder})"
-            ));
+            filter.raw(lapsed_condition("j", &placeholder));
         }
     }
     // ADR 0004: Jobs have no Quarantine, so only an acknowledged filter keeps

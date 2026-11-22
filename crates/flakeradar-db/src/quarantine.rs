@@ -21,11 +21,8 @@ use sea_orm::entity::prelude::DateTimeWithTimeZone;
 use sea_orm::{ConnectionTrait, DbBackend, Statement, Value};
 
 use crate::error::DbError;
-use crate::reads::{
-    IMPACT_COLUMNS, ReadSettings, TESTS_FROM, TESTS_SELECT, id, impact_lateral_sql, impact_since,
-    optional_timestamp, test_out,
-};
-use crate::sql::{fingerprint, get, one, rows};
+use crate::reads::{ReadSettings, entity_row, id, optional_timestamp, test_out};
+use crate::sql::{fingerprint, get, rows};
 
 /// A human's quarantine decision for one Test.
 ///
@@ -75,9 +72,7 @@ pub async fn set_quarantine(
     decision: QuarantineDecision,
     settings: &ReadSettings,
 ) -> Result<Option<TestOut>, DbError> {
-    let impact = impact_lateral_sql(EntityKind::Test, impact_since(settings));
-    let sql = format!("{TESTS_SELECT}{IMPACT_COLUMNS} {TESTS_FROM}{impact} WHERE t.id = $1");
-    let Some(row) = one(db, sql, vec![Value::from(test_id)]).await? else {
+    let Some(row) = entity_row(db, EntityKind::Test, test_id, settings).await? else {
         return Ok(None);
     };
     let stored_id: i32 = get(&row, "id")?;
@@ -107,6 +102,9 @@ pub async fn set_quarantine(
         ],
     );
     db.execute_raw(statement).await?;
+    // Quarantine is a Test-only write, so this call states the Test shape
+    // directly: `entity_row` read a Test row, and there is no Job shape it could
+    // answer instead.
     let mut test = test_out(&row, settings, None)?;
     test.quarantined = quarantined;
     test.quarantined_at = quarantined_at.map(|at| at.with_timezone(&Utc));
