@@ -8,7 +8,8 @@ use std::collections::BTreeMap;
 use flakeradar_core::model::EntityKind;
 use sea_orm::ConnectionTrait;
 
-use super::{ProcessingSettings, Update};
+use super::ProcessingSettings;
+use super::rescore::Update;
 use crate::error::DbError;
 use crate::score_history::{HistoryUpdate, write_today_history};
 
