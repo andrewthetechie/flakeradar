@@ -21,11 +21,8 @@ use sea_orm::entity::prelude::DateTimeWithTimeZone;
 use sea_orm::{ConnectionTrait, DbBackend, Statement, Value};
 
 use crate::error::DbError;
-use crate::reads::{
-    IMPACT_COLUMNS, ReadSettings, TESTS_FROM, TESTS_SELECT, id, impact_lateral_sql, impact_since,
-    optional_timestamp, test_out,
-};
-use crate::sql::{fingerprint, get, one, rows};
+use crate::reads::{EntityOut, ReadSettings, entity_out, entity_row, id, optional_timestamp};
+use crate::sql::{fingerprint, get, rows};
 
 /// A human's quarantine decision for one Test.
 ///
@@ -69,15 +66,18 @@ pub fn decision(body: QuarantineIn) -> QuarantineDecision {
 /// # Errors
 ///
 /// Returns [`DbError::Database`] when a statement fails.
+///
+/// # Panics
+///
+/// Only when the shared map answers a Job shape for the Test row this call reads,
+/// which no argument can cause: the row it read is a Test.
 pub async fn set_quarantine(
     db: &impl ConnectionTrait,
     test_id: i64,
     decision: QuarantineDecision,
     settings: &ReadSettings,
 ) -> Result<Option<TestOut>, DbError> {
-    let impact = impact_lateral_sql(EntityKind::Test, impact_since(settings));
-    let sql = format!("{TESTS_SELECT}{IMPACT_COLUMNS} {TESTS_FROM}{impact} WHERE t.id = $1");
-    let Some(row) = one(db, sql, vec![Value::from(test_id)]).await? else {
+    let Some(row) = entity_row(db, EntityKind::Test, test_id, settings).await? else {
         return Ok(None);
     };
     let stored_id: i32 = get(&row, "id")?;
@@ -107,7 +107,19 @@ pub async fn set_quarantine(
         ],
     );
     db.execute_raw(statement).await?;
-    let mut test = test_out(&row, settings, None)?;
+    // Quarantine is a Test-only write, so the shared map answers a Test shape for
+    // the row this call read. A Job is a bug in this call, not a state the row can
+    // force, so it reports the row it found instead of answering a silent fallback.
+    #[expect(
+        clippy::expect_used,
+        reason = "the row is read and mapped as EntityKind::Test, so the mapped shape can only \
+                  be a TestOut; a Job here is a bug in this call, never a value the row forces"
+    )]
+    let mut test = match entity_out(&row, EntityKind::Test, settings)? {
+        EntityOut::Test(test) => Ok(test),
+        EntityOut::Job(job) => Err(format!("a Test read answered the shape of Job {}", job.id)),
+    }
+    .expect("a row read as a Test maps to a Test shape");
     test.quarantined = quarantined;
     test.quarantined_at = quarantined_at.map(|at| at.with_timezone(&Utc));
     test.quarantine_reason = reason;

@@ -681,6 +681,61 @@ pub(crate) fn job_out(row: &QueryResult, trend: Option<Trend>) -> Result<JobOut,
     })
 }
 
+/// One entity's row in its own response shape.
+pub(crate) enum EntityOut {
+    /// A Test, in the Tests leaderboard shape.
+    Test(TestOut),
+    /// A Job, in the Jobs leaderboard shape.
+    Job(JobOut),
+}
+
+/// Reads one Test or Job row in the leaderboard shape, impact columns included.
+///
+/// This is the one home of the one-row statement: the row shape, the impact
+/// pieces and the id filter live here, so a caller states only the kind and the
+/// id. It answers the raw row — [`entity_out`] maps it — because a write patches
+/// the columns it stored onto the mapped shape before it answers.
+///
+/// # Errors
+///
+/// Returns [`DbError::Database`] when the statement fails.
+pub(crate) async fn entity_row(
+    db: &impl ConnectionTrait,
+    kind: EntityKind,
+    entity_id: i64,
+    settings: &ReadSettings,
+) -> Result<Option<QueryResult>, DbError> {
+    let since = impact_since(settings);
+    let sql = match kind {
+        EntityKind::Test => format!(
+            "{TESTS_SELECT}{IMPACT_COLUMNS} {TESTS_FROM}{} WHERE t.id = $1",
+            impact_lateral_sql(EntityKind::Test, since)
+        ),
+        EntityKind::Job => format!(
+            "{JOBS_SELECT}{IMPACT_COLUMNS} {JOBS_FROM}{} WHERE j.id = $1",
+            impact_lateral_sql(EntityKind::Job, since)
+        ),
+    };
+    one(db, sql, vec![Value::from(entity_id)]).await
+}
+
+/// Maps one row of [`entity_row`] into the response shape of `kind`.
+///
+/// # Errors
+///
+/// Returns [`DbError::UnusableStoredValue`] or [`DbError::UnknownExecutionStatus`]
+/// for a stored value its mapper rejects.
+pub(crate) fn entity_out(
+    row: &QueryResult,
+    kind: EntityKind,
+    settings: &ReadSettings,
+) -> Result<EntityOut, DbError> {
+    match kind {
+        EntityKind::Test => Ok(EntityOut::Test(test_out(row, settings, None)?)),
+        EntityKind::Job => Ok(EntityOut::Job(job_out(row, None)?)),
+    }
+}
+
 impl ListOptions {
     /// The MCP "top flaky" listing: score order, one page, and flaky-only unless
     /// the caller asked for suspect rows too.
