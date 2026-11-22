@@ -29,6 +29,7 @@ use flakeradar_core::{
 use sea_orm::{ConnectionTrait, QueryResult, Value};
 use serde_json::Value as JsonValue;
 
+use crate::acknowledge::{lapsed_condition, live_condition};
 use crate::attribution::{
     explained_ci_job_ids, int_array, job_execution_explained_sql, job_window_ids_overall_sql,
     summary_explaining_siblings,
@@ -891,15 +892,12 @@ pub async fn list_tests(
     if let Some(quarantined) = filters.quarantined {
         filter.eq("t.quarantined", Value::from(quarantined));
     }
-    // An acknowledgement is live while its expiry is in the future.
     if let Some(acknowledged) = filters.acknowledged {
         let placeholder = filter.bind(Value::from(settings.clock.now()));
         if acknowledged {
-            filter.raw(format!("t.acknowledged_until > {placeholder}"));
+            filter.raw(live_condition("t", &placeholder));
         } else {
-            filter.raw(format!(
-                "(t.acknowledged_until IS NULL OR t.acknowledged_until <= {placeholder})"
-            ));
+            filter.raw(lapsed_condition("t", &placeholder));
         }
     }
     if filters.broken {
@@ -964,15 +962,12 @@ pub async fn list_jobs(
     if let Some(pipeline) = &filters.pipeline {
         filter.eq("p.name", Value::from(pipeline.clone()));
     }
-    // An acknowledgement is live while its expiry is in the future.
     if let Some(acknowledged) = filters.acknowledged {
         let placeholder = filter.bind(Value::from(settings.clock.now()));
         if acknowledged {
-            filter.raw(format!("j.acknowledged_until > {placeholder}"));
+            filter.raw(live_condition("j", &placeholder));
         } else {
-            filter.raw(format!(
-                "(j.acknowledged_until IS NULL OR j.acknowledged_until <= {placeholder})"
-            ));
+            filter.raw(lapsed_condition("j", &placeholder));
         }
     }
     // ADR 0004: Jobs have no Quarantine, so only an acknowledged filter keeps

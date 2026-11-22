@@ -20,6 +20,7 @@ use flakeradar_core::{
 use sea_orm::sea_query::Value;
 use sea_orm::{ConnectionTrait, QueryResult};
 
+use crate::acknowledge::lapsed_condition;
 use crate::attribution::{int_array, test_window_ids_overall_sql, unexplained_failure_counts};
 use crate::batching::chunks;
 use crate::error::DbError;
@@ -208,8 +209,8 @@ async fn window_failures(
 /// `$4` the fixed-note streak — bound only when the gate sets one, which is the third
 /// part of the answer because the statement has to leave its clause out at the same
 /// time. The last bind is the acknowledgement instant, `$4` or `$5` depending on
-/// whether that streak clause is there; the statement always has it. Each statement
-/// keeps its own clause text, so the SQL stays greppable.
+/// whether that streak clause is there; the statement always has it, and its clause
+/// comes from [`lapsed_condition`], which is why the placeholder is spelled to it.
 fn gate_binds(chunk: &[i32], gate: &FilingGate, now: DateTime<FixedOffset>) -> (bool, Vec<Value>) {
     let mut values = vec![
         int_array(chunk),
@@ -276,9 +277,9 @@ pub async fn test_candidates(
             ""
         };
         let ack = if streak {
-            " AND (t.acknowledged_until IS NULL OR t.acknowledged_until <= $5)"
+            format!(" AND {}", lapsed_condition("t", "$5"))
         } else {
-            " AND (t.acknowledged_until IS NULL OR t.acknowledged_until <= $4)"
+            format!(" AND {}", lapsed_condition("t", "$4"))
         };
         // This comparison is the GitHub filing gate (`GITHUB_ISSUE_MIN_SCORE`):
         // a score, not a tier. A row whose tier is merely suspect files nothing,
@@ -339,9 +340,9 @@ pub async fn job_candidates(
             ""
         };
         let ack = if streak {
-            " AND (j.acknowledged_until IS NULL OR j.acknowledged_until <= $5)"
+            format!(" AND {}", lapsed_condition("j", "$5"))
         } else {
-            " AND (j.acknowledged_until IS NULL OR j.acknowledged_until <= $4)"
+            format!(" AND {}", lapsed_condition("j", "$4"))
         };
         // This comparison is the GitHub filing gate (`GITHUB_ISSUE_MIN_SCORE`):
         // a score, not a tier. A Job whose tier is merely suspect files nothing,

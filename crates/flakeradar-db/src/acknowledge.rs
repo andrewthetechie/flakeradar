@@ -4,24 +4,33 @@
 //! acknowledgeable entities. The REST route turns an [`AcknowledgeIn`] body into
 //! the [`AcknowledgeDecision`] it describes — the one conversion in the
 //! workspace — and writes it through [`set_acknowledge`]; the retention loop
-//! clears the same pair when the expiry passes. An acknowledged row still lists
+//! clears the same pair through [`clear_expired_acknowledgements`] when the
+//! expiry passes. An acknowledged row still lists
 //! in the leaderboard until the expiry clears, so the decision is reversible by
 //! waiting or by a new request.
 //!
-//! The rules live here, once for both targets. The row is read and mapped
-//! through the shared entry points in `crate::reads`; the one place this module
-//! still switches on the target is the table the write updates.
+//! The rules live here, once for both targets: `live_condition` and
+//! `lapsed_condition` state when an acknowledgement counts, and
+//! [`clear_expired_acknowledgements`] states the lapse rule the retention loop's
+//! prune consumes — the same arrangement `crate::quarantine` keeps for a
+//! quarantine. The listings and the filing gate call the condition instead of
+//! spelling the comparison, so no statement can drift from the others.
+//!
+//! The row is read and mapped through the shared entry points in `crate::reads`;
+//! the one place this module still switches on the target is the table the write
+//! updates.
 
 // Rust guideline compliant 2026-07-21
 
 use chrono::{Duration, Utc};
 use flakeradar_core::{dto::AcknowledgeIn, dto::JobOut, dto::TestOut, model::EntityKind};
+use sea_orm::entity::prelude::DateTimeWithTimeZone;
 use sea_orm::{ConnectionTrait, DbBackend, Statement, Value};
 use serde::Serialize;
 
 use crate::error::DbError;
 use crate::reads::{EntityOut, ReadSettings, entity_out, entity_row};
-use crate::sql::get;
+use crate::sql::{get, one, rows};
 
 /// A human's acknowledgement decision for one Test or Job.
 ///
@@ -65,6 +74,26 @@ const fn acknowledge_table(kind: EntityKind) -> &'static str {
         EntityKind::Test => "test_cases",
         EntityKind::Job => "jobs",
     }
+}
+
+/// The condition for a live acknowledgement, over the row aliased `alias`.
+///
+/// This is the one place the rule is stated: an acknowledgement is live while its
+/// expiry is in the future. `placeholder` is the text of the bind that carries the
+/// instant — `$4` or `$5` in the filing statements, whose position depends on
+/// whether the Clean-streak clause is there, and a numbered placeholder in a
+/// listing — because the comparison always takes the same value the caller binds.
+#[must_use]
+pub(crate) fn live_condition(alias: &str, placeholder: &str) -> String {
+    format!("{alias}.acknowledged_until > {placeholder}")
+}
+
+/// The condition for a lapsed or absent acknowledgement, over the row aliased
+/// `alias`: everything [`live_condition`] rejects, parenthesized so an `OR` in the
+/// surrounding statement cannot read past it.
+#[must_use]
+pub(crate) fn lapsed_condition(alias: &str, placeholder: &str) -> String {
+    format!("({alias}.acknowledged_until IS NULL OR {alias}.acknowledged_until <= {placeholder})")
 }
 
 /// Turns a request body into the decision it describes.
@@ -149,4 +178,67 @@ pub async fn set_acknowledge(
         }
     };
     Ok(Some(out))
+}
+
+/// One acknowledgement the lapse cleared.
+///
+/// A named row, so the caller states which entity it is logging rather than
+/// reading a table name out of a tuple.
+#[derive(Debug, Clone)]
+pub struct ExpiredAcknowledgement {
+    /// Whether the cleared row was a Test or a Job.
+    pub kind: EntityKind,
+    /// The cleared row's id.
+    pub id: i32,
+    /// The cleared row's name.
+    pub name: String,
+}
+
+/// Clears every acknowledgement whose human-set end has passed, all in this round.
+///
+/// This is the one place the lapse rule is stated: a row whose expiry passed loses
+/// the same pair [`set_acknowledge`] stores. One `UPDATE ... RETURNING` per table
+/// clears that table's whole set, so the number of statements no longer grows with
+/// the number of expired rows, and a table is only touched when it has a due row,
+/// so a round with nothing due sends no `UPDATE` at all. The caller logs each
+/// cleared row it returns, which is where the operator-facing line stays.
+///
+/// # Errors
+///
+/// Returns [`DbError::Database`] when a statement fails.
+pub async fn clear_expired_acknowledgements(
+    db: &impl ConnectionTrait,
+    now: DateTimeWithTimeZone,
+) -> Result<Vec<ExpiredAcknowledgement>, DbError> {
+    let mut cleared = Vec::new();
+    for kind in [EntityKind::Test, EntityKind::Job] {
+        let table = acknowledge_table(kind);
+        let due = one(
+            db,
+            format!("SELECT 1 FROM {table} WHERE acknowledged_until <= $1 LIMIT 1"),
+            vec![Value::from(now)],
+        )
+        .await?;
+        if due.is_none() {
+            continue;
+        }
+        let expired = rows(
+            db,
+            format!(
+                "UPDATE {table} SET acknowledged_until = NULL, acknowledge_reason = NULL \
+                  WHERE acknowledged_until <= $1 \
+                  RETURNING id, name"
+            ),
+            vec![Value::from(now)],
+        )
+        .await?;
+        for row in &expired {
+            cleared.push(ExpiredAcknowledgement {
+                kind,
+                id: get(row, "id")?,
+                name: get(row, "name")?,
+            });
+        }
+    }
+    Ok(cleared)
 }

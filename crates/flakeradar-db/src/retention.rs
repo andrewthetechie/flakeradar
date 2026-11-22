@@ -29,7 +29,7 @@ use crate::clock::MonotonicClock;
 use crate::entities::{reports, test_executions, test_runs};
 use crate::error::DbError;
 use crate::processing::{ProcessingSettings, rescore};
-use crate::sql::{bigint_array, get, one, rows};
+use crate::sql::{bigint_array, get, rows};
 
 /// The largest retention window a setting may ask for, in days.
 ///
@@ -217,7 +217,19 @@ pub async fn prune(
         );
     }
     let expired_quarantines = u64::try_from(cleared_quarantines.len()).unwrap_or(u64::MAX);
-    let expired_acknowledgements = clear_expired_acknowledgements(db, now).await?;
+    let cleared_acknowledgements =
+        crate::acknowledge::clear_expired_acknowledgements(db, now).await?;
+    for cleared in &cleared_acknowledgements {
+        info!(
+            name: "retention.acknowledgement_expired",
+            kind = cleared.kind.as_str(),
+            id = cleared.id,
+            name = %cleared.name,
+            "Acknowledgement expired; cleared"
+        );
+    }
+    let expired_acknowledgements =
+        u64::try_from(cleared_acknowledgements.len()).unwrap_or(u64::MAX);
 
     Ok(PruneResult {
         reports,
@@ -458,52 +470,6 @@ async fn drop_silent_tier_changes(
         );
     }
     Ok(u64::try_from(dropped).unwrap_or(u64::MAX))
-}
-
-/// Clears every acknowledgement whose human-set end has passed, in this round.
-///
-/// One `UPDATE ... RETURNING` per table clears that table's whole set, so the
-/// number of statements no longer grows with the number of expired rows. A
-/// table is only updated when it has a due row, so a round with nothing due
-/// sends no `UPDATE` at all. Each cleared Test or Job still gets the line an
-/// operator reads.
-async fn clear_expired_acknowledgements(
-    db: &impl ConnectionTrait,
-    now: DateTimeWithTimeZone,
-) -> Result<u64, DbError> {
-    let mut cleared = 0;
-    for (kind, table) in [(EntityKind::Test, "test_cases"), (EntityKind::Job, "jobs")] {
-        let due = one(
-            db,
-            format!("SELECT 1 FROM {table} WHERE acknowledged_until <= $1 LIMIT 1"),
-            vec![Value::from(now)],
-        )
-        .await?;
-        if due.is_none() {
-            continue;
-        }
-        let expired = rows(
-            db,
-            format!(
-                "UPDATE {table} SET acknowledged_until = NULL, acknowledge_reason = NULL \
-                  WHERE acknowledged_until <= $1 \
-                  RETURNING id, name"
-            ),
-            vec![Value::from(now)],
-        )
-        .await?;
-        for row in &expired {
-            info!(
-                name: "retention.acknowledgement_expired",
-                kind = kind.as_str(),
-                id = get::<i32>(row, "id")?,
-                name = %get::<String>(row, "name")?,
-                "Acknowledgement expired; cleared"
-            );
-        }
-        cleared += u64::try_from(expired.len()).unwrap_or(u64::MAX);
-    }
-    Ok(cleared)
 }
 
 /// Deletes the expired backlog in committed batches, stopping at the time budget.
