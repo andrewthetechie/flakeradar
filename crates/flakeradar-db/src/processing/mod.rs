@@ -8,6 +8,10 @@
 
 // Rust guideline compliant 2026-07-21
 
+mod history;
+
+pub use history::DayCounts;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
@@ -38,7 +42,6 @@ use crate::report_intake::{
     complete_report, fail_report, requeue_report, stored_junit_body, stored_pipeline_report,
     write_report,
 };
-use crate::score_history::{HistoryUpdate, write_today_history};
 use crate::sql::{execution_status, get, placeholder_list, rows, score, value_row};
 
 /// The longest error text a failed Report keeps, in code points.
@@ -710,15 +713,6 @@ struct BuiltExecutions {
     latest: Vec<LatestTest>,
     /// What the day added to each Test's Score history.
     day_counts: BTreeMap<i32, DayCounts>,
-}
-
-/// Executions and failures one day added to a Test's or Job's Score history.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct DayCounts {
-    /// Executions the day recorded.
-    pub executions: i32,
-    /// How many of them failed.
-    pub failures: i32,
 }
 
 /// Builds one Report's Executions in report order.
@@ -1467,36 +1461,8 @@ pub async fn rescore(
         .collect();
     let changes = tier_changes(db, notices_of(kind), &updates, &old, settings).await?;
     write_updates(db, updates_of(kind), &updates).await?;
-    write_day_counts(db, kind, &updates, day_counts, settings).await?;
+    history::write_day_counts(db, kind, &updates, day_counts, settings).await?;
     Ok(changes)
-}
-
-/// Adds this rescore to today's Score history row of every id.
-async fn write_day_counts(
-    db: &impl ConnectionTrait,
-    kind: EntityKind,
-    updates: &[Update],
-    day_counts: Option<&BTreeMap<i32, DayCounts>>,
-    settings: &ProcessingSettings,
-) -> Result<(), DbError> {
-    if updates.is_empty() {
-        return Ok(());
-    }
-    let history_updates: Vec<HistoryUpdate> = updates
-        .iter()
-        .map(|update| HistoryUpdate {
-            id: update.id,
-            flakiness_score: update.flakiness_score,
-            confirmed_flake_count: update.confirmed_flake_count,
-            executions: day_counts
-                .and_then(|counts| counts.get(&update.id))
-                .map_or(0, |counts| counts.executions),
-            failures: day_counts
-                .and_then(|counts| counts.get(&update.id))
-                .map_or(0, |counts| counts.failures),
-        })
-        .collect();
-    write_today_history(db, kind, &history_updates, settings.clock.today()).await
 }
 
 /// What one row holds before a rescore replaces it: its Score, its flaky state,
