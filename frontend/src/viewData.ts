@@ -26,7 +26,7 @@ import {
   type TestPage,
   type TestQuery,
 } from "./api";
-import { LIST_FILTERS, type ViewState } from "./urlState";
+import { LIST_FILTERS, type ListFilters } from "./urlState";
 
 /** Everything the Tests view renders from one load. */
 export interface TestsBundle {
@@ -59,38 +59,15 @@ export interface CiRunBundle {
 export type ViewBundle = TestsBundle | JobsBundle | CiRunBundle;
 
 /**
- * The filters a load consumes: a Pick of the fields ViewState already carries,
- * so a view never needs a second copy of its own filters.
+ * The filters a load consumes: the slice the filter table derives, plus `page`,
+ * which the table does not describe but every list request carries. `page` stays
+ * out of the derived slice itself because a page change must re-fire the load
+ * while the slice keeps its identity.
  */
-export type ViewFilters = Pick<
-  ViewState,
-  | "view"
-  | "repo"
-  | "project"
-  | "page"
-  | "sort"
-  | "showStable"
-  | "cause"
-  | "quarantined"
-  | "broken"
-  | "acknowledged"
-  | "issue"
-  | "newDays"
-  | "pipeline"
-  | "q"
->;
+export type LoadFilters = ListFilters & { page: number };
 
 /** Every leaderboard page loads at this size. */
 const PAGE_SIZE = 50;
-
-/** The two fetch-argument names the table cannot carry, because `api.ts` spells
- *  them differently from the URL and from the wire: `cause` goes into a query as
- *  `category`, `newDays` as `newWithinDays` (`TestQuery`, `JobQuery`). Every other
- *  filter enters the query under its ViewState field name. */
-const QUERY_NAMES: Partial<Record<keyof ViewState, keyof TestQuery | keyof JobQuery>> = {
-  cause: "category",
-  newDays: "newWithinDays",
-};
 
 /** What a caller hands `queryFor` besides the filters: the scope and paging the
  *  table does not describe. `project` is optional because the Jobs query has none. */
@@ -107,16 +84,19 @@ interface QueryBase {
  * view's filters. So the Jobs query drops project and the tests-only filters, and
  * the Tests query drops pipeline, because the table says so rather than because
  * this module enumerates them — and a filter added to the table reaches the
- * endpoints it declares without an edit here. The result is the table's shape, not
- * the literal's, which is why it is cast rather than checked.
+ * endpoints it declares without an edit here. Each filter enters the query under
+ * the name its own table entry states for that endpoint (`key`, falling back to
+ * the ViewState field), so no side table names the exceptions. The result is the
+ * table's shape, not the literal's, which is why it is cast rather than checked.
  */
-function queryFor<Q>(endpoint: "tests" | "jobs", f: ViewFilters, base: QueryBase): Q {
+function queryFor<Q>(endpoint: "tests" | "jobs", f: LoadFilters, base: QueryBase): Q {
   const query: Record<string, unknown> = { ...base };
   for (const d of LIST_FILTERS) {
+    const w = d.wire?.[endpoint];
     // A wire-mapped field is by construction a filter a load consumes, so the
-    // read is one `keyof ViewFilters` narrowing of the table's wider field key.
-    if (d.wire?.[endpoint]) {
-      query[QUERY_NAMES[d.field] ?? d.field] = f[d.field as keyof ViewFilters];
+    // read is one `keyof ListFilters` narrowing of the table's wider field key.
+    if (w) {
+      query[w.key ?? d.field] = f[d.field as keyof ListFilters];
     }
   }
   return query as Q;
@@ -127,7 +107,7 @@ function queryFor<Q>(endpoint: "tests" | "jobs", f: ViewFilters, base: QueryBase
 
 /** The Tests view's bundle: scope tiles, leaderboard page, queue. */
 export async function loadTestsBundle(
-  f: ViewFilters,
+  f: LoadFilters,
   guard: LatestWins,
   request: number,
 ): Promise<TestsBundle | null> {
@@ -145,7 +125,7 @@ export async function loadTestsBundle(
 
 /** The Jobs view's bundle: job tiles, job page, queue. */
 export async function loadJobsBundle(
-  f: ViewFilters,
+  f: LoadFilters,
   guard: LatestWins,
   request: number,
 ): Promise<JobsBundle | null> {
@@ -168,7 +148,7 @@ export async function loadJobsBundle(
  * uniform so one call site can hand the same arguments to every loader.
  */
 export async function loadCiRunBundle(
-  _f: ViewFilters,
+  _f: LoadFilters,
   guard: LatestWins,
   request: number,
 ): Promise<CiRunBundle | null> {
@@ -183,7 +163,7 @@ export async function loadCiRunBundle(
  * per-kind endpoint knowledge; the returned union narrows on `kind`.
  */
 export function loadViewBundle(
-  f: ViewFilters,
+  f: LoadFilters,
   guard: LatestWins,
   request: number,
 ): Promise<ViewBundle | null> {

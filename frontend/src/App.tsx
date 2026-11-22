@@ -32,7 +32,7 @@ import { ThemeToggle } from "./components/ThemeToggle";
 import { ViewToggle } from "./components/ViewToggle";
 import { useConfirmedDecision } from "./confirmedDecision";
 import { useGuardedLoad, type GuardedLoader } from "./guardedLoad";
-import { LIST_FILTERS, useViewState, type ViewState } from "./urlState";
+import { LIST_FILTERS, listFilterSlice, useViewState, type ViewState } from "./urlState";
 import { loadJobHistory, loadTestHistory, loadViewBundle, type ViewBundle } from "./viewData";
 
 const REFRESH_MS = 30_000;
@@ -50,22 +50,16 @@ export default function App() {
   // is showing. Every write therefore goes through.
   const [error, setError] = useState<string | null>(null);
 
-  const {
-    repo,
-    project,
-    sort,
-    showStable,
-    cause,
-    quarantined,
-    broken,
-    acknowledged,
-    issue,
-    newDays,
-    pipeline,
-    q,
-    view: kind,
-  } = view;
-  const pageNumber = view.page;
+  // The filter values a load consumes, as one slice derived from the filter
+  // table (urlState.ts): no field name is listed here, so the next filter is one
+  // table entry plus its control. It changes identity exactly when a filter
+  // value does, which is what the load's dependencies key on.
+  const filters = listFilterSlice(view);
+  const { view: kind, page: pageNumber } = view;
+  // Bound to a local so the `repo` check below narrows inside the closures it
+  // guards: TypeScript discards a narrowed property read (`filters.repo`) in a
+  // callback, and re-checking it there would add a branch no test can reach.
+  const repo = filters.repo;
 
   // The list's whole load, guard and all: only the newest request may write
   // state, so a slow response for the old scope cannot overwrite the view the
@@ -73,43 +67,8 @@ export default function App() {
   // token, the supersede check and the error mapping; this file names the loader
   // and applies the answer.
   const load = useCallback<GuardedLoader<ViewBundle>>(
-    (guard, request) =>
-      loadViewBundle(
-        {
-          view: kind,
-          repo,
-          project,
-          page: pageNumber,
-          sort,
-          showStable,
-          cause,
-          quarantined,
-          broken,
-          acknowledged,
-          issue,
-          newDays,
-          pipeline,
-          q,
-        },
-        guard,
-        request,
-      ),
-    [
-      kind,
-      repo,
-      project,
-      pageNumber,
-      sort,
-      showStable,
-      cause,
-      quarantined,
-      broken,
-      acknowledged,
-      issue,
-      newDays,
-      pipeline,
-      q,
-    ],
+    (guard, request) => loadViewBundle({ ...filters, page: pageNumber }, guard, request),
+    [filters, pageNumber],
   );
 
   const list = useGuardedLoad<ViewBundle>(load, {
@@ -131,7 +90,8 @@ export default function App() {
   });
 
   // Imperative as before: the quarantine handlers await it, and its identity
-  // changes only when the load's does, so the search debounce survives the poll.
+  // changes exactly when the load's does — that is, when the filter slice's or
+  // the page's does — so the search debounce survives the poll.
   const refresh = list.refresh;
 
   // Stable identity: the search box's debounce timer must not restart on the
@@ -150,8 +110,12 @@ export default function App() {
   // scope changes, so a closed drawer's in-flight answer is dropped without
   // superseding the list's refresh. `refresh` stays in each loader's deps, as
   // it was in the old effect's: a drawer re-fetches on any scope or filter
-  // change — those flow through refresh's identity — but not on an imperative
-  // refresh() call, which leaves that identity alone.
+  // change — those flow through refresh's identity, which is the filter slice's
+  // or the page's — but not on an imperative refresh() call, which leaves that
+  // identity alone. The slice is what keeps it that way: it is referentially
+  // stable across a render whose filters are unchanged, so opening a drawer,
+  // editing the CI-run fields, or a poll tick hands back the same refresh (the
+  // rule is documented with `listFilterSlice` in urlState.ts).
   const testHistoryLoader = useCallback<GuardedLoader<History>>(
     // The null arm is a safety net for a null drawer id, which `enabled` below
     // already prevents; it stays so the loader is total on its own.
@@ -283,7 +247,7 @@ export default function App() {
           <ViewToggle view={kind} onChange={(v) => setView({ view: v })} />
           <ScopePicker
             repos={repos}
-            scope={{ repo, project }}
+            scope={{ repo, project: filters.project }}
             showProject={kind === "tests"}
             onChange={(scope) => setView(scope)}
           />
@@ -328,19 +292,19 @@ export default function App() {
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-4 py-3">
             <h2 className="text-[15px] font-semibold">Flakiness leaderboard</h2>
             <LeaderboardControls
-              sort={sort}
-              showStable={showStable}
+              sort={filters.sort}
+              showStable={filters.showStable}
               stableLabel={kind === "jobs" ? "Show stable jobs" : "Show stable tests"}
-              cause={cause}
+              cause={filters.cause}
               causeCounts={summary?.category_counts ?? null}
-              quarantined={quarantined}
-              broken={broken}
-              acknowledged={acknowledged}
-              issue={issue}
-              newDays={newDays}
+              quarantined={filters.quarantined}
+              broken={filters.broken}
+              acknowledged={filters.acknowledged}
+              issue={filters.issue}
+              newDays={filters.newDays}
               pipelines={jobSummary?.pipelines ?? []}
-              pipeline={pipeline}
-              search={q}
+              pipeline={filters.pipeline}
+              search={filters.q}
               searchPlaceholder={kind === "jobs" ? "Job or pipeline" : "Name, classname or file"}
               onSort={(s) => setView({ sort: s })}
               onShowStable={(v) => setView({ showStable: v })}
@@ -362,17 +326,17 @@ export default function App() {
               <JobLeaderboard
                 jobs={jobPage?.items ?? []}
                 repo={repo}
-                showStable={showStable}
-                search={q}
+                showStable={filters.showStable}
+                search={filters.q}
                 selectedId={view.job}
                 onSelect={(id) => setView({ job: id })}
               />
             ) : (
               <Leaderboard
                 tests={page?.items ?? []}
-                scope={{ repo, project }}
-                showStable={showStable}
-                search={q}
+                scope={{ repo, project: filters.project }}
+                showStable={filters.showStable}
+                search={filters.q}
                 selectedId={view.test}
                 onSelect={(id) => setView({ test: id })}
                 onToggleQuarantine={(t) => void quarantine.toggle(t)}

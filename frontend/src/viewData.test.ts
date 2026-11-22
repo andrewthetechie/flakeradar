@@ -11,11 +11,11 @@ import {
   loadTestHistory,
   loadTestsBundle,
   loadViewBundle,
-  type ViewFilters,
+  type LoadFilters,
 } from "./viewData";
 
 /** The filters a load reads. Everything else comes from the view defaults. */
-const filters = (over: Partial<ViewFilters> = {}): ViewFilters => ({
+const filters = (over: Partial<LoadFilters> = {}): LoadFilters => ({
   ...DEFAULT_VIEW,
   repo: "a/b",
   project: "backend",
@@ -160,7 +160,7 @@ describe("per-view filter reach", () => {
   // A non-default sample per wire-mapped filter, in the ViewState fields a load
   // reads. `issue: "none"` rather than "linked" so the has_issue transform has to
   // have run: has_issue=false is a value no other filter produces.
-  const SAMPLES: Partial<ViewFilters> = {
+  const SAMPLES: Partial<LoadFilters> = {
     q: "login",
     sort: "last_seen",
     showStable: true,
@@ -226,7 +226,7 @@ describe("per-view filter reach", () => {
   it.each(mapped)("$param reaches the endpoints that offer it", async (d) => {
     const urls = stubFetch();
     const guard = latestWins();
-    const over = { [d.field]: SAMPLES[d.field as keyof ViewFilters] } as Partial<ViewFilters>;
+    const over = { [d.field]: SAMPLES[d.field as keyof LoadFilters] } as Partial<LoadFilters>;
 
     await unwrap(loadTestsBundle(filters(over), guard, guard.start()));
     await unwrap(loadJobsBundle(filters({ ...over, view: "jobs" }), guard, guard.start()));
