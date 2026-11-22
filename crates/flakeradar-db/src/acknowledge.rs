@@ -8,23 +8,20 @@
 //! in the leaderboard until the expiry clears, so the decision is reversible by
 //! waiting or by a new request.
 //!
-//! The rules live here, once for both targets. The two targets select genuinely
-//! different row shapes, which is the one place the engine switches on the
-//! target: the select prefix, the table and the row mapper.
+//! The rules live here, once for both targets. The row is read and mapped
+//! through the shared entry points in `crate::reads`; the one place this module
+//! still switches on the target is the table the write updates.
 
 // Rust guideline compliant 2026-07-21
 
-use chrono::{DateTime, Duration, Utc};
+use chrono::{Duration, Utc};
 use flakeradar_core::{dto::AcknowledgeIn, dto::JobOut, dto::TestOut, model::EntityKind};
 use sea_orm::{ConnectionTrait, DbBackend, Statement, Value};
 use serde::Serialize;
 
 use crate::error::DbError;
-use crate::reads::{
-    IMPACT_COLUMNS, JOBS_FROM, JOBS_SELECT, ReadSettings, TESTS_FROM, TESTS_SELECT,
-    impact_lateral_sql, impact_since, job_out, test_out,
-};
-use crate::sql::{get, one};
+use crate::reads::{EntityOut, ReadSettings, entity_out, entity_row};
+use crate::sql::get;
 
 /// A human's acknowledgement decision for one Test or Job.
 ///
@@ -67,23 +64,6 @@ const fn acknowledge_table(kind: EntityKind) -> &'static str {
     match kind {
         EntityKind::Test => "test_cases",
         EntityKind::Job => "jobs",
-    }
-}
-
-/// The select of one target's row, as SQL.
-///
-/// It carries the impact columns because the row feeds the leaderboard's own
-/// mapper: without the lateral the answer names unknown columns.
-fn select_sql(kind: EntityKind, since: DateTime<Utc>) -> String {
-    match kind {
-        EntityKind::Test => format!(
-            "{TESTS_SELECT}{IMPACT_COLUMNS} {TESTS_FROM}{} WHERE t.id = $1",
-            impact_lateral_sql(EntityKind::Test, since)
-        ),
-        EntityKind::Job => format!(
-            "{JOBS_SELECT}{IMPACT_COLUMNS} {JOBS_FROM}{} WHERE j.id = $1",
-            impact_lateral_sql(EntityKind::Job, since)
-        ),
     }
 }
 
@@ -131,13 +111,7 @@ pub async fn set_acknowledge(
     decision: AcknowledgeDecision,
     settings: &ReadSettings,
 ) -> Result<Option<AcknowledgedOut>, DbError> {
-    let Some(row) = one(
-        db,
-        select_sql(kind, impact_since(settings)),
-        vec![Value::from(id)],
-    )
-    .await?
-    else {
+    let Some(row) = entity_row(db, kind, id, settings).await? else {
         return Ok(None);
     };
     let stored_id: i32 = get(&row, "id")?;
@@ -162,15 +136,13 @@ pub async fn set_acknowledge(
         ],
     );
     db.execute_raw(statement).await?;
-    let out = match kind {
-        EntityKind::Test => {
-            let mut test = test_out(&row, settings, None)?;
+    let out = match entity_out(&row, kind, settings)? {
+        EntityOut::Test(mut test) => {
             test.acknowledged_until = until.map(|at| at.with_timezone(&Utc));
             test.acknowledge_reason = reason;
             AcknowledgedOut::Test(test)
         }
-        EntityKind::Job => {
-            let mut job = job_out(&row, None)?;
+        EntityOut::Job(mut job) => {
             job.acknowledged_until = until.map(|at| at.with_timezone(&Utc));
             job.acknowledge_reason = reason;
             AcknowledgedOut::Job(job)
