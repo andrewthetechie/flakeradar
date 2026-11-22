@@ -592,7 +592,7 @@ fn is_new(first_seen_at: DateTime<Utc>, settings: &ReadSettings) -> bool {
 }
 
 /// Reads one Test row into its response shape.
-fn test_out(
+pub(crate) fn test_out(
     row: &QueryResult,
     settings: &ReadSettings,
     trend: Option<Trend>,

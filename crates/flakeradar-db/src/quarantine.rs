@@ -21,7 +21,7 @@ use sea_orm::entity::prelude::DateTimeWithTimeZone;
 use sea_orm::{ConnectionTrait, DbBackend, Statement, Value};
 
 use crate::error::DbError;
-use crate::reads::{EntityOut, ReadSettings, entity_out, entity_row, id, optional_timestamp};
+use crate::reads::{ReadSettings, entity_row, id, optional_timestamp, test_out};
 use crate::sql::{fingerprint, get, rows};
 
 /// A human's quarantine decision for one Test.
@@ -66,11 +66,6 @@ pub fn decision(body: QuarantineIn) -> QuarantineDecision {
 /// # Errors
 ///
 /// Returns [`DbError::Database`] when a statement fails.
-///
-/// # Panics
-///
-/// Only when the shared map answers a Job shape for the Test row this call reads,
-/// which no argument can cause: the row it read is a Test.
 pub async fn set_quarantine(
     db: &impl ConnectionTrait,
     test_id: i64,
@@ -107,19 +102,10 @@ pub async fn set_quarantine(
         ],
     );
     db.execute_raw(statement).await?;
-    // Quarantine is a Test-only write, so the shared map answers a Test shape for
-    // the row this call read. A Job is a bug in this call, not a state the row can
-    // force, so it reports the row it found instead of answering a silent fallback.
-    #[expect(
-        clippy::expect_used,
-        reason = "the row is read and mapped as EntityKind::Test, so the mapped shape can only \
-                  be a TestOut; a Job here is a bug in this call, never a value the row forces"
-    )]
-    let mut test = match entity_out(&row, EntityKind::Test, settings)? {
-        EntityOut::Test(test) => Ok(test),
-        EntityOut::Job(job) => Err(format!("a Test read answered the shape of Job {}", job.id)),
-    }
-    .expect("a row read as a Test maps to a Test shape");
+    // Quarantine is a Test-only write, so this call states the Test shape
+    // directly: `entity_row` read a Test row, and there is no Job shape it could
+    // answer instead.
+    let mut test = test_out(&row, settings, None)?;
     test.quarantined = quarantined;
     test.quarantined_at = quarantined_at.map(|at| at.with_timezone(&Utc));
     test.quarantine_reason = reason;
