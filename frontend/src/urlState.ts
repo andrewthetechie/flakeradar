@@ -86,10 +86,8 @@ function positiveInt(raw: string | null): number | null {
   return n >= 1 ? n : null;
 }
 
-/** One endpoint's spelling of a list filter: the wire parameter name, the value
- *  to send for it (or `null` to leave the param out), and the position it takes
- *  in the query string. Spelled exactly as the hand-written `params.set` calls
- *  `api.ts` had before this table, bytes included. */
+/** One endpoint's spelling of a list filter: the wire parameter name and the
+ *  value to send for it (or `null` to leave the param out). */
 export interface WireParam<Q> {
   /** Fetch-argument name this filter enters the endpoint's query object under,
    *  when it differs from the ViewState field name (`cause` is read as
@@ -98,10 +96,6 @@ export interface WireParam<Q> {
   /** Wire parameter name, which differs from the URL param for some filters
    *  (`stable` goes out as `include_stable`, `cause` as `category`). */
   param: string;
-  /** Position among the endpoint's filter params; the derived loop sorts on it.
-   *  The two endpoints take a filter at different positions (tests sends `q`
-   *  last, jobs third), so the order is per endpoint, not per filter. */
-  order: number;
   /** Reads the endpoint's query object, so the mapping has no state of its own. */
   value: (q: Q) => string | null;
 }
@@ -209,9 +203,8 @@ export const LIST_FILTERS: ListFilterDescriptor[] = [
       if (v) p.set("q", v);
     },
     wire: {
-      // tests sends q last, jobs third — each matches the hand-written api.ts.
-      tests: { param: "q", order: 7, value: (q) => q.q || null },
-      jobs: { param: "q", order: 2, value: (q) => q.q || null },
+      tests: { param: "q", value: (q) => q.q || null },
+      jobs: { param: "q", value: (q) => q.q || null },
     },
   }),
   listFilter({
@@ -223,11 +216,10 @@ export const LIST_FILTERS: ListFilterDescriptor[] = [
     serialize: (p, v) => {
       if (v !== "score") p.set("sort", v);
     },
-    // Both endpoints always take a sort, first among the filters, as the
-    // hand-written `params.set("sort", …)` did.
+    // Both endpoints always take a sort.
     wire: {
-      tests: { param: "sort", order: 0, value: (q) => q.sort },
-      jobs: { param: "sort", order: 0, value: (q) => q.sort },
+      tests: { param: "sort", value: (q) => q.sort },
+      jobs: { param: "sort", value: (q) => q.sort },
     },
   }),
   listFilter({
@@ -239,12 +231,10 @@ export const LIST_FILTERS: ListFilterDescriptor[] = [
     wire: {
       tests: {
         param: "include_stable",
-        order: 1,
         value: (q) => (q.showStable ? "true" : null),
       },
       jobs: {
         param: "include_stable",
-        order: 1,
         value: (q) => (q.showStable ? "true" : null),
       },
     },
@@ -256,7 +246,7 @@ export const LIST_FILTERS: ListFilterDescriptor[] = [
     views: ["tests"],
     ...enumFilter("cause", FAILURE_CATEGORIES),
     wire: {
-      tests: { key: "category", param: "category", order: 2, value: (q) => q.category },
+      tests: { key: "category", param: "category", value: (q) => q.category },
     },
   }),
   // Tests-only on the wire, like cause; the URL params still survive a view switch.
@@ -269,7 +259,6 @@ export const LIST_FILTERS: ListFilterDescriptor[] = [
     wire: {
       tests: {
         param: "quarantined",
-        order: 3,
         value: (q) => (q.quarantined ? "true" : null),
       },
     },
@@ -281,7 +270,7 @@ export const LIST_FILTERS: ListFilterDescriptor[] = [
     views: ["tests"],
     ...flag("broken"),
     wire: {
-      tests: { param: "broken", order: 4, value: (q) => (q.broken ? "true" : null) },
+      tests: { param: "broken", value: (q) => (q.broken ? "true" : null) },
     },
   }),
   listFilter({
@@ -293,12 +282,10 @@ export const LIST_FILTERS: ListFilterDescriptor[] = [
     wire: {
       tests: {
         param: "acknowledged",
-        order: 8,
         value: (q) => (q.acknowledged ? "true" : null),
       },
       jobs: {
         param: "acknowledged",
-        order: 6,
         value: (q) => (q.acknowledged ? "true" : null),
       },
     },
@@ -312,12 +299,10 @@ export const LIST_FILTERS: ListFilterDescriptor[] = [
     wire: {
       tests: {
         param: "has_issue",
-        order: 5,
         value: (q) => (q.issue == null ? null : String(q.issue === "linked")),
       },
       jobs: {
         param: "has_issue",
-        order: 4,
         value: (q) => (q.issue == null ? null : String(q.issue === "linked")),
       },
     },
@@ -328,7 +313,7 @@ export const LIST_FILTERS: ListFilterDescriptor[] = [
     relists: true,
     views: ["jobs"],
     ...optionalString("pipeline"),
-    wire: { jobs: { param: "pipeline", order: 3, value: (q) => q.pipeline } },
+    wire: { jobs: { param: "pipeline", value: (q) => q.pipeline } },
   }),
   listFilter({
     param: "new",
@@ -343,13 +328,11 @@ export const LIST_FILTERS: ListFilterDescriptor[] = [
       tests: {
         key: "newWithinDays",
         param: "new_within_days",
-        order: 6,
         value: (q) => (q.newWithinDays == null ? null : String(q.newWithinDays)),
       },
       jobs: {
         key: "newWithinDays",
         param: "new_within_days",
-        order: 5,
         value: (q) => (q.newWithinDays == null ? null : String(q.newWithinDays)),
       },
     },
@@ -425,7 +408,7 @@ export function parseViewState(search: string): ViewState {
 /** "?repo=…" (defaults omitted), or "" for the default view. */
 export function serializeViewState(s: ViewState): string {
   const p = new URLSearchParams();
-  // Pinned emission order: repo, project, q, then the hand-written params, then
+  // Pinned emission sequence: repo, project, q, then the hand-written params, then
   // sort..new. The split is anchored to the sort descriptor rather than a bare
   // index, so inserting or reordering entries before sort cannot silently move
   // the hand-written block.

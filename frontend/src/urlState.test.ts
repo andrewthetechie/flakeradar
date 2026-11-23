@@ -495,40 +495,6 @@ describe("LIST_FILTERS", () => {
     expect(emitted(d.wire?.jobs, BASE_JOB_QUERY)).toBe(want.defaults);
   });
 
-  // The wire `order` each endpoint emits in — the byte order of the hand-written
-  // params.set calls api.ts had before the table, spelled in URL params. The two
-  // endpoints take a filter at different positions (tests sends q last, jobs
-  // third), which is why the order lives per wire entry rather than in the table.
-  const WIRE_ORDER: Record<"tests" | "jobs", string[]> = {
-    tests: [
-      "sort",
-      "stable",
-      "cause",
-      "quarantined",
-      "broken",
-      "issue",
-      "new",
-      "q",
-      "acknowledged",
-    ],
-    jobs: ["sort", "stable", "q", "pipeline", "issue", "new", "acknowledged"],
-  };
-
-  it.each(["tests", "jobs"] as const)(
-    "the %s wire order is the pre-table api.ts byte order",
-    (endpoint) => {
-      const mapped = LIST_FILTERS.flatMap((d) => {
-        const w = d.wire?.[endpoint];
-        return w ? [{ param: d.param, order: w.order }] : [];
-      });
-      const byOrder = [...mapped].sort((a, b) => a.order - b.order);
-      expect(byOrder.map((e) => e.param)).toEqual(WIRE_ORDER[endpoint]);
-      // Every wire entry declares its position: a missing order is a type error,
-      // a duplicated one would make the emission order depend on sort stability.
-      expect(new Set(mapped.map((e) => e.order)).size).toBe(mapped.length);
-    },
-  );
-
   it("a descriptor added to the table drives parse, serialize and the page reset", () => {
     // If any of the three derived functions still enumerated params by hand,
     // this scratch entry would be ignored and this test would fail.
