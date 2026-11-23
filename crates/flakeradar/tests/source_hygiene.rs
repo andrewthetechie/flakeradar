@@ -1,9 +1,10 @@
-//! Four properties of this workspace's own source, checked from outside it.
+//! Five properties of this workspace's own source, checked from outside it.
 //!
 //! All are rules a compiler cannot see: that every log event carries a name and a
 //! static message, that no comment or identifier in `crates/` points at the
 //! implementation this one replaced, that every hand-written file carries the
-//! compliance marker, and that the Report route module owns no database write.
+//! compliance marker, that the Report route module owns no database write, and that
+//! the SQL literals of the tier rule live only in the module that owns them.
 //! Each rule is a function over the text of one file, so a test can feed it a
 //! violation as well as the tree, and every violation shape this file is named
 //! for has a case that runs through it.
@@ -356,6 +357,111 @@ fn the_marker_check_flags_only_a_hand_written_file_without_it() {
         "crates/flakeradar-db/src/entities/jobs.rs",
         "use sea_orm::entity::prelude::*;\n"
     ));
+}
+
+/// The three SQL spellings of the tier rule, which `crates/flakeradar-db/src/tier.rs` owns.
+const TIER_LITERALS: &[&str] = &[
+    "flaky_since IS NOT NULL",
+    "flaky_since IS NULL AND",
+    "flakiness_score > 0",
+];
+
+/// The one file allowed to carry [`TIER_LITERALS`], because it is the single home of
+/// the SQL shapes the filters, counts and gauges read.
+const TIER_MODULE: &str = "crates/flakeradar-db/src/tier.rs";
+
+/// The database module whose SQL those shapes must not be restated in.
+const TIER_SCAN_DIR: &str = "crates/flakeradar-db/src/";
+
+/// The second literal of the criterion: a tier `CASE` spelled without an alias, which
+/// [`TIER_LITERALS`] does not cover because `tier_case` always names its alias between
+/// `WHEN` and `flaky_since`.
+const TIER_CASE_LITERAL: &str = "CASE WHEN flaky_since";
+
+/// Every line of a non-tier file under `crates/flakeradar-db/src/` that spells part
+/// of the classification, each naming the file, the line and the line itself.
+///
+/// The match is case-sensitive, like `rg`'s default, and files outside the scanned
+/// directory answer nothing at all.
+fn tier_literal_offences(name: &str, text: &str) -> Vec<String> {
+    if !name.starts_with(TIER_SCAN_DIR) || name == TIER_MODULE {
+        return Vec::new();
+    }
+    let mut offences = Vec::new();
+    for (number, line) in text.lines().enumerate() {
+        for literal in TIER_LITERALS.iter().copied() {
+            if line.contains(literal) {
+                offences.push(format!("{name}:{}: {literal}: {}", number + 1, line.trim()));
+            }
+        }
+    }
+    offences
+}
+
+/// The classification lives in `tier.rs` and nowhere else in the database crate: no
+/// filter, count or gauge restates it, and no gauge spells its own `CASE`.
+#[test]
+fn classification_literals_live_only_in_tier() {
+    let sources = sources();
+    let offences: Vec<String> = sources
+        .iter()
+        .flat_map(|(name, text)| tier_literal_offences(name, text))
+        .collect();
+    assert!(
+        offences.is_empty(),
+        "these lines restate the classification outside `{TIER_MODULE}`:\n{}",
+        offences.join("\n")
+    );
+    let metrics = sources
+        .iter()
+        .find(|(name, _)| name == "crates/flakeradar-db/src/metrics.rs")
+        .expect("the metrics module is a source file");
+    assert!(
+        !metrics.1.contains(TIER_CASE_LITERAL),
+        "{TIER_CASE_LITERAL} is spelled in {}, which must splice `tier::tier_case`",
+        metrics.0
+    );
+}
+
+/// A literal written back into a database module is flagged, and the same line in the
+/// module that owns the classification is not.
+#[test]
+fn a_tier_literal_outside_the_tier_module_is_flagged() {
+    let line = "    conditions.raw(\"t.flakiness_score > 0\");\n";
+    let offences = tier_literal_offences("crates/flakeradar-db/src/reads.rs", line);
+    assert_eq!(
+        offences,
+        vec![
+            "crates/flakeradar-db/src/reads.rs:1: flakiness_score > 0: \
+              conditions.raw(\"t.flakiness_score > 0\");"
+        ],
+        "the literal in a non-tier database file is reported with its file and line"
+    );
+    assert!(
+        tier_literal_offences(TIER_MODULE, line).is_empty(),
+        "the module that owns the shapes is exempt: {:?}",
+        tier_literal_offences(TIER_MODULE, line)
+    );
+    // Every literal is caught, and a file outside the scanned directory answers
+    // nothing even when it spells them — this file is such a file.
+    for literal in TIER_LITERALS {
+        let text = format!("filter.raw(\"{alias}.{literal}\");\n", alias = "t");
+        assert!(
+            !tier_literal_offences("crates/flakeradar-db/src/metrics.rs", &text).is_empty(),
+            "{literal} is not caught: {text}"
+        );
+        assert!(
+            tier_literal_offences("crates/flakeradar-db/src/tier.rs", &text).is_empty(),
+            "{literal} is caught inside the tier module"
+        );
+    }
+    // A line that spells none of them is not reported, so the rule is not a blanket
+    // refusal of the database module.
+    let quiet = tier_literal_offences(
+        "crates/flakeradar-db/src/reads.rs",
+        "binds.raw(\"t.flaky_since IS NULL\");\n",
+    );
+    assert!(quiet.is_empty(), "an unrelated line is reported: {quiet:?}");
 }
 
 /// Every [`ALLOWED`] entry names a file that exists and a word it still carries.

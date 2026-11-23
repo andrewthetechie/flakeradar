@@ -590,6 +590,57 @@ async fn a_summary_job_with_no_failed_sibling_explains_nothing() {
 }
 
 #[tokio::test]
+async fn a_summary_job_explained_by_a_test_alone_names_no_sibling_job() {
+    // The two halves of an explanation are separate: a failing Test explains the
+    // Summary Job's own failure, while the Jobs listed beside it are the *other*
+    // failed Jobs of that run. With no other failed Job there is nothing to list,
+    // and the explanation the Test gave still stands.
+    let db = TestDb::new().await.expect("a test database");
+    let project = make_project()
+        .repo("acme/app")
+        .project("backend")
+        .create(&db)
+        .await;
+    let pipeline = make_pipeline().repo("acme/app").create(&db).await;
+    let summary = make_job(&pipeline)
+        .name("alls-green")
+        .summary(true)
+        .create(&db)
+        .await;
+    make_job_execution(&summary)
+        .status("failed")
+        .ci_job_id("J-S")
+        .ci_run_id("run-1")
+        .create(&db)
+        .await;
+    let test = make_test_case(&project).name("t1").create(&db).await;
+    let run = make_run(&project)
+        .commit_sha("s")
+        .ci_job_id("J-S")
+        .create(&db)
+        .await;
+    make_execution(&test, &run)
+        .status("failed")
+        .create(&db)
+        .await;
+
+    let body = get(&app(&db, &[]), &format!("/api/jobs/{}/history", summary.id))
+        .await
+        .json();
+    let execution = &body["executions"][0];
+    assert_eq!(execution["ci_job_id"], "J-S");
+    assert_eq!(execution["outcome"], "explained");
+    assert_eq!(execution["explained_by"][0]["name"], "t1");
+    assert_eq!(
+        execution["explained_by_jobs"],
+        json!([]),
+        "a run with no other failed Job explains the Summary Job with no Job"
+    );
+    assert_eq!(body["explained_failures"], 1);
+    assert_eq!(body["unexplained_failures"], 0);
+}
+
+#[tokio::test]
 async fn a_summary_job_lists_at_most_twenty_siblings() {
     let db = TestDb::new().await.expect("a test database");
     let pipeline = make_pipeline().repo("acme/app").create(&db).await;

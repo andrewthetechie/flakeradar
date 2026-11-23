@@ -192,6 +192,27 @@ fn an_entity_that_references_itself_is_refused() {
 }
 
 #[test]
+fn the_two_halves_around_a_doctype_summed_past_the_budget_are_refused() {
+    // Each half around the `DOCTYPE` is measured on its own against the cap, but
+    // the budget is the whole document's: sixteen references to a 4 MiB entity
+    // before the declaration and one after it stay inside the cap half by half and
+    // pass it summed, which is what the whole-document comparison refuses.
+    let value = "A".repeat(4 * 1024 * 1024);
+    let xml = format!(
+        "&e;&e;&e;&e;&e;&e;&e;&e;&e;&e;&e;&e;&e;&e;&e;&e;\
+         <!DOCTYPE testsuite [<!ENTITY e \"{value}\">]>\
+         <testsuite name=\"s\"><testcase classname=\"c\" name=\"t\">&e;</testcase></testsuite>"
+    );
+    assert_eq!(
+        parse_junit_xml(xml.as_bytes(), 1),
+        Err(ParseError::InvalidXml {
+            detail: "the entity references in this report expand past the 67108864 byte budget"
+                .to_owned()
+        }),
+    );
+}
+
+#[test]
 fn a_reference_with_no_terminator_is_refused() {
     // `&e` with no `;` is not a reference the scan counts, and the parser refuses
     // the document itself. What matters is that the answer is a refusal rather

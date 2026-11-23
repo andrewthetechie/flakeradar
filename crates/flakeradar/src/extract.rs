@@ -592,8 +592,26 @@ mod tests {
 
     use super::{
         INTEGER_TYPES, attach_query_input, body_loc, is_integer_failure, is_json_content_type,
-        json_error_position, kind_for, missing_field, off_thread, path_issue,
+        json_error_position, kind_for, missing_field, off_thread, path_error, path_issue,
     };
+
+    #[test]
+    fn a_rejection_that_names_no_deserialization_is_a_not_found() {
+        // `axum` hands the path extractor a `MissingPathParams` rejection when the
+        // request was never routed through a path template, so there is no
+        // deserialization to report and no parameter to name: the answer is the
+        // plain 404 a wrong path gets, not a 422 or a server error.
+        use axum::extract::rejection::{MissingPathParams, PathRejection};
+
+        let error = path_error(PathRejection::MissingPathParams(
+            MissingPathParams::default(),
+        ));
+        assert_eq!(error.status(), StatusCode::NOT_FOUND);
+        match error.detail() {
+            Detail::Text(text) => assert_eq!(text, "Not Found"),
+            Detail::Issues(issues) => panic!("a 404 is one message, not {issues:?}"),
+        }
+    }
 
     #[tokio::test]
     async fn cpu_work_leaves_the_thread_that_awaits_it() {
