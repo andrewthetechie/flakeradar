@@ -17,6 +17,7 @@
 )]
 
 pub mod classify;
+pub mod decision;
 pub mod defaults;
 pub mod digest;
 pub mod dto;
