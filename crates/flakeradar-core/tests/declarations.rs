@@ -241,6 +241,18 @@ fn an_entity_the_internal_subset_declares_expands_in_an_attribute() {
 }
 
 #[test]
+fn entity_declarations_whose_quotes_cross_are_refused() {
+    // The subset's last apostrophe closes the first declaration's quote, so the
+    // inner parameter entity's apostrophe closes nothing and its own quote never
+    // closes inside the subset: the entity scan keeps no value for a declaration
+    // whose closing quote does not exist, and the parser refuses the document.
+    let error = refused(
+        br#"<!DOCTYPE t [<!ENTITY a 'x"<!ENTITY % b "y']><testsuite><testcase name="a"/></testsuite>"#,
+    );
+    assert!(matches!(error, ParseError::InvalidXml { .. }), "{error}");
+}
+
+#[test]
 fn a_numeric_character_reference_without_its_semicolon_is_refused() {
     // The unrepresentable-number check reads a terminated reference only, so the
     // unterminated `&#38 x` is left to the parser, which refuses it.
