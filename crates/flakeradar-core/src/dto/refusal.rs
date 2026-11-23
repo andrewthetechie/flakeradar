@@ -16,7 +16,7 @@ use crate::identity::IdentityError;
 use crate::lax;
 use crate::py::strip_wire_whitespace;
 
-use super::ATTEMPT_MAX;
+use super::request::ATTEMPT_MAX;
 
 /// One segment of a validation error's location.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
