@@ -262,8 +262,12 @@ describe("GET request builders", () => {
     });
   });
 
-  // Every filter the Tests endpoint takes, set at once: the case asserts the
-  // complete parameter set the table maps for this fixture state.
+  // Every filter the Tests endpoint takes, set at once. The map is the recorded
+  // set, parsed: the whole-URL assertion this case replaced, plus the
+  // acknowledged=true the separate acknowledged case recorded (the table's entry
+  // reads only that field, so the two sets simply union). repo, page, page_size,
+  // sort, include_stable, category, quarantined, broken, has_issue,
+  // new_within_days, q, acknowledged: nothing else may appear, none may be missing.
   it("fetchTests maps every filter through the table", async () => {
     const calls = stubFetch();
     await fetchTests({
@@ -275,7 +279,7 @@ describe("GET request builders", () => {
       showStable: true,
       category: "timing",
       quarantined: true,
-      acknowledged: false,
+      acknowledged: true,
       broken: true,
       issue: "linked",
       newWithinDays: 7,
@@ -295,6 +299,7 @@ describe("GET request builders", () => {
         has_issue: "true",
         new_within_days: "7",
         q: "login",
+        acknowledged: "true",
       },
     });
   });
@@ -371,8 +376,12 @@ describe("GET request builders", () => {
     });
   });
 
-  // Jobs' table entries cover every filter this endpoint takes; the case
-  // asserts the complete parameter set the table maps for this fixture state.
+  // Jobs' table entries cover every filter this endpoint takes, all set at once.
+  // The map is the recorded set, parsed: the whole-URL assertion this case
+  // replaced, plus the acknowledged=true the separate acknowledged case recorded
+  // (the table's entry reads only that field, so the two sets simply union).
+  // repo, page, page_size, sort, include_stable, q, pipeline, has_issue,
+  // new_within_days, acknowledged: nothing else may appear, none may be missing.
   it("fetchJobs maps every Jobs filter through the table", async () => {
     const calls = stubFetch();
     await fetchJobs({
@@ -382,7 +391,7 @@ describe("GET request builders", () => {
       sort: "score",
       showStable: true,
       pipeline: "ci.yml",
-      acknowledged: false,
+      acknowledged: true,
       issue: "none",
       newWithinDays: 7,
       q: "login",
@@ -399,6 +408,7 @@ describe("GET request builders", () => {
         pipeline: "ci.yml",
         has_issue: "false",
         new_within_days: "7",
+        acknowledged: "true",
       },
     });
   });
