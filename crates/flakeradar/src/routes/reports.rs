@@ -26,7 +26,7 @@ use flakeradar_core::{
     dto::ReportOut, dto::ReportSummaryOut, dto::ValidationIssue, dto::ci_run_attempt_too_large,
     dto::pipeline_body, dto::read_ci_run_attempt, identity::normalize_project,
     identity::normalize_repo, identity::normalize_root, lax, model::ReportStatus,
-    parsing::ParseError, parsing::parse_junit_xml, py::strip_wire_whitespace,
+    parsing::ParseError, parsing::classify_report, py::strip_wire_whitespace,
 };
 use flakeradar_db::list_reports as report_queue;
 use flakeradar_db::{
@@ -495,7 +495,7 @@ fn report_body_error(rejection: &axum::extract::rejection::BytesRejection) -> Ap
 /// worker. A `<testcase time>` that is not a number answers 400, and every other
 /// parse failure answers 422.
 async fn parse_report_body(content: Bytes, line_base: i64) -> ApiResult<()> {
-    let parsed = tokio::task::spawn_blocking(move || parse_junit_xml(&content, line_base))
+    let parsed = tokio::task::spawn_blocking(move || classify_report(&content, line_base))
         .await
         .map_err(|error| {
             ApiError::new(

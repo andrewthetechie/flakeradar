@@ -10,10 +10,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use flakeradar_core::{
-    classify::FailureCategory, classify::classify_failure, defaults, dto::PipelineReportIn,
-    model::EntityKind, model::ExecutionStatus, model::JobStatus, model::ReportKind,
-    model::ReportStatus, notify::TierChange, parsing::ParseError, parsing::ParsedCase,
-    parsing::parse_junit_xml, types::Fingerprint,
+    defaults, dto::PipelineReportIn, model::EntityKind, model::ExecutionStatus, model::JobStatus,
+    model::ReportKind, model::ReportStatus, notify::TierChange, parsing::ClassifiedCase,
+    parsing::ClassifiedReport, parsing::ParseError, parsing::classify_report,
 };
 use sea_orm::entity::prelude::DateTimeWithTimeZone;
 use sea_orm::{
@@ -243,44 +242,6 @@ pub async fn claim_next_report(
         Some(row) => Ok(Some(reports::Model::from_query_result(&row, "")?)),
         None => Ok(None),
     }
-}
-
-/// Parses a JUnit body and classifies each failing case: the CPU half, run off
-/// the async thread.
-///
-/// The fingerprint of every case is hashed here, once, so neither the upsert nor
-/// the Execution build hashes the same identity again.
-fn parse_and_classify(body: &[u8], line_base: i32) -> Result<ParsedReport, ParseError> {
-    let parsed = parse_junit_xml(body, i64::from(line_base))?;
-    let cases: Vec<ReportedCase> = parsed
-        .into_iter()
-        .map(|case| ReportedCase {
-            fingerprint: flakeradar_core::parsing::fingerprint(
-                &case.suite,
-                &case.classname,
-                &case.name,
-            ),
-            category: case
-                .status
-                .is_failing()
-                .then(|| classify_failure(&case.message, &case.details)),
-            case,
-        })
-        .collect();
-    let first = first_occurrences(&cases);
-    Ok(ParsedReport { cases, first })
-}
-
-/// The index of each distinct Test's first case, in the order they first appear.
-fn first_occurrences(cases: &[ReportedCase]) -> Vec<usize> {
-    let mut seen: BTreeSet<&str> = BTreeSet::new();
-    let mut first = Vec::new();
-    for (index, case) in cases.iter().enumerate() {
-        if seen.insert(case.fingerprint.as_str()) {
-            first.push(index);
-        }
-    }
-    first
 }
 
 /// The counts a processed Report stores.
@@ -520,10 +481,10 @@ async fn finish_report(
 ///
 /// The body moves to the blocking thread, because the parser owns the bytes it
 /// reads and the row keeps its own copy for the status write.
-async fn parse_report(report: &reports::Model) -> Result<ParsedReport, ProcessError> {
+async fn parse_report(report: &reports::Model) -> Result<ClassifiedReport, ProcessError> {
     let (body, line_base) = stored_junit_body(report);
     let body = body.to_vec();
-    let parsed = tokio::task::spawn_blocking(move || parse_and_classify(&body, line_base))
+    let parsed = tokio::task::spawn_blocking(move || classify_report(&body, i64::from(line_base)))
         .await
         .map_err(|error| ProcessError::permanent(format!("RuntimeError: {error}")))?;
     Ok(parsed?)
@@ -574,7 +535,7 @@ async fn store_run(
 /// Upserts the Report's Tests, then builds its Executions off the async thread.
 async fn build_executions(
     db: &impl ConnectionTrait,
-    parsed: ParsedReport,
+    parsed: ClassifiedReport,
     project_id: i32,
     run_id: i32,
     now: DateTimeWithTimeZone,
@@ -648,24 +609,6 @@ async fn mark_infra_suspect(
     Ok(())
 }
 
-/// One Report's cases, and the first case of each distinct Test.
-struct ParsedReport {
-    /// Every case the parser produced, in Report order.
-    cases: Vec<ReportedCase>,
-    /// The index in `cases` of each Test's first occurrence, in that order.
-    first: Vec<usize>,
-}
-
-/// One Test a Report named, with the two facts the processor derives once.
-struct ReportedCase {
-    /// The Test's identity, hashed once for the whole Report.
-    fingerprint: Fingerprint,
-    /// The case the parser read.
-    case: ParsedCase,
-    /// The likely cause of a failure; only a failing case has one.
-    category: Option<FailureCategory>,
-}
-
 /// One Report's Executions as they are built, before they are stored.
 struct BuiltExecutions {
     /// The rows to insert, in Report order.
@@ -685,7 +628,7 @@ struct BuiltExecutions {
 /// feed today's Score history row. The cases are consumed, so a Failure's
 /// details move into the row they belong to instead of being copied.
 fn build_test_executions(
-    report: ParsedReport,
+    report: ClassifiedReport,
     ids: &BTreeMap<String, i32>,
     run_id: i32,
     now: DateTimeWithTimeZone,
@@ -697,7 +640,7 @@ fn build_test_executions(
     let mut latest_by_id: BTreeMap<i32, usize> = BTreeMap::new();
     let mut day_counts: BTreeMap<i32, DayCounts> = BTreeMap::new();
     for reported in report.cases {
-        let ReportedCase {
+        let ClassifiedCase {
             fingerprint,
             case,
             category,
@@ -781,10 +724,10 @@ struct LatestTest {
 async fn upsert_test_cases(
     db: &impl ConnectionTrait,
     project_id: i32,
-    report: &ParsedReport,
+    report: &ClassifiedReport,
     now: DateTimeWithTimeZone,
 ) -> Result<BTreeMap<String, i32>, DbError> {
-    let first: Vec<&ReportedCase> = report
+    let first: Vec<&ClassifiedCase> = report
         .first
         .iter()
         .filter_map(|index| report.cases.get(*index))

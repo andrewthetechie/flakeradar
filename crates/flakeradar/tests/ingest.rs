@@ -1351,6 +1351,26 @@ async fn process_all(db: &TestDb) {
 }
 
 #[tokio::test]
+async fn a_processed_report_agrees_with_the_route() {
+    // The route parses the upload to decide whether to accept it, and the
+    // processor parses the same bytes again through the same function. So a
+    // Report the route accepted must process cleanly: `processed`, with no
+    // `RuntimeError:` or `ParseError:` text stored on the row.
+    let db = TestDb::new().await.expect("a test database is available");
+    let app = test_app(&db);
+    let reply = ingest(&app, &[], passing_report()).await;
+    assert_eq!(reply.status, StatusCode::ACCEPTED, "{}", reply.text());
+    process_all(&db).await;
+
+    let report = stored_reports(&db).await;
+    let report = report.first().expect("one Report");
+    let served = get(&app, &format!("/api/reports/{}", report.id)).await;
+    assert_eq!(served.status, StatusCode::OK);
+    assert_eq!(served.json()["status"], json!("processed"));
+    assert_eq!(served.json()["error"], Value::Null);
+}
+
+#[tokio::test]
 async fn an_ingested_failure_in_an_empty_namespace_is_stored_as_failed() {
     // `xmlns=""` means no namespace, so the `<failure>` is the JUnit one and the
     // Test's stored `last_status` is `failed`.
