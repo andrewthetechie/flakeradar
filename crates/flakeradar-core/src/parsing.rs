@@ -24,7 +24,7 @@
 
 // Rust guideline compliant 2026-07-21
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fmt::Write as _;
 use std::ops::Range;
 use std::sync::LazyLock;
@@ -34,6 +34,7 @@ use regex::Regex;
 use roxmltree::{Document, Node, ParsingOptions};
 use sha1::{Digest as _, Sha1};
 
+use crate::classify::{FailureCategory, classify_failure};
 use crate::encodings::{Rule, Utf16Order, rule_for};
 use crate::model::ExecutionStatus;
 use crate::py::{cap, py_splitlines, strip_wire_whitespace};
@@ -274,6 +275,81 @@ pub fn parse_junit_xml(content: &[u8], line_base: i64) -> Result<Vec<ParsedCase>
     } else {
         parse_text(&String::from_utf8_lossy(content), line_base)
     }
+}
+
+/// One Report's cases with their identities and categories, and the first case
+/// of each distinct Test.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClassifiedReport {
+    /// Every case the parser produced, in Report order.
+    pub cases: Vec<ClassifiedCase>,
+    /// The index in `cases` of each Test's first occurrence, in that order.
+    pub first: Vec<usize>,
+}
+
+/// One Test a Report named, with the two facts derived once per case.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClassifiedCase {
+    /// The Test's identity, hashed once for the whole Report.
+    pub fingerprint: Fingerprint,
+    /// The case the parser read.
+    pub case: ParsedCase,
+    /// The likely cause of a failure; only a failing case has one.
+    pub category: Option<FailureCategory>,
+}
+
+/// Parses a JUnit body and classifies each failing case: the one verdict the
+/// ingest route and the processor both answer.
+///
+/// `line_base` is the base the runner used for line numbers, as in
+/// [`parse_junit_xml`]. The fingerprint of every case is hashed here, once, so
+/// neither the upsert nor the Execution build hashes the same identity again.
+///
+/// # Errors
+///
+/// Returns what [`parse_junit_xml`] returns: [`ParseError::InvalidXml`] when the
+/// bytes are not a JUnit XML report, [`ParseError::NoTestCases`] when the report
+/// holds no named case, and [`ParseError::InvalidTime`] when a `<testcase time>`
+/// is not a number.
+///
+/// # Examples
+///
+/// ```
+/// use flakeradar_core::classify::FailureCategory;
+/// use flakeradar_core::parsing::classify_report;
+///
+/// let xml = br#"<testsuite name="unit"><testcase classname="c" name="t"><failure message="AssertionError: expected 3, got 4">trace</failure></testcase></testsuite>"#;
+/// let classified = classify_report(xml, 1).unwrap();
+/// assert_eq!(classified.cases[0].category, Some(FailureCategory::Assertion));
+/// assert_eq!(classified.first, vec![0]);
+/// ```
+pub fn classify_report(body: &[u8], line_base: i64) -> Result<ClassifiedReport, ParseError> {
+    let parsed = parse_junit_xml(body, line_base)?;
+    let cases: Vec<ClassifiedCase> = parsed
+        .into_iter()
+        .map(|case| ClassifiedCase {
+            fingerprint: fingerprint(&case.suite, &case.classname, &case.name),
+            category: case
+                .status
+                .is_failing()
+                .then(|| classify_failure(&case.message, &case.details)),
+            case,
+        })
+        .collect();
+    let first = first_occurrences(&cases);
+    Ok(ClassifiedReport { cases, first })
+}
+
+/// The index of each distinct Test's first case, in the order they first appear.
+fn first_occurrences(cases: &[ClassifiedCase]) -> Vec<usize> {
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    let mut first = Vec::new();
+    for (index, case) in cases.iter().enumerate() {
+        if seen.insert(case.fingerprint.as_str()) {
+            first.push(index);
+        }
+    }
+    first
 }
 
 /// Decodes the bytes with the encoding they declare, or reports that they are

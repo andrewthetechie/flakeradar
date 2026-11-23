@@ -12,8 +12,9 @@
 )]
 
 use flakeradar_core::{
-    model::ExecutionStatus, parsing::DETAILS_MAX, parsing::MESSAGE_MAX, parsing::ParseError,
-    parsing::ParsedCase, parsing::fingerprint, parsing::parse_junit_xml,
+    classify::FailureCategory, model::ExecutionStatus, parsing::DETAILS_MAX, parsing::MESSAGE_MAX,
+    parsing::ParseError, parsing::ParsedCase, parsing::classify_report, parsing::fingerprint,
+    parsing::parse_junit_xml,
 };
 
 /// Parses a report known to hold exactly one case.
@@ -118,6 +119,24 @@ tests/test_a.py:14: AssertionError</failure><system-out>hello out</system-out><s
         case.details,
         "Traceback...\ntests/test_a.py:14: AssertionError\n\n--- stdout ---\nhello out\n\n--- stderr ---\nerr here"
     );
+}
+
+#[test]
+fn classify_reports_a_failure_message() {
+    // The route and the processor share this one verdict, so the category the
+    // processor stores must be the one this function answers.
+    let classified = classify_report(
+        br#"<testsuite name="s"><testcase classname="c" name="t"><failure message="AssertionError: expected 3, got 4">trace</failure></testcase></testsuite>"#,
+        1,
+    )
+    .expect("the report parses");
+    assert_eq!(classified.cases.len(), 1, "expected one case");
+    assert_eq!(classified.cases[0].case.name, "t");
+    assert_eq!(
+        classified.cases[0].category,
+        Some(FailureCategory::Assertion)
+    );
+    assert_eq!(classified.first, vec![0], "one Test, first case at 0");
 }
 
 #[test]
