@@ -14,6 +14,7 @@ use sea_orm::sea_query::Value;
 
 use crate::error::DbError;
 use crate::sql::{get, one, required_one, rows};
+use crate::tier;
 
 // One roundtrip for the queue facts.
 //
@@ -35,22 +36,21 @@ const QUEUE_SQL: &str = "
 // The tiers are the stored tier state: a row with `flaky_since` set is flaky,
 // one above 0 without it is suspect, otherwise stable. The rescore stamps
 // `flaky_since` from `FLAKE_THRESHOLD` and clears it at `RECOVER_THRESHOLD`, so
-// these gauges count exactly the tier every API row reports.
-const TEST_TIERS_SQL: &str = "
-    SELECT CASE WHEN flaky_since IS NOT NULL THEN 'flaky'
-                WHEN flakiness_score > 0 THEN 'suspect'
-                ELSE 'stable' END AS tier,
-           count(*) AS count
-    FROM test_cases GROUP BY 1
-";
+// these gauges count exactly the tier every API row reports; the `CASE` is the
+// one [`tier::tier_case`] the filters and counts share.
+fn test_tiers_sql() -> String {
+    format!(
+        "SELECT {}, count(*) AS count FROM test_cases GROUP BY 1",
+        tier::tier_case("test_cases")
+    )
+}
 
-const JOB_TIERS_SQL: &str = "
-    SELECT CASE WHEN flaky_since IS NOT NULL THEN 'flaky'
-                WHEN flakiness_score > 0 THEN 'suspect'
-                ELSE 'stable' END AS tier,
-           count(*) AS count
-    FROM jobs GROUP BY 1
-";
+fn job_tiers_sql() -> String {
+    format!(
+        "SELECT {}, count(*) AS count FROM jobs GROUP BY 1",
+        tier::tier_case("jobs")
+    )
+}
 
 const REPORT_STATUSES_SQL: &str = "SELECT status, count(*) AS count FROM reports GROUP BY status";
 
@@ -104,7 +104,7 @@ pub async fn report_status_counts(
 ///
 /// Returns [`DbError::Database`] when the statement fails.
 pub async fn test_tier_counts(db: &impl ConnectionTrait) -> Result<BTreeMap<String, i64>, DbError> {
-    counts(db, TEST_TIERS_SQL, "tier", None).await
+    counts(db, &test_tiers_sql(), "tier", None).await
 }
 
 /// How many Jobs hold each tier, by their stored `flaky_since` state.
@@ -113,7 +113,7 @@ pub async fn test_tier_counts(db: &impl ConnectionTrait) -> Result<BTreeMap<Stri
 ///
 /// Returns [`DbError::Database`] when the statement fails.
 pub async fn job_tier_counts(db: &impl ConnectionTrait) -> Result<BTreeMap<String, i64>, DbError> {
-    counts(db, JOB_TIERS_SQL, "tier", None).await
+    counts(db, &job_tiers_sql(), "tier", None).await
 }
 
 /// The Unix time of the most recently processed Report still retained.
@@ -151,7 +151,7 @@ mod tests {
     //! The query text needs no database.
 
     use super::{
-        JOB_TIERS_SQL, LAST_PROCESSED_SQL, QUEUE_SQL, REPORT_STATUSES_SQL, TEST_TIERS_SQL,
+        LAST_PROCESSED_SQL, QUEUE_SQL, REPORT_STATUSES_SQL, job_tiers_sql, test_tiers_sql,
     };
 
     #[test]
@@ -160,11 +160,11 @@ mod tests {
         // a query here that reached the Execution tables would make every scrape
         // and every readiness check as expensive as the whole history.
         for sql in [
-            QUEUE_SQL,
-            TEST_TIERS_SQL,
-            JOB_TIERS_SQL,
-            REPORT_STATUSES_SQL,
-            LAST_PROCESSED_SQL,
+            QUEUE_SQL.to_owned(),
+            test_tiers_sql(),
+            job_tiers_sql(),
+            REPORT_STATUSES_SQL.to_owned(),
+            LAST_PROCESSED_SQL.to_owned(),
         ] {
             let lowered = sql.to_lowercase();
             for table in ["test_executions", "test_runs", "job_executions"] {
@@ -174,7 +174,7 @@ mod tests {
         // The capture really sees the ops queries themselves.
         assert!(QUEUE_SQL.contains("pg_locks"));
         assert!(QUEUE_SQL.contains("reports"));
-        assert!(TEST_TIERS_SQL.contains("test_cases"));
-        assert!(JOB_TIERS_SQL.contains("jobs"));
+        assert!(test_tiers_sql().contains("test_cases"));
+        assert!(job_tiers_sql().contains("jobs"));
     }
 }
