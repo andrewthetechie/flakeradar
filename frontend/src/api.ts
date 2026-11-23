@@ -218,23 +218,20 @@ export const fetchSummary = (scope: Scope) =>
   getJson<Summary>(withQuery("/api/summary", scopeParams(scope)));
 
 /**
- * Sets the endpoint's filter params from the table, in each entry's declared
- * `order` — the byte order of the hand-written params.set calls this table
- * replaced, so the derived requests are byte-identical to those.
+ * Sets the endpoint's filter params from the table, in the table's declaration
+ * order. Nothing downstream reads the sequence — the backend deserialises the
+ * whole query — so the parameter set is the contract.
  */
 function setWireParams<Q extends TestQuery | JobQuery>(
   params: URLSearchParams,
   q: Q,
   wires: (WireParam<Q> | undefined)[],
 ): void {
-  const mapped: { w: WireParam<Q>; v: string }[] = [];
   for (const w of wires) {
     if (!w) continue;
     const v = w.value(q);
-    if (v != null) mapped.push({ w, v });
+    if (v != null) params.set(w.param, v);
   }
-  mapped.sort((a, b) => a.w.order - b.w.order);
-  for (const { w, v } of mapped) params.set(w.param, v);
 }
 
 export function fetchTests(q: TestQuery): Promise<TestPage> {
@@ -242,10 +239,10 @@ export function fetchTests(q: TestQuery): Promise<TestPage> {
   const params = scopeParams(q);
   params.set("page", String(q.page));
   params.set("page_size", String(q.pageSize));
-  // Every filter the Tests endpoint accepts comes from the table, emitted in
-  // the table's wire order (sort, include_stable, category, quarantined,
-  // broken, has_issue, new_within_days, q, acknowledged) — the pre-table
-  // api.ts byte order.
+  // Every filter the Tests endpoint accepts comes from the table, in the
+  // table's declaration order: q, sort, include_stable, category, quarantined,
+  // broken, acknowledged, has_issue, new_within_days. The order carries no
+  // meaning; the parameter set is the contract.
   setWireParams(
     params,
     q,
@@ -378,9 +375,9 @@ export interface JobQuery {
 
 export function fetchJobs(q: JobQuery): Promise<JobPage> {
   // Jobs takes no project, so the scope param stays hand-written here, as does
-  // paging. The filters come from the table, emitted in the table's wire order
-  // (sort, include_stable, q, pipeline, has_issue, new_within_days,
-  // acknowledged) — the pre-table api.ts byte order.
+  // paging. The filters come from the table, in the table's declaration order:
+  // q, sort, include_stable, acknowledged, has_issue, pipeline,
+  // new_within_days. The order carries no meaning.
   const params = new URLSearchParams();
   if (q.repo) params.set("repo", q.repo);
   params.set("page", String(q.page));

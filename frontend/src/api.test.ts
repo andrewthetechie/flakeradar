@@ -32,6 +32,19 @@ function stubFetch(): Call[] {
   return calls;
 }
 
+/** The endpoint and the parsed query parameters of the one request a builder
+ *  made: the parameter set and its values are the contract, not the order the
+ *  code appended them in. */
+function request(calls: Call[]): { path: string; params: Record<string, string> } {
+  expect(calls).toHaveLength(1);
+  const raw = calls[0]?.path ?? "";
+  const i = raw.indexOf("?");
+  return {
+    path: i < 0 ? raw : raw.slice(0, i),
+    params: Object.fromEntries(new URLSearchParams(i < 0 ? "" : raw.slice(i + 1))),
+  };
+}
+
 /** Stubs the network so every request answers with a failed response. */
 function stubFailure(status: number): void {
   vi.stubGlobal(
@@ -189,8 +202,9 @@ describe("scopeParams", () => {
 });
 
 /**
- * Every GET builder is a parameter mapping, so the exact URL — key names, values
- * and the order the code sets them in — is the contract under test.
+ * Every GET builder is a parameter mapping, so the contract under test is the
+ * complete set of parameters and their values; the order the code appends them
+ * in is not part of it.
  */
 describe("GET request builders", () => {
   afterEach(() => vi.unstubAllGlobals());
@@ -212,9 +226,17 @@ describe("GET request builders", () => {
       newWithinDays: null,
       q: "",
     });
-    expect(calls.map((c) => c.path)).toEqual([
-      "/api/tests?repo=a%2Fb&page=2&page_size=50&sort=proven&include_stable=true&category=timing",
-    ]);
+    expect(request(calls)).toEqual({
+      path: "/api/tests",
+      params: {
+        repo: "a/b",
+        page: "2",
+        page_size: "50",
+        sort: "proven",
+        include_stable: "true",
+        category: "timing",
+      },
+    });
   });
 
   it("fetchTests sends the broken filter as broken=true", async () => {
@@ -234,16 +256,19 @@ describe("GET request builders", () => {
       newWithinDays: null,
       q: "",
     });
-    expect(calls.map((c) => c.path)).toEqual([
-      "/api/tests?repo=a%2Fb&page=1&page_size=50&sort=score&broken=true",
-    ]);
+    expect(request(calls)).toEqual({
+      path: "/api/tests",
+      params: { repo: "a/b", page: "1", page_size: "50", sort: "score", broken: "true" },
+    });
   });
 
-  // The derived block emits in each entry's declared wire order (sort, stable,
-  // cause, quarantined, broken, issue, new, q) — the byte order of the
-  // hand-written params.set calls api.ts had before the table, so a set q comes
-  // last and the request bytes match the pre-table code exactly.
-  it("fetchTests maps every filter through the table, in the declared wire order", async () => {
+  // Every filter the Tests endpoint takes, set at once. The map is the recorded
+  // set, parsed: the whole-URL assertion this case replaced, plus the
+  // acknowledged=true the separate acknowledged case recorded (the table's entry
+  // reads only that field, so the two sets simply union). repo, page, page_size,
+  // sort, include_stable, category, quarantined, broken, has_issue,
+  // new_within_days, q, acknowledged: nothing else may appear, none may be missing.
+  it("fetchTests maps every filter through the table", async () => {
     const calls = stubFetch();
     await fetchTests({
       repo: "a/b",
@@ -254,16 +279,29 @@ describe("GET request builders", () => {
       showStable: true,
       category: "timing",
       quarantined: true,
-      acknowledged: false,
+      acknowledged: true,
       broken: true,
       issue: "linked",
       newWithinDays: 7,
       q: "login",
     });
-    expect(calls.map((c) => c.path)).toEqual([
-      "/api/tests?repo=a%2Fb&page=1&page_size=50&sort=proven&include_stable=true" +
-        "&category=timing&quarantined=true&broken=true&has_issue=true&new_within_days=7&q=login",
-    ]);
+    expect(request(calls)).toEqual({
+      path: "/api/tests",
+      params: {
+        repo: "a/b",
+        page: "1",
+        page_size: "50",
+        sort: "proven",
+        include_stable: "true",
+        category: "timing",
+        quarantined: "true",
+        broken: "true",
+        has_issue: "true",
+        new_within_days: "7",
+        q: "login",
+        acknowledged: "true",
+      },
+    });
   });
 
   it("fetchTests sends issue=none as has_issue=false", async () => {
@@ -283,13 +321,12 @@ describe("GET request builders", () => {
       newWithinDays: null,
       q: "",
     });
-    expect(calls.map((c) => c.path)).toEqual([
-      "/api/tests?repo=a%2Fb&page=1&page_size=50&sort=score&has_issue=false",
-    ]);
+    expect(request(calls)).toEqual({
+      path: "/api/tests",
+      params: { repo: "a/b", page: "1", page_size: "50", sort: "score", has_issue: "false" },
+    });
   });
 
-  // The acknowledged flag is a table entry like the rest; its wire order puts it
-  // last on both endpoints, where the hand-written params.set call used to land.
   it("fetchTests sends acknowledged=true", async () => {
     const calls = stubFetch();
     await fetchTests({
@@ -307,9 +344,10 @@ describe("GET request builders", () => {
       newWithinDays: null,
       q: "",
     });
-    expect(calls.map((c) => c.path)).toEqual([
-      "/api/tests?repo=a%2Fb&page=1&page_size=50&sort=score&acknowledged=true",
-    ]);
+    expect(request(calls)).toEqual({
+      path: "/api/tests",
+      params: { repo: "a/b", page: "1", page_size: "50", sort: "score", acknowledged: "true" },
+    });
   });
 
   it("fetchHistory asks for the fixed history window of one test", async () => {
@@ -332,14 +370,19 @@ describe("GET request builders", () => {
       newWithinDays: null,
       q: "",
     });
-    expect(calls.map((c) => c.path)).toEqual([
-      "/api/jobs?repo=a%2Fb&page=1&page_size=50&sort=score&include_stable=true",
-    ]);
+    expect(request(calls)).toEqual({
+      path: "/api/jobs",
+      params: { repo: "a/b", page: "1", page_size: "50", sort: "score", include_stable: "true" },
+    });
   });
 
-  // Jobs' wire order (sort, stable, q, pipeline, issue, new) also matches the
-  // hand-written params.set calls api.ts had before the table.
-  it("fetchJobs maps every Jobs filter through the table, in the declared wire order", async () => {
+  // Jobs' table entries cover every filter this endpoint takes, all set at once.
+  // The map is the recorded set, parsed: the whole-URL assertion this case
+  // replaced, plus the acknowledged=true the separate acknowledged case recorded
+  // (the table's entry reads only that field, so the two sets simply union).
+  // repo, page, page_size, sort, include_stable, q, pipeline, has_issue,
+  // new_within_days, acknowledged: nothing else may appear, none may be missing.
+  it("fetchJobs maps every Jobs filter through the table", async () => {
     const calls = stubFetch();
     await fetchJobs({
       repo: "a/b",
@@ -348,15 +391,26 @@ describe("GET request builders", () => {
       sort: "score",
       showStable: true,
       pipeline: "ci.yml",
-      acknowledged: false,
+      acknowledged: true,
       issue: "none",
       newWithinDays: 7,
       q: "login",
     });
-    expect(calls.map((c) => c.path)).toEqual([
-      "/api/jobs?repo=a%2Fb&page=1&page_size=50&sort=score&include_stable=true" +
-        "&q=login&pipeline=ci.yml&has_issue=false&new_within_days=7",
-    ]);
+    expect(request(calls)).toEqual({
+      path: "/api/jobs",
+      params: {
+        repo: "a/b",
+        page: "1",
+        page_size: "50",
+        sort: "score",
+        include_stable: "true",
+        q: "login",
+        pipeline: "ci.yml",
+        has_issue: "false",
+        new_within_days: "7",
+        acknowledged: "true",
+      },
+    });
   });
 
   it("fetchJobs sends issue=linked as has_issue=true", async () => {
@@ -373,9 +427,10 @@ describe("GET request builders", () => {
       newWithinDays: null,
       q: "",
     });
-    expect(calls.map((c) => c.path)).toEqual([
-      "/api/jobs?repo=a%2Fb&page=1&page_size=50&sort=proven&has_issue=true",
-    ]);
+    expect(request(calls)).toEqual({
+      path: "/api/jobs",
+      params: { repo: "a/b", page: "1", page_size: "50", sort: "proven", has_issue: "true" },
+    });
   });
 
   it("fetchJobs sends acknowledged=true", async () => {
@@ -392,9 +447,10 @@ describe("GET request builders", () => {
       newWithinDays: null,
       q: "",
     });
-    expect(calls.map((c) => c.path)).toEqual([
-      "/api/jobs?repo=a%2Fb&page=1&page_size=50&sort=score&acknowledged=true",
-    ]);
+    expect(request(calls)).toEqual({
+      path: "/api/jobs",
+      params: { repo: "a/b", page: "1", page_size: "50", sort: "score", acknowledged: "true" },
+    });
   });
 
   it("fetchFailedReports asks for the failed reports window", async () => {
