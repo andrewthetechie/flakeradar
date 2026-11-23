@@ -266,7 +266,7 @@ pub async fn rescore(
             broken_change: answer.broken_change,
         })
         .collect();
-    let changes = tier_changes(db, notices_of(kind), &planned, settings).await?;
+    let changes = tier_changes(db, notices_of(kind), &planned).await?;
     write_updates(db, updates_of(kind), &updates).await?;
     history::write_day_counts(db, kind, &updates, day_counts, settings).await?;
     Ok(changes)
