@@ -2,19 +2,19 @@
 //! window, write the rows the rescore changes, and rescore everything a Report
 //! or a Default branch change touched.
 //!
-//! Every rule a rescore applies lives here: the windows that read the Executions,
-//! the `Update` row the bulk write binds, and the old states the Tier changes are
-//! judged against.
+//! The I/O a rescore needs lives here: the windows that read the Executions, the
+//! stored states the decision reads, the `Update` row the bulk write binds, and
+//! today's Score history. What a rescore decides — the new values, the Tier
+//! crossing and the broken change — is [`decision::decide`], which needs no
+//! connection.
 
 // Rust guideline compliant 2026-07-21
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use flakeradar_core::{
-    classify::FailureCategory, classify::dominant_category, helpers::next_flaky_since,
-    model::EntityKind, model::ExecutionStatus, notify::TierChange, scoring::ScoredExecution,
-    scoring::branch_scoped_fail_streak, scoring::branch_scoped_score,
-    scoring::branch_scoped_streak, types::Score,
+    classify::FailureCategory, decision, model::EntityKind, model::ExecutionStatus,
+    notify::TierChange, scoring::ScoredExecution, types::Score,
 };
 use sea_orm::entity::prelude::DateTimeWithTimeZone;
 use sea_orm::{ConnectionTrait, DbBackend, QueryResult, Statement, Value};
@@ -28,7 +28,7 @@ use crate::attribution::{
 };
 use crate::batching::chunks;
 use crate::error::DbError;
-use crate::sql::{execution_status, get, placeholder_list, rows, score, value_row};
+use crate::sql::{execution_status, get, placeholder_list, rows, value_row};
 
 /// The score window as a bind parameter: a setting far past `i32` is capped,
 /// because the window counts rows, not a database column.
@@ -53,41 +53,37 @@ pub(super) struct Update {
     pub(super) fail_streak: i32,
     /// The dominant Failure category. Only a Test is categorised.
     pub(super) failure_category: Option<FailureCategory>,
-    /// The row's flaky state, moved by [`next_flaky_since`] at the two thresholds.
+    /// The row's flaky state, moved by [`flakeradar_core::helpers::next_flaky_since`] at
+    /// the two thresholds.
     pub(super) flaky_since: Option<DateTimeWithTimeZone>,
 }
 
-/// Recomputes flakiness for the given Tests from their score window.
+/// The rows whose events the decision approved, each with the events it sends.
 ///
-/// Flip scoring looks only at Executions on the Repo's Default branch, while
-/// Proven flakes still count on every branch. `day_counts` adds each Test's
-/// executions and failures to today's Score history row. A Clean streak of 0
-/// also clears `github_issue_fixed_noted_at`; any other streak leaves it alone,
-/// which is what the bulk update's per-row reset flag does.
-///
-/// One entity's scoring window: its newest Executions and its Repo's branch.
-#[derive(Debug, Clone, Default)]
-struct Window {
-    /// Executions, newest first.
-    executions: Vec<ScoredExecution>,
-    /// The Failure categories of the same Executions, newest first. Only a Test
-    /// is categorised, so a Job's window leaves this empty.
-    categories: Vec<Option<FailureCategory>>,
-    /// The Default branch of the entity's Repo, or `None` while it is unknown.
-    default_branch: Option<String>,
+/// The decision answers the crossing and the broken change; this carries them
+/// beside the row so the event query only reads names and writes events.
+pub(super) struct Planned {
+    pub(super) update: Update,
+    /// Whether the row's flaky state moved, so it sends a Tier change.
+    pub(super) crossing: bool,
+    /// Whether the row's Fail streak reached the broken threshold this rescore.
+    pub(super) broken_change: bool,
 }
 
-impl Window {
-    /// Adds one newest-first row: its Execution, and the Repo's Default branch.
-    fn push(&mut self, row: &QueryResult, status: ExecutionStatus) -> Result<(), DbError> {
-        self.executions.push(ScoredExecution {
-            commit_sha: get(row, "commit_sha")?,
-            branch: get(row, "branch")?,
-            status,
-        });
-        self.default_branch = get(row, "default_branch")?;
-        Ok(())
-    }
+/// Adds one newest-first row to a scoring window: its Execution, and the Repo's
+/// Default branch.
+fn push(
+    window: &mut decision::Window,
+    row: &QueryResult,
+    status: ExecutionStatus,
+) -> Result<(), DbError> {
+    window.executions.push(ScoredExecution {
+        commit_sha: get(row, "commit_sha")?,
+        branch: get(row, "branch")?,
+        status,
+    });
+    window.default_branch = get(row, "default_branch")?;
+    Ok(())
 }
 
 /// The binds both window statements take: the ids and the window, twice.
@@ -100,50 +96,35 @@ fn window_binds(chunk: &[i32], settings: &ProcessingSettings) -> Vec<Value> {
     ]
 }
 
-impl Update {
-    /// The row `id`'s window scores to, starting from its stored flaky state.
-    ///
-    /// A row with no window scores as an empty one: no flip, no Proven flake and
-    /// a Clean streak of 0. A row with no stored state is not flaky, so its
-    /// `old_flaky_since` is `None`.
-    fn of(
-        id: i32,
-        window: Option<&Window>,
-        old_flaky_since: Option<DateTimeWithTimeZone>,
-        settings: &ProcessingSettings,
-    ) -> Self {
-        let empty = Window::default();
-        let window = window.unwrap_or(&empty);
-        let branch = window.default_branch.as_deref();
-        let (score, proven) = branch_scoped_score(
-            &window.executions,
-            branch,
-            settings.score_decay,
-            settings.score_window,
-        );
-        let streak = branch_scoped_streak(&window.executions, branch);
-        let categories: Vec<Option<FailureCategory>> = window
-            .categories
-            .iter()
-            .take(settings.score_window)
-            .copied()
-            .collect();
+impl From<&decision::Answer> for Update {
+    /// The row the bulk write binds for one answer of the decision: the values
+    /// it came to, beside the id `decide` was given.
+    fn from(answer: &decision::Answer) -> Self {
+        let values = answer.values;
         Self {
-            id,
-            flakiness_score: score,
-            confirmed_flake_count: i32::try_from(proven).unwrap_or(i32::MAX),
-            clean_streak: i32::try_from(streak).unwrap_or(i32::MAX),
-            clear_fixed_note: streak == 0,
-            fail_streak: i32::try_from(branch_scoped_fail_streak(&window.executions, branch))
-                .unwrap_or(i32::MAX),
-            failure_category: dominant_category(&categories),
-            flaky_since: next_flaky_since(
-                old_flaky_since,
-                score,
-                settings.flake_threshold,
-                settings.recover_threshold,
-                settings.clock.now(),
-            ),
+            id: answer.id,
+            flakiness_score: values.flakiness_score,
+            confirmed_flake_count: values.confirmed_flake_count,
+            clean_streak: values.clean_streak,
+            clear_fixed_note: values.clear_fixed_note,
+            fail_streak: values.fail_streak,
+            failure_category: values.failure_category,
+            flaky_since: values.flaky_since,
+        }
+    }
+}
+
+impl From<&ProcessingSettings> for decision::Settings {
+    /// The fields the decision decides against: the window it scores, the decay
+    /// it weighs the flips with, and the three thresholds the state moves at.
+    /// What else [`ProcessingSettings`] holds is the processor's own.
+    fn from(settings: &ProcessingSettings) -> Self {
+        Self {
+            score_window: settings.score_window,
+            score_decay: settings.score_decay,
+            broken_streak: settings.broken_streak,
+            flake_threshold: settings.flake_threshold,
+            recover_threshold: settings.recover_threshold,
         }
     }
 }
@@ -154,7 +135,7 @@ async fn windows(
     kind: EntityKind,
     ids: &[i32],
     settings: &ProcessingSettings,
-) -> Result<BTreeMap<i32, Window>, DbError> {
+) -> Result<BTreeMap<i32, decision::Window>, DbError> {
     match kind {
         EntityKind::Test => test_windows(db, ids, settings).await,
         EntityKind::Job => job_windows(db, ids, settings).await,
@@ -166,8 +147,8 @@ async fn test_windows(
     db: &impl ConnectionTrait,
     ids: &[i32],
     settings: &ProcessingSettings,
-) -> Result<BTreeMap<i32, Window>, DbError> {
-    let mut windows: BTreeMap<i32, Window> = BTreeMap::new();
+) -> Result<BTreeMap<i32, decision::Window>, DbError> {
+    let mut windows: BTreeMap<i32, decision::Window> = BTreeMap::new();
     for chunk in chunks(ids) {
         let sql = format!(
             "SELECT e.test_case_id, r.commit_sha, r.branch, e.status, e.failure_category, ro.default_branch \
@@ -183,7 +164,7 @@ async fn test_windows(
             let id: i32 = get(&row, "test_case_id")?;
             let status = execution_status(&get::<String>(&row, "status")?)?;
             let window = windows.entry(id).or_default();
-            window.push(&row, status)?;
+            push(window, &row, status)?;
             window.categories.push(
                 get::<Option<String>>(&row, "failure_category")?
                     .as_deref()
@@ -201,8 +182,8 @@ async fn job_windows(
     db: &impl ConnectionTrait,
     ids: &[i32],
     settings: &ProcessingSettings,
-) -> Result<BTreeMap<i32, Window>, DbError> {
-    let mut windows: BTreeMap<i32, Window> = BTreeMap::new();
+) -> Result<BTreeMap<i32, decision::Window>, DbError> {
+    let mut windows: BTreeMap<i32, decision::Window> = BTreeMap::new();
     for chunk in chunks(ids) {
         // The table names are written out: `job_execution_explained_sql` reads
         // `job_executions`, `jobs` and `pipelines` by name, and a query that named
@@ -226,7 +207,7 @@ async fn job_windows(
             if explained && status == ExecutionStatus::Failed {
                 status = ExecutionStatus::Skipped;
             }
-            windows.entry(id).or_default().push(&row, status)?;
+            push(windows.entry(id).or_default(), &row, status)?;
         }
     }
     Ok(windows)
@@ -234,11 +215,18 @@ async fn job_windows(
 
 /// Recomputes flakiness for `kind`'s rows, and writes the Tier changes it makes.
 ///
-/// Every rule a rescore applies is here, once: the window scores the row, the
-/// row's own stored state says whether its flaky state crossed, the bulk write
-/// stores the row and today's Score history gains the day's counts. What differs
-/// between a Test and a Job is a window statement, a write statement and a set of
-/// Notices.
+/// This is the I/O around [`decision::decide`], once per batch: the windows read
+/// the Executions the row scores, the stored states read what the row holds
+/// before the write, the bulk write stores the values the decision came to, and
+/// today's Score history gains the day's counts. What differs between a Test and
+/// a Job is a window statement, a stored-state statement, a write statement and
+/// a set of Notices.
+///
+/// Flip scoring looks only at Executions on the Repo's Default branch, while
+/// Proven flakes still count on every branch. `day_counts` adds each row's
+/// executions and failures to today's Score history row. A Clean streak of 0 also
+/// clears `github_issue_fixed_noted_at`; any other streak leaves it alone, which
+/// is what the bulk update's per-row reset flag does.
 ///
 /// A row Acknowledged past the clock is still written, but sends no Notification,
 /// and the skipped Notification is not sent when the acknowledgement ends.
@@ -255,69 +243,79 @@ pub async fn rescore(
 ) -> Result<Vec<TierChange>, DbError> {
     let windows = windows(db, kind, ids, settings).await?;
     // The stored state is read before the write, because `flaky_since` moves at
-    // the thresholds relative to what the row holds now.
-    let old = old_states(db, kind, ids).await?;
-    let updates: Vec<Update> = ids
+    // the thresholds relative to what the row holds now, and because the decision
+    // suppresses an event with the row's own acknowledgement.
+    let stored = old_states(db, kind, ids).await?;
+    let answers = decision::decide(
+        kind,
+        ids,
+        &windows,
+        &stored,
+        &decision::Settings::from(settings),
+        settings.clock.now(),
+    );
+    let updates: Vec<Update> = answers.iter().map(Update::from).collect();
+    // Only the rows the decision approved an event for name anything, so the
+    // event query reads no row it would not send for.
+    let planned: Vec<Planned> = answers
         .iter()
-        .map(|id| {
-            Update::of(
-                *id,
-                windows.get(id),
-                old.get(id).and_then(|&(_, flaky_since, _)| flaky_since),
-                settings,
-            )
+        .filter(|answer| answer.crossing || answer.broken_change)
+        .map(|answer| Planned {
+            update: Update::from(answer),
+            crossing: answer.crossing,
+            broken_change: answer.broken_change,
         })
         .collect();
-    let changes = tier_changes(db, notices_of(kind), &updates, &old, settings).await?;
+    let changes = tier_changes(db, notices_of(kind), &planned, settings).await?;
     write_updates(db, updates_of(kind), &updates).await?;
     history::write_day_counts(db, kind, &updates, day_counts, settings).await?;
     Ok(changes)
 }
 
-/// What one row holds before a rescore replaces it: its Score, its flaky state,
-/// and its Fail streak. A Job stores no Fail streak, so its row carries `None`.
-pub(super) type OldRow = (Score, Option<DateTimeWithTimeZone>, Option<i32>);
-
-/// The scores and flaky states a rescore is about to replace, read before the update.
+/// The flaky state a row holds before a rescore replaces it, as the decision
+/// reads it. A Job stores no Fail streak, so its row reads none.
 ///
 /// A row the caller lists that this read does not return has no stored state, so
-/// it counts as not flaky.
+/// it counts as not flaky, with no acknowledgement.
 async fn old_states(
     db: &impl ConnectionTrait,
     kind: EntityKind,
     ids: &[i32],
-) -> Result<BTreeMap<i32, OldRow>, DbError> {
+) -> Result<BTreeMap<i32, decision::Stored>, DbError> {
     // Only a Test stores a Fail streak, so a Job's row reads none.
-    let (from, fail_streak) = match kind {
+    let (from, stores_streak) = match kind {
         EntityKind::Test => (
-            "SELECT id, flakiness_score, flaky_since, fail_streak FROM test_cases WHERE id IN ",
+            "SELECT id, flaky_since, fail_streak, acknowledged_until FROM test_cases WHERE id IN ",
             true,
         ),
         EntityKind::Job => (
-            "SELECT id, flakiness_score, flaky_since FROM jobs WHERE id IN ",
+            "SELECT id, flaky_since, acknowledged_until FROM jobs WHERE id IN ",
             false,
         ),
     };
-    let mut scores = BTreeMap::new();
+    let mut states = BTreeMap::new();
     for chunk in chunks(ids) {
         let sql = format!("{}({})", from, placeholder_list(1, chunk.len()));
         let values = chunk.iter().map(|id| Value::from(*id)).collect();
         for row in rows(db, sql, values).await? {
-            scores.insert(
+            states.insert(
                 get(&row, "id")?,
-                (
-                    score(get(&row, "flakiness_score")?, "flakiness_score")?,
-                    get::<Option<DateTimeWithTimeZone>>(&row, "flaky_since")?,
-                    if fail_streak {
+                decision::Stored {
+                    flaky_since: get::<Option<DateTimeWithTimeZone>>(&row, "flaky_since")?,
+                    fail_streak: if stores_streak {
                         Some(get::<i32>(&row, "fail_streak")?)
                     } else {
                         None
                     },
-                ),
+                    acknowledged_until: get::<Option<DateTimeWithTimeZone>>(
+                        &row,
+                        "acknowledged_until",
+                    )?,
+                },
             );
         }
     }
-    Ok(scores)
+    Ok(states)
 }
 
 /// One rescore write: the statement, and the values one row binds into it.
