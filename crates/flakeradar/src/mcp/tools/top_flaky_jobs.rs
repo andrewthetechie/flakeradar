@@ -13,7 +13,7 @@ use flakeradar_core::model::EntityKind;
 use flakeradar_db::reads::{self, EntityFilters, JobListFilters, ListOptions};
 
 use crate::mcp::{
-    BoxFuture, DEFAULT_LIMIT, McpServer, ToolAnswer, ToolFailure, ToolResult, check_limit,
+    BoxFuture, DEFAULT_LIMIT, McpServer, ToolAnswer, ToolResult, check_limit,
     check_new_within_days, default_limit, default_true, lax_boolean, lax_integer,
     lax_optional_integer, nullable, parse, parse_sort, read_only, scope,
 };
@@ -113,13 +113,6 @@ pub(super) fn call(server: &McpServer, arguments: Value) -> BoxFuture<'_, ToolRe
             &server.read_settings(),
         )
         .await?;
-        match page {
-            reads::ListingPage::Job(page) => ToolAnswer::shaped(LISTS, &page.items),
-            // The kind and the filters arm match by construction, so `list` can
-            // only answer a Jobs page.
-            reads::ListingPage::Test(_) => Err(ToolFailure::Tool(
-                "a Jobs listing answered a Tests page".to_owned(),
-            )),
-        }
+        ToolAnswer::shaped(LISTS, &page.items())
     })
 }

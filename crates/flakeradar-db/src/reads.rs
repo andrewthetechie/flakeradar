@@ -10,7 +10,7 @@
 //! window are stated once, and only an intended per-entity difference is
 //! descriptor data. Both boards answer the one [`list`] entry point with a
 //! [`Listing`] of their own [`EntityFilters`], and each filter states its
-//! condition once too, in a `FilterRow` that takes the entity's alias.
+//! condition once too, as a method of its own that takes the entity's alias.
 
 // Rust guideline compliant 2026-07-21
 
@@ -404,6 +404,8 @@ const JOBS_BOARD: EntityBoard = EntityBoard {
 ///
 /// The variants cover both entities: the arm of [`EntityFilters`] decides which of
 /// them a listing can reach, so a Job listing never carries a Tests-only filter.
+/// Each variant states its own condition once, for whichever entity's alias it is
+/// asked for, and its own effect on the tiers a listing returns.
 enum Filter<'a> {
     /// A literal substring of the Test's file.
     File(&'a str),
@@ -421,181 +423,74 @@ enum Filter<'a> {
     Pipeline(&'a str),
 }
 
-/// One filter's row in the descriptor: the SQL it adds, and the tiers it keeps.
-///
-/// A filter is stated once here rather than once per entity: the condition takes
-/// the entity's alias the way `EntityBoard::search` takes the pattern's
-/// placeholder, so the Tests and Jobs boards read the same rule and differ only in
-/// the column prefix. `Board::run` appends the conditions a listing built before
-/// its own, so a filter's binds come first in both statements it runs.
-struct FilterRow {
-    /// Adds this filter's condition, binding its value, for the entity aliased `alias`.
-    condition: fn(alias: &str, selected: &Filter<'_>, filter: &mut Binds, settings: &ReadSettings),
-    /// Whether selecting this filter keeps the stable rows it selected: whoever
-    /// asked for quarantined or acknowledged rows wants to see the ones that score
-    /// zero. ADR 0004: Jobs have no Quarantine, so a Job listing keeps stable rows
-    /// only when it selected acknowledged ones.
-    keeps_stable_rows: fn(&Filter<'_>) -> bool,
-}
-
-/// The Tests' file filter: a literal substring, matched case-insensitively.
-fn file_condition(
-    alias: &str,
-    selected: &Filter<'_>,
-    filter: &mut Binds,
-    _settings: &ReadSettings,
-) {
-    // The row a filter gets is the row that states it, so the other arms cannot occur.
-    let Filter::File(file) = selected else {
-        return;
-    };
-    let placeholder = filter.bind(Value::from(format!("%{}%", escape_like(file))));
-    filter.raw(format!("{alias}.file ILIKE {placeholder} ESCAPE '\\'"));
-}
-
-/// The Failure category of the entity.
-fn category_condition(
-    alias: &str,
-    selected: &Filter<'_>,
-    filter: &mut Binds,
-    _settings: &ReadSettings,
-) {
-    let Filter::Category(category) = selected else {
-        return;
-    };
-    filter.eq(
-        &format!("{alias}.failure_category"),
-        Value::from(category.as_str().to_owned()),
-    );
-}
-
-/// The quarantine state of the Test.
-fn quarantined_condition(
-    alias: &str,
-    selected: &Filter<'_>,
-    filter: &mut Binds,
-    _settings: &ReadSettings,
-) {
-    let Filter::Quarantined(quarantined) = selected else {
-        return;
-    };
-    filter.eq(&format!("{alias}.quarantined"), Value::from(*quarantined));
-}
-
-/// The acknowledgement state of the entity, using the comparison `acknowledge` owns.
-fn acknowledged_condition(
-    alias: &str,
-    selected: &Filter<'_>,
-    filter: &mut Binds,
-    settings: &ReadSettings,
-) {
-    let Filter::Acknowledged(acknowledged) = selected else {
-        return;
-    };
-    let placeholder = filter.bind(Value::from(settings.clock.now()));
-    if *acknowledged {
-        filter.raw(live_condition(alias, &placeholder));
-    } else {
-        filter.raw(lapsed_condition(alias, &placeholder));
+impl Filter<'_> {
+    /// Adds this filter's condition to `filter`, binding its value, for the entity
+    /// aliased `alias`.
+    ///
+    /// A filter is stated once here rather than once per entity: the condition takes
+    /// the entity's alias the way `EntityBoard::search` takes the pattern's
+    /// placeholder, so the Tests and Jobs boards read the same rule and differ only in
+    /// the column prefix. `Board::run` appends the conditions a listing built before
+    /// its own, so a filter's binds come first in both statements it runs.
+    fn condition(&self, alias: &str, filter: &mut Binds, settings: &ReadSettings) {
+        match self {
+            // A literal substring, matched case-insensitively.
+            Self::File(file) => {
+                let placeholder = filter.bind(Value::from(format!("%{}%", escape_like(file))));
+                filter.raw(format!("{alias}.file ILIKE {placeholder} ESCAPE '\\'"));
+            }
+            Self::Category(category) => filter.eq(
+                &format!("{alias}.failure_category"),
+                Value::from(category.as_str().to_owned()),
+            ),
+            Self::Quarantined(quarantined) => {
+                filter.eq(&format!("{alias}.quarantined"), Value::from(*quarantined));
+            }
+            // The comparison is the one `acknowledge` owns.
+            Self::Acknowledged(acknowledged) => {
+                let placeholder = filter.bind(Value::from(settings.clock.now()));
+                if *acknowledged {
+                    filter.raw(live_condition(alias, &placeholder));
+                } else {
+                    filter.raw(lapsed_condition(alias, &placeholder));
+                }
+            }
+            // Detection disabled (`broken_streak == 0`): `is_broken` is false for every
+            // row, so nothing is broken. The comparison itself lives in `tier`.
+            Self::Broken => {
+                let placeholder = (settings.broken_streak > 0)
+                    .then(|| filter.bind(Value::from(settings.broken_streak)));
+                filter.raw(tier::broken(alias, placeholder.as_deref()));
+            }
+            // The window is the one `is_new` applies per row.
+            Self::New => {
+                let placeholder = filter.bind(Value::from(
+                    settings.clock.now().with_timezone(&Utc)
+                        - Duration::days(settings.new_test_days),
+                ));
+                filter.raw(format!("{alias}.first_seen_at > {placeholder}"));
+            }
+            // The Pipeline is named by the board's own `FROM` join rather than by the
+            // entity's alias, so the alias only keeps this arm's shape uniform.
+            Self::Pipeline(pipeline) => {
+                filter.eq("p.name", Value::from(pipeline.to_owned()));
+            }
+        }
     }
-}
 
-/// The Test's Fail streak against the settings' broken threshold.
-fn broken_condition(
-    alias: &str,
-    selected: &Filter<'_>,
-    filter: &mut Binds,
-    settings: &ReadSettings,
-) {
-    let Filter::Broken = selected else {
-        return;
-    };
-    // Detection disabled (`broken_streak == 0`): `is_broken` is false for every
-    // row, so nothing is broken. The comparison itself lives in `tier`.
-    let placeholder =
-        (settings.broken_streak > 0).then(|| filter.bind(Value::from(settings.broken_streak)));
-    filter.raw(tier::broken(alias, placeholder.as_deref()));
-}
-
-/// The Tests first seen inside the window `is_new` applies per row.
-fn new_condition(alias: &str, selected: &Filter<'_>, filter: &mut Binds, settings: &ReadSettings) {
-    let Filter::New = selected else {
-        return;
-    };
-    let placeholder = filter.bind(Value::from(
-        settings.clock.now().with_timezone(&Utc) - Duration::days(settings.new_test_days),
-    ));
-    filter.raw(format!("{alias}.first_seen_at > {placeholder}"));
-}
-
-/// The exact Pipeline name of the Job.
-///
-/// The Pipeline is named by the board's own `FROM` join rather than by the entity's
-/// alias, so the alias only keeps the row's shape uniform.
-fn pipeline_condition(
-    _alias: &str,
-    selected: &Filter<'_>,
-    filter: &mut Binds,
-    _settings: &ReadSettings,
-) {
-    let Filter::Pipeline(pipeline) = selected else {
-        return;
-    };
-    filter.eq("p.name", Value::from(pipeline.to_owned()));
-}
-
-/// The file filter's row: it narrows by name, so it hides no stable row.
-const FILE_ROW: FilterRow = FilterRow {
-    condition: file_condition,
-    keeps_stable_rows: |_selected| false,
-};
-
-/// The category filter's row: it narrows by kind, so it hides no stable row.
-const CATEGORY_ROW: FilterRow = FilterRow {
-    condition: category_condition,
-    keeps_stable_rows: |_selected| false,
-};
-
-/// The quarantine filter's row: a quarantined Test is listed while the flag is set.
-const QUARANTINED_ROW: FilterRow = FilterRow {
-    condition: quarantined_condition,
-    keeps_stable_rows: |selected| matches!(selected, Filter::Quarantined(true)),
-};
-
-/// The acknowledgement filter's row: an acknowledged row is listed while it is live.
-const ACKNOWLEDGED_ROW: FilterRow = FilterRow {
-    condition: acknowledged_condition,
-    keeps_stable_rows: |selected| matches!(selected, Filter::Acknowledged(true)),
-};
-
-/// The broken filter's row: a broken Test is listed whatever it scores.
-const BROKEN_ROW: FilterRow = FilterRow {
-    condition: broken_condition,
-    keeps_stable_rows: |_selected| true,
-};
-
-/// The new filter's row: a new Test is listed whatever it scores.
-const NEW_ROW: FilterRow = FilterRow {
-    condition: new_condition,
-    keeps_stable_rows: |_selected| true,
-};
-
-/// The pipeline filter's row: it narrows by name, so it hides no stable row.
-const PIPELINE_ROW: FilterRow = FilterRow {
-    condition: pipeline_condition,
-    keeps_stable_rows: |_selected| false,
-};
-
-/// The row of the descriptor that states a filter, whichever entity it filters.
-fn filter_row(selected: &Filter<'_>) -> &'static FilterRow {
-    match selected {
-        Filter::File(_) => &FILE_ROW,
-        Filter::Category(_) => &CATEGORY_ROW,
-        Filter::Quarantined(_) => &QUARANTINED_ROW,
-        Filter::Acknowledged(_) => &ACKNOWLEDGED_ROW,
-        Filter::Broken => &BROKEN_ROW,
-        Filter::New => &NEW_ROW,
-        Filter::Pipeline(_) => &PIPELINE_ROW,
+    /// Whether selecting this filter keeps the stable rows it selected.
+    ///
+    /// A quarantined Test is listed while its flag is set, an acknowledged row while
+    /// its acknowledgement is live, and a broken or new Test whatever it scores:
+    /// whoever asked for those wants to see the ones that score zero. The filters this
+    /// method does not name narrow by name or kind, so they hide no stable row.
+    /// ADR 0004: Jobs have no Quarantine, so the arm a Job listing carries reaches
+    /// only the acknowledged case.
+    fn keeps_stable_rows(&self) -> bool {
+        matches!(
+            self,
+            Self::Quarantined(true) | Self::Acknowledged(true) | Self::Broken | Self::New
+        )
     }
 }
 
@@ -618,15 +513,12 @@ enum TierFilter {
 impl TierFilter {
     /// The tier a listing returns, from the options and the entity's own filters.
     ///
-    /// Each selected filter contributes its row's `keeps_stable_rows`, so the tier
-    /// rule reads the descriptor instead of a flag the caller derives from its own
-    /// filter struct.
+    /// Each selected filter contributes its own `keeps_stable_rows`, so the tier
+    /// rule asks the filter instead of reading a flag the caller derives from its
+    /// own filter struct.
     fn of(options: &ListOptions, filters: &EntityFilters) -> Self {
         let searching = options.q.as_deref().is_some_and(|text| !text.is_empty());
-        let keeps_stable_rows = filters
-            .selected()
-            .iter()
-            .any(|selected| (filter_row(selected).keeps_stable_rows)(selected));
+        let keeps_stable_rows = filters.selected().iter().any(Filter::keeps_stable_rows);
         if options.flaky_only || options.new_within_days.is_some() {
             Self::FlakyOnly
         } else if !options.include_stable && !searching && !keeps_stable_rows {
@@ -1119,6 +1011,30 @@ pub enum ListingPage {
     Job(JobPage),
 }
 
+/// The rows of a [`ListingPage`], in the shape of the entity its page is for.
+///
+/// `untagged` makes it serialize as the bare array, which is what a listing tool
+/// shapes; a door that answers the whole page serializes [`ListingPage`] itself.
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(untagged)]
+pub enum ListingItems<'a> {
+    /// The Tests of a Tests page.
+    Test(&'a [TestOut]),
+    /// The Jobs of a Jobs page.
+    Job(&'a [JobOut]),
+}
+
+impl ListingPage {
+    /// The page's rows, for a caller that shapes them without asking which board ran.
+    #[must_use]
+    pub fn items(&self) -> ListingItems<'_> {
+        match self {
+            Self::Test(page) => ListingItems::Test(&page.items),
+            Self::Job(page) => ListingItems::Job(&page.items),
+        }
+    }
+}
+
 /// Reads each row into its response shape, with the score it had a week ago.
 ///
 /// The past scores are one query for the whole page, whatever its size.
@@ -1146,9 +1062,9 @@ async fn read_items<T>(
 /// The leaderboard, for whichever entity the listing is for.
 ///
 /// This is the one entry point both boards answer: it scopes the query, asks each
-/// selected filter's descriptor row for its condition against the entity's alias,
-/// and runs the shared engine — so a filter's rule is written once for both
-/// entities, in a `FilterRow`, and never here.
+/// selected filter for its condition against the entity's alias, and runs the
+/// shared engine — so a filter's rule is written once, in `Filter::condition`, and
+/// never here.
 ///
 /// # Errors
 ///
@@ -1174,7 +1090,7 @@ pub async fn list(
     let mut filter = Binds::default();
     scope_conditions(&listing.scope, "r.name", "p.name", &mut filter);
     for selected in listing.filters.selected() {
-        (filter_row(&selected).condition)(board.alias, &selected, &mut filter, settings);
+        selected.condition(board.alias, &mut filter, settings);
     }
     let options = &listing.options;
     let page = Board {
@@ -2584,8 +2500,7 @@ mod tests {
 
     use super::{
         Binds, EntityFilters, EntityKind, Filter, ListOptions, NEW_FLAKY_DAYS, ReadError,
-        ReadSettings, SortKey, TestListFilters, TierFilter, filter_row, newest_history_join,
-        scope_conditions,
+        ReadSettings, SortKey, TestListFilters, TierFilter, newest_history_join, scope_conditions,
     };
 
     #[test]
@@ -2696,16 +2611,11 @@ mod tests {
     }
 
     #[test]
-    fn a_filter_row_states_its_condition_for_whichever_alias_the_entity_has() {
+    fn a_filter_states_its_condition_for_whichever_alias_the_entity_has() {
         let acknowledged = Filter::Acknowledged(true);
         let condition = |alias: &str| {
             let mut binds = Binds::default();
-            (filter_row(&acknowledged).condition)(
-                alias,
-                &acknowledged,
-                &mut binds,
-                &ReadSettings::default(),
-            );
+            acknowledged.condition(alias, &mut binds, &ReadSettings::default());
             binds.suffix()
         };
         // One row states the acknowledgement comparison for both boards, so the
