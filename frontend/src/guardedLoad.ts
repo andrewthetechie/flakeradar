@@ -68,6 +68,10 @@ export function createRowReloadRegistry(): RowReloadRegistry {
 
 export interface GuardedLoadOptions<TData> {
   /**
+   * The shared engine's own option set. A dashboard view takes `useListLoad` or
+   * `useRowHistoryLoad` instead, which fix the choices an entry point should not
+   * be asked to make per call site.
+   *
    * `"component"` (default) holds one `latestWins()` for the hook's lifetime, so
    * a slow answer for an old scope never writes state. `"effect"` builds a fresh
    * guard per load and cancels it on cleanup and on re-run, so an abandoned
@@ -237,4 +241,61 @@ export function useGuardedLoad<TData>(
   }, [enabled, options.rowReload?.registry, rowKeyOf, refresh]);
 
   return { data, error, refresh };
+}
+
+export interface ListLoadOptions<TData> {
+  /** A current success's data, for a caller that folds it into wider state. */
+  onData?: (data: TData) => void;
+  /** Every error write, mirrored onto a surface shared across loads. */
+  onErrorChange?: (message: string | null) => void;
+}
+
+/**
+ * A dashboard list load: component lifetime, and a current success clearing the
+ * error is this entry point's contract, not an option the call site may leave
+ * unset. Its options are exactly what such a call site uses; anything the load
+ * ignores is unmentionable.
+ */
+export function useListLoad<TData>(
+  load: GuardedLoader<TData>,
+  options: ListLoadOptions<TData> = {},
+) {
+  return useGuardedLoad(load, {
+    clearErrorOnSuccess: true,
+    onData: options.onData,
+    onErrorChange: options.onErrorChange,
+  });
+}
+
+export interface RowHistoryLoadOptions {
+  /** The app's registry, the value this load registers its row's refresher into. */
+  registry: RowReloadRegistry;
+  /** While false no load runs and nothing is registered — a closed drawer loads nothing. */
+  enabled: boolean;
+  /** The row whose history this is, which this load registers itself against. */
+  row?: { kind: RowKind; id: number };
+  /** Every error write, mirrored onto a surface shared across loads. */
+  onErrorChange?: (message: string | null) => void;
+}
+
+/**
+ * A row-history load — an open drawer's history: effect lifetime, so an
+ * abandoned drawer's in-flight answer is dropped on its own, a required
+ * `enabled`, and the optional row it registers itself against while enabled, so
+ * a confirmed decision on that row refetches it. As with `useListLoad` the
+ * option set carries only what such a call site uses.
+ */
+export function useRowHistoryLoad<TData>(
+  load: GuardedLoader<TData>,
+  options: RowHistoryLoadOptions,
+) {
+  return useGuardedLoad(load, {
+    lifetime: "effect",
+    enabled: options.enabled,
+    rowReload:
+      options.row == null
+        ? undefined
+        : { registry: options.registry, kind: options.row.kind, id: options.row.id },
+    onErrorChange: options.onErrorChange,
+  });
 }

@@ -2,7 +2,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, renderHook } from "@testing-library/react";
 import { useState } from "react";
 import { type LatestWins } from "./api";
-import { createRowReloadRegistry, useGuardedLoad, type GuardedLoader } from "./guardedLoad";
+import {
+  createRowReloadRegistry,
+  useGuardedLoad,
+  useListLoad,
+  useRowHistoryLoad,
+  type GuardedLoader,
+} from "./guardedLoad";
 
 /** A loader whose answer the test hands over by hand. */
 interface Deferred<TData> {
@@ -924,5 +930,74 @@ describe("row reloads", () => {
     });
     expect(calls()).toBe(2);
     expect(result.current.data).toBe("b");
+  });
+});
+
+describe("the two entry points", () => {
+  it("a list load clears the banner on the next good answer after a failure", async () => {
+    // The list entry point's contract: component lifetime, and a current success
+    // clears the shared error surface — not an option the caller may leave unset.
+    const message = "/api/tests/5/history?limit=60 -> 500";
+    const failure = deferred<string>();
+    const success = deferred<string>();
+    const { load } = guarded<string>([failure.promise, success.promise]);
+    const { result } = renderHook(() => {
+      const [banner, setBanner] = useState<string | null>(null);
+      const listLoad = useListLoad(load, { onErrorChange: setBanner });
+      return { banner, listLoad };
+    });
+    await flush();
+    failure.reject(new Error(message));
+    await flush();
+    expect(result.current.banner).toBe(message);
+
+    // The next good answer clears the banner even though this hook's own error
+    // transition is the only news — the clear is a write like any other.
+    await act(async () => {
+      const running = result.current.listLoad.refresh();
+      success.resolve("rows");
+      await running;
+    });
+    expect(result.current.banner).toBeNull();
+    expect(result.current.listLoad.data).toBe("rows");
+  });
+
+  it("a row-history load registers its row: reload runs it, registering fired no load", async () => {
+    const { load, calls } = guarded<string>([Promise.resolve("a"), Promise.resolve("b")]);
+    const registry = createRowReloadRegistry();
+    const { result } = renderHook(() =>
+      useRowHistoryLoad(load, { registry, enabled: true, row: { kind: "tests", id: 601 } }),
+    );
+    await flush();
+    // Mount's own load only: taking the key is not a run.
+    expect(calls()).toBe(1);
+
+    await act(async () => {
+      await registry.reload("tests", 601);
+    });
+    expect(calls()).toBe(2);
+    expect(result.current.data).toBe("b");
+  });
+
+  it("a closed drawer registers nothing, and so does a disabled load", async () => {
+    const drawer = guarded<string>([]);
+    const hidden = guarded<string>([]);
+    const registry = createRowReloadRegistry();
+    // A closed drawer has no row: the load may still run, but there is nothing
+    // to register, so a decision on any row reaches it through no path.
+    renderHook(() => useRowHistoryLoad(drawer.load, { registry, enabled: true }));
+    // A disabled load registers nothing and runs nothing.
+    renderHook(() =>
+      useRowHistoryLoad(hidden.load, { registry, enabled: false, row: { kind: "tests", id: 602 } }),
+    );
+    await flush();
+    expect(drawer.calls()).toBe(1);
+    expect(hidden.calls()).toBe(0);
+
+    await act(async () => {
+      await registry.reload("tests", 602);
+    });
+    expect(drawer.calls()).toBe(1);
+    expect(hidden.calls()).toBe(0);
   });
 });
