@@ -10,9 +10,19 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use flakeradar_core::{
-    defaults, dto::PipelineReportIn, model::EntityKind, model::ExecutionStatus, model::JobStatus,
-    model::ReportKind, model::ReportStatus, notify::TierChange, parsing::ClassifiedCase,
-    parsing::ClassifiedReport, parsing::ParseError, parsing::classify_report,
+    defaults,
+    dto::PipelineReportIn,
+    execution::{self, ExecutionError, ExecutionPlan, PlanCounts},
+    model::EntityKind,
+    model::JobStatus,
+    model::ReportKind,
+    model::ReportStatus,
+    notify::TierChange,
+    parsing::ClassifiedCase,
+    parsing::ClassifiedReport,
+    parsing::ParseError,
+    parsing::classify_report,
+    types::Fingerprint,
 };
 use sea_orm::entity::prelude::DateTimeWithTimeZone;
 use sea_orm::{
@@ -31,7 +41,7 @@ use crate::report_intake::{
     complete_report, fail_report, requeue_report, stored_junit_body, stored_pipeline_report,
     write_report,
 };
-use crate::sql::{execution_status, get, placeholder_list, rows, value_row};
+use crate::sql::{execution_status, fingerprint, get, placeholder_list, rows, value_row};
 
 /// The longest error text a failed Report keeps, in code points.
 ///
@@ -189,6 +199,12 @@ impl From<ParseError> for ProcessError {
     }
 }
 
+impl From<ExecutionError> for ProcessError {
+    fn from(error: ExecutionError) -> Self {
+        Self::permanent(error.to_string())
+    }
+}
+
 /// SQLSTATE classes a retry may survive: connection, insufficient resources and
 /// operator intervention, plus serialization failure and deadlock.
 fn transient_sqlstate(code: &str) -> bool {
@@ -256,16 +272,6 @@ struct Counts {
 }
 
 impl Counts {
-    /// Counts one Execution's status.
-    fn add(&mut self, status: ExecutionStatus) {
-        match status {
-            ExecutionStatus::Passed => self.passed += 1,
-            ExecutionStatus::Failed => self.failed += 1,
-            ExecutionStatus::Error => self.error += 1,
-            ExecutionStatus::Skipped => self.skipped += 1,
-        }
-    }
-
     /// The JSON a JUnit Report stores.
     fn junit_json(self) -> JsonValue {
         json!({
@@ -541,9 +547,12 @@ async fn build_executions(
     now: DateTimeWithTimeZone,
 ) -> Result<BuiltExecutions, ProcessError> {
     let ids = upsert_test_cases(db, project_id, &parsed, now).await?;
-    tokio::task::spawn_blocking(move || build_test_executions(parsed, &ids, run_id, now))
-        .await
-        .map_err(|error| ProcessError::permanent(format!("RuntimeError: {error}")))?
+    tokio::task::spawn_blocking(move || -> Result<BuiltExecutions, ProcessError> {
+        let plan = execution::build_executions(&parsed, &ids, run_id, now)?;
+        Ok(write_plan(plan, &parsed))
+    })
+    .await
+    .map_err(|error| ProcessError::permanent(format!("RuntimeError: {error}")))?
 }
 
 /// Stores this Report's Executions and the Tests' newest status.
@@ -621,94 +630,76 @@ struct BuiltExecutions {
     day_counts: BTreeMap<i32, DayCounts>,
 }
 
-/// Builds one Report's Executions in report order.
+/// Writes one Report's plan into the rows the ingest stores.
 ///
-/// `attempt` counts per Test from 0; the last occurrence of a Test wins its
-/// `last_status`, and only an occurrence with a Location sets one. Day counts
-/// feed today's Score history row. The cases are consumed, so a Failure's
-/// details move into the row they belong to instead of being copied.
-fn build_test_executions(
-    report: ClassifiedReport,
-    ids: &BTreeMap<String, i32>,
-    run_id: i32,
-    now: DateTimeWithTimeZone,
-) -> Result<BuiltExecutions, ProcessError> {
-    let mut counts = Counts::default();
-    let mut attempts: BTreeMap<i32, i32> = BTreeMap::new();
-    let mut executions: Vec<test_executions::ActiveModel> = Vec::with_capacity(report.cases.len());
-    let mut latest: Vec<LatestTest> = Vec::new();
-    let mut latest_by_id: BTreeMap<i32, usize> = BTreeMap::new();
-    let mut day_counts: BTreeMap<i32, DayCounts> = BTreeMap::new();
-    for reported in report.cases {
-        let ClassifiedCase {
-            fingerprint,
-            case,
-            category,
-        } = reported;
-        let test_case_id = ids.get(fingerprint.as_str()).copied().ok_or_else(|| {
-            ProcessError::permanent(format!("DataError: Test {fingerprint} vanished"))
-        })?;
-        let attempt = attempts.get(&test_case_id).copied().unwrap_or(0);
-        attempts.insert(test_case_id, attempt + 1);
-        counts.add(case.status);
-        let entry = day_counts.entry(test_case_id).or_default();
-        entry.executions += 1;
-        if case.status.is_failing() {
-            entry.failures += 1;
-        }
-        // A Location is stored only when the report gave a file, so a line
-        // without one is never stored and never has to fit the column.
-        let line = if case.file.is_some() {
-            case.line
-                .map(|line| {
-                    i32::try_from(line).map_err(|_out_of_range| {
-                        ProcessError::permanent(format!("DataError: line {line} is out of range"))
-                    })
-                })
-                .transpose()?
-        } else {
-            None
-        };
-        executions.push(test_executions::ActiveModel {
-            test_case_id: Set(test_case_id),
+/// The plan answers one entry per case, in Report order, so each row's
+/// `failure_category` comes from the case the plan was built from: the category
+/// is the Report's own judgement, not something the plan carries. `created_at`
+/// is likewise answered by the plan, which echoes the `now` it was built with,
+/// so every row of the Run carries the one instant.
+fn write_plan(plan: ExecutionPlan, report: &ClassifiedReport) -> BuiltExecutions {
+    let run_id = plan.run_id;
+    let now = plan.now;
+    let executions = plan
+        .executions
+        .into_iter()
+        .zip(&report.cases)
+        .map(|(row, reported)| test_executions::ActiveModel {
+            test_case_id: Set(row.test_case_id),
             test_run_id: Set(run_id),
-            status: Set(case.status.as_str().to_owned()),
-            duration: Set(case.duration),
-            message: Set(case.message),
-            details: Set(case.details),
-            attempt: Set(attempt),
-            failure_category: Set(category.map(|category| category.as_str().to_owned())),
+            status: Set(row.status.as_str().to_owned()),
+            duration: Set(row.duration),
+            message: Set(row.message),
+            details: Set(row.details),
+            attempt: Set(row.attempt),
+            failure_category: Set(reported.category.map(|kind| kind.as_str().to_owned())),
             created_at: Set(now),
             ..Default::default()
-        });
-        if let Some(index) = latest_by_id.get(&test_case_id) {
-            let row = latest.get_mut(*index).ok_or_else(|| {
-                ProcessError::permanent("DataError: Test bookkeeping is inconsistent")
-            })?;
-            case.status.as_str().clone_into(&mut row.last_status);
-            // A report without a Location never erases one.
-            if case.file.is_some() {
-                row.file.clone_from(&case.file);
-                row.line = line;
-            }
-        } else {
-            latest_by_id.insert(test_case_id, latest.len());
-            latest.push(LatestTest {
-                id: test_case_id,
-                last_status: case.status.as_str().to_owned(),
-                file: case.file.clone(),
-                line,
-            });
-        }
-    }
-    counts.retried =
-        i64::try_from(attempts.values().filter(|seen| **seen > 1).count()).unwrap_or(i64::MAX);
-    Ok(BuiltExecutions {
+        })
+        .collect();
+    let latest = plan
+        .latest
+        .into_iter()
+        .map(|row| LatestTest {
+            id: row.test_case_id,
+            last_status: row.last_status.as_str().to_owned(),
+            file: row.file,
+            line: row.line,
+        })
+        .collect();
+    let PlanCounts {
+        passed,
+        failed,
+        error,
+        skipped,
+        retried,
+        duplicate,
+    } = plan.counts;
+    BuiltExecutions {
         executions,
-        counts,
+        counts: Counts {
+            passed,
+            failed,
+            error,
+            skipped,
+            retried,
+            duplicate,
+        },
         latest,
-        day_counts,
-    })
+        day_counts: plan
+            .day_counts
+            .into_iter()
+            .map(|(id, (executions, failures))| {
+                (
+                    id,
+                    DayCounts {
+                        executions,
+                        failures,
+                    },
+                )
+            })
+            .collect(),
+    }
 }
 
 /// A Test's newest Report occurrence, the row the bulk update writes.
@@ -726,7 +717,7 @@ async fn upsert_test_cases(
     project_id: i32,
     report: &ClassifiedReport,
     now: DateTimeWithTimeZone,
-) -> Result<BTreeMap<String, i32>, DbError> {
+) -> Result<BTreeMap<Fingerprint, i32>, DbError> {
     let first: Vec<&ClassifiedCase> = report
         .first
         .iter()
@@ -773,7 +764,10 @@ async fn upsert_test_cases(
                 .map(|reported| Value::from(reported.fingerprint.as_str().to_owned())),
         );
         for row in rows(db, sql, values).await? {
-            ids.insert(get::<String>(&row, "fingerprint")?, get::<i32>(&row, "id")?);
+            ids.insert(
+                fingerprint(&get::<String>(&row, "fingerprint")?, "fingerprint")?,
+                get::<i32>(&row, "id")?,
+            );
         }
     }
     Ok(ids)
