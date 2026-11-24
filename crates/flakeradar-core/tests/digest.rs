@@ -1,8 +1,9 @@
-//! The weekly digest's webhook body, in each format a Webhook URL chooses.
+//! The weekly digest's webhook body, in each format a Webhook URL chooses, and
+//! the schedule that says when it goes out.
 //!
-//! The rendered text and the JSON keys are what a Slack channel and a JSON
-//! consumer read, so each test names the spelling it pins rather than reusing a
-//! helper that builds the same string.
+//! The rendered text, the JSON keys and the schedule's spelling are what a Slack
+//! channel, a JSON consumer and an operator read, so each test names the
+//! spelling it pins rather than reusing a helper that builds the same string.
 
 // Rust guideline compliant 2026-07-21
 
@@ -13,8 +14,8 @@
 
 use std::slice;
 
-use chrono::{NaiveDate, TimeZone as _, Utc};
-use flakeradar_core::digest::{DigestTest, RepoDigest, render_digest};
+use chrono::{DateTime, NaiveDate, TimeZone as _, Utc, Weekday};
+use flakeradar_core::digest::{DigestSchedule, DigestTest, RepoDigest, render_digest};
 use flakeradar_core::notify::WebhookFormat;
 use serde_json::{Value, json};
 
@@ -205,4 +206,85 @@ fn each_repo_is_a_block_and_an_empty_list_emits_no_line() {
         render_digest(&[fixture(), quiet], WebhookFormat::Slack, week_ending())["text"],
         "FlakeRadar weekly digest — acme/app, week ending 2026-11-09\nNewly flaky: test_login\nTop impact: test_login (2 CI runs, 4.0s lost)\n\nFlakeRadar weekly digest — acme/other, week ending 2026-11-09\nRecovered: test_fixed"
     );
+}
+
+/// The instant the acceptance criteria name: Wednesday 2026-11-11, midday UTC,
+/// in the week that runs from Monday the 9th to Sunday the 15th.
+fn wed_noon() -> DateTime<Utc> {
+    Utc.with_ymd_and_hms(2026, 11, 11, 12, 0, 0)
+        .single()
+        .expect("a real instant")
+}
+
+/// The UTC instant the given fields name.
+fn utc(y: i32, m: u32, d: u32, h: u32) -> DateTime<Utc> {
+    Utc.with_ymd_and_hms(y, m, d, h, 0, 0)
+        .single()
+        .expect("a real instant")
+}
+
+/// The schedule the spelling names, which the parse tests assert against.
+fn schedule(text: &str) -> DigestSchedule {
+    text.parse().expect("a spelled schedule")
+}
+
+#[test]
+fn a_schedule_is_three_lowercase_letters_two_digits_and_an_at_sign() {
+    let parsed = schedule("mon@09");
+    assert_eq!(parsed.weekday, Weekday::Mon);
+    assert_eq!(parsed.hour, 9);
+    assert_eq!(parsed.to_string(), "mon@09");
+    assert_eq!(
+        "sun@23"
+            .parse::<DigestSchedule>()
+            .expect("a schedule")
+            .to_string(),
+        "sun@23"
+    );
+}
+
+#[test]
+fn a_slot_is_the_day_and_hour_in_the_week_holding_now() {
+    let now = wed_noon();
+    assert_eq!(schedule("mon@09").slot(now), utc(2026, 11, 9, 9));
+    assert_eq!(schedule("sun@23").slot(now), utc(2026, 11, 15, 23));
+    // The same week answers whatever day `now` is, including the slot's own day.
+    let monday_evening = utc(2026, 11, 9, 18);
+    assert_eq!(schedule("mon@09").slot(monday_evening), utc(2026, 11, 9, 9));
+}
+
+#[test]
+fn a_refused_spelling_says_so_rather_than_guessing() {
+    for text in [
+        "fri@24",    // an hour that is not on a clock
+        "monday@09", // a day name that is not three letters
+        "mon@9",     // one hour digit
+        "mon09",     // no separator at all
+        "",          // nothing to read
+        "Mon@09",    // a name compared exactly
+        "mon@009",   // three hour digits
+    ] {
+        assert!(
+            text.parse::<DigestSchedule>().is_err(),
+            "`{text}` is not a schedule"
+        );
+    }
+}
+
+#[test]
+fn an_hour_beyond_the_clock_moves_the_slot_instead_of_panicking() {
+    // An hour outside 0 to 23 cannot be parsed, so the only way to hold one is
+    // to build the struct directly; the slot then just carries on past midnight.
+    let rolled = DigestSchedule {
+        weekday: Weekday::Mon,
+        hour: 24,
+    };
+    assert_eq!(rolled.slot(wed_noon()), utc(2026, 11, 10, 0));
+    // The largest hour there is cannot name an instant, so the answer saturates
+    // at the last instant chrono can hold rather than panicking.
+    let extreme = DigestSchedule {
+        weekday: Weekday::Sun,
+        hour: u32::MAX,
+    };
+    assert_eq!(extreme.slot(wed_noon()), DateTime::<Utc>::MAX_UTC);
 }
