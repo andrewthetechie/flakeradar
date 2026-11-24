@@ -31,7 +31,7 @@ import { TestDrawer } from "./components/TestDrawer";
 import { ThemeToggle } from "./components/ThemeToggle";
 import { ViewToggle } from "./components/ViewToggle";
 import { useConfirmedDecision } from "./confirmedDecision";
-import { useGuardedLoad, type GuardedLoader } from "./guardedLoad";
+import { createRowReloadRegistry, useGuardedLoad, type GuardedLoader } from "./guardedLoad";
 import { LIST_FILTERS, listFilterSlice, useViewState, type ViewState } from "./urlState";
 import { loadJobHistory, loadTestHistory, loadViewBundle, type ViewBundle } from "./viewData";
 
@@ -49,6 +49,9 @@ export default function App() {
   // decisions mirror their own writes into it, so no single writer knows what
   // is showing. Every write therefore goes through.
   const [error, setError] = useState<string | null>(null);
+  // The reload registry, created once per App: the same value goes to every load
+  // that registers a row and every decision that reloads one.
+  const [registry] = useState(createRowReloadRegistry);
 
   // The filter values a load consumes, as one slice derived from the filter
   // table (urlState.ts): no field name is listed here, so the next filter is one
@@ -133,7 +136,7 @@ export default function App() {
     enabled: kind === "tests" && view.test != null,
     // The drawer displays one Test, so it registers as that row's refresher: a
     // confirmed decision on that row re-fetches this load too.
-    rowReload: view.test == null ? undefined : { kind: "tests", id: view.test },
+    rowReload: view.test == null ? undefined : { registry, kind: "tests", id: view.test },
     onErrorChange: setError,
   });
 
@@ -148,7 +151,7 @@ export default function App() {
     lifetime: "effect",
     enabled: kind === "jobs" && view.job != null,
     // The same as the Test drawer's: this load displays one Job.
-    rowReload: view.job == null ? undefined : { kind: "jobs", id: view.job },
+    rowReload: view.job == null ? undefined : { registry, kind: "jobs", id: view.job },
     onErrorChange: setError,
   });
 
@@ -167,6 +170,7 @@ export default function App() {
     isDecided: (t) => t.quarantined,
     refresh,
     row: (t) => ({ kind: "tests", id: t.id }),
+    registry,
     onError: setError,
   });
 
@@ -183,6 +187,7 @@ export default function App() {
     isDecided: (t) => isAcknowledged(t.acknowledged_until),
     refresh,
     row: (t) => ({ kind: "tests", id: t.id }),
+    registry,
     onError: setError,
   });
 
@@ -201,6 +206,7 @@ export default function App() {
     isDecided: (j) => isAcknowledged(j.acknowledged_until),
     refresh,
     row: (j) => ({ kind: "jobs", id: j.id }),
+    registry,
     onError: setError,
   });
 

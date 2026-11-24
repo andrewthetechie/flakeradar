@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, renderHook } from "@testing-library/react";
 import { ApiError } from "./api";
 import { useConfirmedDecision } from "./confirmedDecision";
-import { registerRowReload } from "./guardedLoad";
+import { createRowReloadRegistry } from "./guardedLoad";
 
 /** A call whose answer the test hands over by hand. */
 interface Deferred<T> {
@@ -60,11 +60,13 @@ describe("useConfirmedDecision", () => {
     const log: string[] = [];
     const refresh = deferred<void>();
     const reload = step("reload", log, () => refresh.promise.then(() => {}));
+    const registry = createRowReloadRegistry();
     const { result } = renderHook(() =>
       useConfirmedDecision<Row, Choice>({
         call: step("call", log, () => answer.promise),
         isDecided: (t) => t.decided,
         refresh: step("refresh", log, () => refresh.promise),
+        registry,
         reloads: [reload],
         onError: () => {},
       }),
@@ -96,11 +98,13 @@ describe("useConfirmedDecision", () => {
 
   it("an undecided row opens the pending dialog, and nothing posts until confirm", async () => {
     const log: string[] = [];
+    const registry = createRowReloadRegistry();
     const { result } = renderHook(() =>
       useConfirmedDecision<Row, Choice>({
         call: step("call", log, () => Promise.resolve()),
         isDecided: (t) => t.decided,
         refresh: step("refresh", log, () => Promise.resolve()),
+        registry,
         onError: () => {},
       }),
     );
@@ -115,11 +119,13 @@ describe("useConfirmedDecision", () => {
   it("confirm clears the pending entity before the call settles, and keeps it cleared on success", async () => {
     const answer = deferred<unknown>();
     const log: string[] = [];
+    const registry = createRowReloadRegistry();
     const { result } = renderHook(() =>
       useConfirmedDecision<Row, Choice>({
         call: step("call", log, () => answer.promise),
         isDecided: (t) => t.decided,
         refresh: step("refresh", log, () => Promise.resolve()),
+        registry,
         onError: () => {},
       }),
     );
@@ -148,11 +154,13 @@ describe("useConfirmedDecision", () => {
     const answer = deferred<unknown>();
     const log: string[] = [];
     const onError = vi.fn((message: string) => log.push(`error:${message}`));
+    const registry = createRowReloadRegistry();
     const { result } = renderHook(() =>
       useConfirmedDecision<Row, Choice>({
         call: step("call", log, () => answer.promise),
         isDecided: (t) => t.decided,
         refresh: step("refresh", log, () => Promise.resolve()),
+        registry,
         onError,
       }),
     );
@@ -178,11 +186,13 @@ describe("useConfirmedDecision", () => {
   it("cancel clears the pending entity and records nothing", async () => {
     const log: string[] = [];
     const call = vi.fn(() => Promise.resolve());
+    const registry = createRowReloadRegistry();
     const { result } = renderHook(() =>
       useConfirmedDecision<Row, Choice>({
         call,
         isDecided: (t) => t.decided,
         refresh: step("refresh", log, () => Promise.resolve()),
+        registry,
         onError: () => {},
       }),
     );
@@ -202,11 +212,13 @@ describe("useConfirmedDecision", () => {
   it("confirm with nothing pending records nothing", async () => {
     const log: string[] = [];
     const call = vi.fn(() => Promise.resolve());
+    const registry = createRowReloadRegistry();
     const { result } = renderHook(() =>
       useConfirmedDecision<Row, Choice>({
         call,
         isDecided: (t) => t.decided,
         refresh: step("refresh", log, () => Promise.resolve()),
+        registry,
         onError: () => {},
       }),
     );
@@ -225,11 +237,13 @@ describe("useConfirmedDecision", () => {
     const secondReloadGate = deferred<void>();
     const firstReload = step("reload 1", log, () => firstReloadGate.promise);
     const secondReload = step("reload 2", log, () => secondReloadGate.promise);
+    const registry = createRowReloadRegistry();
     const { result } = renderHook(() =>
       useConfirmedDecision<Row, Choice>({
         call: step("call", log, () => Promise.resolve()),
         isDecided: (t) => t.decided,
         refresh: step("refresh", log, () => refreshGate.promise),
+        registry,
         reloads: [firstReload, secondReload],
         onError: () => {},
       }),
@@ -264,19 +278,20 @@ describe("useConfirmedDecision", () => {
 
   it("a settled confirm reloads the row it names, after the refresh and before the extra reloads", async () => {
     // The same tail as above, fed by `row` instead of a hand-listed reload: the
-    // registry entry under the row's key is the drawer's refresher.
+    // entry the row's load registered in this registry is the drawer's refresher.
     const log: string[] = [];
+    const registry = createRowReloadRegistry();
     const refreshGate = deferred<void>();
     const rowGate = deferred<void>();
     const tailGate = deferred<void>();
-    const unregister = registerRowReload(
+    const unregister = registry.register(
       "tests",
       7,
       step("row", log, () => rowGate.promise),
     );
     // A second row's refresher: only the mutated row may answer.
     const other = step("other row", log, () => Promise.resolve());
-    const unregisterOther = registerRowReload("jobs", 7, other);
+    const unregisterOther = registry.register("jobs", 7, other);
     const tail = step("reload 1", log, () => tailGate.promise);
     const { result } = renderHook(() =>
       useConfirmedDecision<Row, Choice>({
@@ -284,6 +299,7 @@ describe("useConfirmedDecision", () => {
         isDecided: (t) => t.decided,
         refresh: step("refresh", log, () => refreshGate.promise),
         row: (t) => ({ kind: "tests", id: t.id }),
+        registry,
         reloads: [tail],
         onError: () => {},
       }),
@@ -327,12 +343,14 @@ describe("useConfirmedDecision", () => {
   it("a row no open display registered reloads nothing, and the tail still runs", async () => {
     const log: string[] = [];
     const onError = vi.fn((message: string) => log.push(`error:${message}`));
+    const registry = createRowReloadRegistry();
     const { result } = renderHook(() =>
       useConfirmedDecision<Row, Choice>({
         call: step("call", log, () => Promise.resolve()),
         isDecided: (t) => t.decided,
         refresh: step("refresh", log, () => Promise.resolve()),
         row: (t) => ({ kind: "jobs", id: t.id }),
+        registry,
         reloads: [step("reload 1", log, () => Promise.resolve())],
         onError,
       }),
@@ -350,7 +368,8 @@ describe("useConfirmedDecision", () => {
 
   it("a rejecting row refetch maps its message onto the error callback and runs nothing further", async () => {
     const log: string[] = [];
-    const unregister = registerRowReload("tests", 6, () =>
+    const registry = createRowReloadRegistry();
+    const unregister = registry.register("tests", 6, () =>
       Promise.reject(new Error("/api/tests/6/history?limit=60 -> 500")),
     );
     const tail = step("reload 1", log, () => Promise.resolve());
@@ -361,6 +380,7 @@ describe("useConfirmedDecision", () => {
         isDecided: (t) => t.decided,
         refresh: step("refresh", log, () => Promise.resolve()),
         row: (t) => ({ kind: "tests", id: t.id }),
+        registry,
         reloads: [tail],
         onError,
       }),
@@ -380,11 +400,13 @@ describe("useConfirmedDecision", () => {
   it("a rejecting call maps an Error message onto the error callback, and runs no refresh", async () => {
     const log: string[] = [];
     const onError = vi.fn((message: string) => log.push(`error:${message}`));
+    const registry = createRowReloadRegistry();
     const { result } = renderHook(() =>
       useConfirmedDecision<Row, Choice>({
         call: step("call", log, () => Promise.reject(new Error("quarantine 7 -> 500"))),
         isDecided: (t) => t.decided,
         refresh: step("refresh", log, () => Promise.resolve()),
+        registry,
         onError,
       }),
     );
@@ -408,6 +430,7 @@ describe("useConfirmedDecision", () => {
   it("a rejecting call maps an ApiError's message onto the error callback", async () => {
     const log: string[] = [];
     const onError = vi.fn((message: string) => log.push(`error:${message}`));
+    const registry = createRowReloadRegistry();
     const { result } = renderHook(() =>
       useConfirmedDecision<Row, Choice>({
         call: step("call", log, () =>
@@ -415,6 +438,7 @@ describe("useConfirmedDecision", () => {
         ),
         isDecided: (t) => t.decided,
         refresh: step("refresh", log, () => Promise.resolve()),
+        registry,
         onError,
       }),
     );
@@ -433,11 +457,13 @@ describe("useConfirmedDecision", () => {
   it("a non-Error rejection is mapped through String onto the error callback", async () => {
     const log: string[] = [];
     const onError = vi.fn((message: string) => log.push(`error:${message}`));
+    const registry = createRowReloadRegistry();
     const { result } = renderHook(() =>
       useConfirmedDecision<Row, Choice>({
         call: step("call", log, () => Promise.reject("backend down")),
         isDecided: (t) => t.decided,
         refresh: step("refresh", log, () => Promise.resolve()),
+        registry,
         onError,
       }),
     );
@@ -457,11 +483,13 @@ describe("useConfirmedDecision", () => {
     const log: string[] = [];
     const onError = vi.fn((message: string) => log.push(`error:${message}`));
     const refresh = vi.fn(() => Promise.resolve());
+    const registry = createRowReloadRegistry();
     const { result } = renderHook(() =>
       useConfirmedDecision<Row, Choice>({
         call: step("call", log, () => Promise.reject(new Error("acknowledge 3 -> 503"))),
         isDecided: (t) => t.decided,
         refresh,
+        registry,
         onError,
       }),
     );

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, renderHook } from "@testing-library/react";
 import { useState } from "react";
 import { type LatestWins } from "./api";
-import { reloadRow, useGuardedLoad, type GuardedLoader } from "./guardedLoad";
+import { createRowReloadRegistry, useGuardedLoad, type GuardedLoader } from "./guardedLoad";
 
 /** A loader whose answer the test hands over by hand. */
 interface Deferred<TData> {
@@ -499,9 +499,13 @@ describe("enabled", () => {
 
   it("a hook disabled mid-mutation leaves its row with nothing to reload", async () => {
     const { load, calls } = guarded<string>([]);
+    const registry = createRowReloadRegistry();
     const { rerender } = renderHook(
       ({ on }: { on: boolean }) =>
-        useGuardedLoad(load, { enabled: on, rowReload: { kind: "tests", id: 506 } }),
+        useGuardedLoad(load, {
+          enabled: on,
+          rowReload: { registry, kind: "tests", id: 506 },
+        }),
       { initialProps: { on: true } },
     );
     await flush();
@@ -514,7 +518,7 @@ describe("enabled", () => {
       await Promise.resolve();
     });
     await act(async () => {
-      await reloadRow("tests", 506);
+      await registry.reload("tests", 506);
     });
     expect(calls()).toBe(1);
   });
@@ -780,17 +784,18 @@ describe("a shared error surface", () => {
 });
 
 describe("row reloads", () => {
-  it("reloadRow runs the registered load's refresh exactly once, and registering fires no load", async () => {
+  it("a registry reload runs the registered load's refresh exactly once, and registering fires no load", async () => {
     const { load, calls } = guarded<string>([Promise.resolve("a"), Promise.resolve("b")]);
+    const registry = createRowReloadRegistry();
     const { result } = renderHook(() =>
-      useGuardedLoad(load, { rowReload: { kind: "tests", id: 501 } }),
+      useGuardedLoad(load, { rowReload: { registry, kind: "tests", id: 501 } }),
     );
     await flush();
     // Mount's own load only: taking the key is not a run.
     expect(calls()).toBe(1);
 
     await act(async () => {
-      await reloadRow("tests", 501);
+      await registry.reload("tests", 501);
     });
     expect(calls()).toBe(2);
     expect(result.current.data).toBe("b");
@@ -798,22 +803,26 @@ describe("row reloads", () => {
 
   it("a disabled load registers nothing, and closing the drawer gives the key up", async () => {
     const { load, calls } = guarded<string>([]);
+    const registry = createRowReloadRegistry();
     // Another load owns the key first — the open drawer. A disabled hook must
     // not take it over: that would move the reload onto a load that never runs.
     const drawer = renderHook(() =>
-      useGuardedLoad(load, { rowReload: { kind: "tests", id: 502 } }),
+      useGuardedLoad(load, { rowReload: { registry, kind: "tests", id: 502 } }),
     );
     await flush();
     expect(calls()).toBe(1);
 
     const { rerender } = renderHook(
       ({ shown }: { shown: boolean }) =>
-        useGuardedLoad(load, { enabled: shown, rowReload: { kind: "tests", id: 502 } }),
+        useGuardedLoad(load, {
+          enabled: shown,
+          rowReload: { registry, kind: "tests", id: 502 },
+        }),
       { initialProps: { shown: false } },
     );
     await flush();
     await act(async () => {
-      await reloadRow("tests", 502);
+      await registry.reload("tests", 502);
     });
     // The reload still reached the open load, not the disabled one.
     expect(calls()).toBe(2);
@@ -829,22 +838,23 @@ describe("row reloads", () => {
     });
     drawer.unmount();
     await act(async () => {
-      await reloadRow("tests", 502);
+      await registry.reload("tests", 502);
     });
     expect(calls()).toBe(3);
   });
 
   it("unmounting unregisters the row", async () => {
     const { load, calls } = guarded<string>([]);
+    const registry = createRowReloadRegistry();
     const { unmount } = renderHook(() =>
-      useGuardedLoad(load, { rowReload: { kind: "jobs", id: 503 } }),
+      useGuardedLoad(load, { rowReload: { registry, kind: "jobs", id: 503 } }),
     );
     await flush();
     expect(calls()).toBe(1);
 
     unmount();
     await act(async () => {
-      await reloadRow("jobs", 503);
+      await registry.reload("jobs", 503);
     });
     expect(calls()).toBe(1);
   });
@@ -852,12 +862,13 @@ describe("row reloads", () => {
   it("the newest registration owns the key, and the older cleanup leaves it alone", async () => {
     const one = guarded<string>([]);
     const two = guarded<string>([]);
+    const registry = createRowReloadRegistry();
     const first = renderHook(() =>
-      useGuardedLoad(one.load, { rowReload: { kind: "tests", id: 504 } }),
+      useGuardedLoad(one.load, { rowReload: { registry, kind: "tests", id: 504 } }),
     );
     await flush();
     const second = renderHook(() =>
-      useGuardedLoad(two.load, { rowReload: { kind: "tests", id: 504 } }),
+      useGuardedLoad(two.load, { rowReload: { registry, kind: "tests", id: 504 } }),
     );
     await flush();
     expect(one.calls()).toBe(1);
@@ -868,7 +879,7 @@ describe("row reloads", () => {
     // entry that now belongs to the second.
     first.unmount();
     await act(async () => {
-      await reloadRow("tests", 504);
+      await registry.reload("tests", 504);
     });
     expect(one.calls()).toBe(1);
     expect(two.calls()).toBe(2);
@@ -877,14 +888,41 @@ describe("row reloads", () => {
 
   it("a row no load displays resolves with nothing loaded", async () => {
     const { load, calls } = guarded<string>([]);
-    renderHook(() => useGuardedLoad(load, { rowReload: { kind: "jobs", id: 505 } }));
+    const registry = createRowReloadRegistry();
+    renderHook(() => useGuardedLoad(load, { rowReload: { registry, kind: "jobs", id: 505 } }));
     await flush();
 
     await act(async () => {
       // The same id under the other kind, and an id nobody registered at all.
-      await reloadRow("tests", 505);
-      await reloadRow("jobs", 999);
+      await registry.reload("tests", 505);
+      await registry.reload("jobs", 999);
     });
     expect(calls()).toBe(1);
+  });
+
+  it("another registry's reload of the same row loads nothing", async () => {
+    // Module state could not say this: two registries are two sets of rows, so
+    // the row one holds is invisible to the other.
+    const { load, calls } = guarded<string>([Promise.resolve("a"), Promise.resolve("b")]);
+    const registered = createRowReloadRegistry();
+    const other = createRowReloadRegistry();
+    const { result } = renderHook(() =>
+      useGuardedLoad(load, { rowReload: { registry: registered, kind: "tests", id: 507 } }),
+    );
+    await flush();
+    expect(calls()).toBe(1);
+
+    await act(async () => {
+      await other.reload("tests", 507);
+    });
+    expect(calls()).toBe(1);
+    expect(result.current.data).toBe("a");
+
+    // The registry that does hold the row still does.
+    await act(async () => {
+      await registered.reload("tests", 507);
+    });
+    expect(calls()).toBe(2);
+    expect(result.current.data).toBe("b");
   });
 });
