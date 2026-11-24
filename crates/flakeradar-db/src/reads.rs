@@ -14,7 +14,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use chrono::{DateTime, Duration, FixedOffset, NaiveDate, Utc};
+use chrono::{DateTime, Duration, NaiveDate, Utc};
 use flakeradar_core::{
     classify::FailureCategory, defaults, dto::CiRunFailedJobOut, dto::CiRunFailuresOut,
     dto::CiRunTestFailureOut, dto::ExecutionOut, dto::ExplainingTestOut, dto::HistoryOut,
@@ -35,11 +35,15 @@ use crate::attribution::{
     summary_explaining_siblings,
 };
 use crate::clock::SharedClock;
-use crate::entity::entity;
+use crate::entity::{
+    IMPACT_COLUMNS, entity, impact_lateral_sql, impact_since, is_new, job_out, stored_category,
+    test_out,
+};
 use crate::error::DbError;
 use crate::score_history;
 use crate::sql::{
-    Binds, ci_run_id, execution_status, fingerprint, get, one, required_one, rows, score,
+    Binds, ci_run_id, execution_status, get, id, one, optional_timestamp, required_one, rows,
+    score, timestamp,
 };
 use crate::tier;
 
@@ -279,88 +283,6 @@ fn newest_history_join(kind: EntityKind, alias: &str, cutoff: NaiveDate) -> Stri
     format!(" LEFT JOIN LATERAL ({lateral}) AS past ON true")
 }
 
-/// The instant the impact window starts: [`IMPACT_DAYS`] before the settings' clock.
-pub(crate) fn impact_since(settings: &ReadSettings) -> DateTime<Utc> {
-    settings.clock.now().with_timezone(&Utc) - Duration::days(IMPACT_DAYS)
-}
-
-/// The three impact columns, to append to the `SELECT` list of a query that joins
-/// [`impact_lateral_sql`].
-pub(crate) const IMPACT_COLUMNS: &str =
-    ", impact.impacted_runs, impact.impacted_branches, impact.time_lost_seconds";
-
-/// The SQL the impact fields add: one aggregate over the entity's failures in the
-/// window, joined per row so a page reads it in the statement that fetches it.
-///
-/// The Test arm excludes the Runs infrastructure marking flagged as suspect: their
-/// failures are not the Test's cost. The Job arm reuses the attribution rule the
-/// Job score uses, so an explained failure costs the Job nothing.
-///
-/// The cutoff is inlined as a literal for the reason [`newest_history_join`]
-/// inlines its own: the board's binds are positional and shared by the count and
-/// the page statement, so an extra bind would shift the filters' placeholders.
-pub(crate) fn impact_lateral_sql(kind: EntityKind, cutoff: DateTime<Utc>) -> String {
-    let since = format!("timestamptz '{}'", cutoff.to_rfc3339());
-    let descriptor = entity(kind);
-    let (alias, table) = (descriptor.alias, descriptor.table);
-    let aggregate = match kind {
-        EntityKind::Test => format!(
-            "SELECT count(DISTINCT r2.ci_run_id) FILTER (WHERE r2.ci_run_id <> '') \
-                  AS impacted_runs, \
-                  count(DISTINCT r2.branch) FILTER (WHERE r.default_branch IS NOT NULL \
-                      AND r2.branch <> r.default_branch) AS impacted_branches, \
-                  coalesce(sum(e2.duration), 0)::double precision AS time_lost_seconds \
-             FROM test_executions e2 JOIN test_runs r2 ON r2.id = e2.test_run_id \
-            WHERE e2.test_case_id = {alias}.id \
-              AND e2.status IN ('failed', 'error') \
-              AND NOT r2.infra_suspect \
-              AND e2.created_at > {since}"
-        ),
-        // The Job tables appear under their bare names: the outer query aliases
-        // them, and [`job_execution_explained_sql`] states its rule for those.
-        EntityKind::Job => format!(
-            "SELECT count(DISTINCT job_executions.ci_run_id) \
-                  FILTER (WHERE job_executions.ci_run_id <> '') AS impacted_runs, \
-                  count(DISTINCT job_executions.branch) \
-                      FILTER (WHERE r.default_branch IS NOT NULL \
-                          AND job_executions.branch <> r.default_branch) \
-                      AS impacted_branches, \
-                  coalesce(sum(EXTRACT(EPOCH FROM \
-                      (job_executions.completed_at - job_executions.started_at))), 0) \
-                      ::double precision AS time_lost_seconds \
-             FROM job_executions \
-             JOIN {table} ON {table}.id = job_executions.job_id \
-             JOIN pipelines ON pipelines.id = {table}.pipeline_id \
-            WHERE job_executions.job_id = {alias}.id \
-              AND job_executions.status = 'failed' \
-              AND NOT ({}) \
-              AND job_executions.created_at > {since}",
-            job_execution_explained_sql()
-        ),
-    };
-    format!(" LEFT JOIN LATERAL ({aggregate}) AS impact ON true")
-}
-
-/// A timestamp column read as UTC.
-pub(crate) fn timestamp(row: &QueryResult, column: &str) -> Result<DateTime<Utc>, DbError> {
-    let value: DateTime<FixedOffset> = get(row, column)?;
-    Ok(value.with_timezone(&Utc))
-}
-
-/// An optional timestamp column read as UTC.
-pub(crate) fn optional_timestamp(
-    row: &QueryResult,
-    column: &str,
-) -> Result<Option<DateTime<Utc>>, DbError> {
-    let value: Option<DateTime<FixedOffset>> = get(row, column)?;
-    Ok(value.map(|value| value.with_timezone(&Utc)))
-}
-
-/// Converts a stored `INTEGER` id to the DTO's `i64`.
-pub(crate) fn id(value: i32) -> i64 {
-    i64::from(value)
-}
-
 /// What the one leaderboard engine needs to know about an entity to query it.
 struct EntityBoard {
     /// The Score-history table the past-score lookups use.
@@ -564,188 +486,6 @@ pub async fn list_repos(db: &impl ConnectionTrait) -> Result<Vec<RepoOut>, DbErr
         }
     }
     Ok(repos)
-}
-
-/// Whether a Test first seen at `first_seen_at` is within the new-test window.
-fn is_new(first_seen_at: DateTime<Utc>, settings: &ReadSettings) -> bool {
-    first_seen_at
-        > settings.clock.now().with_timezone(&Utc) - Duration::days(settings.new_test_days)
-}
-
-/// Reads one Test row into its response shape.
-pub(crate) fn test_out(
-    row: &QueryResult,
-    settings: &ReadSettings,
-    trend: Option<Trend>,
-) -> Result<TestOut, DbError> {
-    let score = score(get(row, "flakiness_score")?, "flakiness_score")?;
-    // The tier reads the row's stored flaky state, so a score that drifted back
-    // under the Flake threshold still lists as flaky until the state clears.
-    let flaky = optional_timestamp(row, "flaky_since")?.is_some();
-    let repo: String = get(row, "repo_name")?;
-    let issue_number: Option<i32> = get(row, "github_issue_number")?;
-    let issue_number = issue_number.map(id);
-    let fail_streak = i64::from(get::<i32>(row, "fail_streak")?);
-    let source_url = issue_url(&repo, issue_number);
-    let first_seen_at = timestamp(row, "first_seen_at")?;
-    Ok(TestOut {
-        id: id(get(row, "id")?),
-        repo,
-        project: get(row, "project_name")?,
-        fingerprint: fingerprint(&get::<String>(row, "fingerprint")?, "fingerprint")?,
-        suite: get(row, "suite")?,
-        classname: get(row, "classname")?,
-        name: get(row, "name")?,
-        file: get(row, "file")?,
-        line: get::<Option<i32>>(row, "line")?.map(id),
-        flakiness_score: score,
-        tier: tier_for(score, flaky),
-        confirmed_flake_count: i64::from(get::<i32>(row, "confirmed_flake_count")?),
-        failure_category: stored_category(
-            get::<Option<String>>(row, "failure_category")?.as_deref(),
-        ),
-        clean_streak: i64::from(get::<i32>(row, "clean_streak")?),
-        fail_streak,
-        broken: is_broken(fail_streak, settings.broken_streak),
-        trend,
-        last_status: execution_status(&get::<String>(row, "last_status")?)?,
-        last_seen_at: timestamp(row, "last_seen_at")?,
-        quarantined: get(row, "quarantined")?,
-        quarantined_at: optional_timestamp(row, "quarantined_at")?,
-        quarantine_reason: get(row, "quarantine_reason")?,
-        quarantine_expires_at: optional_timestamp(row, "quarantine_expires_at")?,
-        acknowledged_until: optional_timestamp(row, "acknowledged_until")?,
-        acknowledge_reason: get(row, "acknowledge_reason")?,
-        github_issue_number: issue_number,
-        github_issue_url: source_url,
-        github_issue_closed: get(row, "github_issue_closed")?,
-        first_seen_at,
-        new: is_new(first_seen_at, settings),
-        impacted_runs: get(row, "impacted_runs")?,
-        impacted_branches: get(row, "impacted_branches")?,
-        time_lost_seconds: get(row, "time_lost_seconds")?,
-    })
-}
-
-/// Reads one Job row into its response shape.
-fn job_out(row: &QueryResult, trend: Option<Trend>) -> Result<JobOut, DbError> {
-    let score = score(get(row, "flakiness_score")?, "flakiness_score")?;
-    // The tier reads the row's stored flaky state, so a score that drifted back
-    // under the Flake threshold still lists as flaky until the state clears.
-    let flaky = optional_timestamp(row, "flaky_since")?.is_some();
-    let repo: String = get(row, "repo_name")?;
-    let provider: String = get(row, "provider")?;
-    let issue_number: Option<i32> = get(row, "github_issue_number")?;
-    let issue_number = issue_number.map(id);
-    let github_issue_url = job_issue_url(&repo, &provider, issue_number);
-    Ok(JobOut {
-        id: id(get(row, "id")?),
-        repo,
-        provider,
-        pipeline: get(row, "pipeline_name")?,
-        name: get(row, "name")?,
-        flakiness_score: score,
-        tier: tier_for(score, flaky),
-        confirmed_flake_count: i64::from(get::<i32>(row, "confirmed_flake_count")?),
-        clean_streak: i64::from(get::<i32>(row, "clean_streak")?),
-        trend,
-        last_status: get(row, "last_status")?,
-        last_seen_at: timestamp(row, "last_seen_at")?,
-        summary: get(row, "summary")?,
-        acknowledged_until: optional_timestamp(row, "acknowledged_until")?,
-        acknowledge_reason: get(row, "acknowledge_reason")?,
-        github_issue_number: issue_number,
-        github_issue_url,
-        github_issue_closed: get(row, "github_issue_closed")?,
-        impacted_runs: get(row, "impacted_runs")?,
-        impacted_branches: get(row, "impacted_branches")?,
-        time_lost_seconds: get(row, "time_lost_seconds")?,
-    })
-}
-
-/// One entity's row in its own response shape.
-pub(crate) enum EntityOut {
-    /// A Test, in the Tests leaderboard shape.
-    Test(TestOut),
-    /// A Job, in the Jobs leaderboard shape.
-    Job(JobOut),
-}
-
-/// Reads one Test or Job row in the leaderboard shape, impact columns included.
-///
-/// This is the one home of the one-row statement: the row shape, the impact
-/// pieces and the id filter live here, so a caller states only the kind and the
-/// id. [`locked_entity_row`] is its twin for a write that locks the row first.
-/// It answers the raw row — [`entity_out`] maps it — because a write patches
-/// the columns it stored onto the mapped shape before it answers.
-///
-/// # Errors
-///
-/// Returns [`DbError::Database`] when the statement fails.
-pub(crate) async fn entity_row(
-    db: &impl ConnectionTrait,
-    kind: EntityKind,
-    entity_id: i64,
-    settings: &ReadSettings,
-) -> Result<Option<QueryResult>, DbError> {
-    let since = impact_since(settings);
-    let descriptor = entity(kind);
-    let (select, from, alias) = (descriptor.select, descriptor.from, descriptor.alias);
-    let sql = format!(
-        "{select}{IMPACT_COLUMNS} {from}{lateral} WHERE {alias}.id = $1",
-        lateral = impact_lateral_sql(kind, since)
-    );
-    one(db, sql, vec![Value::from(entity_id)]).await
-}
-
-/// The locked twin of [`entity_row`]: the same row, `FOR UPDATE`, with the three
-/// Issue-link columns the link engines read.
-///
-/// It carries the impact columns because the row feeds the leaderboard's own
-/// mapper: without the lateral the answer names unknown columns. Locking stays
-/// legal because the lateral is on the target's non-null side.
-///
-/// # Errors
-///
-/// Returns [`DbError::Database`] when the statement fails.
-pub(crate) async fn locked_entity_row(
-    db: &impl ConnectionTrait,
-    kind: EntityKind,
-    entity_id: i64,
-    settings: &ReadSettings,
-) -> Result<Option<QueryResult>, DbError> {
-    let since = impact_since(settings);
-    let descriptor = entity(kind);
-    let (select, from, alias, locked_select) = (
-        descriptor.select,
-        descriptor.from,
-        descriptor.alias,
-        descriptor.locked_select,
-    );
-    let sql = format!(
-        "{select}{IMPACT_COLUMNS}{locked_select}{from}{lateral} WHERE {alias}.id = $1 \
-         FOR UPDATE OF {alias}",
-        lateral = impact_lateral_sql(kind, since)
-    );
-    one(db, sql, vec![Value::from(entity_id)]).await
-}
-
-/// Maps one row of [`entity_row`] or [`locked_entity_row`] into the response
-/// shape of `kind`.
-///
-/// # Errors
-///
-/// Returns [`DbError::UnusableStoredValue`] or [`DbError::UnknownExecutionStatus`]
-/// for a stored value its mapper rejects.
-pub(crate) fn entity_out(
-    row: &QueryResult,
-    kind: EntityKind,
-    settings: &ReadSettings,
-) -> Result<EntityOut, DbError> {
-    match kind {
-        EntityKind::Test => Ok(EntityOut::Test(test_out(row, settings, None)?)),
-        EntityKind::Job => Ok(EntityOut::Job(job_out(row, None)?)),
-    }
 }
 
 impl ListOptions {
@@ -1180,15 +920,6 @@ async fn category_counts(
         }
     }
     Ok(category_counts)
-}
-
-/// The Failure category one stored spelling names.
-///
-/// `failure_category` is free text in the baseline schema, so a row can hold a
-/// word the five categories do not name. It reads as no category, which is the
-/// same rule the summary's per-category counts apply.
-fn stored_category(text: Option<&str>) -> Option<FailureCategory> {
-    text.and_then(FailureCategory::from_wire)
 }
 
 /// One Execution in a Test's history, with the Run facts it carries.

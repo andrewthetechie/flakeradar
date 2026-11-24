@@ -20,9 +20,10 @@ use flakeradar_core::{
 use sea_orm::entity::prelude::DateTimeWithTimeZone;
 use sea_orm::{ConnectionTrait, DbBackend, Statement, Value};
 
+use crate::entity::{entity_row, test_out};
 use crate::error::DbError;
-use crate::reads::{ReadSettings, entity_row, id, optional_timestamp, test_out};
-use crate::sql::{fingerprint, get, rows};
+use crate::reads::ReadSettings;
+use crate::sql::{fingerprint, get, id, optional_timestamp, rows};
 
 /// A human's quarantine decision for one Test.
 ///

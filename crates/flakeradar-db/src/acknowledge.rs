@@ -28,9 +28,9 @@ use sea_orm::entity::prelude::DateTimeWithTimeZone;
 use sea_orm::{ConnectionTrait, DbBackend, Statement, Value};
 use serde::Serialize;
 
-use crate::entity::entity;
+use crate::entity::{EntityOut, entity, entity_out, entity_row};
 use crate::error::DbError;
-use crate::reads::{EntityOut, ReadSettings, entity_out, entity_row};
+use crate::reads::ReadSettings;
 use crate::sql::{get, one, rows};
 
 /// A human's acknowledgement decision for one Test or Job.
