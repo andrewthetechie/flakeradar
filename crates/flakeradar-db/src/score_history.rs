@@ -16,6 +16,7 @@ use sea_orm::{ConnectionTrait, DbBackend, Statement, Value};
 
 use crate::attribution::int_array;
 use crate::batching::chunks;
+use crate::entity::entity;
 use crate::error::DbError;
 use crate::sql::{get, rows, score, value_row};
 
@@ -29,22 +30,6 @@ use crate::sql::{get, rows, score, value_row};
 /// lengthens every detail answer; narrowing it hides the history a fix shows up
 /// in.
 pub const HISTORY_DAYS: i64 = 90;
-
-/// The Score-history table that holds `kind`'s history.
-fn history_table(kind: EntityKind) -> &'static str {
-    match kind {
-        EntityKind::Test => "test_score_history",
-        EntityKind::Job => "job_score_history",
-    }
-}
-
-/// The column naming the owner: the Test's or the Job's id.
-fn owner_column(kind: EntityKind) -> &'static str {
-    match kind {
-        EntityKind::Test => "test_case_id",
-        EntityKind::Job => "job_id",
-    }
-}
 
 /// One owner's Score history row.
 #[derive(Debug, Clone, PartialEq)]
@@ -92,8 +77,8 @@ pub async fn past_scores(
     today: NaiveDate,
 ) -> Result<std::collections::BTreeMap<i32, f64>, DbError> {
     let cutoff = today - chrono::Duration::days(flakeradar_core::helpers::TREND_DAYS);
-    let table = history_table(kind);
-    let owner = owner_column(kind);
+    let table = entity(kind).history_table;
+    let owner = entity(kind).owner_column;
     let mut found = std::collections::BTreeMap::new();
     for chunk in chunks(ids) {
         let sql = format!(
@@ -120,8 +105,8 @@ pub async fn past_scores(
 /// caller uses for the Test or Job (`t` or `j`), and `$1` is the cut-off day.
 #[must_use]
 pub fn newest_history_before(kind: EntityKind, owner: &str) -> String {
-    let table = history_table(kind);
-    let owner_column = owner_column(kind);
+    let table = entity(kind).history_table;
+    let owner_column = entity(kind).owner_column;
     format!(
         "SELECT h.flakiness_score AS score FROM {table} h \
           WHERE h.{owner_column} = {owner}.id AND h.day <= $1::DATE \
@@ -145,8 +130,8 @@ pub async fn window_rows(
     today: NaiveDate,
 ) -> Result<Vec<ScoreHistoryRow>, DbError> {
     let cutoff = today - chrono::Duration::days(HISTORY_DAYS);
-    let table = history_table(kind);
-    let owner_column = owner_column(kind);
+    let table = entity(kind).history_table;
+    let owner_column = entity(kind).owner_column;
     let sql = format!(
         "SELECT day, flakiness_score, confirmed_flake_count, executions, failures \
            FROM {table} WHERE {owner_column} = $1 AND day > $2::DATE ORDER BY day"
@@ -178,8 +163,8 @@ pub async fn write_today_history(
     updates: &[HistoryUpdate],
     today: NaiveDate,
 ) -> Result<(), DbError> {
-    let table = history_table(kind);
-    let owner = owner_column(kind);
+    let table = entity(kind).history_table;
+    let owner = entity(kind).owner_column;
     for chunk in chunks(updates) {
         let mut placeholders = Vec::with_capacity(chunk.len());
         let mut values = Vec::with_capacity(chunk.len() * 6);

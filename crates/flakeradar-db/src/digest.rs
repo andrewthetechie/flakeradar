@@ -15,10 +15,10 @@ use flakeradar_core::digest::{DigestTest, RepoDigest};
 use flakeradar_core::model::EntityKind;
 use sea_orm::{ConnectionTrait, QueryResult, Value};
 
+use crate::entity::entity;
 use crate::error::DbError;
 use crate::reads::{
-    IMPACT_COLUMNS, ReadSettings, TESTS_FROM, id, impact_lateral_sql, impact_since,
-    optional_timestamp,
+    IMPACT_COLUMNS, ReadSettings, id, impact_lateral_sql, impact_since, optional_timestamp,
 };
 use crate::score_history;
 use crate::sql::{Binds, get, rows};
@@ -102,8 +102,9 @@ async fn list_newly_flaky(
     binds.eq("r.name", Value::from(repo.to_owned()));
     let started = binds.bind(Value::from(now - Duration::days(WEEK_DAYS)));
     binds.raw(format!("t.flaky_since > {started}"));
+    let tests_from = entity(EntityKind::Test).from;
     let sql = format!(
-        "{DIGEST_COLUMNS} {TESTS_FROM}{} ORDER BY t.flaky_since DESC, t.id",
+        "{DIGEST_COLUMNS} {tests_from}{} ORDER BY t.flaky_since DESC, t.id",
         binds.suffix()
     );
     digest_rows(db, sql, binds.into_values()).await
@@ -129,8 +130,9 @@ async fn list_recovered(
     binds.raw("t.flaky_since IS NULL");
     let threshold = binds.bind(Value::from(settings.flake_threshold));
     binds.raw(format!("past.score >= {threshold}"));
+    let tests_from = entity(EntityKind::Test).from;
     let sql = format!(
-        "{DIGEST_COLUMNS} {TESTS_FROM} LEFT JOIN LATERAL ({history}) AS past ON true{} \
+        "{DIGEST_COLUMNS} {tests_from} LEFT JOIN LATERAL ({history}) AS past ON true{} \
           ORDER BY t.id",
         binds.suffix()
     );
@@ -151,8 +153,9 @@ async fn list_top_impact(
     let mut binds = Binds::new();
     binds.eq("r.name", Value::from(repo.to_owned()));
     binds.raw("impact.impacted_runs > 0");
+    let tests_from = entity(EntityKind::Test).from;
     let sql = format!(
-        "{DIGEST_COLUMNS}{IMPACT_COLUMNS} {TESTS_FROM}{impact}{} ORDER BY \
+        "{DIGEST_COLUMNS}{IMPACT_COLUMNS} {tests_from}{impact}{} ORDER BY \
            impact.impacted_runs DESC, t.flakiness_score DESC, t.id LIMIT {TOP_IMPACT_MAX}",
         binds.suffix()
     );
@@ -181,8 +184,9 @@ async fn list_quarantine_expiring(
     binds.raw(format!(
         "t.quarantine_expires_at > {starts} AND t.quarantine_expires_at <= {ends}"
     ));
+    let tests_from = entity(EntityKind::Test).from;
     let sql = format!(
-        "{DIGEST_COLUMNS}, t.quarantine_expires_at {TESTS_FROM}{} ORDER BY \
+        "{DIGEST_COLUMNS}, t.quarantine_expires_at {tests_from}{} ORDER BY \
            t.quarantine_expires_at, t.id",
         binds.suffix()
     );

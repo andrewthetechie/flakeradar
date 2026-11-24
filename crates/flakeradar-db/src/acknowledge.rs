@@ -17,8 +17,8 @@
 //! spelling the comparison, so no statement can drift from the others.
 //!
 //! The row is read and mapped through the shared entry points in `crate::reads`;
-//! the one place this module still switches on the target is the table the write
-//! updates.
+//! the table the write updates is named by the descriptor in `crate::entity`,
+//! not by this module.
 
 // Rust guideline compliant 2026-07-21
 
@@ -28,6 +28,7 @@ use sea_orm::entity::prelude::DateTimeWithTimeZone;
 use sea_orm::{ConnectionTrait, DbBackend, Statement, Value};
 use serde::Serialize;
 
+use crate::entity::entity;
 use crate::error::DbError;
 use crate::reads::{EntityOut, ReadSettings, entity_out, entity_row};
 use crate::sql::{get, one, rows};
@@ -66,14 +67,6 @@ pub enum AcknowledgedOut {
     Test(TestOut),
     /// A Job, in the leaderboard shape.
     Job(JobOut),
-}
-
-/// The table that holds `kind`'s acknowledge columns.
-const fn acknowledge_table(kind: EntityKind) -> &'static str {
-    match kind {
-        EntityKind::Test => "test_cases",
-        EntityKind::Job => "jobs",
-    }
 }
 
 /// The condition for a live acknowledgement, over the row aliased `alias`.
@@ -153,7 +146,7 @@ pub async fn set_acknowledge(
     };
     let sql = format!(
         "UPDATE {} SET acknowledged_until = $2, acknowledge_reason = $3 WHERE id = $1",
-        acknowledge_table(kind)
+        entity(kind).table
     );
     let statement = Statement::from_sql_and_values(
         DbBackend::Postgres,
@@ -212,7 +205,7 @@ pub async fn clear_expired_acknowledgements(
 ) -> Result<Vec<ExpiredAcknowledgement>, DbError> {
     let mut cleared = Vec::new();
     for kind in [EntityKind::Test, EntityKind::Job] {
-        let table = acknowledge_table(kind);
+        let table = entity(kind).table;
         let due = one(
             db,
             format!("SELECT 1 FROM {table} WHERE acknowledged_until <= $1 LIMIT 1"),

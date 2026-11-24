@@ -10,8 +10,9 @@
 //!
 //! The rules live in the engines, once for both targets; only an intended
 //! per-target difference is `github_provider_only` (a Job may link an issue only
-//! on a GitHub Pipeline). Both read the row through `reads`' locked entity read,
-//! and switch on the target only to answer its own response shape.
+//! on a GitHub Pipeline), and the table names come from `crate::entity`. Both
+//! read the row through `reads`' locked entity read, and switch on the target
+//! only to answer their own response shape.
 
 // Rust guideline compliant 2026-07-21
 
@@ -25,21 +26,14 @@ use flakeradar_core::{
 use sea_orm::{ConnectionTrait, DbBackend, Statement, TransactionSession, TransactionTrait, Value};
 use serde::Serialize;
 
+use crate::entity::entity;
 use crate::error::DbError;
 use crate::reads::{EntityOut, ReadSettings, entity_out, locked_entity_row, optional_timestamp};
 use crate::sql::{get, one, placeholder_list, rows};
 
-/// The table that holds `kind`'s link columns.
-const fn link_table(kind: EntityKind) -> &'static str {
-    match kind {
-        EntityKind::Test => "test_cases",
-        EntityKind::Job => "jobs",
-    }
-}
-
 /// Whether only a GitHub Pipeline's Job can hold a link (ADR 0008).
 const fn github_provider_only(kind: EntityKind) -> bool {
-    matches!(kind, EntityKind::Job)
+    entity(kind).provider_only
 }
 
 /// What a link or unlink answered: the target's own response shape.
@@ -214,7 +208,7 @@ async fn write_link(
          github_issue_fixed_noted_at = $6, \
          github_issue_last_closed_number = NULL, github_issue_last_closed_at = NULL \
          WHERE id = $1",
-        link_table(target)
+        entity(target).table
     );
     // A front door linked this one, so FlakeRadar must not close it.
     let filed = state.number.map(|_| false);
@@ -369,22 +363,13 @@ pub async fn linked_for_check(
     target: EntityKind,
     batch: i64,
 ) -> Result<Vec<LinkedIssue>, DbError> {
-    let sql = match target {
-        EntityKind::Test => {
-            "SELECT t.id AS id, t.github_issue_number AS number, r.name AS repo_name \
-             FROM test_cases t JOIN projects p ON p.id = t.project_id \
-             JOIN repos r ON r.id = p.repo_id \
-             WHERE t.github_issue_number IS NOT NULL \
-             ORDER BY t.github_issue_checked_at ASC NULLS FIRST, t.id LIMIT $1"
-        }
-        EntityKind::Job => {
-            "SELECT j.id AS id, j.github_issue_number AS number, r.name AS repo_name \
-             FROM jobs j JOIN pipelines p ON p.id = j.pipeline_id \
-             JOIN repos r ON r.id = p.repo_id \
-             WHERE j.github_issue_number IS NOT NULL \
-             ORDER BY j.github_issue_checked_at ASC NULLS FIRST, j.id LIMIT $1"
-        }
-    };
+    let d = entity(target);
+    let (alias, from) = (d.alias, d.from);
+    let sql = format!(
+        "SELECT {alias}.id AS id, {alias}.github_issue_number AS number, r.name AS repo_name \
+         {from} WHERE {alias}.github_issue_number IS NOT NULL \
+         ORDER BY {alias}.github_issue_checked_at ASC NULLS FIRST, {alias}.id LIMIT $1"
+    );
     let mut linked = Vec::new();
     for row in rows(db, sql, vec![Value::from(batch)]).await? {
         linked.push(LinkedIssue {
@@ -417,7 +402,7 @@ pub async fn store_filed_link(
          github_issue_fixed_noted_at = NULL, \
          github_issue_last_closed_number = NULL, github_issue_last_closed_at = NULL \
          WHERE id = $1",
-        link_table(target)
+        entity(target).table
     );
     let result = db
         .execute_raw(Statement::from_sql_and_values(
@@ -493,7 +478,7 @@ pub async fn record_check(
     }
     let sql = format!(
         "UPDATE {} SET {} WHERE id = $1 AND github_issue_number = $2",
-        link_table(target),
+        entity(target).table,
         set.join(", ")
     );
     let result = db
@@ -526,7 +511,7 @@ pub async fn last_closed(
     let sql = format!(
         "SELECT id, github_issue_last_closed_number, github_issue_last_closed_at \
            FROM {} WHERE id IN ({}) AND github_issue_last_closed_number IS NOT NULL",
-        link_table(kind),
+        entity(kind).table,
         placeholder_list(1, ids.len()),
     );
     let values = ids.iter().map(Value::from).collect();
@@ -583,7 +568,7 @@ pub async fn stamp_fixed_note(
         "UPDATE {} SET github_issue_fixed_noted_at = $4 WHERE id = $1 \
          AND github_issue_fixed_noted_at IS NULL AND github_issue_number = $2 \
          AND clean_streak >= $3",
-        link_table(target)
+        entity(target).table
     );
     let result = db
         .execute_raw(Statement::from_sql_and_values(
@@ -605,7 +590,7 @@ pub async fn stamp_fixed_note(
     }
     let sql = format!(
         "SELECT clean_streak, github_issue_number FROM {} WHERE id = $1",
-        link_table(target)
+        entity(target).table
     );
     let state = one(db, sql, vec![Value::from(target_id)]).await?;
     let state = match state {
