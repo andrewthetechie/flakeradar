@@ -243,6 +243,14 @@ impl SortKey {
     }
 }
 
+/// The Score ordering the leaderboard page and both search reads share, so a
+/// search answers the same question in the same order the board does. The
+/// names are bare: every caller selects the entity's own row, so each names
+/// one output column.
+fn score_order() -> &'static str {
+    "flakiness_score DESC, last_seen_at DESC, id"
+}
+
 /// The errors a read can answer with.
 #[derive(Debug, thiserror::Error)]
 pub enum ReadError {
@@ -507,7 +515,7 @@ impl Board<'_> {
         };
 
         let order = match self.options.sort {
-            SortKey::Score => "flakiness_score DESC, last_seen_at DESC, id",
+            SortKey::Score => score_order(),
             SortKey::LastSeen => "last_seen_at DESC, id DESC",
             SortKey::Proven => "confirmed_flake_count DESC, flakiness_score DESC, id",
             // The lateral's own output column, so the page orders it bare.
@@ -1357,6 +1365,11 @@ pub async fn test_job_links(
 
 /// The newest failing Execution of one Test, in the Execution shape.
 ///
+/// This read is not built from the descriptor: neither `EntityBoard` nor
+/// `Entity` carries a join to `job_executions`, so the statement keeps the
+/// hand-written `EXECUTION_WITH_RUN` that brings the Execution and its Run in
+/// one row.
+///
 /// # Errors
 ///
 /// Returns [`DbError::Database`] when the statement fails.
@@ -1394,9 +1407,9 @@ pub async fn search_tests(
     let limit_placeholder = binds.bind(Value::from(limit));
     let impact = impact_lateral_sql(EntityKind::Test, impact_since(settings));
     let (select, from) = (tests.select, tests.from);
+    let order = score_order();
     let sql = format!(
-        "{select}{IMPACT_COLUMNS} {from}{impact}{} ORDER BY t.flakiness_score DESC, \
-         t.id LIMIT {limit_placeholder}",
+        "{select}{IMPACT_COLUMNS} {from}{impact}{} ORDER BY {order} LIMIT {limit_placeholder}",
         binds.suffix()
     );
     let mut values = vec![Value::from(format!("%{}%", escape_like(query)))];
@@ -1406,6 +1419,41 @@ pub async fn search_tests(
         test_out(row, settings, trend)
     })
     .await
+}
+
+/// The exact-match lookup both entity wrappers share: the Repo, the owner
+/// table when the entity has one, the name, and the narrowing column the
+/// descriptor names. `Binds` mints every placeholder, in this order.
+async fn find_ids(
+    db: &impl ConnectionTrait,
+    kind: EntityKind,
+    repo: &str,
+    project: Option<&str>,
+    name: &str,
+    optional: Option<&str>,
+) -> Result<Vec<i64>, DbError> {
+    let descriptor = entity(kind);
+    let alias = descriptor.alias;
+    let name_column = format!("{alias}.name");
+    let mut binds = Binds::new();
+    binds.eq("r.name", Value::from(repo.to_owned()));
+    if let Some(project) = project {
+        binds.eq("p.name", Value::from(project.to_owned()));
+    }
+    binds.eq(name_column.as_str(), Value::from(name.to_owned()));
+    if let Some(optional) = optional {
+        binds.eq(descriptor.lookup_column, Value::from(optional.to_owned()));
+    }
+    let sql = format!(
+        "SELECT {alias}.id {}{} ORDER BY {alias}.id",
+        descriptor.from,
+        binds.suffix()
+    );
+    let mut found = Vec::new();
+    for row in rows(db, sql, binds.into_values()).await? {
+        found.push(id(get::<i32>(&row, "id")?));
+    }
+    Ok(found)
 }
 
 /// Exact-match lookup of a Test by name, and optionally classname.
@@ -1420,25 +1468,7 @@ pub async fn find_test_ids(
     name: &str,
     classname: Option<&str>,
 ) -> Result<Vec<i64>, DbError> {
-    let mut binds = Binds::new();
-    binds.eq("r.name", Value::from(repo.to_owned()));
-    binds.eq("p.name", Value::from(project.to_owned()));
-    binds.eq("t.name", Value::from(name.to_owned()));
-    if let Some(classname) = classname {
-        binds.eq("t.classname", Value::from(classname.to_owned()));
-    }
-    let sql = format!(
-        "SELECT t.id FROM test_cases t \
-           JOIN projects p ON p.id = t.project_id \
-           JOIN repos r ON r.id = p.repo_id{} \
-          ORDER BY t.id",
-        binds.suffix()
-    );
-    let mut found = Vec::new();
-    for row in rows(db, sql, binds.into_values()).await? {
-        found.push(id(get::<i32>(&row, "id")?));
-    }
-    Ok(found)
+    find_ids(db, EntityKind::Test, repo, Some(project), name, classname).await
 }
 
 /// One Job's detail page.
@@ -1908,16 +1938,17 @@ pub async fn search_jobs(
     let impact = impact_lateral_sql(EntityKind::Job, impact_since(settings));
     let jobs = entity(EntityKind::Job);
     let (select, from) = (jobs.select, jobs.from);
+    let order = score_order();
+    let mut binds = Binds::after(2);
+    binds.raw((jobs.search)("$1"));
+    binds.eq("r.name", Value::from(repo.to_owned()));
+    let limit_placeholder = binds.bind(Value::from(limit));
     let sql = format!(
-        "{select}{IMPACT_COLUMNS} {from}{impact} WHERE r.name = $2 AND {} \
-          ORDER BY j.flakiness_score DESC, j.id LIMIT $3",
-        (jobs.search)("$1")
+        "{select}{IMPACT_COLUMNS} {from}{impact}{} ORDER BY {order} LIMIT {limit_placeholder}",
+        binds.suffix()
     );
-    let values = vec![
-        Value::from(format!("%{}%", escape_like(query))),
-        Value::from(repo.to_owned()),
-        Value::from(limit),
-    ];
+    let mut values = vec![Value::from(format!("%{}%", escape_like(query)))];
+    values.extend(binds.into_values());
     let rows = rows(db, sql, values).await?;
     read_items(db, EntityKind::Job, &rows, settings, |row, trend| {
         job_out(row, trend)
@@ -1936,24 +1967,7 @@ pub async fn find_job_ids(
     name: &str,
     pipeline: Option<&str>,
 ) -> Result<Vec<i64>, DbError> {
-    let mut binds = Binds::new();
-    binds.eq("r.name", Value::from(repo.to_owned()));
-    binds.eq("j.name", Value::from(name.to_owned()));
-    if let Some(pipeline) = pipeline {
-        binds.eq("p.name", Value::from(pipeline.to_owned()));
-    }
-    let sql = format!(
-        "SELECT j.id FROM jobs j \
-           JOIN pipelines p ON p.id = j.pipeline_id \
-           JOIN repos r ON r.id = p.repo_id{} \
-          ORDER BY j.id",
-        binds.suffix()
-    );
-    let mut found = Vec::new();
-    for row in rows(db, sql, binds.into_values()).await? {
-        found.push(id(get::<i32>(&row, "id")?));
-    }
-    Ok(found)
+    find_ids(db, EntityKind::Job, repo, None, name, pipeline).await
 }
 
 /// One execution of a failing (Test, Run) pair, as the CI run listing reads it.
