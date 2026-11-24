@@ -31,7 +31,12 @@ import { TestDrawer } from "./components/TestDrawer";
 import { ThemeToggle } from "./components/ThemeToggle";
 import { ViewToggle } from "./components/ViewToggle";
 import { useConfirmedDecision } from "./confirmedDecision";
-import { createRowReloadRegistry, useGuardedLoad, type GuardedLoader } from "./guardedLoad";
+import {
+  createRowReloadRegistry,
+  useListLoad,
+  useRowHistoryLoad,
+  type GuardedLoader,
+} from "./guardedLoad";
 import { LIST_FILTERS, listFilterSlice, useViewState, type ViewState } from "./urlState";
 import { loadJobHistory, loadTestHistory, loadViewBundle, type ViewBundle } from "./viewData";
 
@@ -74,8 +79,7 @@ export default function App() {
     [filters, pageNumber],
   );
 
-  const list = useGuardedLoad<ViewBundle>(load, {
-    clearErrorOnSuccess: true,
+  const list = useListLoad<ViewBundle>(load, {
     onData: (bundle) => {
       // Every view's header data. The CI run view fetches its own run inside
       // CiRunView, so it applies nothing beyond this.
@@ -129,14 +133,14 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [view.test, pageNumber, refresh],
   );
-  const testHistoryLoad = useGuardedLoad<History>(testHistoryLoader, {
-    lifetime: "effect",
+  const testHistoryLoad = useRowHistoryLoad<History>(testHistoryLoader, {
+    registry,
     // The early returns of the effect this replaces: only the Tests view with
     // an open drawer loads, and the ci-run view loads neither history.
     enabled: kind === "tests" && view.test != null,
     // The drawer displays one Test, so it registers as that row's refresher: a
     // confirmed decision on that row re-fetches this load too.
-    rowReload: view.test == null ? undefined : { registry, kind: "tests", id: view.test },
+    row: view.test == null ? undefined : { kind: "tests", id: view.test },
     onErrorChange: setError,
   });
 
@@ -147,11 +151,11 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [view.job, pageNumber, refresh],
   );
-  const jobHistoryLoad = useGuardedLoad<JobHistory>(jobHistoryLoader, {
-    lifetime: "effect",
+  const jobHistoryLoad = useRowHistoryLoad<JobHistory>(jobHistoryLoader, {
+    registry,
     enabled: kind === "jobs" && view.job != null,
     // The same as the Test drawer's: this load displays one Job.
-    rowReload: view.job == null ? undefined : { registry, kind: "jobs", id: view.job },
+    row: view.job == null ? undefined : { kind: "jobs", id: view.job },
     onErrorChange: setError,
   });
 
