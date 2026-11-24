@@ -22,47 +22,56 @@ export type GuardLifetime = "component" | "effect";
 /** Which dashboard row a reload targets — the same union `setAcknowledge` takes. */
 export type RowKind = "tests" | "jobs";
 
-const rowKey = (kind: RowKind, id: number): string => `${kind}:${id}`;
-
 /**
  * The reload registry: a load that displays one row — an open drawer — registers
- * its own `refresh` here under that row, and a confirmed decision on that row
- * calls `reloadRow` to refetch it. It is React-free module state, and the hook
- * below is its only writer, which keeps the reload rule with the loads instead
- * of in every caller. A row nobody displays has no entry, so reloading it is a
- * no-op; the 30 s poll never goes through the registry.
+ * its own `refresh` in it under that row, and a confirmed decision on that row
+ * calls `reload` to refetch it. It is React-free state held by a value the app
+ * creates and hands to both sides, so the reload rule lives with the loads
+ * instead of in module state or in every caller. A row nobody displays has no
+ * entry, so reloading it is a no-op; the 30 s poll never goes through the registry.
  */
-const rowReloads = new Map<string, () => Promise<void>>();
-
-/**
- * Registers `reload` as the refresher of one row's displays and returns its
- * unregistration. Registering fires no load — it only says who to refetch later.
- */
-export function registerRowReload(
-  kind: RowKind,
-  id: number,
-  reload: () => Promise<void>,
-): () => void {
-  const key = rowKey(kind, id);
-  rowReloads.set(key, reload);
-  return () => {
-    // Only the current owner's cleanup unregisters, so a stale one cannot drop
-    // the entry a newer registration for the same row installed.
-    if (rowReloads.get(key) === reload) rowReloads.delete(key);
-  };
+export interface RowReloadRegistry {
+  /**
+   * Registers `reload` as the refresher of one row's displays and returns its
+   * unregistration. Registering fires no load — it only says who to refetch later.
+   */
+  register: (kind: RowKind, id: number, reload: () => Promise<void>) => () => void;
+  /**
+   * Awaits the refresher registered for one row, if any, and resolves without
+   * doing anything when nobody displays it. A hook-registered refresher never
+   * rejects — see `refresh` — but a caller-supplied one may, and this forwards it.
+   */
+  reload: (kind: RowKind, id: number) => Promise<void>;
 }
 
-/**
- * Awaits the refresher registered for one row, if any, and resolves without
- * doing anything when nobody displays it. A hook-registered refresher never
- * rejects — see `refresh` — but a caller-supplied one may, and this forwards it.
- */
-export async function reloadRow(kind: RowKind, id: number): Promise<void> {
-  await rowReloads.get(rowKey(kind, id))?.();
+/** The key one row is held under. Module-private: the hook uses it for its dep. */
+const rowKey = (kind: RowKind, id: number): string => `${kind}:${id}`;
+
+/** Builds a registry: one Map, reachable only through the returned value. */
+export function createRowReloadRegistry(): RowReloadRegistry {
+  const rowReloads = new Map<string, () => Promise<void>>();
+  return {
+    register: (kind, id, reload) => {
+      const key = rowKey(kind, id);
+      rowReloads.set(key, reload);
+      return () => {
+        // Only the current owner's cleanup unregisters, so a stale one cannot drop
+        // the entry a newer registration for the same row installed.
+        if (rowReloads.get(key) === reload) rowReloads.delete(key);
+      };
+    },
+    reload: async (kind, id) => {
+      await rowReloads.get(rowKey(kind, id))?.();
+    },
+  };
 }
 
 export interface GuardedLoadOptions<TData> {
   /**
+   * The shared engine's own option set. A dashboard view takes `useListLoad` or
+   * `useRowHistoryLoad` instead, which fix the choices an entry point should not
+   * be asked to make per call site.
+   *
    * `"component"` (default) holds one `latestWins()` for the hook's lifetime, so
    * a slow answer for an old scope never writes state. `"effect"` builds a fresh
    * guard per load and cancels it on cleanup and on re-run, so an abandoned
@@ -74,9 +83,9 @@ export interface GuardedLoadOptions<TData> {
   /**
    * Set by a load that displays one row — an open drawer — so a confirmed
    * decision on that row can refetch it: while `enabled` the hook registers its
-   * own `refresh` in the registry above. Registration fires no load.
+   * own `refresh` in the registry the caller passed. Registration fires no load.
    */
-  rowReload?: { kind: RowKind; id: number };
+  rowReload?: { registry: RowReloadRegistry; kind: RowKind; id: number };
   /** A current success clears the error. */
   clearErrorOnSuccess?: boolean;
   /** A current failure clears the data when this answers true. */
@@ -216,9 +225,11 @@ export function useGuardedLoad<TData>(
   }, [enabled, refresh]);
 
   // A stable dep for the row option, so an inline object does not re-register
-  // every render. This effect carries no load: registering only names the hook
-  // as the row's refresher, and it is deliberately not merged into the effect
-  // above so the load's identity — and with it the poll's behaviour — is intact.
+  // every render: the row's key string and the registry value the caller passed
+  // (App creates it once) identify the registration, not the option object. This
+  // effect carries no load: registering only names the hook as the row's refresher,
+  // and it is deliberately not merged into the effect above so the load's identity
+  // — and with it the poll's behaviour — is intact.
   const rowKeyOf =
     options.rowReload == null ? null : rowKey(options.rowReload.kind, options.rowReload.id);
   useEffect(() => {
@@ -226,8 +237,65 @@ export function useGuardedLoad<TData>(
     // A closed drawer registers nothing, so a decision on its row reloads the
     // list only — the same rule `runOnce`'s disabled check gives the load.
     if (!enabled || row == null) return;
-    return registerRowReload(row.kind, row.id, refresh);
-  }, [enabled, rowKeyOf, refresh]);
+    return row.registry.register(row.kind, row.id, refresh);
+  }, [enabled, options.rowReload?.registry, rowKeyOf, refresh]);
 
   return { data, error, refresh };
+}
+
+export interface ListLoadOptions<TData> {
+  /** A current success's data, for a caller that folds it into wider state. */
+  onData?: (data: TData) => void;
+  /** Every error write, mirrored onto a surface shared across loads. */
+  onErrorChange?: (message: string | null) => void;
+}
+
+/**
+ * A dashboard list load: component lifetime, and a current success clearing the
+ * error is this entry point's contract, not an option the call site may leave
+ * unset. Its options are exactly what such a call site uses; anything the load
+ * ignores is unmentionable.
+ */
+export function useListLoad<TData>(
+  load: GuardedLoader<TData>,
+  options: ListLoadOptions<TData> = {},
+) {
+  return useGuardedLoad(load, {
+    clearErrorOnSuccess: true,
+    onData: options.onData,
+    onErrorChange: options.onErrorChange,
+  });
+}
+
+export interface RowHistoryLoadOptions {
+  /** The app's registry, the value this load registers its row's refresher into. */
+  registry: RowReloadRegistry;
+  /** While false no load runs and nothing is registered — a closed drawer loads nothing. */
+  enabled: boolean;
+  /** The row whose history this is, which this load registers itself against. */
+  row?: { kind: RowKind; id: number };
+  /** Every error write, mirrored onto a surface shared across loads. */
+  onErrorChange?: (message: string | null) => void;
+}
+
+/**
+ * A row-history load — an open drawer's history: effect lifetime, so an
+ * abandoned drawer's in-flight answer is dropped on its own, a required
+ * `enabled`, and the optional row it registers itself against while enabled, so
+ * a confirmed decision on that row refetches it. As with `useListLoad` the
+ * option set carries only what such a call site uses.
+ */
+export function useRowHistoryLoad<TData>(
+  load: GuardedLoader<TData>,
+  options: RowHistoryLoadOptions,
+) {
+  return useGuardedLoad(load, {
+    lifetime: "effect",
+    enabled: options.enabled,
+    rowReload:
+      options.row == null
+        ? undefined
+        : { registry: options.registry, kind: options.row.kind, id: options.row.id },
+    onErrorChange: options.onErrorChange,
+  });
 }

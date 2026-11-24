@@ -7,7 +7,7 @@
 // here; the caller names the call, the "already decided" predicate and the
 // refresh targets, and renders the dialog for the returned pending entity.
 import { useCallback, useRef, useState } from "react";
-import { reloadRow, type RowKind } from "./guardedLoad";
+import { type RowKind, type RowReloadRegistry } from "./guardedLoad";
 
 export interface ConfirmedDecisionOptions<TEntity, TChoice> {
   /**
@@ -26,6 +26,11 @@ export interface ConfirmedDecisionOptions<TEntity, TChoice> {
    * A row no open display shows resolves with nothing done.
    */
   row?: (entity: TEntity) => { kind: RowKind; id: number };
+  /**
+   * The registry the row's load registers into — the same value the caller gave
+   * the guarded loads, which is what connects this decision to those displays.
+   */
+  registry: RowReloadRegistry;
   /** Extra reloads, run sequentially after `row`'s — the reload tail both that path and a test can drive, successes only. */
   reloads?: (() => Promise<void>)[];
   /** The caller's one error surface; App passes `setError`. */
@@ -66,7 +71,7 @@ export function useConfirmedDecision<TEntity, TChoice>(
   const run = useCallback(
     async (entity: TEntity, decided: boolean, choice: TChoice | null): Promise<void> => {
       // Read the callbacks now, so an inline caller's callback is the live one.
-      const { call, refresh, row, reloads, onError } = optionsRef.current;
+      const { call, refresh, registry, row, reloads, onError } = optionsRef.current;
       try {
         await call(entity, decided, choice);
         await refresh();
@@ -74,7 +79,7 @@ export function useConfirmedDecision<TEntity, TChoice>(
         // refetches once the list it sits over is current again.
         if (row != null) {
           const target = row(entity);
-          await reloadRow(target.kind, target.id);
+          await registry.reload(target.kind, target.id);
         }
         for (const reload of reloads ?? []) await reload();
       } catch (e: unknown) {
