@@ -1,6 +1,6 @@
 //! The Test/Job axis stated once: the scored table's name, its alias, its
-//! `SELECT` list, its joins, and the per-entity words a read statement splices
-//! into its own SQL.
+//! `SELECT` list, its joins, the Score-history table and owner column, and the
+//! per-entity words a read statement splices into its own SQL.
 //!
 //! [`EntityKind`] has two variants, so [`entity`] answers each with one
 //! descriptor. A third entity means one new `entity()` arm plus its descriptor:
@@ -36,6 +36,10 @@ pub(crate) struct Entity {
     pub(crate) locked_select: &'static str,
     /// The Score history joined to the scored table and its parents.
     pub(crate) history_from: &'static str,
+    /// The Score-history table that holds the entity's own history.
+    pub(crate) history_table: &'static str,
+    /// The column naming the owner: the Test's or the Job's id.
+    pub(crate) owner_column: &'static str,
     /// The entity's GitHub issue column.
     pub(crate) issue_column: &'static str,
     /// The search condition, given the pattern bind's placeholder.
@@ -43,6 +47,8 @@ pub(crate) struct Entity {
     /// How the entity's queries are named in the error a statement that
     /// answered nothing gives: nothing for a Test, `job ` for a Job.
     pub(crate) prefix: &'static str,
+    /// Whether only a GitHub Pipeline's entity can hold an Issue link (ADR 0008).
+    pub(crate) provider_only: bool,
 }
 
 /// The case-insensitive literal substring search over a Test's identity.
@@ -80,9 +86,12 @@ const TEST: Entity = Entity {
         JOIN test_cases t ON t.id = h.test_case_id \
         JOIN projects p ON p.id = t.project_id \
         JOIN repos r ON r.id = p.repo_id",
+    history_table: "test_score_history",
+    owner_column: "test_case_id",
     issue_column: "t.github_issue_number",
     search: test_search,
     prefix: "",
+    provider_only: false,
 };
 
 /// The Jobs leaderboard's and headline counts' descriptor.
@@ -105,9 +114,12 @@ const JOB: Entity = Entity {
         JOIN jobs j ON j.id = h.job_id \
         JOIN pipelines p ON p.id = j.pipeline_id \
         JOIN repos r ON r.id = p.repo_id",
+    history_table: "job_score_history",
+    owner_column: "job_id",
     issue_column: "j.github_issue_number",
     search: job_search,
     prefix: "job ",
+    provider_only: true,
 };
 
 /// The descriptor `kind` is scored by.
@@ -168,5 +180,18 @@ mod tests {
     fn each_descriptor_names_its_own_scored_table() {
         assert_eq!(entity(EntityKind::Test).table, "test_cases");
         assert_eq!(entity(EntityKind::Job).table, "jobs");
+    }
+
+    /// The names the acknowledge, link and Score-history modules read: the
+    /// history tables and owner columns exactly as the migrations create them,
+    /// and the one per-target rule the link engine answers from the descriptor.
+    #[test]
+    fn each_descriptor_names_its_history_table_owner_and_provider_rule() {
+        assert_eq!(entity(EntityKind::Test).history_table, "test_score_history");
+        assert_eq!(entity(EntityKind::Job).history_table, "job_score_history");
+        assert_eq!(entity(EntityKind::Test).owner_column, "test_case_id");
+        assert_eq!(entity(EntityKind::Job).owner_column, "job_id");
+        assert!(entity(EntityKind::Job).provider_only);
+        assert!(!entity(EntityKind::Test).provider_only);
     }
 }
