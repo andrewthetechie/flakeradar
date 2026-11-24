@@ -174,37 +174,89 @@ impl Validate for IngestQuery {
     /// The check runs before the handler, so a query that breaks one answers 422
     /// before the body is read, and the issues come in the order the parameters are
     /// declared.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one rule per recorder call, in the order the query declares its parameters"
+    )]
     fn validate(&self) -> ApiResult<()> {
         let mut issues = Issues::new();
-        check_max(&self.repo, NAME_MAX, "repo", &mut issues);
+        let value = RuleValue::Text(&self.repo);
+        record(&mut issues, Rule::NulCharacter, "repo", value);
+        record(&mut issues, Rule::TooLong { max: NAME_MAX }, "repo", value);
         if let Some(project) = &self.project {
-            check_max(project, PROJECT_MAX, "project", &mut issues);
+            let value = RuleValue::Text(project);
+            record(&mut issues, Rule::NulCharacter, "project", value);
+            record(
+                &mut issues,
+                Rule::TooLong { max: PROJECT_MAX },
+                "project",
+                value,
+            );
         }
         if let Some(root) = &self.root {
-            check_max(root, PATH_MAX, "root", &mut issues);
+            let value = RuleValue::Text(root);
+            record(&mut issues, Rule::NulCharacter, "root", value);
+            record(&mut issues, Rule::TooLong { max: PATH_MAX }, "root", value);
         }
-        if self.line_base < 0 {
-            issues.push(ValidationIssue::greater_than_equal(
-                query_loc("line_base"),
-                JsonValue::from(self.line_base),
-                0,
-            ));
-        } else if self.line_base > 1 {
-            issues.push(ValidationIssue::less_than_equal(
-                query_loc("line_base"),
-                JsonValue::from(self.line_base),
-                1,
-            ));
-        }
-        check_min(&self.commit_sha, 1, "commit_sha", &mut issues);
-        check_max(&self.commit_sha, COMMIT_SHA_MAX, "commit_sha", &mut issues);
-        check_max(&self.branch, NAME_MAX, "branch", &mut issues);
-        check_max(&self.ci_run_id, NAME_MAX, "ci_run_id", &mut issues);
+        let value = RuleValue::Number(self.line_base);
+        record(
+            &mut issues,
+            Rule::BelowMinimum { min: 0 },
+            "line_base",
+            value,
+        );
+        record(
+            &mut issues,
+            Rule::AboveMaximum { max: 1 },
+            "line_base",
+            value,
+        );
+        let value = RuleValue::Text(&self.commit_sha);
+        record(&mut issues, Rule::TooShort { min: 1 }, "commit_sha", value);
+        record(&mut issues, Rule::NulCharacter, "commit_sha", value);
+        record(
+            &mut issues,
+            Rule::TooLong {
+                max: COMMIT_SHA_MAX,
+            },
+            "commit_sha",
+            value,
+        );
+        let value = RuleValue::Text(&self.branch);
+        record(&mut issues, Rule::NulCharacter, "branch", value);
+        record(
+            &mut issues,
+            Rule::TooLong { max: NAME_MAX },
+            "branch",
+            value,
+        );
+        let value = RuleValue::Text(&self.ci_run_id);
+        record(&mut issues, Rule::NulCharacter, "ci_run_id", value);
+        record(
+            &mut issues,
+            Rule::TooLong { max: NAME_MAX },
+            "ci_run_id",
+            value,
+        );
         if let Some(default_branch) = &self.default_branch {
-            check_max(default_branch, NAME_MAX, "default_branch", &mut issues);
+            let value = RuleValue::Text(default_branch);
+            record(&mut issues, Rule::NulCharacter, "default_branch", value);
+            record(
+                &mut issues,
+                Rule::TooLong { max: NAME_MAX },
+                "default_branch",
+                value,
+            );
         }
         if let Some(ci_job_id) = &self.ci_job_id {
-            check_max(ci_job_id, NAME_MAX, "ci_job_id", &mut issues);
+            let value = RuleValue::Text(ci_job_id);
+            record(&mut issues, Rule::NulCharacter, "ci_job_id", value);
+            record(
+                &mut issues,
+                Rule::TooLong { max: NAME_MAX },
+                "ci_job_id",
+                value,
+            );
         }
         let attempt_over_range = match &self.ci_run_attempt {
             Some(AttemptQuery(reading)) => {
@@ -216,7 +268,14 @@ impl Validate for IngestQuery {
             None => false,
         };
         if let Some(pipeline) = &self.pipeline {
-            check_max(pipeline, PIPELINE_MAX, "pipeline", &mut issues);
+            let value = RuleValue::Text(pipeline);
+            record(&mut issues, Rule::NulCharacter, "pipeline", value);
+            record(
+                &mut issues,
+                Rule::TooLong { max: PIPELINE_MAX },
+                "pipeline",
+                value,
+            );
         }
         issues.finish().map_err(ApiError::unprocessable)?;
         // An attempt past the column's range is not a body this server can store,
@@ -264,30 +323,64 @@ fn line_base_value(line_base: i64) -> i32 {
     i32::try_from(line_base).unwrap_or(1)
 }
 
-/// Records a NUL or a maximum-length failure for `field`.
+/// A field rule a query parameter can break, with the bound the 422 reports.
+#[derive(Debug, Clone, Copy)]
+enum Rule {
+    /// Text holding a NUL: `nul_character`.
+    NulCharacter,
+    /// Text above its maximum length: `string_too_long`.
+    TooLong { max: usize },
+    /// Text below its minimum length: `string_too_short`.
+    TooShort { min: usize },
+    /// A number below its minimum: `greater_than_equal`.
+    BelowMinimum { min: i64 },
+    /// A number above its maximum: `less_than_equal`.
+    AboveMaximum { max: i64 },
+}
+
+/// The value a rule was read from, as the 422 reports it.
+#[derive(Debug, Clone, Copy)]
+enum RuleValue<'a> {
+    /// The text a string rule checked, reported as a JSON string.
+    Text(&'a str),
+    /// The number a range rule checked, reported as a JSON number.
+    Number(i64),
+}
+
+/// Records the issue `rule` answers for `field`, if it answers one.
+///
+/// The five kinds are `nul_character`, `string_too_long`, `string_too_short`,
+/// `greater_than_equal` and `less_than_equal`, each at `query_loc(field)`. A
+/// string rule records the NUL kind before the length kind, so text that holds a
+/// NUL and is also too long reports the NUL first.
 ///
 /// The length counts characters rather than bytes. A NUL is refused because a
 /// PostgreSQL `text` column cannot store one, and one that reached the column
-/// answered 500 after creating the Repo and Project rows.
-fn check_max(value: &str, max: usize, field: &str, issues: &mut Vec<ValidationIssue>) {
-    lax::refuse_nul(value, query_loc(field), issues);
-    if value.chars().count() > max {
-        issues.push(ValidationIssue::string_too_long(
-            query_loc(field),
-            JsonValue::from(value.to_owned()),
-            max,
-        ));
-    }
-}
-
-/// Records a minimum-length failure for `field`, in characters.
-fn check_min(value: &str, min: usize, field: &str, issues: &mut Vec<ValidationIssue>) {
-    if value.chars().count() < min {
-        issues.push(ValidationIssue::string_too_short(
-            query_loc(field),
-            JsonValue::from(value.to_owned()),
-            min,
-        ));
+/// answered 500 after creating the Repo and Project rows. A `Rule` paired with
+/// the wrong kind of value answers nothing.
+fn record(issues: &mut Vec<ValidationIssue>, rule: Rule, field: &str, value: RuleValue<'_>) {
+    let loc = query_loc(field);
+    let issue = match (rule, &value) {
+        (Rule::TooLong { max }, RuleValue::Text(text)) if text.chars().count() > max => Some(
+            ValidationIssue::string_too_long(loc, JsonValue::from(*text), max),
+        ),
+        (Rule::TooShort { min }, RuleValue::Text(text)) if text.chars().count() < min => Some(
+            ValidationIssue::string_too_short(loc, JsonValue::from(*text), min),
+        ),
+        (Rule::BelowMinimum { min }, RuleValue::Number(number)) if *number < min => Some(
+            ValidationIssue::greater_than_equal(loc, JsonValue::from(*number), min),
+        ),
+        (Rule::AboveMaximum { max }, RuleValue::Number(number)) if *number > max => Some(
+            ValidationIssue::less_than_equal(loc, JsonValue::from(*number), max),
+        ),
+        (Rule::NulCharacter, RuleValue::Text(text)) => {
+            lax::refuse_nul(text, loc, issues);
+            None
+        }
+        _ => None,
+    };
+    if let Some(issue) = issue {
+        issues.push(issue);
     }
 }
 
@@ -322,19 +415,16 @@ impl Validate for ListQuery {
     /// hand-written detail rather than a list of issues.
     fn validate(&self) -> ApiResult<()> {
         let mut issues = Issues::new();
-        if self.limit < 1 {
-            issues.push(ValidationIssue::greater_than_equal(
-                query_loc("limit"),
-                JsonValue::from(self.limit),
-                1,
-            ));
-        } else if self.limit > MAX_REPORT_LIMIT {
-            issues.push(ValidationIssue::less_than_equal(
-                query_loc("limit"),
-                JsonValue::from(self.limit),
-                MAX_REPORT_LIMIT,
-            ));
-        }
+        let value = RuleValue::Number(self.limit);
+        record(&mut issues, Rule::BelowMinimum { min: 1 }, "limit", value);
+        record(
+            &mut issues,
+            Rule::AboveMaximum {
+                max: MAX_REPORT_LIMIT,
+            },
+            "limit",
+            value,
+        );
         issues.finish().map_err(ApiError::unprocessable)
     }
 }
