@@ -64,7 +64,7 @@ describe("superseded answers", () => {
     const current = deferred<string>();
     const { load, calls } = guarded([stale.promise, current.promise]);
 
-    const { result } = renderHook(() => useGuardedLoad(load));
+    const { result } = renderHook(() => useListLoad(load));
     // Leave the mount run unanswered and start the refresh: the newest request
     // supersedes it, which is what "a superseded answer" means.
     await act(async () => {
@@ -92,7 +92,7 @@ describe("superseded answers", () => {
     const current = deferred<string>();
     const { load, calls } = guarded([stale.promise, current.promise]);
 
-    const { result } = renderHook(() => useGuardedLoad(load));
+    const { result } = renderHook(() => useListLoad(load));
     await act(async () => {
       result.current.refresh();
       await settled();
@@ -125,7 +125,7 @@ describe("superseded answers", () => {
     };
 
     const { result, rerender } = renderHook(
-      ({ fn }: { fn: GuardedLoader<string> }) => useGuardedLoad(fn),
+      ({ fn }: { fn: GuardedLoader<string> }) => useListLoad(fn),
       {
         initialProps: { fn: load },
       },
@@ -145,10 +145,13 @@ describe("superseded answers", () => {
 
 describe("cancelling on cleanup", () => {
   it("an effect-lifetime guard cancelled by unmount keeps a late failure silent", async () => {
+    const registry = createRowReloadRegistry();
     const first = deferred<string>();
     const { load, calls, guardOf, requestOf } = guarded<string>([first.promise]);
 
-    const { result, unmount } = renderHook(() => useGuardedLoad(load, { lifetime: "effect" }));
+    const { result, unmount } = renderHook(() =>
+      useRowHistoryLoad(load, { registry, enabled: true }),
+    );
     await act(async () => {
       // The mount run is left unanswered, so the refresh's run supersedes it.
       result.current.refresh();
@@ -168,11 +171,12 @@ describe("cancelling on cleanup", () => {
   });
 
   it("an effect-lifetime guard cancelled by a re-run keeps a late failure silent", async () => {
+    const registry = createRowReloadRegistry();
     const stale = deferred<string>();
     const { load, calls, guardOf, requestOf } = guarded<string>([stale.promise]);
 
     const { result, rerender } = renderHook(
-      ({ fn }: { fn: GuardedLoader<string> }) => useGuardedLoad(fn, { lifetime: "effect" }),
+      ({ fn }: { fn: GuardedLoader<string> }) => useRowHistoryLoad(fn, { registry, enabled: true }),
       { initialProps: { fn: load } },
     );
     // The mount run is left unanswered, so the re-run is what cancels it.
@@ -207,13 +211,14 @@ describe("cancelling on cleanup", () => {
   });
 
   it("an effect-lifetime re-run keeps the new run's data against a late success", async () => {
+    const registry = createRowReloadRegistry();
     // The drawer-switch race: the old drawer's answer lands after the new
     // drawer's, and only the newest request may write state.
     const stale = deferred<string>();
     const { load, calls, guardOf, requestOf } = guarded<string>([stale.promise]);
 
     const { result, rerender } = renderHook(
-      ({ fn }: { fn: GuardedLoader<string> }) => useGuardedLoad(fn, { lifetime: "effect" }),
+      ({ fn }: { fn: GuardedLoader<string> }) => useRowHistoryLoad(fn, { registry, enabled: true }),
       { initialProps: { fn: load } },
     );
     await act(async () => {
@@ -240,12 +245,13 @@ describe("cancelling on cleanup", () => {
   });
 
   it("an effect-lifetime load builds a fresh guard per run", async () => {
+    const registry = createRowReloadRegistry();
     const seen: LatestWins[] = [];
     const load: GuardedLoader<string> = async (guard, request) => {
       seen.push(guard);
       return request > 0 ? "ok" : null;
     };
-    const { result } = renderHook(() => useGuardedLoad(load, { lifetime: "effect" }));
+    const { result } = renderHook(() => useRowHistoryLoad(load, { registry, enabled: true }));
     await act(async () => {
       await result.current.refresh();
     });
@@ -261,7 +267,7 @@ describe("cancelling on cleanup", () => {
       guard = g;
       return late.promise.then((data) => (g.current(request) ? data : null));
     };
-    const { result, unmount } = renderHook(() => useGuardedLoad(load, { onData }));
+    const { result, unmount } = renderHook(() => useListLoad(load, { onData }));
     await act(async () => {
       await settled();
     });
@@ -282,18 +288,20 @@ describe("cancelling on cleanup", () => {
 describe("error mapping", () => {
   it("a non-Error rejection lands as String(e) text", async () => {
     const load: GuardedLoader<string> = () => Promise.reject("plain string failure");
-    const { result } = renderHook(() => useGuardedLoad(load));
+    const { result } = renderHook(() => useListLoad(load));
     await flush();
     expect(result.current.error).toBe("plain string failure");
   });
 
   it("an Error rejection lands as its message", async () => {
     const load: GuardedLoader<string> = () => Promise.reject(new Error("boom"));
-    const { result } = renderHook(() => useGuardedLoad(load));
+    const { result } = renderHook(() => useListLoad(load));
     await flush();
     expect(result.current.error).toBe("boom");
   });
 
+  // Pins the engine's own surface: its default `clearErrorOnSuccess: false`, which
+  // `useListLoad` fixes to true, is what leaves the repeated message alone here.
   it("onErrorChange marks every write, a repeated message included", async () => {
     let message: string | null = "repeated failure";
     const seen: (string | null)[] = [];
@@ -319,6 +327,8 @@ describe("error mapping", () => {
   });
 });
 
+// Pins the engine's own surface: `clearErrorOnSuccess` and `clearDataOn` are options
+// the entry points fix or do not carry, so only the engine can be tested through them.
 describe("error clearing", () => {
   it("clearErrorOnSuccess clears the error on success", async () => {
     let failing = true;
@@ -416,8 +426,9 @@ describe("error clearing", () => {
 
 describe("enabled", () => {
   it("enabled false holds no data and runs nothing", async () => {
+    const registry = createRowReloadRegistry();
     const load = vi.fn<GuardedLoader<string>>(async () => "should never appear");
-    const { result } = renderHook(() => useGuardedLoad(load, { enabled: false }));
+    const { result } = renderHook(() => useRowHistoryLoad(load, { registry, enabled: false }));
     await flush();
     expect(load).not.toHaveBeenCalled();
     expect(result.current.data).toBeNull();
@@ -432,6 +443,7 @@ describe("enabled", () => {
   });
 
   it("an in-flight answer is cancelled when the view is disabled", async () => {
+    const registry = createRowReloadRegistry();
     const gate = deferred<string>();
     let guardSeen: LatestWins | null = null;
     const load: GuardedLoader<string> = (guard, request) => {
@@ -439,7 +451,7 @@ describe("enabled", () => {
       return gate.promise.then((data) => (guard.current(request) ? data : null));
     };
     const { rerender } = renderHook(
-      ({ on }: { on: boolean }) => useGuardedLoad(load, { enabled: on }),
+      ({ on }: { on: boolean }) => useRowHistoryLoad(load, { registry, enabled: on }),
       { initialProps: { on: true } },
     );
     await flush();
@@ -460,9 +472,10 @@ describe("enabled", () => {
   });
 
   it("a disabled view's data resets, and enabling it runs the load", async () => {
+    const registry = createRowReloadRegistry();
     const load = vi.fn<GuardedLoader<string>>(async () => "here");
     const { result, rerender } = renderHook(
-      ({ on }: { on: boolean }) => useGuardedLoad(load, { enabled: on }),
+      ({ on }: { on: boolean }) => useRowHistoryLoad(load, { registry, enabled: on }),
       { initialProps: { on: true } },
     );
     await flush();
@@ -484,11 +497,12 @@ describe("enabled", () => {
   });
 
   it("a late failure while disabled raises no error", async () => {
+    const registry = createRowReloadRegistry();
     const gate = deferred<string>();
     const load: GuardedLoader<string> = (guard, request) =>
       gate.promise.then((data) => (guard.current(request) ? data : null));
     const { rerender, result } = renderHook(
-      ({ on }: { on: boolean }) => useGuardedLoad(load, { enabled: on }),
+      ({ on }: { on: boolean }) => useRowHistoryLoad(load, { registry, enabled: on }),
       { initialProps: { on: true } },
     );
     await flush();
@@ -508,10 +522,7 @@ describe("enabled", () => {
     const registry = createRowReloadRegistry();
     const { rerender } = renderHook(
       ({ on }: { on: boolean }) =>
-        useGuardedLoad(load, {
-          enabled: on,
-          rowReload: { registry, kind: "tests", id: 506 },
-        }),
+        useRowHistoryLoad(load, { registry, enabled: on, row: { kind: "tests", id: 506 } }),
       { initialProps: { on: true } },
     );
     await flush();
@@ -530,6 +541,8 @@ describe("enabled", () => {
   });
 });
 
+// Pins the engine's own surface: `onSettled` and `onFailure` are not options either
+// entry point accepts (requirement 2), so this is engine behaviour a load inherits.
 describe("settle callbacks", () => {
   it("onSettled fires on every current settle, success and failure alike", async () => {
     let failing = false;
@@ -604,6 +617,8 @@ describe("settle callbacks", () => {
   });
 });
 
+// Pins the engine's own surface: the identity rule and the never-rejecting `refresh`
+// are the engine's, and both entry points inherit them unchanged.
 describe("refresh identity", () => {
   it("keeps its identity across rerenders while load is unchanged", async () => {
     const load: GuardedLoader<string> = async () => "ok";
@@ -671,6 +686,8 @@ describe("refresh identity", () => {
   });
 });
 
+// Pins the engine's own surface: the loader seam is the engine's contract, and the
+// entry points forward to it without touching the guard or the token.
 describe("the loader seam", () => {
   it("hands the guard and the started token to the loader", async () => {
     const seen: { guard: LatestWins; request: number }[] = [];
@@ -704,14 +721,13 @@ describe("a shared error surface", () => {
     const drawer: GuardedLoader<string> = async () => {
       throw new Error("/api/tests/5/history?limit=60 -> 500");
     };
+    const registry = createRowReloadRegistry();
     const { result } = renderHook(() => {
       const [banner, setBanner] = useState<string | null>(null);
-      const listLoad = useGuardedLoad(list, {
-        clearErrorOnSuccess: true,
-        onErrorChange: setBanner,
-      });
-      const drawerLoad = useGuardedLoad(drawer, {
-        lifetime: "effect",
+      const listLoad = useListLoad(list, { onErrorChange: setBanner });
+      const drawerLoad = useRowHistoryLoad(drawer, {
+        registry,
+        enabled: true,
         onErrorChange: setBanner,
       });
       return { banner, listLoad, drawerLoad };
@@ -733,10 +749,7 @@ describe("a shared error surface", () => {
     const list: GuardedLoader<string> = async () => "rows";
     const { result } = renderHook(() => {
       const [banner, setBanner] = useState<string | null>(null);
-      const listLoad = useGuardedLoad(list, {
-        clearErrorOnSuccess: true,
-        onErrorChange: setBanner,
-      });
+      const listLoad = useListLoad(list, { onErrorChange: setBanner });
       return { banner, listLoad, setBanner };
     });
     await flush();
@@ -760,14 +773,13 @@ describe("a shared error surface", () => {
       throw new Error(message);
     };
     const list: GuardedLoader<string> = async () => "rows";
+    const registry = createRowReloadRegistry();
     const { result } = renderHook(() => {
       const [banner, setBanner] = useState<string | null>(null);
-      const listLoad = useGuardedLoad(list, {
-        clearErrorOnSuccess: true,
-        onErrorChange: setBanner,
-      });
-      const drawerLoad = useGuardedLoad(drawer, {
-        lifetime: "effect",
+      const listLoad = useListLoad(list, { onErrorChange: setBanner });
+      const drawerLoad = useRowHistoryLoad(drawer, {
+        registry,
+        enabled: true,
         onErrorChange: setBanner,
       });
       return { banner, listLoad, drawerLoad };
@@ -794,7 +806,7 @@ describe("row reloads", () => {
     const { load, calls } = guarded<string>([Promise.resolve("a"), Promise.resolve("b")]);
     const registry = createRowReloadRegistry();
     const { result } = renderHook(() =>
-      useGuardedLoad(load, { rowReload: { registry, kind: "tests", id: 501 } }),
+      useRowHistoryLoad(load, { registry, enabled: true, row: { kind: "tests", id: 501 } }),
     );
     await flush();
     // Mount's own load only: taking the key is not a run.
@@ -813,17 +825,14 @@ describe("row reloads", () => {
     // Another load owns the key first — the open drawer. A disabled hook must
     // not take it over: that would move the reload onto a load that never runs.
     const drawer = renderHook(() =>
-      useGuardedLoad(load, { rowReload: { registry, kind: "tests", id: 502 } }),
+      useRowHistoryLoad(load, { registry, enabled: true, row: { kind: "tests", id: 502 } }),
     );
     await flush();
     expect(calls()).toBe(1);
 
     const { rerender } = renderHook(
       ({ shown }: { shown: boolean }) =>
-        useGuardedLoad(load, {
-          enabled: shown,
-          rowReload: { registry, kind: "tests", id: 502 },
-        }),
+        useRowHistoryLoad(load, { registry, enabled: shown, row: { kind: "tests", id: 502 } }),
       { initialProps: { shown: false } },
     );
     await flush();
@@ -853,7 +862,7 @@ describe("row reloads", () => {
     const { load, calls } = guarded<string>([]);
     const registry = createRowReloadRegistry();
     const { unmount } = renderHook(() =>
-      useGuardedLoad(load, { rowReload: { registry, kind: "jobs", id: 503 } }),
+      useRowHistoryLoad(load, { registry, enabled: true, row: { kind: "jobs", id: 503 } }),
     );
     await flush();
     expect(calls()).toBe(1);
@@ -870,11 +879,11 @@ describe("row reloads", () => {
     const two = guarded<string>([]);
     const registry = createRowReloadRegistry();
     const first = renderHook(() =>
-      useGuardedLoad(one.load, { rowReload: { registry, kind: "tests", id: 504 } }),
+      useRowHistoryLoad(one.load, { registry, enabled: true, row: { kind: "tests", id: 504 } }),
     );
     await flush();
     const second = renderHook(() =>
-      useGuardedLoad(two.load, { rowReload: { registry, kind: "tests", id: 504 } }),
+      useRowHistoryLoad(two.load, { registry, enabled: true, row: { kind: "tests", id: 504 } }),
     );
     await flush();
     expect(one.calls()).toBe(1);
@@ -895,7 +904,9 @@ describe("row reloads", () => {
   it("a row no load displays resolves with nothing loaded", async () => {
     const { load, calls } = guarded<string>([]);
     const registry = createRowReloadRegistry();
-    renderHook(() => useGuardedLoad(load, { rowReload: { registry, kind: "jobs", id: 505 } }));
+    renderHook(() =>
+      useRowHistoryLoad(load, { registry, enabled: true, row: { kind: "jobs", id: 505 } }),
+    );
     await flush();
 
     await act(async () => {
@@ -913,7 +924,11 @@ describe("row reloads", () => {
     const registered = createRowReloadRegistry();
     const other = createRowReloadRegistry();
     const { result } = renderHook(() =>
-      useGuardedLoad(load, { rowReload: { registry: registered, kind: "tests", id: 507 } }),
+      useRowHistoryLoad(load, {
+        registry: registered,
+        enabled: true,
+        row: { kind: "tests", id: 507 },
+      }),
     );
     await flush();
     expect(calls()).toBe(1);
