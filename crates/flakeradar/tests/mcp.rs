@@ -1750,6 +1750,10 @@ async fn a_tool_argument_takes_the_documented_spellings() {
             json!({"repo": "acme/app", "limit": "many"}),
         ),
         (
+            "ci_run_failures",
+            json!({"repo": "acme/app", "ci_run_id": "1", "ci_run_attempt": "many"}),
+        ),
+        (
             "top_flaky_tests",
             json!({"repo": "acme/app", "include_suspect": null}),
         ),
@@ -1825,6 +1829,20 @@ async fn an_unknown_tool_and_an_unreadable_argument_are_error_results() {
     assert!(
         text.contains("missing field `repo`"),
         "the missing field is named: {text:?}"
+    );
+    // An argument no tool takes is named the same way, rather than reported at the
+    // argument object as a whole.
+    let unexpected = rpc(
+        &app,
+        "tools/call",
+        Some("top_flaky_tests"),
+        json!({"name": "top_flaky_tests", "arguments": {"no_such_argument": 1}}),
+    )
+    .await;
+    let text = error_result_text(&unexpected);
+    assert!(
+        text.starts_with("1 validation error for call[top_flaky_tests]\nno_such_argument\n  "),
+        "the unexpected argument is named: {text:?}"
     );
 }
 

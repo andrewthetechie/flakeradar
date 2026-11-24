@@ -218,7 +218,8 @@ mod tests {
     use std::thread;
 
     use super::{
-        answers_a_connection, container_status, lock, run_docker, wait_until_ready, with_database,
+        READY_POLL_INTERVAL, answers_a_connection, container_status, lock, run_docker,
+        wait_until_ready, with_database,
     };
     use crate::error::TestError;
 
@@ -300,6 +301,83 @@ mod tests {
         assert!(
             wait_until_ready(port).is_ok(),
             "the port answers a real connection"
+        );
+    }
+
+    #[test]
+    fn a_server_that_demands_ssl_is_ready_too() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("a loopback port binds");
+        let port = listener
+            .local_addr()
+            .expect("a bound port has an address")
+            .port();
+        // A server that would switch the connection to TLS answers `S`; it is
+        // accepting connections, which is all the readiness probe asks.
+        let _greeter = thread::spawn(move || {
+            let mut request = [0_u8; 8];
+            while let Ok((mut stream, _)) = listener.accept() {
+                use std::io::{Read as _, Write as _};
+                let _ = stream.read_exact(&mut request);
+                let _ = stream.write_all(b"S");
+            }
+        });
+
+        assert!(
+            answers_a_connection(port),
+            "an S answer is a server that takes connections"
+        );
+    }
+
+    #[test]
+    fn a_server_that_answers_nothing_is_not_ready() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("a loopback port binds");
+        let port = listener
+            .local_addr()
+            .expect("a bound port has an address")
+            .port();
+        // A server that ends the connection instead of answering the probe: a
+        // PostgreSQL server still running `initdb`, or nothing behind the port at
+        // all. The read has no answer to wait for, so the probe says not ready.
+        let _closer = thread::spawn(move || {
+            let mut request = [0_u8; 8];
+            while let Ok((mut stream, _)) = listener.accept() {
+                use std::io::Read as _;
+                let _ = stream.read_exact(&mut request);
+                drop(stream);
+            }
+        });
+
+        assert!(
+            !answers_a_connection(port),
+            "a connection that goes unanswered is not a ready server"
+        );
+    }
+
+    #[test]
+    fn a_port_that_starts_answering_part_way_through_becomes_ready() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("a loopback port binds");
+        let port = listener
+            .local_addr()
+            .expect("a bound port has an address")
+            .port();
+        // The first probe lands while the server has not started answering, which
+        // is what the container does while it initializes its data directory; the
+        // read times out rather than failing the wait, and a later probe gets its
+        // answer. The wait is a multiple of the probe's own read timeout, so the
+        // first probe cannot lose the race to the answer this thread is holding.
+        let _slow_greeter = thread::spawn(move || {
+            thread::sleep(READY_POLL_INTERVAL * 3);
+            let mut request = [0_u8; 8];
+            while let Ok((mut stream, _)) = listener.accept() {
+                use std::io::{Read as _, Write as _};
+                let _ = stream.read_exact(&mut request);
+                let _ = stream.write_all(b"N");
+            }
+        });
+
+        assert!(
+            wait_until_ready(port).is_ok(),
+            "a port that starts answering within the startup timeout is ready"
         );
     }
 }

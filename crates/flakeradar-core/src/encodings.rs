@@ -998,3 +998,35 @@ fn normalized(label: &str) -> String {
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    //! The label table's own lookup. A document cannot reach the spellings a
+    //! declaration refuses, so the normalization `CPython` does is proved here.
+
+    use super::rule_for;
+
+    /// The rule the label names, in the one form this file can compare.
+    fn named(label: &str) -> String {
+        format!("{:?}", rule_for(label).expect("the label names a rule"))
+    }
+
+    #[test]
+    fn a_run_of_separators_becomes_one_underscore() {
+        assert_eq!(named("windows--1252"), named("windows-1252"));
+        assert_eq!(named("windows 1252"), named("windows_1252"));
+    }
+
+    #[test]
+    fn a_run_of_separators_at_either_end_is_dropped() {
+        // `CPython` puts an underscore only between two name parts, so a label
+        // that starts or ends with separators names the same codec without them:
+        // `codecs.lookup("-utf-8").name` is `utf-8`. A declaration carries no
+        // such label, because its name must start with a letter, so this is the
+        // one rule of the lookup that no document can ask for.
+        assert_eq!(named("utf-8"), "Utf8");
+        assert_eq!(named("-utf-8"), "Utf8");
+        assert_eq!(named("utf-8-"), "Utf8");
+        assert_eq!(named(" utf_8 "), "Utf8");
+    }
+}
