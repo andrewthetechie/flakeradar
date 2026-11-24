@@ -15,15 +15,16 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Duration, FixedOffset};
 use flakeradar_core::{
-    dto::PipelineReportIn, dto::TestPage, dto::pipeline_body, model::ExecutionStatus, model::Tier,
-    types::CiRunId,
+    dto::JobPage, dto::PipelineReportIn, dto::TestPage, dto::pipeline_body, model::EntityKind,
+    model::ExecutionStatus, model::Tier, types::CiRunId,
 };
 use flakeradar_db::{
-    entities::projects, entities::test_cases, processing::ProcessingSettings,
-    processing::process_next, reads::ListOptions, reads::ReadSettings, reads::Scope,
-    reads::SortKey, reads::TestListFilters, reads::ci_run_failures, reads::find_job_ids,
-    reads::find_test_ids, reads::get_test, reads::job_summary, reads::latest_failure,
-    reads::list_jobs, reads::list_tests, reads::search_jobs, reads::search_tests, reads::summary,
+    DbError, entities::projects, entities::test_cases, processing::ProcessingSettings,
+    processing::process_next, reads::EntityFilters, reads::JobListFilters, reads::ListOptions,
+    reads::Listing, reads::ListingPage, reads::ReadSettings, reads::Scope, reads::SortKey,
+    reads::TestListFilters, reads::ci_run_failures, reads::find_job_ids, reads::find_test_ids,
+    reads::get_test, reads::job_summary, reads::latest_failure, reads::list, reads::search_jobs,
+    reads::search_tests, reads::summary,
 };
 use flakeradar_test_support::{
     FIXTURE_INSTANT, FixedClock, TestDb, make_execution, make_job, make_job_execution,
@@ -65,6 +66,51 @@ fn options(change: impl FnOnce(&mut ListOptions)) -> ListOptions {
     };
     change(&mut options);
     options
+}
+
+/// The one listing call, in the Tests shape this file's cases read.
+async fn list_tests(
+    db: &impl sea_orm::ConnectionTrait,
+    scope: &Scope,
+    filters: TestListFilters,
+    options: ListOptions,
+    settings: &ReadSettings,
+) -> Result<TestPage, DbError> {
+    let listing = Listing {
+        scope: scope.clone(),
+        options,
+        filters: EntityFilters::Test(filters),
+    };
+    match list(db, EntityKind::Test, &listing, settings).await? {
+        ListingPage::Test(page) => Ok(page),
+        ListingPage::Job(_) => Err(DbError::ListingEntityMismatch {
+            asked: EntityKind::Test,
+            answered: EntityKind::Job,
+        }),
+    }
+}
+
+/// The one listing call, in the Jobs shape this file's cases read. A Repo names
+/// the scope, because a Job belongs to its Repo through its Pipeline.
+async fn list_jobs(
+    db: &impl sea_orm::ConnectionTrait,
+    repo: Option<&str>,
+    filters: JobListFilters,
+    options: ListOptions,
+    settings: &ReadSettings,
+) -> Result<JobPage, DbError> {
+    let listing = Listing {
+        scope: Scope::new(repo.map(str::to_owned), None).unwrap_or_default(),
+        options,
+        filters: EntityFilters::Job(filters),
+    };
+    match list(db, EntityKind::Job, &listing, settings).await? {
+        ListingPage::Job(page) => Ok(page),
+        ListingPage::Test(_) => Err(DbError::ListingEntityMismatch {
+            asked: EntityKind::Job,
+            answered: EntityKind::Test,
+        }),
+    }
 }
 
 /// A search fixture: two Repos, a Project each, Tests with a matching name.
@@ -158,8 +204,8 @@ async fn a_search_and_the_listing_answer_the_same_order() {
     let page = list_tests(
         db.connection(),
         &Scope::default(),
-        &TestListFilters::default(),
-        &options(|options| options.q = Some("cron".to_owned())),
+        TestListFilters::default(),
+        options(|options| options.q = Some("cron".to_owned())),
         &settings(),
     )
     .await
@@ -308,8 +354,8 @@ async fn the_flaky_only_listing_keeps_only_flaky_rows() {
     let page = list_tests(
         db.connection(),
         &Scope::default(),
-        &TestListFilters::default(),
-        &options(|options| options.flaky_only = true),
+        TestListFilters::default(),
+        options(|options| options.flaky_only = true),
         &settings(),
     )
     .await
@@ -327,8 +373,8 @@ async fn a_page_whose_offset_overflows_is_an_error() {
     let error = list_tests(
         db.connection(),
         &Scope::default(),
-        &TestListFilters::default(),
-        &options(|options| {
+        TestListFilters::default(),
+        options(|options| {
             options.page = i64::MAX;
             options.page_size = 100;
         }),
@@ -340,6 +386,54 @@ async fn a_page_whose_offset_overflows_is_an_error() {
         error.to_string().contains("offset"),
         "the error names the offset: {error}"
     );
+}
+
+/// A caller that names one entity beside the other entity's listing is refused
+/// with the mismatch, in both directions, rather than answered the other board's
+/// rows. No door can build the disagreeing pair, so only a caller that passes the
+/// kind itself ever sees this error.
+#[tokio::test]
+async fn a_listing_asked_for_as_the_other_entity_is_refused() {
+    let db = TestDb::new().await.expect("a test database");
+    let tests = Listing {
+        scope: Scope::default(),
+        options: options(|_| {}),
+        filters: EntityFilters::Test(TestListFilters::default()),
+    };
+    let error = list(db.connection(), EntityKind::Job, &tests, &settings())
+        .await
+        .expect_err("a Tests listing asked for as Jobs is refused");
+    assert!(
+        matches!(
+            &error,
+            DbError::ListingEntityMismatch {
+                asked: EntityKind::Job,
+                answered: EntityKind::Test
+            }
+        ),
+        "{error:?}"
+    );
+    assert_eq!(error.to_string(), "a Job listing cannot answer Test rows");
+
+    let jobs = Listing {
+        scope: Scope::default(),
+        options: options(|_| {}),
+        filters: EntityFilters::Job(JobListFilters::default()),
+    };
+    let error = list(db.connection(), EntityKind::Test, &jobs, &settings())
+        .await
+        .expect_err("a Jobs listing asked for as Tests is refused");
+    assert!(
+        matches!(
+            &error,
+            DbError::ListingEntityMismatch {
+                asked: EntityKind::Test,
+                answered: EntityKind::Job
+            }
+        ),
+        "{error:?}"
+    );
+    assert_eq!(error.to_string(), "a Test listing cannot answer Job rows");
 }
 
 #[tokio::test]
@@ -360,8 +454,8 @@ async fn list_tests_sorts_by_proven_flakes_and_by_last_seen() {
     let by_proven = list_tests(
         db.connection(),
         &Scope::default(),
-        &TestListFilters::default(),
-        &options(|options| options.sort = SortKey::Proven),
+        TestListFilters::default(),
+        options(|options| options.sort = SortKey::Proven),
         &settings(),
     )
     .await
@@ -370,8 +464,8 @@ async fn list_tests_sorts_by_proven_flakes_and_by_last_seen() {
     let by_seen = list_tests(
         db.connection(),
         &Scope::default(),
-        &TestListFilters::default(),
-        &options(|options| options.sort = SortKey::LastSeen),
+        TestListFilters::default(),
+        options(|options| options.sort = SortKey::LastSeen),
         &settings(),
     )
     .await
@@ -430,8 +524,8 @@ async fn list_tests_sorts_by_impacted_runs() {
     let by_impact = list_tests(
         db.connection(),
         &Scope::default(),
-        &TestListFilters::default(),
-        &options(|options| options.sort = SortKey::Impact),
+        TestListFilters::default(),
+        options(|options| options.sort = SortKey::Impact),
         &settings(),
     )
     .await
@@ -510,8 +604,8 @@ async fn listed_tests(db: &TestDb) -> TestPage {
     list_tests(
         db.connection(),
         &Scope::default(),
-        &TestListFilters::default(),
-        &options(|_| {}),
+        TestListFilters::default(),
+        options(|_| {}),
         &settings(),
     )
     .await
@@ -643,8 +737,8 @@ async fn the_impact_window_counts_unexplained_job_failures() {
     let listed = list_jobs(
         db.connection(),
         None,
-        &flakeradar_db::reads::JobListFilters::default(),
-        &options(|_| {}),
+        JobListFilters::default(),
+        options(|_| {}),
         &settings(),
     )
     .await
@@ -692,8 +786,8 @@ async fn the_impact_window_counts_unexplained_job_failures() {
     let listed = list_jobs(
         db.connection(),
         None,
-        &flakeradar_db::reads::JobListFilters::default(),
-        &options(|_| {}),
+        JobListFilters::default(),
+        options(|_| {}),
         &settings(),
     )
     .await
@@ -732,8 +826,8 @@ async fn the_listing_reports_a_first_seen_timestamp_and_whether_the_test_is_new(
     let page = list_tests(
         db.connection(),
         &Scope::default(),
-        &TestListFilters::default(),
-        &options(|options| options.sort = SortKey::LastSeen),
+        TestListFilters::default(),
+        options(|options| options.sort = SortKey::LastSeen),
         &settings(),
     )
     .await
@@ -785,11 +879,11 @@ async fn the_new_filter_lists_only_tests_first_seen_in_the_window() {
     let page = list_tests(
         db.connection(),
         &Scope::default(),
-        &TestListFilters {
+        TestListFilters {
             new: true,
             ..TestListFilters::default()
         },
-        &options(|options| options.sort = SortKey::LastSeen),
+        options(|options| options.sort = SortKey::LastSeen),
         &settings(),
     )
     .await
@@ -800,8 +894,8 @@ async fn the_new_filter_lists_only_tests_first_seen_in_the_window() {
     let hidden = list_tests(
         db.connection(),
         &Scope::default(),
-        &TestListFilters::default(),
-        &options(|options| options.sort = SortKey::LastSeen),
+        TestListFilters::default(),
+        options(|options| options.sort = SortKey::LastSeen),
         &settings(),
     )
     .await
@@ -812,8 +906,8 @@ async fn the_new_filter_lists_only_tests_first_seen_in_the_window() {
     let page = list_tests(
         db.connection(),
         &Scope::default(),
-        &TestListFilters::default(),
-        &options(|options| {
+        TestListFilters::default(),
+        options(|options| {
             options.sort = SortKey::LastSeen;
             options.include_stable = true;
         }),
@@ -1108,8 +1202,8 @@ async fn job_listings_of_an_empty_database_answer_empty_pages() {
     let page = list_jobs(
         db.connection(),
         None,
-        &flakeradar_db::reads::JobListFilters::default(),
-        &options(|_| {}),
+        JobListFilters::default(),
+        options(|_| {}),
         &settings(),
     )
     .await
@@ -1306,8 +1400,8 @@ async fn every_sql_tier_comparison_reads_the_stored_flaky_state() {
     let page = list_tests(
         db.connection(),
         &Scope::default(),
-        &TestListFilters::default(),
-        &options(|options| options.flaky_only = true),
+        TestListFilters::default(),
+        options(|options| options.flaky_only = true),
         &settings(),
     )
     .await

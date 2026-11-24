@@ -9,13 +9,13 @@ use rmcp::model::ToolAnnotations;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use flakeradar_core::identity::normalize_repo;
-use flakeradar_db::reads::{self, JobListFilters, ListOptions};
+use flakeradar_core::model::EntityKind;
+use flakeradar_db::reads::{self, EntityFilters, JobListFilters, ListOptions};
 
 use crate::mcp::{
     BoxFuture, DEFAULT_LIMIT, McpServer, ToolAnswer, ToolResult, check_limit,
     check_new_within_days, default_limit, default_true, lax_boolean, lax_integer,
-    lax_optional_integer, nullable, parse, parse_sort, read_only,
+    lax_optional_integer, nullable, parse, parse_sort, read_only, scope,
 };
 
 /// The tool's name on the wire.
@@ -95,24 +95,24 @@ pub(super) fn call(server: &McpServer, arguments: Value) -> BoxFuture<'_, ToolRe
             Some(text) => Some(parse_sort(text)?),
             None => None,
         };
-        let name = normalize_repo(&args.repo)?;
-        let filters = JobListFilters {
-            pipeline: None,
-            acknowledged: None,
+        // A Job belongs to its Repo through its Pipeline, so the Repo is the whole
+        // scope, and the tool offers no filter at all.
+        let scope = scope(&args.repo, None)?;
+        let filters = EntityFilters::Job(JobListFilters::default());
+        let options =
+            ListOptions::top_flaky(args.limit, args.include_suspect, args.new_within_days, sort);
+        let listing = reads::Listing {
+            scope,
+            options,
+            filters,
         };
-        let mut options =
-            ListOptions::top_flaky(args.limit, args.include_suspect, args.new_within_days);
-        if let Some(sort) = sort {
-            options.sort = sort;
-        }
-        let page = reads::list_jobs(
+        let page = reads::list(
             server.pool(),
-            Some(&name),
-            &filters,
-            &options,
+            EntityKind::Job,
+            &listing,
             &server.read_settings(),
         )
         .await?;
-        ToolAnswer::shaped(LISTS, &page.items)
+        ToolAnswer::shaped(LISTS, &page.items())
     })
 }

@@ -2,6 +2,8 @@
 
 // Rust guideline compliant 2026-07-21
 
+use flakeradar_core::model::EntityKind;
+
 /// Everything the database layer can fail with.
 ///
 /// Callers branch on the kind: the binary refuses to start on
@@ -54,6 +56,20 @@ pub enum DbError {
         page: i64,
         /// The page size it was asked for with.
         page_size: i64,
+    },
+    /// A listing where the entity its kind names and the entity its filters are for
+    /// disagree, or a page that answered the other entity's shape.
+    ///
+    /// `EntityFilters` is built per entity, so the two can only disagree when a
+    /// caller passes a kind beside a listing it did not build from: like
+    /// [`DbError::PageOffsetTooLarge`] for a caller-built page, it gets an error
+    /// rather than the other entity's rows.
+    #[error("a {asked:?} listing cannot answer {answered:?} rows")]
+    ListingEntityMismatch {
+        /// The entity the caller named.
+        asked: EntityKind,
+        /// The entity the listing's filters, or its answer, is for.
+        answered: EntityKind,
     },
     /// A stored Pipeline Report body is not the Report it was built from.
     #[error("the stored Pipeline Report body is not the Report it was built from: {detail}")]

@@ -9,7 +9,8 @@ use rmcp::model::ToolAnnotations;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use flakeradar_db::reads::{self, ListOptions, TestListFilters};
+use flakeradar_core::model::EntityKind;
+use flakeradar_db::reads::{self, EntityFilters, ListOptions, TestListFilters};
 
 use crate::mcp::{
     BoxFuture, DEFAULT_LIMIT, McpServer, ToolAnswer, ToolResult, check_limit,
@@ -114,27 +115,27 @@ pub(super) fn call(server: &McpServer, arguments: Value) -> BoxFuture<'_, ToolRe
             check_new_within_days(days)?;
         }
         let scope = scope(&args.repo, args.project.as_deref())?;
-        let filters = TestListFilters {
+        // The tool offers `file` and `category` and nothing else, so the arms it
+        // does not offer are the defaults of the Tests listing.
+        let filters = EntityFilters::Test(TestListFilters {
             file: args.file,
             category,
-            quarantined: None,
-            acknowledged: None,
-            broken: false,
-            new: false,
+            ..Default::default()
+        });
+        let options =
+            ListOptions::top_flaky(args.limit, args.include_suspect, args.new_within_days, sort);
+        let listing = reads::Listing {
+            scope,
+            options,
+            filters,
         };
-        let mut options =
-            ListOptions::top_flaky(args.limit, args.include_suspect, args.new_within_days);
-        if let Some(sort) = sort {
-            options.sort = sort;
-        }
-        let page = reads::list_tests(
+        let page = reads::list(
             server.pool(),
-            &scope,
-            &filters,
-            &options,
+            EntityKind::Test,
+            &listing,
             &server.read_settings(),
         )
         .await?;
-        ToolAnswer::shaped(LISTS, &page.items)
+        ToolAnswer::shaped(LISTS, &page.items())
     })
 }

@@ -27,9 +27,12 @@ use flakeradar_db::{
     acknowledge::{self, AcknowledgedOut},
     quarantine,
     reads::DEFAULT_EXECUTIONS_LIMIT,
+    reads::EntityFilters,
     reads::FAILURES_LIMIT,
     reads::JobListFilters,
     reads::ListOptions,
+    reads::Listing,
+    reads::ListingPage,
     reads::MAX_EXECUTIONS_LIMIT,
     reads::ReadSettings,
     reads::Scope,
@@ -39,9 +42,8 @@ use flakeradar_db::{
     reads::get_job,
     reads::get_test,
     reads::job_summary,
-    reads::list_jobs,
+    reads::list,
     reads::list_repos,
-    reads::list_tests,
     reads::summary,
 };
 use serde::Deserialize;
@@ -289,9 +291,9 @@ impl Validate for TestsQuery {
 }
 
 impl TestsQuery {
-    /// The filters and options the query names.
-    fn parts(&self) -> (TestListFilters, ListOptions) {
-        let filters = TestListFilters {
+    /// The filters and options the query names, as a Tests listing.
+    fn parts(&self) -> (EntityFilters, ListOptions) {
+        let filters = EntityFilters::Test(TestListFilters {
             file: self.file.clone(),
             category: self
                 .category
@@ -301,7 +303,7 @@ impl TestsQuery {
             acknowledged: self.acknowledged,
             broken: self.broken.unwrap_or(false),
             new: self.new.unwrap_or(false),
-        };
+        });
         let options = ListOptions {
             include_stable: self.include_stable.unwrap_or(false),
             flaky_only: false,
@@ -477,15 +479,19 @@ pub async fn repos(State(state): State<AppState>) -> RouteResult<Json<Vec<RepoOu
 pub async fn tests(
     State(state): State<AppState>,
     ApiQuery(query): ApiQuery<TestsQuery>,
-) -> RouteResult<Json<TestPage>> {
+) -> RouteResult<Json<ListingPage>> {
     let scope = scope_of(query.repo.clone(), query.project.clone())?;
     let (filters, options) = query.parts();
+    let listing = Listing {
+        scope,
+        options,
+        filters,
+    };
     Ok(Json(
-        list_tests(
+        list(
             state.pool(),
-            &scope,
-            &filters,
-            &options,
+            EntityKind::Test,
+            &listing,
             &read_settings(&state),
         )
         .await?,
@@ -683,6 +689,11 @@ pub async fn quarantine(
 /// # Errors
 ///
 /// Answers 422 for a bad filter or range and 500 when a query fails.
+///
+/// # Panics
+///
+/// Never: the scope this route builds names no Project, which is the one thing the
+/// `Scope` constructor refuses.
 #[utoipa::path(
     get,
     path = "/api/jobs",
@@ -704,7 +715,7 @@ pub async fn quarantine(
 pub async fn jobs(
     State(state): State<AppState>,
     ApiQuery(query): ApiQuery<JobsQuery>,
-) -> RouteResult<Json<JobPage>> {
+) -> RouteResult<Json<ListingPage>> {
     let repo = match &query.repo {
         Some(raw) => Some(normalize_repo(raw).map_err(|error| identity_error(&error))?),
         None => None,
@@ -723,16 +734,28 @@ pub async fn jobs(
         has_issue: query.has_issue,
         new_within_days: query.new_within_days,
     };
-    let filters = JobListFilters {
+    let filters = EntityFilters::Job(JobListFilters {
         pipeline: query.pipeline.clone(),
         acknowledged: query.acknowledged,
+    });
+    // A Job belongs to its Repo through its Pipeline, so the Repo is the whole
+    // scope: with no Project named, the constructor has nothing to refuse.
+    #[expect(
+        clippy::expect_used,
+        reason = "a scope with no Project is always constructible, so a failure here is a \
+                  constructor bug, never a request a client can send"
+    )]
+    let scope = Scope::new(repo, None).expect("a Repo-only scope is constructible");
+    let listing = Listing {
+        scope,
+        options,
+        filters,
     };
     Ok(Json(
-        list_jobs(
+        list(
             state.pool(),
-            repo.as_deref(),
-            &filters,
-            &options,
+            EntityKind::Job,
+            &listing,
             &read_settings(&state),
         )
         .await?,
