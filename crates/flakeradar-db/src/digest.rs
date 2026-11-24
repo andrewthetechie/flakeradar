@@ -17,11 +17,9 @@ use sea_orm::{ConnectionTrait, QueryResult, Value};
 
 use crate::entity::entity;
 use crate::error::DbError;
-use crate::reads::{
-    IMPACT_COLUMNS, ReadSettings, id, impact_lateral_sql, impact_since, optional_timestamp,
-};
+use crate::reads::{IMPACT_COLUMNS, ReadSettings, impact_lateral_sql, impact_since};
 use crate::score_history;
-use crate::sql::{Binds, get, rows};
+use crate::sql::{Binds, get, id, optional_timestamp, rows};
 
 /// How many days a digest spans: one week, backwards and forwards.
 ///

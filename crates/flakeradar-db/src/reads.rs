@@ -14,7 +14,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use chrono::{DateTime, Duration, FixedOffset, NaiveDate, Utc};
+use chrono::{DateTime, Duration, NaiveDate, Utc};
 use flakeradar_core::{
     classify::FailureCategory, defaults, dto::CiRunFailedJobOut, dto::CiRunFailuresOut,
     dto::CiRunTestFailureOut, dto::ExecutionOut, dto::ExplainingTestOut, dto::HistoryOut,
@@ -39,7 +39,8 @@ use crate::entity::entity;
 use crate::error::DbError;
 use crate::score_history;
 use crate::sql::{
-    Binds, ci_run_id, execution_status, fingerprint, get, one, required_one, rows, score,
+    Binds, ci_run_id, execution_status, fingerprint, get, id, one, optional_timestamp,
+    required_one, rows, score, timestamp,
 };
 use crate::tier;
 
@@ -339,26 +340,6 @@ pub(crate) fn impact_lateral_sql(kind: EntityKind, cutoff: DateTime<Utc>) -> Str
         ),
     };
     format!(" LEFT JOIN LATERAL ({aggregate}) AS impact ON true")
-}
-
-/// A timestamp column read as UTC.
-pub(crate) fn timestamp(row: &QueryResult, column: &str) -> Result<DateTime<Utc>, DbError> {
-    let value: DateTime<FixedOffset> = get(row, column)?;
-    Ok(value.with_timezone(&Utc))
-}
-
-/// An optional timestamp column read as UTC.
-pub(crate) fn optional_timestamp(
-    row: &QueryResult,
-    column: &str,
-) -> Result<Option<DateTime<Utc>>, DbError> {
-    let value: Option<DateTime<FixedOffset>> = get(row, column)?;
-    Ok(value.map(|value| value.with_timezone(&Utc)))
-}
-
-/// Converts a stored `INTEGER` id to the DTO's `i64`.
-pub(crate) fn id(value: i32) -> i64 {
-    i64::from(value)
 }
 
 /// What the one leaderboard engine needs to know about an entity to query it.

@@ -28,8 +28,8 @@ use serde::Serialize;
 
 use crate::entity::entity;
 use crate::error::DbError;
-use crate::reads::{EntityOut, ReadSettings, entity_out, locked_entity_row, optional_timestamp};
-use crate::sql::{get, one, placeholder_list, rows};
+use crate::reads::{EntityOut, ReadSettings, entity_out, locked_entity_row};
+use crate::sql::{get, one, optional_timestamp, placeholder_list, rows};
 
 /// Whether only a GitHub Pipeline's Job can hold a link (ADR 0008).
 const fn github_provider_only(kind: EntityKind) -> bool {

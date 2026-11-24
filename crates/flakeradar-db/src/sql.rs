@@ -9,6 +9,7 @@
 
 // Rust guideline compliant 2026-07-21
 
+use chrono::{DateTime, FixedOffset, Utc};
 use flakeradar_core::model::ExecutionStatus;
 use flakeradar_core::types::{CiRunId, Fingerprint, Score};
 use sea_orm::{ConnectionTrait, DbBackend, DbErr, QueryResult, Statement, TryGetable, Value};
@@ -80,6 +81,26 @@ fn unusable(column: &'static str, what: &'static str, detail: &str) -> DbError {
 pub fn get<T: TryGetable>(row: &QueryResult, column: &str) -> Result<T, DbError> {
     row.try_get("", column)
         .map_err(|error: DbErr| DbError::Database(error))
+}
+
+/// A timestamp column read as UTC.
+pub(crate) fn timestamp(row: &QueryResult, column: &str) -> Result<DateTime<Utc>, DbError> {
+    let value: DateTime<FixedOffset> = get(row, column)?;
+    Ok(value.with_timezone(&Utc))
+}
+
+/// An optional timestamp column read as UTC.
+pub(crate) fn optional_timestamp(
+    row: &QueryResult,
+    column: &str,
+) -> Result<Option<DateTime<Utc>>, DbError> {
+    let value: Option<DateTime<FixedOffset>> = get(row, column)?;
+    Ok(value.map(|value| value.with_timezone(&Utc)))
+}
+
+/// Converts a stored `INTEGER` id to the DTO's `i64`.
+pub(crate) fn id(value: i32) -> i64 {
+    i64::from(value)
 }
 
 /// Runs a statement and reads every row.
