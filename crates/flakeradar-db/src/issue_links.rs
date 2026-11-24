@@ -11,7 +11,7 @@
 //! The rules live in the engines, once for both targets; only an intended
 //! per-target difference is `github_provider_only` (a Job may link an issue only
 //! on a GitHub Pipeline), and the table names come from `crate::entity`. Both
-//! read the row through `reads`' locked entity read, and switch on the target
+//! read the row through `entity`'s locked entity read, and switch on the target
 //! only to answer their own response shape.
 
 // Rust guideline compliant 2026-07-21
@@ -26,9 +26,9 @@ use flakeradar_core::{
 use sea_orm::{ConnectionTrait, DbBackend, Statement, TransactionSession, TransactionTrait, Value};
 use serde::Serialize;
 
-use crate::entity::entity;
+use crate::entity::{EntityOut, entity, entity_out, locked_entity_row};
 use crate::error::DbError;
-use crate::reads::{EntityOut, ReadSettings, entity_out, locked_entity_row};
+use crate::reads::ReadSettings;
 use crate::sql::{get, one, optional_timestamp, placeholder_list, rows};
 
 /// Whether only a GitHub Pipeline's Job can hold a link (ADR 0008).

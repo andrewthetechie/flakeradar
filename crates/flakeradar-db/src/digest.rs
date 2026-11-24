@@ -15,9 +15,9 @@ use flakeradar_core::digest::{DigestTest, RepoDigest};
 use flakeradar_core::model::EntityKind;
 use sea_orm::{ConnectionTrait, QueryResult, Value};
 
-use crate::entity::entity;
+use crate::entity::{IMPACT_COLUMNS, entity, impact_lateral_sql, impact_since};
 use crate::error::DbError;
-use crate::reads::{IMPACT_COLUMNS, ReadSettings, impact_lateral_sql, impact_since};
+use crate::reads::ReadSettings;
 use crate::score_history;
 use crate::sql::{Binds, get, id, optional_timestamp, rows};
 
