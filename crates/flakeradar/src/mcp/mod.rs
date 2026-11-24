@@ -18,6 +18,8 @@
 //! wire contract: a client reads them, and `tests/parity` pins every one against
 //! the recorded replay. They are therefore written out as literals in the tool
 //! files rather than derived, so no schema crate can arrange them differently.
+//! Each tool's argument schema and its argument struct are two such literals over
+//! the same arguments, and a named case in the `tools` module asserts they agree.
 
 // Rust guideline compliant 2026-07-21
 

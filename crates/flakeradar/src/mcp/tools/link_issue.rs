@@ -53,6 +53,12 @@ struct LinkIssueArgs {
     replace: bool,
 }
 
+/// The fields `LinkIssueArgs` accepts, as serde names them.
+#[cfg(test)]
+pub(super) fn accepted_fields() -> &'static [&'static str] {
+    super::record_fields::<LinkIssueArgs>()
+}
+
 /// The tool's argument schema.
 pub(super) fn input_schema() -> Value {
     json!({
