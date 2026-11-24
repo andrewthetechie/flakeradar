@@ -13,6 +13,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use flakeradar_core::defaults;
+use flakeradar_core::digest::DigestSchedule;
 use flakeradar_core::dto::lax_bool;
 use flakeradar_core::lax::text_int;
 use flakeradar_core::notify::WebhookFormat;
@@ -352,6 +353,30 @@ impl Raw<'_> {
             }),
         }
     }
+
+    /// The value of `field` parsed as a weekly digest schedule, or `None` when the
+    /// variable is unset or empty.
+    ///
+    /// Empty is off rather than a parse failure: a deployment that exports
+    /// `FLAKERADAR_DIGEST=` with nothing in it asks for no digest, exactly like one
+    /// that leaves the variable out, so both answer `None` and both match the
+    /// default. Any other text is parsed by [`DigestSchedule`] itself, compared byte
+    /// for byte, so `" mon@09 "` is refused rather than read as a schedule.
+    fn digest_schedule(&self, field: &str) -> Result<Option<DigestSchedule>, SettingsError> {
+        let Some(text) = self.raw(field) else {
+            return Ok(None);
+        };
+        if text.is_empty() {
+            return Ok(None);
+        }
+        text.parse()
+            .map(Some)
+            .map_err(|_refusal| SettingsError::InvalidValue {
+                variable: variable(field),
+                value: text.to_owned(),
+                expected: "a digest schedule (<mon|tue|wed|thu|fri|sat|sun>@<00-23>, like mon@09)",
+            })
+    }
 }
 
 /// Reads the `GITHUB_*` variables into `settings`, in field order.
@@ -472,6 +497,13 @@ pub struct Settings {
     pub webhook_urls: Secret,
     /// The body format every Webhook URL receives.
     pub webhook_format: WebhookFormat,
+    /// When the weekly digest goes out, as `mon@09`, or `None` when no digest is
+    /// wanted.
+    ///
+    /// Unset and empty both mean `None`: the digest is off until an operator asks
+    /// for a slot. Any other spelling is refused at start-up rather than ignored,
+    /// so a typo cannot leave a week's digest unsent in silence.
+    pub digest: Option<DigestSchedule>,
     /// The origins `Access-Control-Allow-Origin` may name, comma separated.
     pub cors_origins: String,
     /// The Report processor's idle poll interval.
@@ -531,6 +563,7 @@ impl Default for Settings {
             infra_min_tests: defaults::INFRA_MIN_TESTS,
             webhook_urls: Secret::new(""),
             webhook_format: WebhookFormat::Json,
+            digest: None,
             cors_origins: "http://localhost:5173".to_owned(),
             worker_poll: defaults::WORKER_POLL,
             db_command_timeout_seconds: defaults::DB_COMMAND_TIMEOUT_SECONDS,
@@ -638,6 +671,9 @@ impl Settings {
             &mut settings.webhook_format,
             raw.webhook_format("WEBHOOK_FORMAT")?,
         );
+        // The digest is the field, not a value that replaces a default: an unset or
+        // empty variable means off, which is also what `Settings::default` ships.
+        settings.digest = raw.digest_schedule("DIGEST")?;
         set_if_some(&mut settings.cors_origins, raw.text("CORS_ORIGINS"));
         set_if_some(&mut settings.worker_poll, raw.wait("WORKER_POLL_SECONDS")?);
         set_if_some(
@@ -1040,9 +1076,9 @@ mod tests {
 
     use super::LineCounted;
     use super::{
-        DEFAULT_DATABASE_URL, DEFAULT_HOST, DEFAULT_INSECURE_TOKEN, DEFAULT_PORT, Secret, Settings,
-        SettingsError, assert_secure_token, check_api_token, dotenv_values, environment_values,
-        is_default_token,
+        DEFAULT_DATABASE_URL, DEFAULT_HOST, DEFAULT_INSECURE_TOKEN, DEFAULT_PORT, DigestSchedule,
+        Secret, Settings, SettingsError, assert_secure_token, check_api_token, dotenv_values,
+        environment_values, is_default_token,
     };
 
     /// A settings map holding `pairs`.
@@ -1119,6 +1155,7 @@ mod tests {
             settings.webhook_format,
             flakeradar_core::notify::WebhookFormat::Json
         );
+        assert_eq!(settings.digest, None);
         assert_eq!(settings.cors_origins, "http://localhost:5173");
         assert_eq!(settings.worker_poll, Duration::from_secs(1));
         assert_eq!(settings.db_command_timeout_seconds, 30.0);
@@ -1159,6 +1196,7 @@ mod tests {
             ("FLAKERADAR_INFRA_MIN_TESTS", "30"),
             ("FLAKERADAR_WEBHOOK_URLS", "https://hooks.example.com/a"),
             ("FLAKERADAR_WEBHOOK_FORMAT", "slack"),
+            ("FLAKERADAR_DIGEST", "sun@23"),
             (
                 "FLAKERADAR_CORS_ORIGINS",
                 "https://a.example.com, https://b.example.com",
@@ -1207,6 +1245,13 @@ mod tests {
         assert_eq!(
             settings.webhook_format,
             flakeradar_core::notify::WebhookFormat::Slack
+        );
+        assert_eq!(
+            settings.digest,
+            Some(DigestSchedule {
+                weekday: chrono::Weekday::Sun,
+                hour: 23,
+            })
         );
         // The space after the comma is part of the second origin: splitting is all
         // this reader does.
@@ -1314,6 +1359,12 @@ mod tests {
             ("FLAKERADAR_PORT", "65536"),
             ("FLAKERADAR_PORT", "eighty"),
             ("FLAKERADAR_WEBHOOK_FORMAT", "xml"),
+            // A schedule is exact too: an out-of-range hour, a whole day name and
+            // a one-digit hour are all start-up failures rather than a digest that
+            // quietly never goes out.
+            ("FLAKERADAR_DIGEST", "fri@24"),
+            ("FLAKERADAR_DIGEST", "monday@09"),
+            ("FLAKERADAR_DIGEST", "mon@9"),
             ("FLAKERADAR_PRUNE_BATCH", "1.5"),
             // A wait that is no number at all, which is what an operator who
             // writes a unit gets.
@@ -1331,6 +1382,31 @@ mod tests {
             }
             assert!(error.to_string().contains(variable), "{error}");
             assert!(error.to_string().contains(value), "{error}");
+        }
+    }
+
+    #[test]
+    fn an_empty_digest_is_off() {
+        // The variable is present but empty, which is what an operator who means
+        // "no digest" types: `Raw::raw` hands back `Some("")`, so this is the one
+        // arm a number does not share.
+        let settings = Settings::from_map(&map(&[("FLAKERADAR_DIGEST", "")]))
+            .expect("an empty digest is off, not invalid");
+        assert_eq!(settings.digest, None);
+    }
+
+    #[test]
+    fn an_unreadable_digest_names_the_documented_form() {
+        for value in ["fri@24", "monday@09", "mon@9"] {
+            let error = Settings::from_map(&map(&[("FLAKERADAR_DIGEST", value)]))
+                .expect_err("only a spelled schedule is a schedule");
+            assert!(
+                matches!(error, SettingsError::InvalidValue { .. }),
+                "unexpected error for {value}: {error}"
+            );
+            let message = error.to_string();
+            assert!(message.contains("FLAKERADAR_DIGEST"), "{message}");
+            assert!(message.contains("mon@09"), "{message}");
         }
     }
 
