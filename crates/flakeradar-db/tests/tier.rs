@@ -17,13 +17,16 @@ use std::sync::Arc;
 
 use chrono::{DateTime, FixedOffset};
 use flakeradar_core::{
+    dto::TestPage,
     helpers::{is_broken, tier_for},
+    model::EntityKind,
     model::Tier,
     types::Score,
 };
 use flakeradar_db::{
-    job_tier_counts, reads::ListOptions, reads::ReadSettings, reads::Scope, reads::TestListFilters,
-    reads::list_tests, test_tier_counts,
+    DbError, job_tier_counts, reads::EntityFilters, reads::ListOptions, reads::Listing,
+    reads::ListingPage, reads::ReadSettings, reads::Scope, reads::TestListFilters, reads::list,
+    test_tier_counts,
 };
 use flakeradar_test_support::{
     FIXTURE_INSTANT, FixedClock, TestDb, make_job, make_pipeline, make_project, make_test_case,
@@ -51,6 +54,28 @@ fn options(change: impl FnOnce(&mut ListOptions)) -> ListOptions {
     };
     change(&mut options);
     options
+}
+
+/// The one listing call, in the Tests shape this test reads.
+async fn list_tests(
+    db: &impl sea_orm::ConnectionTrait,
+    scope: &Scope,
+    filters: &TestListFilters,
+    options: &ListOptions,
+    settings: &ReadSettings,
+) -> Result<TestPage, DbError> {
+    let listing = Listing {
+        scope: scope.clone(),
+        options: options.clone(),
+        filters: EntityFilters::Test(filters.clone()),
+    };
+    match list(db, EntityKind::Test, &listing, settings).await? {
+        ListingPage::Test(page) => Ok(page),
+        ListingPage::Job(_) => Err(DbError::ListingEntityMismatch {
+            asked: EntityKind::Test,
+            answered: EntityKind::Job,
+        }),
+    }
 }
 
 /// The stored flaky state, at the fixture instant the builders default to.
