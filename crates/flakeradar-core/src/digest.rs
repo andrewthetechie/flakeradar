@@ -244,7 +244,7 @@ impl FromStr for DigestSchedule {
     ///
     /// Returns [`DigestScheduleError::Format`] when `text` is not of that form.
     fn from_str(text: &str) -> Result<Self, Self::Err> {
-        let (day, hour) = text.split_once('@').ok_or(DigestScheduleError::Format)?;
+        let (day, hour_text) = text.split_once('@').ok_or(DigestScheduleError::Format)?;
         let weekday = match day {
             "mon" => Weekday::Mon,
             "tue" => Weekday::Tue,
@@ -255,17 +255,17 @@ impl FromStr for DigestSchedule {
             "sun" => Weekday::Sun,
             _ => return Err(DigestScheduleError::Format),
         };
-        // Exactly two ASCII digits, so the parsed hour is at most `99` and
-        // cannot overflow. Anything longer, shorter or non-numeric is refused
-        // here rather than read as a partial hour.
-        let digits = hour.as_bytes();
-        if digits.len() != 2 || !digits.iter().all(u8::is_ascii_digit) {
-            return Err(DigestScheduleError::Format);
-        }
-        let Ok(hour) = hour.parse::<u32>() else {
+        // The hour is read as a number first and held to the documented spelling
+        // afterwards, because the two refusals are different: text that is no
+        // number at all, and a number spelled wrong.
+        let Ok(hour) = hour_text.parse::<u32>() else {
             return Err(DigestScheduleError::Format);
         };
-        if hour > 23 {
+        // Exactly two ASCII digits at most `23`, so a one- or three-digit hour and
+        // a signed one are refused even though they name an hour, and an hour off
+        // a clock is refused too.
+        let digits = hour_text.as_bytes();
+        if digits.len() != 2 || !digits.iter().all(u8::is_ascii_digit) || hour > 23 {
             return Err(DigestScheduleError::Format);
         }
         Ok(Self { weekday, hour })

@@ -244,6 +244,40 @@ fn a_schedule_is_three_lowercase_letters_two_digits_and_an_at_sign() {
 }
 
 #[test]
+fn every_documented_day_name_is_a_schedule() {
+    // All seven names, because each is one arm of the parse and one arm of the
+    // display: reading two of them would leave five of each untested. The hours
+    // differ so the display is seen padding as well as printing two digits.
+    let texts = [
+        "mon@07", "tue@11", "wed@02", "thu@23", "fri@00", "sat@19", "sun@06",
+    ];
+    let (weekdays, displayed): (Vec<Weekday>, Vec<String>) = texts
+        .into_iter()
+        .map(|text| {
+            let parsed = schedule(text);
+            (parsed.weekday, parsed.to_string())
+        })
+        .unzip();
+    assert_eq!(
+        weekdays,
+        [
+            Weekday::Mon,
+            Weekday::Tue,
+            Weekday::Wed,
+            Weekday::Thu,
+            Weekday::Fri,
+            Weekday::Sat,
+            Weekday::Sun,
+        ],
+        "each name reads as the day it spells"
+    );
+    assert_eq!(
+        displayed, texts,
+        "each schedule displays as the text it was read from"
+    );
+}
+
+#[test]
 fn a_slot_is_the_day_and_hour_in_the_week_holding_now() {
     let now = wed_noon();
     assert_eq!(schedule("mon@09").slot(now), utc(2026, 11, 9, 9));
@@ -263,6 +297,8 @@ fn a_refused_spelling_says_so_rather_than_guessing() {
         "",          // nothing to read
         "Mon@09",    // a name compared exactly
         "mon@009",   // three hour digits
+        "mon@ab",    // an hour that is no number
+        "mon@+9",    // a signed hour, which is not two digits
     ] {
         assert!(
             text.parse::<DigestSchedule>().is_err(),
