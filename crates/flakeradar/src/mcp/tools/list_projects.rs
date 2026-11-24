@@ -37,6 +37,12 @@ struct ListProjectsArgs {
     repo: String,
 }
 
+/// The fields `ListProjectsArgs` accepts, as serde names them.
+#[cfg(test)]
+pub(super) fn accepted_fields() -> &'static [&'static str] {
+    super::record_fields::<ListProjectsArgs>()
+}
+
 /// The tool's argument schema.
 pub(super) fn input_schema() -> Value {
     json!({

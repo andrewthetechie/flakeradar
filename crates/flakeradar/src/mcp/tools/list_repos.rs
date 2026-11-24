@@ -26,6 +26,13 @@ pub(super) const DESCRIPTION: &str = "List every Repo with its Projects (name an
 /// and answer an object.
 pub(super) const LISTS: bool = true;
 
+/// The fields `list_repos` accepts: none, because its handler refuses every
+/// argument through `no_arguments` before it reads any.
+#[cfg(test)]
+pub(super) fn accepted_fields() -> &'static [&'static str] {
+    &[]
+}
+
 /// The tool's argument schema.
 pub(super) fn input_schema() -> Value {
     json!({"additionalProperties": false, "properties": {}, "type": "object"})
