@@ -35,6 +35,7 @@ use crate::attribution::{
     summary_explaining_siblings,
 };
 use crate::clock::SharedClock;
+use crate::entity::entity;
 use crate::error::DbError;
 use crate::score_history;
 use crate::sql::{
@@ -292,6 +293,8 @@ pub(crate) const IMPACT_COLUMNS: &str =
 /// the page statement, so an extra bind would shift the filters' placeholders.
 pub(crate) fn impact_lateral_sql(kind: EntityKind, cutoff: DateTime<Utc>) -> String {
     let since = format!("timestamptz '{}'", cutoff.to_rfc3339());
+    let descriptor = entity(kind);
+    let (alias, table) = (descriptor.alias, descriptor.table);
     let aggregate = match kind {
         EntityKind::Test => format!(
             "SELECT count(DISTINCT r2.ci_run_id) FILTER (WHERE r2.ci_run_id <> '') \
@@ -300,7 +303,7 @@ pub(crate) fn impact_lateral_sql(kind: EntityKind, cutoff: DateTime<Utc>) -> Str
                       AND r2.branch <> r.default_branch) AS impacted_branches, \
                   coalesce(sum(e2.duration), 0)::double precision AS time_lost_seconds \
              FROM test_executions e2 JOIN test_runs r2 ON r2.id = e2.test_run_id \
-            WHERE e2.test_case_id = t.id \
+            WHERE e2.test_case_id = {alias}.id \
               AND e2.status IN ('failed', 'error') \
               AND NOT r2.infra_suspect \
               AND e2.created_at > {since}"
@@ -318,9 +321,9 @@ pub(crate) fn impact_lateral_sql(kind: EntityKind, cutoff: DateTime<Utc>) -> Str
                       (job_executions.completed_at - job_executions.started_at))), 0) \
                       ::double precision AS time_lost_seconds \
              FROM job_executions \
-             JOIN jobs ON jobs.id = job_executions.job_id \
-             JOIN pipelines ON pipelines.id = jobs.pipeline_id \
-            WHERE job_executions.job_id = j.id \
+             JOIN {table} ON {table}.id = job_executions.job_id \
+             JOIN pipelines ON pipelines.id = {table}.pipeline_id \
+            WHERE job_executions.job_id = {alias}.id \
               AND job_executions.status = 'failed' \
               AND NOT ({}) \
               AND job_executions.created_at > {since}",
@@ -368,22 +371,22 @@ struct EntityBoard {
 
 /// The Tests leaderboard's descriptor.
 const TESTS_BOARD: EntityBoard = EntityBoard {
-    kind: EntityKind::Test,
-    alias: "t",
-    select: TESTS_SELECT,
-    from: TESTS_FROM,
-    search: test_search,
-    issue_column: "t.github_issue_number",
+    kind: entity(EntityKind::Test).kind,
+    alias: entity(EntityKind::Test).alias,
+    select: entity(EntityKind::Test).select,
+    from: entity(EntityKind::Test).from,
+    search: entity(EntityKind::Test).search,
+    issue_column: entity(EntityKind::Test).issue_column,
 };
 
 /// The Jobs leaderboard's descriptor.
 const JOBS_BOARD: EntityBoard = EntityBoard {
-    kind: EntityKind::Job,
-    alias: "j",
-    select: JOBS_SELECT,
-    from: JOBS_FROM,
-    search: job_search,
-    issue_column: "j.github_issue_number",
+    kind: entity(EntityKind::Job).kind,
+    alias: entity(EntityKind::Job).alias,
+    select: entity(EntityKind::Job).select,
+    from: entity(EntityKind::Job).from,
+    search: entity(EntityKind::Job).search,
+    issue_column: entity(EntityKind::Job).issue_column,
 };
 
 /// Which tiers a leaderboard listing may return.
@@ -526,34 +529,6 @@ impl Board<'_> {
         let page = rows(db, page_sql, values).await?;
         Ok(BoardPage { rows: page, total })
     }
-}
-
-/// The row shape both leaderboards select: the entity's columns, then the names.
-const TESTS_SELECT: &str = "SELECT t.*, p.name AS project_name, r.name AS repo_name";
-pub(crate) const TESTS_FROM: &str = "FROM test_cases t \
-     JOIN projects p ON p.id = t.project_id \
-     JOIN repos r ON r.id = p.repo_id";
-
-const JOBS_SELECT: &str = "SELECT j.*, p.name AS pipeline_name, p.provider AS provider, \
-     p.repo_id AS repo_id, r.name AS repo_name";
-const JOBS_FROM: &str = "FROM jobs j \
-     JOIN pipelines p ON p.id = j.pipeline_id \
-     JOIN repos r ON r.id = p.repo_id";
-
-/// The case-insensitive literal substring search over a Test's identity.
-///
-/// One pattern bind covers every column, so `pattern` is repeated.
-fn test_search(pattern: &str) -> String {
-    format!(
-        "(t.name ILIKE {pattern} ESCAPE '\\' \
-         OR t.classname ILIKE {pattern} ESCAPE '\\' \
-         OR t.file ILIKE {pattern} ESCAPE '\\')"
-    )
-}
-
-/// The case-insensitive literal substring search over a Job's name and Pipeline.
-fn job_search(pattern: &str) -> String {
-    format!("(j.name ILIKE {pattern} ESCAPE '\\' OR p.name ILIKE {pattern} ESCAPE '\\')")
 }
 
 /// Every Repo with its Projects, ordered by Repo name then Project name.
@@ -706,16 +681,12 @@ pub(crate) async fn entity_row(
     settings: &ReadSettings,
 ) -> Result<Option<QueryResult>, DbError> {
     let since = impact_since(settings);
-    let sql = match kind {
-        EntityKind::Test => format!(
-            "{TESTS_SELECT}{IMPACT_COLUMNS} {TESTS_FROM}{} WHERE t.id = $1",
-            impact_lateral_sql(EntityKind::Test, since)
-        ),
-        EntityKind::Job => format!(
-            "{JOBS_SELECT}{IMPACT_COLUMNS} {JOBS_FROM}{} WHERE j.id = $1",
-            impact_lateral_sql(EntityKind::Job, since)
-        ),
-    };
+    let descriptor = entity(kind);
+    let (select, from, alias) = (descriptor.select, descriptor.from, descriptor.alias);
+    let sql = format!(
+        "{select}{IMPACT_COLUMNS} {from}{lateral} WHERE {alias}.id = $1",
+        lateral = impact_lateral_sql(kind, since)
+    );
     one(db, sql, vec![Value::from(entity_id)]).await
 }
 
@@ -736,22 +707,18 @@ pub(crate) async fn locked_entity_row(
     settings: &ReadSettings,
 ) -> Result<Option<QueryResult>, DbError> {
     let since = impact_since(settings);
-    let sql = match kind {
-        EntityKind::Test => format!(
-            "{TESTS_SELECT}{IMPACT_COLUMNS}, t.github_issue_checked_at AS checked_at, \
-             t.github_issue_closed AS closed, \
-             t.github_issue_fixed_noted_at AS fixed_noted_at \
-             {TESTS_FROM}{} WHERE t.id = $1 FOR UPDATE OF t",
-            impact_lateral_sql(EntityKind::Test, since)
-        ),
-        EntityKind::Job => format!(
-            "{JOBS_SELECT}{IMPACT_COLUMNS}, j.github_issue_checked_at AS checked_at, \
-             j.github_issue_closed AS closed, \
-             j.github_issue_fixed_noted_at AS fixed_noted_at \
-             {JOBS_FROM}{} WHERE j.id = $1 FOR UPDATE OF j",
-            impact_lateral_sql(EntityKind::Job, since)
-        ),
-    };
+    let descriptor = entity(kind);
+    let (select, from, alias, locked_select) = (
+        descriptor.select,
+        descriptor.from,
+        descriptor.alias,
+        descriptor.locked_select,
+    );
+    let sql = format!(
+        "{select}{IMPACT_COLUMNS}{locked_select}{from}{lateral} WHERE {alias}.id = $1 \
+         FOR UPDATE OF {alias}",
+        lateral = impact_lateral_sql(kind, since)
+    );
     one(db, sql, vec![Value::from(entity_id)]).await
 }
 
@@ -1094,30 +1061,20 @@ struct Tally {
 
 /// The Tests' headline counts.
 const TEST_TALLY: Tally = Tally {
-    kind: EntityKind::Test,
-    alias: "t",
-    from: "test_cases t \
-        JOIN projects p ON p.id = t.project_id \
-        JOIN repos r ON r.id = p.repo_id",
-    history_from: "test_score_history h \
-        JOIN test_cases t ON t.id = h.test_case_id \
-        JOIN projects p ON p.id = t.project_id \
-        JOIN repos r ON r.id = p.repo_id",
-    prefix: "",
+    kind: entity(EntityKind::Test).kind,
+    alias: entity(EntityKind::Test).alias,
+    from: entity(EntityKind::Test).tally_from,
+    history_from: entity(EntityKind::Test).history_from,
+    prefix: entity(EntityKind::Test).prefix,
 };
 
 /// The Jobs' headline counts.
 const JOB_TALLY: Tally = Tally {
-    kind: EntityKind::Job,
-    alias: "j",
-    from: "jobs j \
-        JOIN pipelines p ON p.id = j.pipeline_id \
-        JOIN repos r ON r.id = p.repo_id",
-    history_from: "job_score_history h \
-        JOIN jobs j ON j.id = h.job_id \
-        JOIN pipelines p ON p.id = j.pipeline_id \
-        JOIN repos r ON r.id = p.repo_id",
-    prefix: "job ",
+    kind: entity(EntityKind::Job).kind,
+    alias: entity(EntityKind::Job).alias,
+    from: entity(EntityKind::Job).tally_from,
+    history_from: entity(EntityKind::Job).history_from,
+    prefix: entity(EntityKind::Job).prefix,
 };
 
 /// How many rows became flaky inside [`NEW_FLAKY_DAYS`].
@@ -1274,9 +1231,11 @@ pub async fn get_test(
     executions_limit: i64,
 ) -> Result<Option<HistoryOut>, DbError> {
     let impact = impact_lateral_sql(EntityKind::Test, impact_since(settings));
+    let tests = entity(EntityKind::Test);
+    let (select, from) = (tests.select, tests.from);
     let sql = format!(
-        "{TESTS_SELECT}{IMPACT_COLUMNS}, p.root AS project_root \
-         {TESTS_FROM}{impact} WHERE t.id = $1"
+        "{select}{IMPACT_COLUMNS}, p.root AS project_root \
+         {from}{impact} WHERE t.id = $1"
     );
     let Some(row) = one(db, sql, vec![Value::from(test_id)]).await? else {
         return Ok(None);
@@ -1428,13 +1387,15 @@ pub async fn search_tests(
     settings: &ReadSettings,
     limit: i64,
 ) -> Result<Vec<TestOut>, DbError> {
+    let tests = entity(EntityKind::Test);
     let mut binds = Binds::after(2);
-    binds.raw(test_search("$1"));
+    binds.raw((tests.search)("$1"));
     scope_conditions(scope, "r.name", "p.name", &mut binds);
     let limit_placeholder = binds.bind(Value::from(limit));
     let impact = impact_lateral_sql(EntityKind::Test, impact_since(settings));
+    let (select, from) = (tests.select, tests.from);
     let sql = format!(
-        "{TESTS_SELECT}{IMPACT_COLUMNS} {TESTS_FROM}{impact}{} ORDER BY t.flakiness_score DESC, \
+        "{select}{IMPACT_COLUMNS} {from}{impact}{} ORDER BY t.flakiness_score DESC, \
          t.id LIMIT {limit_placeholder}",
         binds.suffix()
     );
@@ -1492,7 +1453,9 @@ pub async fn get_job(
     executions_limit: i64,
 ) -> Result<Option<JobHistoryOut>, DbError> {
     let impact = impact_lateral_sql(EntityKind::Job, impact_since(settings));
-    let sql = format!("{JOBS_SELECT}{IMPACT_COLUMNS} {JOBS_FROM}{impact} WHERE j.id = $1");
+    let jobs = entity(EntityKind::Job);
+    let (select, from) = (jobs.select, jobs.from);
+    let sql = format!("{select}{IMPACT_COLUMNS} {from}{impact} WHERE j.id = $1");
     let Some(row) = one(db, sql, vec![Value::from(job_id)]).await? else {
         return Ok(None);
     };
@@ -1943,10 +1906,12 @@ pub async fn search_jobs(
     limit: i64,
 ) -> Result<Vec<JobOut>, DbError> {
     let impact = impact_lateral_sql(EntityKind::Job, impact_since(settings));
+    let jobs = entity(EntityKind::Job);
+    let (select, from) = (jobs.select, jobs.from);
     let sql = format!(
-        "{JOBS_SELECT}{IMPACT_COLUMNS} {JOBS_FROM}{impact} WHERE r.name = $2 AND {} \
+        "{select}{IMPACT_COLUMNS} {from}{impact} WHERE r.name = $2 AND {} \
           ORDER BY j.flakiness_score DESC, j.id LIMIT $3",
-        job_search("$1")
+        (jobs.search)("$1")
     );
     let values = vec![
         Value::from(format!("%{}%", escape_like(query))),

@@ -27,6 +27,7 @@ pub mod clock;
 mod connect;
 mod deletes;
 pub mod digest;
+mod entity;
 mod error;
 pub mod filing;
 mod identity;
