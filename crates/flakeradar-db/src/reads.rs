@@ -1365,6 +1365,11 @@ pub async fn test_job_links(
 
 /// The newest failing Execution of one Test, in the Execution shape.
 ///
+/// This read is not built from the descriptor: neither `EntityBoard` nor
+/// `Entity` carries a join to `job_executions`, so the statement keeps the
+/// hand-written `EXECUTION_WITH_RUN` that brings the Execution and its Run in
+/// one row.
+///
 /// # Errors
 ///
 /// Returns [`DbError::Database`] when the statement fails.
@@ -1416,6 +1421,41 @@ pub async fn search_tests(
     .await
 }
 
+/// The exact-match lookup both entity wrappers share: the Repo, the owner
+/// table when the entity has one, the name, and the narrowing column the
+/// descriptor names. `Binds` mints every placeholder, in this order.
+async fn find_ids(
+    db: &impl ConnectionTrait,
+    kind: EntityKind,
+    repo: &str,
+    project: Option<&str>,
+    name: &str,
+    optional: Option<&str>,
+) -> Result<Vec<i64>, DbError> {
+    let descriptor = entity(kind);
+    let alias = descriptor.alias;
+    let name_column = format!("{alias}.name");
+    let mut binds = Binds::new();
+    binds.eq("r.name", Value::from(repo.to_owned()));
+    if let Some(project) = project {
+        binds.eq("p.name", Value::from(project.to_owned()));
+    }
+    binds.eq(name_column.as_str(), Value::from(name.to_owned()));
+    if let Some(optional) = optional {
+        binds.eq(descriptor.lookup_column, Value::from(optional.to_owned()));
+    }
+    let sql = format!(
+        "SELECT {alias}.id {}{} ORDER BY {alias}.id",
+        descriptor.from,
+        binds.suffix()
+    );
+    let mut found = Vec::new();
+    for row in rows(db, sql, binds.into_values()).await? {
+        found.push(id(get::<i32>(&row, "id")?));
+    }
+    Ok(found)
+}
+
 /// Exact-match lookup of a Test by name, and optionally classname.
 ///
 /// # Errors
@@ -1428,25 +1468,7 @@ pub async fn find_test_ids(
     name: &str,
     classname: Option<&str>,
 ) -> Result<Vec<i64>, DbError> {
-    let mut binds = Binds::new();
-    binds.eq("r.name", Value::from(repo.to_owned()));
-    binds.eq("p.name", Value::from(project.to_owned()));
-    binds.eq("t.name", Value::from(name.to_owned()));
-    if let Some(classname) = classname {
-        binds.eq("t.classname", Value::from(classname.to_owned()));
-    }
-    let sql = format!(
-        "SELECT t.id FROM test_cases t \
-           JOIN projects p ON p.id = t.project_id \
-           JOIN repos r ON r.id = p.repo_id{} \
-          ORDER BY t.id",
-        binds.suffix()
-    );
-    let mut found = Vec::new();
-    for row in rows(db, sql, binds.into_values()).await? {
-        found.push(id(get::<i32>(&row, "id")?));
-    }
-    Ok(found)
+    find_ids(db, EntityKind::Test, repo, Some(project), name, classname).await
 }
 
 /// One Job's detail page.
@@ -1945,24 +1967,7 @@ pub async fn find_job_ids(
     name: &str,
     pipeline: Option<&str>,
 ) -> Result<Vec<i64>, DbError> {
-    let mut binds = Binds::new();
-    binds.eq("r.name", Value::from(repo.to_owned()));
-    binds.eq("j.name", Value::from(name.to_owned()));
-    if let Some(pipeline) = pipeline {
-        binds.eq("p.name", Value::from(pipeline.to_owned()));
-    }
-    let sql = format!(
-        "SELECT j.id FROM jobs j \
-           JOIN pipelines p ON p.id = j.pipeline_id \
-           JOIN repos r ON r.id = p.repo_id{} \
-          ORDER BY j.id",
-        binds.suffix()
-    );
-    let mut found = Vec::new();
-    for row in rows(db, sql, binds.into_values()).await? {
-        found.push(id(get::<i32>(&row, "id")?));
-    }
-    Ok(found)
+    find_ids(db, EntityKind::Job, repo, None, name, pipeline).await
 }
 
 /// One execution of a failing (Test, Run) pair, as the CI run listing reads it.

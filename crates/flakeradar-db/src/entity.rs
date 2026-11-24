@@ -44,6 +44,9 @@ pub(crate) struct Entity {
     pub(crate) issue_column: &'static str,
     /// The search condition, given the pattern bind's placeholder.
     pub(crate) search: fn(&str) -> String,
+    /// The column an exact-name lookup narrows by: a Test's classname, a Job's
+    /// Pipeline name.
+    pub(crate) lookup_column: &'static str,
     /// How the entity's queries are named in the error a statement that
     /// answered nothing gives: nothing for a Test, `job ` for a Job.
     pub(crate) prefix: &'static str,
@@ -90,6 +93,7 @@ const TEST: Entity = Entity {
     owner_column: "test_case_id",
     issue_column: "t.github_issue_number",
     search: test_search,
+    lookup_column: "t.classname",
     prefix: "",
     provider_only: false,
 };
@@ -118,6 +122,7 @@ const JOB: Entity = Entity {
     owner_column: "job_id",
     issue_column: "j.github_issue_number",
     search: job_search,
+    lookup_column: "p.name",
     prefix: "job ",
     provider_only: true,
 };
@@ -184,13 +189,16 @@ mod tests {
 
     /// The names the acknowledge, link and Score-history modules read: the
     /// history tables and owner columns exactly as the migrations create them,
-    /// and the one per-target rule the link engine answers from the descriptor.
+    /// the narrowing column the exact-match lookups bind, and the one per-target
+    /// rule the link engine answers from the descriptor.
     #[test]
     fn each_descriptor_names_its_history_table_owner_and_provider_rule() {
         assert_eq!(entity(EntityKind::Test).history_table, "test_score_history");
         assert_eq!(entity(EntityKind::Job).history_table, "job_score_history");
         assert_eq!(entity(EntityKind::Test).owner_column, "test_case_id");
         assert_eq!(entity(EntityKind::Job).owner_column, "job_id");
+        assert_eq!(entity(EntityKind::Test).lookup_column, "t.classname");
+        assert_eq!(entity(EntityKind::Job).lookup_column, "p.name");
         assert!(entity(EntityKind::Job).provider_only);
         assert!(!entity(EntityKind::Test).provider_only);
     }
