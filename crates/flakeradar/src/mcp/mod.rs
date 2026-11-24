@@ -777,3 +777,38 @@ fn default_project() -> String {
 pub fn tools() -> Vec<Tool> {
     tools::TOOLS.iter().map(tools::definition).collect()
 }
+
+#[cfg(test)]
+mod tests {
+    //! The text a call with unreadable arguments answers. Running a tool needs a
+    //! database, but the refusal it produces does not.
+
+    use super::{CallToolResult, ContentBlock, invalid_arguments};
+
+    /// The one message's text of a tool result.
+    fn one_text(result: &CallToolResult) -> String {
+        result
+            .content
+            .first()
+            .and_then(ContentBlock::as_text)
+            .map(|block| block.text.clone())
+            .expect("a tool result carries one text block")
+    }
+
+    #[test]
+    fn a_failure_at_the_argument_object_names_arguments() {
+        // A failure at one argument is reported under that argument's name. A
+        // failure at the object itself names no argument, so `arguments` stands
+        // in, which is the parameter the client sent badly.
+        let one_argument = invalid_arguments("top_flaky_tests", "limit", "expected an integer");
+        assert_eq!(
+            one_text(&one_argument),
+            "1 validation error for call[top_flaky_tests]\nlimit\n  expected an integer"
+        );
+        let whole_object = invalid_arguments("top_flaky_tests", ".", "invalid type: sequence");
+        assert_eq!(
+            one_text(&whole_object),
+            "1 validation error for call[top_flaky_tests]\narguments\n  invalid type: sequence"
+        );
+    }
+}

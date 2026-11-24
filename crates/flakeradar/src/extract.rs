@@ -592,7 +592,8 @@ mod tests {
 
     use super::{
         INTEGER_TYPES, attach_query_input, body_loc, is_integer_failure, is_json_content_type,
-        json_error_position, kind_for, missing_field, off_thread, path_error, path_issue,
+        issue_for, json_error_position, kind_for, missing_field, off_thread, path_error,
+        path_issue,
     };
 
     #[test]
@@ -713,6 +714,27 @@ mod tests {
         );
         assert_eq!(missing_field("missing field"), None);
         assert_eq!(missing_field("missing field `number"), None);
+    }
+
+    #[test]
+    fn a_missing_query_issue_names_a_field_only_when_the_diagnosis_does() {
+        // The query's `missing` issue carries the field `serde` named. A diagnosis
+        // that names none keeps the loc at the query scope, because the route can
+        // say no more than that the query was short one parameter.
+        let failure = serde_path_to_error::deserialize::<_, i64>(Value::from("seven"))
+            .expect_err("a string is no integer");
+        let named = issue_for(failure.path(), "missing field `size`");
+        assert_eq!(named.r#type, "missing");
+        assert_eq!(
+            named.loc,
+            vec![
+                LocSegment::Field("query".to_owned()),
+                LocSegment::Field("size".to_owned())
+            ]
+        );
+        let unnamed = issue_for(failure.path(), "missing field");
+        assert_eq!(unnamed.r#type, "missing");
+        assert_eq!(unnamed.loc, vec![LocSegment::Field("query".to_owned())]);
     }
 
     #[test]
