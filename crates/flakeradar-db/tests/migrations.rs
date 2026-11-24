@@ -124,7 +124,8 @@ async fn a_second_migration_run_migrates_nothing() {
             "0003_flaky_since",
             "0004_acknowledge",
             "0005_issue_reopen",
-            "0006_first_seen"
+            "0006_first_seen",
+            "0007_digest_state"
         ]
     );
 }
@@ -300,6 +301,54 @@ async fn the_added_first_seen_column_is_not_null_and_backfilled() {
     );
 }
 
+/// The table `0007_digest_state` creates: one singleton row, whose id the check
+/// constraint pins to 1, holding the last digest slot that was sent.
+#[tokio::test]
+async fn the_digest_state_table_holds_only_id_one() {
+    let db = TestDb::new().await.expect("a migrated test database");
+    assert_eq!(
+        column_shape(db.connection(), "digest_state", "id").await,
+        ("smallint".to_owned(), "NO".to_owned()),
+        "digest_state.id is a smallint and NOT NULL"
+    );
+    assert_eq!(
+        column_shape(db.connection(), "digest_state", "last_sent_at").await,
+        ("timestamp with time zone".to_owned(), "NO".to_owned()),
+        "digest_state.last_sent_at is a timestamp and NOT NULL"
+    );
+
+    let error = db
+        .connection()
+        .execute_unprepared("INSERT INTO digest_state VALUES (2, now())")
+        .await
+        .expect_err("the check constraint refuses an id other than 1");
+    assert!(
+        error.to_string().contains("check constraint"),
+        "the refusal names the check constraint: {error}"
+    );
+
+    db.connection()
+        .execute_unprepared("INSERT INTO digest_state VALUES (1, now())")
+        .await
+        .expect("(1, now()) inserts once");
+    let row = flakeradar_db::entities::digest_state::Entity::find_by_id(1_i16)
+        .one(db.connection())
+        .await
+        .expect("the table is readable through the entity")
+        .expect("the row with id 1 exists");
+    assert_eq!(row.id, 1_i16, "the entity reads back the singleton row");
+
+    let error = db
+        .connection()
+        .execute_unprepared("INSERT INTO digest_state VALUES (1, now())")
+        .await
+        .expect_err("the primary key refuses a second row");
+    assert!(
+        error.to_string().contains("duplicate key"),
+        "the second insert is refused as a duplicate: {error}"
+    );
+}
+
 /// A migration set with two entries after the baseline, one depending on the other.
 const ORDERED: &[(&str, &str)] = &[
     ("0001_baseline", BASELINE_SQL),
@@ -342,37 +391,42 @@ fn the_migrator_lists_the_baseline_and_the_added_migration_by_name() {
     let migrations = Migrator::migrations();
     assert_eq!(
         migrations.len(),
-        6,
+        7,
         "the shipped set holds the baseline and every migration after it"
     );
     assert_eq!(
-        migrations.first().expect("a set with six entries").name(),
+        migrations.first().expect("a set with seven entries").name(),
         "0001_baseline",
         "the recorded name is unchanged, so an existing install still matches"
     );
     assert_eq!(
-        migrations.get(1).expect("a set with six entries").name(),
+        migrations.get(1).expect("a set with seven entries").name(),
         "0002_infra_suspect",
         "the added migration is recorded under its own name"
     );
     assert_eq!(
-        migrations.get(2).expect("a set with six entries").name(),
+        migrations.get(2).expect("a set with seven entries").name(),
         "0003_flaky_since",
         "the added migration is recorded under its own name"
     );
     assert_eq!(
-        migrations.get(3).expect("a set with six entries").name(),
+        migrations.get(3).expect("a set with seven entries").name(),
         "0004_acknowledge",
         "the added migration is recorded under its own name"
     );
     assert_eq!(
-        migrations.get(4).expect("a set with six entries").name(),
+        migrations.get(4).expect("a set with seven entries").name(),
         "0005_issue_reopen",
         "the added migration is recorded under its own name"
     );
     assert_eq!(
-        migrations.get(5).expect("a set with six entries").name(),
+        migrations.get(5).expect("a set with seven entries").name(),
         "0006_first_seen",
+        "the added migration is recorded under its own name"
+    );
+    assert_eq!(
+        migrations.get(6).expect("a set with seven entries").name(),
+        "0007_digest_state",
         "the added migration is recorded under its own name"
     );
 }
