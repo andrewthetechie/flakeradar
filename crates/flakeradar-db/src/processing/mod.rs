@@ -15,11 +15,6 @@ mod rescore;
 
 #[doc(inline)]
 pub use history::DayCounts;
-#[expect(
-    unused_imports,
-    reason = "ProcessError is `pub(crate)`, so only this module's own users could name it; the re-export keeps the path it had before the split"
-)]
-pub(crate) use intake::ProcessError;
 #[doc(inline)]
 pub use intake::{ERROR_MAX, ProcessOutcome, ProcessingSettings, claim_next_report, process_next};
 #[doc(inline)]
