@@ -45,6 +45,12 @@ struct SearchJobsArgs {
     limit: i64,
 }
 
+/// The fields `SearchJobsArgs` accepts, as serde names them.
+#[cfg(test)]
+pub(super) fn accepted_fields() -> &'static [&'static str] {
+    super::record_fields::<SearchJobsArgs>()
+}
+
 /// The tool's argument schema.
 pub(super) fn input_schema() -> Value {
     json!({

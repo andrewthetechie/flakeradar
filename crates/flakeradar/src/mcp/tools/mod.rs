@@ -3,7 +3,9 @@
 //! Each tool file states its own name, title, description, argument schema,
 //! argument struct, annotations and handler, so adding a tool is one file plus
 //! one row in [`TOOLS`]. [`definition`] turns a row into the `Tool` the wire
-//! carries, and the handler is what `tools/call` runs.
+//! carries, and the handler is what `tools/call` runs. The schema and the
+//! argument struct are two statements of the same arguments, and the test case
+//! here asserts they name the same fields.
 
 // Rust guideline compliant 2026-07-21
 
@@ -103,5 +105,167 @@ fn output_schema(lists: bool) -> Value {
         wrapped_output_schema()
     } else {
         object_output_schema()
+    }
+}
+
+/// The field names the derived `Deserialize` of one argument struct accepts.
+///
+/// The list is serde's own: the derived implementation hands
+/// [`serde::de::Deserializer::deserialize_struct`] the field names it was derived
+/// from, so [`Recorder`] stores that slice and builds nothing. Asking serde is
+/// what keeps a third statement of the arguments from ever appearing.
+#[cfg(test)]
+pub(super) fn record_fields<T: serde::de::DeserializeOwned>() -> &'static [&'static str] {
+    let recorder = Recorder::default();
+    // The recorder stops at the struct, so nothing is ever built and the answer
+    // is always its error. The field slice it stored is the whole point.
+    let _ = T::deserialize(&recorder);
+    recorder
+        .fields
+        .get()
+        .expect("serde named the struct's fields")
+}
+
+/// The field names a [`Recorder`] was handed, until it was.
+#[cfg(test)]
+#[derive(Default)]
+struct Recorder {
+    fields: std::cell::Cell<Option<&'static [&'static str]>>,
+}
+
+/// Why a [`Recorder`] never answers with a value.
+#[cfg(test)]
+#[derive(Debug)]
+struct Stopped;
+
+#[cfg(test)]
+impl std::fmt::Display for Stopped {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the field list has been recorded")
+    }
+}
+
+#[cfg(test)]
+impl std::error::Error for Stopped {}
+
+#[cfg(test)]
+impl serde::de::Error for Stopped {
+    fn custom<T: std::fmt::Display>(_message: T) -> Self {
+        // A recorder only ever names fields, so which message serde would have
+        // carried makes no difference.
+        Self
+    }
+}
+
+#[cfg(test)]
+impl<'de> serde::de::Deserializer<'de> for &Recorder {
+    type Error = Stopped;
+
+    fn deserialize_any<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: serde::de::Visitor<'de>,
+    {
+        Err(Stopped)
+    }
+
+    fn deserialize_struct<V>(
+        self,
+        _name: &'static str,
+        fields: &'static [&'static str],
+        _visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: serde::de::Visitor<'de>,
+    {
+        self.fields.set(Some(fields));
+        Err(Stopped)
+    }
+
+    serde::forward_to_deserialize_any! {
+        bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string bytes byte_buf
+        option unit unit_struct newtype_struct seq tuple tuple_struct map identifier ignored_any
+        enum
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! A tool states its arguments twice, in the schema it publishes and in the
+    //! struct its handler parses, and the two are checked against each other
+    //! here: [`TOOLS`] is `pub(crate)` and every argument struct is private to
+    //! its tool file, so no integration test can reach either half of a pair.
+
+    use std::collections::BTreeSet;
+
+    use serde_json::Value;
+
+    use super::{
+        TOOLS, ci_run_failures, get_job, get_test, link_issue, list_projects, list_repos,
+        search_jobs, search_tests, top_flaky_jobs, top_flaky_tests, unlink_issue,
+    };
+
+    /// The fields one tool's argument struct accepts, as serde names them.
+    type Fields = fn() -> &'static [&'static str];
+
+    /// Every tool's accepted fields, in the order [`TOOLS`] answers `tools/list`.
+    ///
+    /// The list names tools and holds one function pointer each; the argument
+    /// names themselves come from serde, so nothing here restates a schema.
+    const ACCEPTED: [(&str, Fields); 11] = [
+        (list_repos::NAME, list_repos::accepted_fields),
+        (list_projects::NAME, list_projects::accepted_fields),
+        (top_flaky_tests::NAME, top_flaky_tests::accepted_fields),
+        (search_tests::NAME, search_tests::accepted_fields),
+        (get_test::NAME, get_test::accepted_fields),
+        (top_flaky_jobs::NAME, top_flaky_jobs::accepted_fields),
+        (search_jobs::NAME, search_jobs::accepted_fields),
+        (get_job::NAME, get_job::accepted_fields),
+        (ci_run_failures::NAME, ci_run_failures::accepted_fields),
+        (link_issue::NAME, link_issue::accepted_fields),
+        (unlink_issue::NAME, unlink_issue::accepted_fields),
+    ];
+
+    #[test]
+    fn every_tools_schema_names_exactly_the_fields_it_accepts() {
+        let listed: Vec<&str> = TOOLS.iter().map(|spec| spec.name).collect();
+        let declared: Vec<&str> = ACCEPTED.iter().map(|(name, _)| *name).collect();
+        assert_eq!(
+            declared, listed,
+            "the table and the field statement name different tools"
+        );
+
+        for (spec, (_, fields)) in TOOLS.iter().zip(ACCEPTED) {
+            let schema = (spec.input_schema)();
+            let properties = schema
+                .get("properties")
+                .and_then(Value::as_object)
+                .unwrap_or_else(|| panic!("{} declares no properties object", spec.name));
+            let published: BTreeSet<&str> = properties.keys().map(String::as_str).collect();
+            let accepted: BTreeSet<&str> = fields().iter().copied().collect();
+            assert_eq!(
+                published, accepted,
+                "{}'s schema and its argument struct name different arguments",
+                spec.name
+            );
+            for required in schema
+                .get("required")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                let declared = required.as_str();
+                assert!(
+                    declared.is_some_and(|name| properties.contains_key(name)),
+                    "{} requires an argument it does not declare: {required}",
+                    spec.name
+                );
+            }
+            assert_eq!(
+                schema.get("additionalProperties"),
+                Some(&Value::Bool(false)),
+                "{} leaves its arguments open",
+                spec.name
+            );
+        }
     }
 }
