@@ -138,10 +138,15 @@ struct Recorder {
 #[derive(Debug)]
 struct Stopped;
 
+/// What a refusal says: a recorder has read a struct's field names and nothing
+/// else, so every path that wants a value reaches the same sentence.
+#[cfg(test)]
+const REFUSAL: &str = "the recorder stopped at the field list";
+
 #[cfg(test)]
 impl std::fmt::Display for Stopped {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("the field list has been recorded")
+        f.write_str(REFUSAL)
     }
 }
 
@@ -151,8 +156,8 @@ impl std::error::Error for Stopped {}
 #[cfg(test)]
 impl serde::de::Error for Stopped {
     fn custom<T: std::fmt::Display>(_message: T) -> Self {
-        // A recorder only ever names fields, so which message serde would have
-        // carried makes no difference.
+        // Every message a recorder can be refused with is [`REFUSAL`], so which
+        // one serde carried makes no difference to the answer.
         Self
     }
 }
@@ -165,7 +170,9 @@ impl<'de> serde::de::Deserializer<'de> for &Recorder {
     where
         V: serde::de::Visitor<'de>,
     {
-        Err(Stopped)
+        // Every type but a struct arrives here, through the forwarding macro
+        // below, and none of them can be built from a field list.
+        Err(serde::de::Error::custom(REFUSAL))
     }
 
     fn deserialize_struct<V>(
@@ -178,6 +185,8 @@ impl<'de> serde::de::Deserializer<'de> for &Recorder {
         V: serde::de::Visitor<'de>,
     {
         self.fields.set(Some(fields));
+        // The names it came for are already stored, so this refusal carries no
+        // message of its own.
         Err(Stopped)
     }
 
@@ -197,11 +206,12 @@ mod tests {
 
     use std::collections::BTreeSet;
 
+    use serde::Deserialize as _;
     use serde_json::Value;
 
     use super::{
-        TOOLS, ci_run_failures, get_job, get_test, link_issue, list_projects, list_repos,
-        search_jobs, search_tests, top_flaky_jobs, top_flaky_tests, unlink_issue,
+        REFUSAL, Recorder, TOOLS, ci_run_failures, get_job, get_test, link_issue, list_projects,
+        list_repos, search_jobs, search_tests, top_flaky_jobs, top_flaky_tests, unlink_issue,
     };
 
     /// The fields one tool's argument struct accepts, as serde names them.
@@ -239,7 +249,7 @@ mod tests {
             let properties = schema
                 .get("properties")
                 .and_then(Value::as_object)
-                .unwrap_or_else(|| panic!("{} declares no properties object", spec.name));
+                .expect("a published schema declares a properties object");
             let published: BTreeSet<&str> = properties.keys().map(String::as_str).collect();
             let accepted: BTreeSet<&str> = fields().iter().copied().collect();
             assert_eq!(
@@ -267,5 +277,20 @@ mod tests {
                 spec.name
             );
         }
+    }
+
+    /// Why the field list [`super::record_fields`] returns is serde's and not the
+    /// recorder's invention: a recorder answers a struct with its field names
+    /// and refuses every other type, so it can never supply an argument name.
+    #[test]
+    fn a_recorder_names_a_struct_and_refuses_every_other_type() {
+        let recorder = Recorder::default();
+        let refusal = bool::deserialize(&recorder).expect_err("a recorder builds no value");
+
+        assert_eq!(refusal.to_string(), REFUSAL);
+        assert!(
+            recorder.fields.get().is_none(),
+            "a type without fields named none"
+        );
     }
 }
