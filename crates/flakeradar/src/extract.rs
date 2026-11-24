@@ -585,6 +585,7 @@ mod tests {
     use serde_json::Value;
 
     use flakeradar_core::dto::lax_bool;
+    use flakeradar_core::lax;
 
     use axum::http::StatusCode;
 
@@ -657,6 +658,7 @@ mod tests {
 
     #[test]
     fn a_serde_message_maps_to_its_kind() {
+        assert_eq!(kind_for(lax::INT_PARSING_MESSAGE), "int_parsing");
         assert_eq!(kind_for(lax_bool::WRONG_TYPE_MESSAGE), "bool_type");
         assert_eq!(kind_for(lax_bool::UNPARSABLE_MESSAGE), "bool_parsing");
         assert_eq!(

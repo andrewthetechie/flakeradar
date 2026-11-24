@@ -1480,8 +1480,14 @@ mod tests {
     //! they are pinned here rather than left to whichever integration test
     //! happens to reach a setter first.
 
+    use flakeradar_db::entities::job_executions;
+    use sea_orm::{EntityTrait, PaginatorTrait};
+
     use crate::db::TestDb;
-    use crate::factories::{FIXTURE_INSTANT, make_project, make_test_case};
+    use crate::error::TestError;
+    use crate::factories::{
+        FIXTURE_INSTANT, make_job, make_job_execution, make_pipeline, make_project, make_test_case,
+    };
 
     /// A Test built without a first-seen setter takes the fixture instant, and
     /// the setter overrides it, so a test states how old its Test is.
@@ -1505,5 +1511,66 @@ mod tests {
             "the setter decides the first-seen instant"
         );
         assert_eq!(told.last_seen_at, FIXTURE_INSTANT.fixed_offset());
+    }
+
+    /// A Job execution built with a status the column does not allow is refused
+    /// before anything is inserted, so a misspelled status fails the fixture and
+    /// not the test that reads the row.
+    #[tokio::test]
+    async fn a_job_execution_refuses_a_status_the_column_does_not_allow() {
+        let db = TestDb::new().await.expect("a migrated test database");
+        let pipeline = make_pipeline().create(&db).await;
+        let job = make_job(&pipeline).create(&db).await;
+
+        let outcome = make_job_execution(&job)
+            .status("bogus")
+            .build(db.connection())
+            .await;
+        assert!(
+            matches!(&outcome, Err(TestError::Fixture(message)) if message.contains("bad job status")),
+            "{outcome:?}"
+        );
+        let stored = job_executions::Entity::find()
+            .count(db.connection())
+            .await
+            .expect("a count");
+        assert_eq!(stored, 0, "nothing was inserted");
+    }
+
+    /// Any one quarantine setter stores the Test as quarantined: the flag is read
+    /// from the row, so a Test with only an expiry or only a reason is listed as
+    /// quarantined exactly like one whose flag was set outright.
+    #[tokio::test]
+    async fn any_quarantine_setter_stores_the_test_as_quarantined() {
+        let db = TestDb::new().await.expect("a migrated test database");
+        let project = make_project().create(&db).await;
+        let at = (FIXTURE_INSTANT + chrono::Duration::days(7)).fixed_offset();
+
+        let plain = make_test_case(&project).create(&db).await;
+        assert!(!plain.quarantined, "no setter, no quarantine");
+        let flag = make_test_case(&project)
+            .name("t_flag")
+            .quarantined()
+            .create(&db)
+            .await;
+        assert!(flag.quarantined, "the flag setter quarantines");
+        let until = make_test_case(&project)
+            .name("t_until")
+            .quarantine_expires_at(at)
+            .create(&db)
+            .await;
+        assert!(until.quarantined, "an expiry alone quarantines");
+        let reason = make_test_case(&project)
+            .name("t_reason")
+            .quarantine_reason("flaky fixture")
+            .create(&db)
+            .await;
+        assert!(reason.quarantined, "a reason alone quarantines");
+        let since = make_test_case(&project)
+            .name("t_since")
+            .quarantined_at(at)
+            .create(&db)
+            .await;
+        assert!(since.quarantined, "a start alone quarantines");
     }
 }
