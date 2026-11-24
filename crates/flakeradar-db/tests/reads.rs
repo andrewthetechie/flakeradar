@@ -131,6 +131,44 @@ async fn search_tests_is_a_scoped_literal_substring_worst_first() {
 }
 
 #[tokio::test]
+async fn a_search_and_the_listing_answer_the_same_order() {
+    // Two Tests with one score, so only the ordering past the score can tell them
+    // apart. The newer one is inserted second and therefore holds the higher id:
+    // a search that ordered `id` would answer it last, while the board and the
+    // listing answer it first because it was seen most recently.
+    let db = TestDb::new().await.expect("a test database");
+    let project = make_project().create(&db).await;
+    let older = make_test_case(&project)
+        .name("test_cron_a")
+        .flakiness_score(0.5)
+        .last_seen_at(at() - Duration::days(3))
+        .create(&db)
+        .await;
+    let newer = make_test_case(&project)
+        .name("test_cron_b")
+        .flakiness_score(0.5)
+        .last_seen_at(at())
+        .create(&db)
+        .await;
+    let found = search_tests(db.connection(), &Scope::default(), "cron", &settings(), 20)
+        .await
+        .expect("the search");
+    let searched: Vec<i64> = found.iter().map(|item| item.id).collect();
+    assert_eq!(searched, vec![i64::from(newer.id), i64::from(older.id)]);
+    let page = list_tests(
+        db.connection(),
+        &Scope::default(),
+        &TestListFilters::default(),
+        &options(|options| options.q = Some("cron".to_owned())),
+        &settings(),
+    )
+    .await
+    .expect("the page");
+    let listed: Vec<i64> = page.items.iter().map(|item| item.id).collect();
+    assert_eq!(listed, searched);
+}
+
+#[tokio::test]
 async fn find_test_ids_matches_the_name_and_the_classname() {
     let db = TestDb::new().await.expect("a test database");
     let (wanted, _) = seed_search(&db).await;

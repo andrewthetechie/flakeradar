@@ -243,6 +243,14 @@ impl SortKey {
     }
 }
 
+/// The Score ordering the leaderboard page and both search reads share, so a
+/// search answers the same question in the same order the board does. The
+/// names are bare: every caller selects the entity's own row, so each names
+/// one output column.
+fn score_order() -> &'static str {
+    "flakiness_score DESC, last_seen_at DESC, id"
+}
+
 /// The errors a read can answer with.
 #[derive(Debug, thiserror::Error)]
 pub enum ReadError {
@@ -507,7 +515,7 @@ impl Board<'_> {
         };
 
         let order = match self.options.sort {
-            SortKey::Score => "flakiness_score DESC, last_seen_at DESC, id",
+            SortKey::Score => score_order(),
             SortKey::LastSeen => "last_seen_at DESC, id DESC",
             SortKey::Proven => "confirmed_flake_count DESC, flakiness_score DESC, id",
             // The lateral's own output column, so the page orders it bare.
@@ -1394,9 +1402,9 @@ pub async fn search_tests(
     let limit_placeholder = binds.bind(Value::from(limit));
     let impact = impact_lateral_sql(EntityKind::Test, impact_since(settings));
     let (select, from) = (tests.select, tests.from);
+    let order = score_order();
     let sql = format!(
-        "{select}{IMPACT_COLUMNS} {from}{impact}{} ORDER BY t.flakiness_score DESC, \
-         t.id LIMIT {limit_placeholder}",
+        "{select}{IMPACT_COLUMNS} {from}{impact}{} ORDER BY {order} LIMIT {limit_placeholder}",
         binds.suffix()
     );
     let mut values = vec![Value::from(format!("%{}%", escape_like(query)))];
@@ -1908,16 +1916,17 @@ pub async fn search_jobs(
     let impact = impact_lateral_sql(EntityKind::Job, impact_since(settings));
     let jobs = entity(EntityKind::Job);
     let (select, from) = (jobs.select, jobs.from);
+    let order = score_order();
+    let mut binds = Binds::after(2);
+    binds.raw((jobs.search)("$1"));
+    binds.eq("r.name", Value::from(repo.to_owned()));
+    let limit_placeholder = binds.bind(Value::from(limit));
     let sql = format!(
-        "{select}{IMPACT_COLUMNS} {from}{impact} WHERE r.name = $2 AND {} \
-          ORDER BY j.flakiness_score DESC, j.id LIMIT $3",
-        (jobs.search)("$1")
+        "{select}{IMPACT_COLUMNS} {from}{impact}{} ORDER BY {order} LIMIT {limit_placeholder}",
+        binds.suffix()
     );
-    let values = vec![
-        Value::from(format!("%{}%", escape_like(query))),
-        Value::from(repo.to_owned()),
-        Value::from(limit),
-    ];
+    let mut values = vec![Value::from(format!("%{}%", escape_like(query)))];
+    values.extend(binds.into_values());
     let rows = rows(db, sql, values).await?;
     read_items(db, EntityKind::Job, &rows, settings, |row, trend| {
         job_out(row, trend)
