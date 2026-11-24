@@ -388,6 +388,54 @@ async fn a_page_whose_offset_overflows_is_an_error() {
     );
 }
 
+/// A caller that names one entity beside the other entity's listing is refused
+/// with the mismatch, in both directions, rather than answered the other board's
+/// rows. No door can build the disagreeing pair, so only a caller that passes the
+/// kind itself ever sees this error.
+#[tokio::test]
+async fn a_listing_asked_for_as_the_other_entity_is_refused() {
+    let db = TestDb::new().await.expect("a test database");
+    let tests = Listing {
+        scope: Scope::default(),
+        options: options(|_| {}),
+        filters: EntityFilters::Test(TestListFilters::default()),
+    };
+    let error = list(db.connection(), EntityKind::Job, &tests, &settings())
+        .await
+        .expect_err("a Tests listing asked for as Jobs is refused");
+    assert!(
+        matches!(
+            &error,
+            DbError::ListingEntityMismatch {
+                asked: EntityKind::Job,
+                answered: EntityKind::Test
+            }
+        ),
+        "{error:?}"
+    );
+    assert_eq!(error.to_string(), "a Job listing cannot answer Test rows");
+
+    let jobs = Listing {
+        scope: Scope::default(),
+        options: options(|_| {}),
+        filters: EntityFilters::Job(JobListFilters::default()),
+    };
+    let error = list(db.connection(), EntityKind::Test, &jobs, &settings())
+        .await
+        .expect_err("a Jobs listing asked for as Tests is refused");
+    assert!(
+        matches!(
+            &error,
+            DbError::ListingEntityMismatch {
+                asked: EntityKind::Test,
+                answered: EntityKind::Job
+            }
+        ),
+        "{error:?}"
+    );
+    assert_eq!(error.to_string(), "a Test listing cannot answer Job rows");
+}
+
 #[tokio::test]
 async fn list_tests_sorts_by_proven_flakes_and_by_last_seen() {
     let db = TestDb::new().await.expect("a test database");
