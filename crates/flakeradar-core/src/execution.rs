@@ -5,12 +5,16 @@
 //! [`PlannedLatestTest`], the six [`PlanCounts`], and what the day added to each
 //! Test's Score history. Nothing here stores a row or reads a setting: the
 //! database layer maps the plan onto its own active models and owns every
-//! timestamp, so the rules stay testable with plain values.
+//! stored timestamp, so the rules stay testable with plain values. The only
+//! instant the plan answers is the one the caller supplied, echoed so every row
+//! the mapping builds carries it.
 
 // Rust guideline compliant 2026-07-21
 
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
+
+use chrono::{DateTime, FixedOffset};
 
 use crate::model::ExecutionStatus;
 use crate::parsing::{ClassifiedCase, ClassifiedReport};
@@ -85,6 +89,9 @@ pub struct ExecutionPlan {
     /// The Run these Executions belong to, answered back so the caller writes
     /// the same value into every row.
     pub run_id: i32,
+    /// The instant the caller built the plan for, answered back so the mapping
+    /// stamps every row it writes with the one instant the Run already uses.
+    pub now: DateTime<FixedOffset>,
     /// One row per case, in Report order.
     pub executions: Vec<PlannedExecution>,
     /// Each Test's newest occurrence, in order of first appearance.
@@ -124,6 +131,10 @@ pub enum ExecutionError {
 /// The cases are borrowed: the caller keeps them, along with the Failure
 /// category of each, which no column of the plan carries.
 ///
+/// `now` is the instant the caller stamps the Run's rows with. No rule reads it:
+/// the plan answers it back unchanged, so the mapping that builds the rows
+/// writes one instant into all of them.
+///
 /// # Errors
 ///
 /// Returns [`ExecutionError::Vanished`] when `ids` holds no id for a Test the
@@ -147,16 +158,19 @@ pub enum ExecutionError {
 ///     .enumerate()
 ///     .map(|(seen, index)| (report.cases[*index].fingerprint.clone(), (seen + 1) as i32))
 ///     .collect();
-/// let plan = build_executions(&report, &ids, 7).unwrap();
+/// let now = chrono::DateTime::parse_from_rfc3339("2026-07-21T12:00:00+00:00").expect("an instant");
+/// let plan = build_executions(&report, &ids, 7, now).unwrap();
 /// let attempts: Vec<i32> = plan.executions.iter().map(|row| row.attempt).collect();
 /// assert_eq!(attempts, [0, 1]);
 /// assert_eq!(plan.counts.retried, 1);
 /// assert_eq!(plan.latest[0].last_status, ExecutionStatus::Passed);
+/// assert_eq!(plan.now, now);
 /// ```
 pub fn build_executions(
     report: &ClassifiedReport,
     ids: &BTreeMap<Fingerprint, i32>,
     run_id: i32,
+    now: DateTime<FixedOffset>,
 ) -> Result<ExecutionPlan, ExecutionError> {
     let mut counts = PlanCounts::default();
     let mut attempts: BTreeMap<i32, i32> = BTreeMap::new();
@@ -230,6 +244,7 @@ pub fn build_executions(
         .collect();
     Ok(ExecutionPlan {
         run_id,
+        now,
         executions,
         latest,
         counts,

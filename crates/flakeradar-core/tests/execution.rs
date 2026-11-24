@@ -13,6 +13,7 @@
 
 use std::collections::BTreeMap;
 
+use chrono::{DateTime, FixedOffset};
 use flakeradar_core::{
     execution::ExecutionError, execution::ExecutionPlan, execution::PlanCounts,
     execution::build_executions, model::ExecutionStatus, parsing::ClassifiedReport,
@@ -21,6 +22,12 @@ use flakeradar_core::{
 
 /// The Run every plan here is built for.
 const RUN: i32 = 7;
+
+/// The instant every plan here is built at, the one the caller stamps its rows
+/// with.
+fn now() -> DateTime<FixedOffset> {
+    DateTime::parse_from_rfc3339("2026-07-21T12:00:00+00:00").expect("an instant")
+}
 
 /// A Report whose body is `xml`, parsed and classified as the processor does.
 fn report(xml: &str) -> ClassifiedReport {
@@ -41,13 +48,13 @@ fn ids_of(report: &ClassifiedReport) -> BTreeMap<Fingerprint, i32> {
 /// The plan a body answers, with the ids its own cases imply.
 fn plan(xml: &str) -> ExecutionPlan {
     let report = report(xml);
-    build_executions(&report, &ids_of(&report), RUN).expect("the rules answer a plan")
+    build_executions(&report, &ids_of(&report), RUN, now()).expect("the rules answer a plan")
 }
 
 /// What a body answers instead of a plan.
 fn refusal(xml: &str) -> ExecutionError {
     let report = report(xml);
-    build_executions(&report, &ids_of(&report), RUN).expect_err("the rules refuse")
+    build_executions(&report, &ids_of(&report), RUN, now()).expect_err("the rules refuse")
 }
 
 #[test]
@@ -73,6 +80,11 @@ fn three_attempts_of_one_test_are_numbered_from_zero() {
         Some(("src/test_a.rs".to_owned(), 3))
     );
     assert_eq!(plan.run_id, RUN, "the plan answers its own Run");
+    assert_eq!(
+        plan.now,
+        now(),
+        "the plan answers back the instant the caller stamps its rows with"
+    );
     let id = plan.executions[0].test_case_id;
     assert_eq!(plan.day_counts.get(&id), Some(&(3, 2)));
 }
@@ -181,7 +193,7 @@ fn the_latest_rows_keep_first_appearance_order() {
     let mut ids = BTreeMap::new();
     ids.insert(report.cases[0].fingerprint.clone(), 9);
     ids.insert(report.cases[1].fingerprint.clone(), 4);
-    let plan = build_executions(&report, &ids, RUN).expect("the rules answer a plan");
+    let plan = build_executions(&report, &ids, RUN, now()).expect("the rules answer a plan");
     let latest_ids: Vec<i32> = plan.latest.iter().map(|row| row.test_case_id).collect();
     assert_eq!(
         latest_ids,
@@ -198,7 +210,7 @@ fn a_test_missing_from_the_id_map_vanishes() {
     let body = r#"<testsuite name="unit"><testcase classname="c" name="t"/></testsuite>"#;
     let report = report(body);
     let fingerprint = report.cases[0].fingerprint.clone();
-    let error = build_executions(&report, &BTreeMap::new(), RUN)
+    let error = build_executions(&report, &BTreeMap::new(), RUN, now())
         .expect_err("an empty id map has no id for the Test");
     assert_eq!(
         error.to_string(),

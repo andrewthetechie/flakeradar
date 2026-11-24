@@ -548,8 +548,8 @@ async fn build_executions(
 ) -> Result<BuiltExecutions, ProcessError> {
     let ids = upsert_test_cases(db, project_id, &parsed, now).await?;
     tokio::task::spawn_blocking(move || -> Result<BuiltExecutions, ProcessError> {
-        let plan = execution::build_executions(&parsed, &ids, run_id)?;
-        Ok(write_plan(plan, &parsed, now))
+        let plan = execution::build_executions(&parsed, &ids, run_id, now)?;
+        Ok(write_plan(plan, &parsed))
     })
     .await
     .map_err(|error| ProcessError::permanent(format!("RuntimeError: {error}")))?
@@ -634,14 +634,12 @@ struct BuiltExecutions {
 ///
 /// The plan answers one entry per case, in Report order, so each row's
 /// `failure_category` comes from the case the plan was built from: the category
-/// is the Report's own judgement, not something the plan carries. `created_at` is
-/// likewise the caller's, taken from the same `now` every other row uses.
-fn write_plan(
-    plan: ExecutionPlan,
-    report: &ClassifiedReport,
-    now: DateTimeWithTimeZone,
-) -> BuiltExecutions {
+/// is the Report's own judgement, not something the plan carries. `created_at`
+/// is likewise answered by the plan, which echoes the `now` it was built with,
+/// so every row of the Run carries the one instant.
+fn write_plan(plan: ExecutionPlan, report: &ClassifiedReport) -> BuiltExecutions {
     let run_id = plan.run_id;
+    let now = plan.now;
     let executions = plan
         .executions
         .into_iter()
