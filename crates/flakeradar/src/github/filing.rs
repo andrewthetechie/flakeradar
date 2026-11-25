@@ -30,11 +30,12 @@ pub const REOPEN_COMMENT: &str =
 /// The issue-filing gate the configuration states.
 #[must_use]
 pub fn filing_gate(settings: &Settings) -> FilingGate {
-    let fixed_streak = (settings.github_fixed_streak > 0).then_some(settings.github_fixed_streak);
+    let github = settings.github();
+    let fixed_streak = (github.fixed_streak > 0).then_some(github.fixed_streak);
     FilingGate::new(
-        settings.github_issue_min_score,
-        settings.github_issue_min_proven_flakes,
-        settings.github_issue_min_failures,
+        github.issue_min_score,
+        github.issue_min_proven_flakes,
+        github.issue_min_failures,
         fixed_streak,
     )
 }
@@ -241,7 +242,8 @@ async fn reopen_numbers(
     settings: &Settings,
     clock: &SharedClock,
 ) -> BTreeMap<i32, i32> {
-    if settings.github_reopen_days == 0 || ids.is_empty() {
+    let github = settings.github();
+    if github.reopen_days == 0 || ids.is_empty() {
         return BTreeMap::new();
     }
     let closed = match issue_links::last_closed(db, kind, ids).await {
@@ -256,7 +258,7 @@ async fn reopen_numbers(
             return BTreeMap::new();
         }
     };
-    let window = TimeDelta::days(settings.github_reopen_days.clamp(0, MAX_REOPEN_DAYS));
+    let window = TimeDelta::days(github.reopen_days.clamp(0, MAX_REOPEN_DAYS));
     closed
         .into_iter()
         .filter(|(_, (_, at))| clock.now().signed_duration_since(*at) <= window)
@@ -363,6 +365,7 @@ async fn file_one(
             Reopened::Rearm => {}
         }
     }
+    let github = settings.github();
     let call = step(
         Operation::File,
         Success::Created,
@@ -372,7 +375,7 @@ async fn file_one(
             &request.repo,
             &request.title,
             &request.body,
-            &settings.github_issue_label,
+            &github.issue_label,
         )),
         |error| {
             tracing::warn!(

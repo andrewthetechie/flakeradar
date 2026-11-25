@@ -36,21 +36,21 @@ pub async fn note_fixed_for(
     clock: &SharedClock,
     stop: &CancellationToken,
 ) -> BatchReport {
-    if !api.configured() || settings.github_fixed_streak <= 0 || ids.is_empty() {
+    let github = settings.github();
+    if !api.configured() || github.fixed_streak <= 0 || ids.is_empty() {
         return BatchReport::default();
     }
-    let candidates =
-        match filing::note_candidates(db, kind, ids, settings.github_fixed_streak).await {
-            Ok(candidates) => candidates,
-            Err(error) => {
-                tracing::warn!(
-                    name: "github.notes.candidates_unreadable",
-                    error = %error,
-                    "GitHub fixed-note could not read its candidates",
-                );
-                return BatchReport::default();
-            }
-        };
+    let candidates = match filing::note_candidates(db, kind, ids, github.fixed_streak).await {
+        Ok(candidates) => candidates,
+        Err(error) => {
+            tracing::warn!(
+                name: "github.notes.candidates_unreadable",
+                error = %error,
+                "GitHub fixed-note could not read its candidates",
+            );
+            return BatchReport::default();
+        }
+    };
     if candidates.is_empty() {
         return BatchReport::default();
     }
@@ -182,7 +182,7 @@ async fn note_row(
     match note {
         Action::Use => {
             if !stamp_note(db, row, settings, clock.now().with_timezone(&Utc)).await
-                || !settings.github_close_fixed
+                || !settings.github().close_fixed
             {
                 return Noted::Next;
             }
@@ -238,7 +238,7 @@ async fn stamp_note(
     settings: &Settings,
     now: DateTime<Utc>,
 ) -> bool {
-    let threshold = i32::try_from(settings.github_fixed_streak).unwrap_or(i32::MAX);
+    let threshold = i32::try_from(settings.github().fixed_streak).unwrap_or(i32::MAX);
     let stamp = match issue_links::stamp_fixed_note(
         db,
         row.target,
