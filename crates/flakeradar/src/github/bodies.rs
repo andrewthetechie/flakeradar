@@ -286,7 +286,7 @@ pub fn test_issue_body(
     body.filing_gate(
         test.flakiness_score,
         test.confirmed_flake_count,
-        settings.github_issue_min_score,
+        settings.github().issue_min_score,
     );
     let suite = if test.suite.is_empty() {
         "(none)"
@@ -408,7 +408,7 @@ pub fn job_issue_body(
     body.filing_gate(
         job.flakiness_score,
         job.confirmed_flake_count,
-        settings.github_issue_min_score,
+        settings.github().issue_min_score,
     );
     if let Some(history) = history {
         failure_counts(&mut body, history);
