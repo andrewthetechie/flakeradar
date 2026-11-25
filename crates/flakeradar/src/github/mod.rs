@@ -108,6 +108,33 @@ pub use sync::{CLOSE_COMMENT, close_issues_after_removal, sync_closed_issues};
 
 use crate::settings::Settings;
 
+/// The filing, note and sync values, as this module's view of the configuration.
+///
+/// [`Settings::github`] builds it, so the GitHub work needs only the values it
+/// reads. The token is deliberately absent: it is spent where [`Api`] is built,
+/// before this module is reached.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GithubSettings {
+    /// The label applied to every auto-filed GitHub issue.
+    pub issue_label: String,
+    /// The Flakiness score a Test or Job must reach before an issue is filed.
+    pub issue_min_score: f64,
+    /// The Proven flake count a Test must reach before an issue is filed. `0` skips the gate.
+    pub issue_min_proven_flakes: i64,
+    /// The recent failure count a Test or Job must reach before an issue is filed. `0` skips it.
+    pub issue_min_failures: i64,
+    /// How many linked Tests, and separately Jobs, one maintenance sync checks.
+    pub sync_batch: i64,
+    /// The Clean streak at which FlakeRadar comments once that a fix appears to hold.
+    pub fixed_streak: i64,
+    /// Whether to also close the issue whose fix appears to hold.
+    pub close_fixed: bool,
+    /// How many days a closed issue stays eligible to be reopened instead of
+    /// refiled; `0` disables reopening, and the filing code clamps a larger value
+    /// rather than refusing it.
+    pub reopen_days: i64,
+}
+
 /// The `ReportWorker` hook: file issues for the Tests and Jobs a Report touched.
 ///
 /// Also notes the rows whose Clean streak now proves the fix held. A newly filed
