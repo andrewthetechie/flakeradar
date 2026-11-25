@@ -55,6 +55,14 @@ fn endpoint(url: &str) -> String {
         .unwrap_or_else(|| "endpoint".to_owned())
 }
 
+fn log_sent(label: &str) {
+    tracing::info!(
+        name: "digest.sent",
+        endpoint = %label,
+        "sent the weekly digest"
+    );
+}
+
 /// The HTTP client every weekly digest goes through.
 ///
 /// The same client a Notification uses: the same timeout bounds a black-holed
@@ -160,11 +168,7 @@ impl DigestShared {
         let label = endpoint(url);
         match self.client.post(url).json(body).send().await {
             Ok(response) if response.status().is_success() => {
-                tracing::info!(
-                    name: "digest.sent",
-                    endpoint = %label,
-                    "sent the weekly digest"
-                );
+                log_sent(&label);
             }
             Ok(response) => {
                 tracing::warn!(

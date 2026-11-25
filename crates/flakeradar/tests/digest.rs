@@ -331,3 +331,22 @@ async fn the_digest_debug_line_names_no_endpoint() {
     );
     assert!(!line.contains(&url), "the URL is a credential: {line}");
 }
+
+#[tokio::test]
+async fn tmp_probe_sent_log_lines() {
+    let db = TestDb::new().await.expect("a test database");
+    seed_week(&db).await;
+    let server = stub("/hook", 200).await;
+    let worker = worker(
+        &db,
+        "2026-11-09T09:30:00+00:00",
+        vec![format!("{}/hook", server.uri())],
+    );
+    let log = CapturedLog::install();
+    LeaderTask::start(&worker).await;
+    wait_until("the first check ran", || async { worker.checks() >= 1 }).await;
+    LeaderTask::stop(&worker).await.expect("the task stops");
+    let line = log.only_line_holding("sent the weekly digest");
+    assert!(line.contains("127.0.0.1"), "the host names the endpoint: {line}");
+    drop(log);
+}
