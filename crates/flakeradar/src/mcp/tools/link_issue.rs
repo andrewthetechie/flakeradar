@@ -51,6 +51,9 @@ struct LinkIssueArgs {
     /// Whether a different linked issue may be replaced.
     #[serde(default, deserialize_with = "lax_boolean")]
     replace: bool,
+    /// The issue's url, which must name the target's own Repo.
+    #[serde(default)]
+    url: Option<String>,
 }
 
 /// The fields `LinkIssueArgs` accepts, as serde names them.
@@ -68,6 +71,7 @@ pub(super) fn input_schema() -> Value {
             "number": {"type": "integer"},
             "replace": {"default": false, "type": "boolean"},
             "test_id": nullable("integer"),
+            "url": nullable("string"),
         },
         "required": ["number"],
         "type": "object",
@@ -93,7 +97,7 @@ pub(super) fn call(server: &McpServer, arguments: Value) -> BoxFuture<'_, ToolRe
             kind,
             id,
             args.number,
-            None,
+            args.url.as_deref(),
             args.replace,
             &server.read_settings(),
         )
