@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use chrono::{DateTime, FixedOffset, NaiveDate, Utc};
 use flakeradar_core::digest::{DigestTest, RepoDigest};
-use flakeradar_db::digest::weekly_digest;
+use flakeradar_db::digest::{claim_digest_slot, weekly_digest};
 use flakeradar_db::entities::test_cases;
 use flakeradar_db::reads::ReadSettings;
 use flakeradar_test_support::{
@@ -52,6 +52,23 @@ fn names(tests: &[DigestTest]) -> Vec<&str> {
         .iter()
         .map(|test| test.name.as_str())
         .collect::<Vec<_>>()
+}
+
+/// The slot `digest_state` says has been claimed, or `None` while the ledger is
+/// still empty.
+async fn stored_slot(db: &TestDb) -> Option<DateTime<Utc>> {
+    let row = flakeradar_db::sql::one(
+        db.connection(),
+        "SELECT last_sent_at FROM digest_state",
+        Vec::new(),
+    )
+    .await
+    .expect("the ledger is readable");
+    row.map(|row| {
+        let stored: DateTime<FixedOffset> =
+            flakeradar_db::sql::get(&row, "last_sent_at").expect("a stored instant");
+        stored.with_timezone(&Utc)
+    })
 }
 
 /// The digest of the fixture Repo, which every case here asserts something about.
@@ -402,5 +419,61 @@ async fn top_impact_keeps_the_five_worst_costliest_tests() {
             .collect::<Vec<_>>(),
         [Some(7), Some(6), Some(5), Some(4), Some(3)],
         "each item carries the count it was ranked by"
+    );
+}
+
+#[tokio::test]
+async fn claim_digest_slot_claims_a_slot_once() {
+    let db = TestDb::new().await.expect("a test database");
+    let week = instant("2026-11-09T09:00:00+00:00").with_timezone(&Utc);
+
+    assert!(
+        claim_digest_slot(db.connection(), week)
+            .await
+            .expect("an empty ledger is claimable"),
+        "the first caller owns the slot"
+    );
+    assert_eq!(
+        stored_slot(&db).await,
+        Some(week),
+        "a successful claim stores the slot it was given"
+    );
+
+    assert!(
+        !claim_digest_slot(db.connection(), week)
+            .await
+            .expect("a slot already stored is still an answer, not an error"),
+        "a second caller for the same slot does not own it, so a replica or a \
+         restart sends the week once"
+    );
+    assert_eq!(
+        stored_slot(&db).await,
+        Some(week),
+        "a refused claim leaves the stored slot alone"
+    );
+
+    let next_week = instant("2026-11-16T09:00:00+00:00").with_timezone(&Utc);
+    assert!(
+        claim_digest_slot(db.connection(), next_week)
+            .await
+            .expect("a later slot is claimable"),
+        "the week after the stored one is a new claim"
+    );
+    assert_eq!(
+        stored_slot(&db).await,
+        Some(next_week),
+        "a successful claim moves the stored slot forward"
+    );
+
+    assert!(
+        !claim_digest_slot(db.connection(), week)
+            .await
+            .expect("an older slot is still an answer, not an error"),
+        "a slot older than the stored one is refused, so a late run cannot resend"
+    );
+    assert_eq!(
+        stored_slot(&db).await,
+        Some(next_week),
+        "a refused older slot leaves the stored slot alone"
     );
 }
