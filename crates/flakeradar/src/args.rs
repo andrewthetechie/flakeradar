@@ -378,4 +378,25 @@ mod tests {
             "repo must look like 'owner/name', got 'acme'"
         );
     }
+
+    #[test]
+    fn both_doors_map_one_refusal_onto_the_field_it_names() {
+        // One rule, two shapes: the window refusal, mapped by each front door,
+        // still names `new_within_days` — the issue's own example field.
+        let refusal = new_within_days(0).expect_err("a window of no days is no window");
+
+        let issue = crate::routes::reads::refusal_issue(&refusal);
+        assert_eq!(
+            issue.loc,
+            crate::extract::query_loc("new_within_days"),
+            "the REST 422 points at the argument the rule refused"
+        );
+        assert_eq!(issue.r#type, "greater_than_equal");
+
+        assert_eq!(
+            crate::mcp::refusal_text(&refusal),
+            "new_within_days must be between 1 and 90",
+            "the MCP answer states the same refusal in the sentence it publishes today"
+        );
+    }
 }
