@@ -2,14 +2,18 @@
 //!
 //! A Notification says that one Test crossed a threshold at one instant; a
 //! digest instead answers what a Repo did over the past week, so it carries four
-//! lists of Tests rather than one event. This module owns the data shape and the
-//! webhook body, so the database query that fills the lists and the command that
-//! posts them cannot disagree about either. Posting is not this crate's job, just
-//! as posting a Notification is not.
+//! lists of Tests rather than one event. This module owns the data shape, the
+//! schedule that says when the message goes out, and the webhook body, so the
+//! database query that fills the lists, the setting that names the slot and the
+//! command that posts them cannot disagree about either. Posting is not this
+//! crate's job, just as posting a Notification is not.
 
 // Rust guideline compliant 2026-07-21
 
-use chrono::{DateTime, NaiveDate, Utc};
+use std::fmt;
+use std::str::FromStr;
+
+use chrono::{DateTime, Datelike, NaiveDate, NaiveTime, TimeDelta, Utc, Weekday};
 use serde_json::{Map, Value};
 
 use crate::notify::WebhookFormat;
@@ -202,5 +206,124 @@ pub fn render_digest(
     match format {
         WebhookFormat::Slack => digest_slack(digests, week_ending),
         WebhookFormat::Json => digest_json(digests, week_ending),
+    }
+}
+
+/// When a week's digest goes out: a weekday and an hour, as `mon@09`.
+///
+/// The operator writes the spelling in `FLAKERADAR_DIGEST` and the scheduler
+/// reads it back each week, so the two directions are the same text. An hour is
+/// UTC, because the digest says what a week held and a week is held in UTC.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DigestSchedule {
+    /// The day of the week the digest goes out.
+    pub weekday: Weekday,
+    /// The UTC hour of the day it goes out, `0` to `23`.
+    pub hour: u32,
+}
+
+/// Why a string is not a [`DigestSchedule`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum DigestScheduleError {
+    /// The text is not a known day, an `@` and exactly two hour digits.
+    #[error("a digest schedule is <mon|tue|wed|thu|fri|sat|sun>@<00-23>, like mon@09")]
+    Format,
+}
+
+impl FromStr for DigestSchedule {
+    type Err = DigestScheduleError;
+
+    /// The schedule the spelling `text` names, as `mon@09`.
+    ///
+    /// The day is one of the three-letter lowercase names and the hour is
+    /// exactly two digits at most `23`; anything else, including an uppercase
+    /// name or a one-digit hour, is refused, so a typo says so at start-up
+    /// instead of quietly moving the digest.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DigestScheduleError::Format`] when `text` is not of that form.
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        let (day, hour_text) = text.split_once('@').ok_or(DigestScheduleError::Format)?;
+        let weekday = match day {
+            "mon" => Weekday::Mon,
+            "tue" => Weekday::Tue,
+            "wed" => Weekday::Wed,
+            "thu" => Weekday::Thu,
+            "fri" => Weekday::Fri,
+            "sat" => Weekday::Sat,
+            "sun" => Weekday::Sun,
+            _ => return Err(DigestScheduleError::Format),
+        };
+        // The hour is read as a number first and held to the documented spelling
+        // afterwards, because the two refusals are different: text that is no
+        // number at all, and a number spelled wrong.
+        let Ok(hour) = hour_text.parse::<u32>() else {
+            return Err(DigestScheduleError::Format);
+        };
+        // Exactly two ASCII digits at most `23`, so a one- or three-digit hour and
+        // a signed one are refused even though they name an hour, and an hour off
+        // a clock is refused too.
+        let digits = hour_text.as_bytes();
+        if digits.len() != 2 || !digits.iter().all(u8::is_ascii_digit) || hour > 23 {
+            return Err(DigestScheduleError::Format);
+        }
+        Ok(Self { weekday, hour })
+    }
+}
+
+impl fmt::Display for DigestSchedule {
+    /// The spelling [`DigestSchedule::from_str`] accepts, so `parse` after
+    /// `to_string` is the identity.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let day = match self.weekday {
+            Weekday::Mon => "mon",
+            Weekday::Tue => "tue",
+            Weekday::Wed => "wed",
+            Weekday::Thu => "thu",
+            Weekday::Fri => "fri",
+            Weekday::Sat => "sat",
+            Weekday::Sun => "sun",
+        };
+        write!(f, "{day}@{:02}", self.hour)
+    }
+}
+
+impl DigestSchedule {
+    /// When this schedule rings in the ISO week (Monday first) that holds `now`.
+    ///
+    /// The week is `now`'s, so the answer can lie in the past: that is how the
+    /// caller learns whether this week's digest is still owed. An hour outside
+    /// `0` to `23` is only reachable by building the struct directly, and it
+    /// adds past midnight like any other duration; the arithmetic saturates at
+    /// the last instant chrono can name rather than panicking.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use chrono::{TimeZone, Utc};
+    /// # use flakeradar_core::digest::DigestSchedule;
+    /// let now = Utc.with_ymd_and_hms(2026, 11, 11, 12, 0, 0).unwrap();
+    /// let schedule: DigestSchedule = "mon@09".parse().unwrap();
+    /// assert_eq!(schedule.slot(now), Utc.with_ymd_and_hms(2026, 11, 9, 9, 0, 0).unwrap());
+    /// ```
+    #[must_use]
+    pub fn slot(&self, now: DateTime<Utc>) -> DateTime<Utc> {
+        let monday = now
+            .date_naive()
+            .checked_sub_signed(TimeDelta::days(i64::from(
+                now.weekday().num_days_from_monday(),
+            )))
+            .unwrap_or(NaiveDate::MIN);
+        let day = monday
+            .checked_add_signed(TimeDelta::days(i64::from(
+                self.weekday.num_days_from_monday(),
+            )))
+            .unwrap_or(NaiveDate::MAX);
+        let hour = TimeDelta::try_hours(i64::from(self.hour)).unwrap_or(TimeDelta::MAX);
+        day.and_time(NaiveTime::MIN)
+            .and_utc()
+            .checked_add_signed(hour)
+            .unwrap_or(DateTime::<Utc>::MAX_UTC)
     }
 }
