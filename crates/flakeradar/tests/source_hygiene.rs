@@ -1,10 +1,11 @@
-//! Five properties of this workspace's own source, checked from outside it.
+//! Six properties of this workspace's own source, checked from outside it.
 //!
 //! All are rules a compiler cannot see: that every log event carries a name and a
 //! static message, that no comment or identifier in `crates/` points at the
 //! implementation this one replaced, that every hand-written file carries the
-//! compliance marker, that the Report route module owns no database write, and that
-//! the SQL literals of the tier rule live only in the module that owns them.
+//! compliance marker, that the Report route module owns no database write, that
+//! the SQL literals of the tier rule live only in the module that owns them, and
+//! that the GitHub modules name their settings only through the projection.
 //! Each rule is a function over the text of one file, so a test can feed it a
 //! violation as well as the tree, and every violation shape this file is named
 //! for has a case that runs through it.
@@ -462,6 +463,87 @@ fn a_tier_literal_outside_the_tier_module_is_flagged() {
         "binds.raw(\"t.flaky_since IS NULL\");\n",
     );
     assert!(quiet.is_empty(), "an unrelated line is reported: {quiet:?}");
+}
+
+/// The prefix of a flat GitHub setting read: `Settings`' `github_*` fields, named
+/// through any receiver variable.
+const GITHUB_FLAT_FIELD: &str = "settings.github_";
+
+/// The directory whose modules must read the `Settings::github` projection instead
+/// of the flat fields, and which this scan alone covers.
+const GITHUB_SCAN_DIR: &str = "crates/flakeradar/src/github/";
+
+/// Every line of a file under `crates/flakeradar/src/github/` that names a flat
+/// GitHub setting field, each naming the file, the line and the line itself.
+///
+/// No file in the directory is exempt: every GitHub module reads the projection.
+/// The match is case-sensitive, like `rg`'s default, and files outside the scanned
+/// directory answer nothing at all.
+fn github_flat_read_offences(name: &str, text: &str) -> Vec<String> {
+    if !name.starts_with(GITHUB_SCAN_DIR) {
+        return Vec::new();
+    }
+    let mut offences = Vec::new();
+    for (number, line) in text.lines().enumerate() {
+        if line.contains(GITHUB_FLAT_FIELD) {
+            offences.push(format!("{name}:{}: {}", number + 1, line.trim()));
+        }
+    }
+    offences
+}
+
+/// The GitHub modules read their configuration through the `github()` projection:
+/// no source file under `crates/flakeradar/src/github/` names a flat `github_*`
+/// field of `Settings`.
+#[test]
+fn the_github_modules_read_the_projection_not_the_flat_fields() {
+    let offences: Vec<String> = sources()
+        .iter()
+        .flat_map(|(name, text)| github_flat_read_offences(name, text))
+        .collect();
+    assert!(
+        offences.is_empty(),
+        "these lines read a flat GitHub setting field; `Settings::github()` answers \
+         the projection:\n{}",
+        offences.join("\n")
+    );
+}
+
+/// A flat read written back into a GitHub module is flagged, and neither the
+/// projection call nor an unrelated line is.
+#[test]
+fn a_flat_github_read_inside_the_github_modules_is_flagged() {
+    let offences = github_flat_read_offences(
+        "crates/flakeradar/src/github/filing.rs",
+        "    let score = settings.github_issue_min_score;\n",
+    );
+    assert_eq!(
+        offences,
+        vec![
+            "crates/flakeradar/src/github/filing.rs:1: \
+              let score = settings.github_issue_min_score;"
+        ],
+        "the flat read is reported with its file and line"
+    );
+    // The projection call spells no flat field, so it never reads as an offence,
+    // and neither does a line that names no GitHub setting at all.
+    for text in [
+        "    let score = settings.github().issue_min_score;\n",
+        "    let url = &settings.public_url;\n",
+    ] {
+        let clean = github_flat_read_offences("crates/flakeradar/src/github/notes.rs", text);
+        assert!(clean.is_empty(), "{text:?} is reported: {clean:?}");
+    }
+    // A file outside the scanned directory answers nothing even when it spells the
+    // field — this file is such a file.
+    assert!(
+        github_flat_read_offences(
+            "crates/flakeradar/tests/github/filing.rs",
+            "    let score = settings.github_issue_min_score;\n",
+        )
+        .is_empty(),
+        "a file outside the GitHub modules is scanned"
+    );
 }
 
 /// Every [`ALLOWED`] entry names a file that exists and a word it still carries.
