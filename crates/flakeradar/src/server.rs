@@ -18,6 +18,7 @@ use sea_orm::DatabaseConnection;
 use tokio::net::TcpListener;
 
 use crate::app::{AppState, build_app};
+use crate::digest::DigestWorker;
 use crate::github::Api;
 use crate::github_worker::GitHubWorker;
 use crate::settings::Settings;
@@ -52,6 +53,36 @@ fn webhook_task(settings: &Settings) -> anyhow::Result<Option<Arc<WebhookWorker>
             &settings.public_url,
         )?)))
     }
+}
+
+/// The weekly digest task, built only when a slot is scheduled and at least one
+/// Webhook URL is configured.
+///
+/// A schedule with nowhere to post is no task at all, for the same reason a URL
+/// with no schedule is not: the task would wake every interval, claim the week's
+/// slot in `digest_state`, and then drop the body it built. The clock is the
+/// process clock, so the week a digest covers is the same week every other read
+/// of the process sees.
+fn digest_task(
+    settings: &Settings,
+    pool: DatabaseConnection,
+    clock: flakeradar_db::clock::SharedClock,
+) -> anyhow::Result<Option<Arc<DigestWorker>>> {
+    let Some(schedule) = settings.digest else {
+        return Ok(None);
+    };
+    let urls = flakeradar_core::notify::parse_urls(settings.webhook_urls.expose());
+    if urls.is_empty() {
+        return Ok(None);
+    }
+    DigestWorker::new(
+        pool,
+        schedule,
+        settings.webhook_format,
+        urls,
+        settings.reads(clock),
+    )
+    .map(|worker| Some(Arc::new(worker)))
 }
 
 /// How long the graceful drain waits for in-flight requests before it is abandoned.
@@ -156,11 +187,16 @@ impl Server {
                 Api::production(settings.github_token.clone())?,
                 settings.prune_interval,
             )
-            .with_clock(clock),
+            .with_clock(Arc::clone(&clock)),
         );
         worker = worker.with_leader_task(github);
         if let Some(webhook) = webhook_task(&settings)? {
             worker = worker.with_leader_task(webhook);
+        }
+        // The digest task shares the process clock with the GitHub task, which is
+        // why it clones: the week it reports must be the week the server reads.
+        if let Some(digest) = digest_task(&settings, pool.clone(), clock)? {
+            worker = worker.with_leader_task(digest);
         }
         let worker = Arc::new(worker);
         Arc::clone(&worker).start().await;
@@ -299,8 +335,9 @@ impl Server {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::sync::Arc;
 
-    use super::webhook_task;
+    use super::{digest_task, webhook_task};
     use crate::settings::Settings;
 
     /// Settings built from `pairs`.
@@ -330,6 +367,56 @@ mod tests {
             .expect("a configured endpoint builds the task")
             .is_some(),
             "one URL means one Notification task"
+        );
+    }
+
+    #[test]
+    fn the_lifespan_builds_a_digest_worker_only_when_a_schedule_and_urls_are_set() {
+        // The process clock the lifespan hands the task; a unit test never reads
+        // the instant it answers, and the worker only stores the handle.
+        let clock: flakeradar_db::clock::SharedClock = Arc::new(flakeradar_db::clock::SystemClock);
+        // A disconnected handle: building the task stores the pool and opens
+        // nothing, so gating needs no database.
+        let pool = sea_orm::DatabaseConnection::default();
+
+        assert!(
+            digest_task(
+                &settings(&[("FLAKERADAR_API_TOKEN", "real-token")]),
+                pool.clone(),
+                Arc::clone(&clock),
+            )
+            .expect("no schedule is not a failure")
+            .is_none(),
+            "no schedule means no digest task at all"
+        );
+        assert!(
+            digest_task(
+                &settings(&[
+                    ("FLAKERADAR_API_TOKEN", "real-token"),
+                    ("FLAKERADAR_DIGEST", "mon@09"),
+                ]),
+                pool.clone(),
+                Arc::clone(&clock),
+            )
+            .expect("a schedule with no endpoint is not a failure")
+            .is_none(),
+            "a digest with nowhere to go means no digest task"
+        );
+        // What the task does once it runs is `tests/digest.rs`'s subject, where a
+        // real endpoint receives the week's body.
+        assert!(
+            digest_task(
+                &settings(&[
+                    ("FLAKERADAR_API_TOKEN", "real-token"),
+                    ("FLAKERADAR_DIGEST", "mon@09"),
+                    ("FLAKERADAR_WEBHOOK_URLS", "https://hooks.example.com/a"),
+                ]),
+                pool,
+                Arc::clone(&clock),
+            )
+            .expect("a scheduled digest to a known endpoint builds the task")
+            .is_some(),
+            "a schedule and one URL mean one digest task"
         );
     }
 }
