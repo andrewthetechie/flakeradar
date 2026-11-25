@@ -17,7 +17,7 @@ set -euo pipefail
 
 TOKEN="smoke-token"
 PROTOCOL_VERSION="2026-07-28"
-MCP_TOOLS=11
+MCP_TOOLS=12
 
 fail() {
   printf 'smoke: FAIL: %s\n' "$*" >&2
