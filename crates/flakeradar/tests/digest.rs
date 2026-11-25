@@ -28,6 +28,7 @@ use flakeradar_db::{processing::ProcessOutcome, reads::ReadSettings};
 use flakeradar_test_support::{
     CapturedLog, FixedClock, TestDb, make_project, make_test_case, wait_until,
 };
+use sea_orm::ConnectionTrait as _;
 use serde_json::Value;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -65,6 +66,15 @@ async fn store_slot(db: &TestDb, slot: &str) {
     let _ = flakeradar_db::sql::one(db.connection(), sql, Vec::new())
         .await
         .expect("the ledger takes a row");
+}
+
+/// Drops a table from this test's database, so every later statement against it
+/// fails: the seam for a check whose ledger or reads are gone.
+async fn drop_table(db: &TestDb, table: &str) {
+    db.connection()
+        .execute_unprepared(&format!("DROP TABLE {table} CASCADE"))
+        .await
+        .expect("the test database drops a table");
 }
 
 /// A Repo with one Test that became flaky in the week ending 2026-11-08, which is
@@ -206,6 +216,31 @@ async fn a_second_digest_check_sends_nothing() {
 }
 
 #[tokio::test]
+async fn a_digest_check_interval_applies_only_before_the_task_runs() {
+    let db = TestDb::new().await.expect("a test database");
+    let server = stub("/hook", 200).await;
+    // The shipped 300-second interval: one check, then a wait no test sits through.
+    let worker = worker(
+        &db,
+        "2026-11-09T08:59:00+00:00",
+        vec![format!("{}/hook", server.uri())],
+    );
+
+    LeaderTask::start(&worker).await;
+    wait_until("the first check ran", || async { worker.checks() >= 1 }).await;
+    // The loop holds its own share of the state, so the seam cannot reach it
+    // once it runs: the builder answers with the same, still-slow task.
+    let worker = worker.with_check_interval(Duration::from_millis(10));
+    LeaderTask::stop(&worker).await.expect("the task stops");
+
+    assert_eq!(
+        worker.checks(),
+        1,
+        "a running task keeps the interval it started with"
+    );
+}
+
+#[tokio::test]
 async fn a_digest_check_before_the_slot_sends_nothing() {
     let db = TestDb::new().await.expect("a test database");
     seed_week(&db).await;
@@ -286,6 +321,140 @@ async fn a_failed_digest_post_is_logged_once_by_host_and_not_retried() {
     );
 }
 
+/// A week whose ledger is gone: every claim fails, so every check logs the
+/// refusal and sends nothing.
+#[tokio::test]
+async fn a_digest_whose_claim_fails_is_logged_and_sends_nothing() {
+    let db = TestDb::new().await.expect("a test database");
+    seed_week(&db).await;
+    drop_table(&db, "digest_state").await;
+    let server = stub("/hook", 200).await;
+    let worker = worker(
+        &db,
+        "2026-11-09T09:30:00+00:00",
+        vec![format!("{}/hook", server.uri())],
+    );
+
+    let log = CapturedLog::install();
+    LeaderTask::start(&worker).await;
+    wait_until("the first check ran", || async { worker.checks() >= 1 }).await;
+    LeaderTask::stop(&worker).await.expect("the task stops");
+
+    assert_eq!(
+        recorded(&server).await,
+        0,
+        "a slot that cannot be claimed sends nothing"
+    );
+    let failure = log.only_line_holding("could not claim the weekly digest slot");
+    assert!(
+        failure.contains("2026-11-09T09:00:00+00:00"),
+        "the refusal names the slot it could not claim: {failure}"
+    );
+}
+
+/// A week whose ledger is claimed but whose digest cannot be built: the claim
+/// stays written, so the lost digest is never sent twice.
+#[tokio::test]
+async fn a_digest_that_cannot_be_built_keeps_its_claimed_slot() {
+    let db = TestDb::new().await.expect("a test database");
+    seed_week(&db).await;
+    let server = stub("/hook", 200).await;
+    let worker = worker(
+        &db,
+        "2026-11-09T09:30:00+00:00",
+        vec![format!("{}/hook", server.uri())],
+    );
+    // The ledger survives, the Repo list does not: the claim is reached and the
+    // first digest statement fails.
+    drop_table(&db, "repos").await;
+
+    let log = CapturedLog::install();
+    LeaderTask::start(&worker).await;
+    wait_until("the first check ran", || async { worker.checks() >= 1 }).await;
+    LeaderTask::stop(&worker).await.expect("the task stops");
+
+    assert_eq!(
+        recorded(&server).await,
+        0,
+        "a digest that could not be built is not posted"
+    );
+    let failure = log.only_line_holding("could not build the weekly digest");
+    assert!(
+        failure.contains("2026-11-09T09:00:00+00:00"),
+        "the refusal names the slot it could not fill: {failure}"
+    );
+    assert_eq!(
+        stored_slot(&db).await,
+        Some(instant("2026-11-09T09:00:00+00:00").with_timezone(&Utc)),
+        "the claimed slot stays claimed: the week is lost, not duplicated"
+    );
+}
+
+/// One `POST` to a port nothing listens on: the failure is logged once, by host,
+/// and never retried.
+#[tokio::test]
+async fn an_unreachable_digest_endpoint_is_logged_once_by_host() {
+    let db = TestDb::new().await.expect("a test database");
+    seed_week(&db).await;
+    // Nothing listens on port 1: every attempt fails to connect.
+    let worker = worker(
+        &db,
+        "2026-11-09T09:30:00+00:00",
+        vec!["http://127.0.0.1:1/hook".to_owned()],
+    )
+    .with_check_interval(Duration::from_millis(10));
+
+    let log = CapturedLog::install();
+    LeaderTask::start(&worker).await;
+    wait_until("the second check ran", || async { worker.checks() >= 2 }).await;
+    LeaderTask::stop(&worker).await.expect("the task stops");
+
+    let failures = log.lines_holding("unreachable for the weekly digest");
+    assert_eq!(
+        failures.len(),
+        1,
+        "the refused `POST` is not retried, and the next check loses the claim: {}",
+        log.lines()
+    );
+    assert!(
+        failures[0].contains("127.0.0.1"),
+        "the endpoint's host is enough to find it: {}",
+        failures[0]
+    );
+}
+
+/// A digest URL that is not a URL: the failure names the endpoint only as
+/// `endpoint`, and never carries the text that stood in for one.
+#[tokio::test]
+async fn a_digest_endpoint_that_is_not_a_url_is_logged_as_endpoint() {
+    /// A credential in the text, which no log line may carry.
+    const SECRET: &str = "SECRETTOKEN";
+
+    let db = TestDb::new().await.expect("a test database");
+    seed_week(&db).await;
+    let worker = worker(
+        &db,
+        "2026-11-09T09:30:00+00:00",
+        vec![format!("not a url/{SECRET}")],
+    );
+
+    let log = CapturedLog::install();
+    LeaderTask::start(&worker).await;
+    wait_until("the first check ran", || async { worker.checks() >= 1 }).await;
+    LeaderTask::stop(&worker).await.expect("the task stops");
+
+    let failure = log.only_line_holding("unreachable for the weekly digest");
+    assert!(
+        failure.contains("endpoint"),
+        "an unparseable URL leaves only the generic label: {failure}"
+    );
+    let logged = log.lines();
+    assert!(
+        !logged.contains(SECRET),
+        "no log line carries the URL text: {logged}"
+    );
+}
+
 #[tokio::test]
 async fn the_digest_task_enqueue_is_a_no_op() {
     let db = TestDb::new().await.expect("a test database");
@@ -330,6 +499,11 @@ async fn the_digest_debug_line_names_no_endpoint() {
         "the Debug line names the task"
     );
     assert!(!line.contains(&url), "the URL is a credential: {line}");
+    assert_eq!(
+        LeaderTask::name(&worker),
+        "Digest",
+        "the leader registry names the task"
+    );
 }
 
 #[tokio::test]
@@ -347,6 +521,9 @@ async fn tmp_probe_sent_log_lines() {
     wait_until("the first check ran", || async { worker.checks() >= 1 }).await;
     LeaderTask::stop(&worker).await.expect("the task stops");
     let line = log.only_line_holding("sent the weekly digest");
-    assert!(line.contains("127.0.0.1"), "the host names the endpoint: {line}");
+    assert!(
+        line.contains("127.0.0.1"),
+        "the host names the endpoint: {line}"
+    );
     drop(log);
 }

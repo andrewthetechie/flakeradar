@@ -25,6 +25,7 @@ use anyhow::Context as _;
 use chrono::{DateTime, Utc};
 use flakeradar_core::{digest::DigestSchedule, digest::render_digest, notify::WebhookFormat};
 use flakeradar_db::{
+    DbError,
     digest::{claim_digest_slot, weekly_digest},
     processing::ProcessOutcome,
     reads::ReadSettings,
@@ -56,10 +57,39 @@ fn endpoint(url: &str) -> String {
 }
 
 fn log_sent(label: &str) {
-    tracing::info!(
-        name: "digest.sent",
-        endpoint = %label,
-        "sent the weekly digest"
+    tracing::info!(name: "digest.sent", endpoint = %label, "sent the weekly digest");
+}
+
+/// A refused claim: the slot and the error, and never a URL.
+fn log_claim_failed(slot: &DateTime<Utc>, error: &DbError) {
+    tracing::warn!(
+        name: "digest.claim.failed",
+        slot = %slot.to_rfc3339(), error = %error, "could not claim the weekly digest slot"
+    );
+}
+
+/// A slot that was claimed but whose digest could not be built: the ledger keeps
+/// the loss, so the week is never sent twice.
+fn log_build_failed(slot: &DateTime<Utc>, error: &DbError) {
+    tracing::warn!(
+        name: "digest.build.failed",
+        slot = %slot.to_rfc3339(), error = %error, "could not build the weekly digest"
+    );
+}
+
+/// A `POST` the endpoint refused: host and status, no retry (the claim stands).
+fn log_rejected(label: &str, status: u16) {
+    tracing::warn!(
+        name: "digest.delivery.failed",
+        endpoint = %label, status, "Webhook endpoint rejected the weekly digest"
+    );
+}
+
+/// A `POST` that never got an answer, by host and a URL-stripped error.
+fn log_unreachable(label: &str, error: &str) {
+    tracing::warn!(
+        name: "digest.delivery.failed",
+        endpoint = %label, error, "Webhook endpoint unreachable for the weekly digest"
     );
 }
 
@@ -132,24 +162,14 @@ impl DigestShared {
             Ok(true) => {}
             Ok(false) => return,
             Err(error) => {
-                tracing::warn!(
-                    name: "digest.claim.failed",
-                    slot = %slot.to_rfc3339(),
-                    error = %error,
-                    "could not claim the weekly digest slot"
-                );
+                log_claim_failed(&slot, &error);
                 return;
             }
         }
         let digests = match weekly_digest(&self.pool, now, &self.reads).await {
             Ok(digests) => digests,
             Err(error) => {
-                tracing::warn!(
-                    name: "digest.build.failed",
-                    slot = %slot.to_rfc3339(),
-                    error = %error,
-                    "could not build the weekly digest"
-                );
+                log_build_failed(&slot, &error);
                 return;
             }
         };
@@ -167,25 +187,9 @@ impl DigestShared {
     async fn post(&self, url: &str, body: &Value) {
         let label = endpoint(url);
         match self.client.post(url).json(body).send().await {
-            Ok(response) if response.status().is_success() => {
-                log_sent(&label);
-            }
-            Ok(response) => {
-                tracing::warn!(
-                    name: "digest.delivery.failed",
-                    endpoint = %label,
-                    status = response.status().as_u16(),
-                    "Webhook endpoint rejected the weekly digest"
-                );
-            }
-            Err(error) => {
-                tracing::warn!(
-                    name: "digest.delivery.failed",
-                    endpoint = %label,
-                    error = %error.without_url().to_string(),
-                    "Webhook endpoint unreachable for the weekly digest"
-                );
-            }
+            Ok(response) if response.status().is_success() => log_sent(&label),
+            Ok(response) => log_rejected(&label, response.status().as_u16()),
+            Err(error) => log_unreachable(&label, &error.without_url().to_string()),
         }
     }
 }
