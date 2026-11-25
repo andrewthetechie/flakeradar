@@ -1719,6 +1719,30 @@ async fn link_issue_refuses_what_the_rules_refuse() {
 }
 
 #[tokio::test]
+async fn link_issue_url_must_be_the_tests_own_repo() {
+    let db = TestDb::new().await.expect("a test database is available");
+    let app = mcp_app(&db);
+    let flaky = seed(&db).await;
+    let own_url = "https://github.com/andrewthetechie/writers-app/issues/7";
+    refused(
+        &app,
+        "link_issue",
+        json!({"number": 7, "test_id": flaky, "url": "https://github.com/other/repo/issues/7"}),
+        &format!("url must be {own_url}: the issue must be in the Test's own Repo"),
+    )
+    .await;
+    let got = call(&app, "get_test", json!({"test_id": flaky})).await;
+    assert_eq!(got["test"]["github_issue_number"], Value::Null);
+    let linked = call(
+        &app,
+        "link_issue",
+        json!({"number": 7, "test_id": flaky, "url": own_url}),
+    )
+    .await;
+    assert_eq!(linked["github_issue_number"], 7);
+}
+
+#[tokio::test]
 async fn link_issue_refuses_a_conflict_unless_it_may_replace() {
     let db = TestDb::new().await.expect("a test database is available");
     let app = mcp_app(&db);
