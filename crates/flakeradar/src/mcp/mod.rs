@@ -1,4 +1,4 @@
-//! The MCP server: eleven tools over the same queries as the REST API.
+//! The MCP server: twelve tools over the same queries as the REST API.
 //!
 //! Agents reach FlakeRadar through `POST /mcp/`, the Streamable HTTP transport
 //! with no sessions. Every tool reads except `link_issue` and `unlink_issue`,
@@ -294,6 +294,15 @@ impl McpServer {
     /// The read settings the queries take.
     pub(crate) fn read_settings(&self) -> ReadSettings {
         self.settings.reads(Arc::clone(&self.clock))
+    }
+
+    /// The configuration this server runs with, for a tool that reports it.
+    ///
+    /// A tool reads the [`Settings`] themselves rather than the [`ReadSettings`] a
+    /// query takes, because the thresholds it answers are the configured values and
+    /// not the ones scoped to one read.
+    pub(crate) fn settings(&self) -> &Settings {
+        &self.settings
     }
 
     /// Runs one tool by name over its arguments.

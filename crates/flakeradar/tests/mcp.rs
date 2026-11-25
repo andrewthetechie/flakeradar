@@ -325,7 +325,7 @@ async fn seed(db: &TestDb) -> i64 {
 }
 
 #[tokio::test]
-async fn the_tools_are_the_eleven_the_wire_declares() {
+async fn the_tools_are_the_twelve_the_wire_declares() {
     let db = TestDb::new().await.expect("a test database is available");
     let app = mcp_app(&db);
     let reply = rpc(&app, "tools/list", None, json!({})).await;
@@ -337,6 +337,7 @@ async fn the_tools_are_the_eleven_the_wire_declares() {
         [
             "ci_run_failures",
             "get_job",
+            "get_settings",
             "get_test",
             "link_issue",
             "list_projects",
@@ -348,6 +349,74 @@ async fn the_tools_are_the_eleven_the_wire_declares() {
             "unlink_issue",
         ]
     );
+}
+
+#[tokio::test]
+async fn get_settings_answers_the_configured_thresholds_and_the_digest() {
+    // The tool reads the `Settings` this server runs with, so an app configured
+    // away from the defaults answers its own numbers and the `mon@09` spelling of
+    // its digest schedule.
+    let db = TestDb::new().await.expect("a test database is available");
+    let app = app(
+        &db,
+        &[
+            ("FLAKERADAR_API_TOKEN", TOKEN),
+            ("FLAKERADAR_FLAKE_THRESHOLD", "0.5"),
+            ("FLAKERADAR_BROKEN_STREAK", "3"),
+            ("FLAKERADAR_DIGEST", "mon@09"),
+        ],
+    );
+    let result = call(&app, "get_settings", json!({})).await;
+    assert_eq!(result["flake_threshold"], 0.5);
+    assert_eq!(result["broken_streak"], 3);
+    assert_eq!(result["new_test_days"], 7);
+    assert_eq!(result["github"]["close_fixed"], false);
+    assert_eq!(result["github"]["min_score"], 0.3);
+    assert_eq!(result["digest"], "mon@09");
+}
+
+#[tokio::test]
+async fn get_settings_answers_the_shipped_defaults_and_a_null_digest() {
+    // The plain app runs with the shipped defaults, so the same tool answers the
+    // window a reader would otherwise assume, and `null` for a digest that is off.
+    let db = TestDb::new().await.expect("a test database is available");
+    let app = mcp_app(&db);
+    let result = call(&app, "get_settings", json!({})).await;
+    assert_eq!(result["digest"], Value::Null);
+    assert_eq!(result["score_window"], 50);
+}
+
+#[tokio::test]
+async fn get_settings_refuses_an_argument_and_holds_no_secret() {
+    // The tool takes nothing, so an argument is the same validation error every
+    // other tool answers, and neither the refusal nor the answer carries a token.
+    let db = TestDb::new().await.expect("a test database is available");
+    let app = mcp_app(&db);
+    let raw = call_result(&app, "get_settings", json!({"repo": "o/r"})).await;
+    assert_eq!(
+        raw.get("isError"),
+        Some(&Value::Bool(true)),
+        "an argument to a tool that takes none must be refused: {raw}"
+    );
+    assert!(
+        text(&raw).starts_with("1 validation error for call[get_settings]"),
+        "the refusal names the tool: {}",
+        text(&raw)
+    );
+
+    let result = call_result(&app, "get_settings", json!({})).await;
+    let answer = data(&result);
+    assert!(
+        !text(&result).contains(TOKEN),
+        "the answer text carries the token: {}",
+        text(&result)
+    );
+    for secret in ["api_token", "database_url", "github_token", "webhook_urls"] {
+        assert!(
+            answer.get(secret).is_none(),
+            "the answer holds the secret key {secret}: {answer}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -635,7 +704,7 @@ async fn two_requests_with_no_session_header_both_succeed() {
         assert_eq!(reply.header("mcp-session-id"), None);
         assert_eq!(
             reply.json()["result"]["tools"].as_array().map(Vec::len),
-            Some(11)
+            Some(12)
         );
     }
 }
