@@ -28,8 +28,8 @@ use std::sync::Arc;
 use chrono::NaiveDate;
 use flakeradar_core::{
     classify::FailureCategory, dto::ScorePointOut, identity::DEFAULT_PROJECT,
-    identity::IdentityError, identity::normalize_project, identity::normalize_repo, lax,
-    model::EntityKind, py::TRUNCATION_MARKER, py::strip_wire_whitespace,
+    identity::IdentityError, lax, model::EntityKind, py::TRUNCATION_MARKER,
+    py::strip_wire_whitespace,
 };
 use flakeradar_db::issue_links::LinkError;
 use flakeradar_db::reads::{ReadError, ReadSettings, Scope, SortKey};
@@ -47,6 +47,7 @@ use serde::{Deserialize as _, Serialize};
 use serde_json::{Value, json};
 
 use crate::BoxFuture;
+use crate::args;
 use crate::settings::Settings;
 
 mod prompts;
@@ -58,18 +59,6 @@ pub use transport::{MCP_PATH, router};
 
 /// What one tool's answer is, as the framework carries it.
 pub(crate) type ToolResult = Result<ToolAnswer, ToolFailure>;
-
-/// The largest `limit` a listing tool accepts.
-///
-/// The REST leaderboards cap a page at the same number, so a tool that took more
-/// would answer rows no client could page to; the MCP surface refuses instead.
-pub(crate) const MAX_LIMIT: i64 = flakeradar_core::limits::LIST_LIMIT_MAX;
-
-/// The widest "became flaky recently" window a tool accepts, in days.
-///
-/// The REST `?new_within_days=` parameter enforces the same bound, because both
-/// read the same Score history.
-pub(crate) const MAX_NEW_WITHIN_DAYS: i64 = flakeradar_core::limits::NEW_WITHIN_DAYS_MAX;
 
 /// How many characters of a Failure's details a tool returns.
 ///
@@ -102,10 +91,10 @@ const SCORE_HISTORY_MAX: usize = 30;
 /// The default `limit` and `executions_limit` every listing tool declares.
 ///
 /// A tool's answer is read into a model's context, so the default page is small:
-/// 20 rows is a list a reader can act on, and both arguments accept up to
-/// [`MAX_LIMIT`] for a caller that asks for more. Every tool's published
-/// `inputSchema` states this default, so changing it changes the wire
-/// `tests/parity` replays.
+/// 20 rows is a list a reader can act on, and both arguments accept up to the
+/// bound [`crate::args::listing_limit`] enforces for a caller that asks for more.
+/// Every tool's published `inputSchema` states this default, so changing it
+/// changes the wire `tests/parity` replays.
 pub(crate) const DEFAULT_LIMIT: i64 = 20;
 
 /// The version this server reports in `serverInfo`.
@@ -526,62 +515,57 @@ fn missing_field(message: &str) -> Option<&str> {
 
 /// The scope a Repo and an optional Project name.
 fn scope(repo: &str, project: Option<&str>) -> Result<Scope, ToolFailure> {
-    let repo = normalize_repo(repo).map_err(|error| ToolFailure::Tool(error.to_string()))?;
-    let project = match project {
-        Some(raw) => Some(
-            normalize_project(Some(raw)).map_err(|error| ToolFailure::Tool(error.to_string()))?,
-        ),
-        None => None,
-    };
-    Scope::new(Some(repo), project).map_err(|error| ToolFailure::Tool(error.to_string()))
+    args::scope(Some(repo), project).map_err(|refusal| ToolFailure::Tool(refusal.to_string()))
 }
 
-/// Refuses a `limit` outside 1 to [`MAX_LIMIT`].
+/// The sentence a range refusal becomes in a tool's answer: the bound the rule
+/// states, in the words both doors have always published for it.
+pub(crate) fn refusal_text(refusal: &args::RangeRefusal) -> String {
+    format!(
+        "{} must be between {} and {}",
+        refusal.field, refusal.min, refusal.max
+    )
+}
+
+/// Refuses a `limit` outside the listing bound the rulebook shares with the REST
+/// leaderboards, so a tool cannot answer rows no client could page to.
 fn check_limit(limit: i64) -> Result<(), ToolFailure> {
-    if !(1..=MAX_LIMIT).contains(&limit) {
-        return Err(ToolFailure::Tool(format!(
-            "limit must be between 1 and {MAX_LIMIT}"
-        )));
-    }
-    Ok(())
+    args::listing_limit(limit).map_err(|refusal| ToolFailure::Tool(refusal_text(&refusal)))
 }
 
-/// Refuses a `new_within_days` outside 1 to [`MAX_NEW_WITHIN_DAYS`].
+/// Refuses a `new_within_days` outside the window the rulebook shares with the
+/// REST `?new_within_days=` parameter, because both read the same Score history.
 fn check_new_within_days(days: i64) -> Result<(), ToolFailure> {
-    if !(1..=MAX_NEW_WITHIN_DAYS).contains(&days) {
-        return Err(ToolFailure::Tool(format!(
-            "new_within_days must be between 1 and {MAX_NEW_WITHIN_DAYS}"
-        )));
-    }
-    Ok(())
+    args::new_within_days(days).map_err(|refusal| ToolFailure::Tool(refusal_text(&refusal)))
 }
 
 /// The Failure category a `category` argument names.
 fn parse_category(text: &str) -> Result<FailureCategory, ToolFailure> {
-    FailureCategory::from_wire(text).ok_or_else(|| {
-        ToolFailure::Tool(format!(
-            "category must be one of: {}",
-            FailureCategory::ALL
-                .iter()
-                .map(|category| category.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        ))
-    })
+    args::category(text).map_err(|refusal| ToolFailure::Tool(category_text(&refusal)))
+}
+
+/// The sentence a category refusal becomes: every option bare, after a colon.
+fn category_text(refusal: &args::NameRefusal) -> String {
+    format!(
+        "{} must be one of: {}",
+        refusal.field,
+        refusal.options.join(", ")
+    )
 }
 
 /// The sort order a `sort` argument names.
 fn parse_sort(text: &str) -> Result<SortKey, ToolFailure> {
-    SortKey::parse(text).ok_or_else(|| {
-        ToolFailure::Tool(format!(
-            "sort must be one of {}",
-            SortKey::SPELLINGS
-                .iter()
-                .map(|spelling| format!("'{spelling}'"))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ))
-    })
+    args::sort(text).map_err(|refusal| ToolFailure::Tool(sort_text(&refusal)))
+}
+
+/// The sentence a sort refusal becomes: every option quoted, with no colon.
+fn sort_text(refusal: &args::NameRefusal) -> String {
+    let options: Vec<String> = refusal
+        .options
+        .iter()
+        .map(|option| format!("'{option}'"))
+        .collect();
+    format!("{} must be one of {}", refusal.field, options.join(", "))
 }
 
 /// The query a search tool uses, refusing one that is blank.
