@@ -715,6 +715,28 @@
         "type": "object"
       },
       "title": "Unlink Issue"
+    },
+    {
+      "_meta": {
+        "fastmcp": {
+          "tags": []
+        }
+      },
+      "annotations": {
+        "readOnlyHint": true
+      },
+      "description": "This instance's scoring and filing settings: thresholds, windows and the\nweekly digest schedule, as text. Contains no credentials.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "name": "get_settings",
+      "outputSchema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "title": "Get Settings"
     }
   ]
 }

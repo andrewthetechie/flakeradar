@@ -66,6 +66,7 @@ In production, always use HTTPS, so that the token is not sent as clear text.
 | `ci_run_failures(repo, ci_run_id, ci_run_attempt?)` | The failing tests of one CI run attempt (the latest by default) with their current tier and score, its failed jobs (explained or unexplained), and its report counts. |
 | `link_issue(number, test_id \| job_id, replace=false)` | Writes. Links GitHub issue `number`, in the repo of the test or job, so FlakeRadar shows it and files no issue of its own. A different linked issue is an error unless `replace` is true. Returns the test or job. |
 | `unlink_issue(test_id \| job_id)` | Writes. Removes the issue link of a test or job. Returns the test or job. |
+| `get_settings` | This instance's scoring, filing and digest settings, with no arguments: the eight scoring keys `flake_threshold`, `recover_threshold`, `score_window`, `score_decay`, `broken_streak`, `new_test_days`, `infra_fail_share` and `infra_min_tests`; the GitHub filing gates under `github`, namely `min_score`, `min_proven_flakes`, `min_failures`, `fixed_streak`, `close_fixed` and `reopen_days`; and the weekly digest schedule as `digest`, the text `mon@09` or `null` when digest sending is off. Read-only, and contains no credentials: never a token, database URL or Webhook URL. |
 
 The read tools have the MCP annotation `readOnlyHint: true`. The two write
 tools have `readOnlyHint: false`, so your client can ask you before it calls

@@ -1,4 +1,4 @@
-//! The eleven tools, one file each, in the order `tools/list` answers.
+//! The twelve tools, one file each, in the order `tools/list` answers.
 //!
 //! Each tool file states its own name, title, description, argument schema,
 //! argument struct, annotations and handler, so adding a tool is one file plus
@@ -11,6 +11,7 @@
 
 mod ci_run_failures;
 mod get_job;
+mod get_settings;
 mod get_test;
 mod link_issue;
 mod list_projects;
@@ -68,7 +69,7 @@ macro_rules! row {
 }
 
 /// Every tool, in the order `tools/list` answers.
-pub(crate) const TOOLS: [ToolSpec; 11] = [
+pub(crate) const TOOLS: [ToolSpec; 12] = [
     row!(list_repos),
     row!(list_projects),
     row!(top_flaky_tests),
@@ -80,6 +81,7 @@ pub(crate) const TOOLS: [ToolSpec; 11] = [
     row!(ci_run_failures),
     row!(link_issue),
     row!(unlink_issue),
+    row!(get_settings),
 ];
 
 /// The row a client's tool name names, or `None` when no tool has it.
@@ -210,8 +212,9 @@ mod tests {
     use serde_json::Value;
 
     use super::{
-        REFUSAL, Recorder, TOOLS, ci_run_failures, get_job, get_test, link_issue, list_projects,
-        list_repos, search_jobs, search_tests, top_flaky_jobs, top_flaky_tests, unlink_issue,
+        REFUSAL, Recorder, TOOLS, ci_run_failures, get_job, get_settings, get_test, link_issue,
+        list_projects, list_repos, search_jobs, search_tests, top_flaky_jobs, top_flaky_tests,
+        unlink_issue,
     };
 
     /// The fields one tool's argument struct accepts, as serde names them.
@@ -221,7 +224,7 @@ mod tests {
     ///
     /// The list names tools and holds one function pointer each; the argument
     /// names themselves come from serde, so nothing here restates a schema.
-    const ACCEPTED: [(&str, Fields); 11] = [
+    const ACCEPTED: [(&str, Fields); 12] = [
         (list_repos::NAME, list_repos::accepted_fields),
         (list_projects::NAME, list_projects::accepted_fields),
         (top_flaky_tests::NAME, top_flaky_tests::accepted_fields),
@@ -233,6 +236,7 @@ mod tests {
         (ci_run_failures::NAME, ci_run_failures::accepted_fields),
         (link_issue::NAME, link_issue::accepted_fields),
         (unlink_issue::NAME, unlink_issue::accepted_fields),
+        (get_settings::NAME, get_settings::accepted_fields),
     ];
 
     #[test]

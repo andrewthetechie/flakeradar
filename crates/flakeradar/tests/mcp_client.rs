@@ -143,6 +143,7 @@ async fn a_real_mcp_client_lists_the_tools() {
         vec![
             "ci_run_failures",
             "get_job",
+            "get_settings",
             "get_test",
             "link_issue",
             "list_projects",
