@@ -29,6 +29,7 @@ pub mod app;
 pub mod args;
 pub mod assets;
 pub mod cli;
+pub mod digest;
 pub mod docs;
 pub mod error;
 pub mod extract;
