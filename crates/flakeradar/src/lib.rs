@@ -26,6 +26,7 @@
 use std::pin::Pin;
 
 pub mod app;
+pub mod args;
 pub mod assets;
 pub mod cli;
 pub mod docs;

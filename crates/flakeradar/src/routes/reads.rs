@@ -14,7 +14,6 @@ use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Router, middleware};
 use flakeradar_core::defaults;
-use flakeradar_core::limits::{LIST_LIMIT_MAX, NEW_WITHIN_DAYS_MAX};
 use flakeradar_core::{
     classify::FailureCategory, dto::AcknowledgeIn, dto::CiRunFailuresOut, dto::FinishIssues,
     dto::HistoryOut, dto::Issues, dto::JobHistoryOut, dto::JobOut, dto::JobPage,
@@ -33,7 +32,6 @@ use flakeradar_db::{
     reads::ListOptions,
     reads::Listing,
     reads::ListingPage,
-    reads::MAX_EXECUTIONS_LIMIT,
     reads::ReadSettings,
     reads::Scope,
     reads::SortKey,
@@ -50,6 +48,7 @@ use serde::Deserialize;
 use serde_json::Value as JsonValue;
 
 use crate::app::AppState;
+use crate::args;
 use crate::error::{ApiError, ApiResult, RouteError, RouteResult, identity_error};
 use crate::extract::{ApiJson, ApiPath, ApiQuery, Validate, query_loc};
 use crate::middleware::require_token;
@@ -127,84 +126,85 @@ fn check_ge(value: Option<i64>, min: i64, field: &str, issues: &mut Vec<Validati
     }
 }
 
-/// Records a number above its maximum.
-fn check_le(value: Option<i64>, max: i64, field: &str, issues: &mut Vec<ValidationIssue>) {
-    if let Some(value) = value
-        && value > max
-    {
-        issues.push(ValidationIssue::less_than_equal(
-            query_loc(field),
-            JsonValue::from(value),
-            max,
-        ));
+/// The 422 issue a rulebook range refusal becomes, on the low side or the high.
+pub(crate) fn refusal_issue(refusal: &args::RangeRefusal) -> ValidationIssue {
+    let loc = query_loc(refusal.field);
+    let input = JsonValue::from(refusal.value);
+    if refusal.value < refusal.min {
+        ValidationIssue::greater_than_equal(loc, input, refusal.min)
+    } else {
+        ValidationIssue::less_than_equal(loc, input, refusal.max)
     }
 }
 
-/// The largest `page` whose `OFFSET` fits an `i64` at [`LIST_LIMIT_MAX`].
-///
-/// Only the bottom of the range was bounded before, so a page past this one
-/// wrapped in release builds and panicked in development ones. A page real
-/// clients ask for is a handful of digits.
-const PAGE_MAX: i64 = i64::MAX / LIST_LIMIT_MAX;
-
-/// The paging range both leaderboards share.
-fn validate_paging(page: Option<i64>, page_size: Option<i64>, issues: &mut Vec<ValidationIssue>) {
-    check_ge(page, 1, "page", issues);
-    check_le(page, PAGE_MAX, "page", issues);
-    check_ge(page_size, 1, "page_size", issues);
-    check_le(page_size, LIST_LIMIT_MAX, "page_size", issues);
+/// The 422 issue a rulebook name refusal becomes, listing its options.
+pub(crate) fn name_refusal_issue(refusal: &args::NameRefusal) -> ValidationIssue {
+    ValidationIssue::literal_error(
+        query_loc(refusal.field),
+        JsonValue::from(refusal.value.clone()),
+        &expected_options(&refusal.options),
+    )
 }
 
-/// The `new_within_days` range both leaderboards share.
-fn validate_new_within_days(value: Option<i64>, issues: &mut Vec<ValidationIssue>) {
-    check_ge(value, 1, "new_within_days", issues);
-    check_le(value, NEW_WITHIN_DAYS_MAX, "new_within_days", issues);
-}
-
-/// Records a `sort` value that is not one of the four orders.
-fn validate_sort(sort: Option<&String>, issues: &mut Vec<ValidationIssue>) {
-    if let Some(sort) = sort
-        && SortKey::parse(sort).is_none()
-    {
-        issues.push(ValidationIssue::literal_error(
-            query_loc("sort"),
-            JsonValue::from(sort.clone()),
-            "'score', 'last_seen', 'proven' or 'impact'",
-        ));
-    }
-}
-
-/// The expected list of Failure categories, as the 422 spells it.
-fn category_expected() -> String {
-    let names: Vec<String> = FailureCategory::ALL
-        .iter()
-        .map(|category| format!("'{}'", category.as_str()))
-        .collect();
+/// A set of accepted spellings, as the 422 spells them: `'x', 'y' or 'z'`.
+fn expected_options(options: &[&'static str]) -> String {
+    let names: Vec<String> = options.iter().map(|option| format!("'{option}'")).collect();
     match names.split_last() {
         Some((last, rest)) => format!("{} or {last}", rest.join(", ")),
         None => String::new(),
     }
 }
 
+/// Records a rulebook range refusal, if the rule answered with one.
+fn record_range(result: Result<(), args::RangeRefusal>, issues: &mut Vec<ValidationIssue>) {
+    if let Err(refusal) = result {
+        issues.push(refusal_issue(&refusal));
+    }
+}
+
+/// Records a rulebook name refusal, if the rule answered with one.
+fn record_name<T>(result: Result<T, args::NameRefusal>, issues: &mut Vec<ValidationIssue>) {
+    if let Err(refusal) = result {
+        issues.push(name_refusal_issue(&refusal));
+    }
+}
+
+/// The paging range both leaderboards share.
+fn validate_paging(page: Option<i64>, page_size: Option<i64>, issues: &mut Vec<ValidationIssue>) {
+    if let Some(page) = page {
+        record_range(args::page(page), issues);
+    }
+    if let Some(page_size) = page_size {
+        record_range(args::page_size(page_size), issues);
+    }
+}
+
+/// The `new_within_days` range both leaderboards share.
+fn validate_new_within_days(value: Option<i64>, issues: &mut Vec<ValidationIssue>) {
+    if let Some(value) = value {
+        record_range(args::new_within_days(value), issues);
+    }
+}
+
+/// Records a `sort` value that is not one of the four orders.
+fn validate_sort(sort: Option<&String>, issues: &mut Vec<ValidationIssue>) {
+    if let Some(sort) = sort {
+        record_name(args::sort(sort), issues);
+    }
+}
+
 /// Records a `category` value that is not one of the five.
 fn validate_category(category: Option<&String>, issues: &mut Vec<ValidationIssue>) {
-    if let Some(category) = category
-        && !FailureCategory::ALL
-            .iter()
-            .any(|known| known.as_str() == category)
-    {
-        issues.push(ValidationIssue::literal_error(
-            query_loc("category"),
-            JsonValue::from(category.clone()),
-            &category_expected(),
-        ));
+    if let Some(category) = category {
+        record_name(args::category(category), issues);
     }
 }
 
 /// Records a `limit` outside the detail routes' range.
 fn validate_limit(limit: Option<i64>, issues: &mut Vec<ValidationIssue>) {
-    check_ge(limit, 1, "limit", issues);
-    check_le(limit, MAX_EXECUTIONS_LIMIT, "limit", issues);
+    if let Some(limit) = limit {
+        record_range(args::executions_limit(limit), issues);
+    }
 }
 
 /// The optional `?repo=&project=` pair several routes take.
@@ -228,16 +228,8 @@ impl Validate for ScopeQuery {
 }
 
 /// Builds the Scope a query names, normalizing both names.
-fn scope_of(repo: Option<String>, project: Option<String>) -> RouteResult<Scope> {
-    let repo = match repo {
-        Some(raw) => Some(normalize_repo(&raw).map_err(|error| identity_error(&error))?),
-        None => None,
-    };
-    let project = match project {
-        Some(raw) => Some(normalize_project(Some(&raw)).map_err(|error| identity_error(&error))?),
-        None => None,
-    };
-    Scope::new(repo, project).map_err(|error| detail_error(error.to_string()).into())
+fn scope_of(repo: Option<&str>, project: Option<&str>) -> RouteResult<Scope> {
+    args::scope(repo, project).map_err(|refusal| detail_error(refusal.to_string()).into())
 }
 
 /// The query parameters of `GET /api/tests`.
@@ -480,7 +472,7 @@ pub async fn tests(
     State(state): State<AppState>,
     ApiQuery(query): ApiQuery<TestsQuery>,
 ) -> RouteResult<Json<ListingPage>> {
-    let scope = scope_of(query.repo.clone(), query.project.clone())?;
+    let scope = scope_of(query.repo.as_deref(), query.project.as_deref())?;
     let (filters, options) = query.parts();
     let listing = Listing {
         scope,
@@ -517,7 +509,7 @@ pub async fn test_summary(
     State(state): State<AppState>,
     ApiQuery(query): ApiQuery<ScopeQuery>,
 ) -> RouteResult<Json<SummaryOut>> {
-    let scope = scope_of(query.repo, query.project)?;
+    let scope = scope_of(query.repo.as_deref(), query.project.as_deref())?;
     Ok(Json(
         summary(state.pool(), &scope, &read_settings(&state)).await?,
     ))
