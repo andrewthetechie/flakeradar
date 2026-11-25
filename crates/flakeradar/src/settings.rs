@@ -840,6 +840,25 @@ impl Settings {
         crate::worker::WorkerSettings::from_settings(self)
     }
 
+    /// The GitHub work's view of these settings.
+    ///
+    /// The struct lives with its consumers in [`crate::github`], which reads only
+    /// these values: the token arrives where the [`crate::github::Api`] is built,
+    /// and the public URL stays flat because the webhook render shares it.
+    #[must_use]
+    pub fn github(&self) -> crate::github::GithubSettings {
+        crate::github::GithubSettings {
+            issue_min_score: self.github_issue_min_score,
+            issue_min_proven_flakes: self.github_issue_min_proven_flakes,
+            issue_min_failures: self.github_issue_min_failures,
+            issue_label: self.github_issue_label.clone(),
+            sync_batch: self.github_sync_batch,
+            fixed_streak: self.github_fixed_streak,
+            close_fixed: self.github_close_fixed,
+            reopen_days: self.github_reopen_days,
+        }
+    }
+
     /// The database settings the connection pool is built with.
     ///
     /// # Errors
@@ -1868,5 +1887,38 @@ mod tests {
             .expect("the fixture is valid");
         let clock: flakeradar_db::clock::SharedClock = Arc::new(flakeradar_db::clock::SystemClock);
         assert_eq!(settings.reads(clock).new_test_days, 3);
+    }
+
+    #[test]
+    fn the_github_projection_agrees_with_the_flat_fields() {
+        let settings = Settings::from_map(&map(&[
+            ("FLAKERADAR_GITHUB_ISSUE_LABEL", "flaky"),
+            ("FLAKERADAR_GITHUB_ISSUE_MIN_SCORE", "0.4"),
+            ("FLAKERADAR_GITHUB_ISSUE_MIN_PROVEN_FLAKES", "3"),
+            ("FLAKERADAR_GITHUB_ISSUE_MIN_FAILURES", "4"),
+            ("FLAKERADAR_GITHUB_SYNC_BATCH", "10"),
+            ("FLAKERADAR_GITHUB_FIXED_STREAK", "11"),
+            ("FLAKERADAR_GITHUB_CLOSE_FIXED", "true"),
+            ("FLAKERADAR_GITHUB_REOPEN_DAYS", "7"),
+        ]))
+        .expect("the fixture is valid");
+        // Every variable carries a distinct value that its field defaults to
+        // neither, so a projection field read from the wrong flat setting shows
+        // up here instead of passing on a copied default.
+        let github = settings.github();
+        assert_eq!(github.issue_min_score, settings.github_issue_min_score);
+        assert_eq!(
+            github.issue_min_proven_flakes,
+            settings.github_issue_min_proven_flakes
+        );
+        assert_eq!(
+            github.issue_min_failures,
+            settings.github_issue_min_failures
+        );
+        assert_eq!(github.issue_label, settings.github_issue_label);
+        assert_eq!(github.sync_batch, settings.github_sync_batch);
+        assert_eq!(github.fixed_streak, settings.github_fixed_streak);
+        assert_eq!(github.close_fixed, settings.github_close_fixed);
+        assert_eq!(github.reopen_days, settings.github_reopen_days);
     }
 }

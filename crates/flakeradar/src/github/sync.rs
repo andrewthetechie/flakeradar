@@ -46,7 +46,7 @@ pub async fn sync_closed_issues(
     if !api.configured() {
         return report;
     }
-    let batch = settings.github_sync_batch;
+    let batch = settings.github().sync_batch;
     let mut rows: Vec<(EntityKind, issue_links::LinkedIssue)> = Vec::new();
     for target in EntityKind::ALL {
         match issue_links::linked_for_check(db, target, batch).await {

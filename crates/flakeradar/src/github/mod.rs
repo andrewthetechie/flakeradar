@@ -108,6 +108,32 @@ pub use sync::{CLOSE_COMMENT, close_issues_after_removal, sync_closed_issues};
 
 use crate::settings::Settings;
 
+/// The configuration the GitHub work reads, built by [`Settings::github`].
+///
+/// It names only the values this directory's modules use. The token is absent
+/// because it is read where [`Api`] is built, and the public URL is absent
+/// because the webhook render shares it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GithubSettings {
+    /// The Flakiness score a Test must reach before FlakeRadar files an issue.
+    pub issue_min_score: f64,
+    /// The Proven flake count a Test must reach before an issue is filed. `0` skips the gate.
+    pub issue_min_proven_flakes: i64,
+    /// The recent failure count a Test must reach before an issue is filed. `0` skips it.
+    pub issue_min_failures: i64,
+    /// The label applied to every auto-filed GitHub issue.
+    pub issue_label: String,
+    /// How many linked Tests, and separately Jobs, one maintenance sync checks.
+    pub sync_batch: i64,
+    /// The Clean streak at which FlakeRadar comments once that a fix appears to hold.
+    pub fixed_streak: i64,
+    /// Whether to also close the issue whose fix appears to hold.
+    pub close_fixed: bool,
+    /// How many days a closed issue stays eligible to be reopened instead of
+    /// refiled; `0` disables reopening.
+    pub reopen_days: i64,
+}
+
 /// The `ReportWorker` hook: file issues for the Tests and Jobs a Report touched.
 ///
 /// Also notes the rows whose Clean streak now proves the fix held. A newly filed
