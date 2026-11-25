@@ -7,6 +7,8 @@
 //! and the quarantine columns — so a digest of a week is never a second account
 //! of it. The impact numbers come from the very fragment the board serves, so a
 //! digest and the leaderboard cannot disagree about what a flake cost.
+//! [`claim_digest_slot`] is the one write: the single-row ledger of which week's
+//! digest a caller has taken, so a second caller sends nothing.
 
 // Rust guideline compliant 2026-07-21
 
@@ -19,7 +21,7 @@ use crate::entity::{IMPACT_COLUMNS, entity, impact_lateral_sql, impact_since};
 use crate::error::DbError;
 use crate::reads::ReadSettings;
 use crate::score_history;
-use crate::sql::{Binds, get, id, optional_timestamp, rows};
+use crate::sql::{Binds, get, id, one, optional_timestamp, rows};
 
 /// How many days a digest spans: one week, backwards and forwards.
 ///
@@ -41,6 +43,37 @@ const TOP_IMPACT_MAX: i64 = 5;
 /// The columns every digest list reports: a Test's own identity and its score.
 const DIGEST_COLUMNS: &str =
     "SELECT t.id, t.classname, t.name, t.flakiness_score, p.name AS project";
+
+/// Claims one weekly digest slot, answering whether this caller owns it.
+///
+/// The slot is claimed *before* the digest is built and its `POST` is sent,
+/// because delivery is best effort (ADR 0009,
+/// `docs/adr/0009-webhook-notifications.md`): a restart or a second replica must
+/// not send one week's digest twice, so a lost digest is accepted over a
+/// duplicate. `digest_state` is the ledger of what has been claimed — one row,
+/// whose `id` migration 0007 pins to 1 — and one statement writes
+/// `last_sent_at = slot` only when no row exists or the stored slot is older, so
+/// exactly one caller hears `true` for a week. A digest that is claimed but never
+/// sent, because the process died in between, is the loss that rule buys.
+///
+/// # Errors
+///
+/// Returns [`DbError::Database`] when the statement fails.
+pub async fn claim_digest_slot(
+    db: &impl ConnectionTrait,
+    slot: DateTime<Utc>,
+) -> Result<bool, DbError> {
+    let claimed = one(
+        db,
+        "INSERT INTO digest_state (id, last_sent_at) VALUES (1, $1) \
+           ON CONFLICT (id) DO UPDATE SET last_sent_at = $1 \
+           WHERE digest_state.last_sent_at < $1 \
+           RETURNING last_sent_at",
+        vec![Value::from(slot)],
+    )
+    .await?;
+    Ok(claimed.is_some())
+}
 
 /// The weekly flaky-test digest: one entry per Repo with something to report,
 /// ordered by Repo name.

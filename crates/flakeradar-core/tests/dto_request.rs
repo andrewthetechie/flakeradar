@@ -386,6 +386,23 @@ fn an_acknowledge_body_requires_the_flag_and_the_days_it_names() {
     );
 }
 
+/// A `days` that is no integer has recorded its own lax issue: the rulebook says
+/// so once, with the lax kind, and never adds a range complaint on top.
+#[test]
+fn an_acknowledge_body_refuses_a_day_count_that_is_no_integer_by_its_lax_kind() {
+    let issues = acknowledged(&json!({"acknowledged": true, "days": "3.5"}))
+        .expect_err("a fraction is no integer of days");
+    assert_eq!(issues.len(), 1, "the range rule adds nothing: {issues:?}");
+    assert_eq!(issues[0].r#type, "int_parsing");
+    assert_eq!(
+        issues[0].loc,
+        [
+            LocSegment::Field("body".to_owned()),
+            LocSegment::Field("days".to_owned())
+        ]
+    );
+}
+
 #[test]
 fn an_acknowledge_body_takes_a_day_count_between_one_and_thirty() {
     for days in [1, 30] {

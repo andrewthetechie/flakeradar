@@ -209,6 +209,38 @@ async fn a_server_with_webhook_urls_starts_and_stops_the_notification_task() {
 }
 
 #[tokio::test]
+async fn a_server_with_a_digest_schedule_and_urls_starts_and_stops_the_digest_task() {
+    let db = TestDb::new().await.expect("a test database");
+    let settings = settings(&[
+        ("FLAKERADAR_DATABASE_URL", db.url()),
+        ("FLAKERADAR_HOST", "127.0.0.1"),
+        ("FLAKERADAR_PORT", "0"),
+        ("FLAKERADAR_API_TOKEN", "a-real-token"),
+        ("FLAKERADAR_DIGEST", "mon@09"),
+        ("FLAKERADAR_WEBHOOK_URLS", "http://127.0.0.1:1/hook"),
+    ]);
+    let server = Server::start(settings).await.expect("the server starts");
+    let address = server.local_addr();
+    let (stop, stopped) = oneshot::channel();
+    let serving = tokio::spawn(server.serve(async move {
+        let _ = stopped.await;
+    }));
+
+    let reply = reqwest::Client::new()
+        .get(format!("http://{address}/api/health"))
+        .send()
+        .await
+        .expect("the socket answers");
+    assert_eq!(reply.status(), 200);
+
+    let _ = stop.send(());
+    serving
+        .await
+        .expect("the serving task ends")
+        .expect("the server stops cleanly with the Digest task running");
+}
+
+#[tokio::test]
 async fn the_readiness_probe_reports_the_worker_leading_and_releases_it_on_shutdown() {
     let db = TestDb::new().await.expect("a test database");
     let server = Server::start(settings_for(&db))

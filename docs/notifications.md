@@ -121,3 +121,92 @@ oldest messages, so a long endpoint outage also loses messages.
 
 The dashboard still shows the current tier, and the next report that changes
 the tier sends a new message.
+
+## Weekly digest
+
+Set `FLAKERADAR_DIGEST` to a weekday and a UTC hour, spelled `mon@09`, and
+FlakeRadar posts a summary of the week to every [Webhook
+URL](configuration.md#settings) once a week at that hour. An unset or empty
+value sends nothing, and a value that is not a day and a two-digit hour stops the
+process at start-up. The digest needs at least one `FLAKERADAR_WEBHOOK_URLS`
+entry: a slot with nowhere to post builds no task.
+
+The hour is UTC, because the digest says what a week held and a week is held in
+UTC. FlakeRadar checks the schedule when the task starts and then every five
+minutes, so a replica that took leadership just after the hour still sends within
+minutes of it.
+
+The slot is claimed in the `digest_state` table before anything is sent, and the
+claim is one row that only moves forward, so at most one replica — and at most
+one restart through the hour — sends a given week, however many FlakeRadar
+processes are running.
+
+`json` posts a list of `digest.weekly` events, one per repo with something to
+report:
+
+```json
+[
+  {
+    "event": "digest.weekly",
+    "repo": "acme/app",
+    "week_ending": "2026-11-09",
+    "newly_flaky": [
+      {
+        "id": 42,
+        "project": "backend",
+        "classname": "tests.test_auth",
+        "name": "test_login",
+        "flakiness_score": 0.42
+      }
+    ],
+    "recovered": [],
+    "top_impact": [
+      {
+        "id": 42,
+        "project": "backend",
+        "classname": "tests.test_auth",
+        "name": "test_login",
+        "flakiness_score": 0.42,
+        "impacted_runs": 12,
+        "time_lost_seconds": 340.5
+      }
+    ],
+    "quarantine_expiring": [
+      {
+        "id": 7,
+        "project": "backend",
+        "classname": "tests.test_ui",
+        "name": "test_scroll",
+        "flakiness_score": 0.51,
+        "quarantine_expires_at": "2026-11-14T09:00:00+00:00"
+      }
+    ]
+  }
+]
+```
+
+`newly_flaky` holds the tests that became flaky in the week, `recovered` those
+that were flaky and are no longer, `top_impact` those whose flakes cost the most
+CI runs, worst first, and `quarantine_expiring` those whose quarantine lapses in
+the coming week. A test in `top_impact` carries `impacted_runs` and
+`time_lost_seconds`, a test in `quarantine_expiring` carries
+`quarantine_expires_at`, and a test in neither list carries neither, so a
+consumer reads an absent key as "this list says nothing about that".
+`week_ending` is the UTC date the digest went out. A repo whose four lists are
+all empty is absent, so a week with nothing to report posts nothing.
+
+`slack` posts `{"text": ...}` with one block per repo, separated by a blank
+line, and a line per list that has anything in it:
+
+```
+FlakeRadar weekly digest — acme/app, week ending 2026-11-09
+Newly flaky: test_login
+Top impact: test_login (12 CI runs, 340.5s lost)
+Quarantine expiring: test_scroll (2026-11-14)
+```
+
+A digest is not retried. A `POST` that fails is logged, naming the endpoint's
+host, and dropped: the slot is already claimed, so a second attempt would be a
+second message for the week. Like a Notification's, delivery here is best effort
+([ADR 0009](adr/0009-webhook-notifications.md)) — a lost digest is better than a
+duplicate one. The next digest is the one next week.
