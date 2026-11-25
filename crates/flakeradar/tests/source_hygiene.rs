@@ -1,10 +1,11 @@
-//! Five properties of this workspace's own source, checked from outside it.
+//! Six properties of this workspace's own source, checked from outside it.
 //!
 //! All are rules a compiler cannot see: that every log event carries a name and a
 //! static message, that no comment or identifier in `crates/` points at the
 //! implementation this one replaced, that every hand-written file carries the
-//! compliance marker, that the Report route module owns no database write, and that
-//! the SQL literals of the tier rule live only in the module that owns them.
+//! compliance marker, that the Report route module owns no database write, that the
+//! SQL literals of the tier rule live only in the module that owns them, and that no
+//! GitHub source file names a flat setting field.
 //! Each rule is a function over the text of one file, so a test can feed it a
 //! violation as well as the tree, and every violation shape this file is named
 //! for has a case that runs through it.
@@ -378,6 +379,13 @@ const TIER_SCAN_DIR: &str = "crates/flakeradar-db/src/";
 /// `WHEN` and `flaky_since`.
 const TIER_CASE_LITERAL: &str = "CASE WHEN flaky_since";
 
+/// The GitHub module, whose files must read the `github()` projection rather than the
+/// flat `Settings` fields — the durable form of issue #241's criterion.
+const GITHUB_SCAN_DIR: &str = "crates/flakeradar/src/github/";
+
+/// The spelling the criterion refuses: a GitHub file naming a flat setting field.
+const GITHUB_FLAT_READ: &str = "settings.github_";
+
 /// Every line of a non-tier file under `crates/flakeradar-db/src/` that spells part
 /// of the classification, each naming the file, the line and the line itself.
 ///
@@ -393,6 +401,29 @@ fn tier_literal_offences(name: &str, text: &str) -> Vec<String> {
             if line.contains(literal) {
                 offences.push(format!("{name}:{}: {literal}: {}", number + 1, line.trim()));
             }
+        }
+    }
+    offences
+}
+
+/// Every line of a file under `crates/flakeradar/src/github/` that names a flat
+/// setting field, each naming the file, the line and the line itself.
+///
+/// The match is case-sensitive, like `rg`'s default, and files outside the scanned
+/// directory answer nothing at all. No file is exempt: the projection is the only way
+/// in.
+fn github_flat_read_offences(name: &str, text: &str) -> Vec<String> {
+    if !name.starts_with(GITHUB_SCAN_DIR) {
+        return Vec::new();
+    }
+    let mut offences = Vec::new();
+    for (number, line) in text.lines().enumerate() {
+        if line.contains(GITHUB_FLAT_READ) {
+            offences.push(format!(
+                "{name}:{}: {GITHUB_FLAT_READ}: {}",
+                number + 1,
+                line.trim()
+            ));
         }
     }
     offences
@@ -420,6 +451,22 @@ fn classification_literals_live_only_in_tier() {
         !metrics.1.contains(TIER_CASE_LITERAL),
         "{TIER_CASE_LITERAL} is spelled in {}, which must splice `tier::tier_case`",
         metrics.0
+    );
+}
+
+/// The GitHub work reads its values through the `github()` projection: no file under
+/// `crates/flakeradar/src/github/` names a flat setting field.
+#[test]
+fn no_github_file_names_a_flat_setting_field() {
+    let offences: Vec<String> = sources()
+        .iter()
+        .flat_map(|(name, text)| github_flat_read_offences(name, text))
+        .collect();
+    assert!(
+        offences.is_empty(),
+        "these lines name a flat setting field where `{GITHUB_SCAN_DIR}` must read the \
+         `github()` projection:\n{}",
+        offences.join("\n")
     );
 }
 
@@ -460,6 +507,38 @@ fn a_tier_literal_outside_the_tier_module_is_flagged() {
     let quiet = tier_literal_offences(
         "crates/flakeradar-db/src/reads.rs",
         "binds.raw(\"t.flaky_since IS NULL\");\n",
+    );
+    assert!(quiet.is_empty(), "an unrelated line is reported: {quiet:?}");
+}
+
+/// A flat setting read written back into a GitHub file is flagged, and the same line
+/// outside the scanned directory — even spelling the literal, like this file does — is
+/// not.
+#[test]
+fn a_github_flat_setting_read_is_flagged() {
+    let line = "    let batch = settings.github_sync_batch;\n";
+    let offences = github_flat_read_offences("crates/flakeradar/src/github/filing.rs", line);
+    assert_eq!(
+        offences,
+        vec![
+            "crates/flakeradar/src/github/filing.rs:1: settings.github_: \
+              let batch = settings.github_sync_batch;"
+        ],
+        "the flat read in a GitHub file is reported with its file and line"
+    );
+    // A file outside the scanned directory answers nothing even when it spells the
+    // literal: the flat fields are legitimate everywhere the projection is not
+    // required, and this file is such a file.
+    let outside = github_flat_read_offences("crates/flakeradar/tests/source_hygiene.rs", line);
+    assert!(
+        outside.is_empty(),
+        "the flat read is caught outside `{GITHUB_SCAN_DIR}`: {outside:?}"
+    );
+    // A line that does not spell the literal is not reported, so the rule is not a
+    // blanket refusal of the GitHub module.
+    let quiet = github_flat_read_offences(
+        "crates/flakeradar/src/github/sync.rs",
+        "let batch = settings.sync_batch;\n",
     );
     assert!(quiet.is_empty(), "an unrelated line is reported: {quiet:?}");
 }

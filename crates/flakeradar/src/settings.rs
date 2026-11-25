@@ -623,6 +623,26 @@ impl Settings {
         }
     }
 
+    /// The GitHub work's view of these settings.
+    ///
+    /// It names only the values the GitHub modules read. The token is not one of
+    /// them, because it is spent where [`crate::github::Api`] is built, and the
+    /// public URL is not either, because the Webhook render shares it. It takes
+    /// no clock, because every GitHub entry point already carries one.
+    #[must_use]
+    pub fn github(&self) -> crate::github::GithubSettings {
+        crate::github::GithubSettings {
+            issue_label: self.github_issue_label.clone(),
+            issue_min_score: self.github_issue_min_score,
+            issue_min_proven_flakes: self.github_issue_min_proven_flakes,
+            issue_min_failures: self.github_issue_min_failures,
+            sync_batch: self.github_sync_batch,
+            fixed_streak: self.github_fixed_streak,
+            close_fixed: self.github_close_fixed,
+            reopen_days: self.github_reopen_days,
+        }
+    }
+
     /// Reads the settings, overlaid on the defaults.
     ///
     /// `values` holds `FLAKERADAR_*` variables only; anything else is ignored, so a
@@ -1860,6 +1880,38 @@ mod tests {
             processing.infra_min_tests
         );
         assert_eq!(settings.retention(), retention);
+    }
+
+    #[test]
+    fn the_github_projection_agrees_with_the_flat_fields() {
+        // Every value here differs from its default, so a projection that
+        // restated a default instead of reading the field would fail this.
+        let settings = Settings::from_map(&map(&[
+            ("FLAKERADAR_GITHUB_ISSUE_LABEL", "flaky"),
+            ("FLAKERADAR_GITHUB_ISSUE_MIN_SCORE", "0.45"),
+            ("FLAKERADAR_GITHUB_ISSUE_MIN_PROVEN_FLAKES", "2"),
+            ("FLAKERADAR_GITHUB_ISSUE_MIN_FAILURES", "3"),
+            ("FLAKERADAR_GITHUB_SYNC_BATCH", "7"),
+            ("FLAKERADAR_GITHUB_FIXED_STREAK", "4"),
+            ("FLAKERADAR_GITHUB_CLOSE_FIXED", "true"),
+            ("FLAKERADAR_GITHUB_REOPEN_DAYS", "5"),
+        ]))
+        .expect("the fixture is valid");
+        let github = settings.github();
+        assert_eq!(github.issue_label, settings.github_issue_label);
+        assert_eq!(github.issue_min_score, settings.github_issue_min_score);
+        assert_eq!(
+            github.issue_min_proven_flakes,
+            settings.github_issue_min_proven_flakes
+        );
+        assert_eq!(
+            github.issue_min_failures,
+            settings.github_issue_min_failures
+        );
+        assert_eq!(github.sync_batch, settings.github_sync_batch);
+        assert_eq!(github.fixed_streak, settings.github_fixed_streak);
+        assert_eq!(github.close_fixed, settings.github_close_fixed);
+        assert_eq!(github.reopen_days, settings.github_reopen_days);
     }
 
     #[test]
