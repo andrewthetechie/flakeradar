@@ -43,6 +43,7 @@ pub mod routes;
 pub mod server;
 pub mod settings;
 mod telemetry;
+pub mod webhook_sender;
 pub mod webhooks;
 pub mod worker;
 
