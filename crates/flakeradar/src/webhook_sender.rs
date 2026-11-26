@@ -21,7 +21,13 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use crate::webhooks::WEBHOOK_TIMEOUT_SECONDS;
+/// How long one `POST` through the sender may take.
+///
+/// A Slack or Teams endpoint answers a small JSON post in well under a second, so
+/// five seconds is a generous ceiling that still bounds a leader task's stall on a
+/// black-holed endpoint. Raising it delays every message waiting behind a stuck
+/// one; lowering it fails a delivery a slow endpoint would have accepted.
+pub const WEBHOOK_TIMEOUT_SECONDS: u64 = 5;
 
 /// The endpoint identifier a log line may name: `url`'s host, or a generic label.
 ///
@@ -39,9 +45,10 @@ pub fn endpoint(url: &str) -> String {
 
 /// The HTTP client every Webhook goes through.
 ///
-/// The timeout is what keeps one slow endpoint from parking a leader task's queue,
-/// and the user agent is what every endpoint expects to be told. This is the seam
-/// a worker builds its client through, so a test can hand it a build that fails.
+/// The timeout of [`WEBHOOK_TIMEOUT_SECONDS`] is what keeps one slow endpoint from
+/// parking a leader task's queue, and the user agent is what every endpoint expects
+/// to be told. This is the seam a worker builds its client through, so a test can
+/// hand it a build that fails.
 ///
 /// # Errors
 ///

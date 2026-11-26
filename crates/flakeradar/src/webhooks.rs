@@ -51,17 +51,9 @@ pub const ATTEMPTS: usize = RETRY_DELAYS.len() + 1;
 /// Notification that still cannot be delivered is lost by design.
 ///
 /// The cap is per retry, not per batch: one endpoint holds its batch for at most
-/// [`ATTEMPTS`] attempts of [`WEBHOOK_TIMEOUT_SECONDS`] each with two capped
-/// waits between them.
+/// [`ATTEMPTS`] attempts of [`crate::webhook_sender::WEBHOOK_TIMEOUT_SECONDS`] each
+/// with two capped waits between them.
 pub const MAX_RETRY_AFTER_SECONDS: f64 = 10.0;
-
-/// How long one Notification attempt may take.
-///
-/// A Slack or Teams endpoint answers a small JSON post in well under a second, so
-/// five seconds is a generous ceiling that still bounds the queue's stall on a
-/// black-holed endpoint. Raising it delays every Notification behind a stuck
-/// one; lowering it fails a delivery a slow endpoint would have accepted.
-pub const WEBHOOK_TIMEOUT_SECONDS: u64 = 5;
 
 /// How many batches the Notification queue holds before it drops the oldest.
 ///
