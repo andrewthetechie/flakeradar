@@ -7,7 +7,9 @@
 //!
 //! This task never logs a Webhook URL: the URL is the credential, so a log line
 //! names an endpoint's host only, and a `reqwest` error has its URL removed
-//! before it is logged.
+//! before it is logged. The mechanics that keep that promise — the client, the
+//! host-only label, the redaction and the classification of one `POST` — belong
+//! to [`crate::webhook_sender`]; what stays here is the Notification's policy.
 //!
 //! A delivery and the wait before a retry end the moment leadership does, so a
 //! leader that drops never waits out an endpoint's timeout.
@@ -25,6 +27,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::BoxFuture;
 use crate::queue::BatchQueue;
+use crate::webhook_sender::{self, Delivery, WebhookSender};
 use crate::worker::{LeaderRun, LeaderTask, until_stopped};
 
 /// The delays before the second and third Notification attempts, in seconds.
@@ -82,7 +85,7 @@ struct WebhookShared {
     format: WebhookFormat,
     public_url: String,
     retry_delays: [f64; 2],
-    client: reqwest::Client,
+    sender: WebhookSender,
     queue: BatchQueue<Vec<TierChange>>,
 }
 
@@ -153,21 +156,13 @@ impl WebhookShared {
         }
     }
 
-    /// The host an endpoint belongs to. Never log the URL itself: it is a credential.
-    fn endpoint(url: &str) -> String {
-        reqwest::Url::parse(url)
-            .ok()
-            .and_then(|parsed| parsed.host_str().map(str::to_owned))
-            .unwrap_or_else(|| "endpoint".to_owned())
-    }
-
     /// Posts one batch to one endpoint, with the retry policy of ADR 0009.
     ///
     /// The POST and the wait before a retry both end when `stop` fires: an
     /// endpoint that never answers costs the leader no more than the cancellation.
     async fn post(self: &Arc<Self>, url: &str, batch: &[TierChange], stop: &CancellationToken) {
         let body = render(batch, self.format, &self.public_url);
-        let label = Self::endpoint(url);
+        let label = webhook_sender::endpoint(url);
         for attempt in 0..ATTEMPTS {
             let delay = self.retry_delays.get(attempt).copied().unwrap_or_default();
             let after = match self
@@ -189,10 +184,13 @@ impl WebhookShared {
         }
     }
 
-    /// One POST of `body` to `url`, and what its answer means for the policy.
+    /// One POST of `body` to `url` through the sender, and what its answer means.
     ///
-    /// `events` is how many Tier changes the batch holds, and `attempt` is which
-    /// try this is, both of which the endpoint's log line carries.
+    /// The sender makes the request and classifies it; this decides what the
+    /// classification costs the retry policy. `events` is how many Tier changes
+    /// the batch holds, and `attempt` is which try this is, both of which the
+    /// endpoint's log line carries. `label` is the host the delivery went to,
+    /// which the stop arm needs because a stopped delivery answers with nothing.
     async fn attempt(
         &self,
         url: &str,
@@ -202,7 +200,7 @@ impl WebhookShared {
         attempt: usize,
         stop: &CancellationToken,
     ) -> Attempt {
-        let answer = until_stopped(stop, self.client.post(url).json(body).send()).await;
+        let answer = until_stopped(stop, self.sender.post(url, body)).await;
         let Some(answer) = answer else {
             tracing::info!(
                 name: "webhook.task.stopped",
@@ -211,49 +209,53 @@ impl WebhookShared {
             );
             return Attempt::Stopped;
         };
-        let response = match answer.map_err(|error| error.without_url().to_string()) {
-            Ok(response) => response,
-            Err(error) => {
+        match answer {
+            Delivery::Sent { endpoint } => {
+                tracing::info!(
+                    name: "webhook.delivery.sent",
+                    notifications = events,
+                    endpoint = %endpoint,
+                    "sent a batch of Tier changes"
+                );
+                Attempt::Finished
+            }
+            Delivery::Unreachable { endpoint, error } => {
                 tracing::warn!(
                     name: "webhook.delivery.unreachable",
-                    endpoint = %label,
+                    endpoint = %endpoint,
                     attempt = attempt + 1,
                     attempts = ATTEMPTS,
                     error = %error,
                     "Webhook endpoint unreachable"
                 );
-                return Attempt::Retry { after: None };
+                Attempt::Retry { after: None }
             }
-        };
-        let status = response.status().as_u16();
-        if (200..300).contains(&status) {
-            tracing::info!(
-                name: "webhook.delivery.sent",
-                notifications = events,
-                endpoint = %label,
-                "sent a batch of Tier changes"
-            );
-            return Attempt::Finished;
-        }
-        if is_permanent(status) {
-            tracing::warn!(
-                name: "webhook.delivery.rejected",
-                endpoint = %label,
+            Delivery::Refused {
+                endpoint,
                 status,
-                "Webhook endpoint rejected the batch"
-            );
-            return Attempt::Finished;
-        }
-        tracing::warn!(
-            name: "webhook.delivery.failed",
-            endpoint = %label,
-            status,
-            attempt = attempt + 1,
-            attempts = ATTEMPTS,
-            "Webhook delivery failed"
-        );
-        Attempt::Retry {
-            after: retry_after_seconds(response.headers()),
+                headers,
+            } => {
+                if is_permanent(status) {
+                    tracing::warn!(
+                        name: "webhook.delivery.rejected",
+                        endpoint = %endpoint,
+                        status,
+                        "Webhook endpoint rejected the batch"
+                    );
+                    return Attempt::Finished;
+                }
+                tracing::warn!(
+                    name: "webhook.delivery.failed",
+                    endpoint = %endpoint,
+                    status,
+                    attempt = attempt + 1,
+                    attempts = ATTEMPTS,
+                    "Webhook delivery failed"
+                );
+                Attempt::Retry {
+                    after: retry_after_seconds(&headers),
+                }
+            }
         }
     }
 }
@@ -305,17 +307,6 @@ impl std::fmt::Debug for WebhookWorker {
     }
 }
 
-/// The HTTP client every Notification goes through.
-///
-/// The timeout is what keeps one slow endpoint from parking the queue, and the
-/// user agent is what every endpoint expects to be told.
-fn webhook_client() -> anyhow::Result<reqwest::Client> {
-    Ok(reqwest::Client::builder()
-        .timeout(Duration::from_secs(WEBHOOK_TIMEOUT_SECONDS))
-        .user_agent(format!("flakeradar/{}", env!("CARGO_PKG_VERSION")))
-        .build()?)
-}
-
 impl WebhookWorker {
     /// A task that posts to `urls` in `format`.
     ///
@@ -340,7 +331,13 @@ impl WebhookWorker {
         public_url: &str,
         retry_delays: [f64; 2],
     ) -> anyhow::Result<Self> {
-        Self::with_client_build(urls, format, public_url, retry_delays, webhook_client)
+        Self::with_client_build(
+            urls,
+            format,
+            public_url,
+            retry_delays,
+            webhook_sender::client,
+        )
     }
 
     /// The same task, with `build` making the HTTP client instead.
@@ -367,7 +364,7 @@ impl WebhookWorker {
                 format,
                 public_url: public_url.to_owned(),
                 retry_delays,
-                client,
+                sender: WebhookSender::from_client(client),
                 queue: BatchQueue::new(QUEUE_MAX),
             }),
             run: LeaderRun::new(),
