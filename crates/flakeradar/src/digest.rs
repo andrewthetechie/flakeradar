@@ -13,7 +13,10 @@
 //!
 //! This task never logs a Webhook URL: the URL is the credential, so a log line
 //! names an endpoint's host only, and a `reqwest` error has its URL removed
-//! before it is logged.
+//! before it is logged. The mechanics that keep that promise — the client, the
+//! host-only label, the redaction and the classification of one `POST` — belong
+//! to [`crate::webhook_sender`]; what stays here is the digest's policy: one
+//! `POST` per endpoint, with no retry.
 
 // Rust guideline compliant 2026-07-21
 
@@ -35,7 +38,7 @@ use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
 use crate::BoxFuture;
-use crate::webhooks::WEBHOOK_TIMEOUT_SECONDS;
+use crate::webhook_sender::{Delivery, WebhookSender};
 use crate::worker::{LeaderRun, LeaderTask, until_stopped};
 
 /// How long the digest task waits between two checks of the schedule, in seconds.
@@ -47,14 +50,6 @@ use crate::worker::{LeaderRun, LeaderTask, until_stopped};
 /// hour an operator asked for; shortening it only adds idle wakeings. A test
 /// overrides the interval with [`DigestWorker::with_check_interval`].
 pub const DIGEST_CHECK_SECONDS: u64 = 300;
-
-/// The host an endpoint belongs to. Never log the URL itself: it is a credential.
-fn endpoint(url: &str) -> String {
-    reqwest::Url::parse(url)
-        .ok()
-        .and_then(|parsed| parsed.host_str().map(str::to_owned))
-        .unwrap_or_else(|| "endpoint".to_owned())
-}
 
 fn log_sent(label: &str) {
     tracing::info!(name: "digest.sent", endpoint = %label, "sent the weekly digest");
@@ -93,24 +88,13 @@ fn log_unreachable(label: &str, error: &str) {
     );
 }
 
-/// The HTTP client every weekly digest goes through.
-///
-/// The same client a Notification uses: the same timeout bounds a black-holed
-/// endpoint, and the same user agent is what every endpoint expects to be told.
-fn digest_client() -> anyhow::Result<reqwest::Client> {
-    Ok(reqwest::Client::builder()
-        .timeout(Duration::from_secs(WEBHOOK_TIMEOUT_SECONDS))
-        .user_agent(format!("flakeradar/{}", env!("CARGO_PKG_VERSION")))
-        .build()?)
-}
-
 /// Everything the digest task shares with its loop.
 struct DigestShared {
     pool: DatabaseConnection,
     schedule: DigestSchedule,
     format: WebhookFormat,
     urls: Vec<String>,
-    client: reqwest::Client,
+    sender: WebhookSender,
     reads: ReadSettings,
     check_interval: Duration,
     checks: AtomicUsize,
@@ -185,11 +169,15 @@ impl DigestShared {
     /// Posts one digest to one endpoint. A refusal is logged and not retried: the
     /// slot is already claimed, so a retry would be a second `POST` for the week.
     async fn post(&self, url: &str, body: &Value) {
-        let label = endpoint(url);
-        match self.client.post(url).json(body).send().await {
-            Ok(response) if response.status().is_success() => log_sent(&label),
-            Ok(response) => log_rejected(&label, response.status().as_u16()),
-            Err(error) => log_unreachable(&label, &error.without_url().to_string()),
+        match self.sender.post(url, body).await {
+            Delivery::Sent { endpoint } => log_sent(&endpoint),
+            // No retry: the slot is claimed, so a second `POST` would be a second
+            // digest. The refusal's headers are the Notification's business, not
+            // the digest's.
+            Delivery::Refused {
+                endpoint, status, ..
+            } => log_rejected(&endpoint, status),
+            Delivery::Unreachable { endpoint, error } => log_unreachable(&endpoint, &error),
         }
     }
 }
@@ -238,7 +226,7 @@ impl DigestWorker {
                 schedule,
                 format,
                 urls,
-                client: digest_client().context("building the digest HTTP client")?,
+                sender: WebhookSender::new().context("building the digest HTTP client")?,
                 reads,
                 check_interval: Duration::from_secs(DIGEST_CHECK_SECONDS),
                 checks: AtomicUsize::new(0),
