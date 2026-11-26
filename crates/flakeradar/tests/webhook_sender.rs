@@ -15,7 +15,11 @@
     reason = "a test fails loudly when a stub or a delivery does not behave"
 )]
 
-use flakeradar::webhook_sender::{Delivery, WebhookSender, client};
+use std::collections::BTreeMap;
+
+use flakeradar::settings::Settings;
+use flakeradar::webhook_sender::{Delivery, WebhookSender, client, target};
+use flakeradar_core::notify::WebhookFormat;
 use flakeradar_test_support::CapturedLog;
 use serde_json::{Value, json};
 use wiremock::matchers::{method, path};
@@ -255,4 +259,89 @@ async fn an_endpoint_that_is_not_a_url_is_logged_as_endpoint() {
         "the returned error names no URL: {error}"
     );
     assert_named_by_host_only(&log, line, "ERROR", "endpoint", SECRET, &url);
+}
+
+/// Settings built from `pairs`, for the cases that ask what target the settings
+/// describe.
+fn settings(pairs: &[(&str, &str)]) -> Settings {
+    let values: BTreeMap<String, String> = pairs
+        .iter()
+        .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+        .collect();
+    Settings::from_map(&values).expect("the test's settings are valid")
+}
+
+#[test]
+fn the_target_is_the_parsed_urls_and_their_format() {
+    // Spaces and empty entries are the operator's, and the parser's job is to
+    // drop them: the target is what the settings mean, not what they spell.
+    let target = target(&settings(&[
+        ("FLAKERADAR_API_TOKEN", "real-token"),
+        (
+            "FLAKERADAR_WEBHOOK_URLS",
+            " https://hooks.example.com/a , ,https://hooks.example.com/b ",
+        ),
+        ("FLAKERADAR_WEBHOOK_FORMAT", "slack"),
+    ]))
+    .expect("two URLs describe a target");
+    assert_eq!(
+        target.urls,
+        vec![
+            "https://hooks.example.com/a".to_owned(),
+            "https://hooks.example.com/b".to_owned(),
+        ],
+        "the target carries every configured endpoint"
+    );
+    assert_eq!(
+        target.format,
+        WebhookFormat::Slack,
+        "the target carries the format the endpoints receive"
+    );
+}
+
+#[test]
+fn no_configured_url_is_no_target() {
+    // The empty case is what both leader tasks gate on, and the helper is the
+    // only place that decides it.
+    assert!(
+        target(&settings(&[("FLAKERADAR_API_TOKEN", "real-token")])).is_none(),
+        "no URLs means no target at all"
+    );
+    assert!(
+        target(&settings(&[
+            ("FLAKERADAR_API_TOKEN", "real-token"),
+            ("FLAKERADAR_WEBHOOK_URLS", " , "),
+        ]))
+        .is_none(),
+        "a list of blanks is still no URLs"
+    );
+}
+
+#[test]
+fn the_target_names_itself_and_its_debug_line_carries_no_endpoint() {
+    /// A credential in the path, which no `Debug` line may carry.
+    const SECRET: &str = "SECRETTOKEN";
+
+    let target = target(&settings(&[
+        ("FLAKERADAR_API_TOKEN", "real-token"),
+        (
+            "FLAKERADAR_WEBHOOK_URLS",
+            &format!("https://hooks.example.com/{SECRET}"),
+        ),
+    ]))
+    .expect("one URL describes a target");
+    let debug = format!("{target:?}");
+    assert!(debug.contains("WebhookTarget"), "{debug}");
+    assert!(
+        debug.contains("endpoints: 1"),
+        "the endpoint count is formatted: {debug}"
+    );
+    assert!(
+        !debug.contains(SECRET),
+        "the Debug line names no Webhook URL: {debug}"
+    );
+    assert!(
+        !debug.contains("https://hooks.example.com"),
+        "the Debug line names no Webhook URL, not even its host: {debug}"
+    );
 }

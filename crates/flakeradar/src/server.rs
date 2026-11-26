@@ -41,18 +41,17 @@ pub struct Server {
 /// The Notification task, built only when at least one Webhook URL is configured.
 ///
 /// No URLs means no task at all, not an idle one: a task with nothing to deliver
-/// would take part of every leader loop for no reader.
+/// would take part of every leader loop for no reader. Which settings make a
+/// target is stated once, in [`crate::webhook_sender::target`].
 fn webhook_task(settings: &Settings) -> anyhow::Result<Option<Arc<WebhookWorker>>> {
-    let urls = flakeradar_core::notify::parse_urls(settings.webhook_urls.expose());
-    if urls.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(Arc::new(WebhookWorker::new(
-            urls,
-            settings.webhook_format,
-            &settings.public_url,
-        )?)))
-    }
+    let Some(target) = crate::webhook_sender::target(settings) else {
+        return Ok(None);
+    };
+    Ok(Some(Arc::new(WebhookWorker::new(
+        target.urls,
+        target.format,
+        &settings.public_url,
+    )?)))
 }
 
 /// The weekly digest task, built only when a slot is scheduled and at least one
@@ -71,15 +70,14 @@ fn digest_task(
     let Some(schedule) = settings.digest else {
         return Ok(None);
     };
-    let urls = flakeradar_core::notify::parse_urls(settings.webhook_urls.expose());
-    if urls.is_empty() {
+    let Some(target) = crate::webhook_sender::target(settings) else {
         return Ok(None);
-    }
+    };
     DigestWorker::new(
         pool,
         schedule,
-        settings.webhook_format,
-        urls,
+        target.format,
+        target.urls,
         settings.reads(clock),
     )
     .map(|worker| Some(Arc::new(worker)))

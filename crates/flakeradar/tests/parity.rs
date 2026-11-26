@@ -42,8 +42,9 @@ use common::additions::Additions;
 use common::allowances::{Allowances, AllowedField, allowed, contract_for};
 use flakeradar::{
     BoxFuture, app::AppState, app::build_app, github::Api, github_worker::GitHubWorker,
-    settings::Settings, webhooks::WebhookWorker, worker::AdvisoryLock, worker::DatabaseProcessor,
-    worker::ReportProcessor, worker::ReportWorker, worker::WorkerSettings,
+    settings::Settings, webhook_sender, webhooks::WebhookWorker, worker::AdvisoryLock,
+    worker::DatabaseProcessor, worker::ReportProcessor, worker::ReportWorker,
+    worker::WorkerSettings,
 };
 use flakeradar_db::entities::repos;
 use flakeradar_db::{
@@ -382,10 +383,9 @@ impl Replay {
                 settings.prune_interval,
             )));
         }
-        let urls = flakeradar_core::notify::parse_urls(settings.webhook_urls.expose());
-        if !urls.is_empty() {
+        if let Some(target) = webhook_sender::target(&settings) {
             worker = worker.with_leader_task(Arc::new(
-                WebhookWorker::new(urls, settings.webhook_format, &settings.public_url)
+                WebhookWorker::new(target.urls, target.format, &settings.public_url)
                     .expect("the Notification client builds"),
             ));
         }

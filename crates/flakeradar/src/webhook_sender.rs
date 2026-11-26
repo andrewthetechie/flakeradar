@@ -14,12 +14,19 @@
 //! into data. Retry policy, attempt counts, the retryability split, fan-out and
 //! sequencing stay with the callers: [`WebhookSender::post`] answers one `POST`
 //! to one URL and stops there.
+//!
+//! The one construction question the tasks share lives here too: [`target`]
+//! answers which settings make a Webhook target, so the parse-and-gate rule is
+//! stated once for the Notification, the digest and the parity harness.
 
 // Rust guideline compliant 2026-07-21
 
 use std::time::Duration;
 
+use flakeradar_core::notify::WebhookFormat;
 use serde_json::Value;
+
+use crate::settings::Settings;
 
 /// How long one `POST` through the sender may take.
 ///
@@ -142,4 +149,41 @@ impl WebhookSender {
             },
         }
     }
+}
+
+/// The Webhook target the settings describe: endpoints and the format they take.
+///
+/// Its `Debug` names the endpoints by count, never by URL: a Webhook URL is a
+/// credential (ADR 0009).
+pub struct WebhookTarget {
+    /// Every configured endpoint.
+    pub urls: Vec<String>,
+    /// The body format each of them receives.
+    pub format: WebhookFormat,
+}
+
+impl std::fmt::Debug for WebhookTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WebhookTarget")
+            .field("endpoints", &self.urls.len())
+            .field("format", &self.format)
+            .finish_non_exhaustive()
+    }
+}
+
+/// The configured Webhook target, or `None` when no URL is configured.
+///
+/// A target with no endpoint is no task at all — a task with nothing to deliver
+/// would take part of every leader loop for no reader — which is why the gate
+/// lives here rather than at each caller.
+#[must_use]
+pub fn target(settings: &Settings) -> Option<WebhookTarget> {
+    let urls = flakeradar_core::notify::parse_urls(settings.webhook_urls.expose());
+    if urls.is_empty() {
+        return None;
+    }
+    Some(WebhookTarget {
+        urls,
+        format: settings.webhook_format,
+    })
 }
